@@ -56,6 +56,11 @@ btTransform transform(const PhysicsTransform& value) {
                        vector(value.position));
 }
 
+bool finite(const PhysicsTransform& value) {
+    return std::ranges::all_of(value.position, [](float component) { return std::isfinite(component); })
+        && std::ranges::all_of(value.rotation, [](float component) { return std::isfinite(component); });
+}
+
 PhysicsTransform transform(const btTransform& value) {
     const auto& q = value.getRotation();
     return { vector(value.getOrigin()), { q.x(), q.y(), q.z(), q.w() } };
@@ -79,11 +84,23 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
     impl_->initialTransforms.reserve(model.rigidBodies.size());
     impl_->modes.reserve(model.rigidBodies.size());
     for (const auto& source : model.rigidBodies) {
+        const Float3 safeSize {
+            std::max(std::abs(source.size[0]), 0.001F),
+            std::max(std::abs(source.size[1]), 0.001F),
+            std::max(std::abs(source.size[2]), 0.001F),
+        };
+        const bool degenerate = !std::ranges::all_of(source.size, [](float component) {
+            return std::isfinite(component) && std::abs(component) >= 0.001F;
+        });
+        if (degenerate) {
+            impl_->shapes.push_back(std::make_unique<btEmptyShape>());
+        } else {
         switch (source.shape) {
-        case 0: impl_->shapes.push_back(std::make_unique<btSphereShape>(source.size[0])); break;
-        case 1: impl_->shapes.push_back(std::make_unique<btBoxShape>(vector(source.size))); break;
-        case 2: impl_->shapes.push_back(std::make_unique<btCapsuleShape>(source.size[0], source.size[1])); break;
+        case 0: impl_->shapes.push_back(std::make_unique<btSphereShape>(safeSize[0])); break;
+        case 1: impl_->shapes.push_back(std::make_unique<btBoxShape>(vector(safeSize))); break;
+        case 2: impl_->shapes.push_back(std::make_unique<btCapsuleShape>(safeSize[0], safeSize[1])); break;
         default: throw std::runtime_error("unsupported PMX rigid body shape");
+        }
         }
         const auto initial = transform(source.position, source.rotation);
         impl_->initialTransforms.push_back(initial);
@@ -123,7 +140,8 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
         };
         if (!finite3(source.position) || !finite3(source.rotation)
             || !finite3(source.translationMinimum) || !finite3(source.translationMaximum)
-            || !finite3(source.rotationMinimum) || !finite3(source.rotationMaximum)) continue;
+            || !finite3(source.rotationMinimum) || !finite3(source.rotationMaximum)
+            || !finite3(source.translationSpring) || !finite3(source.rotationSpring)) continue;
         const auto jointWorld = transform(source.position, source.rotation);
         const auto frameA = impl_->initialTransforms[static_cast<std::size_t>(source.bodyA)].inverse() * jointWorld;
         const auto frameB = impl_->initialTransforms[static_cast<std::size_t>(source.bodyB)].inverse() * jointWorld;
@@ -134,15 +152,16 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
         joint->setAngularLowerLimit(vector(source.rotationMinimum));
         joint->setAngularUpperLimit(vector(source.rotationMaximum));
         for (int axis = 0; axis < 3; ++axis) {
-            if (source.translationSpring[static_cast<std::size_t>(axis)] != 0.0F) {
+            if (source.translationSpring[static_cast<std::size_t>(axis)] > 0.0F) {
                 joint->enableSpring(axis, true);
                 joint->setStiffness(axis, source.translationSpring[static_cast<std::size_t>(axis)]);
             }
-            if (source.rotationSpring[static_cast<std::size_t>(axis)] != 0.0F) {
+            if (source.rotationSpring[static_cast<std::size_t>(axis)] > 0.0F) {
                 joint->enableSpring(axis + 3, true);
                 joint->setStiffness(axis + 3, source.rotationSpring[static_cast<std::size_t>(axis)]);
             }
         }
+        joint->setEquilibriumPoint();
         impl_->world->addConstraint(joint.get(), true);
         impl_->constraints.push_back(std::move(joint));
     }
@@ -213,7 +232,7 @@ void MmdPhysics::setGravity(const Float3& gravity) {
 void MmdPhysics::setKinematicTransform(std::size_t body, const PhysicsTransform& value) {
 #if DAYO_HAS_BULLET
     if (body >= impl_->bodies.size()) throw std::out_of_range("PMX rigid body index");
-    if (impl_->modes[body] != 0) return;
+    if (impl_->modes[body] != 0 || !finite(value)) return;
     const auto world = transform(value);
     impl_->bodies[body]->setWorldTransform(world);
     impl_->bodies[body]->getMotionState()->setWorldTransform(world);
