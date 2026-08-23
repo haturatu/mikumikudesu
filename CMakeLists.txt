@@ -49,6 +49,7 @@ add_library(dayo_core
   src/core/asset.cpp
   src/core/denoiser.cpp
   src/core/model_probe.cpp
+  src/core/motion.cpp
 )
 target_include_directories(dayo_core PUBLIC src)
 
@@ -176,6 +177,7 @@ install(DIRECTORY MikuMikuDayo/hlsl MikuMikuDayo/renderer
 if(BUILD_TESTING)
   add_executable(dayo_core_tests tests/core_tests.cpp)
   target_link_libraries(dayo_core_tests PRIVATE dayo_core)
+  target_compile_definitions(dayo_core_tests PRIVATE DAYO_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   add_test(NAME core COMMAND dayo_core_tests)
   add_test(NAME vulkan_probe COMMAND mikumikudesu --probe --hidden)
   set_tests_properties(vulkan_probe PROPERTIES TIMEOUT 20)

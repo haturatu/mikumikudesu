@@ -4,6 +4,7 @@
 #include "core/denoiser.hpp"
 #include "core/log.hpp"
 #include "core/model_probe.hpp"
+#include "core/motion.hpp"
 #include "graphics/device.hpp"
 #include "platform/window.hpp"
 
@@ -149,6 +150,30 @@ void Application::handleAsset(const std::filesystem::path& path) {
             log::info("Loaded metadata: ", lastAsset_, " (", path.string(), ")");
         } catch (const std::exception& exception) {
             lastAsset_ = "PMX error: " + std::string(exception.what());
+            log::warn(lastAsset_);
+        }
+        return;
+    }
+    if (kind == core::AssetKind::vmd) {
+        try {
+            const auto motion = core::loadVmd(path);
+            lastAsset_ = "VMD " + motion.modelName + " — " + std::to_string(motion.bones.size())
+                       + " bone keys, " + std::to_string(motion.morphs.size()) + " morph keys, "
+                       + std::to_string(motion.lastFrame) + " frames";
+            log::info("Loaded motion: ", lastAsset_, " (", path.string(), ")");
+        } catch (const std::exception& exception) {
+            lastAsset_ = "VMD error: " + std::string(exception.what());
+            log::warn(lastAsset_);
+        }
+        return;
+    }
+    if (kind == core::AssetKind::vpd) {
+        try {
+            const auto pose = core::loadVpd(path);
+            lastAsset_ = "VPD pose — " + std::to_string(pose.bones.size()) + " bones";
+            log::info("Loaded pose: ", lastAsset_, " (", path.string(), ")");
+        } catch (const std::exception& exception) {
+            lastAsset_ = "VPD error: " + std::string(exception.what());
             log::warn(lastAsset_);
         }
         return;

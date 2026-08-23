@@ -1,5 +1,6 @@
 #include "core/asset.hpp"
 #include "core/model_probe.hpp"
+#include "core/motion.hpp"
 
 #include <array>
 #include <bit>
@@ -100,6 +101,19 @@ int main() {
         ok &= check(model.materials.size() == 1 && model.bones.empty(), "complete PMX sections");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: PMX probe: " << exception.what() << '\n';
+        ok = false;
+    }
+    try {
+        std::filesystem::path sampleVmd;
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(
+                 std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo/sample")) {
+            if (entry.path().extension() == ".vmd") { sampleVmd = entry.path(); break; }
+        }
+        const auto motion = dayo::core::loadVmd(sampleVmd);
+        ok &= check(!motion.modelName.empty(), "VMD CP932 model name");
+        ok &= check(!motion.bones.empty(), "VMD bone keys");
+    } catch (const std::exception& exception) {
+        std::cerr << "FAIL: VMD load: " << exception.what() << '\n';
         ok = false;
     }
     std::error_code error;
