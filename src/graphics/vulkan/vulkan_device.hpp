@@ -27,6 +27,7 @@ public:
     void updatePreviewVertices(std::span<const PreviewVertex> vertices) override;
     void updatePreviewMaterials(std::span<const PreviewMaterial> materials) override;
     void uploadPreviewTextures(std::span<const PreviewTexture> textures) override;
+    void updatePreviewScene(const PreviewScene& scene) override { previewScene_ = scene; }
     [[nodiscard]] BufferHandle createBuffer(const BufferDesc& desc) override;
     [[nodiscard]] TextureHandle createTexture(const TextureDesc& desc) override;
 
@@ -126,6 +127,7 @@ private:
     std::uint32_t previewIndexCount_ {};
     std::vector<PreviewMaterial> previewMaterials_;
     std::vector<PreviewTextureResource> previewTextures_;
+    PreviewScene previewScene_;
 
     std::uint64_t nextResourceHandle_ { 1 };
     std::unordered_map<BufferHandle, BufferResource> buffers_;

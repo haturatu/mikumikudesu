@@ -38,6 +38,7 @@ private:
     void handleAsset(const std::filesystem::path& path);
     void refreshAnimatedMesh(bool initialUpload, float deltaSeconds = 0.0F);
     void refreshVideoFrame();
+    void refreshPreviewScene();
     void buildUi();
 
     Options options_;
@@ -59,6 +60,11 @@ private:
     std::int64_t uploadedVideoFrame_ { -1 };
     std::string lastAsset_ { "Drop PMX/VMD/VPD/media files into the window" };
     std::vector<core::ProjectAsset> projectAssets_;
+    core::PreviewNormalization normalization_;
+    float cameraYaw_ {};
+    float cameraPitch_ {};
+    float cameraDistance_ { 3.0F };
+    bool manualCamera_ {};
 };
 
 } // namespace dayo::app

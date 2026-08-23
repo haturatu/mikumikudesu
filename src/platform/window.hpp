@@ -19,9 +19,11 @@ struct WindowOptions {
 };
 
 struct WindowEvent {
-    enum class Type { quit, resized, fileDropped };
+    enum class Type { quit, resized, fileDropped, cameraDragged, cameraZoomed };
     Type type {};
     std::filesystem::path path;
+    float x {};
+    float y {};
 };
 
 class Window {
@@ -44,4 +46,3 @@ protected:
 [[nodiscard]] std::unique_ptr<Window> createWindow(const WindowOptions& options);
 
 } // namespace dayo::platform
-

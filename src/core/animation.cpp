@@ -349,8 +349,8 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
     return result;
 }
 
-void normalizeForPreview(std::vector<PmxVertex>& vertices, const PmxModel& model) {
-    if (vertices.empty() || model.vertices.empty()) return;
+PreviewNormalization previewNormalization(const PmxModel& model) {
+    if (model.vertices.empty()) return {};
     auto minimum = model.vertices.front().position;
     auto maximum = minimum;
     for (const auto& vertex : model.vertices) {
@@ -359,12 +359,19 @@ void normalizeForPreview(std::vector<PmxVertex>& vertices, const PmxModel& model
             maximum[axis] = std::max(maximum[axis], vertex.position[axis]);
         }
     }
-    const Float3 center { (minimum[0] + maximum[0]) * 0.5F, (minimum[1] + maximum[1]) * 0.5F,
-                          (minimum[2] + maximum[2]) * 0.5F };
-    const float scale = 1.8F / std::max({ maximum[0] - minimum[0], maximum[1] - minimum[1],
-                                          maximum[2] - minimum[2], 0.001F });
+    PreviewNormalization result;
+    result.center = { (minimum[0] + maximum[0]) * 0.5F, (minimum[1] + maximum[1]) * 0.5F,
+                      (minimum[2] + maximum[2]) * 0.5F };
+    result.scale = 1.8F / std::max({ maximum[0] - minimum[0], maximum[1] - minimum[1],
+                                     maximum[2] - minimum[2], 0.001F });
+    return result;
+}
+
+void normalizeForPreview(std::vector<PmxVertex>& vertices, const PmxModel& model) {
+    if (vertices.empty() || model.vertices.empty()) return;
+    const auto normalization = previewNormalization(model);
     for (auto& vertex : vertices) for (std::size_t axis = 0; axis < 3; ++axis) {
-        vertex.position[axis] = (vertex.position[axis] - center[axis]) * scale;
+        vertex.position[axis] = (vertex.position[axis] - normalization.center[axis]) * normalization.scale;
     }
 }
 

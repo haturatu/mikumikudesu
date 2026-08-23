@@ -209,4 +209,56 @@ VpdPose loadVpd(const std::filesystem::path& path) {
     return pose;
 }
 
+VmdCameraState evaluateCamera(const VmdMotion& motion, float frame) {
+    VmdCameraState result;
+    if (motion.cameras.empty()) return result;
+    const VmdCameraKey* previous = &motion.cameras.front();
+    const VmdCameraKey* next = previous;
+    for (const auto& key : motion.cameras) {
+        if (static_cast<float>(key.frame) <= frame
+            && (static_cast<float>(previous->frame) > frame || key.frame >= previous->frame)) previous = &key;
+        if (static_cast<float>(key.frame) >= frame
+            && (static_cast<float>(next->frame) < frame || key.frame <= next->frame)) next = &key;
+    }
+    if (static_cast<float>(previous->frame) > frame) previous = next;
+    if (static_cast<float>(next->frame) < frame) next = previous;
+    const auto span = static_cast<float>(next->frame) - static_cast<float>(previous->frame);
+    const float t = span > 0.0F ? std::clamp((frame - static_cast<float>(previous->frame)) / span, 0.0F, 1.0F) : 0.0F;
+    const auto interpolate = [t](float a, float b) { return a + (b - a) * t; };
+    result.distance = interpolate(previous->distance, next->distance);
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        result.position[axis] = interpolate(previous->position[axis], next->position[axis]);
+        result.rotation[axis] = interpolate(previous->rotation[axis], next->rotation[axis]);
+    }
+    result.viewAngle = interpolate(static_cast<float>(previous->viewAngle),
+                                   static_cast<float>(next->viewAngle));
+    result.perspective = t < 0.5F ? previous->perspective : next->perspective;
+    return result;
+}
+
+VmdLightKey evaluateLight(const VmdMotion& motion, float frame) {
+    VmdLightKey result;
+    result.color = { 0.6F, 0.6F, 0.6F };
+    result.position = { -0.5F, -1.0F, 0.5F };
+    if (motion.lights.empty()) return result;
+    const VmdLightKey* previous = &motion.lights.front();
+    const VmdLightKey* next = previous;
+    for (const auto& key : motion.lights) {
+        if (static_cast<float>(key.frame) <= frame
+            && (static_cast<float>(previous->frame) > frame || key.frame >= previous->frame)) previous = &key;
+        if (static_cast<float>(key.frame) >= frame
+            && (static_cast<float>(next->frame) < frame || key.frame <= next->frame)) next = &key;
+    }
+    if (static_cast<float>(previous->frame) > frame) previous = next;
+    if (static_cast<float>(next->frame) < frame) next = previous;
+    const auto span = static_cast<float>(next->frame) - static_cast<float>(previous->frame);
+    const float t = span > 0.0F ? std::clamp((frame - static_cast<float>(previous->frame)) / span, 0.0F, 1.0F) : 0.0F;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        result.color[axis] = previous->color[axis] + (next->color[axis] - previous->color[axis]) * t;
+        result.position[axis] = previous->position[axis] + (next->position[axis] - previous->position[axis]) * t;
+    }
+    result.frame = static_cast<std::uint32_t>(std::max(frame, 0.0F));
+    return result;
+}
+
 } // namespace dayo::core

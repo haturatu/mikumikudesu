@@ -17,6 +17,11 @@ struct AnimatedModelFrame {
     bool visible { true };
 };
 
+struct PreviewNormalization {
+    Float3 center {};
+    float scale { 1.0F };
+};
+
 class MmdAnimator {
 public:
     explicit MmdAnimator(const PmxModel& model);
@@ -36,5 +41,6 @@ private:
 
 // Applies one stable model-space transform so animated vertices remain framed.
 void normalizeForPreview(std::vector<PmxVertex>& vertices, const PmxModel& model);
+[[nodiscard]] PreviewNormalization previewNormalization(const PmxModel& model);
 
 } // namespace dayo::core

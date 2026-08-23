@@ -47,6 +47,14 @@ struct VmdMotion {
     std::uint32_t lastFrame {};
 };
 
+struct VmdCameraState {
+    float distance { -45.0F };
+    Float3 position {};
+    Float3 rotation {};
+    float viewAngle { 30.0F };
+    bool perspective { true };
+};
+
 struct VpdBonePose {
     std::string name;
     Float3 translation {};
@@ -58,5 +66,7 @@ struct VpdPose { std::vector<VpdBonePose> bones; };
 [[nodiscard]] std::string decodeCp932(std::string_view input);
 [[nodiscard]] VmdMotion loadVmd(const std::filesystem::path& path);
 [[nodiscard]] VpdPose loadVpd(const std::filesystem::path& path);
+[[nodiscard]] VmdCameraState evaluateCamera(const VmdMotion& motion, float frame);
+[[nodiscard]] VmdLightKey evaluateLight(const VmdMotion& motion, float frame);
 
 } // namespace dayo::core

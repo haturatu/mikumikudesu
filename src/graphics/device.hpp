@@ -85,6 +85,15 @@ struct PreviewTexture {
     std::span<const std::uint8_t> rgba;
 };
 
+struct PreviewScene {
+    float cameraRotation[3] {};
+    float cameraDistance { 3.0F };
+    float target[3] {};
+    float verticalFovRadians { 0.785398163F };
+    float lightDirection[3] { -0.5F, -1.0F, 0.5F };
+    bool perspective { true };
+};
+
 using BufferHandle = std::uint64_t;
 using TextureHandle = std::uint64_t;
 using PipelineHandle = std::uint64_t;
@@ -118,6 +127,7 @@ public:
     virtual void updatePreviewVertices(std::span<const PreviewVertex> vertices) = 0;
     virtual void updatePreviewMaterials(std::span<const PreviewMaterial> materials) = 0;
     virtual void uploadPreviewTextures(std::span<const PreviewTexture> textures) = 0;
+    virtual void updatePreviewScene(const PreviewScene& scene) = 0;
 
     [[nodiscard]] virtual BufferHandle createBuffer(const BufferDesc& desc) = 0;
     [[nodiscard]] virtual TextureHandle createTexture(const TextureDesc& desc) = 0;

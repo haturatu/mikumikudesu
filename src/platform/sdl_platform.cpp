@@ -58,12 +58,12 @@ public:
             switch (event.type) {
             case SDL_EVENT_QUIT:
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-                result.push_back({ WindowEvent::Type::quit, {} });
+                result.push_back({ WindowEvent::Type::quit, {}, 0.0F, 0.0F });
                 break;
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
             case SDL_EVENT_WINDOW_RESIZED:
                 updateSize();
-                result.push_back({ WindowEvent::Type::resized, {} });
+                result.push_back({ WindowEvent::Type::resized, {}, 0.0F, 0.0F });
                 break;
             case SDL_EVENT_WINDOW_MINIMIZED:
                 minimized_ = true;
@@ -71,13 +71,22 @@ public:
             case SDL_EVENT_WINDOW_RESTORED:
                 minimized_ = false;
                 updateSize();
-                result.push_back({ WindowEvent::Type::resized, {} });
+                result.push_back({ WindowEvent::Type::resized, {}, 0.0F, 0.0F });
                 break;
             case SDL_EVENT_DROP_FILE:
                 if (event.drop.data != nullptr) {
                     result.push_back({ WindowEvent::Type::fileDropped,
                                        std::filesystem::path(event.drop.data) });
                 }
+                break;
+            case SDL_EVENT_MOUSE_MOTION:
+                if ((event.motion.state & SDL_BUTTON_RMASK) != 0U) {
+                    result.push_back({ WindowEvent::Type::cameraDragged, {},
+                                       event.motion.xrel, event.motion.yrel });
+                }
+                break;
+            case SDL_EVENT_MOUSE_WHEEL:
+                result.push_back({ WindowEvent::Type::cameraZoomed, {}, event.wheel.y, 0.0F });
                 break;
             default:
                 break;

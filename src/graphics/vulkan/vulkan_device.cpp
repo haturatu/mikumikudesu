@@ -96,6 +96,15 @@ VkBufferUsageFlags toVkUsage(BufferDesc::Usage usage) {
     return 0;
 }
 
+struct PreviewPushConstants {
+    std::array<float, 4> diffuse { 1.0F, 1.0F, 1.0F, 1.0F };
+    std::array<float, 4> camera {};
+    std::array<float, 4> target {};
+    std::array<float, 4> light {};
+};
+
+static_assert(sizeof(PreviewPushConstants) == 64);
+
 } // namespace
 
 VulkanDevice::VulkanDevice(platform::Window& window, bool validation)
@@ -608,9 +617,9 @@ void VulkanDevice::createPipeline() {
         .pDynamicStates = dynamicStates.data(),
     };
     const VkPushConstantRange pushConstant {
-        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         .offset = 0,
-        .size = sizeof(float) * 4,
+        .size = sizeof(PreviewPushConstants),
     };
     const VkPipelineLayoutCreateInfo layoutInfo {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -1124,19 +1133,30 @@ void VulkanDevice::renderFrame() {
     const VkDeviceSize vertexOffset = 0;
     vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer_, &vertexOffset);
     vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
+    PreviewPushConstants constants;
+    std::copy_n(previewScene_.cameraRotation, 3, constants.camera.begin());
+    constants.camera[3] = previewScene_.cameraDistance;
+    std::copy_n(previewScene_.target, 3, constants.target.begin());
+    constants.target[3] = previewScene_.perspective ? previewScene_.verticalFovRadians
+                                                   : -previewScene_.verticalFovRadians;
+    std::copy_n(previewScene_.lightDirection, 3, constants.light.begin());
+    constants.light[3] = swapchainExtent_.height == 0 ? 1.0F
+        : static_cast<float>(swapchainExtent_.width) / static_cast<float>(swapchainExtent_.height);
     if (previewMaterials_.empty()) {
-        const std::array diffuse { 1.0F, 1.0F, 1.0F, 1.0F };
         if (!previewTextures_.empty()) vkCmdBindDescriptorSets(frame.commandBuffer,
             VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1,
             &previewTextures_.front().descriptor, 0, nullptr);
-        vkCmdPushConstants(frame.commandBuffer, pipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(diffuse), diffuse.data());
+        vkCmdPushConstants(frame.commandBuffer, pipelineLayout_,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(constants), &constants);
         vkCmdDrawIndexed(frame.commandBuffer, previewIndexCount_, 1, 0, 0, 0);
     } else {
         for (const auto& material : previewMaterials_) {
             if (material.indexCount == 0 || material.firstIndex >= previewIndexCount_) continue;
-            vkCmdPushConstants(frame.commandBuffer, pipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0, sizeof(material.diffuse), material.diffuse);
+            std::copy_n(material.diffuse, 4, constants.diffuse.begin());
+            vkCmdPushConstants(frame.commandBuffer, pipelineLayout_,
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(constants), &constants);
             if (!previewTextures_.empty()) {
                 const auto slot = std::min<std::size_t>(material.textureSlot, previewTextures_.size() - 1);
                 vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,

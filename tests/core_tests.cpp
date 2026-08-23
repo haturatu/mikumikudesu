@@ -43,6 +43,22 @@ int main() {
     ok &= check(dayo::core::classifyAsset("motion.vmd") == AssetKind::vmd, "VMD extension");
     ok &= check(dayo::core::classifyAsset("sound.M4A") == AssetKind::audio, "audio extension");
     ok &= check(dayo::core::classifyAsset("movie.webm") == AssetKind::video, "video extension");
+    {
+        dayo::core::VmdMotion cameraMotion;
+        dayo::core::VmdCameraKey first;
+        first.frame = 0;
+        first.distance = -4.0F;
+        first.viewAngle = 30;
+        dayo::core::VmdCameraKey second;
+        second.frame = 10;
+        second.distance = -8.0F;
+        second.position = { 2.0F, 4.0F, 6.0F };
+        second.viewAngle = 50;
+        cameraMotion.cameras = { first, second };
+        const auto camera = dayo::core::evaluateCamera(cameraMotion, 5.0F);
+        ok &= check(camera.distance == -6.0F && camera.position[1] == 2.0F
+                    && camera.viewAngle == 40.0F, "VMD camera interpolation");
+    }
     try {
         const auto projectPath = std::filesystem::temp_directory_path() / "mikumikudesu-project-test.dayo";
         dayo::core::DayoProject project;

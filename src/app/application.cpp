@@ -128,6 +128,17 @@ int Application::run() {
             case platform::WindowEvent::Type::fileDropped:
                 handleAsset(event.path);
                 break;
+            case platform::WindowEvent::Type::cameraDragged:
+                cameraYaw_ += event.x * 0.008F;
+                cameraPitch_ = std::clamp(cameraPitch_ + event.y * 0.008F, -1.5F, 1.5F);
+                manualCamera_ = true;
+                refreshPreviewScene();
+                break;
+            case platform::WindowEvent::Type::cameraZoomed:
+                cameraDistance_ = std::clamp(cameraDistance_ * std::exp(-event.x * 0.12F), 0.4F, 30.0F);
+                manualCamera_ = true;
+                refreshPreviewScene();
+                break;
             }
         }
         if (!running) break;
@@ -138,11 +149,14 @@ int Application::run() {
         const auto tick = std::chrono::steady_clock::now();
         const float deltaSeconds = std::chrono::duration<float>(tick - previousTick).count();
         previousTick = tick;
-        if (playing_ && animator_ != nullptr && motion_ != nullptr && motion_->lastFrame > 0) {
+        if (playing_ && motion_ != nullptr && motion_->lastFrame > 0) {
             animationFrame_ = std::fmod(animationFrame_ + deltaSeconds * 30.0F,
                                         static_cast<float>(motion_->lastFrame + 1));
             const int integerFrame = static_cast<int>(animationFrame_);
-            if (integerFrame != uploadedAnimationFrame_) refreshAnimatedMesh(false, deltaSeconds);
+            if (integerFrame != uploadedAnimationFrame_ && animator_ != nullptr) {
+                refreshAnimatedMesh(false, deltaSeconds);
+            }
+            refreshPreviewScene();
         }
         if (playing_ && videoMode_ && media_ != nullptr && media_->info().hasVideo) {
             mediaSeconds_ += deltaSeconds;
@@ -199,6 +213,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             media_.reset();
             audioPlayer_.stop();
             model_ = std::make_unique<core::PmxModel>(core::loadPmxModel(path));
+            normalization_ = core::previewNormalization(*model_);
             animator_ = std::make_unique<core::MmdAnimator>(*model_);
             physics_ = std::make_unique<core::MmdPhysics>(*model_);
             animator_->setMotion(motion_.get());
@@ -233,6 +248,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             animationFrame_ = 0.0F;
             uploadedAnimationFrame_ = -1;
             refreshAnimatedMesh(true);
+            refreshPreviewScene();
             lastAsset_ = "PMX " + model_->metadata.modelName + " — v"
                        + std::to_string(model_->metadata.version) + ", vertices "
                        + std::to_string(model_->metadata.vertexCount) + ", triangles "
@@ -284,7 +300,9 @@ void Application::handleAsset(const std::filesystem::path& path) {
     if (kind == core::AssetKind::vmd) {
         try {
             motion_ = std::make_unique<core::VmdMotion>(core::loadVmd(path));
+            manualCamera_ = false;
             if (animator_ != nullptr) { animator_->setMotion(motion_.get()); animationFrame_ = 0.0F; refreshAnimatedMesh(false); }
+            refreshPreviewScene();
             lastAsset_ = "VMD " + motion_->modelName + " — " + std::to_string(motion_->bones.size())
                        + " bone keys, " + std::to_string(motion_->morphs.size()) + " morph keys, "
                        + std::to_string(motion_->lastFrame) + " frames";
@@ -381,6 +399,30 @@ void Application::refreshVideoFrame() {
     uploadedVideoFrame_ = static_cast<std::int64_t>(mediaSeconds_ * media_->info().videoFramesPerSecond);
 }
 
+void Application::refreshPreviewScene() {
+    if (device_ == nullptr) return;
+    graphics::PreviewScene scene;
+    scene.cameraRotation[0] = cameraPitch_;
+    scene.cameraRotation[1] = cameraYaw_;
+    scene.cameraDistance = cameraDistance_;
+    if (!manualCamera_ && motion_ != nullptr && !motion_->cameras.empty()) {
+        const auto camera = core::evaluateCamera(*motion_, animationFrame_);
+        std::copy(camera.rotation.begin(), camera.rotation.end(), scene.cameraRotation);
+        scene.cameraDistance = std::max(std::abs(camera.distance) * normalization_.scale, 0.4F);
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            scene.target[axis] = (camera.position[axis] - normalization_.center[axis]) * normalization_.scale;
+        }
+        scene.verticalFovRadians = std::clamp(camera.viewAngle, 1.0F, 179.0F)
+                                 * 0.01745329252F;
+        scene.perspective = camera.perspective;
+    }
+    if (motion_ != nullptr && !motion_->lights.empty()) {
+        const auto light = core::evaluateLight(*motion_, animationFrame_);
+        std::copy(light.position.begin(), light.position.end(), scene.lightDirection);
+    }
+    device_->updatePreviewScene(scene);
+}
+
 void Application::buildUi() {
 #if DAYO_HAS_IMGUI
     ImGui::SetNextWindowPos({ 24.0F, 24.0F }, ImGuiCond_FirstUseEver);
@@ -399,6 +441,7 @@ void Application::buildUi() {
             float maximum = static_cast<float>(std::max(motion_->lastFrame, 1U));
             if (ImGui::SliderFloat("Frame", &animationFrame_, 0.0F, maximum, "%.1f")) {
                 refreshAnimatedMesh(false);
+                refreshPreviewScene();
             }
         }
         if (media_ != nullptr) {
@@ -415,6 +458,11 @@ void Application::buildUi() {
         if (effect_ != nullptr) {
             ImGui::Text("Effect graph: %zu passes / %zu textures / %zu samplers",
                         effect_->passes.size(), effect_->textures.size(), effect_->samplers.size());
+        }
+        ImGui::TextUnformatted("Camera: right-drag to orbit, wheel to zoom");
+        if (manualCamera_ && ImGui::Button("Use VMD camera")) {
+            manualCamera_ = false;
+            refreshPreviewScene();
         }
         ImGui::Separator();
         ImGui::TextUnformatted("Subayai and BDPT are enabled only when Vulkan RT features are present.");
