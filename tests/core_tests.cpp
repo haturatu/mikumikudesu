@@ -6,6 +6,7 @@
 #include "core/model_probe.hpp"
 #include "core/motion.hpp"
 #include "core/physics.hpp"
+#include "core/project.hpp"
 
 #include <array>
 #include <algorithm>
@@ -42,6 +43,26 @@ int main() {
     ok &= check(dayo::core::classifyAsset("motion.vmd") == AssetKind::vmd, "VMD extension");
     ok &= check(dayo::core::classifyAsset("sound.M4A") == AssetKind::audio, "audio extension");
     ok &= check(dayo::core::classifyAsset("movie.webm") == AssetKind::video, "video extension");
+    try {
+        const auto projectPath = std::filesystem::temp_directory_path() / "mikumikudesu-project-test.dayo";
+        dayo::core::DayoProject project;
+        project.renderer = "subayai";
+        project.frame = 42.5F;
+        project.playing = false;
+        project.assets.push_back({ "pmx", std::filesystem::absolute("model.pmx") });
+        project.assets.push_back({ "vmd", std::filesystem::absolute("motion.vmd") });
+        dayo::core::saveProject(projectPath, project);
+        const auto loaded = dayo::core::loadProject(projectPath);
+        ok &= check(loaded.renderer == "subayai" && loaded.frame == 42.5F && !loaded.playing,
+                    ".dayo project settings round trip");
+        ok &= check(loaded.assets.size() == 2 && loaded.assets[0].path.is_absolute(),
+                    ".dayo relative asset round trip");
+        std::error_code projectError;
+        std::filesystem::remove(projectPath, projectError);
+    } catch (const std::exception& exception) {
+        std::cerr << "FAIL: project: " << exception.what() << '\n';
+        ok = false;
+    }
 
     const auto path = std::filesystem::temp_directory_path() / "mikumikudesu-core-test.pmx";
     {

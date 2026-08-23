@@ -66,9 +66,13 @@ Options parseOptions(int argc, char** argv) {
         } else if (argument == "--model" || argument == "--asset") {
             if (++i >= argc) throw std::invalid_argument(std::string(argument) + " requires a path");
             options.assets.emplace_back(argv[i]);
+        } else if (argument == "--save-project") {
+            if (++i >= argc) throw std::invalid_argument("--save-project requires a path");
+            options.saveProject = std::filesystem::path(argv[i]);
         } else if (argument == "--help" || argument == "-h") {
             log::info("Usage: mikumikudesu [--probe] [--hidden] [--frames N] "
-                      "[--renderer preview|subayai|bdpt] [--asset PATH] [--no-validation]");
+                      "[--renderer preview|subayai|bdpt] [--asset PATH] "
+                      "[--save-project PATH] [--no-validation]");
             options.probeOnly = true;
         } else if (!argument.empty() && argument.front() == '-') {
             throw std::invalid_argument("unknown option: " + std::string(argument));
@@ -95,6 +99,15 @@ int Application::run() {
     log::info("Media: ", DAYO_HAS_MEDIA ? "FFmpeg available" : "FFmpeg development libraries not found");
 
     for (const auto& asset : options_.assets) handleAsset(asset);
+    if (options_.saveProject) {
+        core::DayoProject project;
+        project.renderer = std::string(graphics::toString(device->activeRenderer()));
+        project.frame = animationFrame_;
+        project.playing = playing_;
+        project.assets = projectAssets_;
+        core::saveProject(*options_.saveProject, project);
+        log::info("Saved project: ", options_.saveProject->string());
+    }
     if (options_.probeOnly) {
         std::cout << device->capabilities().json() << '\n';
         return 0;
@@ -160,6 +173,26 @@ void Application::handleAsset(const std::filesystem::path& path) {
         log::warn(lastAsset_);
         return;
     }
+    if (kind == core::AssetKind::project) {
+        try {
+            const auto project = core::loadProject(path);
+            projectAssets_.clear();
+            if (project.renderer == "subayai") device_->selectRenderer(graphics::RendererKind::subayai);
+            else if (project.renderer == "bdpt") device_->selectRenderer(graphics::RendererKind::bdpt);
+            else device_->selectRenderer(graphics::RendererKind::preview);
+            for (const auto& asset : project.assets) handleAsset(asset.path);
+            animationFrame_ = project.frame;
+            playing_ = project.playing;
+            if (animator_ != nullptr) refreshAnimatedMesh(false);
+            lastAsset_ = "Project " + path.filename().string() + " — "
+                       + std::to_string(project.assets.size()) + " assets";
+            log::info("Loaded project: ", lastAsset_);
+        } catch (const std::exception& exception) {
+            lastAsset_ = "Project error: " + std::string(exception.what());
+            log::warn(lastAsset_);
+        }
+        return;
+    }
     if (kind == core::AssetKind::pmx) {
         try {
             videoMode_ = false;
@@ -207,6 +240,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
                        + std::to_string(model_->bones.size()) + ", textures "
                        + std::to_string(loadedTextures) + "/" + std::to_string(model_->textures.size());
             log::info("Loaded metadata: ", lastAsset_, " (", path.string(), ")");
+            projectAssets_.push_back({ "pmx", std::filesystem::absolute(path) });
         } catch (const std::exception& exception) {
             lastAsset_ = "PMX error: " + std::string(exception.what());
             log::warn(lastAsset_);
@@ -239,6 +273,8 @@ void Application::handleAsset(const std::filesystem::path& path) {
             lastAsset_ = std::string(core::toString(kind)) + " — "
                        + std::to_string(media_->info().durationSeconds) + " s";
             log::info("Loaded media: ", lastAsset_, " (", path.string(), ")");
+            projectAssets_.push_back({ kind == core::AssetKind::audio ? "audio" : "video",
+                                       std::filesystem::absolute(path) });
         } catch (const std::exception& exception) {
             lastAsset_ = "Media error: " + std::string(exception.what());
             log::warn(lastAsset_);
@@ -253,6 +289,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
                        + " bone keys, " + std::to_string(motion_->morphs.size()) + " morph keys, "
                        + std::to_string(motion_->lastFrame) + " frames";
             log::info("Loaded motion: ", lastAsset_, " (", path.string(), ")");
+            projectAssets_.push_back({ "vmd", std::filesystem::absolute(path) });
         } catch (const std::exception& exception) {
             lastAsset_ = "VMD error: " + std::string(exception.what());
             log::warn(lastAsset_);
@@ -265,6 +302,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             if (animator_ != nullptr) { animator_->setPose(pose_.get()); refreshAnimatedMesh(false); }
             lastAsset_ = "VPD pose — " + std::to_string(pose_->bones.size()) + " bones";
             log::info("Loaded pose: ", lastAsset_, " (", path.string(), ")");
+            projectAssets_.push_back({ "vpd", std::filesystem::absolute(path) });
         } catch (const std::exception& exception) {
             lastAsset_ = "VPD error: " + std::string(exception.what());
             log::warn(lastAsset_);
@@ -287,6 +325,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
                        + std::to_string(effect_->passes.size()) + " passes, "
                        + std::to_string(effect_->textures.size()) + " textures";
             log::info("Loaded effect graph: ", lastAsset_);
+            projectAssets_.push_back({ "effect", std::filesystem::absolute(path) });
         } catch (const std::exception& exception) {
             lastAsset_ = "Effect error: " + std::string(exception.what());
             log::warn(lastAsset_);
@@ -352,7 +391,7 @@ void Application::buildUi() {
         ImGui::Text("Renderer request: %s", graphics::toString(options_.renderer).data());
         ImGui::TextWrapped("%s", lastAsset_.c_str());
         ImGui::Spacing();
-        ImGui::TextUnformatted("Files: PMX / VMD / VPD / PNG / JPEG / DDS / WAV / MP3 / M4A / MP4 / AVI");
+        ImGui::TextUnformatted("Files: DAYO / PMX / VMD / VPD / images / audio / video / FXDAYO");
         ImGui::Text("OIDN: %s", DAYO_HAS_OIDN ? "CPU available; HIP optional" : "not installed");
         ImGui::Text("Media: %s", DAYO_HAS_MEDIA ? "FFmpeg enabled" : "metadata/drop only");
         if (motion_ != nullptr) {

@@ -69,6 +69,7 @@ add_library(dayo_core
   src/core/model_probe.cpp
   src/core/motion.cpp
   src/core/physics.cpp
+  src/core/project.cpp
 )
 target_include_directories(dayo_core PUBLIC src)
 target_include_directories(dayo_core PRIVATE "${DAYO_STB_INCLUDE_DIR}")
@@ -78,6 +79,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   set_source_files_properties(src/core/physics.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-float-conversion")
   set_source_files_properties(src/core/media.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-old-style-cast")
   set_source_files_properties(src/core/effect.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-shadow;-Wno-cpp;-Wno-deprecated-declarations")
+  set_source_files_properties(src/core/project.cpp PROPERTIES COMPILE_OPTIONS "-Wno-cpp;-Wno-deprecated-declarations")
 endif()
 
 add_library(dayo_platform
@@ -211,6 +213,20 @@ target_compile_definitions(dayo_core PUBLIC DAYO_HAS_JSONNET=${DAYO_HAS_JSONNET}
 if(DAYO_HAS_JSONNET)
   target_link_libraries(dayo_core PUBLIC ${DAYO_JSONNET_TARGET} nlohmann_json::nlohmann_json)
 endif()
+if(NOT TARGET nlohmann_json::nlohmann_json)
+  find_package(nlohmann_json 3.6.1 QUIET)
+endif()
+if(NOT TARGET nlohmann_json::nlohmann_json AND DAYO_FETCH_DEPENDENCIES)
+  FetchContent_Declare(nlohmann_json_source
+    URL https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  )
+  FetchContent_MakeAvailable(nlohmann_json_source)
+endif()
+if(NOT TARGET nlohmann_json::nlohmann_json)
+  message(FATAL_ERROR "nlohmann_json is required for .dayo project support")
+endif()
+target_link_libraries(dayo_core PUBLIC nlohmann_json::nlohmann_json)
 
 set(DAYO_HAS_MEDIA 0)
 if(DAYO_ENABLE_MEDIA)

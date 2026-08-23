@@ -6,6 +6,7 @@
 #include "core/physics.hpp"
 #include "core/media.hpp"
 #include "core/effect.hpp"
+#include "core/project.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -21,6 +22,7 @@ struct Options {
     bool hidden {};
     bool validation { true };
     std::optional<std::uint64_t> frameLimit;
+    std::optional<std::filesystem::path> saveProject;
     graphics::RendererKind renderer { graphics::RendererKind::preview };
     std::vector<std::filesystem::path> assets;
 };
@@ -56,6 +58,7 @@ private:
     double mediaSeconds_ {};
     std::int64_t uploadedVideoFrame_ { -1 };
     std::string lastAsset_ { "Drop PMX/VMD/VPD/media files into the window" };
+    std::vector<core::ProjectAsset> projectAssets_;
 };
 
 } // namespace dayo::app
