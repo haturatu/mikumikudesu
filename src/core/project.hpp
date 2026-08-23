@@ -1,7 +1,10 @@
 #pragma once
 
+#include "core/motion.hpp"
+
 #include <filesystem>
 #include <string>
+#include <optional>
 #include <vector>
 
 namespace dayo::core {
@@ -17,6 +20,7 @@ struct DayoProject {
     float frame {};
     bool playing { true };
     std::vector<ProjectAsset> assets;
+    std::optional<VmdMotion> embeddedMotion;
 };
 
 // Loads native v2 projects and the asset portion of original MikuMikuDayo

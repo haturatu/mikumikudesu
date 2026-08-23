@@ -195,6 +195,11 @@ void Application::handleAsset(const std::filesystem::path& path) {
             else if (project.renderer == "bdpt") device_->selectRenderer(graphics::RendererKind::bdpt);
             else device_->selectRenderer(graphics::RendererKind::preview);
             for (const auto& asset : project.assets) handleAsset(asset.path);
+            if (project.embeddedMotion && animator_ != nullptr) {
+                motion_ = std::make_unique<core::VmdMotion>(*project.embeddedMotion);
+                animator_->setMotion(motion_.get());
+                manualCamera_ = false;
+            }
             animationFrame_ = project.frame;
             playing_ = project.playing;
             if (animator_ != nullptr) refreshAnimatedMesh(false);

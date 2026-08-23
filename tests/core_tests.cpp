@@ -81,6 +81,30 @@ int main() {
                     ".dayo project settings round trip");
         ok &= check(loaded.assets.size() == 2 && loaded.assets[0].path.is_absolute(),
                     ".dayo relative asset round trip");
+        {
+            std::ofstream legacy(projectPath, std::ios::binary | std::ios::trunc);
+            legacy << "[MikuMikuDayo]\n"
+                      "{\"MikuMikuDayo\":{\"ver\":1,\"assetPath\":\".\","
+                      "\"editor\":{\"frame\":12},\"models\":[{\"filename\":\"legacy.pmx\"}],"
+                      "\"fxinfo\":[]}}\n[BinaryDayo]\n";
+            for (int section = 0; section < 7; ++section) append(legacy, std::int32_t { 0 });
+            append(legacy, std::int32_t { 1 });
+            appendText(legacy, "Bone");
+            append(legacy, std::int32_t { 7 });
+            const std::array<float, 3> translation { 1.0F, 2.0F, 3.0F };
+            const std::array<float, 4> rotation { 0.0F, 0.0F, 0.0F, 1.0F };
+            const std::array<std::uint8_t, 16> interpolation {};
+            legacy.write(reinterpret_cast<const char*>(translation.data()), sizeof(translation));
+            legacy.write(reinterpret_cast<const char*>(rotation.data()), sizeof(rotation));
+            legacy.write(reinterpret_cast<const char*>(interpolation.data()), sizeof(interpolation));
+            append(legacy, std::uint8_t { 1 });
+            for (int section = 0; section < 6; ++section) append(legacy, std::int32_t { 0 });
+        }
+        const auto legacy = dayo::core::loadProject(projectPath);
+        ok &= check(legacy.frame == 12.0F && legacy.assets.size() == 1
+                    && legacy.embeddedMotion && legacy.embeddedMotion->bones.size() == 1
+                    && legacy.embeddedMotion->bones[0].frame == 7,
+                    "legacy .dayo binary keyframe import");
         std::error_code projectError;
         std::filesystem::remove(projectPath, projectError);
     } catch (const std::exception& exception) {

@@ -16,7 +16,7 @@ MikuMikuDayo 1.20をLinuxへ移植したネイティブ実行系です。元のW
 - PMX材質範囲、diffuse/ambient/specular/power、texture乗算/加算モーフ、VMDカメラ/照明
 - FFmpegによるWAV/MP3/M4A等の音声再生とMP4/AVI/MKV/MOV/WebM動画デコード
 - Jsonnetを実行した`.fxdayo`のtexture/sampler/pass/raster/compute/raytracing graph解析
-- `.dayo` v2の相対パス保存と原子的置換、v2再読込、旧版JSONヘッダーからのasset復元
+- `.dayo` v2の相対パス保存と原子的置換、v2再読込、旧版assetとbinary keyframeの復元
 - Vulkan feature単位のPreview/Subayai/BDPT判定と、安全なPreviewフォールバック
 - OIDNのHIP→CPU runtime選択（OIDNは任意依存）
 - `DEBUG/INFO → stdout`、`WARN/ERROR → stderr`のログ規約
@@ -28,8 +28,9 @@ PreviewはLinux/AMDで実動します。SubayaiとBDPTについては、`.fxdayo
 そのため`nativeSubayai`と`nativeBdpt`は意図的にfalseであり、対応していると偽装しません。
 
 また、PMX 2.1 soft-bodyは安全に解析しますが、現在のBullet worldではsimulation対象外です。
-旧Windows `.dayo`のJSON asset情報は読めますが、後続する独自binary keyframe streamはまだ
-読みません。複数モデル編集、ImGuizmo編集、動画書き出しも元Windows UI相当には未到達です。
+旧Windows `.dayo`のcamera/light/shadow、bone/morph keyは読み込めます。外部親と重力keyは
+境界を保って読み飛ばし、現状のruntimeへは反映しません。複数モデル編集、ImGuizmo編集、
+動画書き出しも元Windows UI相当には未到達です。
 
 ## 必要環境
 
