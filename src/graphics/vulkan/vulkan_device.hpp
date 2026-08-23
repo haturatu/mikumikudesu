@@ -49,6 +49,13 @@ private:
         VkDeviceMemory memory {};
     };
 
+    struct DepthResource {
+        VkImage image {};
+        VkDeviceMemory memory {};
+        VkImageView view {};
+        bool initialized {};
+    };
+
     struct PreviewTextureResource {
         VkImage image {};
         VkDeviceMemory memory {};
@@ -100,6 +107,7 @@ private:
     std::vector<VkImage> swapchainImages_;
     std::vector<VkImageView> swapchainViews_;
     std::vector<bool> swapchainInitialized_;
+    std::vector<DepthResource> swapchainDepth_;
 
     VkPipelineLayout pipelineLayout_ {};
     VkPipeline pipeline_ {};

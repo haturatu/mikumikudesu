@@ -40,7 +40,7 @@ VertexOutput VS(VertexInput input, uint vertexId : SV_VertexID)
     else
     {
         float3 normal = normalize(input.normal);
-        output.position = float4(input.position.x, -input.position.y, input.position.z * 0.1, 1.0);
+        output.position = float4(input.position.x, -input.position.y, input.position.z * 0.05 + 0.5, 1.0);
         output.color = 0.28 + 0.62 * abs(normal.zyx);
     }
     return output;
