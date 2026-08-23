@@ -13,7 +13,21 @@ class MmdPhysics;
 
 struct AnimatedModelFrame {
     std::vector<PmxVertex> vertices;
-    std::vector<Float4> materialDiffuse;
+    struct Material {
+        Float4 diffuse {};
+        Float3 specular {};
+        float shininess {};
+        Float3 ambient {};
+        Float4 edgeColor {};
+        float edgeSize {};
+        Float4 textureMultiply { 1.0F, 1.0F, 1.0F, 1.0F };
+        Float4 textureAdd {};
+        Float4 sphereMultiply { 1.0F, 1.0F, 1.0F, 1.0F };
+        Float4 sphereAdd {};
+        Float4 toonMultiply { 1.0F, 1.0F, 1.0F, 1.0F };
+        Float4 toonAdd {};
+    };
+    std::vector<Material> materials;
     bool visible { true };
 };
 

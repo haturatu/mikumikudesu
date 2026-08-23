@@ -30,13 +30,16 @@ Quat normalize(Quat value) {
     return value;
 }
 Quat conjugate(const Quat& q) { return { -q[0], -q[1], -q[2], q[3] }; }
-Quat multiply(const Quat& a, const Quat& b) {
-    return normalize({
+Quat multiplyRaw(const Quat& a, const Quat& b) {
+    return {
         a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
         a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
         a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
         a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
-    });
+    };
+}
+Quat multiply(const Quat& a, const Quat& b) {
+    return normalize(multiplyRaw(a, b));
 }
 Float3 rotate(const Quat& q, const Float3& value) {
     const Float3 u { q[0], q[1], q[2] };
@@ -194,6 +197,69 @@ Float3 transformPoint(const GlobalPose& pose, const Float3& bindPosition, const 
     return add(rotate(pose.rotation, sub(value, bindPosition)), pose.position);
 }
 
+void skinSdef(PmxVertex& vertex, const PmxModel& model, const std::vector<GlobalPose>& global) {
+    const auto first = vertex.bones[0];
+    const auto second = vertex.bones[1];
+    if (first < 0 || second < 0 || static_cast<std::size_t>(first) >= global.size()
+        || static_cast<std::size_t>(second) >= global.size()) return;
+    const float weight = std::clamp(vertex.weights[0], 0.0F, 1.0F);
+    const auto halfDelta = mul(sub(vertex.sdefR0, vertex.sdefR1), 0.5F);
+    const auto cr0 = add(vertex.sdefC, mul(halfDelta, 1.0F - weight));
+    const auto cr1 = sub(vertex.sdefC, mul(halfDelta, weight));
+    const auto rotation = slerp(global[static_cast<std::size_t>(second)].rotation,
+                                global[static_cast<std::size_t>(first)].rotation, weight);
+    const auto translated0 = transformPoint(global[static_cast<std::size_t>(first)],
+                                             model.bones[static_cast<std::size_t>(first)].position, cr0);
+    const auto translated1 = transformPoint(global[static_cast<std::size_t>(second)],
+                                             model.bones[static_cast<std::size_t>(second)].position, cr1);
+    vertex.position = add(rotate(rotation, sub(vertex.position, vertex.sdefC)),
+                          add(mul(translated0, weight), mul(translated1, 1.0F - weight)));
+    vertex.normal = normalized(rotate(rotation, vertex.normal));
+}
+
+void skinQdef(PmxVertex& vertex, const PmxModel& model, const std::vector<GlobalPose>& global) {
+    Quat real {};
+    Quat dual {};
+    Quat pivot {};
+    bool initialized = false;
+    for (std::size_t influence = 0; influence < 4; ++influence) {
+        const auto bone = vertex.bones[influence];
+        float weight = vertex.weights[influence];
+        if (bone < 0 || static_cast<std::size_t>(bone) >= global.size() || weight == 0.0F) continue;
+        const auto index = static_cast<std::size_t>(bone);
+        const auto rotation = global[index].rotation;
+        const auto translation = sub(global[index].position,
+                                     rotate(rotation, model.bones[index].position));
+        auto dualPart = multiplyRaw({ translation[0], translation[1], translation[2], 0.0F }, rotation);
+        for (auto& component : dualPart) component *= 0.5F;
+        if (!initialized) {
+            pivot = rotation;
+            initialized = true;
+        } else if (dot({ pivot[0], pivot[1], pivot[2] },
+                       { rotation[0], rotation[1], rotation[2] }) + pivot[3] * rotation[3] < 0.0F) {
+            weight = -weight;
+        }
+        for (std::size_t component = 0; component < 4; ++component) {
+            real[component] += rotation[component] * weight;
+            dual[component] += dualPart[component] * weight;
+        }
+    }
+    const float magnitude = std::sqrt(real[0] * real[0] + real[1] * real[1]
+                                    + real[2] * real[2] + real[3] * real[3]);
+    if (!initialized || magnitude <= 1e-8F) return;
+    for (std::size_t component = 0; component < 4; ++component) {
+        real[component] /= magnitude;
+        dual[component] /= magnitude;
+    }
+    const float projection = real[0] * dual[0] + real[1] * dual[1]
+                           + real[2] * dual[2] + real[3] * dual[3];
+    for (std::size_t component = 0; component < 4; ++component) dual[component] -= real[component] * projection;
+    const auto translation = multiplyRaw(dual, conjugate(real));
+    vertex.position = add(rotate(real, vertex.position),
+                          { 2.0F * translation[0], 2.0F * translation[1], 2.0F * translation[2] });
+    vertex.normal = normalized(rotate(real, vertex.normal));
+}
+
 } // namespace
 
 MmdAnimator::MmdAnimator(const PmxModel& model) : model_(model) {}
@@ -204,8 +270,17 @@ void MmdAnimator::setPhysics(MmdPhysics* physics) { physics_ = physics; previous
 AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
     AnimatedModelFrame result;
     result.vertices = model_.vertices;
-    result.materialDiffuse.reserve(model_.materials.size());
-    for (const auto& material : model_.materials) result.materialDiffuse.push_back(material.diffuse);
+    result.materials.reserve(model_.materials.size());
+    for (const auto& material : model_.materials) {
+        AnimatedModelFrame::Material animated;
+        animated.diffuse = material.diffuse;
+        animated.specular = material.specular;
+        animated.shininess = material.shininess;
+        animated.ambient = material.ambient;
+        animated.edgeColor = material.edgeColor;
+        animated.edgeSize = material.edgeSize;
+        result.materials.push_back(animated);
+    }
 
     std::unordered_map<std::string_view, std::vector<const VmdBoneKey*>> boneKeys;
     std::unordered_map<std::string_view, std::vector<const VmdMorphKey*>> morphKeys;
@@ -260,12 +335,37 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
                     slerp({ 0.0F, 0.0F, 0.0F, 1.0F }, offset.vector4, weight));
             } else if (morph.type == 8) {
                 const auto first = offset.index < 0 ? std::size_t { 0 } : static_cast<std::size_t>(offset.index);
-                const auto last = offset.index < 0 ? result.materialDiffuse.size() : std::min(first + 1, result.materialDiffuse.size());
+                const auto last = offset.index < 0 ? result.materials.size() : std::min(first + 1, result.materials.size());
                 for (std::size_t material = first; material < last; ++material) {
-                    for (std::size_t component = 0; component < 4; ++component) {
-                        const float value = offset.materialVectors[0][component];
-                        if (offset.operation == 0) result.materialDiffuse[material][component] *= 1.0F + (value - 1.0F) * weight;
-                        else result.materialDiffuse[material][component] += value * weight;
+                    auto& destination = result.materials[material];
+                    const auto apply4 = [&](Float4& value, const Float4& morphValue) {
+                        for (std::size_t component = 0; component < 4; ++component) {
+                            if (offset.operation == 0) value[component] *= 1.0F + (morphValue[component] - 1.0F) * weight;
+                            else value[component] += morphValue[component] * weight;
+                        }
+                    };
+                    const auto apply3 = [&](Float3& value, const Float4& morphValue) {
+                        for (std::size_t component = 0; component < 3; ++component) {
+                            if (offset.operation == 0) value[component] *= 1.0F + (morphValue[component] - 1.0F) * weight;
+                            else value[component] += morphValue[component] * weight;
+                        }
+                    };
+                    apply4(destination.diffuse, offset.materialVectors[0]);
+                    apply3(destination.specular, offset.materialVectors[1]);
+                    apply3(destination.ambient, offset.materialVectors[2]);
+                    apply4(destination.edgeColor, offset.materialVectors[3]);
+                    if (offset.operation == 0) {
+                        destination.shininess *= 1.0F + (offset.materialVectors[1][3] - 1.0F) * weight;
+                        destination.edgeSize *= 1.0F + (offset.materialVectors[2][3] - 1.0F) * weight;
+                        apply4(destination.textureMultiply, offset.materialVectors[4]);
+                        apply4(destination.sphereMultiply, offset.materialVectors[5]);
+                        apply4(destination.toonMultiply, offset.materialVectors[6]);
+                    } else {
+                        destination.shininess += offset.materialVectors[1][3] * weight;
+                        destination.edgeSize += offset.materialVectors[2][3] * weight;
+                        apply4(destination.textureAdd, offset.materialVectors[4]);
+                        apply4(destination.sphereAdd, offset.materialVectors[5]);
+                        apply4(destination.toonAdd, offset.materialVectors[6]);
                     }
                 }
             }
@@ -327,6 +427,14 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
     previousFrame_ = frame;
 
     for (auto& vertex : result.vertices) {
+        if (vertex.weightType == PmxWeightType::sdef) {
+            skinSdef(vertex, model_, global);
+            continue;
+        }
+        if (vertex.weightType == PmxWeightType::qdef) {
+            skinQdef(vertex, model_, global);
+            continue;
+        }
         Float3 position {};
         Float3 normal {};
         float totalWeight = 0.0F;
