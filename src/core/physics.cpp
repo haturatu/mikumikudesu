@@ -122,7 +122,7 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
             impl_->bodies.back()->setActivationState(DISABLE_DEACTIVATION);
         }
         const short group = static_cast<short>(1U << std::min<std::uint8_t>(source.group, 15));
-        const short mask = static_cast<short>((~source.collisionMask) & 0xFFFFU);
+        const short mask = static_cast<short>(source.collisionMask);
         impl_->world->addRigidBody(impl_->bodies.back().get(), group, mask);
     }
     impl_->constraints.reserve(model.joints.size());
