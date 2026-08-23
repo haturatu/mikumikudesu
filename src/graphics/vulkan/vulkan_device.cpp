@@ -551,8 +551,15 @@ void VulkanDevice::createPipeline() {
         .dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size()),
         .pDynamicStates = dynamicStates.data(),
     };
+    const VkPushConstantRange pushConstant {
+        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .offset = 0,
+        .size = sizeof(float) * 4,
+    };
     const VkPipelineLayoutCreateInfo layoutInfo {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &pushConstant,
     };
     check(vkCreatePipelineLayout(device_, &layoutInfo, nullptr, &pipelineLayout_),
           "create pipeline layout");
@@ -791,7 +798,20 @@ void VulkanDevice::renderFrame() {
     const VkDeviceSize vertexOffset = 0;
     vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer_, &vertexOffset);
     vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(frame.commandBuffer, previewIndexCount_, 1, 0, 0, 0);
+    if (previewMaterials_.empty()) {
+        const std::array diffuse { 1.0F, 1.0F, 1.0F, 1.0F };
+        vkCmdPushConstants(frame.commandBuffer, pipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(diffuse), diffuse.data());
+        vkCmdDrawIndexed(frame.commandBuffer, previewIndexCount_, 1, 0, 0, 0);
+    } else {
+        for (const auto& material : previewMaterials_) {
+            if (material.indexCount == 0 || material.firstIndex >= previewIndexCount_) continue;
+            vkCmdPushConstants(frame.commandBuffer, pipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(material.diffuse), material.diffuse);
+            const auto count = std::min(material.indexCount, previewIndexCount_ - material.firstIndex);
+            vkCmdDrawIndexed(frame.commandBuffer, count, 1, material.firstIndex, 0, 0);
+        }
+    }
 #if DAYO_HAS_IMGUI
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.commandBuffer);
 #endif
@@ -923,6 +943,10 @@ void VulkanDevice::updatePreviewVertices(std::span<const PreviewVertex> vertices
           "map animated preview vertices");
     std::memcpy(mapped, vertices.data(), vertices.size_bytes());
     vkUnmapMemory(device_, previewVertexMemory_);
+}
+
+void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> materials) {
+    previewMaterials_.assign(materials.begin(), materials.end());
 }
 
 std::uint32_t VulkanDevice::findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags flags) const {

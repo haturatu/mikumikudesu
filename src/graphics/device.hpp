@@ -71,6 +71,13 @@ struct PreviewVertex {
     float uv[2] {};
 };
 
+struct PreviewMaterial {
+    std::uint32_t firstIndex {};
+    std::uint32_t indexCount {};
+    float diffuse[4] { 1.0F, 1.0F, 1.0F, 1.0F };
+    bool doubleSided {};
+};
+
 using BufferHandle = std::uint64_t;
 using TextureHandle = std::uint64_t;
 using PipelineHandle = std::uint64_t;
@@ -102,6 +109,7 @@ public:
     virtual void uploadPreviewMesh(std::span<const PreviewVertex> vertices,
                                    std::span<const std::uint32_t> indices) = 0;
     virtual void updatePreviewVertices(std::span<const PreviewVertex> vertices) = 0;
+    virtual void updatePreviewMaterials(std::span<const PreviewMaterial> materials) = 0;
 
     [[nodiscard]] virtual BufferHandle createBuffer(const BufferDesc& desc) = 0;
     [[nodiscard]] virtual TextureHandle createTexture(const TextureDesc& desc) = 0;

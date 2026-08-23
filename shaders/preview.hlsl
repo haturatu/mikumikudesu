@@ -11,6 +11,9 @@ struct VertexOutput
     [[vk::location(0)]] float3 color : COLOR0;
 };
 
+struct MaterialConstants { float4 diffuse; };
+[[vk::push_constant]] ConstantBuffer<MaterialConstants> material;
+
 VertexOutput VS(VertexInput input, uint vertexId : SV_VertexID)
 {
     const float2 positions[3] = {
@@ -41,5 +44,5 @@ VertexOutput VS(VertexInput input, uint vertexId : SV_VertexID)
 
 float4 PS(VertexOutput input) : SV_Target0
 {
-    return float4(input.color, 1.0);
+    return float4(input.color, 1.0) * material.diffuse;
 }

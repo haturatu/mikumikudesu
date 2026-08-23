@@ -209,6 +209,21 @@ void Application::refreshAnimatedMesh(bool initialUpload) {
     }
     if (initialUpload) device_->uploadPreviewMesh(vertices, model_->indices);
     else device_->updatePreviewVertices(vertices);
+    std::vector<graphics::PreviewMaterial> materials;
+    materials.reserve(model_->materials.size());
+    std::uint32_t firstIndex = 0;
+    for (std::size_t i = 0; i < model_->materials.size(); ++i) {
+        graphics::PreviewMaterial material;
+        material.firstIndex = firstIndex;
+        material.indexCount = model_->materials[i].indexCount;
+        material.doubleSided = (model_->materials[i].drawFlags & 0x01U) != 0;
+        const auto& diffuse = i < frame.materialDiffuse.size() ? frame.materialDiffuse[i]
+                                                               : model_->materials[i].diffuse;
+        std::copy(diffuse.begin(), diffuse.end(), material.diffuse);
+        materials.push_back(material);
+        firstIndex += material.indexCount;
+    }
+    device_->updatePreviewMaterials(materials);
     uploadedAnimationFrame_ = static_cast<int>(animationFrame_);
 }
 

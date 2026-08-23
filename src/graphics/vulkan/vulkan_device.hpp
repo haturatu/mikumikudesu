@@ -25,6 +25,7 @@ public:
     void uploadPreviewMesh(std::span<const PreviewVertex> vertices,
                            std::span<const std::uint32_t> indices) override;
     void updatePreviewVertices(std::span<const PreviewVertex> vertices) override;
+    void updatePreviewMaterials(std::span<const PreviewMaterial> materials) override;
     [[nodiscard]] BufferHandle createBuffer(const BufferDesc& desc) override;
     [[nodiscard]] TextureHandle createTexture(const TextureDesc& desc) override;
 
@@ -99,6 +100,7 @@ private:
     VkBuffer previewIndexBuffer_ {};
     VkDeviceMemory previewIndexMemory_ {};
     std::uint32_t previewIndexCount_ {};
+    std::vector<PreviewMaterial> previewMaterials_;
 
     std::uint64_t nextResourceHandle_ { 1 };
     std::unordered_map<BufferHandle, BufferResource> buffers_;
