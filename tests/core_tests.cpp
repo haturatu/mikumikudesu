@@ -11,6 +11,7 @@
 #include <array>
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -54,10 +55,17 @@ int main() {
         second.distance = -8.0F;
         second.position = { 2.0F, 4.0F, 6.0F };
         second.viewAngle = 50;
+        for (std::size_t channel = 0; channel < 6; ++channel) {
+            second.interpolation[channel * 4] = 20;
+            second.interpolation[channel * 4 + 1] = 107;
+            second.interpolation[channel * 4 + 2] = 20;
+            second.interpolation[channel * 4 + 3] = 107;
+        }
         cameraMotion.cameras = { first, second };
         const auto camera = dayo::core::evaluateCamera(cameraMotion, 5.0F);
-        ok &= check(camera.distance == -6.0F && camera.position[1] == 2.0F
-                    && camera.viewAngle == 40.0F, "VMD camera interpolation");
+        ok &= check(std::abs(camera.distance + 6.0F) < 0.001F
+                    && std::abs(camera.position[1] - 2.0F) < 0.001F
+                    && std::abs(camera.viewAngle - 40.0F) < 0.001F, "VMD camera interpolation");
     }
     try {
         const auto projectPath = std::filesystem::temp_directory_path() / "mikumikudesu-project-test.dayo";

@@ -65,6 +65,26 @@ float parseFloat(std::string_view input, std::string_view field) {
     return value;
 }
 
+float cameraBezier(float x, const std::array<std::uint8_t, 24>& values, std::size_t offset) {
+    const float x1 = static_cast<float>(values[offset]) / 127.0F;
+    const float x2 = static_cast<float>(values[offset + 1]) / 127.0F;
+    const float y1 = static_cast<float>(values[offset + 2]) / 127.0F;
+    const float y2 = static_cast<float>(values[offset + 3]) / 127.0F;
+    float low = 0.0F;
+    float high = 1.0F;
+    for (int iteration = 0; iteration < 16; ++iteration) {
+        const float value = (low + high) * 0.5F;
+        const float inverse = 1.0F - value;
+        const float curveX = 3.0F * inverse * inverse * value * x1
+                           + 3.0F * inverse * value * value * x2 + value * value * value;
+        if (curveX < x) low = value; else high = value;
+    }
+    const float value = (low + high) * 0.5F;
+    const float inverse = 1.0F - value;
+    return 3.0F * inverse * inverse * value * y1
+         + 3.0F * inverse * value * value * y2 + value * value * value;
+}
+
 template <std::size_t N>
 std::array<float, N> parseVector(std::string value, std::string_view field) {
     if (!value.empty() && value.back() == ';') value.pop_back();
@@ -223,16 +243,21 @@ VmdCameraState evaluateCamera(const VmdMotion& motion, float frame) {
     if (static_cast<float>(previous->frame) > frame) previous = next;
     if (static_cast<float>(next->frame) < frame) next = previous;
     const auto span = static_cast<float>(next->frame) - static_cast<float>(previous->frame);
-    const float t = span > 0.0F ? std::clamp((frame - static_cast<float>(previous->frame)) / span, 0.0F, 1.0F) : 0.0F;
-    const auto interpolate = [t](float a, float b) { return a + (b - a) * t; };
-    result.distance = interpolate(previous->distance, next->distance);
+    const float t = span > 1.0F ? std::clamp((frame - static_cast<float>(previous->frame)) / span, 0.0F, 1.0F) : 0.0F;
+    result.distance = previous->distance + (next->distance - previous->distance)
+                    * cameraBezier(t, next->interpolation, 16);
     for (std::size_t axis = 0; axis < 3; ++axis) {
-        result.position[axis] = interpolate(previous->position[axis], next->position[axis]);
-        result.rotation[axis] = interpolate(previous->rotation[axis], next->rotation[axis]);
+        result.position[axis] = previous->position[axis]
+                              + (next->position[axis] - previous->position[axis])
+                              * cameraBezier(t, next->interpolation, axis * 4);
+        result.rotation[axis] = previous->rotation[axis]
+                              + (next->rotation[axis] - previous->rotation[axis])
+                              * cameraBezier(t, next->interpolation, 12);
     }
-    result.viewAngle = interpolate(static_cast<float>(previous->viewAngle),
-                                   static_cast<float>(next->viewAngle));
-    result.perspective = t < 0.5F ? previous->perspective : next->perspective;
+    result.viewAngle = static_cast<float>(previous->viewAngle)
+                     + (static_cast<float>(next->viewAngle) - static_cast<float>(previous->viewAngle))
+                     * cameraBezier(t, next->interpolation, 20);
+    result.perspective = previous->perspective;
     return result;
 }
 
