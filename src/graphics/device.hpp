@@ -75,6 +75,11 @@ struct PreviewMaterial {
     std::uint32_t firstIndex {};
     std::uint32_t indexCount {};
     float diffuse[4] { 1.0F, 1.0F, 1.0F, 1.0F };
+    float ambient[3] { 0.2F, 0.2F, 0.2F };
+    float shininess {};
+    float specular[3] {};
+    float textureMultiply[4] { 1.0F, 1.0F, 1.0F, 1.0F };
+    float textureAdd[4] {};
     bool doubleSided {};
     std::uint32_t textureSlot {};
 };

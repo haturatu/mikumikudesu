@@ -376,9 +376,15 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         material.doubleSided = (model_->materials[i].drawFlags & 0x01U) != 0;
         material.textureSlot = model_->materials[i].textureIndex >= 0
             ? static_cast<std::uint32_t>(model_->materials[i].textureIndex + 1) : 0U;
-        const auto& diffuse = i < frame.materialDiffuse.size() ? frame.materialDiffuse[i]
-                                                               : model_->materials[i].diffuse;
-        std::copy(diffuse.begin(), diffuse.end(), material.diffuse);
+        if (i < frame.materials.size()) {
+            const auto& animated = frame.materials[i];
+            std::copy(animated.diffuse.begin(), animated.diffuse.end(), material.diffuse);
+            std::copy(animated.ambient.begin(), animated.ambient.end(), material.ambient);
+            std::copy(animated.specular.begin(), animated.specular.end(), material.specular);
+            material.shininess = animated.shininess;
+            std::copy(animated.textureMultiply.begin(), animated.textureMultiply.end(), material.textureMultiply);
+            std::copy(animated.textureAdd.begin(), animated.textureAdd.end(), material.textureAdd);
+        }
         materials.push_back(material);
         firstIndex += material.indexCount;
     }

@@ -101,9 +101,13 @@ struct PreviewPushConstants {
     std::array<float, 4> camera {};
     std::array<float, 4> target {};
     std::array<float, 4> light {};
+    std::array<float, 4> ambientShininess { 0.28F, 0.28F, 0.28F, 0.0F };
+    std::array<float, 4> specular {};
+    std::array<float, 4> textureMultiply { 1.0F, 1.0F, 1.0F, 1.0F };
+    std::array<float, 4> textureAdd {};
 };
 
-static_assert(sizeof(PreviewPushConstants) == 64);
+static_assert(sizeof(PreviewPushConstants) == 128);
 
 } // namespace
 
@@ -1154,6 +1158,11 @@ void VulkanDevice::renderFrame() {
         for (const auto& material : previewMaterials_) {
             if (material.indexCount == 0 || material.firstIndex >= previewIndexCount_) continue;
             std::copy_n(material.diffuse, 4, constants.diffuse.begin());
+            std::copy_n(material.ambient, 3, constants.ambientShininess.begin());
+            constants.ambientShininess[3] = material.shininess;
+            std::copy_n(material.specular, 3, constants.specular.begin());
+            std::copy_n(material.textureMultiply, 4, constants.textureMultiply.begin());
+            std::copy_n(material.textureAdd, 4, constants.textureAdd.begin());
             vkCmdPushConstants(frame.commandBuffer, pipelineLayout_,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(constants), &constants);

@@ -11,6 +11,7 @@ struct VertexOutput
     [[vk::location(0)]] float3 normal : NORMAL0;
     [[vk::location(1)]] float2 uv : TEXCOORD0;
     [[vk::location(2)]] float3 color : COLOR0;
+    [[vk::location(3)]] float3 viewPosition : TEXCOORD1;
 };
 
 struct MaterialConstants
@@ -19,6 +20,10 @@ struct MaterialConstants
     float4 camera; // xyz Euler rotation, w distance
     float4 target; // xyz target, w signed field of view (negative means orthographic)
     float4 light;  // xyz direction, w framebuffer aspect
+    float4 ambientShininess;
+    float4 specular;
+    float4 textureMultiply;
+    float4 textureAdd;
 };
 [[vk::push_constant]] ConstantBuffer<MaterialConstants> material;
 [[vk::binding(0, 0)]] Texture2D<float4> baseTexture;
@@ -40,6 +45,7 @@ VertexOutput VS(VertexInput input, uint vertexId : SV_VertexID)
     VertexOutput output;
     output.uv = input.uv;
     output.normal = float3(0.0, 0.0, 1.0);
+    output.viewPosition = float3(0.0, 0.0, 1.0);
     if (input.normal.x == 0.0 && input.normal.y == 0.0 && input.normal.z == 0.0)
     {
         output.position = float4(positions[vertexId], 0.0, 1.0);
@@ -73,6 +79,7 @@ VertexOutput VS(VertexInput input, uint vertexId : SV_VertexID)
             output.position = float4(p.x / aspect, -p.y, p.z * 0.01, 1.0);
         }
         output.normal = normalize(n);
+        output.viewPosition = p;
         output.color = float3(1.0, 1.0, 1.0);
     }
     return output;
@@ -80,8 +87,16 @@ VertexOutput VS(VertexInput input, uint vertexId : SV_VertexID)
 
 float4 PS(VertexOutput input) : SV_Target0
 {
-    const float diffuseLight = 0.28 + 0.72 * saturate(dot(normalize(input.normal),
-                                                        normalize(-material.light.xyz)));
-    return float4(input.color * diffuseLight, 1.0) * material.diffuse
-         * baseTexture.Sample(baseSampler, input.uv);
+    const float3 normal = normalize(input.normal);
+    const float3 lightDirection = normalize(-material.light.xyz);
+    const float diffuseLight = saturate(dot(normal, lightDirection));
+    const float3 halfVector = normalize(lightDirection + normalize(-input.viewPosition));
+    const float specularLight = material.ambientShininess.w > 0.0
+        ? pow(saturate(dot(normal, halfVector)), material.ambientShininess.w) : 0.0;
+    const float4 sampled = baseTexture.Sample(baseSampler, input.uv)
+                         * material.textureMultiply + material.textureAdd;
+    const float3 lighting = material.ambientShininess.xyz
+                          + material.diffuse.rgb * diffuseLight
+                          + material.specular.rgb * specularLight;
+    return float4(input.color * lighting, material.diffuse.a) * sampled;
 }
