@@ -3,6 +3,7 @@
 #include "graphics/device.hpp"
 #include "core/animation.hpp"
 #include "core/image.hpp"
+#include "core/physics.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -31,7 +32,7 @@ public:
 
 private:
     void handleAsset(const std::filesystem::path& path);
-    void refreshAnimatedMesh(bool initialUpload);
+    void refreshAnimatedMesh(bool initialUpload, float deltaSeconds = 0.0F);
     void buildUi();
 
     Options options_;
@@ -40,6 +41,7 @@ private:
     std::unique_ptr<core::VmdMotion> motion_;
     std::unique_ptr<core::VpdPose> pose_;
     std::unique_ptr<core::MmdAnimator> animator_;
+    std::unique_ptr<core::MmdPhysics> physics_;
     std::vector<core::ImageRgba8> textures_;
     float animationFrame_ {};
     int uploadedAnimationFrame_ { -1 };

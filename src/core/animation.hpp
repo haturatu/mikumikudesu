@@ -9,6 +9,8 @@
 
 namespace dayo::core {
 
+class MmdPhysics;
+
 struct AnimatedModelFrame {
     std::vector<PmxVertex> vertices;
     std::vector<Float4> materialDiffuse;
@@ -21,12 +23,15 @@ public:
 
     void setMotion(const VmdMotion* motion);
     void setPose(const VpdPose* pose);
-    [[nodiscard]] AnimatedModelFrame evaluate(float frame) const;
+    void setPhysics(MmdPhysics* physics);
+    [[nodiscard]] AnimatedModelFrame evaluate(float frame, float deltaSeconds = 0.0F);
 
 private:
     const PmxModel& model_;
     const VmdMotion* motion_ {};
     const VpdPose* pose_ {};
+    MmdPhysics* physics_ {};
+    float previousFrame_ { -1.0F };
 };
 
 // Applies one stable model-space transform so animated vertices remain framed.

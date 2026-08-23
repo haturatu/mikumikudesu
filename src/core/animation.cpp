@@ -1,4 +1,5 @@
 #include "core/animation.hpp"
+#include "core/physics.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -60,6 +61,13 @@ Quat axisAngle(const Float3& axis, float angle) {
     const float half = angle * 0.5F;
     const float sine = std::sin(half);
     return normalize({ axis[0] * sine, axis[1] * sine, axis[2] * sine, std::cos(half) });
+}
+
+Quat eulerRotation(const Float3& euler) {
+    const auto x = axisAngle({ 1.0F, 0.0F, 0.0F }, euler[0]);
+    const auto y = axisAngle({ 0.0F, 1.0F, 0.0F }, euler[1]);
+    const auto z = axisAngle({ 0.0F, 0.0F, 1.0F }, euler[2]);
+    return multiply(z, multiply(y, x));
 }
 
 float bezier(float x, std::uint8_t x1, std::uint8_t y1, std::uint8_t x2, std::uint8_t y2) {
@@ -191,8 +199,9 @@ Float3 transformPoint(const GlobalPose& pose, const Float3& bindPosition, const 
 MmdAnimator::MmdAnimator(const PmxModel& model) : model_(model) {}
 void MmdAnimator::setMotion(const VmdMotion* motion) { motion_ = motion; }
 void MmdAnimator::setPose(const VpdPose* pose) { pose_ = pose; }
+void MmdAnimator::setPhysics(MmdPhysics* physics) { physics_ = physics; previousFrame_ = -1.0F; }
 
-AnimatedModelFrame MmdAnimator::evaluate(float frame) const {
+AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
     AnimatedModelFrame result;
     result.vertices = model_.vertices;
     result.materialDiffuse.reserve(model_.materials.size());
@@ -278,6 +287,44 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame) const {
     std::vector<GlobalPose> global(model_.bones.size());
     calculateGlobals(model_, local, global);
     solveIk(model_, local, global);
+
+    if (physics_ != nullptr && physics_->available()) {
+        if (previousFrame_ >= 0.0F && frame < previousFrame_) physics_->reset();
+        for (std::size_t bodyIndex = 0; bodyIndex < model_.rigidBodies.size(); ++bodyIndex) {
+            const auto& body = model_.rigidBodies[bodyIndex];
+            if (body.mode != 0 || body.bone < 0 || static_cast<std::size_t>(body.bone) >= global.size()) continue;
+            const auto bone = static_cast<std::size_t>(body.bone);
+            const auto offset = sub(body.position, model_.bones[bone].position);
+            const auto offsetRotation = eulerRotation(body.rotation);
+            PhysicsTransform value;
+            value.position = add(global[bone].position, rotate(global[bone].rotation, offset));
+            value.rotation = multiply(global[bone].rotation, offsetRotation);
+            physics_->setKinematicTransform(bodyIndex, value);
+        }
+        physics_->step(deltaSeconds);
+        for (std::size_t bodyIndex = 0; bodyIndex < model_.rigidBodies.size(); ++bodyIndex) {
+            const auto& body = model_.rigidBodies[bodyIndex];
+            if (body.mode == 0 || body.bone < 0 || static_cast<std::size_t>(body.bone) >= global.size()) continue;
+            const auto bone = static_cast<std::size_t>(body.bone);
+            const auto bodyPose = physics_->bodyTransform(bodyIndex);
+            const auto offset = sub(body.position, model_.bones[bone].position);
+            const auto boneRotation = multiply(bodyPose.rotation, conjugate(eulerRotation(body.rotation)));
+            const auto bonePosition = sub(bodyPose.position, rotate(boneRotation, offset));
+            const auto parent = model_.bones[bone].parent;
+            if (parent >= 0 && static_cast<std::size_t>(parent) < global.size()) {
+                const auto parentIndex = static_cast<std::size_t>(parent);
+                local[bone].rotation = multiply(conjugate(global[parentIndex].rotation), boneRotation);
+                const auto bindOffset = sub(model_.bones[bone].position, model_.bones[parentIndex].position);
+                local[bone].translation = sub(rotate(conjugate(global[parentIndex].rotation),
+                                                     sub(bonePosition, global[parentIndex].position)), bindOffset);
+            } else {
+                local[bone].rotation = boneRotation;
+                local[bone].translation = sub(bonePosition, model_.bones[bone].position);
+            }
+            calculateGlobals(model_, local, global);
+        }
+    }
+    previousFrame_ = frame;
 
     for (auto& vertex : result.vertices) {
         Float3 position {};

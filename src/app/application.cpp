@@ -127,7 +127,7 @@ int Application::run() {
             animationFrame_ = std::fmod(animationFrame_ + deltaSeconds * 30.0F,
                                         static_cast<float>(motion_->lastFrame + 1));
             const int integerFrame = static_cast<int>(animationFrame_);
-            if (integerFrame != uploadedAnimationFrame_) refreshAnimatedMesh(false);
+            if (integerFrame != uploadedAnimationFrame_) refreshAnimatedMesh(false, deltaSeconds);
         }
         device->beginUiFrame();
         buildUi();
@@ -151,8 +151,10 @@ void Application::handleAsset(const std::filesystem::path& path) {
         try {
             model_ = std::make_unique<core::PmxModel>(core::loadPmxModel(path));
             animator_ = std::make_unique<core::MmdAnimator>(*model_);
+            physics_ = std::make_unique<core::MmdPhysics>(*model_);
             animator_->setMotion(motion_.get());
             animator_->setPose(pose_.get());
+            animator_->setPhysics(physics_.get());
             textures_.clear();
             textures_.resize(model_->textures.size());
             std::size_t loadedTextures = 0;
@@ -225,9 +227,9 @@ void Application::handleAsset(const std::filesystem::path& path) {
     log::info("Accepted ", core::toString(kind), " asset: ", path.string());
 }
 
-void Application::refreshAnimatedMesh(bool initialUpload) {
+void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     if (device_ == nullptr || model_ == nullptr || animator_ == nullptr) return;
-    auto frame = animator_->evaluate(animationFrame_);
+    auto frame = animator_->evaluate(animationFrame_, deltaSeconds);
     core::normalizeForPreview(frame.vertices, *model_);
     std::vector<graphics::PreviewVertex> vertices(frame.vertices.size());
     for (std::size_t i = 0; i < frame.vertices.size(); ++i) {
@@ -276,6 +278,10 @@ void Application::buildUi() {
             if (ImGui::SliderFloat("Frame", &animationFrame_, 0.0F, maximum, "%.1f")) {
                 refreshAnimatedMesh(false);
             }
+        }
+        if (physics_ != nullptr) {
+            ImGui::Text("Bullet: %s (%zu bodies, %zu joints)", physics_->available() ? "enabled" : "unavailable",
+                        physics_->bodyCount(), physics_->jointCount());
         }
         ImGui::Separator();
         ImGui::TextUnformatted("Subayai and BDPT are enabled only when Vulkan RT features are present.");

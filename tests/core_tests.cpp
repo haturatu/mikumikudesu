@@ -3,6 +3,7 @@
 #include "core/image.hpp"
 #include "core/model_probe.hpp"
 #include "core/motion.hpp"
+#include "core/physics.hpp"
 
 #include <array>
 #include <bit>
@@ -103,6 +104,44 @@ int main() {
         ok &= check(model.materials.size() == 1 && model.bones.empty(), "complete PMX sections");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: PMX probe: " << exception.what() << '\n';
+        ok = false;
+    }
+    try {
+        dayo::core::PmxModel physicsModel;
+        dayo::core::PmxRigidBody falling;
+        falling.shape = 0;
+        falling.size = { 0.5F, 0.5F, 0.5F };
+        falling.position = { 0.0F, 2.0F, 0.0F };
+        falling.mass = 1.0F;
+        falling.mode = 1;
+        falling.bone = 0;
+        physicsModel.rigidBodies.push_back(falling);
+        dayo::core::MmdPhysics physics(physicsModel);
+#if DAYO_HAS_BULLET
+        ok &= check(physics.available() && physics.bodyCount() == 1, "Bullet PMX body creation");
+        const auto before = physics.bodyTransform(0);
+        for (int i = 0; i < 60; ++i) physics.step(1.0F / 60.0F);
+        const auto after = physics.bodyTransform(0);
+        ok &= check(after.position[1] < before.position[1], "Bullet gravity simulation");
+        physicsModel.vertices.resize(1);
+        physicsModel.vertices[0].position = { 0.0F, 2.0F, 0.0F };
+        physicsModel.vertices[0].normal = { 0.0F, 1.0F, 0.0F };
+        physicsModel.vertices[0].bones[0] = 0;
+        dayo::core::PmxBone rootBone;
+        rootBone.position = { 0.0F, 2.0F, 0.0F };
+        physicsModel.bones.push_back(rootBone);
+        dayo::core::MmdPhysics animatedPhysics(physicsModel);
+        dayo::core::MmdAnimator physicalAnimator(physicsModel);
+        physicalAnimator.setPhysics(&animatedPhysics);
+        const auto physicalBefore = physicalAnimator.evaluate(0.0F, 0.0F);
+        const auto physicalAfter = physicalAnimator.evaluate(1.0F, 1.0F / 30.0F);
+        ok &= check(physicalAfter.vertices[0].position[1] < physicalBefore.vertices[0].position[1],
+                    "Bullet body drives PMX bone skinning");
+#else
+        ok &= check(!physics.available(), "optional Bullet fallback");
+#endif
+    } catch (const std::exception& exception) {
+        std::cerr << "FAIL: physics: " << exception.what() << '\n';
         ok = false;
     }
     try {
