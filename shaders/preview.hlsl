@@ -9,10 +9,13 @@ struct VertexOutput
 {
     float4 position : SV_Position;
     [[vk::location(0)]] float3 color : COLOR0;
+    [[vk::location(1)]] float2 uv : TEXCOORD0;
 };
 
 struct MaterialConstants { float4 diffuse; };
 [[vk::push_constant]] ConstantBuffer<MaterialConstants> material;
+[[vk::binding(0, 0)]] Texture2D<float4> baseTexture;
+[[vk::binding(1, 0)]] SamplerState baseSampler;
 
 VertexOutput VS(VertexInput input, uint vertexId : SV_VertexID)
 {
@@ -28,6 +31,7 @@ VertexOutput VS(VertexInput input, uint vertexId : SV_VertexID)
     };
 
     VertexOutput output;
+    output.uv = input.uv;
     if (input.normal.x == 0.0 && input.normal.y == 0.0 && input.normal.z == 0.0)
     {
         output.position = float4(positions[vertexId], 0.0, 1.0);
@@ -44,5 +48,5 @@ VertexOutput VS(VertexInput input, uint vertexId : SV_VertexID)
 
 float4 PS(VertexOutput input) : SV_Target0
 {
-    return float4(input.color, 1.0) * material.diffuse;
+    return float4(input.color, 1.0) * material.diffuse * baseTexture.Sample(baseSampler, input.uv);
 }

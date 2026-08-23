@@ -45,14 +45,32 @@ if(NOT Vulkan_FOUND)
 endif()
 find_package(SDL3 CONFIG REQUIRED)
 
+find_path(DAYO_STB_INCLUDE_DIR stb_image.h)
+if(NOT DAYO_STB_INCLUDE_DIR)
+  if(NOT DAYO_FETCH_DEPENDENCIES)
+    message(FATAL_ERROR "stb_image.h was not found; install stb or enable DAYO_FETCH_DEPENDENCIES")
+  endif()
+  FetchContent_Declare(stb
+    URL https://github.com/nothings/stb/archive/f0569113c93ad095470c54bf34a17b36646bbbb5.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  )
+  FetchContent_MakeAvailable(stb)
+  set(DAYO_STB_INCLUDE_DIR "${stb_SOURCE_DIR}")
+endif()
+
 add_library(dayo_core
   src/core/animation.cpp
   src/core/asset.cpp
   src/core/denoiser.cpp
+  src/core/image.cpp
   src/core/model_probe.cpp
   src/core/motion.cpp
 )
 target_include_directories(dayo_core PUBLIC src)
+target_include_directories(dayo_core PRIVATE "${DAYO_STB_INCLUDE_DIR}")
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+  set_source_files_properties(src/core/image.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-unused-but-set-variable")
+endif()
 
 add_library(dayo_platform
   src/platform/sdl_platform.cpp

@@ -3,6 +3,7 @@
 #include "core/asset.hpp"
 #include "core/animation.hpp"
 #include "core/denoiser.hpp"
+#include "core/image.hpp"
 #include "core/log.hpp"
 #include "core/model_probe.hpp"
 #include "core/motion.hpp"
@@ -152,6 +153,32 @@ void Application::handleAsset(const std::filesystem::path& path) {
             animator_ = std::make_unique<core::MmdAnimator>(*model_);
             animator_->setMotion(motion_.get());
             animator_->setPose(pose_.get());
+            textures_.clear();
+            textures_.resize(model_->textures.size());
+            std::size_t loadedTextures = 0;
+            for (std::size_t i = 0; i < model_->textures.size(); ++i) {
+                try {
+                    auto texturePath = model_->textures[i];
+                    if (!std::filesystem::exists(texturePath)) {
+                        // Some legacy ZIP extractors rewrite Japanese filenames. A same-stem
+                        // image beside the PMX is an unambiguous recovery for bundled assets.
+                        for (const auto& entry : std::filesystem::directory_iterator(model_->sourcePath.parent_path())) {
+                            if (!entry.is_regular_file() || entry.path().extension() != texturePath.extension()) continue;
+                            if (entry.path().stem() == model_->sourcePath.stem()) { texturePath = entry.path(); break; }
+                        }
+                    }
+                    textures_[i] = core::loadImageRgba8(texturePath);
+                    ++loadedTextures;
+                } catch (const std::exception& exception) {
+                    log::warn(exception.what());
+                }
+            }
+            std::vector<graphics::PreviewTexture> previewTextures;
+            previewTextures.reserve(textures_.size());
+            for (const auto& texture : textures_) {
+                previewTextures.push_back({ texture.width, texture.height, texture.pixels });
+            }
+            if (device_ != nullptr) device_->uploadPreviewTextures(previewTextures);
             animationFrame_ = 0.0F;
             uploadedAnimationFrame_ = -1;
             refreshAnimatedMesh(true);
@@ -159,7 +186,8 @@ void Application::handleAsset(const std::filesystem::path& path) {
                        + std::to_string(model_->metadata.version) + ", vertices "
                        + std::to_string(model_->metadata.vertexCount) + ", triangles "
                        + std::to_string(model_->indices.size() / 3) + ", bones "
-                       + std::to_string(model_->bones.size());
+                       + std::to_string(model_->bones.size()) + ", textures "
+                       + std::to_string(loadedTextures) + "/" + std::to_string(model_->textures.size());
             log::info("Loaded metadata: ", lastAsset_, " (", path.string(), ")");
         } catch (const std::exception& exception) {
             lastAsset_ = "PMX error: " + std::string(exception.what());
@@ -217,6 +245,8 @@ void Application::refreshAnimatedMesh(bool initialUpload) {
         material.firstIndex = firstIndex;
         material.indexCount = model_->materials[i].indexCount;
         material.doubleSided = (model_->materials[i].drawFlags & 0x01U) != 0;
+        material.textureSlot = model_->materials[i].textureIndex >= 0
+            ? static_cast<std::uint32_t>(model_->materials[i].textureIndex + 1) : 0U;
         const auto& diffuse = i < frame.materialDiffuse.size() ? frame.materialDiffuse[i]
                                                                : model_->materials[i].diffuse;
         std::copy(diffuse.begin(), diffuse.end(), material.diffuse);

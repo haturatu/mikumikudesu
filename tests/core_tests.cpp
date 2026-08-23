@@ -1,5 +1,6 @@
 #include "core/asset.hpp"
 #include "core/animation.hpp"
+#include "core/image.hpp"
 #include "core/model_probe.hpp"
 #include "core/motion.hpp"
 
@@ -102,6 +103,15 @@ int main() {
         ok &= check(model.materials.size() == 1 && model.bones.empty(), "complete PMX sections");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: PMX probe: " << exception.what() << '\n';
+        ok = false;
+    }
+    try {
+        const auto icon = dayo::core::loadImageRgba8(
+            std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo/res/dayoicon.png");
+        ok &= check(icon.width > 0 && icon.height > 0 && icon.pixels.size() == icon.width * icon.height * 4U,
+                    "RGBA image decode");
+    } catch (const std::exception& exception) {
+        std::cerr << "FAIL: image load: " << exception.what() << '\n';
         ok = false;
     }
     try {

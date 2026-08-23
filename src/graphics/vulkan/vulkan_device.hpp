@@ -26,6 +26,7 @@ public:
                            std::span<const std::uint32_t> indices) override;
     void updatePreviewVertices(std::span<const PreviewVertex> vertices) override;
     void updatePreviewMaterials(std::span<const PreviewMaterial> materials) override;
+    void uploadPreviewTextures(std::span<const PreviewTexture> textures) override;
     [[nodiscard]] BufferHandle createBuffer(const BufferDesc& desc) override;
     [[nodiscard]] TextureHandle createTexture(const TextureDesc& desc) override;
 
@@ -48,6 +49,13 @@ private:
         VkDeviceMemory memory {};
     };
 
+    struct PreviewTextureResource {
+        VkImage image {};
+        VkDeviceMemory memory {};
+        VkImageView view {};
+        VkDescriptorSet descriptor {};
+    };
+
     void createInstance(bool validation);
     void createSurface();
     void selectPhysicalDevice();
@@ -57,6 +65,11 @@ private:
     void destroySwapchain();
     void createPipeline();
     void destroyPipeline();
+    void createPreviewDescriptors();
+    void destroyPreviewDescriptors();
+    void destroyPreviewTextures();
+    void createPreviewTexture(std::uint32_t width, std::uint32_t height,
+                              std::span<const std::uint8_t> rgba);
     void createFrames();
     void destroyFrames();
     void createUi();
@@ -90,6 +103,9 @@ private:
 
     VkPipelineLayout pipelineLayout_ {};
     VkPipeline pipeline_ {};
+    VkDescriptorSetLayout previewDescriptorSetLayout_ {};
+    VkDescriptorPool previewDescriptorPool_ {};
+    VkSampler previewSampler_ {};
     VkDescriptorPool imguiDescriptorPool_ {};
     bool uiInitialized_ {};
     std::array<Frame, 2> frames_ {};
@@ -101,6 +117,7 @@ private:
     VkDeviceMemory previewIndexMemory_ {};
     std::uint32_t previewIndexCount_ {};
     std::vector<PreviewMaterial> previewMaterials_;
+    std::vector<PreviewTextureResource> previewTextures_;
 
     std::uint64_t nextResourceHandle_ { 1 };
     std::unordered_map<BufferHandle, BufferResource> buffers_;

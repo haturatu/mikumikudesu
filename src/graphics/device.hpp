@@ -76,6 +76,13 @@ struct PreviewMaterial {
     std::uint32_t indexCount {};
     float diffuse[4] { 1.0F, 1.0F, 1.0F, 1.0F };
     bool doubleSided {};
+    std::uint32_t textureSlot {};
+};
+
+struct PreviewTexture {
+    std::uint32_t width {};
+    std::uint32_t height {};
+    std::span<const std::uint8_t> rgba;
 };
 
 using BufferHandle = std::uint64_t;
@@ -110,6 +117,7 @@ public:
                                    std::span<const std::uint32_t> indices) = 0;
     virtual void updatePreviewVertices(std::span<const PreviewVertex> vertices) = 0;
     virtual void updatePreviewMaterials(std::span<const PreviewMaterial> materials) = 0;
+    virtual void uploadPreviewTextures(std::span<const PreviewTexture> textures) = 0;
 
     [[nodiscard]] virtual BufferHandle createBuffer(const BufferDesc& desc) = 0;
     [[nodiscard]] virtual TextureHandle createTexture(const TextureDesc& desc) = 0;
