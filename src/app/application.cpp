@@ -207,6 +207,44 @@ void Application::handleAsset(const std::filesystem::path& path) {
         }
         return;
     }
+    if (kind == core::AssetKind::image) {
+        try {
+            auto image = core::loadImageRgba8(path);
+            videoMode_ = false;
+            media_.reset();
+            animator_.reset();
+            physics_.reset();
+            model_.reset();
+            audioPlayer_.stop();
+            const std::array<graphics::PreviewVertex, 4> vertices {{
+                {{ -1.0F, -1.0F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 0.0F, 1.0F }},
+                {{  1.0F, -1.0F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 1.0F, 1.0F }},
+                {{  1.0F,  1.0F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 1.0F, 0.0F }},
+                {{ -1.0F,  1.0F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 0.0F, 0.0F }},
+            }};
+            const std::array<std::uint32_t, 6> indices { 0, 1, 2, 2, 3, 0 };
+            device_->uploadPreviewMesh(vertices, indices);
+            const std::array previewTextures { graphics::PreviewTexture {
+                image.width, image.height, image.pixels } };
+            device_->uploadPreviewTextures(previewTextures);
+            graphics::PreviewMaterial material;
+            material.indexCount = 6;
+            material.textureSlot = 1;
+            const std::array materials { material };
+            device_->updatePreviewMaterials(materials);
+            graphics::PreviewScene scene;
+            scene.cameraDistance = 2.42F;
+            device_->updatePreviewScene(scene);
+            lastAsset_ = "Image " + path.filename().string() + " — "
+                       + std::to_string(image.width) + "x" + std::to_string(image.height);
+            projectAssets_.push_back({ "image", std::filesystem::absolute(path) });
+            log::info("Loaded image: ", lastAsset_);
+        } catch (const std::exception& exception) {
+            lastAsset_ = "Image error: " + std::string(exception.what());
+            log::warn(lastAsset_);
+        }
+        return;
+    }
     if (kind == core::AssetKind::pmx) {
         try {
             videoMode_ = false;
