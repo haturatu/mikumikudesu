@@ -1,0 +1,32 @@
+_C C_Ramp : RampLUT.pmx, Ramp
+_C C_DiffusionR : RampLUT.pmx, CatR
+_C C_DiffusionG : RampLUT.pmx, CatG
+_C C_DiffusionB : RampLUT.pmx, CatB
+_C C_DiffusionA : RampLUT.pmx, CatA
+_C C_Roughness : RampLUT.pmx, Roughness
+_C C_IOR : RampLUT.pmx, IOR
+_C C_PowR: RampLUT.pmx, PowR
+_C C_PowG: RampLUT.pmx, PowG
+_C C_PowB: RampLUT.pmx, PowB
+_C C_NormalScale : RampLUT.pmx, NormalScale
+_C C_TextureLoops: RampLUT.pmx, TextureLoops
+
+
+Category : sss
+Ramp : C_Ramp
+Roughness : C_Roughness
+Cat : C_DiffusionR,C_DiffusionG,C_DiffusionB,C_DiffusionA
+IOR : C_IOR,0
+ColorConst : C_PowR,C_PowG,C_PowB,1
+ColorConstOp : pow
+
+TextureLoops : C_TextureLoops
+NormalScale : C_NormalScale
+RoughnessScale : 1
+AlbedoScale : 1
+
+
+_TNormalMap : "../../BDPT/m/t/skin.png"
+_TRoughnessMap : "../../BDPT/m/t/leather/leather_red_02_rough_1k.jpg"
+_T RampLUT : RampLUT
+_T RampZH : RampZH

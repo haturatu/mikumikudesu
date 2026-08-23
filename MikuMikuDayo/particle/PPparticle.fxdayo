@@ -1,0 +1,172 @@
+#include <resources_PP.hlsli>
+#include <yrz.hlsli>
+using namespace Dayo;
+using namespace YRZ;
+
+[YRZFX]
+local ParticleCount = 10000;
+{
+    "fx": {
+        "cereal_class_version": 0,
+		"category" : "postprocess",
+        "controllers": [
+			{ "name":"C_SizePlus", "controllerName":"(self)", "item":"大きく", "type":"float" },
+			{ "name":"C_SizeMinus", "controllerName":"(self)", "item":"小さく", "type":"float" }
+		],
+		"samplers":[
+			{ "name":"samp" }
+		],
+		"buffers":[
+			{ "name":"IBuf", "type":"uint", "size":{"absolute":true, "width":ParticleCount*6}, "view":"UAV" }
+		],
+        "passes": [
+			{ "name":"Copy", "type":"postprocess", "pixelShader":"PS", "vertexShader":"VS" },
+			{
+				"name":"Computer", "type":"compute", "computeShader":"CS", "UAV":[{"name":"IBuf"}],
+				"outputSize":{"absolute":true, "dimension":1, "width":ParticleCount, "conditions":["OnStart|OnLoad"]}
+			},
+			{
+				"name":"PPP", "type":"rasterizer", "pixelShader":"PS", "vertexShader":"VS",
+                "rasterizerDesc": { "cullMode":"none" },
+                "blendDesc": {
+                    "renderTarget0": { "blendEnable":true, "srcBlend":"one", "destBlend":"one", "blendOp":"add",
+                        "srcBlendAlpha":"one", "destBlendAlpha":"inv_src_alpha", "blendOpAlpha":"add" }
+				},
+				"rasterModelTarget":"buffer", "rasterIB":"IBuf"
+			}
+		]
+    }
+}
+[HLSL]
+
+/* ポストプロセス版パーティクルテンプレ
+
+  ポストプロセスでパーティクルを作る理由について
+
+  デフォーマはレンダラによるライティングが必要な物体に使うのでデフォーマによって変形を行った物体は
+  1.レンダラによる照明を実行する
+  2.レイトレーシングのための構造(BLAS)を維持・更新する
+
+  という処理が走るが、レンダラによる照明が必要ない物体や、BLASの維持・更新のコストが高いジオメトリでも同様の処理を行うと全体的に重くなってしまう
+  現状でBLASの維持・更新コストの高いジオメトリとは以下のような物
+
+  ・飛び飛びの位置にトライアングルが散らばっている
+  ・頂点数自体が多い
+
+  要するにパーティクルを作るための頂点群はレイトレの対象にするには異様に重い物になってしまう
+  (これは将来のDirectXやドライバの更新でなんとでもなるのかもしれないし、何とかなって欲しいけど)
+
+  一方、ポストプロセスの場合、デフォーマの適用される普通のモデルに対して以下のような違いを設けてある
+
+  1.ポストプロセス起動用のPMXモデルに対してはBLASの維持・更新を行わない
+  2.スキニングのための処理(デフォルトのデフォーマを適用する事)も行わない
+
+  このためレイトレーシング環境においてもレンダラによる照明の必要のないパーティクルであれば従来のラスタライザのみの環境以上の速度でパーティクルを実装できる
+
+  また、ラスタライザパスの"rasterModelTarget"を"buffer"に指定すると、エフェクト内で定義されたVertexBuffer,IndexBuffer元にレンダリングするのでポリゴンを一杯入れたPMXモデルをわざわざ用意しなくてもよい
+  "rasterVB"の指定を省略すると空のVertexBufferを使ってレンダリングするようになる。
+  SV_Indexのみを手掛かりにpixel shaderへの入力を完全に定義できる場合はそのようにするとVRAMを無駄に食わなくて良い
+*/
+
+
+static float Size = Exerp(1,10,C_SizePlus-C_SizeMinus);
+
+//ポストプロセス前の画像をポストプロセス後の画像としてそのままパスする
+#ifdef YRZ_PASS_Copy
+struct VSO { float4 position:SV_POSITION; float2 uv:TEXCOORD; };
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD ) { VSO vso = (VSO)0; vso.position = pos;  vso.uv = uv; return vso; }
+float4 PS(VSO vso) : SV_TARGET
+{
+	return ScreenTexture.Sample(samp, vso.uv);
+}
+#endif
+
+
+//パーティクルのメッシュ全体を出力するコンピュートシェーダ
+#ifdef YRZ_PASS_Computer
+[numthreads(1024, 1, 1)]
+void CS( uint3 id : SV_DispatchThreadID )
+{
+	uint i = id.x;
+
+	//頂点インデクス
+	//MMDモデルはTRIANGLELIST。3つの頂点インデクスで1つの三角形が定義される
+	uint p = i*6;
+	uint q = i*4;
+	IBuf[p] = q;
+	IBuf[p+1] = q+1;
+	IBuf[p+2] = q+3;
+	IBuf[p+3] = q+1;
+	IBuf[p+4] = q+2;
+	IBuf[p+5] = q+3;
+
+	//↓はVertexShaderで代入する
+	/*
+	VBuf[q].uv = float2(0,0);
+	VBuf[q+1].uv = float2(1,0);
+	VBuf[q+2].uv = float2(1,1);
+	VBuf[q+3].uv = float2(0,1);
+	*/
+}
+#endif
+
+//パーティクルを書き込むパス
+#ifdef YRZ_PASS_PPP
+
+struct VSO {
+	float4 position:SV_POSITION;
+	float2 uv:TEXCOORD0;
+	float3 eye:TEXCOORD2;
+	float3 color:TEXCOORD3;
+};
+
+VSO VS(uint index:SV_VertexID )
+{
+	VSO vso = (VSO)0;
+
+	uint iQuad = index / 4;
+	uint iVert = index % 4;
+	const float2 UVs[4] = { {0,0}, {1,0}, {1,1}, {0,1}};
+	float2 uv = UVs[iVert];
+	float2 dp = uv-0.5; dp.y = -dp.y;
+	float4 xi = Hash4(uint4(iQuad,123,456,789)); 
+	float t = frac(xi.w + Time * 0.01);
+	float3 C = lerp(-50,50,xi.xyz);
+
+	C.x += sin(t*2*PI) * 20;
+	//C.y += cos(t*2*PI) * 20;
+	//C.z += sin(t*PI) * 20;
+
+	float z = mul(float4(C,1),ViewMatrix).z;
+	dp *= Size * 0.1;
+	float4 xi2 = Hash4(uint4(iQuad,987,654,321));
+	vso.color = HSVtoRGB(float3(xi2.x,0.8,10));
+	
+	float3 P = C + dp.x * ViewMatrix._11_21_31 + dp.y * ViewMatrix._12_22_32;
+
+	vso.position = mul(float4(P,1),ViewProjectionMatrix);
+	vso.eye = CameraPosition - P.xyz;
+	vso.uv = uv;
+	return vso;
+}
+
+float4 PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace) : SV_TARGET
+{
+	//Zテスト
+	uint2 p = vso.position.xy;
+	float z = NormalDepth[p].w;
+	float pz = vso.position.w;
+	if (pz > z && z!=0)
+		discard;
+
+	float4 O = 1;
+	O.rgb = vso.color;
+	float soft = smoothstep(0,10,z-pz);	//Z値が近い場合は薄める(ソフトパーティクル)
+	if (!z)
+		soft = 1;
+	O.rgb *= smoothstep(0.51,0.5,length(vso.uv-0.5)) * soft;
+	O.a = 1;
+	return O;
+}
+
+#endif

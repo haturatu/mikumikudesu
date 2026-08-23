@@ -1,0 +1,397 @@
+[YRZFX]
+local RENCON1 = "subayairencon.pmx";
+local RENCON2 = "dayorencon.pmx";
+
+{
+    "fx": {
+        "cereal_class_version": 0,
+		"category" : "postprocess",
+        "controllers": [
+			{ "name":"C_Density", "type":"float", "controllerName":"(self)", "item":"濃度",
+				"slider":{"def":0.5},
+				"desc":["",""] },
+			{ "name":"C_Godray", "type":"float", "controllerName":"(self)", "item":"ゴッドレイ",
+				"slider":{"int":true},
+				"desc":["Taking shielding into account, light beams will appear","遮蔽を考慮して光の筋が出るようになります"] },
+			{ "name":"acsX", "type":"float", "controllerName":"(self)", "item":"R",
+				"slider":{"def":1.0},
+				"desc":["",""] },
+			{ "name":"acsY", "type":"float", "controllerName":"(self)", "item":"G",
+				"slider":{"def":1.0},
+				"desc":["",""] },
+			{ "name":"acsZ", "type":"float", "controllerName":"(self)", "item":"B",
+				"slider":{"def":1.0},
+				"desc":["",""] },
+			{ "name":"C_LumPlus", "type":"float", "controllerName":"(self)", "item":"明るく", 
+				"desc":["Displays the fog with brightness emphasised, disregarding the conservation of energy","明度を強調して表示します。エネルギー保存を考慮しないので不自然に見える場合もあります"] },
+			{ "name":"acsRx", "type":"float", "controllerName":"(self)", "item":"散乱係数",
+				"slider":{"def":0.5},
+				"desc":["When Mie scattering is off, forward scattering becomes stronger; when it is on, the particle size of the medium increases.","Mie散乱offの時は前方散乱が強くなり、onの時は媒質の粒径が大きくなります"] },
+			{ "name":"acsRy", "type":"float", "controllerName":"(self)", "item":"加算",
+				"desc":["","平行光源分だけ加算するようになります"] },
+			{ "name":"acsRz", "type":"float", "controllerName":"(self)", "item":"ゴッドレイ範囲",
+				"slider":{"def":0.5},
+				"desc":["It will add only the parallel light sources","光の筋を計算する範囲を指定します"] },
+			{ "name":"C_Samples", "type":"float", "controllerName":"(self)", "item":"サンプル数",
+				"slider":{"def":0.5},
+				"desc":["Suppresses godray noise","ゴッドレイのノイズを抑えます"] },
+			{ "name":"C_Mie", "type":"float", "controllerName":"(self)", "item":"Mie散乱", "slider":{"int":true},
+				"desc":["A look-up table will be used for the medium's BSDF.","媒質のBSDFにLUTを用います"]},
+			{ "name":"C_Cloud", "type":"float", "controllerName":"(self)", "item":"雲",
+				"desc":["The medium density becomes uneven","媒質密度にムラが生じます"]},
+			{ "name":"C_CloudScale", "type":"float", "controllerName":"(self)", "item":"雲スケール",
+				"slider":{"def":0.5},
+				"desc":["",""]},
+			{ "name":"C_CloudV", "type":"float3", "controllerName":"(self)", "item":"雲速度","desc":["",""]},
+			{ "name":"C_FalloffStart", "type":"float3", "controllerName":"(self)", "item":"減衰開始高さ",
+				"desc":["Beyond this bone, as the Y-coordinate increases, the fog density begins to thin","このボーンよりY座標が高くなると霧が薄くなり始めます"]},
+			{ "name":"C_FalloffEnd", "type":"float3", "controllerName":"(self)", "item":"減衰終了高さ",
+				"desc":["When the Y-coordinate exceeds this bone, the fog density becomes zero","このボーンよりY座標が高くなると霧の濃度が0になります"]},
+
+			//蓮根由来の変数
+			{"name": "C_ExposurePlus1","controllerName": RENCON1,"item": "露出+","type": "float"},
+			{"name": "C_ExposureMinus1","controllerName": RENCON1,"item": "露出-","type": "float"},
+			{"name": "C_ExposurePlus2","controllerName": RENCON2,"item": "露出+","type": "float"},
+			{"name": "C_ExposureMinus2","controllerName": RENCON2,"item": "露出-","type": "float"},
+			{"name": "C_SkyLightPlus","controllerName": RENCON1,"item": "環境光+","type": "float"},
+			{"name": "C_SkyLightMinus","controllerName": RENCON1,"item": "環境光-","type": "float"},
+			{"name": "C_DirectLightPlus","controllerName": RENCON1,"item": "直接光+","type": "float"},
+			{"name": "C_DirectLightMinus","controllerName": RENCON1,"item": "直接光-","type": "float"},
+			{"name": "C_DirectionalLightPlus","controllerName": RENCON1,"item": "平行光源+","type": "float"},
+			{"name": "C_SkyRotate1","controllerName": RENCON1,"item": "skybox回転","type": "float"},
+			{"name": "C_SkyRotate2","controllerName": RENCON2,"item": "skybox回転","type": "float"},
+		],
+		"samplers": [
+			{ "name":"samp", "filter":"POINT", "addressU":"CLAMP", "addressV":"CLAMP"},
+			{ "name":"LinearSamp", "filter":"LINEAR", "addressU":"CLAMP", "addressV":"CLAMP"},
+			{ "name":"CloudSamp", "filter":"LINEAR" },
+			{ "name":"ModelSamp" }
+		],
+		"textures": [
+			{ "name":"ShadowMap", "format":"R32_FLOAT", "size":{"absolute":true, "width":1024, "height":1024}, "view":"rtv" },
+			{ "name":"ZBuf", "format":"D32_FLOAT", "size":{"absolute":true, "width":1024, "height":1024}, "view":"dsv"},
+			{ "name":"RainbowLUT", "filename":"rainbow_sun.dds"},
+			{ "name":"RainbowZH", "filename":"rainbowZH.dds"},
+		],
+        "passes": [
+			{
+				"name":"Shadow", "type":"rasterizer",
+				"DSV":{"name":"ZBuf", "clear": true, "depth": 1.0},
+				"RTV":[{"name":"ShadowMap", "clear": true, "value":{"x":0, "y":0, "z":0, "w":0}}],
+				"rasterizerDesc": { "cullMode": "back" },
+				"vertexShader":"VS", "pixelShader":"PS", "conditions":["C_Godray"]
+			},
+			{"name":"Pass", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS"}
+		]
+    }
+}
+[HLSL]
+#include <resources_pp.hlsli>
+#include <yrz.hlsli>
+using namespace Dayo;
+using namespace YRZ;
+
+#define NURI NonUniformResourceIndex
+
+static float Gain = exp2(10*(C_LumPlus+C_ExposurePlus1+C_ExposurePlus2-C_ExposureMinus1-C_ExposureMinus2));
+static float SkyboxIntensity = exp2(10 * (C_SkyLightPlus-C_SkyLightMinus));
+static float DirectLightIntensity = exp2(10 * (C_DirectionalLightPlus+C_DirectLightPlus-C_DirectLightMinus));
+
+static float Density = Exerp(1e-6,1,C_Density);
+static float3 SigmaT = Density;
+static float3 Albedo = saturate(float3(acsX,acsY,acsZ));	//single scattering albedo
+static float3 SigmaS = Albedo * Density;
+static float3 SigmaA = (1-Albedo) * Density;
+static float IntensityEnv = Gain * SkyboxIntensity * max(0,1 - acsRy);
+static float MaxVolumeD = Exerp(1e+1,1e+5,acsRz);
+static float3 MMDLightLinear = ToLinear(LightColor);
+static int FOG_STEPS = clamp(Exerp(8,128,C_Samples)*SamplesPerFrame,1,1024);
+
+//ボリューム遮蔽マップ用、平行光源行列
+static float4x4 LightView = InverseRTMatrix(LookAtMatrix(-LightDirection*MaxVolumeD*0.1, 0));
+static float4x4 LightProjection = OrthoProjectionMatrix(float2(-MaxVolumeD*0.1,+MaxVolumeD*0.1),float2(MaxVolumeD*0.1,-MaxVolumeD*0.1),1,1e+5);
+static float4x4 LightViewProjection = mul(LightView, LightProjection);
+//static float4x4 LightView = ViewMatrix;
+//static float4x4 LightProjection = ProjectionMatrix;
+//static float4x4 LightViewProjection = mul(LightView, LightProjection);
+
+static float CloudScale = Exerp(0.5,16,C_CloudScale);
+
+static float SkyboxPhi = C_SkyRotate1 + C_SkyRotate2;
+
+float3 LongRat(float3 v)
+{
+    float3 uvu = float3(atan2(v.z, v.x), acos(v.y), atan2(v.z, abs(v.x))) / float3(-2*PI, PI, -2*PI) - float3(0.25 + SkyboxPhi, 0, 0.25 + SkyboxPhi);
+    return uvu;
+}
+
+//方向v.xyzのスカイボックステクスチャを得る
+//ZHを使用して各バンドにDlr[L]を掛けて加算
+float3 fetchSkyboxZonal(float3 v, float g)
+{
+	float3x3 ComboFactor;
+	if (C_Mie) {
+		//Lee diagramをZHしてCLBFの逆数を掛けて作ったテーブル
+		ComboFactor[0] = RainbowZH.SampleLevel(LinearSamp, float4(0.5/3,g, 0,0), 0);
+		ComboFactor[1] = 0;//RainbowZH.SampleLevel(LinearSamp, float4(1.5/3,g, 0,0), 0) /1.5;
+		ComboFactor[2] = 0;//RainbowZH.SampleLevel(LinearSamp, float4(2.5/3,g, 0,0), 0) /4;
+		//ComboFactor[1],[2]は0 -> Lee diagramは直流分だけ使う事にする(gが高い場合にGibbs現象が起こるので)
+	} else {
+		ComboFactor[0] = 1;
+		ComboFactor[1] = 0; //前方散乱+後方散乱の場合は0、前方のみの場合はg
+		ComboFactor[2] = g*g;
+	}
+	v = RotY(v, -SkyboxPhi*2*PI);
+	return SHIrradiance(float3(-v.z,-v.x,v.y), SkyboxSH[0], ComboFactor);
+}
+
+void RaySaySay(float2 Tex, out float3 ray, out float3 pos, uniform bool normalizeFlag = true)
+{
+	float2 tex = (Tex.xy - 0.5) * 2.0;
+	//normalizeをすると球面状にレイトレするようになり、しないと平面の板上をレイトレする
+	//板上レイトレではSDFを使ったレイマーチには注意が必要
+	ray =
+		ViewMatrix._13_23_33 / ProjectionMatrix._33
+		+ (ViewMatrix._11_21_31 * tex.x / ProjectionMatrix._11)
+		- (ViewMatrix._12_22_32 * tex.y / ProjectionMatrix._22);
+	if (normalizeFlag)
+		ray = normalize(ray);
+	pos = CameraPosition;
+}
+
+float3 PhaseFunction(float mu, float param)
+{
+	[branch]
+	if (C_Mie) {
+		return RainbowLUT.SampleLevel(LinearSamp, float2(mu*0.5+0.5,param), 0);
+	} else {
+		return (HenyeyGreenstein(-mu, param) + HenyeyGreenstein(-mu, -param)) / 2;	//two-robe HG
+	}
+}
+
+float fBm(float3 p, float3 dp)
+{
+	return (ValueNoise33(abs(p+dp)).x*4+ValueNoise33(abs(p*2+dp)+0.1189).x*2+ValueNoise33(abs(p*4+dp)+0.542).x)/7.0;
+}
+
+//高さ減衰計算用、傾斜関数
+//e0～e1で0～1の値を取り、e0より外で0、e1より外で1になる
+//要するにあんまりsmoothじゃないstep
+float Slope(float e0, float e1, float x)
+{
+	return saturate((x-e0)/(e1-e0));
+}
+
+//Slope関数の区間t0～t1についての積分
+float IntegrateSlope(float e0, float e1, float t0, float t1)
+{
+	//e0→0, e1→1となるよう変数変換し、t0→a,t1→bとする
+	float J = e1-e0;	//ヤコビヤン
+	float a = (t0-e0)/J;
+	float b = (t1-e0)/J;
+	float sa = sqr(saturate(a))/2 + max(0,a-1);	//0～aまでの積分
+	float sb = sqr(saturate(b))/2 + max(0,b-1);	//0～bまでの積分
+	return abs((sb-sa)*J);
+}
+
+
+float GetBeta(float3 p)
+{
+	float beta = 1;
+	//高さによる濃度倍率
+	if (abs(C_FalloffStart.y - C_FalloffEnd.y) >= 1e-3) {
+		beta *= Slope(C_FalloffEnd.y, C_FalloffStart.y, p.y);
+	}
+
+	[branch]
+	if (C_Cloud) {
+		//float d = Cloud.SampleLevel(CloudSamp, t/C_CloudScale, 0).r;
+		//return smoothstep(0.8,0.85,d);
+		float k = clamp((1-C_Cloud)/2, 1e-3, 0.5);
+		return smoothstep(0.5-k,0.5+k,fBm(p/CloudScale,-C_CloudV*Time/CloudScale) * beta);
+	} else {
+		return beta;
+	}
+}
+
+float visibility(float3 p, int3 seed)
+{
+	[branch]
+	if (!C_Godray)
+		return 1;
+	
+	float2 uv = Project(p, LightViewProjection);
+	float3 xi = Hash3(seed);
+	float2 jt = CosSin(xi.x*2*PI) * sqrt(xi.y) / 2048.0;
+	uv += jt;
+	if (all(saturate(uv) == uv)) {
+		float smap = ShadowMap.SampleLevel(samp, uv, 0);
+		float h = Transform(p, LightView).z;
+		return h < smap;
+	} else
+		return 1;
+}
+
+#ifdef YRZ_PASS_Shadow
+
+struct VSO {
+	float4 pos:SV_POSITION;
+	float2 uv:TEXCOORD0;
+	float linearZ:TEXCOORD1;
+};
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD )
+{
+	VSO vso = (VSO)0;
+	vso.pos = mul(pos,LightViewProjection);
+	vso.uv = uv;
+	vso.linearZ = mul(pos,LightView).z;
+	return vso;
+}
+
+float4 PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace) : SV_TARGET
+{
+	//物体のαだけ得る
+	int imo = ModelIndex;
+	MMDMaterial mmd = MMDMaterials[imo][Faces[imo][iFace]];
+
+	//片面描画材質の裏面をスキップ
+	if (!vface && ((mmd.drawFlag&1) == 0))
+		discard;
+
+	float a = mmd.diffuse.a;
+	
+	if (mmd.tex >= 0) {
+		int iTex = TextureTable[imo];
+		float4 tex = Textures[NURI(iTex + mmd.tex)].Sample(ModelSamp, vso.uv);
+		a*=tex.a;
+	}
+
+	//不透明体だけ書き入れる
+	if (a < Dayo::AlphaThreshold)
+		discard;
+
+	return vso.linearZ;
+}
+#endif
+
+#ifdef YRZ_PASS_Pass
+struct VSO {
+	float4 pos:SV_POSITION;
+	float2 uv:TEXCOORD;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD )
+{
+	VSO vso = (VSO)0;
+	vso.pos = pos;
+	vso.uv = uv;
+	return vso;
+}
+
+
+//AB間の光学厚さを求める
+float3 OpticalDepth(float3 A, float3 B)
+{
+	float y0 = C_FalloffStart.y;
+	float y1 = C_FalloffEnd.y;
+    float L = length(A-B);
+	float3 full = L * SigmaS;	//高さ減衰が無い場合の光学厚さ
+
+	//特殊ケース1:高さ減衰を考えなくていい場合
+	if (abs(y0-y1) < 1e-3) {
+		return full;
+	}
+
+	//特殊ケース2:AとBが同じ高さ
+	if (A.y == B.y) {
+		return full * Slope(y1,y0,A.y);
+	}
+
+	return IntegrateSlope(y1,y0,A.y,B.y)/abs(A.y-B.y) * full;
+}
+
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	float2 Tex = vso.uv;
+	int2 pix = vso.pos.xy;
+	float4 I = ScreenTexture[pix];
+	float3 O;
+	float3 ray,pos;
+	RaySaySay(Tex, ray, pos);
+
+	float g = clamp(acsRx,-0.999,0.999);	//前方散乱係数
+	float LoV = dot(ray,-LightDirection);
+	float3 FogColorSky = fetchSkyboxZonal(ray, g) * IntensityEnv;
+	float3 FogColorSun =  PhaseFunction(LoV, g) * MMDLightLinear * PI * Gain * DirectLightIntensity;
+
+	float depth =  NormalDepth[pix].w;
+	depth = depth ? depth : 1e+5;
+
+	[branch]
+	if (C_Godray || C_Cloud) {
+		//非解析的フォグ。レイマーチする
+		//レイマーチ範囲d0..d1の確定
+		float dmax = min(MaxVolumeD,depth);
+		float df, d0 = 0, d1 = dmax;
+		if (abs(C_FalloffStart.y - C_FalloffEnd.y) > 1e-3) {
+			if (RayPlane(pos, ray, float3(0,1,0), -C_FalloffEnd.y, df)) {
+				if (sign(ray.y) == sign(C_FalloffEnd.y - C_FalloffStart.y)) {
+					d1 = df;
+				} else {
+					d0 = df;
+					d1 = dmax;
+				}
+			}
+			if (d1 <= d0) {
+				return float4(I.rgb,1);
+			}
+			d1 = min(d1,dmax);
+		}
+
+		float volumeD = d1-d0;
+		float dd = volumeD/FOG_STEPS;
+		float d = d0 + dd * frac(GoldenHash12(pix) + Hash3(uint3(Time*1000,iSample,0)));
+		float3 tr = 1;
+		float3 ins = 0;
+		float preAlpha = true;
+		[loop]
+		for (int i=0; i<FOG_STEPS; i++) {
+			float3 p = pos + ray * d;
+			float beta = GetBeta(p);
+			float3 exs = exp(-beta*SigmaT*dd);	//この区間のtransmittance
+			float3 ss = 1;
+			float3 ao = 1;
+			[branch]
+			if (C_Cloud) {
+				float sb = GetBeta(p-LightDirection*CloudScale*0.25);
+				float a = SigmaT*3;
+				ss = exp(-sb*a);	//雲のセルフシャドウ
+				ss *= 1+((1-exp(-a))/a)*Albedo;	//multi-scattering項…セルフシャドウで失われるエネルギーの(大体の)平均値分を補填
+				//同様に、AO用の計算。サンプル数の都合でAO用のプローブも雲のセルフシャドウ用の位置という事にする
+				float b = SigmaT*0.5;
+				ao = exp(-sb*b);
+				ao *= 1+((1-exp(-b))/b)*Albedo;
+			}
+			float3 S = FogColorSun * visibility(p, int3(pix,i)) * ss + FogColorSky * ao;
+			float3 Sint = S * (1-exs) * Albedo;
+			d += dd;
+			ins += tr * Sint;
+			tr *= exs;
+		}
+		//MaxVolumeDより先のフォグを加味する
+		float3 ex0 = CameraPosition + ray * d1;
+		float3 ex1 = CameraPosition + ray * depth;
+		//float3 Lmax = lerp(FogColorSun+FogColorSky,I.rgb,exp(-SigmaS*(depth-volumeD)));
+		float3 Lmax = lerp(FogColorSun+FogColorSky,I.rgb*(1-acsRy),exp(-OpticalDepth(ex0,ex1)));
+		O = Lmax * tr + ins;
+	} else {
+		//解析的フォグ
+		float3 od = OpticalDepth(CameraPosition, CameraPosition + ray*depth);
+		O = lerp(Albedo * (FogColorSky + FogColorSun), I.rgb*(1-acsRy), exp(-od));
+	}
+	
+	O = lerp(O,O+I.rgb, acsRy);
+	return float4(O, 1);
+}
+#endif

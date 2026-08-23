@@ -1,0 +1,8 @@
+Category : 2
+Roughness : 1
+TextureLoops : 3
+NormalScale : 1
+_TAlbedoMap : t/chainmail/Chainmail004_1K_Color.jpg
+_TNormalMap : t/chainmail/Chainmail004_1K_Normal.jpg
+_TRoughnessMap : t/chainmail/Chainmail004_1K_Roughness.jpg
+_TAlphaMap : t/chainmail/Chainmail004_1K_Opacity.jpg

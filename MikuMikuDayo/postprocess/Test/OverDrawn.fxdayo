@@ -1,0 +1,107 @@
+//上書描画回数を探るモノ
+//MMXXV (c) SANDMAN presents!
+//
+
+#include "../../hlsl/resources_PP.hlsli"
+#include "../../hlsl/yrz.hlsli"
+using namespace Dayo;
+using namespace YRZ;
+
+[YRZFX]
+{
+    "fx": {
+        "cereal_class_version": 0,
+		"category" : "postprocess",
+        "controllers": [
+			{ "name":"C_OFF", "controllerName":"(self)", "item":"off", "type":"float" },
+		],
+		"samplers":[
+			{"name":"samp"}
+		],
+		"textures":[
+			{"name":"counter", "format":"R32_FLOAT", "view":"RTV"},
+			{"name":"ZBuf", "format":"D32_FLOAT", "view":"DSV"}
+		],
+        "passes": [
+			{
+				"name":"Draw", "type":"rasterizer", "pixelShader":"PS", "vertexShader":"VS",
+				"RTV":[ {"name":"counter","clear":true, "value":{"x":0, "y":0, "z":0, "w":0} }],
+				"DSV":{"name":"ZBuf", "clear":true, "depth":1.0},
+				"rasterizerDesc": { "cullMode": "none" }, "rasterModelTarget":"other",
+                "blendDesc": {
+                    "renderTarget0": { "blendEnable": true, "srcBlend": "one", "destBlend": "one", "blendOp": "add",
+                        "srcBlendAlpha": "one", "destBlendAlpha": "inv_src_alpha", "blendOpAlpha": "add"},
+				}
+			},
+			{
+				"name":"Compo", "type":"postprocess", "pixelShader":"PS", "vertexShader":"VS"
+			}
+		]
+    }
+}
+[HLSL]
+
+#ifdef YRZ_PASS_Draw
+
+struct VSO { float4 position:SV_POSITION; float2 uv:TEXCOORD; };
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD )
+{
+	VSO vso = (VSO)0;
+	vso.position = mul(pos, ViewProjectionMatrix);
+	vso.uv = uv;
+	return vso;
+}
+
+float4 PS(VSO vso, bool vface:SV_IsFrontFace) : SV_TARGET
+{
+	uint2 pix = vso.position.xy;
+	float4 GB = GBuffer[pix];
+	int imo = GB.r;
+	int iface = GB.g;
+	int imat = Faces[imo][iface];
+	MMDMaterial m = MMDMaterials[imo][imat];
+	if (!(m.drawFlag&1) && !vface)
+		discard;
+
+	float alpha = m.diffuse.a;
+	
+	if (alpha == 0)
+		discard;
+
+	return 1;
+}
+
+#endif
+
+
+#ifdef YRZ_PASS_Compo
+
+float3 IntToColor(int C)
+{
+	if (C == 0)
+		return 0;
+	
+	if (C>32)
+		C = 32;
+	return HSVtoRGB( float3(((C-1)%32)/32.0,1,1) );
+}
+
+struct VSO { float4 position:SV_POSITION; float2 uv:TEXCOORD; };
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD ) { VSO vso = (VSO)0; vso.position = pos;  vso.uv = uv; return vso; }
+float4 PS(VSO vso) : SV_TARGET
+{
+	float2 uv = vso.uv;
+	float4 o = 1;
+	int C = counter.Sample(samp, uv);
+
+	o.rgb = IntToColor(C);
+
+	if (uv.y < 0.05) {
+		o.rgb = IntToColor(uv.x*32);
+	}
+
+	float4 I = ScreenTexture.Sample(samp, uv);
+	return lerp(o,I,C_OFF);
+}
+#endif

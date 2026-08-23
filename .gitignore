@@ -1,0 +1,30 @@
+# Build products
+/build/
+/out/
+/cmake-build-*/
+/install/
+CMakeUserPresets.json
+compile_commands.json
+
+# Downloaded/source archives and Windows distribution binaries
+/*.zip
+*.exe
+*.dll
+*.pdb
+*.lib
+*.exp
+
+# Runtime output
+*.log
+MikuMikuDayo/shadercache/*
+!MikuMikuDayo/shadercache/_.txt
+MikuMikuDayo/screenshots/*
+!MikuMikuDayo/screenshots/_.txt
+
+# IDE and OS metadata
+.cache/
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store

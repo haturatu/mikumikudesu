@@ -1,0 +1,86 @@
+//パニーニ投影ポストプロセス
+//MMXXV (c) SANDMAN presents!
+//
+
+#include "../../hlsl/resources_PP.hlsli"
+#include "../../hlsl/yrz.hlsli"
+using namespace Dayo;
+using namespace YRZ;
+
+[YRZFX]
+{
+    "fx": {
+        "cereal_class_version": 0,
+		"category" : "postprocess",
+        "controllers": [
+			{ "name":"C_OFF", "controllerName":"(self)", "item":"off", "type":"float" },
+			{ "name":"C_Zoom", "controllerName":"(self)", "item":"ズーム", "type":"float" },
+		],
+		"samplers":[
+			{"name":"samp", "addressU":"border", "addressV":"border", "borderColor":"opaque_black"}
+		],
+        "passes": [
+			{
+				"name":"Panini", "type":"postprocess", "pixelShader":"PS", "vertexShader":"VS"
+			}
+		]
+    }
+}
+[HLSL]
+
+float FitCoeff(float d);
+
+//Tiny Texel氏 "Panini Projection"
+//https://www.shadertoy.com/view/Wt3fzB より
+float2 PaniniProjection(float2 uv, float d, uniform bool fit = true)
+{
+    float d2 = d*d;
+	float2 tc = uv*2-1;
+
+	//ズームの計算
+	[branch]
+	if (fit) {
+		tc *= 1-C_Zoom;
+	}
+
+    /* http://tksharpless.net/vedutismo/Pannini/panini.pdf */
+    float h = tc.x;
+    float v = tc.y;
+    
+    float h2 = h*h;
+    
+    float k = h2/sqr(d+1);
+    float k2 = k*k;
+    
+    float discr = max(0, k2*d2 - (k+1)*(k*d2-1));
+    
+    float cosPhi = (-k*d+sqrt(discr))/(k+1);
+    float S = (d+1)/(d+cosPhi);
+    float tanTheta = v/S;
+    
+    float sinPhi = sqrt(max(0, 1-sqr(cosPhi)));
+    if(tc.x < 0.0) sinPhi *= -1.0;
+    
+    //float s = rsqrt(1.0+sqr(tanTheta));
+    //return float3(sinPhi, tanTheta, cosPhi) * s;
+	return float2(sinPhi/cosPhi, tanTheta/cosPhi)/2+0.5;
+}
+
+
+//パニーニ投影後のイメージを画面にフィットさせるための係数
+float FitCoeff(float d)
+{
+	float phi = d*atan(AspectRatio/CameraFoV);
+	float S = (1+d)/(d+cos(phi));
+	return 1/S;
+}
+
+
+#ifdef YRZ_PASS_Panini
+struct VSO { float4 position:SV_POSITION; float2 uv:TEXCOORD; };
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD ) { VSO vso = (VSO)0; vso.position = pos;  vso.uv = uv; return vso; }
+float4 PS(VSO vso) : SV_TARGET
+{
+	return ScreenTexture.Sample(samp, PaniniProjection(vso.uv,1-C_OFF));
+}
+#endif

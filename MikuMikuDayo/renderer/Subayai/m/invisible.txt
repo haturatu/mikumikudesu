@@ -1,0 +1,2 @@
+Category : blackbody
+Alpha : 0

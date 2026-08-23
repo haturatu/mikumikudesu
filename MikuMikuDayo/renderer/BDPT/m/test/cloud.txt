@@ -1,0 +1,26 @@
+#ボリュームテクスチャの指定 : の右辺にddsファイル名を書くべし
+#Specify volume texture dds file name should be written after :
+
+_V VolumeMap : t/embergen_fire_a_50.dds
+
+#JangaFX社様よりCC0で公開されているテクスチャを利用させていただきました
+#it used textures released by JangaFX in CC0 licence
+#https://jangafx.com/software/embergen/download/free-vdb-animations
+
+
+#UVWアニメの場合、xyz:U,V,W方向にいくつ分割するか w:総コマ数
+#If it is a UVW animation, how many divisions in xyz:U,V,W direction w:number of frames
+
+VolumeDiv : 1,1,1,1
+
+
+#テクスチャをボルボックス内に何周分敷き詰めるかx,y,z方向それぞれについて指定
+#Specifies how many rounds the texture should be laid down in the volbox in the x, y and z directions respectively.
+
+VolumeLoops : 1,1,1
+
+
+#テクスチャをボルボックス内でループして敷き詰めず、テクスチャ1週分だけ使用する場合は0
+#set 0 if the texture is not laid in a loop in the volvox and only 1 loop of texture is used.
+
+VolumeWrap : 1

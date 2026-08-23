@@ -1,0 +1,192 @@
+//sdExpensiveLens移植版
+//MMXXV (c) SANDMAN presents!
+//
+
+#include "../../hlsl/resources_PP.hlsli"
+#include "../../hlsl/yrz.hlsli"
+using namespace Dayo;
+using namespace YRZ;
+
+[YRZFX]
+{
+    "fx": {
+        "cereal_class_version": 0,
+		"category" : "postprocess",
+        "controllers": [
+			{ "name":"C_OFF", "controllerName":"(self)", "item":"off", "type":"float" },
+			{ "name":"C_K1Plus", "controllerName":"(self)", "item":"樽型収差1", "type":"float" },
+			{ "name":"C_K1Minus", "controllerName":"(self)", "item":"糸巻収差1", "type":"float" },
+			{ "name":"C_K2Plus", "controllerName":"(self)", "item":"樽型収差2", "type":"float" },
+			{ "name":"C_K2Minus", "controllerName":"(self)", "item":"糸巻収差2", "type":"float" },
+			{ "name":"C_P1Plus", "controllerName":"(self)", "item":"円周歪み横+", "type":"float" },
+			{ "name":"C_P1Minus", "controllerName":"(self)", "item":"円周歪み横-", "type":"float" },
+			{ "name":"C_P2Plus", "controllerName":"(self)", "item":"円周歪み縦+", "type":"float" },
+			{ "name":"C_P2Minus", "controllerName":"(self)", "item":"円周歪み縦-", "type":"float" },
+			{ "name":"C_Magnify", "controllerName":"(self)", "item":"拡大", "type":"float" },
+			{ "name":"C_Minify", "controllerName":"(self)", "item":"縮小", "type":"float" },
+			{ "name":"C_Anamophic", "controllerName":"(self)", "item":"ｱﾅﾓﾙﾌｨｯｸﾓｰﾄﾞ", "type":"float",
+				"desc":["Please incresase this if the output aspect ratio is Cinemascope size","出力の縦横比がウルトラワイド比率になっている場合などにどうぞ"] },
+			{ "name":"C_ZoomCAPlus", "controllerName":"(self)", "item":"倍率色収差+", "type":"float",
+				"desc":["Increases color shift to the periphery of the screen","画面の周辺部に色ずれを加えます"] },
+			{ "name":"C_ZoomCAMinus", "controllerName":"(self)", "item":"倍率色収差-", "type":"float",
+				"desc":["Decreases color shift to the periphery of the screen","画面の周辺部の色ずれを抑えます"] },
+			{ "name":"C_AxialCAPlus", "controllerName":"(self)", "item":"軸上色収差+", "type":"float",
+				"desc":["Increases color shift near the object's boundary","物体の境界付近に色ずれを加えます"] },
+			{ "name":"C_AxialCAMinus", "controllerName":"(self)", "item":"軸上色収差-", "type":"float",
+				"desc":["Decreases color shift near the object's boundary","物体の境界付近の色ずれを抑えます"] },
+			{ "name":"C_VignettePlus", "controllerName":"(self)", "item":"ビネット+", "type":"float",
+				"desc":["Darkens the edges of the screen","画面の周辺を暗くします"] },
+			{ "name":"C_VignetteMinus", "controllerName":"(self)", "item":"ビネット-", "type":"float",
+				"desc":["Reduces darkening of the edges of the screen","画面の周辺を暗くするのを抑えます"] },
+			{ "name":"C_SquareFrame", "controllerName":"(self)", "item":"四角い枠", "type":"float" },
+			{ "name":"C_RoundFrame", "controllerName":"(self)", "item":"丸い枠", "type":"float" },
+			{ "name":"C_OvalFrame", "controllerName":"(self)", "item":"楕円枠", "type":"float" },
+			{ "name":"C_DullFrame", "controllerName":"(self)", "item":"ゆる枠", "type":"float" },
+		],
+		"samplers":[
+			{"name":"BorderSamp", "addressU":"border", "addressV":"border", "borderColor":"opaque_black"}
+		],
+		"textures":[
+			{"name":"MipScreen", "format":"R16G16B16A16_FLOAT", "mipmap":true, "view":"RTV"}
+		],
+        "passes": [
+			{ "name":"MipSrc", "type":"postprocess", "pixelShader":"PS", "vertexShader":"VS", "RTV":[{"name":"MipScreen"}]},
+			{ "name":"Mip", "type":"mipmapgen", "target":"MipScreen"},
+			{ "name":"Main", "type":"postprocess", "pixelShader":"PS", "vertexShader":"VS" }
+		]
+    }
+}
+[HLSL]
+
+static float K1 = C_K1Plus - C_K1Minus;
+static float K2 = C_K2Plus - C_K2Minus;
+static float P1 = C_P1Plus - C_P1Minus;
+static float P2 = C_P2Plus - C_P2Minus;
+static float ZoomRate = 1 + C_Magnify - C_Minify;
+
+static float Anamorphic = C_Anamophic;
+static float Squeeze = lerp(1,2,Anamorphic);
+static float ZoomCA = 2.5 * (1 + C_ZoomCAPlus*4 - C_ZoomCAMinus);
+static float AxialCA = 500 * (1 + C_AxialCAPlus - C_AxialCAMinus);
+static float VignetteIntensity = 1 + C_VignettePlus*9 - C_VignetteMinus;
+
+
+struct VSO { float4 pos:SV_POSITION; float2 uv:TEXCOORD; };
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD ) { VSO vso = (VSO)0; vso.pos = pos;  vso.uv = uv; return vso; }
+
+
+#ifdef YRZ_PASS_MipSrc
+float4 PS(VSO vso) : SV_TARGET
+{
+	return ScreenTexture[vso.pos.xy];
+}
+#endif
+
+
+float Sell1(float Lambda, float Lc, float c)
+{
+	return (c/(1-sqr(Lc/Lambda)));
+}
+
+//セルマイヤーの法則に従って波長毎の石英ガラスの屈折率を出す
+float Sellmeier(float lambda)
+{
+	float l = lambda * 1e-9;
+	float n2 = 1 + Sell1(l,0.0684043e-6, 0.6961663) + Sell1(l,0.1162414e-6, 0.4079424) + Sell1(l, 9.896161e-6,0.8974794);
+	return sqrt(n2);
+}
+
+
+float3 fetch(float2 uv, float lod)
+{
+	return min(MipScreen.SampleLevel(BorderSamp, uv,lod).rgb,200);	//超高輝度の物体が入ると精度の都合でノイズが乗るので
+}
+
+//歪曲収差
+//https://en.wikipedia.org/wiki/Distortion_(optics) より
+//posはアスペクト比補正済みの中心を0とした座標(画面の縦幅を±0.5とする)
+float2 Distortion(float2 pos, float k1, float k2)
+{
+	float2 p = pos;
+	float2 ret;
+    float r2 = dot(p, p);
+    float r4 = r2*r2;
+    
+	//Radial distortion ... 波長依存性がある
+    ret = p * (1.0f + k1*r2 + k2*r4);
+
+    //tangential distortion
+	ret.x += P1 * (r2+2*p.x*p.x) + 2*P2*(p.x*p.y);
+	ret.y += 2*P1 * (p.x*p.y) + P2*(r2+2*p.y*p.y);
+
+    ret /= ZoomRate;	//拡大・縮小
+    return ret;
+}
+
+//周辺減光
+//posはアスペクト比補正済みの中心を0とした座標
+float Vignette(float2 pos)
+{
+	float v = 1;
+	
+	//わく
+	float s = min(0.9999,1-C_DullFrame);
+	float va = AspectRatio;
+	float rf = (1-C_RoundFrame) * sqrt(1+va*va)/2;
+	float of = (1-C_OvalFrame) * sqrt(1+va*va);
+	float sf = (1-C_SquareFrame);
+	float2 ps = pos * float2(Squeeze,1);
+	v *= C_RoundFrame ? 1-smoothstep(rf * s,rf, sqrt(dot(ps,ps))) : 1;
+	v *= C_SquareFrame ? 1-smoothstep(sf * s,sf, max(abs(ps.x/va),abs(ps.y))*2) : 1;
+	v *= C_OvalFrame ? 1-smoothstep(of * s,of, sqr(ps.x) + sqr(ps.y*va)) : 1;
+	
+	//コサイン四乗則に従ったビネット
+	float cos4 = 1 / sqr(dot(pos,pos) * VignetteIntensity + 1);	//1.0は係数
+	
+	return v * cos4;
+}
+
+
+
+#ifdef YRZ_PASS_Main
+float4 PS(VSO vso) : SV_TARGET
+{
+	uint2 pix = vso.pos.xy;
+	float2 uv = vso.uv;
+	float4 Before = ScreenTexture[pix];
+	float4 Color = 0;
+
+	float CenterN = Sellmeier(540);	//基準の屈折率。380から700の中間
+	float totalY=0;
+
+    float2 pos = uv - 0.5;
+	pos.x *= AspectRatio/Squeeze;
+	float2 opos = pos;
+	for (int i = 0; i< 33; i++)
+    {
+		float lambda = i * 10 + 380;	//380-700nmの範囲を10nm単位で計算する
+		float n = Sellmeier(lambda);
+		float3 xyz = CIE1931[i*2+4].yzw;
+        float2 uv = pos;
+        float zure = (n-CenterN)*ZoomCA;	//540nmの屈折率を基準として像を球面上で伸縮させる
+		float muv = length(uv) * zure;			//本来の位置からのズレ分
+		float mini = muv + 1;					//縮小率
+		float lod = max(0,-log2(mini));			//本来は拡大率2 → lod +1, 拡大率4→lod +2 強調できるようにする
+		lod += abs((n-CenterN)*AxialCA);
+		
+		uv = Distortion(pos, K1+zure, K2+zure);	//なんかいい加減だけど拡大色収差が考慮される
+		float2 duv = uv;
+		uv.x /= AspectRatio/Squeeze;
+        uv += 0.5;
+		Color.xyz += mul(fetch(uv, lod),RGB2XYZ) * xyz * Vignette(duv);
+		totalY += xyz.y;
+    }
+	
+	Color.rgb = max(0,mul(Color.xyz,XYZ2RGB));
+	Color.rgb /= totalY;	//明度で正規化
+
+	Color.rgb = lerp(Color.rgb, Before.rgb, C_OFF);
+	Color.a = 1;
+	return Color;
+}
+#endif

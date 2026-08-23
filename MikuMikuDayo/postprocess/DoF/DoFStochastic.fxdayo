@@ -1,0 +1,238 @@
+[YRZFX]
+{
+    "fx": {
+        "cereal_class_version": 0,
+		"category" : "postprocess",
+        "controllers": [
+			{"name": "C_off","controllerName": "(self)","item": "off","type": "float"},
+			{"name": "C_BokehPlus","controllerName": "(self)","item": "ボケて","type": "float"},
+			{"name": "C_BokehMinus","controllerName": "(self)","item": "ボケないで","type": "float"},
+			{"name": "C_Pint","controllerName": "(self)","item": "ピント","type": "float3"},
+			{"name": "C_Delay","controllerName": "(self)","item": "ピント遅延","type": "float"},
+			{"name": "C_FrontMinus","controllerName": "(self)","item": "前ボケないで","type": "float"},
+			{"name": "C_SamplesPlus","controllerName": "(self)","item": "サンプル数+","type": "float"},
+			{"name": "C_SamplesMinus","controllerName": "(self)","item": "サンプル数-","type": "float"}
+		],
+		"textures":[
+			{ "name":"Mip", "format":"R16G16B16A16_FLOAT", "view":"RTV", "mipmap":true},
+			{ "name":"CoCMap","format":"R32_FLOAT", "view":"RTV" },
+			{ "name":"Combo", "format":"R16G16B16A16_FLOAT", "view":"RTV"}
+		],
+		"buffers":[
+			{ "name":"Computer", "elemSize":16, "type":"float4", "view":"UAV", "size":{"absolute":true,"width":1}}
+		],
+		"samplers": [
+			{ "name":"samp"},
+			{ "name":"PointSamp", "filter":"POINT", "addressU":"CLAMP", "addressV":"CLAMP" },
+			{ "name":"ClampSamp", "filter":"LINEAR", "addressU":"CLAMP", "addressV":"CLAMP" },
+			{ "name":"BorderSamp", "filter":"LINEAR", "addressU":"BORDER", "addressV":"BORDER", "borderColor":"TRANSPARENT_BLACK" }
+		],
+        "passes": [
+			{
+				"name":"Computer", "type":"compute", "computeShader":"CS", "UAV":[{"name":"Computer"}],
+				"outputSize":{"absolute":true, "width":1, "dimension":1}, "numthreads":{"x":1}},
+			{ "name":"MipSource", "type":"postprocess", "vertexShader":"VS","pixelShader":"PS", "RTV":[{"name":"Mip"}]},
+			{ "name":"Mip", "type":"mipmapgen", "target":"Mip"},
+			{ "name":"CoC", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS", "RTV":[ {"name":"CoCMap"}]},
+			{ "name":"Combo", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS", "RTV":[ {"name":"Combo"}]},
+			{ "name":"Compose", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS"}
+		]
+    }
+}
+[HLSL]
+#include <resources_pp.hlsli>
+#include <yrz.hlsli>
+using namespace Dayo;
+using namespace YRZ;
+
+static float Aperture = 10 * exp2((C_BokehPlus-C_BokehMinus)*5);	//開口量[mm]
+static float Pint = length(C_Pint-CameraPosition);
+static int SampleCount = clamp( lerp(64,256,C_SamplesPlus)*(1-C_SamplesMinus)*SamplesPerFrame, 1,1024);
+
+//ポストプロセス共通VS
+struct VSO {
+	float4 pos : SV_POSITION;
+	float2 uv : TEXCOORD0;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv : TEXCOORD ) {
+	VSO o;
+	o.pos = pos;
+	o.uv = uv;
+	return o;
+}
+
+
+
+//元画面のコピーを取ってミップマップを作成開始するためのパス
+#ifdef YRZ_PASS_MipSource
+float4 PS(VSO vso):SV_TARGET
+{
+	return 	ScreenTexture.Sample(samp, vso.uv);
+}
+#endif
+
+
+//ピント遅延コンピュート
+#ifdef YRZ_PASS_Computer
+YRZ_NUMTHREADS
+void CS( uint3 id : SV_DispatchThreadID )
+{
+	//追従目標
+	float fd = Pint;	//測距の結果
+	float zoom = ProjectionMatrix._22;	//画角の変更→ズームレンズ動く→ピント遅延でズレるのを表現
+
+	//現在の値
+	float4 comp = Computer[0];
+	float zoomNow = comp.g;	//現在の追従している画角
+	float fdNow = comp.b;	//今セットされているピント距離
+
+	//再生開始時にリセット
+	if (RealTime < 0.01) {
+		zoomNow = ProjectionMatrix._22;
+		fdNow = fd;
+	}
+
+	float got = lerp(0.01,10,C_Delay);	//99%合焦時間[s]
+	float u = pow(0.01, DRealTime/got);	//使い勝手を考えてリアルタイムに合わせるとする
+	fd = (C_Delay>0) ? lerp(fd,fdNow, u) : fd;
+	zoom = (C_Delay>0) ? lerp(zoom,zoomNow, u) : zoom;
+
+	fd = max(0.1, fd);
+	Computer[0] = float4(fd/zoom*ProjectionMatrix._22, zoom, fd,1);	//rにピント位置、gに画角
+}
+#endif
+
+
+//CoCサイズ取得
+#ifdef YRZ_PASS_CoC
+float4 PS(VSO vso) : SV_TARGET0
+{
+	float z = NormalDepth[vso.pos.xy].w;
+	//何も書かれていない所はてきとうに遠い所、と仮定する
+	float depth = (z==0) ? 1e+5 : z; 
+	depth = length(UVZtoView(vso.uv, depth, CameraFoV, AspectRatio));	//奥行→カメラからの距離に変換
+
+	float focus = Computer[0].r;
+	float d = depth * 80;	//mmに直す
+	float d0 = focus * 80;	
+
+	const float sensorHeight = 24;	//35ミリフルサイズCCDセンサの高さは24ミリ
+	float f = ProjectionMatrix._22 * sensorHeight * 0.5;	//画角から焦点距離を割り出す
+
+	float CoCRadius_mm = Aperture * abs(d-d0)/d * f / (max(1e-3,abs(d0-f)));	//mm単位のCoCの半径(Wikipediaに載ってる公式通り)
+	float CoC = CoCRadius_mm / sensorHeight * Resolution.y;
+	//前ボケの場合はCoCをマイナスにする
+	if (d < d0)
+		CoC = -CoC;
+	//前ボケ抑止モーフ
+	if (C_FrontMinus && CoC<0) {
+		CoC = lerp(CoC,0,saturate(C_FrontMinus));
+	}
+	return float4(CoC,0,0,1);
+}
+#endif
+
+//畳み込み
+#ifdef YRZ_PASS_Combo
+
+#define FILTER_FUNCTION 0
+
+//中心から頂点までの距離1の六角形の範囲でランダム
+float2 RandHex(uint4 seed)
+{	
+	float3 Xi = Hash4(seed).xyz;
+	float acsRx = 0;
+
+	#if FILTER_FUNCTION == 0
+		//六角
+		Xi.y -= Xi.x/2;		//平行四辺形
+		Xi.x *= sqrt(3)/2;
+		float t = radians(floor(Xi.z * 3) * 120);	//120度単位でランダムに回転して3つに振り分ける
+		return Rot2(Rot2(Xi.xy,t),acsRx);
+	#elif FILTER_FUNCTION == 1
+		//三つ菱
+		float t = radians(floor(Xi.z * 3) * 120);
+		Xi.y += Xi.x/2;
+		Xi.x *= sqrt(3)/2;
+		return Rot2(Rot2(Xi.xy,t)*2/3,acsRx);
+	#elif FILTER_FUNCTION == 2
+		//なんかカッコいい模様
+		float t = radians(floor(Xi.y * 3) * 120);
+		Xi.y += Xi.x/2;
+		Xi.x *= sqrt(3)/2;
+		return Rot2(Rot2(Xi.xy,t)*2/3,acsRx);
+	#elif FILTER_FUNCTION == 3
+		//ゴーヤ
+		float t = radians(floor(Xi.z * 3) * 120);
+		Xi.xy = float2(cos(Xi.x*2*PI),sin(Xi.y*2*PI));
+		return Rot2(Rot2(Xi.xy,-t),acsRx);
+	#elif FILTER_FUNCTION == 4
+		//三つ穴
+		float t = radians(floor(Xi.z * 3) * 120);
+		Xi.xy = float2(cos(Xi.x*2*PI),sin(Xi.x*2*PI)) * sqrt(Xi.y) * 1/3;
+		Xi.x += 2/3.0;
+		return Rot2(Rot2(Xi.xy,t),acsRx);
+	#elif FILTER_FUNCTION == 5
+		//りんご
+		float s,c;
+		sincos(Xi.x*2*PI, c,s);
+		Xi.xy = float2(c,s) * (1+c) * sqrt(Xi.x);
+		return Rot2(Xi.xy,acsRx+0.5*PI);
+	#elif FILTER_FUNCTION == 6
+		//ドーナツ
+		float s,c;
+		sincos(Xi.x*2*PI, s,c);
+		return float2(c,s) * lerp(0.6,1,sqrt(Xi.y));
+	#elif FILTER_FUNCTION == 7
+		//円
+		float s,c;
+		sincos(Xi.x*2*PI, s,c);
+		return float2(c,s) * sqrt(Xi.y);
+	#endif
+
+	return 0;
+}
+
+float4 PS(VSO vso) : SV_TARGET0
+{
+	float2 uv = vso.uv;
+	
+	float4 cc = ScreenTexture.Sample(ClampSamp, uv);
+	float coc = CoCMap.Sample(PointSamp, uv).r;
+	if (coc == 0) {
+		return cc;
+	}
+
+	float2 e = 1.0/Resolution;
+	float tw = 0;
+	float4 tc = 0;
+	for (int i=0; i<SampleCount; i++) {
+		uint4 xi = uint4(vso.pos.xy, i, iSample);
+		float2 sp = uv + RandHex(xi)*e*coc;
+		float w = abs(CoCMap.Sample(PointSamp, sp).r);	//w=1にした方がいいかもしれん
+		//float4 c = ScreenTexture.Sample(ClampSamp, sp);
+		float lod = max(0,log2(coc) - log2(SampleCount)/2);
+		float4 c = Mip.SampleLevel(ClampSamp,sp,lod);
+		tc += c*w;
+		tw += w;
+	}
+	return tw ? tc/tw : cc;
+}
+#endif
+
+
+//コンポジット&アキュムレーション
+//問題：アキュムレーションするとデノイザが利かなくなる
+//デノイジングされていない途中のサンプルをポストプロセスが蓄積してしまうので
+#ifdef YRZ_PASS_Compose
+
+float4 PS(VSO vso) : SV_TARGET0
+{
+	float4 I = ScreenTexture.Sample(ClampSamp, vso.uv);
+	float4 O = Combo.Sample(ClampSamp, vso.uv);
+	return O;
+}
+#endif
+
+

@@ -1,0 +1,3 @@
+IESGamma : 2.2
+Equirectangular : 1
+_T IESMap : ../../../sample/starmap_g4k.jpg

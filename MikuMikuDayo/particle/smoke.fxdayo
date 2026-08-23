@@ -1,0 +1,170 @@
+#include <resources_PP.hlsli>
+#include <yrz.hlsli>
+using namespace Dayo;
+using namespace YRZ;
+
+static const int ParticleCount = 128;
+[YRZFX]
+local base = import "liteparticle_common.jsonnet";
+base {
+    fx+: {
+        controllers+: [],
+        textures3D+: [
+			{ "name":"SmokeTexture", "filename":"smoke.dds", "mipmap":true },
+        ],
+        passes+: [
+			{
+				"name":"Main", "type":"rasterizer", "pixelShader":"PS", "vertexShader":"VS",
+                "rasterizerDesc": { "cullMode":"none" },
+                "blendDesc": {
+                    "renderTarget0": { "blendEnable":true, "srcBlend":"src_alpha", "destBlend":"inv_src_alpha", "blendOp":"add",
+                        "srcBlendAlpha":"one", "destBlendAlpha":"inv_src_alpha", "blendOpAlpha":"add" }
+				},
+				"rasterModelTarget":"buffer", "rasterIB":"IBuf"
+			}
+        ]
+    }
+}
+[HLSL]
+
+static float3 SmokeColor = HSVtoRGB(float3(H,S,V)) * exp2(_Intensity*10);
+
+struct VS_OUTPUT {
+    float4 Pos      : SV_POSITION;
+    float3 Normal   : TEXCOORD0;
+    float3 Eye      : TEXCOORD1;
+    float2 Tex      : TEXCOORD2;
+    float3 SmokePos : TEXCOORD3;
+    float4 Color : TEXCOORD4;
+};
+
+#include "liteparticle_common.hlsli"
+
+
+//煙粒子の位置の計算
+//センターボーンによる回転・平行移動を加える前の座標で計算する
+float3 ResolvePosition(int iSmoke, int SmokeCount,out float phase, out bool valid)
+{
+    valid = true;
+    float t = frac(Time*AnimSpeed);
+    float3 rand = Hash3(iSmoke);
+    float birthT = rand.x;  //パーティクルの生まれた時刻
+    phase = t - birthT;
+    phase = (phase < 0) ? phase+1 : phase;
+
+    float rx = (rand.y - 0.5) * Arc;
+    float ry = (rand.z - 0.5) * Arc;
+
+    float3 v = float3(0,0,1);
+    float3 aimLocal = mul(float4(AimBone,1),InvCenterMatrix); //ローカル座標での狙いボーンの位置
+    [branch]
+    if (Aim > 0.001 && length(aimLocal)>0.001) {
+        v = lerp(float3(0,0,1),normalize(aimLocal),Aim); //速度ベクトル
+    }
+    [branch]
+    if (all(v==0))
+        v = float3(0,0,1);
+    else
+        v = normalize(v);
+
+    float3 g = float3(0,0,-1);
+    v = RotY(v,ry);
+    v = RotX(v,rx);
+
+    if (InjectionBone.x < 0.01) {
+        //出かかり
+        valid = phase < (10+InjectionBone.x)/10;
+    } else if (InjectionBone.x > 0.01) {
+        //出し切り
+        valid = phase > InjectionBone.x/10;
+    }
+    return (v * pow(phase,0.7) * 25 + g*phase*phase)*EntireSize;
+}
+
+//粒子のサイズを計算
+float ResolveSize(int iSmoke, float phase)
+{
+    float2 rand = Hash3(iSmoke+200).xy;
+    float2 s;
+    //fBmもどき
+    if (rand.x < 0.5)
+        s = float2(5,5);
+    else if (rand.x < 0.75)
+        s = float2(6,10);
+    else
+        s = float2(7,15);
+    return lerp(s.x,s.y,phase) * lerp(0.8,1.2, sin((phase+rand.y)*3)*0.5+0.5) * lerp(0.5,1.5,phase) * EntireSize;
+}
+
+
+//パーティクルを書き込むパス
+#ifdef YRZ_PASS_Main
+
+VS_OUTPUT VS(uint index : SV_VertexID)
+{
+    VS_OUTPUT Out = (VS_OUTPUT)0;
+	float4 Pos = 1e+5;
+
+    if (index < Amount) {
+        int iSmoke = index / 4;      //何個目のツブか
+        int iVertex = index % 4;     //ツブ内の何個目の頂点か
+        static int SmokeCount = Amount / 4; //表示対象のビームの総数
+        float phase;    //ツブの年齢
+        bool valid;     //噴射ボーンで噴出中かどうか決めるけど、それで弾かれてないか？
+        float3 dPos = ResolvePosition(iSmoke,SmokeCount,phase,valid);
+        if (valid) {
+            Out.SmokePos = mul(float4(dPos,1),CenterMatrix);
+            Pos.xyz = Out.SmokePos;
+            Pos.w = 1;
+
+            float2 uv = float2((iVertex/2+iVertex)%2,iVertex/2) - 0.5;
+            float size = ResolveSize(iSmoke,phase);
+
+            #ifdef IN_THE_MIRROR
+                float3 dp = uv.x * ViewMatrix._11_21_31 * size + uv.y * ViewMatrix._12_22_32 * size;
+                float3 wp = Pos.xyz;
+                Out.Eye = CameraPosition - (wp+dp);
+                wp = WF_TransMirrorPos(wp);
+                Out.Pos = mul(float4(wp+dp,1), ViewProjectionMatrix);
+                Out.Pos.x = -Out.Pos.x;
+            #else
+                Pos.xyz += uv.x * ViewMatrix._11_21_31 * size;
+                Pos.xyz += uv.y * ViewMatrix._12_22_32 * size;
+                Out.Pos = mul( Pos, ViewProjectionMatrix );
+                Out.Eye = CameraPosition - Pos.xyz;
+            #endif
+            Out.Tex = uv+0.5;
+            Out.Color = float4(1,1,1, dstep01(0.2,0.7,phase) * Alpha);
+        } else {
+            Out.Pos = mul( Pos, ViewProjectionMatrix );
+        }
+    } else {
+        Out.Pos = mul( Pos, ViewProjectionMatrix );
+    }
+    return Out;
+}
+
+//マスクを作成
+float Maskin(float2 uv)
+{
+    float2 f = uv-0.5;
+    float2 t = float2(abs(f.x*2) + (f.y > 0 ? f.y : 0),f.y);
+    float c = smoothstep(0.5,0.25,length(t));  //楕円マスク
+    return c;
+}
+
+float4 PS(VS_OUTPUT IN) : SV_Target
+{
+    float4 Color;
+    float3 pos = CameraPosition - IN.Eye;
+    float2 uv = IN.Tex;
+    float3 AmbientColor = SkyboxSH[0].c[0].rgb / (4*PI);
+
+    float texel = SmokeTexture.Sample(samp, float3(uv.xy,frac((pos.z/EntireSize)*0.01+Time*0.3))).r;
+    Color.rgb = lerp(AmbientColor,SmokeColor, pow(texel,Koshi));
+    Color.a = texel * smoothstep(0.5,0.2,length(IN.Tex-0.5)) * SoftParticle(IN) * IN.Color.a;
+
+    return Color;
+}
+
+#endif

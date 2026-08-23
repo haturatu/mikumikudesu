@@ -1,0 +1,4 @@
+Category : 3
+Roughness : 0.2
+IOR : 1.33,0
+Cat : 1,0.1,0.1,1

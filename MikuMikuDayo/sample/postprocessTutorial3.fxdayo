@@ -1,0 +1,64 @@
+#include <resources_pp.hlsli>
+#include <yrz.hlsli>
+
+[YRZFX]
+{
+    "fx": {
+        "cereal_class_version": 0,
+		"category" : "postprocess",
+        "controllers": [{"name": "C_off","controllerName": "(self)","item": "off","type": "float"}],
+		"samplers": [{ "name":"samp", "filter":"linear", "addressU":"clamp", "addressV":"clamp" }],
+		"textures": [
+			{ "name":"BlurXTexture", "format":"R16G16B16A16_FLOAT", "view":"RTV"}
+		],
+        "passes": [
+			{
+				"name":"BlurX", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS",
+				"RTV":[ {"name":"BlurXTexture"} ],
+				"macros":[ "BLUR_DIR=float2(1,0)", "SRCTEX=Dayo::ScreenTexture" ]
+			},
+			{
+				"name":"BlurY", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS",
+				"macros":[ "BLUR_DIR=float2(0,1)", "SRCTEX=BlurXTexture" ]
+			}
+		]
+    }
+}
+[HLSL]
+
+#ifdef BLUR_DIR
+struct VSO {
+	float4 pos:SV_POSITION;
+	float2 uv:TEXCOORD;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD )
+{
+	VSO vso = (VSO)0;
+	vso.pos = pos;
+	vso.uv = uv;
+	return vso;
+}
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	float4 I = Dayo::ScreenTexture.Sample(samp, vso.uv);
+	float4 O = I;
+
+	const int N = 64;
+	float w;
+	float tw = 0;
+	float4 tc = 0;
+	for (int i=0; i<N; i++) {
+		float2 d = BLUR_DIR*(i+0.5-N*0.5);
+		float2 sp = vso.uv + d/Resolution;
+		w = exp(-dot(d,d)/N);
+		tw += w;
+		float4 c = SRCTEX.Sample(samp,sp);
+		tc += c * w;
+	}
+	O = tc/tw;
+
+	return O;
+}
+#endif

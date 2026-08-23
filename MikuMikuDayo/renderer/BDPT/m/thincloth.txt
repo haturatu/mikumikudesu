@@ -1,0 +1,11 @@
+Category : 3
+Roughness : 0.35
+Anisotropy:-0.8
+IOR : 1.5,0
+Cat : 1.0,0.3,0.15,0.02
+TextureLoops:5
+NormalScale : 1
+RoughnessScale : 1
+
+_TNormalMap : "t/cloth/Fabric063_1K-JPG_NormalDX.jpg"
+_TRoughnessMap : "t/cloth/Fabric063_1K-JPG_Roughness.jpg"

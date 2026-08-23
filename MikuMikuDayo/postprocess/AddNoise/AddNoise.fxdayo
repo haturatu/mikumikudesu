@@ -1,0 +1,167 @@
+//ノイズMME
+//MMXX,MMXXV (c) SANDMAN presents!
+
+#include "../../hlsl/resources_PP.hlsli"
+#include "../../hlsl/yrz.hlsli"
+using namespace Dayo;
+using namespace YRZ;
+
+[YRZFX]
+{
+    "fx": {
+        "cereal_class_version": 0,
+		"category" : "postprocess",
+        "controllers": [
+			{ "name":"C_HSync", "controllerName":"(self)", "item":"水平同期喪失", "type":"float" },
+			{ "name":"C_VSync", "controllerName":"(self)", "item":"垂直同期喪失", "type":"float" },
+			{ "name":"C_GhostWidth", "controllerName":"(self)", "item":"ゴースト幅", "type":"float" },
+			{ "name":"C_Ghost", "controllerName":"(self)", "item":"ゴースト濃く", "type":"float" },
+			{ "name":"C_Distortion", "controllerName":"(self)", "item":"球面歪み", "type":"float" },
+			{ "name":"C_PowerOff", "controllerName":"(self)", "item":"電源OFF", "type":"float" },
+			{ "name":"C_Noise", "controllerName":"(self)", "item":"ノイズ", "type":"float",
+				"desc":["Setting to 0.5 or higher will result in loss of the colour burst signal, causing the image to become monochrome.","0.5以上を設定するとカラーバースト信号を喪失してモノクロになります"] },
+			{ "name":"C_All", "controllerName":"(self)", "item":"全部", "type":"float",
+				"desc":["Sets all effects except power off in one go.","電源OFF以外の全ての効果を一括で設定します"] }
+		],
+		"samplers":[
+			{"name":"samp"},
+			{ "name":"BorderSamp", "filter":"LINEAR", "addressU":"BORDER", "addressV":"BORDER", "borderColor":"TRANSPARENT_BLACK" }
+		],
+		"textures":[
+			{"name":"Tex1", "format":"R16G16B16A16_FLOAT", "view":"RTV"}
+		],
+        "passes": [
+			{ "name":"Noise", "type":"postprocess", "pixelShader":"PS", "vertexShader":"VS", "RTV":[{"name":"Tex1"}] },
+			{ "name":"Dist", "type":"postprocess", "pixelShader":"PS", "vertexShader":"VS" }
+		]
+    }
+}
+[HLSL]
+
+
+static float acsX = C_HSync;
+static float acsY = C_VSync;
+static float Rx = C_GhostWidth;
+static float Ry = C_Ghost;
+static float Rz = C_Distortion;
+static float Si = 1-C_PowerOff;
+static float acsTr = C_Noise;
+static float acsZ = C_All;
+
+
+float noise(float x)
+{
+	return frac(sin(x*5132.629)*712.128);
+}
+
+
+struct VSO { float4 position:SV_POSITION; float2 uv:TEXCOORD; };
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD ) { VSO vso = (VSO)0; vso.position = pos;  vso.uv = uv; return vso; }
+
+//電源オフ時の輝度
+float OffMap(float2 pos, float tr)
+{
+	float2 p = abs(pos - 0.5);
+	float det = pow(tr, 10);
+	if (det < p.y)
+		return 0;
+	else {
+		return (pow(cos(radians(p.y / det * 90)), 3)) / det;
+	}
+}
+
+
+//ノイズ付加パス
+#ifdef YRZ_PASS_Noise
+float4 PS(VSO vso) : SV_TARGET
+{
+	if (abs(Si) < 0.001)
+		return float4(0,0,0,1);
+
+	float4 Color;
+	float3 rand = ValueNoise33(float3(vso.uv * float2(AspectRatio*240,240), Time*60));	//縦の解像度240(480i)とする
+	float4 wrand = Hash4(uint4(0,0,Time*60,2));
+	float2 uv = vso.uv;
+	float2 srcXY = uv;
+
+	//水平同期のズレ
+	float JitterH = (wrand.x < 0.4*(acsX+acsZ)) ? sin(Time)*0.0005 : 0;
+	JitterH *= acsX + acsZ;
+	float nline = floor(uv.y * 480);	//ライン数(NTSCの縦480ドット準拠)
+	srcXY.x += (JitterH * (Time + sin(Time)) * nline);
+
+	//垂直同期のズレ
+	float JitterV = acsY + acsZ;
+	srcXY.y += JitterV * (Time + sinh(sin(Time) * 2) + wrand * 0.03);
+
+
+	//ゴースト
+	//Rx,Ryのデフォルト値のセット
+	if (abs(acsZ) >= 0.001) {
+		if (abs(Rx) < 0.001)
+			Rx = 0.2;
+		if (abs(Ry) < 0.001)
+			Ry = acsZ;
+	}
+	float4 JIColor = ScreenTexture.Sample(samp,srcXY);
+	float JitterG1 = Rx;	//ゴーストの水平移動分
+	float JitterG2 = min(sqrt(Ry)/6,0.16);	//ゴーストの濃さ
+
+	if (abs(Rx) >= 0.001) {
+		for (int i = 0; i < 4; i++) {
+			JIColor = lerp(JIColor, ScreenTexture.Sample(samp, srcXY + float2(-JitterG1 * i, 0)) , (4-i) * JitterG2);
+		}
+	}
+
+	//ノイズ
+	if (acsTr+acsZ >= 0.5) {
+		//ノイズ量が多くなるとカラーバースト信号を喪失する
+		Color.rgb = lerp(RGBtoY(JIColor.rgb), rand.r, pow(acsTr+acsZ,2));
+	}
+	else {
+		Color.rgb = lerp(JIColor, rand, pow(acsTr + acsZ,2));
+	}
+
+	//スイッチオフ
+	if (Si <= 0.999) {
+		//色ズレ
+		float d = 0.01 * (1 - Si);
+		Color.r *= OffMap(uv + ((noise(Time)) - 0.5)*d, Si);
+		Color.g *= OffMap(uv + ((noise(Time + 1)) - 0.5)*d, Si);
+		Color.b *= OffMap(uv + ((noise(Time + 2)) - 0.5)*d, Si);
+	}
+
+	Color.a = JIColor.a;
+	return Color;
+}
+#endif
+
+
+//球面歪み付加パス
+#ifdef YRZ_PASS_Dist
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	float4 Color;
+	float2 srcXY = vso.uv;
+
+	if (abs(Rz) >= 0.001) {
+		srcXY = vso.uv - 0.5;
+		srcXY.x *= AspectRatio;
+		if (Rz > 1) {
+			float b = 0.5*(AspectRatio/1.33);
+			srcXY *= (length(srcXY) + 1 / (Rz-1)) * (Rz-1);
+			if (abs(srcXY.x) > b) {
+				srcXY.x = clamp(srcXY.x, -b, b);
+			}
+		} else
+			srcXY *= (length(srcXY) + 1/Rz) * Rz;
+		srcXY.x /= AspectRatio;
+		srcXY += 0.5;
+	}
+	Color = Tex1.Sample(BorderSamp, srcXY);
+
+	return Color;
+}
+
+#endif

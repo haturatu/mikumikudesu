@@ -1,0 +1,181 @@
+#include <resources_deform.hlsli>
+#include <yrz.hlsli>
+using namespace Dayo;
+using namespace YRZ;
+
+[YRZFX]
+{
+    "fx": {
+        "cereal_class_version": 0,
+		"category" : "deform",
+        "controllers": [
+            { "name":"CenterMatrix", "type":"float4x4", "controllerName":"(self)", "item":"センター",
+                "desc":["Specifies the position and direction of the firing source","発射元の位置と発射方向を指定します"] },
+            { "name":"AimBone", "type":"float3", "controllerName":"(self)", "item":"狙い",
+                "desc":["If the aiming morph is greater than 0, it fires in the direction of the aiming bone.","狙い有効モーフが0より大きい時、狙いボーンの方向へ発射します"] },
+            { "name":"Aim", "type":"float", "controllerName":"(self)", "item":"狙い有効",
+                "desc":["fire in the direction of the aim bone","狙いボーンの方向へ発射するようになります"] },
+            { "name":"_FloorY", "type":"float3", "controllerName":"(self)", "item":"床の高さ",
+                "desc":["When the morph Y-Loop is greater than 0, a piece of paper that goes below the Y-coordinate of the floor height bone will fall back down from the ceiling height.","上から出るモーフが0より大きい時、床の高さボーンのY座標より下に行った紙片は天井の高さからまた降ってきます。"] },
+            { "name":"_CeilY", "type":"float3", "controllerName":"(self)", "item":"天井の高さ",
+                "desc":["When the morph Y-Loop is greater than 0, a piece of paper that goes below the Y-coordinate of the floor height bone will fall back down from the ceiling height.","上から出るモーフが0より大きい時、床の高さボーンのY座標より下に行った紙片は天井の高さからまた降ってきます。"] },
+            { "name":"InjectionBone", "type":"float3", "controllerName":"(self)", "item":"噴射",
+                "desc":["Moving the X-coordinate of this bone in the + direction causes the animation to progress: +1 X-coordinate per frame makes the movement more in line with real time. This makes it easy to reverse or stop the animation.","このボーンのX座標を+方向に動かすとアニメーションが進行します。1フレームにつきX座標を+1すると実時間に合った動きになります。このため逆再生や停止などを簡単に行う事が出来ます。"] },
+            { "name":"_Amount", "type":"float", "controllerName":"(self)", "item":"少なく",
+                "desc":["Reduces the amount of paper strip displayed.","紙片の表示量を少なくします"] },
+            { "name":"Mario", "type":"float", "controllerName":"(self)", "item":"上から出る", "slider":{"int":true}, 
+                "desc":["Loop over and under the space.","空間の上と下をループさせます"] },
+            { "name":"V0", "type":"float", "controllerName":"(self)", "item":"初速","desc":["",""] },
+            { "name":"Wind", "type":"float", "controllerName":"(self)", "item":"上昇気流", "desc":["",""] },
+            { "name":"_Arc", "type":"float", "controllerName":"(self)", "item":"広がり", "desc":["",""] },
+            { "name":"Thickness", "type":"float", "controllerName":"(self)", "item":"粒サイズ", "desc":["",""] },
+            { "name":"_EntireSize", "type":"float", "controllerName":"(self)", "item":"スケール", "desc":["",""] },
+            { "name":"H", "type":"float", "controllerName":"(self)", "item":"H", "desc":["",""] },
+            { "name":"dH", "type":"float", "controllerName":"(self)", "item":"Hランダム", "desc":["",""] },
+            { "name":"S", "type":"float", "controllerName":"(self)", "item":"S", "desc":["",""] },
+            { "name":"V", "type":"float", "controllerName":"(self)", "item":"V", "desc":["",""] },
+            { "name":"C_Ground", "type":"float", "controllerName":"(self)", "item":"床に置く", "slider":{"int":true},
+                "desc":["Particles are scattered on the floor","パーティクルが床にまかれます"]}
+        ],
+        "passes":[
+            { "name":"Main", "type":"compute", "computeShader":"CS" },
+        ]
+    }
+}
+[HLSL]
+
+static float4x4 InvCenterMatrix = InverseRTMatrix(CenterMatrix);
+static float FloorY = _FloorY.y + 0.05; //使い勝手のため少し上げとく
+static float CeilY = _CeilY.y;
+static int Amount = max(min((round((1-_Amount) * 128)),128) * 4,0);   //表示に使う頂点の数
+static float Arc = _Arc * PI;
+static float EntireSize = exp2((_EntireSize-0.5)*10);
+
+float mod(float x, float y)
+{
+    return x - floor(x/y)*y;
+}
+
+//粒子の位置・法線の計算
+//センターボーンによる回転・平行移動を加える前の座標で計算する
+float2x3 ResolvePosNor(int iParticle, int ParticleCount,out float phase, out bool valid)
+{
+    //噴射ボーンで時刻を指定(0の時発射の瞬間、30で1秒後)
+    static float t = InjectionBone.x / 30;
+    valid = t >= 0;
+    phase = min(0.5,t);
+    if (C_Ground)
+        phase = 0.5;    //床にまいてある奴は時刻と関係ない。噴射ボーンが負でないなら表示するというだけ
+
+    float3 rand = Hash3(uint3(iParticle,0,0));
+
+    //v0の決定
+    float rx = (rand.y - 0.5) * Arc;
+    float ry = (rand.z - 0.5) * Arc;
+    float3 v = float3(0,0,1);
+    static float3 aimLocal = mul(float4(AimBone,1),InvCenterMatrix); //ローカル座標での狙いボーンの位置
+    [branch]
+    if (Aim > 0.001 && length(aimLocal)>0.001) {
+        v = lerp(float3(0,0,-1),normalize(aimLocal),Aim); //速度ベクトル
+    }
+    [branch]
+    if (all(v==0))
+        v = float3(0,0,1);
+    else
+        v = normalize(v);
+
+    v*=V0 * lerp(30,60,rand.x);//lerp(30,60,rand.x);
+    v = RotY(v,ry);
+    v = RotX(v,rx);
+
+    //位置の計算：風向き・重力・初速から時刻tにおける位置を求める
+    float3 randP = Hash3(uint3(iParticle,1000,0)) - 0.5;
+    float3 randT = Hash3(uint3(iParticle,1500,0));
+    float3 pos, n;
+    if (C_Ground) {
+        pos = v*2.5;
+        float3 wpos = mul(float4(pos,1),CenterMatrix).xyz;
+        wpos.y = FloorY;
+        pos = mul(float4(wpos,1),InvCenterMatrix).xyz;
+        n = mul(float3(0,1,0),(float3x3)InvCenterMatrix);
+    } else {
+        static float3 up = mul(float3(0,1,0),(float3x3)InvCenterMatrix);
+        static float3 w = up * Wind;   //風(上昇気流)
+        static float3 g = up * -9.8;
+        float k = lerp(5,10,randT.z);  //空気抵抗
+        float3 c1 = v - g/k;
+        float3 c2 = c1 / k;
+        pos = c2 + ((g+k*w)*t - c1*exp(-k*t))/k;  //以上の解析解
+        //適当turbulence
+        float3 turb = float3(1,0.5,1)*min(t,1)*randP*sin(t*randT.x*2+randT.y*6) * 0.7;
+        pos += turb;
+        //[m]を[MMD]に直す
+        pos *= EntireSize / 0.08;   
+
+        //マリオ効果
+        if (Mario > 0.001) {
+            float marioMin = FloorY;        //これ未満になったら上から出る
+            float marioMax = CeilY;  //「上」の高さ
+            //ここだけワールド座標で計算       
+            float3 wpos = mul(float4(pos,1),CenterMatrix).xyz;
+            if (wpos.y < marioMin)
+                wpos.y = mod(wpos.y-marioMin,marioMax)+marioMin;
+            pos = mul(float4(wpos,1),InvCenterMatrix).xyz;
+        }
+
+        //姿勢
+        float3 Axis = normalize(Hash3(uint3(iParticle,300,0)));
+        float3 rand2 = Hash3(uint3(iParticle,600,0));
+        float av = lerp(5,20,rand2.x);
+        float r0 = rand2.y * 2 * PI;
+        n = RotAxis(float3(0,0,1),Axis,t * av + r0);
+    }
+
+    return float2x3(pos,n);
+}
+
+#ifdef YRZ_PASS_Main
+YRZ_NUMTHREADS
+void CS( uint3 id : SV_DispatchThreadID )
+{
+    uint index = id.x;
+    Vertex v = VB[index];
+    int iParticle = index / 4;      //何個目の粒か
+    int iVertex = index % 4;     //粒内の何個目の頂点か
+    int ParticleCount = Amount / 4; //表示対象の粒の総数
+
+    if (index < Amount) {
+        float phase;
+        bool valid;
+        float2x3 pv = ResolvePosNor(iParticle,ParticleCount,phase,valid);
+        if (valid) {
+            float3 p,n;
+            p = mul(float4(pv[0],1),CenterMatrix);
+            n = -mul(pv[1],(float3x3)CenterMatrix);
+            float3x3 TBN = ComputeTBN(n);
+            if (C_Ground) {   //床に撒いてある奴の場合ランダムでY軸周りの回転
+                float rangle = Hash3(uint3(iParticle,765,0)) * PI;
+                TBN[0] = RotY(TBN[0], rangle);
+                TBN[1] = RotY(TBN[1], rangle);
+            }
+
+            float2 uv = float2((iVertex/2+iVertex)%2,iVertex/2) - 0.5;
+            float size = EntireSize * Thickness;//ResolveSize(iParticle,phase);
+            p += uv.x * TBN[0] * size * EntireSize;
+            p += uv.y * TBN[1] * size * EntireSize;
+
+            v.normal = n;
+            v.uv = uv + 0.5;
+            v.tangent = TBN[0];
+            v.position = p;
+            float dh = dH * (Hash3(uint3(iParticle, 573, 111))-0.5);
+            v.exuv[0] = float4(H+dh,S,V,1);
+        }
+    } else {
+        v.position = -1e+5;
+    }
+
+    OutBuf[index] = v;
+}
+
+#endif

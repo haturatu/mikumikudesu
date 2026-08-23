@@ -1,0 +1,1194 @@
+/*****************************************************************
+  MikuMikuDayo用 ラスタライザベースのレンダラ
+  MMXXV (c) SANDMAN presents!
+*****************************************************************/
+#include "../hlsl/resources.hlsli"
+#include "../hlsl/yrz.hlsli"
+using namespace YRZ;
+using namespace Dayo;
+
+/*
+参考文献
+
+Jorge Jimenez氏 ほか "Practical Realtime Strategies for Accurate Indirect Occlusion"
+https://www.activision.com/cdn/research/Practical_Real_Time_Strategies_for_Accurate_Indirect_Occlusion_NEW%20VERSION_COLOR.pdf
+
+↑の実装にあたっては Kvaleya氏
+"An implementation of [Jimenez et al., 2016] Ground Truth Ambient Occlusion"を参考にしました
+https://old.reddit.com/r/opengl/comments/96api8/has_anyone_successfully_implemented_groundtruth_ao/e40d2ie/
+https://pastebin.com/bKxFnN5i
+*/
+
+#define NUM_LIGHTS 16		//ライトの数。HLSL側に伝える定数、json側(すぐ下に書いてある)も同様にいじってね
+
+[YRZFX]
+local NUM_LIGHTS = 16;	//ライトの数
+
+local RENCON = "subayairencon.pmx";
+local LIGHT = "subalight.pmx";
+
+local LA = "[" + NUM_LIGHTS + "]";
+
+//シャドウマップ作成パスの素
+local DefShadowPass(idx) = {
+	"name":"Shadow"+idx, "type":"rasterizer", "pixelShader":"PS", "vertexShader":"VS",
+    "DSV": { "name": "ZBuf", "clear": true, "depth": 1.0 },
+	"RTV": [ {"name":"ShadowMap"+idx, "clear":true, "value":{"x":0, "y":0, "z":0, "w":0} }],
+    "rasterizerDesc": { "cullMode": "none" },
+	"macros": [ "SHADOWINDEX="+idx ],
+	"conditions":[ "L_Cone["+idx+"]", "SelfShadowMode" ]
+};
+
+local DefShadowMap(idx) = {"name" : "ShadowMap"+idx, "format": "R32_FLOAT", "view": "RTV" };
+
+local DefShadowFunc(idx) = "case "+idx+" : return ShadowMap"+idx+".SampleLevel(samp, uv,0);";
+
+local CullModeConst = "none";
+
+{
+    "fx": {
+        "cereal_class_version": 0,
+        "category": "render", 
+		"memos": ["SkyboxPrefilter"],
+		"controllers": [
+			{"name": "C_ExposurePlus","controllerName": RENCON,"item": "露出+","type": "float"},
+			{"name": "C_ExposureMinus","controllerName": RENCON,"item": "露出-","type": "float"},
+			{"name": "C_SkyLightPlus","controllerName": RENCON,"item": "環境光+","type": "float"},
+			{"name": "C_SkyLightMinus","controllerName": RENCON,"item": "環境光-","type": "float"},
+			{"name": "C_DirectLightPlus","controllerName": RENCON,"item": "直接光+","type": "float"},
+			{"name": "C_DirectLightMinus","controllerName": RENCON,"item": "直接光-","type": "float"},
+			{"name": "C_DirectionalLightPlus","controllerName": RENCON,"item": "平行光源+","type": "float"},
+
+			{"name": "C_SSAOPlus","controllerName": RENCON,"item": "SSAO+","type": "float"},
+			{"name": "C_SSAOMinus","controllerName": RENCON,"item": "SSAO-","type": "float"},
+			{"name": "C_SSAOFar","controllerName": RENCON,"item": "SSAO距離+","type": "float"},
+			{"name": "C_SSAONear","controllerName": RENCON,"item": "SSAO距離-","type": "float"},
+			{"name": "C_SkyRotate","controllerName": RENCON,"item": "skybox回転","type": "float"},
+			{"name": "C_AL","controllerName": RENCON,"item": "AL発光","type": "float"},
+			{"name": "C_IluMeter", "controllerName": RENCON,"item": "照度計","type": "float"},
+			{"name": "C_GIVarMinus", "controllerName": RENCON,"item": "GI分散-","type": "float"},
+			{"name": "C_GIPlus", "controllerName": RENCON,"item": "GI+","type": "float"},
+			{"name": "C_GIMinus", "controllerName": RENCON,"item": "GI-","type": "float"},
+			{"name": "C_SoftShadow", "controllerName": RENCON,"item": "ソフト影","type": "float"},
+
+			{"name": "L_Val"+LA, "controllerName": LIGHT,"item": "明度","type": "float", "slider":{"def":1} },
+			{"name": "L_Hue"+LA,"controllerName": LIGHT,"item": "色相","type": "float"},
+			{"name": "L_Sat"+LA,"controllerName": LIGHT,"item": "彩度","type": "float"},
+			{"name": "L_Bright"+LA,"controllerName": LIGHT,"item": "明るく","type": "float"},
+			{"name": "L_Cone"+LA,"controllerName": LIGHT,"item": "コーン","type": "float"},
+			{"name": "L_DullCone"+LA,"controllerName": LIGHT,"item": "ゆるコーン","type": "float"},
+			{"name": "L_MinRadius"+LA,"controllerName": LIGHT,"item": "最小距離","type": "float"},
+			{"name": "L_MaxRadius"+LA,"controllerName": LIGHT,"item": "最大距離","type": "float"},
+			{"name": "L_Godray"+LA,"controllerName": LIGHT,"item": "ゴッドレイ","type": "float"},
+			{"name": "L_GodrayN"+LA,"controllerName": LIGHT,"item": "サンプル数","type": "float"},
+			{"name": "L_GodrayG"+LA,"controllerName": LIGHT,"item": "指向性","type": "float"},
+			{"name": "L_GodrayHazy"+LA,"controllerName": LIGHT,"item": "霞み","type": "float"},
+			{"name": "L_Bone"+LA,"controllerName": LIGHT,"item": "全ての親","type": "float4x4"},
+			{"name": "L_Target"+LA,"controllerName": LIGHT,"item": "狙い","type": "float3"},
+			{"name": "L_Is"+LA,"controllerName": LIGHT,"item": "","type": "bool"},
+			{"name": "L_ID"+LA,"controllerName": LIGHT,"item": "","type": "int"}
+		],
+		"textures" : 
+		[DefShadowMap(i) for i in std.range(0,NUM_LIGHTS-1)] + 
+		[
+			{"name": "ZBuf", "format": "D32_FLOAT", "view": "DSV" },
+			{"name": "RasterOut", "format": "R16G16B16A16_FLOAT", "view":"RTV" },
+			{"name": "AccBuf", "format":"R32G32B32A32_FLOAT", "view":"UAV" },
+			{"name": "MyNormalDepth", "format": "R32G32B32A32_FLOAT", "view":"RTV" },
+			{"name": "MyGBuffer1", "format": "R32G32B32A32_FLOAT", "view":"RTV"},
+			{"name": "MyGBuffer2", "format": "R32G32_FLOAT", "view":"RTV"},
+			{"name": "DiffuseOut", "format": "R16G16B16A16_FLOAT", "view":"RTV" },
+			{"name": "SpecularOut", "format": "R16G16B16A16_FLOAT", "view":"RTV"},
+			{"name": "AO", "format":"R8_UNORM", "view":"RTV" },
+			{"name": "ShadowMapR", "format": "R8_UNORM", "view":"UAV", "size":{"ratio":{"x":1,"y":1}}, "conditions":["SelfShadowMode"]},
+			{"name": "SSS_X", "format":"R16G16B16A16_FLOAT", "view":"RTV"},
+			{"name": "EnvSpecular", "format":"R16G16B16A16_FLOAT", "view":"RTV"},
+			{"name": "RTGI", "format":"R16G16B16A16_FLOAT", "view":"UAV"},
+			{"name": "AlbedoOIDN", "format":"R8G8B8A8_UNORM", "view":"RTV"}
+		],
+		"samplers" : [
+			{ "name":"samp", "filter":"ANISOTROPIC" }, 
+			{ "name":"LinearSamp", "filter":"LINEAR", "addressU":"WRAP", "addressV":"WRAP" },
+			{ "name":"ClampSamp", "filter":"LINEAR", "addressU":"CLAMP", "addressV":"CLAMP" },
+			{ "name":"SkySamp", "filter":"LINEAR", "addressU":"WRAP", "addressV":"CLAMP" },
+			{ "name":"PointSamp", "filter":"POINT", "addressU":"BORDER", "addressV":"BORDER", "borderColor":"TRANSPARENT_BLACK" }
+		],
+        "passes":
+		//ライトのシャドウマップ
+		[DefShadowPass(i) for i in std.range(0,NUM_LIGHTS-1)] +
+		[
+			{	//法線奥行マップとGBuffer作成
+				"name":"NormalDepth1", "type":"rasterizer", "pixelShader":"PS", "vertexShader":"VS",
+                "DSV": { "name": "ZBuf", "clear": true, "depth": 1.0 },
+				"RTV": [
+					{"name":"MyNormalDepth", "clear":true, "value":{"x":0, "y":0, "z":0, "w":0}},
+					{"name":"MyGBuffer1", "clear":true, "value":{"x":-1, "y":-1, "z":-1, "w":-1}},
+					{"name":"MyGBuffer2", "clear":true, "value":{"x":0, "y":0, "z":0, "w":0}}
+				],
+                "rasterizerDesc": { "cullMode": CullModeConst }, "macros":["COLLECT_THRESHOLD=Dayo::AlphaThreshold"]
+			},
+			{	//↑をNormalDepth, GBuffer1,2にコピー
+			 	"name":"CopyNDG", "type":"postprocess", "pixelShader":"PS", "vertexShader":"VS", "conditions":["iSample==0"]
+			},
+			{	//Z-Prepass
+				"name":"ZPre", "type":"rasterizer", "pixelShader":"PS", "vertexShader":"VS",
+                "DSV": { "name": "ZBuf", "clear": true, "depth": 1.0 },
+				"RTV": [ {"name":"AO", "clear":true, "value":{"x":0, "y":0, "z":0, "w":0} }],
+                "rasterizerDesc": { "cullMode": CullModeConst }, "macros":["COLLECT_THRESHOLD=0.98"]
+			},
+			{	//平行光源のシャドウ
+				"name":"ShadowR", "type":"raytracing", 
+				"raygenShader": "RayGeneration", "missShader": [ "Miss" ],
+                "hitGroup": [ { "type":"TRIANGLES", "closestHit": "ClosestHit", "anyHit": "AnyHit", "intersection": "" }],
+                "maxPayloadSize": 32, "maxAttributeSize": 8, "maxRecursionDepth": 1,
+				"UAV":[{"name":"ShadowMapR"}], "outputSize":{"ratio":{"x":1,"y":1}}
+			},
+			{	//GTAO
+				"name":"AO", "type":"postprocess", "pixelShader":"PS", "vertexShader":"VS",
+				"RTV": [{"name":"AO"}]
+			},
+			{	//メインのレンダリング
+				"name": "MMD",
+                "type": "rasterizer",
+                "vertexShader": "VS",
+                "pixelShader": "PS",
+                "DSV": { "name": "ZBuf", "clear": false},
+				"RTV": [
+					{ "name": "DiffuseOut",  "clear":true,"value":{"x":0, "y":0, "z":0, "w":0} },
+					{ "name": "SpecularOut", "clear":true,"value":{"x":0, "y":0, "z":0, "w":0}},
+					{ "name": "EnvSpecular", "clear":true,"value":{"x":0, "y":0, "z":0, "w":0}},
+					{ "name": "AlbedoOIDN", "clear":true,"value":{"x":0, "y":0, "z":0, "w":0}}
+				],
+                "blendDesc": {
+					"independentBlendEnable":true,
+                    "renderTarget0": { "blendEnable": true, "srcBlend": "src_alpha", "destBlend": "inv_src_alpha", "blendOp": "add",
+                        "srcBlendAlpha": "one", "destBlendAlpha": "inv_src_alpha", "blendOpAlpha": "add"},
+                    "renderTarget1": { "blendEnable": true, "srcBlend": "src_alpha", "destBlend": "inv_src_alpha", "blendOp": "add",
+                        "srcBlendAlpha": "one", "destBlendAlpha": "inv_src_alpha", "blendOpAlpha": "add"},
+                    "renderTarget2": { "blendEnable": true, "srcBlend": "src_alpha", "destBlend": "inv_src_alpha", "blendOp": "add",
+                        "srcBlendAlpha": "one", "destBlendAlpha": "inv_src_alpha", "blendOpAlpha": "add"},
+                    "renderTarget3": { "blendEnable": true, "srcBlend": "src_alpha", "destBlend": "inv_src_alpha", "blendOp": "add",
+                        "srcBlendAlpha": "one", "destBlendAlpha": "inv_src_alpha", "blendOpAlpha": "add"}
+                },
+                "rasterizerDesc": { "cullMode": CullModeConst },
+				"depthStencilDesc": { "depthWriteMask" : "all", "depthFunc" : "less_equal" }
+            },
+			{	//SSSSS
+				"name":"SSSSS_X", "type":"postprocess", "pixelShader": "PS", "vertexShader": "VS",
+				"RTV": [ {"name":"SSS_X"}], "macros":["SSSDIR=float2(1,0)","SRCTEX=DiffuseOut"]
+			}, 
+			{
+				"name":"SSSSS_Y", "type":"postprocess", "pixelShader": "PS", "vertexShader": "VS",
+				"RTV": [ {"name":"DiffuseOut"}], "macros":["SSSDIR=float2(0,1)","SRCTEX=SSS_X"]
+			}, 
+			{	//RTGI
+				"name":"RTGI", "type":"raytracing", 
+				"raygenShader": "RayGeneration", "missShader": [ "Miss" ],
+                "hitGroup": [ { "type":"TRIANGLES", "closestHit": "ClosestHit", "anyHit": "AnyHit", "intersection": "" }],
+                "maxPayloadSize": 32, "maxAttributeSize": 8, "maxRecursionDepth": 1,
+				"UAV":[{"name":"RTGI"}]
+			},
+			{	//以下、コンポジットなど
+				"name":"Compo", "type":"postprocess", "pixelShader": "PS", "vertexShader": "VS",
+				"RTV": [ {"name":"RasterOut", "clear":true, "value":{"x":0, "y":0, "z":0, "w":0} }]
+			},
+			{"name":"Copy", "type":"postprocess", "pixelShader": "PS", "vertexShader": "VS", "UAV":[{"name":"AccBuf"}]},
+			{"name":"DENOISE", "type":"postprocess", "pixelShader": "PS", "vertexShader": "VS",
+			 	"conditions":["DenoiserEnabled"]}
+        ],
+        "matDescs": {
+            "name": "Subayai",
+            "template": "Subayai/m/_template.txt",
+            "defaultFile": "Subayai/m/default.txt"
+        },
+		"code":[
+			"float4 ShadowMap(int idx, SamplerState samp, float2 uv){",
+			"if (SelfShadowMode==0) return 1e+10;",
+			"switch(idx) {" ] +
+			[DefShadowFunc(i) for i in std.range(0,NUM_LIGHTS-1)] + [
+			"default : return 1e+10; } }"
+		]
+    }
+}	
+[HLSL]
+
+
+static float Exposure = exp2(10 * (C_ExposurePlus-C_ExposureMinus));
+static float SkyLightGain = exp2(10 * (C_SkyLightPlus-C_SkyLightMinus));
+static float DirectLightGain = exp2(10 * (C_DirectLightPlus-C_DirectLightMinus));
+static float DirectionalLightGain = exp2(10 * C_DirectionalLightPlus);
+static float SSAOPower = max(0,1+C_SSAOPlus-C_SSAOMinus);
+static float SSAODistance = Exerp(25,250,C_SSAOFar - C_SSAONear);
+static float GIGain = (C_GIMinus <= -1) ? 0 : exp2(10 * (C_GIPlus-C_GIMinus));
+
+//散乱を考えない場合の太陽の視野角は1/11700[rad]
+//散乱を考えた場合の「見かけの」太陽の視野角はおおむね0.5°(0.0087[rad])程度とのこと。半径で4.4E-3とする
+static float SunCosMax = C_SoftShadow ? cos(Exerp(4.4E-4,4.4E-2,C_SoftShadow)) : 1;
+
+#include "subayai/hlsl/SubayaiHelper.hlsli"
+
+//Raytracing Specular GI
+#ifdef YRZ_PASS_RTGI
+#define RAYTRACING
+[shader("raygeneration")]
+void RayGeneration()
+{	
+	Payload payload = (Payload)0;
+	uint2 pix = DispatchRaysIndex().xy;
+	float2 uv = float2(pix+0.5)/DispatchRaysDimensions().xy;
+
+	//GI無効設定なら帰る
+	if (GIGain <= 0) { RTGI[pix] = 0; return; }
+
+	float4 nd = MyNormalDepth.SampleLevel(PointSamp,uv,0);
+	//何も書かれてないパッチなら帰る
+	if (nd.w == 0) { RTGI[pix] = 0; return; }
+
+	float3 P,rd;
+	rd = RaySaySayZ(uv, nd.w, P);
+
+	//パッチの接空間とマテリアルを得る
+	uint2 GB = GBuffer1[pix];
+	uint imo = GB.r;
+	uint iFace = GB.g;
+	if (imo == -1) { RTGI[pix] = 0; return; }
+
+	int iMat = Faces[imo][iFace];
+	Vertex v = GetVertex(imo,iFace,GBuffer2[pix]);
+	//法線が逆向きなら反転させる
+	if (dot(rd,v.normal) > 0) {
+		v.normal = -v.normal;
+		v.tangent = -v.tangent;
+	}
+	Material mp = GetMaterialIDMat(imo,iMat,v.uv,GetSPUV(v.normal),false, float4x4(v.exuv[0],v.exuv[1],v.exuv[2],v.exuv[3]));
+	SubayaiTexture ptex = GetSubayaiTexture(imo,iMat);
+
+	//やんなくてよくね？という時は帰る
+	bool kaeru = false;
+
+	//完全黒体なら帰る
+	if (mp.category==CAT_BLACKBODY)
+		kaeru = true;
+	
+	//ラフネスの高い金属・ガラス以外の物体なら帰る
+	bool dielectric = (mp.category!=CAT_METAL) && (mp.category!=CAT_GLASS) && (!ptex.hasIridescenceLUT);
+	if (mp.roughness>=0.5 && dielectric)
+		kaeru = true;
+
+	if (kaeru) { RTGI[pix] = 0; return; }
+	
+	//GI分散-
+	float2 a = mp.ggxA * (1-C_GIVarMinus);
+
+	//屈折フラグ
+	bool glass = (mp.category == CAT_GLASS);
+
+	//VNDFでマイクロファセットの法線Hをサンプリング
+	float4 xi = Hash4(uint4(pix, iSample, Time*1000));
+	float3x3 TBN = ComputeTBN(v.normal,v.tangent,true);
+	float3 H = VNDF(-rd,TBN,xi.xy,a);
+	float3 rl = reflect(rd,H);
+	float3 R = rl;	//レイの出射方向
+	float LoH = abs(dot(rl,H));	
+	float f0;
+	float3 F = Fresnel(ptex, mp, LoH, f0);
+	
+	float rpdf = 1;	//反射or屈折で反射が選択される確率、ガラス以外なら1のまま
+	//ガラスの場合は屈折先をRに入れる
+	if (glass) {
+		float3 rr = refract(rd,H,1/mp.IOR.x);
+		rpdf = all(rr==0) ? 1 : RGBtoY(F);
+		if (xi.z<rpdf) {
+			//反射が選択された
+			R = rl;
+			glass = false;
+		} else {
+			//屈折
+			rpdf = 1-rpdf;
+			R = rr;
+		}
+	}
+	
+	//フレネル反射率と D・G・NoL分/pdf
+	float3 beta = GGXAnisoBRDFdivPDF(a, -rd, H, TBN, false) / rpdf;
+	beta = glass ? (1-F)*beta : F*beta;
+	if (dielectric)
+		beta *= saturate(1-mp.roughness*2);	//roughnessが0.5の所で0になるようスケールする
+
+	//鏡面反射率が非常に小さいなら帰る
+	if (all(beta<1e-10)) {
+		RTGI[pix] = 0;
+		return;
+	}
+
+	//ガラスの色を入れる
+	if (glass) {
+		beta *= pow( clamp(mp.albedo,1e-3,1), 1/max(1e-6,abs(dot(TBN[2],R))) );
+	}
+
+	//出射方向を追う
+	RayDesc ray;
+	ray.Origin = P;
+	ray.Direction = R;
+	ray.TMin = max(1e-3,nd.w*1e-4);
+	ray.TMax = 1e+5;
+	payload.tr = 1;
+	payload.t = 0;
+	payload.glass = glass;
+	TraceRay(TLAS, RAY_FLAG_NONE, 0xFF, 0,0,0, ray, payload);
+
+	//オクルードが発生している場合はスペキュラ環境マップ(ガラスの場合はディフューズ分も)を取り除く
+	float3 envspec = 0;
+
+	//2025-0716 屈折の場合にenvspecが引かれてないのを修正
+	envspec = EnvSpecular.SampleLevel(PointSamp,uv,0).rgb;
+	if (glass)
+		envspec += DiffuseOut.SampleLevel(PointSamp,uv,0).rgb;
+
+	if (payload.tr == 1) {
+		//ミスった、ガラスの場合はディフューズ分を取り除き、skyboxの画像を代わりに入れる
+		RTGI[pix] =	float4(FetchSkybox(R)*beta*GIGain - envspec,mp.roughness);
+		return;
+	} else {
+		//ヒットした
+		float3 X = P + ray.Direction * payload.t;
+
+		/*
+		//反射先パッチがスクリーンスペースに入っている場合、
+		//既にレンダリングしてある内容のコピー(要するにSSR)で行けないかチェック
+		//パフォーマンスは多少良くなるがアーティファクトが出る
+		//いいアイディアではない気がするので無効にした
+
+		//ヒット位置が投影される2D座標を得る
+		float4 sp = mul(float4(X,1),JtViewProjectionMatrix);
+		//反射先はカメラに映らない(カメラの裏に回る)範囲でないかチェック
+		if (sp.w > 0) {
+			sp/=sp.w;
+			sp.y=-sp.y;
+			float2 uv = sp.xy*0.5+0.5;
+			nd = MyNormalDepth.SampleLevel(PointSamp,uv,0);
+			//無効なパッチだったり、画面外をサンプルしようとしてないかチェック
+			if (nd.w && all(uv==saturate(uv))) {
+				float3 C = UVtoWorld(uv,nd.w);
+				//既にレンダリングされているパッチかな？
+				if (length(C-X)<nd.w*0.01) {
+					//SSRでヨシ
+					float3 GI = beta * (SpecularOut.SampleLevel(ClampSamp, uv, 0) + DiffuseOut.SampleLevel(ClampSamp, uv, 0))*GIGain;
+					RTGI[pix] = float4(GI * float3(1,0,1) -envspec,mp.roughness);
+					return;
+				}
+			}
+		}
+		*/
+
+		//ヒット位置で新たにシェーディングする
+		int iMat = Faces[payload.ID][payload.iFace];
+		Vertex v = GetVertex(payload.ID, payload.iFace, payload.uv);
+		if (dot(ray.Direction,v.normal)>0) { v.normal = -v.normal; }
+		Material m = GetMaterial(payload.ID, payload.iFace, v.uv, GetSPUV(v.normal), false, float4x4(v.exuv[0],v.exuv[1],v.exuv[2],v.exuv[3]));
+		
+		Payload payshadow = (Payload)0;
+		if ((m.category != CAT_BLACKBODY) && SelfShadowMode) {
+			RayDesc shadowRay;
+			//平行光源のシャドウを得る
+			shadowRay.Origin = X;
+			shadowRay.Direction = -LightDirection;
+			shadowRay.TMin = 0.01;
+			shadowRay.TMax = 1e+5;
+			payshadow.tr = 1;
+			payshadow.t = 0;
+			payshadow.glass = false;
+			payshadow.ccw = true;
+			TraceRay(TLAS, RAY_FLAG_NONE, 0xFF, 0,0,0, shadowRay, payshadow);
+		}
+		float shadow = payshadow.tr;
+		SubayaiTexture ptex = GetSubayaiTexture(payload.ID,iMat);
+		float3x3 TBN = ComputeTBN(v.normal, v.tangent, true);
+		float3 dif,spec,dmy;
+		Illumination(pix, ptex,m,TBN,X,-ray.Direction,dif,spec,dmy,shadow);
+		float3 GI = beta * (dif+spec+m.emission)*GIGain;
+		RTGI[pix] = float4(GI-envspec,mp.roughness);
+	}
+
+}
+
+[shader("miss")]
+void Miss(inout Payload payload)
+{
+	payload.tr = 1;
+}
+
+[shader("closesthit")]
+void ClosestHit(inout Payload payload, Attribute attr)
+{
+	payload.t = RayTCurrent();
+	payload.ID = InstanceID();
+	payload.iFace = PrimitiveIndex();
+	payload.uv = attr.st;
+}
+
+[shader("anyhit")]
+void AnyHit(inout Payload payload, Attribute attr)
+{
+	uint id = InstanceID();
+	uint triangleIndex = PrimitiveIndex();
+	Vertex v = GetVertex(id,triangleIndex, attr.st);
+	Material m = GetMaterial(id, triangleIndex, v.uv, 0, false, float4x4(v.exuv[0], v.exuv[1], v.exuv[2], v.exuv[3]));	//カテゴリも欲しいのでalphaOnly=false
+	bool face = (HitKind() == HIT_KIND_TRIANGLE_FRONT_FACE);
+
+	//屈折モードだったらガラスは貫通する(1回屈折してればそれっぽくは見えるので)
+	if (payload.glass && m.category==CAT_GLASS) {
+		IgnoreHit();
+		return;
+	}
+	if ((face==payload.ccw && !m.twosided) || (m.alpha < Dayo::AlphaThreshold)) {
+		IgnoreHit();
+	} else {
+		payload.tr *= (1-m.alpha);
+	}
+}
+
+#endif
+
+
+
+//平行光源用レイトレシャドウマップ
+#ifdef YRZ_PASS_ShadowR
+#define RAYTRACING
+[shader("raygeneration")]
+void RayGeneration()
+{
+	Payload payload = (Payload)0;
+	uint2 pix = DispatchRaysIndex().xy;
+	float2 uv = (pix+0.5)/DispatchRaysDimensions().xy;
+
+	float4 nd = MyNormalDepth.SampleLevel(PointSamp,uv,0);
+	//何も書かれてないパッチなら帰る
+	if (nd.w == 0) {
+		ShadowMapR[pix] = 1.0;
+		return;
+	}
+
+	float3 P = UVtoWorld(uv,nd.w);
+
+	//Shadow Terminator対策
+	uint2 GB1 = GBuffer1[pix];
+	uint imo = GB1.r;
+	uint iFace = GB1.g;
+	float2 GB2 = GBuffer2[pix];
+	float3 bary = float3(1-(GB2.r+GB2.g), GB2.r, GB2.g);
+	Vertex v[3];
+	float3 Ng = 0;	//ついでにジオメトリ法線も出しとく
+	for (int i=0; i<3; i++) {
+		v[i] = VB[imo][IB[imo][iFace*3 + i]];
+		Ng += v[i].normal * bary[i];
+	}
+	P = FixShadowTerminator(P, bary.xy, v[0].position,v[1].position,v[2].position, v[0].normal,v[1].normal,v[2].normal);
+	Ng = normalize(Ng);
+
+	//ライトが遮られていないかテスト
+	RayDesc ray;
+	ray.Origin = P + Ng * nd.w*1e-3;	//ジオメトリ法線方向に少し浮かしてからレイを飛ばす(アクネ対策)
+	float pdf;
+	float2 xi = Hash4(uint4(pix,iSample,Time*1000)).xy;
+	float3 L = SampleCone(ComputeTBN(-LightDirection),xi,SunCosMax, pdf);
+	ray.Direction = L;
+	ray.TMin = 0;
+	ray.TMax = 1e+5;
+	payload.tr = 1;
+	TraceRay(TLAS, RAY_FLAG_NONE, 0xFF, 0,0,0, ray, payload);
+	float tr = payload.tr;
+	ShadowMapR[pix] = (payload.tr >= 0.98) ? 1: payload.tr;
+}
+
+[shader("miss")]
+void Miss(inout Payload payload)
+{
+}
+
+[shader("closesthit")]
+void ClosestHit(inout Payload payload, Attribute attr)
+{
+}
+
+[shader("anyhit")]
+//ハマった話…AnyHitShaderは始点から近く→遠くの順に起動される保証はないとのこと
+void AnyHit(inout Payload payload, Attribute attr)
+{
+	uint id = InstanceID();
+	uint triangleIndex = PrimitiveIndex();
+	Vertex v = GetVertex(id,triangleIndex, attr.st);
+	Material m = GetMaterial(id, triangleIndex, v.uv, 0, true, float4x4(v.exuv[0],v.exuv[1],v.exuv[2],v.exuv[3]));
+	bool face = (HitKind() == HIT_KIND_TRIANGLE_FRONT_FACE);
+
+	//光から見て表の面(パッチから見ると裏向き)だけヒットする
+	if (!face || m.twosided) {
+		payload.tr *= (1-saturate(m.alpha * m.shadowCaster));
+		//どこでぶつかっているかを探すのではなくパッチ⇔光源間の透過率を調べるので、以下のロジックで良い
+		if (payload.tr < 0.02) {
+			payload.tr = 0;
+			AcceptHitAndEndSearch();
+		} else
+			IgnoreHit();
+	} else
+		IgnoreHit();
+
+}
+
+
+#endif
+
+//スポットライト用シャドウマップ
+#ifdef SHADOWINDEX
+struct VSO {
+	float4 position:SV_POSITION;
+	float2 uv:TEXCOORD0;
+	float2 spuv:TECOORD1;
+	float3 eye:TEXCOORD2;
+	float4 exuv1:TEXCOORD3;
+	float4 exuv2:TEXCOORD4;
+	float4 exuv3:TEXCOORD5;
+	float4 exuv4:TEXCOORD6;
+};
+
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD, float3 normal:NORMAL,
+	float4 exuv1:TEXCOORD1, float4 exuv2:TEXCOORD2, float4 exuv3:TEXCOORD3, float4 exuv4:TEXCOORD4)
+{
+	float4x4 view,viewproj;
+	SpotLightMatrix(SHADOWINDEX, view,viewproj);
+
+	VSO vso = (VSO)0;
+	vso.position = mul(pos,viewproj);
+	vso.eye = LightBone(SHADOWINDEX)._41_42_43 - pos.xyz;
+	vso.spuv = mul(normal,(float3x2)view) * float2(0.5,-0.5) + 0.5;
+	vso.uv = uv;
+	vso.exuv1 = exuv1;
+	vso.exuv2 = exuv2;
+	vso.exuv3 = exuv3;
+	vso.exuv4 = exuv4;
+	return vso;
+}
+
+float4 PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace) : SV_TARGET
+{
+	if (!L_Is[SHADOWINDEX])
+		discard;
+
+	uint imo = ModelIndex;
+	MMDMaterial mmd = MMDMaterials[imo][Faces[imo][iFace]];
+
+	//片面描画材質の裏面をスキップ
+	if (!vface && ((mmd.drawFlag&1) == 0))
+		discard;
+
+	Material m = GetMaterial(imo, iFace, vso.uv, vso.spuv, true, float4x4(vso.exuv1, vso.exuv2, vso.exuv3, vso.exuv4));
+
+	//不透明体だけ書き入れる
+	if (m.alpha*m.shadowCaster < Dayo::AlphaThreshold)
+		discard;
+	
+	return vso.position.w;
+}
+
+#endif
+
+//ZPrepassとG-Buffer構築パス
+#if defined(YRZ_PASS_ZPre) || defined(YRZ_PASS_NormalDepth1)
+struct VSO {
+	float4 position:SV_POSITION;
+	float3 normal:NORMAL;
+	float3 tangent:TANGENT;
+	float2 uv:TEXCOORD0;
+	float3 eye:TEXCOORD1;
+	float2 spuv:TEXCOORD2;
+	float4 exuv1:TEXCOORD3;
+	float4 exuv2:TEXCOORD4;
+	float4 exuv3:TEXCOORD5;
+	float4 exuv4:TEXCOORD6;
+};
+
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD, float3 normal:NORMAL, float3 tangent:TANGENT,
+	float4 exuv1:TEXCOORD1, float4 exuv2:TEXCOORD2, float4 exuv3:TEXCOORD3, float4 exuv4:TEXCOORD4)
+{
+	VSO vso = (VSO)0;
+	vso.position = mul(pos,JtViewProjectionMatrix);
+	vso.eye = CameraPosition - pos.xyz;
+	vso.normal = normal;
+	vso.tangent = tangent;
+	vso.uv = uv;
+	vso.exuv1 = exuv1;
+	vso.exuv2 = exuv2;
+	vso.exuv3 = exuv3;
+	vso.exuv4 = exuv4;
+	vso.spuv = mul(normal,(float3x2)ViewMatrix) * float2(0.5,-0.5) + 0.5;
+	return vso;
+}
+
+#ifdef YRZ_PASS_NormalDepth1
+struct PSO {
+	float4 ND : SV_TARGET0;
+	float4 GB1 : SV_TARGET1;
+	float2 GB2 : SV_TARGET2;
+};
+#else
+struct PSO {
+	float4 o : SV_TARGET0;
+};
+#endif
+
+#ifdef NO_BARYCENTRICS
+	PSO PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace)
+#else
+	PSO PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace, float3 bary:SV_Barycentrics)
+#endif
+{
+	uint imo = ModelIndex;
+
+	MMDMaterial mmd = MMDMaterials[imo][Faces[imo][iFace]];
+
+	//片面描画材質の裏面をスキップ
+	if (!vface && ((mmd.drawFlag&1) == 0))
+		discard;
+
+	#ifdef YRZ_PASS_NormalDepth1
+		Material m = GetMaterial(imo, iFace, vso.uv, vso.spuv, false, float4x4(vso.exuv1, vso.exuv2, vso.exuv3, vso.exuv4));
+	#else
+		Material m = GetMaterial(imo, iFace, vso.uv, vso.spuv, true, float4x4(vso.exuv1, vso.exuv2, vso.exuv3, vso.exuv4));
+	#endif
+
+	//不透明体だけ書き入れる
+	if (m.alpha < COLLECT_THRESHOLD)
+		discard;
+	
+	#ifdef YRZ_PASS_NormalDepth1
+		PSO o = (PSO)0;
+		//裏向き面なら法線を反転して記録
+		float z = vso.position.w;
+		float3 P = UVtoWorld(vso.uv, z);
+		float3x3 TBN = ComputeTBN(normalize(vso.normal), normalize(vso.tangent), true);
+		if (!vface)
+			TBN = -TBN;
+		o.ND.xyz = NormalMap(m, iFace, P, vso.uv, TBN)[2];
+		o.ND.w = z;
+		o.GB1.r = ModelIndex & 0x00FFFFFF;
+		o.GB1.g = ModelIndex >> 24;
+		o.GB1.b = iFace & 0x00FFFFFF;
+		o.GB1.a = iFace >> 24;
+		#ifndef NO_BARYCENTRICS
+			o.GB2 = bary.yz;
+		#else
+			o.GB2 = float2(0,1);
+		#endif
+		return o;
+	#else
+		//ZPrePassならてきとうに帰る
+		return (PSO)0;
+	#endif
+}
+#endif
+
+//G-Bufferとかのコピー
+#ifdef YRZ_PASS_CopyNDG
+
+struct VSO { float4 position:SV_POSITION; float2 uv:TEXCOORD; };
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD ) { VSO vso; vso.position = pos; vso.uv = uv; return vso; }
+
+float4 PS(VSO vso):SV_TARGET
+{
+	uint2 p = vso.position.xy;
+	float4 g = MyGBuffer1[p];
+	GBuffer1[p].x = (g.x<0) ? -1 : (uint)g.x | ((uint)g.y << 24);
+	GBuffer1[p].y = (g.z<0) ? -1 : (uint)g.z | ((uint)g.w << 24);
+	GBuffer2[p] = MyGBuffer2[p];
+	NormalDepth[p] = MyNormalDepth[p];
+	discard;
+	return 0;
+}
+#endif
+
+
+//GTAO
+#ifdef YRZ_PASS_AO
+
+struct VSO { float4 position:SV_POSITION; float2 uv:TEXCOORD; };
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD ) { VSO vso; vso.position = pos; vso.uv = uv; return vso; }
+
+// [Eberly2014] GPGPU Programming for Games and Science
+float FastAcos(float x)
+{
+    float res = -0.156583 * abs(x) + PI/2;
+    res *= sqrt(1.0 - abs(x));
+    return x >= 0 ? res : PI - res;
+} 
+//資料のEq.7 a^
+float IntegrateArc(float h1, float h2, float n)
+{
+	float s,c;
+	sincos(n,s,c);
+    return ( -cos(2*h1-n) + c + 2*h1*s -cos(2*h2-n) +c + 2*h2*s ) / 4;
+}
+
+//spにあるサンプルを取得して、c1/c2を更新
+//closest : 現在のcos(θ) (資料Eq.9)
+void Sample1Dir(float2 sp, inout float closest, float3 C, float3 V)
+{
+	const float R = SSAODistance;	//AOの最大物体間距離[MMD]
+	const float F = SSAODistance/2;	//フォールオフ開始距離
+
+	float4 s = MyNormalDepth.Sample(PointSamp, sp);
+	if (s.w) {
+		float3 P = UVtoWorld(sp,s.w);	//サンプル点のワールド座標
+		float3 H = normalize(P-C);
+		float f = clamp( (R-length(P-C))/F, 0,1);	//距離が遠すぎる場合はf=0として棄却
+		float c = dot(H,V);	//cos(θs)
+		//資料のEq.9とは少し違う、Kvaleya氏による改良？良い見た目が得られている
+		if (c > closest)
+			closest = lerp(closest,c,f);
+		else
+			closest = lerp(closest,c,0.2*f);
+	}
+}
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	if (SSAOPower == 0)
+		return 1;
+
+	float2 uv = vso.uv;
+	uint2 pix = uv * Resolution;
+	float4 ND = MyNormalDepth.SampleLevel(ClampSamp, uv, 0);
+	if (!any(ND))
+		return 1;
+
+	const int M = 3;	//円周方向のサンプル数
+	const int N = 12;	//半径方向サンプル数(の半分)
+	const float dd = 0.025;	//ディスクの最大半径(画面の縦サイズとの割合)
+	const float2 e = float2(AspectRatio,1) * dd;
+
+	float3 Nc = ND.xyz;
+	float3 C,rd;
+	rd = RaySaySayZ(uv, ND.w, C);
+	float3 V = -rd;
+	
+	float xi = frac(GoldenHash12(pix) + Hash3(uint3(iSample,Time*1000,0)).x);
+	float tv = 0;
+	for (int i=0; i<M; i++) {
+		float2 dir = CosSin( ((i+xi)/M) * 2 * PI);	//horizonの方向
+		float c1 = 0,c2 = 0;	//horizonの左半分・右半分について最大cosθの記録用
+		for (int j=0; j<N; j++) {
+			float2 delta = (j+0.5)/N * dir * e;
+			float2 sp = uv + delta;
+			Sample1Dir(sp, c1, C, V);
+			sp = uv - delta;
+			 Sample1Dir(sp, c2, C, V);
+		}
+
+		float3 toDir = RaySaySay(uv - dir*e);			//toDir : カメラ → 注目点をhorizonの方向にずらした位置
+		float3 planeN = normalize(cross(V,-toDir));		//
+		float3 projN = Nc - planeN * dot(Nc,planeN);	//ビュー空間に投影されて短くなったNc
+		float3 projDir = normalize(toDir+V);			//ビュー空間に投影されたhorizonの向き
+
+		float n = FastAcos(dot(-projDir, normalize(projN))) - PI/2;
+		float h1,h2;
+		h1 = n + max(-FastAcos(c1)-n, -PI/2);
+		h2 = n + min(FastAcos(c2)-n, PI/2);
+		float vis = lerp(1, IntegrateArc(h1,h2,n), length(projN));
+		tv+=saturate(vis);
+	}
+
+	return pow(tv/M,SSAOPower);
+}
+
+#endif
+
+
+
+//メインのレンダリング
+#ifdef YRZ_PASS_MMD
+struct VSO {
+	float4 position:SV_POSITION;
+	float3 normal:NORMAL;
+	float2 uv:TEXCOORD;
+	float2 spuv:TEXCOORD1;
+	float3 eye:TEXCOORD2;
+	float3 tangent:TANGENT;
+	float4 exuv1:TEXCOORD3;
+	float4 exuv2:TEXCOORD4;
+	float4 exuv3:TEXCOORD5;
+	float4 exuv4:TEXCOORD6;
+};
+
+
+VSO VS( float4 pos : POSITION, float3 normal:NORMAL, float3 tangent:TANGENT, float2 uv:TEXCOORD,
+	float4 exuv1:TEXCOORD1, float4 exuv2:TEXCOORD2, float4 exuv3:TEXCOORD3, float4 exuv4:TEXCOORD4)
+{
+	VSO o = (VSO)0;
+	
+	o.position = mul(pos,JtViewProjectionMatrix);
+	o.uv = uv;
+	o.spuv = mul(normal,(float3x2)ViewMatrix) * float2(0.5,-0.5) + 0.5;
+	o.normal = normal;
+	o.tangent = tangent;
+	o.eye = CameraPosition - pos.xyz;
+	o.exuv1 = exuv1;
+	o.exuv2 = exuv2;
+	o.exuv3 = exuv3;
+	o.exuv4 = exuv4;
+	return o;
+}
+
+struct PSO {
+	float4 diffuse : SV_TARGET0;
+	float4 specular : SV_TARGET1;
+	float4 EnvSpec :SV_TARGET2;
+	float4 Albedo : SV_TARGET3;
+};
+
+//資料より引用。multi-bounceを考慮したAO項の補正
+float3 GTAOMultiBounce(float vis, float3 albedo)
+{
+	float3 a =  2.0404 * albedo - 0.3324;
+	float3 b = -4.7951 * albedo + 0.6417;
+	float3 c =  2.7552 * albedo + 0.6903;
+	float x = vis;
+	return max(x, ((x*a+b)*x+c)*x);
+}
+
+PSO PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace)
+{
+	PSO pso = (PSO)0;
+	float3 diffuse = 0,specular = 0;
+	int iMat = Faces[ModelIndex][iFace];
+	Material m = GetMaterial(ModelIndex,iFace,vso.uv,vso.spuv,false, float4x4(vso.exuv1, vso.exuv2, vso.exuv3, vso.exuv4));
+	float3x3 TBN = {normalize(vso.tangent), normalize(cross(vso.normal,vso.tangent)), normalize(vso.normal)};
+
+	if (!vface && !m.twosided)
+		discard;
+
+	if (m.alpha == 0)
+		discard;
+
+	//はじまりはじまり
+	if (m.category != CAT_BLACKBODY) {
+		SubayaiTexture ptex = GetSubayaiTexture(ModelIndex,iMat);
+		SubayaiValue pbr = GetSubayaiValue(ModelIndex,iMat);
+		float3 Le = LinearLightColor;	//光源色
+		float3 L = -LightDirection;
+		float3 V = normalize(vso.eye);
+		//接空間を求める
+		if (!vface) { TBN = -TBN; }
+
+		//スクリーン座標
+		float2 suv = vso.position.xy / Resolution;
+		//法線マップの適用
+		float3 P = CameraPosition-vso.eye;
+		float2 uv = vso.uv;
+		TBN = NormalMap(m, iFace, P, uv, TBN);
+
+		float3 N = TBN[2];
+		float3 H = normalize(L+V);
+		float NoL =  dot(N,L);
+		float LoH = abs(dot(L,H));
+		float isoR = m.roughness;
+
+		float3 spec, dif;
+
+		//SSAO
+		//m.ao *= AO.SampleLevel(ClampSamp,suv,0).r;
+		m.ao *= GTAOMultiBounce(AO.SampleLevel(ClampSamp,suv,0).r, m.albedo);
+		
+		//非レイトレ環境の場合はコメントアウト
+		float shadow = 1;
+		#ifndef NO_BARYCENTRICS
+			if (SelfShadowMode)
+				shadow = ShadowMapR.SampleLevel(ClampSamp, suv, 0);
+		#endif
+
+		//曲率
+		/*
+		m.ramp = saturate(length(fwidth(vso.normal)) / length(fwidth(vso.eye*80))); //曲率[1/mm]  80はMMD長さ→mmへの変換係数
+		if (ptex.hasRampZH) {
+			float u = m.ramp;
+			m.ZH[0] = ptex.RampZH.Sample(ClampSamp, float2(u,0)).rgb;
+			m.ZH[1] = ptex.RampZH.Sample(ClampSamp, float2(u,0.5)).rgb;
+			m.ZH[2] = ptex.RampZH.Sample(ClampSamp, float2(u,1.0)).rgb;
+		}
+		*/
+		
+		float3 envs;
+		Illumination(vso.position.xy, ptex, m, TBN, P,V, dif, spec, envs, shadow);
+		diffuse = dif;
+		specular = spec;
+		pso.EnvSpec = float4(envs,m.alpha);
+
+		//diffuse = m.ramp;
+	}
+
+	specular += m.emission;
+
+	//α=0.98,0.99はpmdでフラグとして使われているらしいので描画上は1扱いとする
+	if (m.alpha >= 0.98)
+		m.alpha = 1;
+
+	pso.diffuse = float4(diffuse, m.alpha);
+	pso.specular = float4(specular, m.alpha);
+
+	pso.Albedo = float4(m.albedo,m.alpha);
+
+	return pso;
+}
+
+#endif
+
+
+//SSSSS
+#ifdef SSSDIR
+
+struct VSO { float4 position:SV_POSITION; float2 uv:TEXCOORD; };
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD ) { VSO vso;  vso.position = pos;  vso.uv = uv; return vso; }
+
+SubayaiValue GetSubayaiValueFromGB(float2 uv)
+{
+	SubayaiValue pbr = (SubayaiValue)0;
+	uint2 GB = GBuffer1[uv*Resolution];
+	uint iModel = GB.r;
+	//何も書かれていないなら帰る
+	if (iModel == -1) {
+		return pbr;
+	}
+	uint iFace = GB.g;
+	uint iMat = Faces[iModel][iFace];
+	pbr = GetSubayaiValue(iModel,iMat);
+	return pbr;
+}
+
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	float2 uv = vso.uv;
+	float3 tw=0;
+	float3 tc=0;
+	float2 delta = 4 / (float2(AspectRatio,1)*1080);	//1080pの時に4px間隔でサンプリングする感じで
+	float R=8;	//フィルタ半径(delta*Rが実際の半径)
+	float4 C = SRCTEX.Sample(ClampSamp, uv);
+
+	SubayaiValue pbr = GetSubayaiValueFromGB(uv);
+
+	//diffusion profileを得る
+	float4 dp = pbr.Cat;
+	if (pbr.Category != CAT_SSS || dp.w == 0)
+		return C;
+
+	//中心パッチの位置を得る
+	float z = MyNormalDepth.Sample(PointSamp, uv).w;
+	float3 PC = UVtoWorld(uv,z);
+
+	for (int x=-R; x<=R; x++) {
+		float2 sp = uv + delta * SSSDIR * x;
+		SubayaiValue sv = GetSubayaiValueFromGB(sp);
+		//拡散の対象ではないパッチは飛ばす
+		float4 t = sv.Cat;
+		if (sv.Category == CAT_SSS && t.w > 0) {
+			z = MyNormalDepth.Sample(PointSamp, sp).w;
+			float3 P = UVtoWorld(sp,z);
+			float r = length(PC-P)*80;	//MMD→mm
+			float3 sigmaT =  1 / max(dp.rgb * dp.w * 100,1e-3);	//dpはmfp[0.1m]を示している
+			float3 w = exp(-sigmaT*r);
+			float3 c = SRCTEX.Sample(ClampSamp, sp);
+			tw += w;
+			tc += c * w;
+		}
+	}
+	
+	return all(tw) ? float4(tc/tw,C.a) : C;
+}
+
+#endif
+
+
+//背景Skybox, Diffuse, Specularを合成
+#ifdef YRZ_PASS_Compo
+struct VSO { float4 position:SV_POSITION; float2 uv:TEXCOORD; };
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD ) { VSO vso;  vso.position = pos; vso.uv = uv; return vso; }
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	float4 o = 0;
+	float3 rd = RaySaySay(vso.uv);
+	o.rgb = FetchSkybox(rd);
+
+	float4 d = DiffuseOut.SampleLevel(ClampSamp, vso.uv, 0);
+	float4 s = SpecularOut.SampleLevel(ClampSamp, vso.uv, 0);
+
+	o.rgb = lerp(o.rgb, d.rgb+s.rgb, d.a);
+	o.a = d.a;
+	return o;
+}
+
+#endif
+
+
+//ポストプロセス＆レンダリング結果をRTOutputへコピー
+#ifdef YRZ_PASS_Copy
+
+struct VSO { float4 position:SV_POSITION; float2 uv:TEXCOORD; };
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD ) { VSO vso; vso.position = pos; vso.uv = uv; return vso; }
+
+//目盛に刻みを入れる、刻みの上なら0を返す
+bool kizami(float2 uv)
+{
+	if (frac(uv.x*10) < 0.02)
+		return 0;
+	return 1;
+}
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	float3 Lt = 0;
+	float3 ro,rd,X;
+	float depthZ = MyNormalDepth.SampleLevel(PointSamp,vso.uv,0).w;
+	rd = RaySaySayZ(vso.uv,depthZ,X);	//X=uvに相当する画面上のパッチの位置
+	ro = CameraPosition;
+	float z = length(X-ro);	//カメラからパッチまでの距離
+
+	//ゴッドレイPP
+	float ttr = 1;	//ボリューム全部での透過率
+	float maxD = 250;	//カメラから最大どこまでの奥行のゴッドレイを扱うか
+	if (depthZ==0 || z > maxD)
+		z = maxD;
+	for (int i=0; i<NUM_LIGHTS; i++) {
+		if (!L_Is[i] || !L_Godray[i])
+			continue;
+		int N = clamp(L_GodrayN[i]*100,10,1000);	//ステップ数
+		//コーンとの当たり判定を求める
+		float t0,t1;
+		if (L_Cone[i]) {
+			if (!RayLightCone(i, ro,rd,z,t0,t1))
+				continue;
+		} else {
+			/*
+			t0 = 0;
+			t1 = z;
+			*/
+			if (!RaySphere(ro-LightBone(i)._41_42_43, rd, maxD, t0,t1))
+				continue;
+			t0 = max(0,t0);
+			t1 = min(z,t1);
+		}
+		float4 xi = Hash4(uint4(iSample,vso.position.xy,Time*1000));	//ジッターの素
+		float jtD = GoldenHash12(vso.position.xy+xi.x);	//距離についてのジッター
+		float2 jtS = CosSin(xi.y*2*PI)*sqrt(xi.z);	//シャドウマップ上の座標についてのジッター
+		float s = (t1-t0)/N;	//1ステップの距離
+		float d = t0 + jtD*s;	//現在のカメラからの距離
+		float tr = 1;			//現在の透過率
+		float3 P = ro + rd * d;	//現在の位置
+		float muT = LightMuT(i);//消失係数[1/MMD]
+		float g = min(L_GodrayG[i],0.999);	//前方散乱係数
+		for (int j=0; j<N; j++) {
+			if (d>z)
+				break;
+			float v = Visibility(i,P, jtS);
+			if (v>0) {
+				float3 L,Le;
+				float cone;
+				float3 S = LightIrradiance(i,P,L,cone);
+				S *= HenyeyGreenstein(dot(-L,rd),g);
+				float ex = exp(-muT * s * cone);
+				Lt += tr * S * (1-ex) ;
+				tr *= ex;
+			}
+			d += s;
+			P += rd*s;
+		}
+		//霞み効果。遮蔽分は環境光に近づく
+		float hazy = lerp(1,tr,saturate(L_GodrayHazy[i]));	
+		ttr *= hazy;
+	}
+
+
+	/* アキュムレーションしない版
+	uint2 pix = trunc(vso.position);
+	float2 uv = vso.position.xy / Resolution;
+	RTOutput[trunc(vso.position.xy)] = RasterOut.SampleLevel(ClampSamp, uv,0);
+	*/
+	uint2 pix = trunc(vso.position.xy);
+	float2 uv = vso.position.xy / Resolution;
+	
+	float4 GITex = RTGI.SampleLevel(ClampSamp, uv,0);
+	float3 GI = GITex.rgb;
+	
+	float3 Env = 0.282095 * SkyboxSH[0].c[0].xyz;	//環境光の直流分 = 霞の色(平行光源色を足したりした方が良いかもしらん)
+	float4 Rasta = RasterOut.SampleLevel(ClampSamp, uv,0);
+
+	float4 current = float4( (lerp(Env, Rasta.rgb + GI, ttr) + Lt) * Exposure, Rasta.a);
+	float4 history = AccBuf[pix];
+	float4 o;
+	if (all(isfinite(current)))
+		o = lerp(history, current, 1.0/(iSample+1));
+	else
+		o = history;
+	AccBuf[pix] = o;
+	
+	//照度計 ゲージが画面の右端一杯までくる時1.0 ＝ 反射率1のLambertianに垂直に入射する時に輝度1になるような照度
+	if (C_IluMeter) {
+		float k = kizami(uv);
+		//直接光と垂直な面に対する照度
+		float d = RGBtoY(LinearLightColor) * Exposure / PI;
+		//環境光とN=(0,1,0)面に対する照度
+		float e = RGBtoY(SkyIrradiance(float3(0,1,0),ZHCosine)) * Exposure;
+		//合計
+		float t = d+e;
+		//各色
+		float4 Cd = {1,0.2,0.01,1};
+		float4 Cs = {0.01,0.2,1,1};
+		float4 Ct = 1;
+		//ゲージの濃度、モーフ0.5で濃度はmaxになる
+		float alpha = saturate(C_IluMeter*2);
+		//モーフが0.75越えたらダークモード
+		if (C_IluMeter > 0.75) {
+			Cd.rgb *= 0.1;
+			Cs.rgb *= 0.1;
+			Ct.rgb *= 0.1;
+		}
+
+		if (pix.y < 16 && uv.x < t && k) {
+			o = lerp(o,Ct,alpha);
+		}
+		if (18 <= pix.y && pix.y < 34 && uv.x < d && k) {
+			o = lerp(o,Cd,alpha);
+		}
+		if (36 <= pix.y && pix.y < 52 && uv.x < e && k) {
+			o = lerp(o,Cs,alpha);
+		}
+	}
+
+	RTOutput[pix] = o;
+	discard;
+	return 0;
+}
+
+#endif
+
+
+//OIDNへの入力を作るパス
+#ifdef YRZ_PASS_DENOISE
+struct VSO { float4 position:SV_POSITION; float2 uv:TEXCOORD;};
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD ) { VSO vso = (VSO)0; vso.position = pos; vso.uv = uv; return vso; }
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	uint2 pix = trunc(vso.position);
+	float2 uv = vso.position.xy / Resolution;
+
+	uint idx = pix.y * Resolution.x + pix.x;
+	OIDNBuf[idx].color = RTOutput[pix.xy].xyz;
+	OIDNBuf[idx].albedo = AlbedoOIDN[pix.xy].xyz;
+	OIDNBuf[idx].normal = NormalDepth[pix.xy].xyz;
+
+	discard;
+	return 0;
+}
+
+#endif

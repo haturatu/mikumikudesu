@@ -1,0 +1,9 @@
+Category : 0
+Roughness : 1
+IOR : 1.5,0
+TextureLoops : 5
+NormalScale : 1
+RoughnessScale : 1
+
+_TNormalMap : "t/cloth/Fabric063_1K-JPG_NormalDX.jpg"
+_TRoughnessMap : "t/cloth/Fabric063_1K-JPG_Roughness.jpg"

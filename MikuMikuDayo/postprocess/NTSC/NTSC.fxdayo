@@ -1,0 +1,132 @@
+//NTSCのテレビっぽいポストプロセシングエフェクト
+//MMXXX,MMXXV (c) SANDMAN presents!
+//
+
+#include "../../hlsl/resources_PP.hlsli"
+#include "../../hlsl/yrz.hlsli"
+using namespace Dayo;
+using namespace YRZ;
+
+[YRZFX]
+{
+    "fx": {
+        "cereal_class_version": 0,
+		"category" : "postprocess",
+        "controllers": [
+			{ "name":"C_ResolutionPlus", "controllerName":"(self)", "item":"解像度+", "type":"float" },
+			{ "name":"C_ResolutionMinus", "controllerName":"(self)", "item":"解像度-", "type":"float" },
+			{ "name":"C_IntensityPlus", "controllerName":"(self)", "item":"輝度+", "type":"float" },
+			{ "name":"C_IntensityMinus", "controllerName":"(self)", "item":"輝度-", "type":"float" },
+			{ "name":"C_BleedPlus", "controllerName":"(self)", "item":"にじみ+", "type":"float" },
+			{ "name":"C_BleedMinus", "controllerName":"(self)", "item":"にじみ-", "type":"float" },
+			{ "name":"C_WireShadow", "controllerName":"(self)", "item":"ワイヤー影", "type":"float" },
+			{ "name":"C_OFF", "controllerName":"(self)", "item":"off", "type":"float" }
+		],
+		"samplers":[
+			{"name":"samp", "addressU":"clamp", "addressV":"clamp"}
+		],
+        "passes": [
+			{
+				"name":"NTSC", "type":"postprocess", "pixelShader":"PS", "vertexShader":"VS"
+			}
+		]
+    }
+}
+[HLSL]
+
+
+//ダンパーワイヤーの影の濃さ
+static float acsX = C_WireShadow;
+
+//滲み具合
+static float acsY = C_BleedPlus - C_BleedMinus;
+
+//全体的な輝度
+static float acsZ = C_IntensityPlus - C_IntensityMinus;
+
+//縦方向の解像度(0の時、480とみなす)
+static float Rx = (1 + C_ResolutionPlus - C_ResolutionMinus) * 480;
+
+//Trでスイッチオンオフ(1で普通・0でオフ)
+static float acsTr = saturate(1-C_OFF);
+
+
+float noise(float x)
+{
+	return frac(sin(x*5132.629)*712.128);
+}
+
+//NTSC解像度に縮退したテクスチャをフェッチ
+//delta ... pを基準に実際のピクセルの中央はどけだけずれているか
+float4 fetchNTSC(float2 p, out float2 delta)
+{
+	const float2 res = float2(Rx * AspectRatio, Rx);
+	float2 xy = floor(p*res) / res;
+
+	delta = frac(p*res);
+
+	return ScreenTexture.Sample(samp, xy);
+}
+
+//輝度colのピクセルの左上からd だけずれた位置から観測される輝度
+float3 truRGB(float3 col, float2 d)
+{
+	const float2 centerR = { 0.25,0.5 };
+	const float2 centerG = { 0.5 ,0.5 };
+	const float2 centerB = { 0.75,0.5 };
+	const float2 w = { 1,1 };		//縦横方向の重み付け
+
+	float3 ret;
+
+	ret.r = length((centerR - d)*w);
+	ret.g = length((centerG - d)*w);
+	ret.b = length((centerB - d)*w);
+	
+	ret = exp(-ret*(2-2*acsY));
+	//ret *= smoothstep(0.0, 0.1, d.y);	//スキャンライン
+
+	ret *= col;
+	return ret;
+}
+
+//輝度が大きいほど大きくにじむ効果を考えて
+//畳み込み
+float4 Convo(float2 p)
+{
+	const float2 res = float2(Rx * AspectRatio, Rx);	//pが1変わると何仮想ピクセル分動くか
+	float4 col = 0;
+
+	
+	for (int y = -4; y <=4 ; y++) {
+		for (int x = -4; x <= 4; x++) {
+			float jitter = lerp(0,0,noise(Time + p.x + p.y*3));
+			float2 d = float2(x+jitter, y + jitter) / res;
+			
+			float2 delta;
+			float4 fetched = fetchNTSC(p + d/4, delta);
+
+			col.rgb += truRGB(fetched.rgb, delta);
+		}
+	}
+
+	col *= (0.025 + 0.025*acsZ);
+	return col;
+}
+
+#ifdef YRZ_PASS_NTSC
+struct VSO { float4 position:SV_POSITION; float2 uv:TEXCOORD; };
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD ) { VSO vso = (VSO)0; vso.position = pos;  vso.uv = uv; return vso; }
+float4 PS(VSO vso) : SV_TARGET
+{
+	float4 O = Convo(vso.uv);
+
+	//ヤツの影
+	if (abs(vso.uv.y-0.5) < (1.0 / Resolution.y))
+		O.rgb *= 1 - acsX;
+
+
+	float4 S = ScreenTexture[vso.position.xy];
+	O.a = S.a;
+	return lerp(O,S,C_OFF);
+}
+#endif

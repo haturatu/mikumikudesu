@@ -1,0 +1,145 @@
+[YRZFX]
+{
+    "fx": {
+        "cereal_class_version": 0,
+		"category" : "postprocess",
+        "controllers": [
+			{ "name": "C_ThresholdPlus","controllerName": "(self)","item": "閾値+","type": "float",
+				"desc":["Only bright areas will emit light","明るい所だけから光芒がでるようになります"] },
+			{ "name": "C_ThresholdMinus","controllerName": "(self)","item": "閾値-","type": "float",
+				"desc":["Light will come out even in dark places","暗い所からも光芒が出るようになります"] },
+			{ "name": "C_SizePlus","controllerName": "(self)","item": "サイズ+","type": "float",
+				"desc":["Increases the beam of light","光芒を大きくします"] },
+			{ "name": "C_SizeMinus","controllerName": "(self)","item": "サイズ-","type": "float",
+				"desc":["Reduce the beam of light","光芒を小さくします"] },
+			{ "name": "C_ValPlus","controllerName": "(self)","item": "明度+","type": "float",
+				"desc":["Brighten the light","光芒を明るくします"] },
+			{ "name": "C_ValMinus","controllerName": "(self)","item": "明度-","type": "float",
+				"desc":["Dim the light","光芒を暗くします"] },
+			{ "name": "C_Blades","controllerName": "(self)","item": "数","type": "float",
+				"slider":{"min":1, "max":6, "def":2, "int":true},
+				"desc":["Half the number of aperture blades","光芒の本数です"] },
+			{ "name": "C_Angle","controllerName": "(self)","item": "回転","type": "float",
+				"desc":["Rotating the beam of light","光芒を回転させます"] },
+		],
+		"textures":[
+			{ "name":"Glare", "filename":"filter.hdr"},
+			{ "name":"Image","format": "R16G16B16A16_FLOAT", "view":"RTV" },
+			{ "name":"Mask","format": "R8_UNORM", "view":"UAV" }
+		],
+		"samplers": [
+			{ "name":"ClampSamp", "filter":"LINEAR", "addressU":"CLAMP", "addressV":"CLAMP" },
+			{ "name":"BorderSamp", "filter":"LINEAR", "addressU":"BORDER", "addressV":"BORDER", "borderColor":"TRANSPARENT_BLACK" }
+		],
+        "passes": [
+			{ "name":"Setup", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS", "RTV":[ {"name":"Image"}]},
+			{ "name":"Clear", "type":"clearUAV", "target":"Mask"},
+			{ "name":"Mask", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS", "UAV":[{"name":"Mask"}]},
+			{ "name":"Combo", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS"}
+		]
+    }
+}
+[HLSL]
+#include "../../hlsl/resources_pp.hlsli"
+#include "../../hlsl/yrz.hlsli"
+using namespace Dayo;
+using namespace YRZ;
+
+static float Size = lerp(0, 0.25, 1+C_SizePlus-C_SizeMinus);	//画面の縦幅を1とした光芒の片側の長さ
+static float Threshold = max(1e-6,Exerp(1,100,C_ThresholdPlus-C_ThresholdMinus));
+static float Intensity = (C_ValPlus-C_ValMinus) <= -1 ? 0 : Exerp(1,100,C_ValPlus-C_ValMinus);
+static int Blades = C_Blades;
+
+struct VSO {
+	float4 pos : SV_POSITION;
+	float2 uv : TEXCOORD0;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv : TEXCOORD ) {
+	VSO o;
+	o.pos = pos;
+	o.uv = uv;
+	return o;
+}
+
+#ifdef YRZ_PASS_Setup
+//高輝度部分抽出
+float4 PS(VSO vso):SV_TARGET
+{
+	float4 Color = ScreenTexture.Sample(ClampSamp, vso.uv);
+
+	float g = 5;
+	float y = RGBtoY(Color.rgb);
+	Color.rgb *= step(Threshold,y);
+	Color.xyz = mul(Color.rgb, RGB2XYZ);	//XYZに変換
+	Color.a = 1;
+	return Color;
+}
+#endif
+
+//spにサンプル位置を指定するループを作るマクロ
+#define LOOP_HEAD\
+	const int N = max(1,Resolution.y*Size);\
+	const int M = Blades;\
+	float angle = C_Angle * 2 * PI;\
+		for (int j=0; j<M; j++) {\
+			float2 e = Rot2(float2(Size/N,0),angle + (float)j/M*PI) * float2(1,AspectRatio);\
+			for (int i = 0; i < N; i++) {\
+				float d = (i+0.5 - N/2.0);\
+				float2 sp = uv + d * e;\
+
+#define LOOP_TAIL }}
+
+
+
+#ifdef YRZ_PASS_Mask
+//マスク作成(高輝度部分が周辺にある所のみを畳み込みの対象にして高速化する)
+float4 PS(VSO vso) : SV_TARGET
+{
+	uint2 pix = vso.pos.xy;
+	float2 uv = vso.uv;
+	float3 cc = Image[pix].rgb;
+	if (any(cc)) {
+		LOOP_HEAD
+			uint2 dest = sp*Resolution;
+			if (all(dest == clamp(dest,0,Resolution-2))) {
+				Mask[dest] = 1;	//アンチエイリアシングも考えて周囲2x2ピクセルを畳み込み対象とする
+				Mask[dest+uint2(1,0)] = 1;
+				Mask[dest+uint2(1,1)] = 1;
+				Mask[dest+uint2(0,1)] = 1;
+				}
+		LOOP_TAIL
+	}
+	
+	discard;
+	return 0;
+}
+#endif
+
+#ifdef YRZ_PASS_Combo
+//畳み込みと合成
+float4 PS(VSO vso) : SV_TARGET
+{
+	uint2 pix = vso.pos.xy;
+	float2 uv = vso.uv;
+
+	float tw=0;
+	float3 tc=0;
+	if (Mask[pix].r) {
+		LOOP_HEAD	
+			//XYZ色空間で畳み込み
+			float3 p = Glare.SampleLevel(ClampSamp, float2((i+0.5) / N, 0.5), 0).xyz;
+			float3 c = Image.SampleLevel(ClampSamp, sp,0).xyz;
+			tc += c * p;
+			tw += p.y;	//明度で正規化するためのウェイト
+		LOOP_TAIL
+	}
+
+	float4 s = ScreenTexture[pix];
+	float3 lt = tw ? max(0,mul(tc/tw,XYZ2RGB)) * Intensity : 0;
+	return float4(s + lt, s.a);
+}
+#endif
+
+
+

@@ -1,0 +1,206 @@
+#include <resources.hlsli>
+#include <yrz.hlsli>
+
+[YRZFX]
+{
+    "fx": {
+        "cereal_class_version": 0,
+        "category": "render",
+        "samplers" : [{"name":"samp"}],
+        "passes" : [
+            {
+                "name":"Main", "type":"raytracing",
+				"raygenShader": "RayGeneration",
+                "missShader": ["Miss"],
+                "hitGroup": [ { "closestHit": "ClosestHit", "anyHit": "AnyHit" }],
+                "maxPayloadSize": 128, "maxAttributeSize": 8, "maxRecursionDepth": 1
+            }
+        ]
+    }
+}
+[HLSL]
+
+//コントローラ由来の変数とか
+static float SkyboxPhi = 0;
+
+/**************************************************************
+  構造体
+**************************************************************/
+//ペイロード。最後にどこにレイが当たったかの情報
+struct Payload {
+    uint imo;    //ヒットした物体番号(Dayo::Inaiで何にもヒットしてない)
+    uint iface;  //面番号
+    float2 st;  //重心座標(uvだとテクスチャ座標と間違うのでstと書いてある)
+    float t;    //最後にレイを撃った位置からヒットした場所までの距離
+    uint xi;    //サイコロ振り用
+};
+
+//PBRマテリアル
+struct Material {
+    float alpha;    //不透過度
+    float3 albedo;  //反射率
+};
+
+//レイがぶっかった表面についての情報
+struct Patch {
+    float3 pos;     //ワールド座標での位置
+    float3x3 TBN;   //接空間(tangent,binomal,normalの順)
+    Material m;     //マテリアル
+};
+
+/**************************************************************
+  ヘルパー関数・マクロ・定数
+**************************************************************/
+using YRZ::PI;  //πくらいは名前空間無しで使いたいよね
+
+//乱数生成器マクロ
+#define RNG (YRZ::Hash4(uint4(DispatchRaysIndex().xy, iSample, payload.xi++)))
+
+//画面上の点uvに対応するフィルム上の位置のワールド座標を得る
+float3 FilmPos(float2 uv)
+{
+    const float filmH = 0.3;  //フィルムの高さ0.3MMD = 24mm
+    float3 fp;  //ビュー座標系でのフィルム上の点の位置
+    fp.xy = (uv*2-1) * float2(-filmH * Dayo::AspectRatio, filmH);
+    fp.z = -filmH * Dayo::CameraFoV;
+    return mul((float3x3)Dayo::ViewMatrix,fp) + Dayo::CameraPosition;
+}
+
+//MMDの材質からPBR用材質を作る
+ Material GetMaterial(uint imo, uint iface, float2 uv, bool frontface)
+{
+    Material m = (Material)0;
+
+    //MMD材質を得る
+    int imat = Dayo::Faces[imo][iface];
+	Dayo::MMDMaterial mmd = Dayo::MMDMaterials[imo][imat];
+
+	//片面描画材質の裏面はα=0として処理する
+	if (!frontface && ((mmd.drawFlag&1) == 0))
+		return m;
+
+    //テクスチャの読み取りと材質モーフ適用
+	uint tidx = Dayo::TextureTable[imo];    //モデルに割り当てられたテクスチャ番号の先頭
+	float4 tex = 1;
+	if (mmd.tex >= 0) {
+		tex =  Dayo::Textures[tidx+mmd.tex].SampleLevel(samp, uv, 0);
+		tex.rgb = lerp(1, tex.rgb * mmd.textureMulValue.rgb + mmd.textureAddValue.rgb, mmd.textureMulValue.a + mmd.textureAddValue.a);
+	}
+
+    //マテリアルパラメータ決定
+    float4 o =  mmd.diffuse * tex;
+    m.alpha = o.a >= 0.98 ? 1 : o.a;    //α=0.98以上なら1扱いする(pmdではフラグとして使われていたらしいので)
+    m.albedo = YRZ::ToLinear(o.rgb);
+    return m;
+}
+
+//面情報を得る
+Patch GetPatch(uint imo, uint iface, float2 st, bool frontface = true)
+{
+    float3 p=0,n=0,t=0;
+    float2 uv=0;
+	float3 bary = float3((1-st.x-st.y), st.x, st.y);
+
+    for (int i=0; i<3; i++) {
+        uint iv = Dayo::IB[imo][iface*3+i];
+        Dayo::Vertex v = Dayo::VB[imo][iv];
+        p += v.position * bary[i];
+        n += v.normal * bary[i];
+        t += v.tangent * bary[i];
+        uv += v.uv * bary[i];
+    }
+    n = normalize(n);
+    t = normalize(t);
+
+    Patch P;
+    P.pos = p;
+    P.TBN = YRZ::ComputeTBN(n,t,true);
+    P.m = GetMaterial(imo, iface, uv, frontface);
+    return P;
+}
+
+//rdの方角の空模様を得る
+float3 FetchSkybox(float3 rd)
+{
+    float2 uv = float2(atan2(rd.z, rd.x), acos(rd.y)) / float2(-2 * PI, PI) - float2(0.25 + SkyboxPhi, 0);
+    return Dayo::Skybox.SampleLevel(samp,uv,0).rgb;
+}
+
+/**************************************************************
+  シェーダ
+**************************************************************/
+#ifdef YRZ_PASS_Main
+
+[shader("miss")]
+void Miss(inout Payload payload)
+{
+    payload.imo = Dayo::Inai;
+}
+
+[shader("closesthit")]
+void ClosestHit(inout Payload payload, Dayo::Attribute attr)
+{
+	payload.imo = InstanceID();
+	payload.iface = PrimitiveIndex();
+	payload.st = attr.st;
+	payload.t = RayTCurrent();
+}
+
+[shader("anyhit")]
+//AnyHitShaderは始点から近く→遠くの順に起動される保証はない
+void AnyHit(inout Payload payload, Dayo::Attribute attr)
+{
+	uint imo = InstanceID();
+	uint iface = PrimitiveIndex();
+    bool frontface = (HitKind() == HIT_KIND_TRIANGLE_FRONT_FACE);
+
+    Patch p = GetPatch(imo, iface, attr.st, frontface);
+    if (p.m.alpha < RNG.x)
+        IgnoreHit();
+}
+
+
+[shader("raygeneration")]
+void RayGeneration()
+{
+	Payload payload = (Payload)0;
+    uint2 pix = DispatchRaysIndex().xy;
+
+    //レイ生成
+    const int nRays = 8;    //レイの発射回数
+    float3 ro = Dayo::CameraPosition;
+    float3 rd = normalize(ro - FilmPos((pix+RNG.xy) / DispatchRaysDimensions().xy));
+    float3 beta = 1;    //パスのスループット…このパスを辿った光はどれだけの倍率でカメラまで届くのか？という割合
+    float3 Lt = 0;      //パスの寄与…パスを辿って光源→カメラまで実際に届いた光の輝度
+    bool directSky = false;
+
+    for (int i=0; i<nRays; i++) {
+        RayDesc ray;
+        ray.Origin = ro;
+        ray.Direction = rd;
+        ray.TMin = 1e-3;    //数値誤差対策に少し浮かせて発射するのがミソ
+        ray.TMax = 1e+5;    //10万MMDは本家の遠方クリッピング面までの距離と同じ
+        TraceRay(Dayo::TLAS, RAY_FLAG_NONE, 0xFF, 0,0,0, ray, payload);
+
+        if (payload.imo == Dayo::Inai) {
+            //何も当たらなかったので空を仰ぐ
+            Lt += FetchSkybox(rd) * beta;
+            directSky = (i==0);
+            break;
+        } else {
+            //当たったので反射先を追う
+            Patch P = GetPatch(payload.imo, payload.iface, payload.st);
+            float pdf;
+            ro = P.pos;
+            rd = YRZ::SampleCosWeightedHemisphere(P.TBN, RNG.xy, pdf);
+            float3 brdf = P.m.albedo / PI;
+            float geom = abs(dot(P.TBN[2],rd));
+            beta *= geom * brdf / pdf;
+        }
+    }
+
+    float4 cur = float4(Lt,directSky ? 0 : 1);
+    Dayo::RTOutput[pix] = lerp(Dayo::RTOutput[pix], cur, 1.0/(iSample+1));
+}
+
+#endif

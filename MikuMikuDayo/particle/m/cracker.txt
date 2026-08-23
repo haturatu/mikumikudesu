@@ -1,0 +1,17 @@
+_C rough:(self),roughness
+_C metallic:(self),metallic
+_C light:(self),発光
+_C normalScale:(self),シワシワ度
+
+Category:step(metallic,0.5)*2
+Roughness:rough
+Cutout : 0.5
+Light : light*10
+
+#元の材質の色はRGB=(1,0,0)にするのがいい(材質のHSVに対して+hue, *sat, *valueされるので)
+ColorConstUV : 1
+ColorConstOp : hsv
+
+_T NormalMap : CrackerNormal.jpg
+NormalScale : normalScale*10
+NormalLoops : 0.05

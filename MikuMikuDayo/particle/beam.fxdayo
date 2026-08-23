@@ -1,0 +1,418 @@
+#include <resources_PP.hlsli>
+#include <yrz.hlsli>
+using namespace Dayo;
+using namespace YRZ;
+
+[YRZFX]
+local ParticleCount = 100;
+{
+    "fx": {
+        "cereal_class_version": 0,
+		"category" : "postprocess",
+        "controllers": [
+			{ "name":"CenterMatrix", "controllerName":"(self)", "item":"センター", "type":"float4x4" },
+			{ "name":"AimBone", "controllerName":"(self)", "item":"狙い", "type":"float3",
+				"desc":["the beam is directed at the position of the aim bone.","狙い有効モーフが0より大きい時、ビームが狙いボーンの位置を向きます"] },
+			{ "name":"Aim", "controllerName":"(self)", "item":"狙い有効", "type":"float",
+				"desc":["the beam is directed at the position of the aim bone.","ビームが狙いボーンの位置を向きます"] },
+			{ "name":"_Amount", "controllerName":"(self)", "item":"本数", "type":"float", "slider":{"int":true, "def":8, "min":1, "max":100 } },
+			{ "name":"_Length", "controllerName":"(self)", "item":"長さ", "type":"float" },
+			{ "name":"_Thickness", "controllerName":"(self)", "item":"根元太さ", "type":"float" },
+			{ "name":"_ThicknessEdge", "controllerName":"(self)", "item":"先端太さ", "type":"float" },
+			{ "name":"Fade", "controllerName":"(self)", "item":"根元フェード", "type":"float",
+				"desc":["Fade out the roots","根元部分をフェードアウトさせます"] },
+			{ "name":"_FadeEdge", "controllerName":"(self)", "item":"先端フェード", "type":"float",
+				"desc":["Fade out the tips","先端部分をフェードアウトさせます"] },
+			{ "name":"_Interval", "controllerName":"(self)", "item":"間隔", "type":"float" },
+			{ "name":"ZigZagDir", "controllerName":"(self)", "item":"ジグザグ向き", "type":"float",
+				"desc":["The beam direction alternates between odd-numbered and even-numbered beams.","ビームの向く方向が奇数番目のビームと偶数番目のビームで互い違いになります"] },
+			{ "name":"Circular", "controllerName":"(self)", "item":"円弧配置", "type":"float",
+				"desc":["The beam will be positioned on an arc instead of a straight line. The angle of the arc will be the morph value * 360 degrees.","ビームが直線上でなく円弧上に配置されるようになります。円弧の角度はモーフの値*360度になります"] },
+			{ "name":"_ThetaMean", "controllerName":"(self)", "item":"向きX", "type":"float" },
+			{ "name":"_ThetaRange", "controllerName":"(self)", "item":"ゆれ幅X", "type":"float",
+				"desc":["Swing at the cycle specified by SwingBPM","ゆれBPMで指定される周期でゆれるようになります"] },
+			{ "name":"_PhiMean", "controllerName":"(self)", "item":"向きY", "type":"float" },
+			{ "name":"_PhiRange", "controllerName":"(self)", "item":"ゆれ幅Y", "type":"float",
+				"desc":["Swing at the cycle specified by SwingBPM","ゆれBPMで指定される周期でゆれるようになります"] },
+			{ "name":"Wave", "controllerName":"(self)", "item":"ゆれ波", "type":"float",
+				"desc":["This creates a phase difference in the vibration between beams. The entire beam sequence will have a period of morph value * 10.","ビームの間でゆれに位相差を持たせます。ビーム列全体でモーフの値*10周期になります"]  },
+			{ "name":"_Freq", "controllerName":"(self)", "item":"ゆれBPM", "type":"float", "slider":{"max":480, "def":120},
+				"desc":["Specify the swinging frequency in BPM.","ゆれの周波数をBPMで指定します"]  },
+			{ "name":"SwingPhase", "controllerName":"(self)", "item":"ゆれ位相", "type":"float",
+				"desc":["This changes the starting angle of the direction shake. Use this when you want to align the movement of a person with the direction of a spotlight.","方向ゆれの開始角度をずらします。人物の動きとスポットライトの向きを合わせたい時などにどうぞ"]  },
+			{ "name":"NoriNori", "controllerName":"(self)", "item":"ノリノリ度", "type":"float",
+				"desc":["The swings get funny.","ゆれがノリノリになります"]  },
+			{ "name":"_H", "controllerName":"(self)", "item":"H", "type":"float",
+				"desc":["hue","色相"]  },
+			{ "name":"_S", "controllerName":"(self)", "item":"S", "type":"float",
+				"desc":["saturation","彩度"]  },
+			{ "name":"_V", "controllerName":"(self)", "item":"V", "type":"float",
+				"desc":["value","明度"]  },
+			{ "name":"_Intensity", "controllerName":"(self)", "item":"明るく", "type":"float" },
+			{ "name":"_SoftLight", "controllerName":"(self)", "item":"やわらか", "type":"float" },
+			{ "name":"Dazzle", "controllerName":"(self)", "item":"まぶしく", "type":"float",
+				"desc":["Increases brightness as the beam approaches your line of sight","ビームが視線の方に飛んでくる時に輝度を上げます"]  },
+			{ "name":"HRandom", "controllerName":"(self)", "item":"Hランダム", "type":"float",
+				"desc":["Randomly changes the hue. Updated at the cycle specified by the strobeBPM","色相をランダムに変更します。ストロボBPMで指定される周期で更新されます"]  },
+			{ "name":"Strobe", "controllerName":"(self)", "item":"ストロボ", "type":"float",
+				"desc":["The brightness, direction, and hue will change periodically.","周期的に輝度・向き・色相が変化するようになります"]  },
+			{ "name":"_StrobeFreq", "controllerName":"(self)", "item":"ストロボBPM", "type":"float", "slider":{"max":480, "def":120},
+				"desc":["Specifies the time interval for the strobe","ストロボの時間間隔を指定します"]  },
+			{ "name":"StrobePhase", "controllerName":"(self)", "item":"ストロボ位相", "type":"float",
+				"desc":["Specifies the offset for the strobe light. This can be used to synchronize the strobe light with the character's movements or the beat of the music.","ストロボを炊く時間に対するオフセットを指定します。キャラクターの動きや音楽のビートとストロボを炊くタイミングを合わせるのに使えます"]  },
+			{ "name":"Textured", "controllerName":"(self)", "item":"テクスチャ", "type":"float" },
+			{ "name":"C_Collision", "controllerName":"(self)", "item":"当たり判定", "type":"float",
+				"desc":["The beam will be shielded by the object. You can specify how far from the tip to start applying the collision detection.","ビームが物体により遮蔽されるようになります。先端からどれだけの位置から当たり判定を付け始めるかを指定できます"] },
+			{ "name":"C_ID", "controllerName":"(self)", "type":"int" },
+		],
+		"samplers":[
+			{ "name":"samp", "addressU":"clamp", "addressV":"clamp" }
+		],
+		"buffers":[
+			{ "name":"IBuf", "type":"uint", "size":{"absolute":true, "width":ParticleCount*6}, "view":"UAV" },
+		],
+		"textures":[
+			{ "name":"DistanceTex", "format":"R32_FLOAT", "size":{"absolute":true, "width":ParticleCount, "height":1}, "view":"UAV" },
+		],
+        "passes": [
+			{ "name":"Copy", "type":"postprocess", "pixelShader":"PS", "vertexShader":"VS" },
+			{
+				"name":"Computer", "type":"compute", "computeShader":"CS", "UAV":[{"name":"IBuf"}],
+				"outputSize":{"absolute":true, "dimension":1, "width":ParticleCount, "conditions":["OnStart"]}
+			},
+			{
+				//測距
+				"name":"Distance", "type":"raytracing",
+				"raygenShader":"RayGeneration",
+				"missShader":["Miss"],
+				"hitGroup":[{"closestHit": "ClosestHit", "anyHit": "AnyHit"}],
+				"maxPayloadSize": 4, "maxRecursionDepth": 1,
+				"UAV":[{"name":"DistanceTex"}]
+			},
+			{
+				"name":"Main", "type":"rasterizer", "pixelShader":"PS", "vertexShader":"VS",
+                "rasterizerDesc": { "cullMode":"none" },
+                "blendDesc": {
+                    "renderTarget0": { "blendEnable":true, "srcBlend":"one", "destBlend":"one", "blendOp":"add",
+                        "srcBlendAlpha":"one", "destBlendAlpha":"inv_src_alpha", "blendOpAlpha":"add" }
+				},
+				"rasterModelTarget":"buffer", "rasterIB":"IBuf"
+			}
+		]
+    }
+}
+[HLSL]
+
+static int Amount = clamp(_Amount*4,4,400);	//頂点数
+static float Length = max(0.1,_Length * 1000);
+static float Thickness = max(_Thickness * 10, 0.1);
+static float ThicknessEdge = Thickness + Length * tan(_ThicknessEdge * 0.25 * PI);
+static float FadeEdge = 1-_FadeEdge;
+static float Interval = _Interval * 100;
+static float ThetaMean = -(_ThetaMean - 0.5);
+static float ThetaRange = _ThetaRange * 0.5;
+static float PhiMean = -(_PhiMean - 0.5);
+static float PhiRange = _PhiRange * 0.5;
+static float Freq = _Freq / 60;
+static float3 BeamColor = HSVtoRGB(float3(_H,min(0.999,_S),_V)) * exp2(_Intensity*10);
+static float SoftLight = _SoftLight * 10;
+static float StrobeFreq = _StrobeFreq /30; //ゆれ半周期でストロボ1回のタイミング
+static float4x4 InvCenterMatrix = InverseRTMatrix(CenterMatrix);
+
+//ポストプロセス前の画像をポストプロセス後の画像としてそのままパスする
+#ifdef YRZ_PASS_Copy
+struct VSO { float4 position:SV_POSITION; float2 uv:TEXCOORD; };
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD ) { VSO vso = (VSO)0; vso.position = pos;  vso.uv = uv; return vso; }
+float4 PS(VSO vso) : SV_TARGET
+{
+	return ScreenTexture.Sample(samp, vso.uv);
+}
+#endif
+
+
+//パーティクルのメッシュ全体を出力するコンピュートシェーダ
+#ifdef YRZ_PASS_Computer
+YRZ_NUMTHREADS
+void CS( uint3 id : SV_DispatchThreadID )
+{
+	uint i = id.x;
+
+	//頂点インデクス
+	//MMDモデルはTRIANGLELIST。3つの頂点インデクスで1つの三角形が定義される
+	uint p = i*6;
+	uint q = i*4;
+	IBuf[p] = q;
+	IBuf[p+1] = q+1;
+	IBuf[p+2] = q+3;
+	IBuf[p+3] = q+1;
+	IBuf[p+4] = q+2;
+	IBuf[p+5] = q+3;
+}
+#endif
+
+float dstep01(float a, float b, float x)
+{
+    return smoothstep(0,a,x) * smoothstep(1,b,x);
+}
+
+float NoriSine(float t)
+{
+    return lerp( sin(t), (sin(t) + sin(3*t)/3) * 0.75 ,NoriNori);
+}
+
+
+//注視してる点を入れるとビームのU方向・V方向・法線を返す
+float3x3 ComputeTBN(float3 dir, float3 pos)
+{
+    float3 B = dir;
+    float3 v = normalize(pos - CameraPosition);
+    float3 T = normalize(cross(v, B));
+    float3 N = cross(T,B);
+    return float3x3(T,B,N);
+}
+
+//直線配置
+float3 ResolveStraight(int iBeam, int BeamCount)
+{  
+    float3 pos = 0;
+    float o = iBeam - (BeamCount - 1.0) / 2.0;
+
+    pos.x = o * Interval;
+    //pos.z = iBeam % 2 * (Interval * ZigZag * 2);
+    return pos;
+}
+
+//円弧配置
+float3 ResolveCircle(int iBeam, int BeamCount)
+{
+    //XZ平面に並べる
+    float o = iBeam - (BeamCount - 1) / 2.0;
+    float theta = BeamCount > 1 ? 2 * PI * Circular * o / (BeamCount) : 0;
+    float s,c;
+    sincos(theta, s,c);
+
+    float r = Interval * BeamCount / PI * 0.5 / max(0.001,Circular);
+    float3 P = r * float3(s,0,c-1);
+    return P;
+}
+
+//ビームの配置位置の計算
+float3 ResolvePosition(int iBeam, int BeamCount)
+{
+    if (Circular < 0.001)
+        return ResolveStraight(iBeam, BeamCount);
+    else
+        return ResolveCircle(iBeam, BeamCount);
+}
+
+
+//ビームの発射方向を計算
+float3 ResolveDirection(int iBeam, int BeamCount)
+{
+    float3 dirAim,dir;
+
+    //狙いボーンの方向
+    float3 pos = ResolvePosition(iBeam, BeamCount);
+    float3 aim = mul(float4(AimBone,1),InvCenterMatrix);
+    float3 ap = aim-pos;
+    dirAim =  normalize(ap);
+
+    float3 T,B,N;   //ビーム空間の基底
+    //Tは隣り合っているビーム砲を結んだ線、BはY軸、Nは角度0の時のビームの発射方向
+    //ビーム砲は必ずY=0平面上に並ぶので、TはXZ平面と平行なベクトルとなり、B=Y軸扱いで問題ない
+    if (BeamCount <= 1) {
+        T = float3(1,0,0);
+    } else if (BeamCount == 2 && Circular > 0.999){
+        if (iBeam == 0)
+            T = float3(0,0,1);
+        else
+            T = float3(0,0,-1);
+    } else {
+        T = ResolvePosition(iBeam+1, BeamCount) - ResolvePosition(iBeam-1, BeamCount);   //Tangent
+    }
+    T = normalize(T);
+
+    B = float3(0,1,0);   //従法線
+
+    float strobeTime = Strobe > 0.001 ? floor(Time*StrobeFreq+StrobePhase) : Time;
+    float tt = (Freq * strobeTime + SwingPhase)* 2 * PI + (float)iBeam / max(BeamCount-1,1) * PI * 20 * Wave;
+    float sinPhase = NoriSine(tt);
+    float cosPhase = NoriSine(0.5*PI-tt);
+    float PR = PhiRange,TR = ThetaRange;
+    if (iBeam % 2) {
+        PR = lerp(PR,-PR,ZigZagDir);
+        TR = lerp(TR,-TR,ZigZagDir);
+    }
+
+    float phi = (PhiMean + PR * cosPhase ) * 2 * PI;    //向きY
+    float theta = (ThetaMean + TR * sinPhase) * 2 * PI; //向きX
+    N = normalize(cross(T,B));
+
+    dir = RotAxis(N, B, theta);
+    dir = RotAxis(dir, T, -phi);
+
+	if (Aim)
+	    return normalize(lerp(dir,dirAim, Aim));
+	else
+		return dir;
+}
+//ビームの色の計算
+float3 ResolveColor(int iBeam, int BeamCount)
+{
+    float t = Time*StrobeFreq+StrobePhase;
+    float hueShift = (Hash3(iBeam+floor(t)*100)-0.5) * HRandom;
+    float s = Strobe ? pow(abs(sin(t * PI)),Strobe*10) : 1;
+    return HSVtoRGB(float3(hueShift + _H, min(0.999,_S), _V)) * exp2(_Intensity*10) * s;
+}
+
+
+//根元から遮られずに飛べる距離を計算するパス
+#ifdef YRZ_PASS_Distance
+
+struct Payload {
+	float t;
+};
+
+[shader("raygeneration")]
+void RayGeneration()
+{
+	int iBeam = DispatchRaysIndex().x;
+	int BeamCount = Amount / 4;
+
+	if (iBeam >= BeamCount) {
+		DistanceTex[uint2(iBeam,0)] = 0;
+		return;
+	}
+
+	Payload payload;
+	payload.t = Length;
+	[branch]
+	if (C_Collision) {
+		float3 ro = Transform(ResolvePosition(iBeam,BeamCount), CenterMatrix);
+		float3 rd = Rotate(ResolveDirection(iBeam,BeamCount), CenterMatrix);
+
+		RayDesc ray;
+		ray.TMin = Length * saturate(1-C_Collision);
+		ray.TMax = Length;
+		ray.Origin = ro;
+		ray.Direction = rd;
+		TraceRay(TLAS, RAY_FLAG_NONE, 0xFF, 0,0,0, ray, payload);
+	}
+
+	DistanceTex[uint2(iBeam,0)] = payload.t;
+}
+
+[shader("closesthit")]
+void ClosestHit(inout Payload payload, Attribute attr)
+{
+	payload.t = RayTCurrent();
+}
+
+[shader("anyhit")]
+void AnyHit(inout Payload payload, Attribute attr)
+{
+
+}
+
+
+[shader("miss")]
+void Miss(inout Payload payload)
+{
+
+}
+
+
+#endif
+
+
+//パーティクルを書き込むパス
+#ifdef YRZ_PASS_Main
+
+struct VS_OUTPUT {
+    float4 Pos      : SV_POSITION;
+    float3 Normal   : TEXCOORD0;
+    float3 Eye      : TEXCOORD1;
+    float2 Tex      : TEXCOORD2;
+    float3 Tangent  : TEXCOORD3;
+    float3 Binormal : TEXCOORD4;
+    float3 BeamPos : TEXCOORD5;
+    float3 Color : TEXCOORD6;
+    float3 Direction : TEXCOORD7;
+	float Length : TEXCOORD8;
+};
+
+
+VS_OUTPUT VS(uint index:SV_VertexID )
+{
+	float4 Pos = float4(-1e+6,-1e+6,-1e+6,1);
+    VS_OUTPUT Out = (VS_OUTPUT)0;
+    if (index < Amount) {
+        int iBeam = index / 4;      //何本目のビームか
+        int iVertex = index % 4;    //ビーム内の何個目の頂点か
+        static int BeamCount = Amount / 4; //表示対象のビームの総数
+        float3 dPos = ResolvePosition(iBeam,BeamCount);
+        Out.BeamPos = mul(float4(dPos,1),CenterMatrix);
+        Pos.xyz = Out.BeamPos;
+        Pos.w = 1;
+		const float2 UVs[4] = { {0,0}, {1,0}, {1,1}, {0,1} };
+        float2 uv = UVs[iVertex];
+        float3 dir = mul(ResolveDirection(iBeam,BeamCount),(float3x3)CenterMatrix);
+		float3x3 TBN = ::ComputeTBN(dir, Out.BeamPos + dir * Length * 0.5);
+		#ifdef NO_BARYCENTRICS
+			Out.Length = Length;
+		#else
+			Out.Length = max(DistanceTex[uint2(iBeam,0)].r,1e-3);
+		#endif
+		Pos.xyz += TBN[0] * (uv.x-0.5) * lerp(Thickness, ThicknessEdge, uv.y);
+		Pos.xyz += TBN[1] * uv.y * Out.Length;
+		Out.Pos = mul( Pos, ViewProjectionMatrix );
+		Out.Eye = CameraPosition - Pos.xyz;
+
+        Out.Direction = dir;
+        Out.Normal = TBN[2];
+        Out.Tangent = TBN[0];
+        Out.Binormal = TBN[1];
+        Out.Tex = uv;
+        Out.Color = ResolveColor(iBeam, BeamCount);
+    } else {
+        Out.Pos = mul( Pos, ViewProjectionMatrix );
+    }
+    return Out;
+}
+
+float4 PS(VS_OUTPUT vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace) : SV_TARGET
+{
+	//Zテスト
+	uint2 p = vso.Pos.xy;
+	float z = NormalDepth[p].w;
+	float pz = vso.Pos.w;
+	if (pz > z && z!=0)
+		discard;
+
+    float3x3 TBN = float3x3(vso.Tangent, vso.Binormal, vso.Normal);
+    float4 Color;
+    float3 pos = CameraPosition - vso.Eye;
+    float3 loc = mul(TBN, pos-vso.BeamPos);  //板ポリ上の座標を出す
+    float2 uv;
+    uv.y = loc.y/Length;
+
+	//if (uv.y > 1)
+	//	discard;
+
+    uv.x = saturate(loc.x/lerp(Thickness,ThicknessEdge,uv.y)+0.5);
+
+	int tidx = TextureTable[C_ID];
+    float3 texel = lerp(1, ToLinear(Textures[tidx].Sample(samp, uv.yx).rgb), Textured);
+    Color.rgb = vso.Color * pow(max(sin(uv.x*PI),1e-3),SoftLight) * dstep01(Fade,FadeEdge,uv.y) * texel;
+
+    //目に入ったらまぶしい補正
+    float cosT = dot(normalize(vso.Eye),vso.Direction);
+	if (cosT > 0)
+	    Color.rgb *= 1 + pow(cosT,Dazzle*500) * (Dazzle*500);
+
+    Color.a = 1;
+    return Color;
+
+}
+
+#endif

@@ -1,0 +1,174 @@
+#Subayai用、材質注釈テンプレート
+#兼、各パラメータについての説明書
+
+#####################################################################
+# 1. パラメータ名の定義
+#
+# "型.要素数 : 名前" で材質注釈変数を定義する
+# 変数の型はi(32bit整数)またはf(単精度浮動小数) 要素数は1～4
+#####################################################################
+
+#マテリアルのカテゴリ
+i.1 : Category
+_E Category : default=0, glass=1, metal=2, sss=3, blackbody=4
+
+#_E で列挙子を定義できる。材質注釈内で「Category : default」と書くと「Category : 0」と書いたのと同じ扱いになる
+#default鏡面反射面の下に拡散反射面を持つ。透過を起こさない
+#glass 鏡面反射面のみを持つ。拡散反射は起こさず透過する。透過の実装はレイトレにより近似的に行う
+#metal 鏡面反射面のみを持つ。透過も拡散反射も起こさない
+#sss 表面下散乱を起こす。Catパラメータに従って側方に光がにじむ
+#blackbody 反射・透過を起こさないので照明の影響を受けない (単純にEmissionだけで見た目が決まる)
+
+#発光分
+f.3 : Emission	
+f.1 : Light		#albedoのLight倍がEmissionに加算される(BDPTとは異なり、周囲を照明しません)
+
+#BxDFを定義するための情報
+f.1 : Roughness		#鏡面反射面の粗さ。0～1
+f.1 : Anisotropy	#粗さの方向による偏り。-1～1。0の時は等方性、1の時はTangent方向 -1の時はBinormal方向に偏る。Conty&Kulla[2017]参照
+f.2 : IOR		#屈折率。xyの2要素。実際の屈折率は x + y/λ[nm]²で算出され、yは分散を表す。CauchyのABパラメータに相当
+f.4 : Cat		#カテゴリ固有パラメータ。現在の所、Subayaiではsssのみ対応
+#Category == sssの時 xyzでRGB各チャンネルについての光の平均自由行程、wでスケール。
+
+#RampLUTを参照する際の縦軸(uv座標のv)
+f.1 : Ramp	#Ramp=0でLambertianと同値になるようにすると使い勝手が良いかも
+
+#IridescenceLUTを参照する際の縦軸(uv座標のv)
+f.1 : Iridescence	#構造色の膜厚など色彩の変化のためのパラメータ
+
+#色と透過度の調整用パラメータ
+f.1 : Alpha		#α値へ乗算
+f.1 : Cutout		#0で無効。α値がこの値未満の場合は0、それ以上の場合は1としてレンダリングする
+f.4 : ColorConst	#Albedoを調整するための定数
+i.1 : ColorConstOp	#↑をどのように用いるか
+_E ColorConstOp : default, add, mul, pow, hsv
+# default : 	ColorConst.xyzに設定されたrgb値1色で置き換える
+# add : 	ColorConst.xyzに設定されたrgb値と加算する
+# mul : 	ColorConst.xyzに設定されたrgb値と乗算する
+# pow : 	ColorConst.xyzに設定された係数乗する
+# hsv : 	xで色相の変化(加算)、yで彩度の変化(乗算)、zで明度の変化(乗算)
+# 共通:		wで影響度(0の時影響無し、1の時以上の操作を行った結果をそのまま採用する)
+i.1 : ColorConstUV	#1～4の時、追加UV座標をColorConstにセットする
+
+
+#MMD材質からの変換についての注釈用
+i.1 : EnableSphereMap	#0でスフィアマップ無効、1で有効
+i.1 : AlbedoEstimation	#Albedoの推定法、以下詳述
+_E AlbedoEstimation : mmd, diffuse, ambient
+#mmd : MMDの標準状態に近い色にする、拡散色*154/255 + 環境色で算出
+#diffuse : MMD材質の拡散色をAlbedoとする、
+#ambient : MMD材質の環境色をAlbedoとする
+
+#光源・影についての調整用
+f.3 : LightVisibility	#直接光の影響度 1がデフォルト。0で直接光から一切照明されない
+f.3 : SkyVisibility	#環境光(skybox)の影響度
+f.3 : ShadowVisibility	#シャドウマップの影響度 0で影の影響を受けない
+f.3 : AOVisibility	#AOの影響度
+f.1 : ShadowCaster	#1:影を落とす 0:影を落とさない (材質のα=0.5未満の場合はいずれにしても影を落とさない。現在の実装では0か1のみ有効)
+i.4 : LightBlockMask	#何番のライトからの光は受けないようにするかというビットマスク。0でライトを受ける、1でライトを受けない。1要素で32個のライトを識別できる。2要素目以降は将来への拡張用。
+
+#テクスチャマッピングのための情報
+f.1 : AutoNormal	#モデルに設定されたテクスチャの明度勾配に従う法線マップを自動生成する
+                        #値を大きくするほど凸凹になる。1より大きくしてよい
+f.1 : TextureLoops	#以下の**Loops変数に対する倍率(VolumeLoopsには適用されません)
+
+f.1 : NormalLoops	#法線マップがモデルに設定されたUV1周あたり何周するか
+f.1 : NormalScale	#法線マップの影響度の強さ(デコボコ具合) 1より大きくしてもよい
+i.1 : NormalUV		#法線のUVをどこから持ってくるか 0:普通のuv座標, 1～4:追加uv座標1～4のxy要素
+
+f.1 : RoughnessLoops	
+f.1 : RoughnessScale	#roughnessマップの影響度。0～1で指定する
+i.1 : RoughnessUV
+
+f.1 : AlbedoLoops	
+f.1 : AlbedoScale	#元の色とのブレンド比。0～1で指定する
+i.1 : AlbedoUV
+
+f.1 : AlphaLoops	
+f.1 : AlphaScale	#αマップの影響度の強さ。0～1で指定する
+i.1 : AlphaUV
+
+f.1 : IridescenceLoops
+f.1 : IridescenceScale
+i.1 : IridescenceUV
+
+f.1 : AOLoops		#AO値に乗算するマップ
+f.1 : AOScale
+i.1 : AOUV
+
+#光源(subalight)のための情報
+f.1 : IESGamma		#IESのγ値。リニアに変更するために書いてある値の何乗すればよいか？デフォルトは1.0(リニア)
+i.1 : Equirectangular	#配光特性テクスチャがskyboxHDRIのような正距円筒図法に基づいた記述のされ方をしているなら1
+
+#####################################################################
+# 2.使用可能なテクスチャマップの指定
+#
+#####################################################################
+
+_T0m : NormalMap	#物体の法線方向を摂動させる
+_T1m : RoughnessMap	#Roughnessに乗算される
+_T2m : AlbedoMap	#Albedo(基本色)を置換する
+_T3m : AlphaMap		#α値と乗算する
+_T4m : AOMap		#AO項に乗算する
+_T5m : RampLUT		#ランプテクスチャ(拡散反射BSDFのルックアップテーブル)
+_T6m : IridescenceLUT	#構造色テクスチャ(フレネル項のルックアップテーブル)
+_T7m : IESMap		#ライトの配光特性(光源モデル専用)
+_T8m : RampZH		#ランプテクスチャを帯域球面調和関数で分解した物(l=2まで)
+_T9m : IridescenceMap	#構造色の厚さマップ。Iridescnce値に乗算する
+
+
+#####################################################################
+# 3.各パラメータのデフォルト値の指定
+#
+#####################################################################
+
+Roughness : 0.5
+IOR : 1.5,0
+TextureLoops : 1
+NormalLoops : 1
+NormalScale : 1
+RoughnessLoops : 1
+RoughnessScale : 1
+AlbedoLoops : 1
+AlbedoScale : 1
+AlphaLoops : 1
+AlphaScale : 1
+AOLoops : 1
+AOScale : 1
+Alpha : 1
+IridescenceLoops : 1
+IridescenceScale : 1
+
+AlbedoEstimation : diffuse
+EnableSphereMap : 1
+
+LightVisibility : 1,1,1
+SkyVisibility : 1,1,1
+ShadowVisibility : 1,1,1
+AOVisibility : 1,1,1
+ShadowCaster : 1
+
+IESGamma : 1
+
+
+#余談
+#デフォルトではAlbedoEstimationはdiffuse
+#mmdを指定すると確かに本家に近い見た目が得られるが白っぽくなりやすい
+#また、基本色に関するパラメータが2つある事になるので1からモデルを作る事を考えるとdiffuseの方が直感的であり
+#blenderなど最近のDCCツールとの相性も良いと考えられるため
+
+
+
+#####################################################################
+#4.おすすめ設定の指定
+#
+# 材質名に右辺のキーワードを含む場合、左辺よりプレフィックス_Rを取り除いたファイルが適用される
+#
+#####################################################################
+
+_R Subayai/m/eye.txt : 白目,eye
+_R Subayai/m/glass.txt : ガラス,氷,glass,ice
+_R Subayai/m/metal.txt : 金,鉄,metal,iron,gold
+_R Subayai/m/hair.txt : 髪,hair
+_R Subayai/m/skin.txt : 肌,skin
+_R Subayai/m/cloth.txt : 服,cloth

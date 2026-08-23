@@ -1,0 +1,2 @@
+Category : 2
+Roughness : 0.5

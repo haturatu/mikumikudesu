@@ -1,0 +1,14 @@
+Category : 3
+Roughness : 0.35
+IOR : 1.42,0
+Cat : 1.0,0.1,0.1,0.03
+NormalScale : 1
+NormalLoops : 10
+RoughnessScale : 1
+RoughnessLoops : 10
+AlbedoScale : 1
+AlbedoLoops : 10
+
+_TNormalMap : "t/skin.png"
+_TRoughnessMap : "t/leather/leather_red_02_rough_1k.jpg"
+#_TAlbedoMap : "t/skin/leather_red_02_ao_1k.jpg"

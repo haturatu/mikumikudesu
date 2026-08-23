@@ -1,0 +1,158 @@
+[YRZFX]
+{
+    "fx": {
+        "cereal_class_version": 0,
+		"category" : "postprocess",
+        "controllers": [
+			{"name":"C_Sharpness", "controllerName":"(self)", "item":"シャープ", "type":"float",
+				"desc":["Clarify the shape of the lens flare","レンズフレアの形をはっきりさせます"] },
+			{"name": "C_Threshold","controllerName": "(self)","item": "閾値","type": "float",
+				"desc":["Lens flare will only come from bright areas","明るい所だけからレンズフレアがでるようにします"]},
+			{"name": "C_Range","controllerName": "(self)","item": "範囲絞り","type": "float", "slider":{"def":0.5},
+				"desc":["Narrows the width at which lens flares appear","レンズフレアの現れる横幅を狭くします"] },
+			{"name": "C_Hue","controllerName": "(self)","item": "色相","type": "float", "slider":{"def":0.6}},
+			{"name": "C_Sat","controllerName": "(self)","item": "彩度","type": "float", "slider":{"def":0.8}},
+			{"name": "C_ValPlus","controllerName": "(self)","item": "明度+","type": "float"},
+			{"name": "C_ValMinus","controllerName": "(self)","item": "明度-","type": "float"},
+		],
+		"textures":[
+			{ "name":"Image","format": "R16G16B16A16_FLOAT", "view":"RTV", "mipmap":true },
+			{ "name":"Blur","format": "R16G16B16A16_FLOAT", "view":"RTV" }
+		],
+		"samplers": [
+			{ "name":"ClampSamp", "filter":"LINEAR", "addressU":"CLAMP", "addressV":"CLAMP" },
+			{ "name":"BorderSamp", "filter":"LINEAR", "addressU":"BORDER", "addressV":"BORDER", "borderColor":"TRANSPARENT_BLACK" }
+		],
+        "passes": [
+			{ "name":"Setup", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS", "RTV":[ {"name":"Image"}]},
+			{ "name":"Mipmap", "type":"mipmapgen", "target":"Image" },
+			{ "name":"Stamp", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS", "RTV":[ {"name":"Blur"}]},
+			{ "name":"Blur", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS", "RTV":[ {"name":"Image"}]},
+			{ "name":"Compo", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS"}
+		]
+    }
+}
+[HLSL]
+#include "../../hlsl/resources_pp.hlsli"
+#include "../../hlsl/yrz.hlsli"
+using namespace Dayo;
+using namespace YRZ;
+
+static float acsSi = 10;
+static float3 ARCoatedReflectance = HSVtoRGB(float3(C_Hue,C_Sat,1)) * Exerp(0.01,1,C_ValPlus-C_ValMinus); //float3(0.005,0.01,0.02);
+
+static float Smoothness = saturate(1-C_Sharpness);
+static float Threshold = max(1e-6,Exerp(0.01,100,C_Threshold));	//Ver.4.20で最低1e-6とした。smoothstepが稀にバグる事があったので
+static float Range = Exerp(4,256,C_Range);
+
+struct VSO {
+	float4 pos : SV_POSITION;
+	float2 uv : TEXCOORD0;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv : TEXCOORD ) {
+	VSO o;
+	o.pos = pos;
+	o.uv = uv;
+	return o;
+}
+
+#ifdef YRZ_PASS_Setup
+//輝点を引き延ばした状態を記録
+float4 PS(VSO vso):SV_TARGET
+{
+	float2 uv = vso.uv;
+	float3 tc=0;
+	float2 e = float2(1.0/Resolution.x,0) * (Smoothness+0.25);
+	float N = 200.0 * Resolution.x / 1920;
+	float o = N*0.5+0.5;
+	[loop]
+	for (int i=0; i<N; i++) {
+		float d = i-o;
+		float3 c =  ScreenTexture.Sample(BorderSamp, uv + e * d);
+		float lum = RGBtoY(c);
+		c = Threshold ? c * smoothstep(Threshold*0.9, Threshold, lum) : c;
+		tc += c;
+	}
+	return float4(tc/N, 1);
+}
+#endif
+
+#ifdef YRZ_PASS_Stamp
+float3 ViewRaySaySay(float2 Tex)
+{
+	float2 uv = (Tex-0.5)*2;
+	return normalize(float3(uv.x,-uv.y,1) / ProjectionMatrix._11_22_33);
+}
+
+//ぼかしというかスタンプ的な
+float4 PS(VSO vso) : SV_TARGET
+{
+	float2 uv = vso.uv;
+	const int N = 21;	//フレネルインターフェイスの組み合わせのうちケラレていない数
+	float3 color = 0;
+	for (int i=0; i<N; i++) {
+		float3 rd = Hash3(i+100);
+		float width = max(rd.z + Smoothness * 5, 0.001);
+		if (rd.y < 0.3)	//なんか反転してる奴も付ける
+			width = -width;
+		float2 jt = float2(lerp(-0.5,0.5,rd.x), lerp(-0.002,0.002,rd.y));
+		float lod = clamp(log2(abs(width)),0,2);
+		float2 sp = float2((uv.x-0.5)/width+0.5+jt.x,uv.y+jt.y);
+		float co = max(0,dot(ViewRaySaySay(sp),ViewRaySaySay(uv.xy)));
+		float cos4 = pow(co,Range);//離れた所は暗くする
+		color += Image.SampleLevel(BorderSamp, sp,0).rgb * cos4;
+	}
+
+	return float4(color,1);
+}
+#endif
+
+#ifdef YRZ_PASS_Blur
+//平均値フィルタで適当に横へぼかす
+float4 PS(VSO vso) : SV_TARGET
+{
+	float2 uv = vso.uv;
+	const int N = clamp(200 * Resolution.x / 1920.0 * abs(Smoothness), 1,400);
+	float o = N*0.5-0.5;
+	float2 e = float2(1.0/Resolution.x,0);
+	float3 tc = 0;
+	for (int i=0; i<N; i++) {
+		float d = i-o;
+		float2 sp = uv + e * d;
+		float3 c = Blur.Sample(ClampSamp, sp);
+		tc += c;
+	}
+
+	return float4(tc/N,1);
+}
+#endif
+
+
+#ifdef YRZ_PASS_Compo
+float4 PS(VSO vso) : SV_TARGET
+{
+	float2 uv = vso.uv;
+	float4 Before = ScreenTexture.Sample(ClampSamp, uv);
+	float4 Color;
+
+	float3 r = ARCoatedReflectance;//float3(0.005,0.01,0.02);	//ARコート込みのレンズの反射率
+	float3 col1 = Image.Sample(BorderSamp, uv).rgb * r * r;
+	float3 col2 = Image.Sample(BorderSamp, 1-uv).rgb * r * r * r; //後段の通常レンズによる点対称なフレア(ほんとはr^4がよさそうだけどほぼ見えないのでr^3とした)
+	Color.rgb = (col1 + col2) * acsSi * 6.25;
+	
+	//*6.25は光学系全体で反射による損失が発生するのでその分をリカバーする係数
+	//レンズ間で奇数回反射して外に戻っていく光による損失が発生し、偶数回反射した物がレンズフレアになる
+	//4回以上の反射については反射率が非常に低いので計算対象外とする
+	//近年のCookeのアナモルフィックレンズで開放T2.3付近なので5.29分の1になる
+	//想定しているのは古めのレンズだが少々古くてもT値は大きくは変わらないようなのでT2.5相当の1/6.25とした
+	//奇数回反射で出ていく光のうちほとんどは1回反射分であると考えられるので残りの16%がレンズフレア及び結像に使われる
+	//ホンマかいな
+
+	Color.rgb += Before;
+    Color.a = Before.a;
+	return Color;
+}
+#endif
+
+

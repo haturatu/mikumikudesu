@@ -1,0 +1,3 @@
+Category:metal
+Roughness:0.1
+AutoNormal:1

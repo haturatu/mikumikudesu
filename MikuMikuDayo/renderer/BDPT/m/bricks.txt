@@ -1,0 +1,7 @@
+Roughness:1
+TextureLoops:2
+AlbedoScale:1
+
+_TRoughnessMap:t/bricks/Bricks001_2K_Roughness.jpg
+_TAlbedoMap:t/bricks/Bricks001_2K_Color.jpg
+_TNormalMap:t/bricks/Bricks001_2K_Normal.jpg

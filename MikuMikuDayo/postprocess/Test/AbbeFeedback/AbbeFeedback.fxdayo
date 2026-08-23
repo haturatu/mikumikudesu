@@ -1,0 +1,84 @@
+//色ずれ付きフィードバック
+//MMXXV (c) SANDMAN presents!
+//
+
+#include "../../hlsl/resources_PP.hlsli"
+#include "../../hlsl/yrz.hlsli"
+using namespace Dayo;
+using namespace YRZ;
+
+[YRZFX]
+{
+    "fx": {
+        "cereal_class_version": 0,
+		"category" : "postprocess",
+        "controllers": [
+			{ "name":"C_OFF", "controllerName":"(self)", "item":"off", "type":"float" },
+			{ "name":"C_Zoom", "controllerName":"(self)", "item":"ズーム", "type":"float" },
+		],
+		"samplers":[
+			{ "name":"samp" }
+		],
+		"textures":[
+			{"name":"Feedback", "format":"R16G16B16A16_FLOAT", "view":"UAV"},
+			{"name":"Feedback2", "format":"R16G16B16A16_FLOAT", "view":"UAV"}
+		],
+        "passes": [
+			{ "name":"Feedback", "type":"postprocess", "pixelShader":"PS", "vertexShader":"VS", "UAV":[{"name":"Feedback"}, {"name":"Feedback2"}]},
+			{ "name":"Main", "type":"postprocess", "pixelShader":"PS", "vertexShader":"VS", "UAV":[{"name":"Feedback"}]},
+			{ "name":"CopyFB", "type":"copy", "copySrc":"Feedback", "copyDest":"Feedback2" }
+		]
+    }
+}
+[HLSL]
+
+struct VSO { float4 position:SV_POSITION; float2 uv:TEXCOORD; };
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD ) { VSO vso = (VSO)0; vso.position = pos;  vso.uv = uv; return vso; }
+
+
+//フィードバック内容更新
+#ifdef YRZ_PASS_Feedback
+float4 PS(VSO vso):SV_TARGET
+{
+	uint2 pix = vso.position.xy;
+	if (RealTime == 0) {
+		Feedback[pix] = 0;
+		return 0;
+	}
+
+	uint mo  = GBuffer[pix].x;
+	float2 C = Resolution/2;
+	float mag = pow(0.999,Time);
+	uint2 s = (pix-C)*mag+C;
+	float4 H = Feedback2[s];
+	if (mo != 5) {
+		float3 hsv = RGBtoHSV(H.rgb);
+		hsv.x+=0.05;
+		hsv.y+=0.05;
+		H.rgb = HSVtoRGB(hsv);
+		H.a *= 0.9;
+		Feedback[pix] = H;
+	} else {
+		H = ScreenTexture[pix];
+		Feedback[pix] = H;
+	}
+	discard;
+	return 0;
+}
+#endif
+
+#ifdef YRZ_PASS_Main
+float4 PS(VSO vso):SV_TARGET
+{
+	float2 uv = vso.uv;
+	uint2 pix = vso.position.xy;
+	float4 I = ScreenTexture.Sample(samp, uv);
+	float4 H = Feedback[pix];
+	uint mo  = GBuffer[pix].x;
+
+	//合成
+	float4 O = lerp(I,H,H.a);
+	return O;
+}
+#endif
+

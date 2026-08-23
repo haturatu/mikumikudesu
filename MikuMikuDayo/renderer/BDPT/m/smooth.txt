@@ -1,0 +1,2 @@
+Roughness : 0
+IOR : 1.8,0

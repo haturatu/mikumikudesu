@@ -1,0 +1,4 @@
+Roughness:1
+IOR:1,0
+Light:0.25
+RestrictedLight:1

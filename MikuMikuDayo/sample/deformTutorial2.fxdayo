@@ -1,0 +1,26 @@
+#include <yrz.hlsli>
+#include <resources_deform.hlsli>
+#include <skinning.hlsli>
+
+[YRZFX]
+{
+    "fx": {
+        "cereal_class_version": 0,
+		"category" : "deform",
+        "controllers" : [
+			{ "name":"C_Inparusu", "controllerName":"(self)", "item":"インパルす", "type":"float" },
+        ],
+        "passes": [ { "name":"Main", "type":"compute", "computeShader":"CS" } ]
+    }
+}
+[HLSL]
+
+#ifdef YRZ_PASS_Main
+YRZ_NUMTHREADS
+void CS( uint3 id : SV_DispatchThreadID )
+{
+    Dayo::Vertex v = Dayo::DefaultSkinning(id.x);
+    v.position.x += sin(v.position.y + Dayo::Time)*2*C_Inparusu;
+    Dayo::OutBuf[id.x] = v;
+}
+#endif

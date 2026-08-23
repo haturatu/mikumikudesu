@@ -1,0 +1,1 @@
+_T AlbedoMap : screen.bmp

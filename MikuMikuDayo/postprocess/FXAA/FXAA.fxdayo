@@ -1,0 +1,137 @@
+[YRZFX]
+{
+    "fx": {
+        "cereal_class_version": 0,
+		"category" : "postprocess",
+        "controllers": [{"name":"C_off", "controllerName":"(self)", "item":"off", "type":"float"}],
+		"samplers": [{ "name":"LinearSamp", "filter":"LINEAR", "addressU":"CLAMP", "addressV":"CLAMP" }],
+        "passes": [
+			{
+				"name":"RGBLPass", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PSRGBL",
+				"RTV":[ {"name":"RGBLMap", "clear":false }]
+			},
+			{
+				"name":"Pass", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS"
+			}
+		],
+		"textures" : [
+			{"name": "RGBLMap", "format": "R8G8B8A8_UNORM", "view":"RTV" }
+		]
+    }
+}
+[HLSL]
+#include "../../hlsl/resources_pp.hlsli"
+#include "../../hlsl/yrz.hlsli"
+using namespace YRZ;
+using namespace Dayo;
+
+//FXAA
+//
+// NVIDIA社が公開しているTIMOTHY LOTTES氏作のコードをDirectX12で使えるようにしただけです
+// ShaderModel 6.1でもそのままコンパイル・実行できました
+// コードそのもののライセンスなどについてはFxaa3_11.fxsubの先頭をご覧ください
+
+#define FXAA_PC 1
+#define FXAA_HLSL_5 1
+
+//いろいろ設定用/////////////////////////////////////////////////////////
+
+//全体的な品質。39が最高らしいんだけど変えても正直良くわからない
+#define FXAA_QUALITY__PRESET 12
+
+//好みに応じて微妙に変えられます。見た目に一応分かる
+// Only used on FXAA Quality.
+// This used to be the FXAA_QUALITY__SUBPIX define.
+// It is here now to allow easier tuning.
+// Choose the amount of sub-pixel aliasing removal.
+// This can effect sharpness.
+//   1.00 - upper limit (softer)
+//   0.75 - default amount of filtering
+//   0.50 - lower limit (sharper, less sub-pixel aliasing removal)
+//   0.25 - almost off
+//   0.00 - completely off
+#define QUALITYSUBPIX 0.75
+
+//あんまり良くわからない
+// Only used on FXAA Quality.
+// This used to be the FXAA_QUALITY__EDGE_THRESHOLD define.
+// It is here now to allow easier tuning.
+// The minimum amount of local contrast required to apply algorithm.
+//   0.333 - too little (faster)
+//   0.250 - low quality
+//   0.166 - default
+//   0.125 - high quality 
+//   0.063 - overkill (slower)
+#define EDGETHRESHOLD 0.063
+
+// これは割と効果が分かりやすい
+// Only used on FXAA Quality.
+// This used to be the FXAA_QUALITY__EDGE_THRESHOLD_MIN define.
+// It is here now to allow easier tuning.
+// Trims the algorithm from processing darks.
+//   0.0833 - upper limit (default, the start of visible unfiltered edges)
+//   0.0625 - high quality (faster)
+//   0.0312 - visible limit (slower)
+// Special notes when using FXAA_GREEN_AS_LUMA,
+//   Likely want to set this to zero.
+//   As colors that are mostly not-green
+//   will appear very dark in the green channel!
+//   Tune by looking at mostly non-green content,
+//   then start at zero and increase until aliasing is a problem.
+#define EDGETHRESHOLDMIN 0.0312
+
+#include "Fxaa3_11.fxsub"
+
+
+
+
+#ifdef __INTELLISENSE__
+float C_off;
+#endif
+
+struct VSO {
+	float4 position:SV_POSITION;
+	float2 uv:TEXCOORD;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD )
+{
+	VSO vso = (VSO)0;
+	vso.position = pos;
+	vso.uv = uv;
+	return vso;
+}
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	float4 I = ScreenTexture.Sample(LinearSamp, vso.uv);
+
+	//return ScnMap.SampleLevel(LinearSamp, vso.uv, 0);
+
+	FxaaTex t;
+	t.smpl = LinearSamp;
+	t.tex = RGBLMap;
+
+	float4 O = FxaaPixelShader(
+        vso.uv, 0,
+        t, t, t,
+        1.0/Resolution, 0, 0, 0,
+		QUALITYSUBPIX, EDGETHRESHOLD, EDGETHRESHOLDMIN,
+        8, 0.125, 0.05, 0);
+
+	O.rgb = ToLinear(O.rgb);
+	O.rgb = lerp(O.rgb, I.rgb, C_off);
+	O.a = I.a;
+	return O;
+}
+
+
+float4 PSRGBL(VSO vso) : SV_TARGET
+{
+	float4 I,O;
+
+	I  = ScreenTexture.SampleLevel(LinearSamp, vso.uv, 0);
+	O.rgb = ToGamma(I.rgb);
+	O.a = dot(O.rgb, float3(0.298912,0.586611,0.114478));
+	return O;
+}

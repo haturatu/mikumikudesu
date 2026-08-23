@@ -1,0 +1,321 @@
+// Motion Blur Effect
+// MMXXV (c) SANDMAN presents!!
+
+//参考文献
+//Gilberto Rosado氏
+//GPU Gems 3 Chapter 27. Motion Blur as a Post-Processing Effect
+
+#include "../../hlsl/resources_pp.hlsli"
+#include "../../hlsl/yrz.hlsli"
+using namespace Dayo;
+using namespace YRZ;
+
+
+
+//設定・JSON側も同様に指定してね
+#define Thickness 4	//ブラーの太さ=グリッドの間隔。大きいほど粗く、軽い
+#define SHRINK 0.5	//縮小バッファのサイズ
+
+[YRZFX]
+local Thickness = 4;
+local T2 = Thickness * Thickness;
+local SHRINK = 0.5;
+{
+    "fx": {
+        "cereal_class_version": 0,
+		"category" : "postprocess",
+        "controllers": [
+			{"name": "C_ShutterTimePlus","controllerName": "(self)","item": "長く","type": "float"},
+			{"name": "C_ShutterTimeMinus","controllerName": "(self)","item": "短く","type": "float"},
+			{"name": "C_DensPlus","controllerName": "(self)","item": "濃く","type": "float"},
+			{"name": "C_DensMinus","controllerName": "(self)","item": "薄く","type": "float"},
+		],
+		"samplers": [
+			{"name":"samp", "filter":"LINEAR", "addressU":"CLAMP", "addressV":"CLAMP" }
+		],
+		"textures":[
+			{"name":"Gather", "format":"R16G16B16A16_FLOAT", "view":"RTV"},
+			{"name":"MotionVec", "format":"R32G32_FLOAT", "view":"RTV"},
+			{"name":"Shrink", "format":"R16G16B16A16_FLOAT", "view":"RTV", "size":{"ratio":{"x":SHRINK,"y":SHRINK}}}
+		],
+		"buffers":[
+			{"name":"PreVP", "type":"float4x4", "view":"UAV", "size":{"absolute":true,"width":2}},
+			{"name":"IBuf", "type":"uint", "view":"UAV", "size":{"convX":"XY","ratio":{"x":6.0/T2,"y":1,"z":1}}},
+		],
+        "passes": [
+			{	//IBufの初期化
+				"name":"Computer", "type":"compute", "computeShader":"CS", "UAV":[{"name":"IBuf"}],
+				"outputSize":{"base":"IBuf", "ratio":{"x":1/6.0,"y":1,"z":1}}, "conditions":["OnLoad || OnResize"]
+			},
+			//動きベクトル計算
+			{ "name":"MotionVec", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS", "RTV":[{"name":"MotionVec"}] },
+			//ギャザーによるボカし
+			{ "name":"Gather", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS", "RTV":[{"name":"Gather"}] },
+			//Shrinkバッファへ↑をコピー
+			{ "name":"Copy", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS", "RTV":[{"name":"Shrink"}]},
+			//ライン描画によるスキャッター、縮小バッファに書き込み
+			{
+				"name":"Scatter", "type":"rasterizer", "vertexShader":"ScatterVS", "pixelShader":"PS",
+                "rasterizerDesc": { "cullMode":"none" },
+                "blendDesc": {
+                    "renderTarget0": { "blendEnable":true, "srcBlend":"src_alpha", "destBlend":"inv_src_alpha", "blendOp":"add",
+                        "srcBlendAlpha":"one", "destBlendAlpha":"inv_src_alpha", "blendOpAlpha":"add" }
+				},
+				"rasterModelTarget":"buffer", "rasterIB":"IBuf",
+				"RTV":[{"name":"Shrink", "clear":false}]
+			},
+			//アップサンプリングとコンポジット
+			{ "name":"Up", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS" },
+			//ViewProjectionMatrixを保存
+			{ "name":"PreVP", "type":"compute", "computeShader":"CS", "UAV":[{"name":"PreVP"}], "numthreads":{"x":1}, "outputSize":{"absolute":true, "width":1, "dimension":1} },
+			//デバッグ
+			//{"name":"Debug", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS"},
+		]
+    }
+}
+[HLSL]
+
+static float Density = clamp(1 + C_DensPlus - C_DensMinus, 0,2);
+static float ShutterTime = saturate(0.5 + 0.5 * (C_ShutterTimePlus - C_ShutterTimeMinus));
+
+//ポストプロセス共通VB
+struct VSO { float4 pos:SV_POSITION; float2 uv:TEXCOORD; };
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD ) { VSO vso = (VSO)0; vso.pos = pos; vso.uv = uv; return vso; }
+
+static float4x4 InvProjectionMatrix = Perspective ? InverseProjectionMatrix(ProjectionMatrix) : InverseOrthoProjectionMatrix(ProjectionMatrix);
+static float4x4 InvViewMatrix = InverseRTMatrix(ViewMatrix);
+static float4x4 InvViewProjectionMatrix = mul(InvProjectionMatrix,InvViewMatrix);
+
+//カメラからの線形深度zとUVを入れてワールド座標を得る
+float3 UVtoWorld(float2 uv, float z)
+{
+	float3 R = Transform(float3((uv*2-1)*float2(1,-1),0), InvViewProjectionMatrix) - CameraPosition;
+	return CameraPosition + R * z;
+}
+
+
+//パーティクルのメッシュ全体を出力するコンピュートシェーダ
+#ifdef YRZ_PASS_Computer
+[numthreads(1024, 1, 1)]
+void CS( uint3 id : SV_DispatchThreadID )
+{
+	uint i = id.x;
+
+	//頂点インデクス
+	//MMDモデルはTRIANGLELIST。3つの頂点インデクスで1つの三角形が定義される
+	uint p = i*6;
+	uint q = i*4;
+	IBuf[p] = q;
+	IBuf[p+1] = q+1;
+	IBuf[p+2] = q+3;
+	IBuf[p+3] = q+1;
+	IBuf[p+4] = q+2;
+	IBuf[p+5] = q+3;
+}
+#endif
+
+//動きベクトル
+#ifdef YRZ_PASS_MotionVec
+float4 PS(VSO vso) : SV_TARGET
+{
+	if (OnStart) {
+		return float4(0,0,0,1);
+	}
+
+	float2 uv = vso.uv;
+	uint2 pix = vso.pos.xy;
+
+	//GBuffer読み取り
+	uint2 GB1 = GBuffer1[pix];
+	uint imo = GB1.x;
+	uint iFace = GB1.y;
+	float2 st = GBuffer2[pix];
+
+	// パッチのワールド座標
+	float4 P;
+
+	//奥行
+	float z = NormalDepth[pix].w;
+	if (z==0)
+		z = 1e+5;	//記録が無い場合は「どこか遠く」とする
+
+	if (imo != -1) {
+		//GBufferに記録がある場合、その頂点の前フレームでの位置を取り出す
+		P = float4(0,0,0,1);
+		float3 bary = {1-st.x-st.y, st.x, st.y};
+		for (int i=0; i<3; i++)
+			P.xyz += PreVB[imo][IB[imo][iFace*3+i]].position * bary[i];
+	} else {
+		//GBufferに記録が無い場合は奥行だけで判定
+		P = float4(UVtoWorld(uv,z),1);
+	}
+
+	//その位置は前フレームではどこに表示されていたか？
+	//カメラがスムーズに動いている場合は前フレームのViewProjで、飛んでいる場合は現フレームのViewProjで変換
+	//カメラ補間が効いていない時の「次の」フレームこそがカメラが飛んだ直後、またはカメラが飛んでいる間
+	float2 Puv = Project(P, (PreVP[0]._11 || !Playing) ? PreVP[1] : ViewProjectionMatrix);
+
+	float2 v = uv - Puv;
+	v *= ShutterTime;
+
+	return float4(v,0,1);
+}
+#endif
+
+//ギャザー(線状畳み込み)によるブラー
+#ifdef YRZ_PASS_Gather
+float4 PS(VSO vso) : SV_TARGET
+{
+	float4 I = ScreenTexture.Sample(samp, vso.uv);
+	if (OnStart) {
+		return I;
+	}
+
+	float2 uv = vso.uv;
+	uint2 pix = vso.pos.xy;
+	float2 v = MotionVec[pix].xy;
+
+	float4 tc = I;
+	int Samples = clamp(length(v*Resolution),1,256);
+	for (int i = 1; i < Samples; i++) {
+		float2 sp = uv - i*v/Samples;
+		float4 c = ScreenTexture.Sample(samp, sp);
+		tc += c;
+	}
+
+	float4 O = tc / Samples;
+	return lerp(I,O,saturate(0.75*Density));
+}
+#endif
+
+//コピー。Gather後の状態のRGBで、αは0としてスキャッターの準備とする
+#ifdef YRZ_PASS_Copy
+float4 PS(VSO vso) : SV_TARGET
+{
+	float4 G = Gather.Sample(samp, vso.uv);
+	return float4(G.rgb,0);
+}
+#endif
+
+//スキャッター(直線パーティクル)によるブラー
+#ifdef YRZ_PASS_Scatter
+
+struct VSOsc {
+	float4 pos:SV_POSITION;
+	float2 uv:TEXCOORD0;
+	float3 color:TEXCOORD1;
+	float alpha:TEXCOORD2;
+	float depth:TEXCOORD3;
+};
+
+VSOsc ScatterVS(uint index:SV_VertexID)
+{
+	VSOsc vso = (VSOsc)0;
+	uint iQuad = index / 4;		//何番目の四角形か？
+	uint quadPerLine = Resolution.x / Thickness;
+	uint2 I = {iQuad % quadPerLine, iQuad / quadPerLine};	//Quadの二次元的なインデックス
+	const float2 UVs[4] = {{0,0},{1,0},{1,1},{0,1}};
+	float2 uv = UVs[index%4];
+
+	//はみ出し奴
+	if (I.y >= Resolution.y/Thickness) {
+		vso.pos = float4(1000,1000,1,1);
+		vso.alpha = 0;
+		return vso;
+	}
+
+	//グリッドの中心位置
+	float2 P = float2(I+0.5) / (Resolution/Thickness);
+
+	//四隅までの差分
+	float2 v = MotionVec.SampleLevel(samp,P,0);
+	float2 dX = -v*uv.x;	//速度ベクトルと反対側に掃引する
+	float2 X = normalize(v);
+	float2 Y = {X.y,-X.x};
+	float2 T = Thickness * abs(Y / Resolution);	//太さ計算用
+	float2 dY = Y*(uv.y-0.5)*max(T.x,T.y);		//斜めの線を太くする(線幅はThicknessで一定ではない)
+	vso.color = ScreenTexture.SampleLevel(samp,P+dY,0);	//上下の点でグラデにする
+	vso.depth = NormalDepth[(P+dY)*Resolution].w;
+
+	//正規化座標
+	float2 S = (P+dX+dY)*2-1;
+	S.y = -S.y;
+
+	//濃度
+	float lenRel = length(v*float2(AspectRatio,1));	//画面の縦の長さに対する長さ
+	float lenPx = length(v*Resolution);	//長さ[pix]
+	float a = Density*0.005/lenRel;	//掃引範囲に応じて薄くのびるようにする
+	a *= smoothstep(0.005,0.01,lenRel);	//動きが遅い所はギャザーで十分なので消す
+
+	vso.alpha = saturate(a);
+	vso.pos = float4(S, 0.5,1);
+	vso.uv = uv;
+	return vso;
+}
+
+float4 PS(VSOsc vso) : SV_TARGET
+{
+	//デプステスト
+	float z = NormalDepth[vso.pos.xy/SHRINK].w;
+	z = z ? z : 1e+10;
+	if (vso.depth > z+1e-3)
+		discard;
+
+	float a = vso.alpha;
+	//a *= smoothstep(0,1,z-vso.depth);	//奥行差が小さい場合は薄める
+	return float4(vso.color,a);
+}
+#endif
+
+
+//アップサンプルと合成
+#ifdef YRZ_PASS_Up
+float4 PS(VSO vso) : SV_TARGET
+{
+	float2 uv = vso.uv;
+	uint2 pix = vso.pos.xy;
+	float4 G = Gather[pix];
+
+	float4 tc = 0;
+	float tw = 0;
+	const float filter[3] = {1,2,1};	//binomial filter
+	float2 e = 1.0/Resolution;
+
+	for (int y=0; y<3; y++) {
+		for (int x=0; x<3; x++) {
+			float w = filter[y] * filter[x];
+			float2 sp = uv + e * float2(x-1,y-1);
+			float4 c = Shrink.Sample(samp, sp);
+			tc += c * w;
+			tw += w;
+		}
+	}
+	float4 S = tc/tw;
+
+	float4 O;
+	O.rgb = lerp(G.rgb,S.rgb,S.a);
+	O.a = saturate(G.a * (1-S.a) + S.a);
+
+	return O;
+}
+#endif
+
+
+//前フレームのViewProjectionMatrixを保存
+#ifdef YRZ_PASS_PreVP
+[numthreads(1, 1, 1)]
+void CS( uint3 id : SV_DispatchThreadID )
+{
+	PreVP[0]._11 = CameraInterpolated;
+	PreVP[1] = ViewProjectionMatrix;
+}
+#endif
+
+//デバッグ用、動きベクトル表示
+#ifdef YRZ_PASS_Debug
+float4 PS(VSO vso) : SV_TARGET
+{
+	float3 C = MotionVec[vso.pos.xy];
+	return float4(ToGamma(abs(C)*10),1);
+}
+#endif

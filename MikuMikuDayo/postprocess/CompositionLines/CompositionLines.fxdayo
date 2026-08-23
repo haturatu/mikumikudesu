@@ -1,0 +1,88 @@
+[YRZFX]
+{
+    "fx": {
+        "cereal_class_version": 0,
+		"category" : "postprocess",
+        "controllers": [{"name": "C_off","controllerName": "(self)","item": "off","type": "float"}],
+		"samplers": [{ "name":"samp", "filter":"LINEAR", "addressU":"CLAMP", "addressV":"CLAMP"}],
+        "passes": [ {"name":"Pass", "type":"postprocess", "vertexShader":"VS", "pixelShader":"PS"} ]
+    }
+}
+[HLSL]
+#include "../../hlsl/resources_pp.hlsli"
+#include "../../hlsl/yrz.hlsli"
+using namespace Dayo;
+using namespace YRZ;
+
+
+struct VSO {
+	float4 position:SV_POSITION;
+	float2 uv:TEXCOORD;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD )
+{
+	VSO vso = (VSO)0;
+	vso.position = pos;
+	vso.uv = uv;
+	return vso;
+}
+
+// 2D線分 s→e と点 p の距離を計算
+float seg(float2 s, float2 e, float2 p)
+{
+    // 線分ベクトルと s→p ベクトルを取得
+    float2 v = e - s;
+    float2 w = p - s;
+
+    // プロジェクション係数 t = dot(w, v) / dot(v, v)
+    // saturate で [0,1] にクランプして線分上に制限
+    float denom = dot(v, v);
+    float t = (denom > 0.0) 
+            ? saturate(dot(w, v) / denom)
+            : 0.0; // 端点が一致する場合は s に固定
+
+    // 最近接点 = s + t * v
+    float2 proj = s + t * v;
+
+    // 点 p から最近接点までの距離
+    return length(p - proj);
+}
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	float2 uv = vso.uv;
+	int2 pix = vso.position.xy;
+	float4 I = ScreenTexture[pix];
+	float4 O = I;
+	float2 R = Resolution;
+	float A = 1-C_off;
+
+	float d;
+
+	//半径を縦サイズまたは横サイズとする円
+	d = 1e+10;
+	d = min(d, abs(length(pix-R/2) - min(R.y,R.x)/2));
+	d = min(d, abs(length(pix-R/2) - max(R.y,R.x)/2));
+	O = lerp(O,float4(0,0.5,0.5,1),smoothstep(2,0,d)*A);
+
+	//三分割線
+	d = 1e+10;
+	d = min(d,seg(float2(0,1.0/3)*R, float2(1,1.0/3)*R, pix));
+	d = min(d,seg(float2(0,2.0/3)*R, float2(1,2.0/3)*R, pix));
+	d = min(d,seg(float2(1.0/3,0)*R, float2(1.0/3,1)*R, pix));
+	d = min(d,seg(float2(2.0/3,0)*R, float2(2.0/3,1)*R, pix));
+	O = lerp(O,float4(0.5,0.5,0,1),smoothstep(2,0,d)*A);
+
+	//中心を通る米印
+	d = 1e+10;
+	d = min(d,seg(0, R, pix));
+	d = min(d,seg(float2(1,0)*R, float2(0,1)*R, pix));
+	d = min(d,seg(float2(0.5,0)*R, float2(0.5,1)*R, pix));
+	d = min(d,seg(float2(0,0.5)*R, float2(1,0.5)*R, pix));
+	O = lerp(O,0.5,smoothstep(2,0,d)*A);
+
+
+
+	return O;
+}

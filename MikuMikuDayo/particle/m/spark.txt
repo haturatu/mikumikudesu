@@ -1,0 +1,16 @@
+_C rough:(self),roughness
+_C hue:(self),H
+_C sat:(self),S
+_C value:(self),V
+_C light:(self),明るく
+
+
+Category:blackbody
+Roughness:rough
+Light : light*100
+ColorConst : hue, sat*2,value,1
+ColorConstOp : hsv
+ShadowCaster : 0
+
+_T AlbedoMap : red.png
+_T AlphaMap : maru.png
