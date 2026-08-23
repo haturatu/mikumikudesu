@@ -1,6 +1,7 @@
 #include "app/application.hpp"
 
 #include "core/asset.hpp"
+#include "core/denoiser.hpp"
 #include "core/log.hpp"
 #include "core/model_probe.hpp"
 #include "graphics/device.hpp"
@@ -82,7 +83,8 @@ int Application::run() {
     device_ = device.get();
     device->selectRenderer(options_.renderer);
     log::info("Graphics convention: depth [0,1], Vulkan framebuffer Y handled in backend");
-    log::info("OIDN: ", DAYO_HAS_OIDN ? "available (CPU; HIP selectable at runtime)" : "not found, disabled");
+    const auto denoiser = core::selectDenoiser();
+    log::info("Denoiser: ", denoiser.detail);
     log::info("Media: ", DAYO_HAS_MEDIA ? "FFmpeg available" : "FFmpeg development libraries not found");
 
     for (const auto& asset : options_.assets) handleAsset(asset);

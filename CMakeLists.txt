@@ -47,6 +47,7 @@ find_package(SDL3 CONFIG REQUIRED)
 
 add_library(dayo_core
   src/core/asset.cpp
+  src/core/denoiser.cpp
   src/core/model_probe.cpp
 )
 target_include_directories(dayo_core PUBLIC src)
@@ -121,6 +122,15 @@ if(DAYO_ENABLE_OIDN)
     set(DAYO_HAS_OIDN 1)
   endif()
 endif()
+target_compile_definitions(dayo_core PUBLIC DAYO_HAS_OIDN=${DAYO_HAS_OIDN})
+if(DAYO_HAS_OIDN)
+  target_link_libraries(dayo_core PUBLIC OpenImageDenoise)
+endif()
+
+find_package(Bullet QUIET)
+find_package(cereal CONFIG QUIET)
+find_package(directxtex CONFIG QUIET)
+find_package(jsonnet CONFIG QUIET)
 
 set(DAYO_HAS_MEDIA 0)
 if(DAYO_ENABLE_MEDIA)
@@ -146,9 +156,6 @@ target_compile_definitions(mikumikudesu PRIVATE
   DAYO_HAS_MEDIA=${DAYO_HAS_MEDIA}
   DAYO_VERSION="${PROJECT_VERSION}"
 )
-if(DAYO_HAS_OIDN)
-  target_link_libraries(mikumikudesu PRIVATE OpenImageDenoise)
-endif()
 if(DAYO_HAS_MEDIA)
   target_link_libraries(mikumikudesu PRIVATE PkgConfig::FFMPEG)
 endif()
@@ -178,3 +185,7 @@ message(STATUS "mikumikudesu backend: ${DAYO_BACKEND}")
 message(STATUS "Dear ImGui: ${DAYO_ENABLE_IMGUI}")
 message(STATUS "OIDN detected: ${DAYO_HAS_OIDN} (CPU always preferred; HIP is runtime-optional)")
 message(STATUS "FFmpeg detected: ${DAYO_HAS_MEDIA}")
+message(STATUS "Bullet detected: ${Bullet_FOUND}")
+message(STATUS "cereal detected: ${cereal_FOUND}")
+message(STATUS "DirectXTex detected: ${directxtex_FOUND}")
+message(STATUS "Jsonnet detected: ${jsonnet_FOUND}")
