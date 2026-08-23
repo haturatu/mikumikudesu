@@ -33,15 +33,19 @@ struct DeviceCapabilities {
     bool rayTracingPipeline {};
     bool rayQuery {};
     bool fragmentShaderBarycentric {};
+    bool nativeSubayai {};
+    bool nativeBdpt {};
 
     [[nodiscard]] bool supportsPreview() const noexcept { return swapchain; }
-    [[nodiscard]] bool supportsSubayai() const noexcept {
+    [[nodiscard]] bool hardwareSupportsSubayai() const noexcept {
         return supportsPreview() && bufferDeviceAddress && descriptorIndexing
             && accelerationStructure && rayQuery && fragmentShaderBarycentric;
     }
-    [[nodiscard]] bool supportsBdpt() const noexcept {
-        return supportsSubayai() && rayTracingPipeline;
+    [[nodiscard]] bool hardwareSupportsBdpt() const noexcept {
+        return hardwareSupportsSubayai() && rayTracingPipeline;
     }
+    [[nodiscard]] bool supportsSubayai() const noexcept { return nativeSubayai && hardwareSupportsSubayai(); }
+    [[nodiscard]] bool supportsBdpt() const noexcept { return nativeBdpt && hardwareSupportsBdpt(); }
     [[nodiscard]] bool supports(RendererKind renderer) const noexcept;
     [[nodiscard]] std::string missingFeatures(RendererKind renderer) const;
     [[nodiscard]] std::string json() const;

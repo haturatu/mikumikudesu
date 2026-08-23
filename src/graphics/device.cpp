@@ -32,6 +32,8 @@ std::string DeviceCapabilities::missingFeatures(RendererKind renderer) const {
     if (renderer == RendererKind::bdpt && !rayTracingPipeline) {
         add("VK_KHR_ray_tracing_pipeline");
     }
+    if (renderer == RendererKind::subayai && !nativeSubayai) add("native Subayai pass implementation");
+    if (renderer == RendererKind::bdpt && !nativeBdpt) add("native BDPT pass implementation");
     return output.str();
 }
 
@@ -48,6 +50,8 @@ std::string DeviceCapabilities::json() const {
            << "  \"preview\": " << supportsPreview() << ",\n"
            << "  \"subayai\": " << supportsSubayai() << ",\n"
            << "  \"bdpt\": " << supportsBdpt() << ",\n"
+           << "  \"subayai_hardware\": " << hardwareSupportsSubayai() << ",\n"
+           << "  \"bdpt_hardware\": " << hardwareSupportsBdpt() << ",\n"
            << "  \"buffer_device_address\": " << bufferDeviceAddress << ",\n"
            << "  \"descriptor_indexing\": " << descriptorIndexing << ",\n"
            << "  \"acceleration_structure\": " << accelerationStructure << ",\n"
