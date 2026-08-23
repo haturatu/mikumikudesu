@@ -1,4 +1,5 @@
 #include "core/asset.hpp"
+#include "core/animation.hpp"
 #include "core/model_probe.hpp"
 #include "core/motion.hpp"
 
@@ -112,6 +113,26 @@ int main() {
         const auto motion = dayo::core::loadVmd(sampleVmd);
         ok &= check(!motion.modelName.empty(), "VMD CP932 model name");
         ok &= check(!motion.bones.empty(), "VMD bone keys");
+        for (const auto& entry : std::filesystem::directory_iterator(
+                 std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo/sample")) {
+            if (entry.path().extension() != ".pmx") continue;
+            try {
+                auto candidate = dayo::core::loadPmxModel(entry.path());
+                if (candidate.metadata.modelName != motion.modelName || candidate.vertices.empty()) continue;
+                dayo::core::MmdAnimator animator(candidate);
+                animator.setMotion(&motion);
+                const auto first = animator.evaluate(0.0F);
+                const auto animated = animator.evaluate(10.0F);
+                bool changed = false;
+                for (std::size_t i = 0; i < first.vertices.size(); ++i) {
+                    if (first.vertices[i].position != animated.vertices[i].position) { changed = true; break; }
+                }
+                ok &= check(changed, "VMD CPU skinning changes vertices");
+                break;
+            } catch (const std::exception&) {
+                // Some tiny effect descriptors use the PMX extension without model sections.
+            }
+        }
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: VMD load: " << exception.what() << '\n';
         ok = false;

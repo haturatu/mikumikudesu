@@ -859,6 +859,7 @@ void VulkanDevice::destroyPreviewMesh() {
     if (previewVertexMemory_ != VK_NULL_HANDLE) vkFreeMemory(device_, previewVertexMemory_, nullptr);
     previewVertexBuffer_ = VK_NULL_HANDLE;
     previewVertexMemory_ = VK_NULL_HANDLE;
+    previewVertexSize_ = 0;
     previewIndexBuffer_ = VK_NULL_HANDLE;
     previewIndexMemory_ = VK_NULL_HANDLE;
     previewIndexCount_ = 0;
@@ -898,6 +899,7 @@ void VulkanDevice::uploadPreviewMesh(std::span<const PreviewVertex> vertices,
     try {
         upload(vertices.data(), vertices.size_bytes(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                previewVertexBuffer_, previewVertexMemory_);
+        previewVertexSize_ = vertices.size_bytes();
         upload(indices.data(), indices.size_bytes(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                previewIndexBuffer_, previewIndexMemory_);
         previewIndexCount_ = static_cast<std::uint32_t>(indices.size());
@@ -907,6 +909,20 @@ void VulkanDevice::uploadPreviewMesh(std::span<const PreviewVertex> vertices,
     }
     log::info("Uploaded PMX preview mesh: ", vertices.size(), " vertices, ",
               indices.size() / 3, " triangles");
+}
+
+void VulkanDevice::updatePreviewVertices(std::span<const PreviewVertex> vertices) {
+    if (vertices.size_bytes() != previewVertexSize_ || previewVertexMemory_ == VK_NULL_HANDLE) {
+        throw std::invalid_argument("preview vertex update has a different size");
+    }
+    // The preview path uses coherent host memory. Waiting here is conservative and
+    // will be replaced by per-frame staging when the GPU skinning path is selected.
+    waitIdle();
+    void* mapped = nullptr;
+    check(vkMapMemory(device_, previewVertexMemory_, 0, previewVertexSize_, 0, &mapped),
+          "map animated preview vertices");
+    std::memcpy(mapped, vertices.data(), vertices.size_bytes());
+    vkUnmapMemory(device_, previewVertexMemory_);
 }
 
 std::uint32_t VulkanDevice::findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags flags) const {
@@ -935,7 +951,9 @@ BufferHandle VulkanDevice::createBuffer(const BufferDesc& desc) {
         : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     VkMemoryAllocateFlagsInfo allocationFlags {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
-        .flags = capabilities_.bufferDeviceAddress ? VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT : 0U,
+        .flags = capabilities_.bufferDeviceAddress
+            ? static_cast<VkMemoryAllocateFlags>(VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT)
+            : VkMemoryAllocateFlags {},
     };
     const VkMemoryAllocateInfo allocationInfo {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,

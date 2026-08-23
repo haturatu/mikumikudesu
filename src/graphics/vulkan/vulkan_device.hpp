@@ -24,6 +24,7 @@ public:
     void waitIdle() override;
     void uploadPreviewMesh(std::span<const PreviewVertex> vertices,
                            std::span<const std::uint32_t> indices) override;
+    void updatePreviewVertices(std::span<const PreviewVertex> vertices) override;
     [[nodiscard]] BufferHandle createBuffer(const BufferDesc& desc) override;
     [[nodiscard]] TextureHandle createTexture(const TextureDesc& desc) override;
 
@@ -94,6 +95,7 @@ private:
     std::size_t frameIndex_ {};
     VkBuffer previewVertexBuffer_ {};
     VkDeviceMemory previewVertexMemory_ {};
+    VkDeviceSize previewVertexSize_ {};
     VkBuffer previewIndexBuffer_ {};
     VkDeviceMemory previewIndexMemory_ {};
     std::uint32_t previewIndexCount_ {};

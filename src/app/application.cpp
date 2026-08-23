@@ -1,6 +1,7 @@
 #include "app/application.hpp"
 
 #include "core/asset.hpp"
+#include "core/animation.hpp"
 #include "core/denoiser.hpp"
 #include "core/log.hpp"
 #include "core/model_probe.hpp"
@@ -13,7 +14,9 @@
 #endif
 
 #include <charconv>
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -96,6 +99,7 @@ int Application::run() {
 
     bool running = true;
     std::uint64_t frameCount = 0;
+    auto previousTick = std::chrono::steady_clock::now();
     while (running) {
         for (const auto& event : window->pollEvents()) {
             switch (event.type) {
@@ -114,6 +118,15 @@ int Application::run() {
         if (window->minimized() || window->pixelWidth() == 0 || window->pixelHeight() == 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
             continue;
+        }
+        const auto tick = std::chrono::steady_clock::now();
+        const float deltaSeconds = std::chrono::duration<float>(tick - previousTick).count();
+        previousTick = tick;
+        if (playing_ && animator_ != nullptr && motion_ != nullptr && motion_->lastFrame > 0) {
+            animationFrame_ = std::fmod(animationFrame_ + deltaSeconds * 30.0F,
+                                        static_cast<float>(motion_->lastFrame + 1));
+            const int integerFrame = static_cast<int>(animationFrame_);
+            if (integerFrame != uploadedAnimationFrame_) refreshAnimatedMesh(false);
         }
         device->beginUiFrame();
         buildUi();
@@ -135,18 +148,18 @@ void Application::handleAsset(const std::filesystem::path& path) {
     }
     if (kind == core::AssetKind::pmx) {
         try {
-            const auto mesh = core::loadPmxMesh(path);
-            std::vector<graphics::PreviewVertex> vertices(mesh.vertices.size());
-            for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
-                std::memcpy(vertices[i].position, mesh.vertices[i].position.data(), sizeof(vertices[i].position));
-                std::memcpy(vertices[i].normal, mesh.vertices[i].normal.data(), sizeof(vertices[i].normal));
-                std::memcpy(vertices[i].uv, mesh.vertices[i].uv.data(), sizeof(vertices[i].uv));
-            }
-            if (device_ != nullptr) device_->uploadPreviewMesh(vertices, mesh.indices);
-            lastAsset_ = "PMX " + mesh.metadata.modelName + " — v"
-                       + std::to_string(mesh.metadata.version) + ", vertices "
-                       + std::to_string(mesh.metadata.vertexCount) + ", triangles "
-                       + std::to_string(mesh.indices.size() / 3);
+            model_ = std::make_unique<core::PmxModel>(core::loadPmxModel(path));
+            animator_ = std::make_unique<core::MmdAnimator>(*model_);
+            animator_->setMotion(motion_.get());
+            animator_->setPose(pose_.get());
+            animationFrame_ = 0.0F;
+            uploadedAnimationFrame_ = -1;
+            refreshAnimatedMesh(true);
+            lastAsset_ = "PMX " + model_->metadata.modelName + " — v"
+                       + std::to_string(model_->metadata.version) + ", vertices "
+                       + std::to_string(model_->metadata.vertexCount) + ", triangles "
+                       + std::to_string(model_->indices.size() / 3) + ", bones "
+                       + std::to_string(model_->bones.size());
             log::info("Loaded metadata: ", lastAsset_, " (", path.string(), ")");
         } catch (const std::exception& exception) {
             lastAsset_ = "PMX error: " + std::string(exception.what());
@@ -156,10 +169,11 @@ void Application::handleAsset(const std::filesystem::path& path) {
     }
     if (kind == core::AssetKind::vmd) {
         try {
-            const auto motion = core::loadVmd(path);
-            lastAsset_ = "VMD " + motion.modelName + " — " + std::to_string(motion.bones.size())
-                       + " bone keys, " + std::to_string(motion.morphs.size()) + " morph keys, "
-                       + std::to_string(motion.lastFrame) + " frames";
+            motion_ = std::make_unique<core::VmdMotion>(core::loadVmd(path));
+            if (animator_ != nullptr) { animator_->setMotion(motion_.get()); animationFrame_ = 0.0F; refreshAnimatedMesh(false); }
+            lastAsset_ = "VMD " + motion_->modelName + " — " + std::to_string(motion_->bones.size())
+                       + " bone keys, " + std::to_string(motion_->morphs.size()) + " morph keys, "
+                       + std::to_string(motion_->lastFrame) + " frames";
             log::info("Loaded motion: ", lastAsset_, " (", path.string(), ")");
         } catch (const std::exception& exception) {
             lastAsset_ = "VMD error: " + std::string(exception.what());
@@ -169,8 +183,9 @@ void Application::handleAsset(const std::filesystem::path& path) {
     }
     if (kind == core::AssetKind::vpd) {
         try {
-            const auto pose = core::loadVpd(path);
-            lastAsset_ = "VPD pose — " + std::to_string(pose.bones.size()) + " bones";
+            pose_ = std::make_unique<core::VpdPose>(core::loadVpd(path));
+            if (animator_ != nullptr) { animator_->setPose(pose_.get()); refreshAnimatedMesh(false); }
+            lastAsset_ = "VPD pose — " + std::to_string(pose_->bones.size()) + " bones";
             log::info("Loaded pose: ", lastAsset_, " (", path.string(), ")");
         } catch (const std::exception& exception) {
             lastAsset_ = "VPD error: " + std::string(exception.what());
@@ -180,6 +195,21 @@ void Application::handleAsset(const std::filesystem::path& path) {
     }
     lastAsset_ = std::string(core::toString(kind)) + ": " + path.filename().string();
     log::info("Accepted ", core::toString(kind), " asset: ", path.string());
+}
+
+void Application::refreshAnimatedMesh(bool initialUpload) {
+    if (device_ == nullptr || model_ == nullptr || animator_ == nullptr) return;
+    auto frame = animator_->evaluate(animationFrame_);
+    core::normalizeForPreview(frame.vertices, *model_);
+    std::vector<graphics::PreviewVertex> vertices(frame.vertices.size());
+    for (std::size_t i = 0; i < frame.vertices.size(); ++i) {
+        std::memcpy(vertices[i].position, frame.vertices[i].position.data(), sizeof(vertices[i].position));
+        std::memcpy(vertices[i].normal, frame.vertices[i].normal.data(), sizeof(vertices[i].normal));
+        std::memcpy(vertices[i].uv, frame.vertices[i].uv.data(), sizeof(vertices[i].uv));
+    }
+    if (initialUpload) device_->uploadPreviewMesh(vertices, model_->indices);
+    else device_->updatePreviewVertices(vertices);
+    uploadedAnimationFrame_ = static_cast<int>(animationFrame_);
 }
 
 void Application::buildUi() {
@@ -195,6 +225,13 @@ void Application::buildUi() {
         ImGui::TextUnformatted("Files: PMX / VMD / VPD / PNG / JPEG / DDS / WAV / MP3 / M4A / MP4 / AVI");
         ImGui::Text("OIDN: %s", DAYO_HAS_OIDN ? "CPU available; HIP optional" : "not installed");
         ImGui::Text("Media: %s", DAYO_HAS_MEDIA ? "FFmpeg enabled" : "metadata/drop only");
+        if (motion_ != nullptr) {
+            ImGui::Checkbox("Play", &playing_);
+            float maximum = static_cast<float>(std::max(motion_->lastFrame, 1U));
+            if (ImGui::SliderFloat("Frame", &animationFrame_, 0.0F, maximum, "%.1f")) {
+                refreshAnimatedMesh(false);
+            }
+        }
         ImGui::Separator();
         ImGui::TextUnformatted("Subayai and BDPT are enabled only when Vulkan RT features are present.");
     }

@@ -1,10 +1,12 @@
 #pragma once
 
 #include "graphics/device.hpp"
+#include "core/animation.hpp"
 
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -28,10 +30,18 @@ public:
 
 private:
     void handleAsset(const std::filesystem::path& path);
+    void refreshAnimatedMesh(bool initialUpload);
     void buildUi();
 
     Options options_;
     graphics::Device* device_ {};
+    std::unique_ptr<core::PmxModel> model_;
+    std::unique_ptr<core::VmdMotion> motion_;
+    std::unique_ptr<core::VpdPose> pose_;
+    std::unique_ptr<core::MmdAnimator> animator_;
+    float animationFrame_ {};
+    int uploadedAnimationFrame_ { -1 };
+    bool playing_ { true };
     std::string lastAsset_ { "Drop PMX/VMD/VPD/media files into the window" };
 };
 

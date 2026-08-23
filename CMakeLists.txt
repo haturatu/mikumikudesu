@@ -46,6 +46,7 @@ endif()
 find_package(SDL3 CONFIG REQUIRED)
 
 add_library(dayo_core
+  src/core/animation.cpp
   src/core/asset.cpp
   src/core/denoiser.cpp
   src/core/model_probe.cpp

@@ -101,6 +101,7 @@ public:
     virtual void waitIdle() = 0;
     virtual void uploadPreviewMesh(std::span<const PreviewVertex> vertices,
                                    std::span<const std::uint32_t> indices) = 0;
+    virtual void updatePreviewVertices(std::span<const PreviewVertex> vertices) = 0;
 
     [[nodiscard]] virtual BufferHandle createBuffer(const BufferDesc& desc) = 0;
     [[nodiscard]] virtual TextureHandle createTexture(const TextureDesc& desc) = 0;
