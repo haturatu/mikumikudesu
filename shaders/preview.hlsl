@@ -1,10 +1,17 @@
+struct VertexInput
+{
+    [[vk::location(0)]] float3 position : POSITION;
+    [[vk::location(1)]] float3 normal : NORMAL;
+    [[vk::location(2)]] float2 uv : TEXCOORD0;
+};
+
 struct VertexOutput
 {
     float4 position : SV_Position;
     [[vk::location(0)]] float3 color : COLOR0;
 };
 
-VertexOutput VS(uint vertexId : SV_VertexID)
+VertexOutput VS(VertexInput input, uint vertexId : SV_VertexID)
 {
     const float2 positions[3] = {
         float2( 0.0, -0.65),
@@ -18,8 +25,17 @@ VertexOutput VS(uint vertexId : SV_VertexID)
     };
 
     VertexOutput output;
-    output.position = float4(positions[vertexId], 0.0, 1.0);
-    output.color = colors[vertexId];
+    if (input.normal.x == 0.0 && input.normal.y == 0.0 && input.normal.z == 0.0)
+    {
+        output.position = float4(positions[vertexId], 0.0, 1.0);
+        output.color = colors[vertexId];
+    }
+    else
+    {
+        float3 normal = normalize(input.normal);
+        output.position = float4(input.position.x, -input.position.y, input.position.z * 0.1, 1.0);
+        output.color = 0.28 + 0.62 * abs(normal.zyx);
+    }
     return output;
 }
 

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -60,6 +61,12 @@ struct TextureDesc {
     bool renderTarget {};
 };
 
+struct PreviewVertex {
+    float position[3] {};
+    float normal[3] {};
+    float uv[2] {};
+};
+
 using BufferHandle = std::uint64_t;
 using TextureHandle = std::uint64_t;
 using PipelineHandle = std::uint64_t;
@@ -88,6 +95,8 @@ public:
     virtual void beginUiFrame() = 0;
     virtual void renderFrame() = 0;
     virtual void waitIdle() = 0;
+    virtual void uploadPreviewMesh(std::span<const PreviewVertex> vertices,
+                                   std::span<const std::uint32_t> indices) = 0;
 
     [[nodiscard]] virtual BufferHandle createBuffer(const BufferDesc& desc) = 0;
     [[nodiscard]] virtual TextureHandle createTexture(const TextureDesc& desc) = 0;
@@ -101,4 +110,3 @@ protected:
 [[nodiscard]] std::string_view toString(RendererKind renderer) noexcept;
 
 } // namespace dayo::graphics
-

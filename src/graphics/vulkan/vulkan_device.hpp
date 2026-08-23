@@ -22,6 +22,8 @@ public:
     void beginUiFrame() override;
     void renderFrame() override;
     void waitIdle() override;
+    void uploadPreviewMesh(std::span<const PreviewVertex> vertices,
+                           std::span<const std::uint32_t> indices) override;
     [[nodiscard]] BufferHandle createBuffer(const BufferDesc& desc) override;
     [[nodiscard]] TextureHandle createTexture(const TextureDesc& desc) override;
 
@@ -58,6 +60,7 @@ private:
     void createUi();
     void destroyUi();
     void recreateSwapchain();
+    void destroyPreviewMesh();
     [[nodiscard]] std::uint32_t findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags flags) const;
 
     platform::Window& window_;
@@ -89,6 +92,11 @@ private:
     bool uiInitialized_ {};
     std::array<Frame, 2> frames_ {};
     std::size_t frameIndex_ {};
+    VkBuffer previewVertexBuffer_ {};
+    VkDeviceMemory previewVertexMemory_ {};
+    VkBuffer previewIndexBuffer_ {};
+    VkDeviceMemory previewIndexMemory_ {};
+    std::uint32_t previewIndexCount_ {};
 
     std::uint64_t nextResourceHandle_ { 1 };
     std::unordered_map<BufferHandle, BufferResource> buffers_;

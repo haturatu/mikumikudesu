@@ -31,8 +31,8 @@ private:
     void buildUi();
 
     Options options_;
+    graphics::Device* device_ {};
     std::string lastAsset_ { "Drop PMX/VMD/VPD/media files into the window" };
 };
 
 } // namespace dayo::app
-

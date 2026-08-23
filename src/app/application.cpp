@@ -12,6 +12,7 @@
 
 #include <charconv>
 #include <chrono>
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include <string_view>
@@ -78,6 +79,7 @@ int Application::run() {
     windowOptions.hidden = options_.hidden || options_.probeOnly;
     auto window = platform::createWindow(windowOptions);
     auto device = graphics::createVulkanDevice(*window, options_.validation);
+    device_ = device.get();
     device->selectRenderer(options_.renderer);
     log::info("Graphics convention: depth [0,1], Vulkan framebuffer Y handled in backend");
     log::info("OIDN: ", DAYO_HAS_OIDN ? "available (CPU; HIP selectable at runtime)" : "not found, disabled");
@@ -130,9 +132,15 @@ void Application::handleAsset(const std::filesystem::path& path) {
     }
     if (kind == core::AssetKind::pmx) {
         try {
-            const auto metadata = core::probePmx(path);
-            lastAsset_ = "PMX " + metadata.modelName + " — v" + std::to_string(metadata.version)
-                       + ", vertices " + std::to_string(metadata.vertexCount);
+            const auto mesh = core::loadPmxMesh(path);
+            std::vector<graphics::PreviewVertex> vertices(mesh.vertices.size());
+            static_assert(sizeof(graphics::PreviewVertex) == sizeof(core::PmxVertex));
+            std::memcpy(vertices.data(), mesh.vertices.data(), mesh.vertices.size() * sizeof(core::PmxVertex));
+            if (device_ != nullptr) device_->uploadPreviewMesh(vertices, mesh.indices);
+            lastAsset_ = "PMX " + mesh.metadata.modelName + " — v"
+                       + std::to_string(mesh.metadata.version) + ", vertices "
+                       + std::to_string(mesh.metadata.vertexCount) + ", triangles "
+                       + std::to_string(mesh.indices.size() / 3);
             log::info("Loaded metadata: ", lastAsset_, " (", path.string(), ")");
         } catch (const std::exception& exception) {
             lastAsset_ = "PMX error: " + std::string(exception.what());

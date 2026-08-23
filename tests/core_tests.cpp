@@ -48,13 +48,31 @@ int main() {
         appendText(output, "Miku English");
         appendText(output, "comment");
         appendText(output, "comment en");
-        append(output, static_cast<std::int32_t>(3939));
+        append(output, static_cast<std::int32_t>(3));
+        for (std::int32_t vertex = 0; vertex < 3; ++vertex) {
+            const std::array<float, 3> position { static_cast<float>(vertex), static_cast<float>(vertex & 1), 0.0F };
+            const std::array<float, 3> normal { 0.0F, 0.0F, 1.0F };
+            const std::array<float, 2> uv { 0.0F, 0.0F };
+            output.write(reinterpret_cast<const char*>(position.data()), sizeof(position));
+            output.write(reinterpret_cast<const char*>(normal.data()), sizeof(normal));
+            output.write(reinterpret_cast<const char*>(uv.data()), sizeof(uv));
+            append(output, static_cast<std::uint8_t>(0));
+            append(output, static_cast<std::int32_t>(0));
+            append(output, 1.0F);
+        }
+        append(output, static_cast<std::int32_t>(3));
+        append(output, static_cast<std::uint32_t>(0));
+        append(output, static_cast<std::uint32_t>(1));
+        append(output, static_cast<std::uint32_t>(2));
     }
     try {
         const auto metadata = dayo::core::probePmx(path);
         ok &= check(metadata.version == 2.0F, "PMX version");
         ok &= check(metadata.modelName == "Miku", "PMX UTF-8 model name");
-        ok &= check(metadata.vertexCount == 3939, "PMX vertex count");
+        ok &= check(metadata.vertexCount == 3, "PMX vertex count");
+        const auto mesh = dayo::core::loadPmxMesh(path);
+        ok &= check(mesh.vertices.size() == 3, "PMX vertex loading");
+        ok &= check(mesh.indices.size() == 3 && mesh.indices[2] == 2, "PMX index loading");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: PMX probe: " << exception.what() << '\n';
         ok = false;

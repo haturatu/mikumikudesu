@@ -1,9 +1,11 @@
 #include "core/model_probe.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <string_view>
 
@@ -66,43 +68,145 @@ std::string readText(std::istream& input, std::uint8_t encoding) {
     return encoding == 0 ? utf16LeToUtf8(bytes) : bytes;
 }
 
-} // namespace
+void skip(std::istream& input, std::streamoff bytes, std::string_view field) {
+    if (bytes < 0) throw std::runtime_error("invalid PMX byte count for " + std::string(field));
+    input.seekg(bytes, std::ios::cur);
+    if (!input) throw std::runtime_error("truncated PMX while skipping " + std::string(field));
+}
 
-PmxMetadata probePmx(const std::filesystem::path& path) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) throw std::runtime_error("cannot open PMX file: " + path.string());
+std::uint32_t readIndex(std::istream& input, std::uint8_t size) {
+    switch (size) {
+    case 1: return read<std::uint8_t>(input, "vertex index");
+    case 2: return read<std::uint16_t>(input, "vertex index");
+    case 4: return read<std::uint32_t>(input, "vertex index");
+    default: throw std::runtime_error("invalid PMX vertex index size");
+    }
+}
 
+struct Header {
+    PmxMetadata metadata;
+    std::array<std::uint8_t, 64> settings {};
+};
+
+Header readHeader(std::istream& input, const std::filesystem::path& path) {
     std::array<char, 4> magic {};
     input.read(magic.data(), static_cast<std::streamsize>(magic.size()));
     if (!input || std::string_view(magic.data(), magic.size()) != "PMX ") {
         throw std::runtime_error("not a PMX file: " + path.string());
     }
 
-    PmxMetadata result;
-    result.version = read<float>(input, "version");
-    if (result.version < 2.0F || result.version > 2.2F) {
+    Header result;
+    result.metadata.version = read<float>(input, "version");
+    if (result.metadata.version < 2.0F || result.metadata.version > 2.2F) {
         throw std::runtime_error("unsupported PMX version");
     }
-
     const auto headerSize = read<std::uint8_t>(input, "header size");
-    if (headerSize < 8 || headerSize > 64) throw std::runtime_error("invalid PMX header size");
-    std::array<std::uint8_t, 64> header {};
-    input.read(reinterpret_cast<char*>(header.data()), headerSize);
+    if (headerSize < 8 || headerSize > result.settings.size()) {
+        throw std::runtime_error("invalid PMX header size");
+    }
+    input.read(reinterpret_cast<char*>(result.settings.data()), headerSize);
     if (!input) throw std::runtime_error("truncated PMX header");
-    result.textEncoding = header[0];
-    result.additionalUvCount = header[1];
-    if (result.textEncoding > 1 || result.additionalUvCount > 4) {
+    result.metadata.textEncoding = result.settings[0];
+    result.metadata.additionalUvCount = result.settings[1];
+    if (result.metadata.textEncoding > 1 || result.metadata.additionalUvCount > 4) {
         throw std::runtime_error("invalid PMX global settings");
     }
-
-    result.modelName = readText(input, result.textEncoding);
-    result.englishName = readText(input, result.textEncoding);
-    static_cast<void>(readText(input, result.textEncoding));
-    static_cast<void>(readText(input, result.textEncoding));
-    result.vertexCount = read<std::int32_t>(input, "vertex count");
-    if (result.vertexCount < 0) throw std::runtime_error("invalid PMX vertex count");
+    for (std::size_t i = 2; i < 8; ++i) {
+        if (result.settings[i] != 1 && result.settings[i] != 2 && result.settings[i] != 4) {
+            throw std::runtime_error("invalid PMX index size");
+        }
+    }
+    result.metadata.modelName = readText(input, result.metadata.textEncoding);
+    result.metadata.englishName = readText(input, result.metadata.textEncoding);
+    static_cast<void>(readText(input, result.metadata.textEncoding));
+    static_cast<void>(readText(input, result.metadata.textEncoding));
+    result.metadata.vertexCount = read<std::int32_t>(input, "vertex count");
+    if (result.metadata.vertexCount < 0 || result.metadata.vertexCount > 100'000'000) {
+        throw std::runtime_error("invalid PMX vertex count");
+    }
     return result;
 }
 
-} // namespace dayo::core
+} // namespace
 
+PmxMetadata probePmx(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) throw std::runtime_error("cannot open PMX file: " + path.string());
+
+    return readHeader(input, path).metadata;
+}
+
+PmxMesh loadPmxMesh(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) throw std::runtime_error("cannot open PMX file: " + path.string());
+    const auto header = readHeader(input, path);
+
+    PmxMesh mesh;
+    mesh.metadata = header.metadata;
+    mesh.vertices.resize(static_cast<std::size_t>(mesh.metadata.vertexCount));
+    const auto boneIndexSize = header.settings[5];
+    for (auto& vertex : mesh.vertices) {
+        input.read(reinterpret_cast<char*>(vertex.position), sizeof(vertex.position));
+        input.read(reinterpret_cast<char*>(vertex.normal), sizeof(vertex.normal));
+        input.read(reinterpret_cast<char*>(vertex.uv), sizeof(vertex.uv));
+        if (!input) throw std::runtime_error("truncated PMX vertex data");
+        skip(input, static_cast<std::streamoff>(mesh.metadata.additionalUvCount) * 4 * sizeof(float),
+             "additional UVs");
+        const auto weight = read<std::uint8_t>(input, "weight type");
+        switch (weight) {
+        case 0: // BDEF1
+            skip(input, boneIndexSize, "BDEF1");
+            break;
+        case 1: // BDEF2
+            skip(input, 2 * boneIndexSize + static_cast<std::streamoff>(sizeof(float)), "BDEF2");
+            break;
+        case 2: // BDEF4
+        case 4: // QDEF
+            skip(input, 4 * boneIndexSize + 4 * static_cast<std::streamoff>(sizeof(float)), "BDEF4/QDEF");
+            break;
+        case 3: // SDEF
+            skip(input, 2 * boneIndexSize + 10 * static_cast<std::streamoff>(sizeof(float)), "SDEF");
+            break;
+        default:
+            throw std::runtime_error("unsupported PMX weight type");
+        }
+        skip(input, sizeof(float), "edge scale");
+    }
+
+    const auto indexCount = read<std::int32_t>(input, "index count");
+    if (indexCount < 0 || indexCount > 300'000'000 || indexCount % 3 != 0) {
+        throw std::runtime_error("invalid PMX index count");
+    }
+    mesh.indices.resize(static_cast<std::size_t>(indexCount));
+    const auto vertexIndexSize = header.settings[2];
+    for (auto& index : mesh.indices) {
+        index = readIndex(input, vertexIndexSize);
+        if (index >= mesh.vertices.size()) throw std::runtime_error("PMX vertex index out of range");
+    }
+
+    if (!mesh.vertices.empty()) {
+        std::array<float, 3> minimum { mesh.vertices[0].position[0], mesh.vertices[0].position[1],
+                                      mesh.vertices[0].position[2] };
+        auto maximum = minimum;
+        for (const auto& vertex : mesh.vertices) {
+            for (std::size_t axis = 0; axis < 3; ++axis) {
+                minimum[axis] = std::min(minimum[axis], vertex.position[axis]);
+                maximum[axis] = std::max(maximum[axis], vertex.position[axis]);
+            }
+        }
+        const std::array center { (minimum[0] + maximum[0]) * 0.5F,
+                                  (minimum[1] + maximum[1]) * 0.5F,
+                                  (minimum[2] + maximum[2]) * 0.5F };
+        const float extent = std::max({ maximum[0] - minimum[0], maximum[1] - minimum[1],
+                                        maximum[2] - minimum[2], 0.001F });
+        const float scale = 1.8F / extent;
+        for (auto& vertex : mesh.vertices) {
+            for (std::size_t axis = 0; axis < 3; ++axis) {
+                vertex.position[axis] = (vertex.position[axis] - center[axis]) * scale;
+            }
+        }
+    }
+    return mesh;
+}
+
+} // namespace dayo::core

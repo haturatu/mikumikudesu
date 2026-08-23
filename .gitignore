@@ -28,3 +28,4 @@ MikuMikuDayo/screenshots/*
 *.swp
 *~
 .DS_Store
+imgui.ini

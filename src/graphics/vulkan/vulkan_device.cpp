@@ -109,12 +109,16 @@ VulkanDevice::VulkanDevice(platform::Window& window, bool validation)
     createPipeline();
     createFrames();
     createUi();
+    const std::array<PreviewVertex, 3> fallbackVertices {{ {}, {}, {} }};
+    const std::array<std::uint32_t, 3> fallbackIndices { 0, 1, 2 };
+    uploadPreviewMesh(fallbackVertices, fallbackIndices);
     log::info("Vulkan device ready: ", capabilities_.gpuName, " (", capabilities_.driverName, ")");
 }
 
 VulkanDevice::~VulkanDevice() {
     if (device_ != VK_NULL_HANDLE) vkDeviceWaitIdle(device_);
     destroyUi();
+    destroyPreviewMesh();
     for (const auto& [handle, resource] : textures_) {
         static_cast<void>(handle);
         if (resource.image != VK_NULL_HANDLE) vkDestroyImage(device_, resource.image, nullptr);
@@ -491,8 +495,25 @@ void VulkanDevice::createPipeline() {
             .pName = "PS",
         },
     };
+    const VkVertexInputBindingDescription vertexBinding {
+        .binding = 0,
+        .stride = sizeof(PreviewVertex),
+        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+    const std::array vertexAttributes {
+        VkVertexInputAttributeDescription { 0, 0, VK_FORMAT_R32G32B32_SFLOAT,
+                                            offsetof(PreviewVertex, position) },
+        VkVertexInputAttributeDescription { 1, 0, VK_FORMAT_R32G32B32_SFLOAT,
+                                            offsetof(PreviewVertex, normal) },
+        VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT,
+                                            offsetof(PreviewVertex, uv) },
+    };
     const VkPipelineVertexInputStateCreateInfo vertexInput {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = 1,
+        .pVertexBindingDescriptions = &vertexBinding,
+        .vertexAttributeDescriptionCount = static_cast<std::uint32_t>(vertexAttributes.size()),
+        .pVertexAttributeDescriptions = vertexAttributes.data(),
     };
     const VkPipelineInputAssemblyStateCreateInfo assembly {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -767,7 +788,10 @@ void VulkanDevice::renderFrame() {
     vkCmdSetViewport(frame.commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
     vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-    vkCmdDraw(frame.commandBuffer, 3, 1, 0, 0);
+    const VkDeviceSize vertexOffset = 0;
+    vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer_, &vertexOffset);
+    vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(frame.commandBuffer, previewIndexCount_, 1, 0, 0, 0);
 #if DAYO_HAS_IMGUI
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.commandBuffer);
 #endif
@@ -826,6 +850,63 @@ void VulkanDevice::renderFrame() {
 
 void VulkanDevice::waitIdle() {
     if (device_ != VK_NULL_HANDLE) check(vkDeviceWaitIdle(device_), "wait for Vulkan device");
+}
+
+void VulkanDevice::destroyPreviewMesh() {
+    if (previewIndexBuffer_ != VK_NULL_HANDLE) vkDestroyBuffer(device_, previewIndexBuffer_, nullptr);
+    if (previewIndexMemory_ != VK_NULL_HANDLE) vkFreeMemory(device_, previewIndexMemory_, nullptr);
+    if (previewVertexBuffer_ != VK_NULL_HANDLE) vkDestroyBuffer(device_, previewVertexBuffer_, nullptr);
+    if (previewVertexMemory_ != VK_NULL_HANDLE) vkFreeMemory(device_, previewVertexMemory_, nullptr);
+    previewVertexBuffer_ = VK_NULL_HANDLE;
+    previewVertexMemory_ = VK_NULL_HANDLE;
+    previewIndexBuffer_ = VK_NULL_HANDLE;
+    previewIndexMemory_ = VK_NULL_HANDLE;
+    previewIndexCount_ = 0;
+}
+
+void VulkanDevice::uploadPreviewMesh(std::span<const PreviewVertex> vertices,
+                                     std::span<const std::uint32_t> indices) {
+    if (vertices.empty() || indices.empty()) throw std::invalid_argument("preview mesh is empty");
+    waitIdle();
+    destroyPreviewMesh();
+
+    auto upload = [this](const void* data, VkDeviceSize size, VkBufferUsageFlags usage,
+                         VkBuffer& buffer, VkDeviceMemory& memory) {
+        const VkBufferCreateInfo bufferInfo {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = size,
+            .usage = usage,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        };
+        check(vkCreateBuffer(device_, &bufferInfo, nullptr, &buffer), "create preview mesh buffer");
+        VkMemoryRequirements requirements {};
+        vkGetBufferMemoryRequirements(device_, buffer, &requirements);
+        const VkMemoryAllocateInfo allocationInfo {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = requirements.size,
+            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+        };
+        check(vkAllocateMemory(device_, &allocationInfo, nullptr, &memory), "allocate preview mesh memory");
+        check(vkBindBufferMemory(device_, buffer, memory, 0), "bind preview mesh memory");
+        void* mapped = nullptr;
+        check(vkMapMemory(device_, memory, 0, size, 0, &mapped), "map preview mesh memory");
+        std::memcpy(mapped, data, static_cast<std::size_t>(size));
+        vkUnmapMemory(device_, memory);
+    };
+
+    try {
+        upload(vertices.data(), vertices.size_bytes(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+               previewVertexBuffer_, previewVertexMemory_);
+        upload(indices.data(), indices.size_bytes(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+               previewIndexBuffer_, previewIndexMemory_);
+        previewIndexCount_ = static_cast<std::uint32_t>(indices.size());
+    } catch (...) {
+        destroyPreviewMesh();
+        throw;
+    }
+    log::info("Uploaded PMX preview mesh: ", vertices.size(), " vertices, ",
+              indices.size() / 3, " triangles");
 }
 
 std::uint32_t VulkanDevice::findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags flags) const {

@@ -157,6 +157,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   foreach(target dayo_core dayo_platform dayo_graphics mikumikudesu)
     target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
   endforeach()
+  target_compile_options(dayo_graphics PRIVATE -Wno-missing-field-initializers)
 endif()
 
 install(TARGETS mikumikudesu RUNTIME DESTINATION bin)
