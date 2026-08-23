@@ -1,181 +1,144 @@
 # mikumikudesu
 
-MikuMikuDayo 1.20 の Linux ネイティブ移植ブランチです。既存の Windows/D3D12
-ソースとデータを保持しつつ、`SDL3 + Vulkan 1.3 + HLSL/SPIR-V` の独立した実行系を
-追加しています。
+MikuMikuDayo 1.20をLinuxへ移植したネイティブ実行系です。元のWindows/D3D12ソースと
+アセットを保持しつつ、Linux側を`SDL3 + Vulkan 1.3 + HLSL/SPIR-V`で構成しています。
 
-## 現在動くもの
+## 実装済み
 
-- Linux x86_64 上の SDL3 ウィンドウ、マウス・キーボード・ゲームパッド初期化
-- SDL3 のファイル D&D（PMX/VMD/VPD、画像、音声、動画、`.dayo`、`.fxdayo` を分類）
-- Vulkan 1.3 の instance/device/surface/swapchain、dynamic rendering、同期、resize
-- Dear ImGui の `imgui_impl_sdl3 + imgui_impl_vulkan`
-- HLSL から SPIR-V へのビルド（DXC優先、Previewのみglslcフォールバック可）
-- PMX 2.0/2.1 のUTF-8/UTF-16メタデータ、頂点、法線、UV、BDEF/SDEF/QDEF、
-  1/2/4 byteインデックスの読み込み
-- PMXメッシュのVulkan頂点／インデックスバッファへのアップロードと静的Preview描画
-- GPU機能ベースの Preview/Subayai/BDPT 判定とPreviewへの安全なフォールバック
-- OIDNは HIP → CPU の順で実行時選択（OIDN自体は任意依存）
-- FFmpeg開発ライブラリの任意検出
-- `DEBUG/INFO → stdout`、`WARN/ERROR → stderr` のログ出力
+- SDL3ウィンドウ、HiDPI/resize、ファイルD&D、右ドラッグカメラ、ホイールズーム
+- Vulkan 1.3 swapchain、dynamic rendering、同期、深度、αブレンド、材質別両面描画
+- Dear ImGuiのSDL3/Vulkan backend
+- PMX 2.0/2.1の全セクション（頂点、材質、ボーン/IK、全モーフ、表示枠、剛体、
+  ジョイント、soft-bodyデータ）の検証付き読み込み
+- BDEF1/2/4、SDEF、QDEF、VMDベジェ補間、VPD、ボーン継承、CCD IK、全PMXモーフ
+- Bullet剛体/6DoF spring、collision group、固定step、物理ボーンへの往復反映
+- PNG/JPEG/BMP/TGA/HDRとDDS（RGBA/BGRA、BC1～BC5）の読込、Vulkan sRGB texture upload
+- PMX材質範囲、diffuse/ambient/specular/power、texture乗算/加算モーフ、VMDカメラ/照明
+- FFmpegによるWAV/MP3/M4A等の音声再生とMP4/AVI/MKV/MOV/WebM動画デコード
+- Jsonnetを実行した`.fxdayo`のtexture/sampler/pass/raster/compute/raytracing graph解析
+- `.dayo` v2の相対パス保存と原子的置換、v2再読込、旧版JSONヘッダーからのasset復元
+- Vulkan feature単位のPreview/Subayai/BDPT判定と、安全なPreviewフォールバック
+- OIDNのHIP→CPU runtime選択（OIDNは任意依存）
+- `DEBUG/INFO → stdout`、`WARN/ERROR → stderr`のログ規約
 
-現時点のネイティブPreviewは静的メッシュ確認用です。元アプリのVMD/VPDアニメーション、
-Bullet変形、材質・テクスチャ、`.fxdayo`パスグラフ、Subayai/BDPTのシェーダー本体、
-録音・動画デコード／書き出しは、Windows側ソースには存在しますが新しいVulkan実行系には
-まだ接続されていません。RT拡張を持つGPUで機能判定が成功しても、現在表示する内容は
-Previewメッシュです。この制約を隠して「Linux完全対応」とは扱いません。
-`--probe` の `*_hardware` はGPU機能だけ、`subayai` / `bdpt` はGPU機能とネイティブ実装の
-両方を満たした利用可否を表します。
+## 制約
+
+PreviewはLinux/AMDで実動します。SubayaiとBDPTについては、`.fxdayo`グラフと必要featureの
+検出までは移植済みですが、Vulkan acceleration structure/SBTと各passの実行器は未接続です。
+そのため`nativeSubayai`と`nativeBdpt`は意図的にfalseであり、対応していると偽装しません。
+
+また、PMX 2.1 soft-bodyは安全に解析しますが、現在のBullet worldではsimulation対象外です。
+旧Windows `.dayo`のJSON asset情報は読めますが、後続する独自binary keyframe streamはまだ
+読みません。複数モデル編集、ImGuizmo編集、動画書き出しも元Windows UI相当には未到達です。
 
 ## 必要環境
-
-最小構成:
 
 - Linux x86_64
 - CMake 3.25以上、Ninja、C++20コンパイラ
 - SDL 3.2以上
 - Vulkan loaderとVulkan 1.3対応ドライバ
 - glslc、またはDXC
+- Preview: Vulkan swapchain対応GPU
+- RT実装の開発・検証: RDNA2/RX 6000以降など、起動時に表示するRT featureを満たすGPU
 
-AMD推奨構成:
+AMDではMesa RADVを推奨します。BDPTを将来有効化する構成ではRAM 16GB、VRAM 8GB以上を
+推奨します。
 
-- AMD Radeon RX 6000（RDNA2）以降
-- Mesa RADV
-- RAM 16 GB以上、VRAM 8 GB以上（BDPT移植完了後の推奨値）
-
-PreviewだけならハードウェアRTは不要です。Subayai/BDPT向けには次を起動時に確認します。
+確認するRT feature:
 
 - `VK_KHR_acceleration_structure`
 - `VK_KHR_ray_tracing_pipeline`
 - `VK_KHR_ray_query`
 - `VK_KHR_fragment_shader_barycentric`
-- buffer device address
-- descriptor indexing
+- buffer device address / descriptor indexing
 
 ### Artix / Arch Linux
 
 ```bash
 sudo pacman -S --needed \
-  base-devel cmake ninja sdl3 \
+  base-devel cmake ninja sdl3 ffmpeg bullet nlohmann-json \
   vulkan-headers vulkan-icd-loader vulkan-radeon vulkan-tools \
   vulkan-validation-layers shaderc
 ```
 
-DXC、Bullet、OIDN、Jsonnet、DirectXTex等はディストリビューションのパッケージ、または
-下記vcpkgマニフェストを利用できます。VulkanヘッダーとDear ImGuiが未導入の場合、通常の
-CMakeプリセットは公式ソースの固定タグを自動取得します。
+不足するVulkan-Headers、stb、Dear ImGui、Bullet、Jsonnet等は、通常presetでは固定versionを
+CMakeが取得します。取得を禁止する場合は必要なdevelopment packageを先に導入してください。
 
 ## ビルドと実行
 
 ```bash
 cmake --preset linux-debug
 cmake --build --preset linux-debug
-ctest --preset linux-debug
+ctest --preset linux-debug --output-on-failure
 
 ./build/linux-debug/mikumikudesu
-./build/linux-debug/mikumikudesu --asset MikuMikuDayo/sample/deformTutorial.pmx
+./build/linux-debug/mikumikudesu --asset model.pmx --asset motion.vmd
 ```
 
 主なオプション:
 
 ```text
---renderer preview|subayai|bdpt  要求するレンダラー（不足機能時はPreview）
---asset PATH                     起動時にアセットを読む（複数指定可）
---probe                          GPU機能をJSONで表示して終了
---hidden --frames N              非表示ウィンドウでNフレーム描画するsmoke test
+--renderer preview|subayai|bdpt  要求renderer（利用不可なら理由を表示してPreview）
+--asset PATH                     起動時asset。複数指定可
+--save-project PATH              読み込んだassetと状態を.dayoへ保存
+--probe                          GPU featureをJSONで出力して終了
+--hidden --frames N              非表示windowでN frame描画するsmoke test
 --no-validation                 Vulkan validationを要求しない
 ```
 
-ネットワーク取得を禁止して、インストール済み依存だけを使う場合:
+system packageのみで構成する場合:
 
 ```bash
 cmake --preset linux-system-only
 cmake --build --preset linux-system-only
+ctest --preset linux-system-only --output-on-failure
 ```
 
-一括診断は次で実行できます。
+AMD環境の一括診断:
 
 ```bash
 ./scripts/check-linux-amd.sh
 ```
 
-## vcpkg
+このスクリプトはGPU probe、unit test、PMX+VMD+Bullet、画像、`.dayo` round trip、
+FFmpeg動画/音声（CLIがある場合）を実際に実行します。
 
-`vcpkg.json` には SDL3、Vulkan、DXC、DirectXTex（JPEG/PNG有効）、Bullet、
-Dear ImGui、ImGuizmo、cereal、Jsonnetを宣言しています。
+## シェーダーと依存
 
-```bash
-export VCPKG_ROOT=/path/to/vcpkg
-cmake --preset linux-release \
-  -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
-cmake --build --preset linux-release
-```
+`cmake/CompileHlsl.cmake`はDXCがあればVulkan 1.3向けSPIR-Vを生成し、単純なPreviewのみ
+glslc HLSL frontendへfallbackします。既存のbindless/ray query/ray tracing shaderを移す場合は
+DXCが必須です。`SV_Barycentrics`はSPIR-V fragment barycentricへ写像する設計です。
 
-OIDNには現行vcpkg公式レジストリのportがないため、ディストリビューションまたはOIDN公式の
-CMake installを利用します。DirectXTexのLinux版はDDS/HDR/TGAに加え、マニフェストの`jpeg`/`png` featureで
-JPEG/PNG補助関数を有効にします。ネイティブPreviewの現在の色付き法線表示はまだ
-DirectXTexを呼ばず、材質移植時の依存として準備しています。
-
-## シェーダー
-
-`cmake/CompileHlsl.cmake` は `dxc` を検出すると次に相当する設定を使います。
-
-```bash
-dxc -spirv -fspv-target-env=vulkan1.3 -fvk-use-dx-layout \
-  -E VS -T vs_6_6 shader.hlsl -Fo shader.spv
-```
-
-DXCが無い場合は、移植基盤の単純なPreviewシェーダーに限ってglslcのHLSL frontendへ
-フォールバックします。既存のbindless、ray query、ray tracingシェーダーを移す際はDXCを
-必須にします。`SV_Barycentrics` はSPIR-Vのfragment barycentricへ写像する前提です。
-
-## OIDN
-
-OIDNは必須ではありません。ビルド時に見つかった場合、起動時にHIP deviceを試し、
-利用できなければCPU deviceへフォールバックします。OIDNが無い場合もアプリは起動し、
-denoiseだけを無効にします。HIPを使う環境では対応するROCm/HIP runtimeも別途必要です。
-
-## Wine + vkd3d-protonの事前確認
-
-配布物の `MikuMikuDayo/MikuMikuDayo.exe` はネイティブ移植とは別に、Wine prefixを一時
-ディレクトリへ隔離して確認できます。
-
-```bash
-./scripts/wine-smoke.sh
-```
-
-これはD3D12→vkd3d-proton→Vulkan経路の互換性確認であり、Linuxネイティブ対応を意味しません。
+`vcpkg.json`にはSDL3、Vulkan、DXC、DirectXTex、Bullet、Dear ImGui、ImGuizmo、cereal、
+Jsonnetを宣言しています。Linux実行系の画像読込は現在stbと内蔵DDS decoderを使うため、
+WICには依存しません。OIDNは任意で、HIP deviceが使えなければCPUへfallbackします。
 
 ## 構成
 
 ```text
 src/
-├── app/                     CLI、D&D、ImGui画面、メインループ
-├── core/                    アセット分類、PMX、OIDN選択、ログ
-├── platform/                SDL3 window/event/audio初期化
+├── app/                     CLI、D&D、ImGui、main loop、project連携
+├── core/                    PMX/VMD/VPD、animation、Bullet、media、effect、project
+├── platform/                SDL3 window/event/audio
 └── graphics/
-    ├── device.hpp           backend非依存のdevice/resource/command契約
-    └── vulkan/              Vulkan device/swapchain/pipeline/resource実装
+    ├── device.hpp           API非依存device/resource契約
+    └── vulkan/              Vulkan swapchain/pipeline/resource実装
 
-MikuMikuDayo/src/            元のWin32/D3D12実装（比較・段階移植用）
+MikuMikuDayo/src/            元のWin32/D3D12実装（比較用）
 MikuMikuDayo/hlsl/           既存HLSL
 MikuMikuDayo/renderer/       Preview/Subayai/BDPT effectと素材
 ```
 
-Vulkan/D3Dの座標差は `GraphicsConvention` とVulkan backend内で吸収し、CoreへAPI差を
-持ち込みません。D3D12側を同じinterfaceへ接続する作業が完了するまでは、Windowsでは元の
-配布ビルドを使用します。
-
 ## このAMD環境での確認結果
 
-2026-08-24、AMD Ryzen 5 PRO 3500U / Radeon Vega 8 / Mesa RADV 26.1.7で確認:
+2026-08-24、AMD Ryzen 5 PRO 3500U / Radeon Vega 8 / Mesa RADV 26.1.7:
 
-- Vulkan API 1.4.354、Preview: 対応
-- buffer device address / descriptor indexing: 対応
-- acceleration structure / ray query / RT pipeline / fragment barycentric: 非対応
-- core test、Vulkan probe: 成功
-- Dear ImGui有効ビルド: 成功
-- 同梱PMX（4,694頂点、7,860三角形）のアップロードと複数フレーム描画: 成功
-- Subayai/BDPT要求時: 不足機能を列挙してPreviewへフォールバック
+- Vulkan API 1.4.354、Preview対応
+- buffer device address / descriptor indexing対応
+- acceleration structure / ray query / RT pipeline / fragment barycentric非対応
+- unit test、Vulkan probe、ImGui build成功
+- 同梱PMX（4,694頂点、7,860三角形）+ VMD + Bulletを10 frame描画成功
+- PNG表示、FFmpeg動画/音声、`.dayo`保存/再読込成功
+- Subayai/BDPT要求時は不足featureを列挙しPreviewへfallback
 
-Vega 8はRDNA2ではないため、このRT非対応は想定どおりです。
+Vega 8はRDNA2ではないため、RT実行試験はハードウェア上不可能です。
