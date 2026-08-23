@@ -64,6 +64,29 @@ int main() {
         append(output, static_cast<std::uint32_t>(0));
         append(output, static_cast<std::uint32_t>(1));
         append(output, static_cast<std::uint32_t>(2));
+        append(output, static_cast<std::int32_t>(0)); // textures
+        append(output, static_cast<std::int32_t>(1)); // materials
+        appendText(output, "Material");
+        appendText(output, "Material");
+        const std::array<float, 4> diffuse { 1.0F, 1.0F, 1.0F, 1.0F };
+        const std::array<float, 3> vector3 {};
+        const std::array<float, 4> vector4 {};
+        output.write(reinterpret_cast<const char*>(diffuse.data()), sizeof(diffuse));
+        output.write(reinterpret_cast<const char*>(vector3.data()), sizeof(vector3));
+        append(output, 0.0F);
+        output.write(reinterpret_cast<const char*>(vector3.data()), sizeof(vector3));
+        append(output, static_cast<std::uint8_t>(0));
+        output.write(reinterpret_cast<const char*>(vector4.data()), sizeof(vector4));
+        append(output, 0.0F);
+        append(output, static_cast<std::int32_t>(-1));
+        append(output, static_cast<std::int32_t>(-1));
+        append(output, static_cast<std::uint8_t>(0));
+        append(output, static_cast<std::uint8_t>(0));
+        append(output, static_cast<std::int32_t>(-1));
+        appendText(output, "");
+        append(output, static_cast<std::int32_t>(3));
+        // bones, morphs, display frames, bodies and joints
+        for (int section = 0; section < 5; ++section) append(output, static_cast<std::int32_t>(0));
     }
     try {
         const auto metadata = dayo::core::probePmx(path);
@@ -73,6 +96,8 @@ int main() {
         const auto mesh = dayo::core::loadPmxMesh(path);
         ok &= check(mesh.vertices.size() == 3, "PMX vertex loading");
         ok &= check(mesh.indices.size() == 3 && mesh.indices[2] == 2, "PMX index loading");
+        const auto model = dayo::core::loadPmxModel(path);
+        ok &= check(model.materials.size() == 1 && model.bones.empty(), "complete PMX sections");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: PMX probe: " << exception.what() << '\n';
         ok = false;

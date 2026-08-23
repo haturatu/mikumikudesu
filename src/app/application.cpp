@@ -136,8 +136,11 @@ void Application::handleAsset(const std::filesystem::path& path) {
         try {
             const auto mesh = core::loadPmxMesh(path);
             std::vector<graphics::PreviewVertex> vertices(mesh.vertices.size());
-            static_assert(sizeof(graphics::PreviewVertex) == sizeof(core::PmxVertex));
-            std::memcpy(vertices.data(), mesh.vertices.data(), mesh.vertices.size() * sizeof(core::PmxVertex));
+            for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
+                std::memcpy(vertices[i].position, mesh.vertices[i].position.data(), sizeof(vertices[i].position));
+                std::memcpy(vertices[i].normal, mesh.vertices[i].normal.data(), sizeof(vertices[i].normal));
+                std::memcpy(vertices[i].uv, mesh.vertices[i].uv.data(), sizeof(vertices[i].uv));
+            }
             if (device_ != nullptr) device_->uploadPreviewMesh(vertices, mesh.indices);
             lastAsset_ = "PMX " + mesh.metadata.modelName + " — v"
                        + std::to_string(mesh.metadata.version) + ", vertices "

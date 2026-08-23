@@ -5,20 +5,36 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
-#include <span>
 #include <stdexcept>
 #include <string_view>
+#include <type_traits>
 
 namespace dayo::core {
 namespace {
 
+constexpr std::int32_t maxElements = 300'000'000;
+
 template <typename T>
 T read(std::istream& input, std::string_view field) {
     static_assert(std::is_trivially_copyable_v<T>);
-    T result {};
-    input.read(reinterpret_cast<char*>(&result), sizeof(result));
+    T value {};
+    input.read(reinterpret_cast<char*>(&value), sizeof(value));
     if (!input) throw std::runtime_error("truncated PMX while reading " + std::string(field));
-    return result;
+    return value;
+}
+
+template <std::size_t N>
+std::array<float, N> readFloatArray(std::istream& input, std::string_view field) {
+    std::array<float, N> value {};
+    input.read(reinterpret_cast<char*>(value.data()), static_cast<std::streamsize>(sizeof(value)));
+    if (!input) throw std::runtime_error("truncated PMX while reading " + std::string(field));
+    return value;
+}
+
+std::int32_t readCount(std::istream& input, std::string_view field, std::int32_t maximum = maxElements) {
+    const auto count = read<std::int32_t>(input, field);
+    if (count < 0 || count > maximum) throw std::runtime_error("invalid PMX " + std::string(field));
+    return count;
 }
 
 std::string utf16LeToUtf8(std::string_view bytes) {
@@ -27,21 +43,18 @@ std::string utf16LeToUtf8(std::string_view bytes) {
     for (std::size_t i = 0; i + 1 < bytes.size(); i += 2) {
         const auto lo = static_cast<unsigned char>(bytes[i]);
         const auto hi = static_cast<unsigned char>(bytes[i + 1]);
-        std::uint32_t codepoint = static_cast<std::uint32_t>(lo)
-                                | (static_cast<std::uint32_t>(hi) << 8U);
+        std::uint32_t codepoint = static_cast<std::uint32_t>(lo) | (static_cast<std::uint32_t>(hi) << 8U);
         if (codepoint >= 0xD800U && codepoint <= 0xDBFFU && i + 3 < bytes.size()) {
             const auto lo2 = static_cast<unsigned char>(bytes[i + 2]);
             const auto hi2 = static_cast<unsigned char>(bytes[i + 3]);
-            const std::uint32_t trail = static_cast<std::uint32_t>(lo2)
-                                      | (static_cast<std::uint32_t>(hi2) << 8U);
+            const auto trail = static_cast<std::uint32_t>(lo2) | (static_cast<std::uint32_t>(hi2) << 8U);
             if (trail >= 0xDC00U && trail <= 0xDFFFU) {
-                codepoint = 0x10000U + ((codepoint - 0xD800U) << 10U) + (trail - 0xDC00U);
+                codepoint = 0x10000U + ((codepoint - 0xD800U) << 10U) + trail - 0xDC00U;
                 i += 2;
             }
         }
-        if (codepoint <= 0x7FU) {
-            output.push_back(static_cast<char>(codepoint));
-        } else if (codepoint <= 0x7FFU) {
+        if (codepoint <= 0x7FU) output.push_back(static_cast<char>(codepoint));
+        else if (codepoint <= 0x7FFU) {
             output.push_back(static_cast<char>(0xC0U | (codepoint >> 6U)));
             output.push_back(static_cast<char>(0x80U | (codepoint & 0x3FU)));
         } else if (codepoint <= 0xFFFFU) {
@@ -59,22 +72,23 @@ std::string utf16LeToUtf8(std::string_view bytes) {
 }
 
 std::string readText(std::istream& input, std::uint8_t encoding) {
-    const auto size = read<std::int32_t>(input, "text length");
-    constexpr std::int32_t maxTextSize = 16 * 1024 * 1024;
-    if (size < 0 || size > maxTextSize) throw std::runtime_error("invalid PMX text length");
+    const auto size = readCount(input, "text length", 16 * 1024 * 1024);
     std::string bytes(static_cast<std::size_t>(size), '\0');
     input.read(bytes.data(), size);
     if (!input) throw std::runtime_error("truncated PMX text");
     return encoding == 0 ? utf16LeToUtf8(bytes) : bytes;
 }
 
-void skip(std::istream& input, std::streamoff bytes, std::string_view field) {
-    if (bytes < 0) throw std::runtime_error("invalid PMX byte count for " + std::string(field));
-    input.seekg(bytes, std::ios::cur);
-    if (!input) throw std::runtime_error("truncated PMX while skipping " + std::string(field));
+std::int32_t readSignedIndex(std::istream& input, std::uint8_t size, std::string_view field) {
+    switch (size) {
+    case 1: return read<std::int8_t>(input, field);
+    case 2: return read<std::int16_t>(input, field);
+    case 4: return read<std::int32_t>(input, field);
+    default: throw std::runtime_error("invalid PMX index size");
+    }
 }
 
-std::uint32_t readIndex(std::istream& input, std::uint8_t size) {
+std::uint32_t readVertexIndex(std::istream& input, std::uint8_t size) {
     switch (size) {
     case 1: return read<std::uint8_t>(input, "vertex index");
     case 2: return read<std::uint16_t>(input, "vertex index");
@@ -85,7 +99,7 @@ std::uint32_t readIndex(std::istream& input, std::uint8_t size) {
 
 struct Header {
     PmxMetadata metadata;
-    std::array<std::uint8_t, 64> settings {};
+    std::array<std::uint8_t, 8> settings {};
 };
 
 Header readHeader(std::istream& input, const std::filesystem::path& path) {
@@ -94,37 +108,289 @@ Header readHeader(std::istream& input, const std::filesystem::path& path) {
     if (!input || std::string_view(magic.data(), magic.size()) != "PMX ") {
         throw std::runtime_error("not a PMX file: " + path.string());
     }
-
     Header result;
     result.metadata.version = read<float>(input, "version");
-    if (result.metadata.version < 2.0F || result.metadata.version > 2.2F) {
+    if (result.metadata.version < 2.0F || result.metadata.version > 2.1F) {
         throw std::runtime_error("unsupported PMX version");
     }
     const auto headerSize = read<std::uint8_t>(input, "header size");
-    if (headerSize < 8 || headerSize > result.settings.size()) {
-        throw std::runtime_error("invalid PMX header size");
-    }
-    input.read(reinterpret_cast<char*>(result.settings.data()), headerSize);
+    if (headerSize != result.settings.size()) throw std::runtime_error("unsupported PMX global header size");
+    input.read(reinterpret_cast<char*>(result.settings.data()), static_cast<std::streamsize>(result.settings.size()));
     if (!input) throw std::runtime_error("truncated PMX header");
     result.metadata.textEncoding = result.settings[0];
     result.metadata.additionalUvCount = result.settings[1];
     if (result.metadata.textEncoding > 1 || result.metadata.additionalUvCount > 4) {
         throw std::runtime_error("invalid PMX global settings");
     }
-    for (std::size_t i = 2; i < 8; ++i) {
+    for (std::size_t i = 2; i < result.settings.size(); ++i) {
         if (result.settings[i] != 1 && result.settings[i] != 2 && result.settings[i] != 4) {
             throw std::runtime_error("invalid PMX index size");
         }
     }
     result.metadata.modelName = readText(input, result.metadata.textEncoding);
     result.metadata.englishName = readText(input, result.metadata.textEncoding);
-    static_cast<void>(readText(input, result.metadata.textEncoding));
-    static_cast<void>(readText(input, result.metadata.textEncoding));
-    result.metadata.vertexCount = read<std::int32_t>(input, "vertex count");
-    if (result.metadata.vertexCount < 0 || result.metadata.vertexCount > 100'000'000) {
-        throw std::runtime_error("invalid PMX vertex count");
-    }
+    result.metadata.comment = readText(input, result.metadata.textEncoding);
+    result.metadata.englishComment = readText(input, result.metadata.textEncoding);
+    result.metadata.vertexCount = readCount(input, "vertex count", 100'000'000);
     return result;
+}
+
+void readVertices(std::istream& input, const Header& header, PmxModel& model) {
+    model.vertices.resize(static_cast<std::size_t>(header.metadata.vertexCount));
+    const auto boneSize = header.settings[5];
+    for (auto& vertex : model.vertices) {
+        vertex.position = readFloatArray<3>(input, "position");
+        vertex.normal = readFloatArray<3>(input, "normal");
+        vertex.uv = readFloatArray<2>(input, "uv");
+        for (std::uint8_t i = 0; i < header.metadata.additionalUvCount; ++i) {
+            vertex.additionalUv[i] = readFloatArray<4>(input, "additional uv");
+        }
+        const auto type = read<std::uint8_t>(input, "weight type");
+        if (type > 4 || (type == 4 && header.metadata.version < 2.1F)) {
+            throw std::runtime_error("invalid PMX weight type");
+        }
+        vertex.weightType = static_cast<PmxWeightType>(type);
+        const auto bone = [&] { return readSignedIndex(input, boneSize, "bone index"); };
+        switch (vertex.weightType) {
+        case PmxWeightType::bdef1:
+            vertex.bones[0] = bone();
+            break;
+        case PmxWeightType::bdef2:
+            vertex.bones[0] = bone(); vertex.bones[1] = bone();
+            vertex.weights[0] = read<float>(input, "BDEF2 weight");
+            vertex.weights[1] = 1.0F - vertex.weights[0];
+            break;
+        case PmxWeightType::bdef4:
+        case PmxWeightType::qdef:
+            for (auto& index : vertex.bones) index = bone();
+            vertex.weights = readFloatArray<4>(input, "BDEF4/QDEF weights");
+            break;
+        case PmxWeightType::sdef:
+            vertex.bones[0] = bone(); vertex.bones[1] = bone();
+            vertex.weights[0] = read<float>(input, "SDEF weight");
+            vertex.weights[1] = 1.0F - vertex.weights[0];
+            vertex.sdefC = readFloatArray<3>(input, "SDEF C");
+            vertex.sdefR0 = readFloatArray<3>(input, "SDEF R0");
+            vertex.sdefR1 = readFloatArray<3>(input, "SDEF R1");
+            break;
+        }
+        vertex.edgeScale = read<float>(input, "edge scale");
+    }
+}
+
+void readMaterials(std::istream& input, const Header& header, PmxModel& model) {
+    const auto textureCount = readCount(input, "texture count", 1'000'000);
+    model.textures.reserve(static_cast<std::size_t>(textureCount));
+    for (std::int32_t i = 0; i < textureCount; ++i) {
+        const auto value = readText(input, header.metadata.textEncoding);
+        const auto* utf8 = reinterpret_cast<const char8_t*>(value.c_str());
+        model.textures.push_back((model.sourcePath.parent_path() / std::filesystem::path(utf8)).lexically_normal());
+    }
+    const auto count = readCount(input, "material count", 1'000'000);
+    model.materials.resize(static_cast<std::size_t>(count));
+    std::uint64_t coveredIndices = 0;
+    for (auto& material : model.materials) {
+        material.name = readText(input, header.metadata.textEncoding);
+        material.englishName = readText(input, header.metadata.textEncoding);
+        material.diffuse = readFloatArray<4>(input, "material diffuse");
+        material.specular = readFloatArray<3>(input, "material specular");
+        material.shininess = read<float>(input, "material shininess");
+        material.ambient = readFloatArray<3>(input, "material ambient");
+        material.drawFlags = read<std::uint8_t>(input, "material draw flags");
+        material.edgeColor = readFloatArray<4>(input, "material edge color");
+        material.edgeSize = read<float>(input, "material edge size");
+        material.textureIndex = readSignedIndex(input, header.settings[3], "texture index");
+        material.sphereTextureIndex = readSignedIndex(input, header.settings[3], "sphere texture index");
+        material.sphereMode = read<std::uint8_t>(input, "sphere mode");
+        material.toonMode = read<std::uint8_t>(input, "toon mode");
+        material.toonTextureIndex = material.toonMode == 0
+            ? readSignedIndex(input, header.settings[3], "toon texture index")
+            : static_cast<std::int32_t>(read<std::uint8_t>(input, "shared toon index"));
+        material.memo = readText(input, header.metadata.textEncoding);
+        const auto indexCount = readCount(input, "material index count");
+        material.indexCount = static_cast<std::uint32_t>(indexCount);
+        coveredIndices += material.indexCount;
+    }
+    if (coveredIndices != model.indices.size()) throw std::runtime_error("PMX material ranges do not cover indices");
+}
+
+void readBones(std::istream& input, const Header& header, PmxModel& model) {
+    const auto count = readCount(input, "bone count", 10'000'000);
+    model.bones.resize(static_cast<std::size_t>(count));
+    for (auto& bone : model.bones) {
+        bone.name = readText(input, header.metadata.textEncoding);
+        bone.englishName = readText(input, header.metadata.textEncoding);
+        bone.position = readFloatArray<3>(input, "bone position");
+        bone.parent = readSignedIndex(input, header.settings[5], "parent bone");
+        bone.deformLayer = read<std::int32_t>(input, "bone layer");
+        bone.flags = read<std::uint16_t>(input, "bone flags");
+        if ((bone.flags & 0x0001U) != 0) bone.tailBone = readSignedIndex(input, header.settings[5], "tail bone");
+        else bone.tailOffset = readFloatArray<3>(input, "tail offset");
+        if ((bone.flags & 0x0300U) != 0) {
+            bone.inheritParent = readSignedIndex(input, header.settings[5], "inherit bone");
+            bone.inheritRatio = read<float>(input, "inherit ratio");
+        }
+        if ((bone.flags & 0x0400U) != 0) bone.fixedAxis = readFloatArray<3>(input, "fixed axis");
+        if ((bone.flags & 0x0800U) != 0) {
+            bone.localAxisX = readFloatArray<3>(input, "local axis x");
+            bone.localAxisZ = readFloatArray<3>(input, "local axis z");
+        }
+        if ((bone.flags & 0x2000U) != 0) bone.externalParentKey = read<std::int32_t>(input, "external parent key");
+        if ((bone.flags & 0x0020U) != 0) {
+            bone.ikTarget = readSignedIndex(input, header.settings[5], "IK target");
+            bone.ikLoopCount = read<std::int32_t>(input, "IK loop count");
+            bone.ikLimitAngle = read<float>(input, "IK angle");
+            const auto linkCount = readCount(input, "IK link count", 1'000'000);
+            bone.ikLinks.resize(static_cast<std::size_t>(linkCount));
+            for (auto& link : bone.ikLinks) {
+                link.bone = readSignedIndex(input, header.settings[5], "IK link bone");
+                link.limited = read<std::uint8_t>(input, "IK link limit") != 0;
+                if (link.limited) {
+                    link.minimum = readFloatArray<3>(input, "IK minimum");
+                    link.maximum = readFloatArray<3>(input, "IK maximum");
+                }
+            }
+        }
+    }
+}
+
+void readMorphs(std::istream& input, const Header& header, PmxModel& model) {
+    const auto count = readCount(input, "morph count", 10'000'000);
+    model.morphs.resize(static_cast<std::size_t>(count));
+    for (auto& morph : model.morphs) {
+        morph.name = readText(input, header.metadata.textEncoding);
+        morph.englishName = readText(input, header.metadata.textEncoding);
+        morph.panel = read<std::uint8_t>(input, "morph panel");
+        morph.type = read<std::uint8_t>(input, "morph type");
+        if (morph.type > 10 || (morph.type >= 9 && header.metadata.version < 2.1F)) {
+            throw std::runtime_error("invalid PMX morph type");
+        }
+        const auto offsetCount = readCount(input, "morph offset count", 100'000'000);
+        morph.offsets.resize(static_cast<std::size_t>(offsetCount));
+        for (auto& offset : morph.offsets) {
+            if (morph.type == 0 || morph.type == 9) {
+                offset.index = readSignedIndex(input, header.settings[6], "group morph index");
+                offset.scalar = read<float>(input, "group morph weight");
+            } else if (morph.type == 1) {
+                offset.index = static_cast<std::int32_t>(readVertexIndex(input, header.settings[2]));
+                offset.vector3 = readFloatArray<3>(input, "vertex morph offset");
+            } else if (morph.type == 2) {
+                offset.index = readSignedIndex(input, header.settings[5], "bone morph index");
+                offset.vector3 = readFloatArray<3>(input, "bone morph translation");
+                offset.vector4 = readFloatArray<4>(input, "bone morph rotation");
+            } else if (morph.type >= 3 && morph.type <= 7) {
+                offset.index = static_cast<std::int32_t>(readVertexIndex(input, header.settings[2]));
+                offset.vector4 = readFloatArray<4>(input, "UV morph offset");
+            } else if (morph.type == 8) {
+                offset.index = readSignedIndex(input, header.settings[4], "material morph index");
+                offset.operation = read<std::uint8_t>(input, "material morph operation");
+                offset.materialVectors[0] = readFloatArray<4>(input, "morph diffuse");
+                const auto specular = readFloatArray<3>(input, "morph specular");
+                offset.materialVectors[1] = { specular[0], specular[1], specular[2], read<float>(input, "morph power") };
+                const auto ambient = readFloatArray<3>(input, "morph ambient");
+                offset.materialVectors[2] = { ambient[0], ambient[1], ambient[2], 0.0F };
+                offset.materialVectors[3] = readFloatArray<4>(input, "morph edge color");
+                offset.materialVectors[2][3] = read<float>(input, "morph edge size");
+                offset.materialVectors[4] = readFloatArray<4>(input, "morph texture");
+                offset.materialVectors[5] = readFloatArray<4>(input, "morph sphere");
+                offset.materialVectors[6] = readFloatArray<4>(input, "morph toon");
+            } else {
+                offset.index = readSignedIndex(input, header.settings[7], "impulse rigid body");
+                offset.local = read<std::uint8_t>(input, "impulse local flag") != 0;
+                offset.vector3 = readFloatArray<3>(input, "impulse velocity");
+                offset.tertiaryVector3 = readFloatArray<3>(input, "impulse torque");
+            }
+        }
+    }
+}
+
+void readDisplayFrames(std::istream& input, const Header& header, PmxModel& model) {
+    const auto count = readCount(input, "display frame count", 1'000'000);
+    model.displayFrames.resize(static_cast<std::size_t>(count));
+    for (auto& frame : model.displayFrames) {
+        frame.name = readText(input, header.metadata.textEncoding);
+        frame.englishName = readText(input, header.metadata.textEncoding);
+        frame.special = read<std::uint8_t>(input, "display frame special") != 0;
+        const auto itemCount = readCount(input, "display item count", 10'000'000);
+        frame.items.resize(static_cast<std::size_t>(itemCount));
+        for (auto& item : frame.items) {
+            item.bone = read<std::uint8_t>(input, "display item type") == 0;
+            item.index = readSignedIndex(input, item.bone ? header.settings[5] : header.settings[6], "display item index");
+        }
+    }
+}
+
+void readPhysics(std::istream& input, const Header& header, PmxModel& model) {
+    const auto bodyCount = readCount(input, "rigid body count", 1'000'000);
+    model.rigidBodies.resize(static_cast<std::size_t>(bodyCount));
+    for (auto& body : model.rigidBodies) {
+        body.name = readText(input, header.metadata.textEncoding);
+        body.englishName = readText(input, header.metadata.textEncoding);
+        body.bone = readSignedIndex(input, header.settings[5], "rigid body bone");
+        body.group = read<std::uint8_t>(input, "rigid body group");
+        body.collisionMask = read<std::uint16_t>(input, "rigid body mask");
+        body.shape = read<std::uint8_t>(input, "rigid body shape");
+        body.size = readFloatArray<3>(input, "rigid body size");
+        body.position = readFloatArray<3>(input, "rigid body position");
+        body.rotation = readFloatArray<3>(input, "rigid body rotation");
+        body.mass = read<float>(input, "rigid body mass");
+        body.linearDamping = read<float>(input, "rigid body linear damping");
+        body.angularDamping = read<float>(input, "rigid body angular damping");
+        body.restitution = read<float>(input, "rigid body restitution");
+        body.friction = read<float>(input, "rigid body friction");
+        body.mode = read<std::uint8_t>(input, "rigid body mode");
+    }
+    const auto jointCount = readCount(input, "joint count", 1'000'000);
+    model.joints.resize(static_cast<std::size_t>(jointCount));
+    for (auto& joint : model.joints) {
+        joint.name = readText(input, header.metadata.textEncoding);
+        joint.englishName = readText(input, header.metadata.textEncoding);
+        joint.type = read<std::uint8_t>(input, "joint type");
+        joint.bodyA = readSignedIndex(input, header.settings[7], "joint body A");
+        joint.bodyB = readSignedIndex(input, header.settings[7], "joint body B");
+        joint.position = readFloatArray<3>(input, "joint position");
+        joint.rotation = readFloatArray<3>(input, "joint rotation");
+        joint.translationMinimum = readFloatArray<3>(input, "joint translation minimum");
+        joint.translationMaximum = readFloatArray<3>(input, "joint translation maximum");
+        joint.rotationMinimum = readFloatArray<3>(input, "joint rotation minimum");
+        joint.rotationMaximum = readFloatArray<3>(input, "joint rotation maximum");
+        joint.translationSpring = readFloatArray<3>(input, "joint translation spring");
+        joint.rotationSpring = readFloatArray<3>(input, "joint rotation spring");
+    }
+}
+
+void readSoftBodies(std::istream& input, const Header& header, PmxModel& model) {
+    if (header.metadata.version < 2.1F || input.peek() == std::char_traits<char>::eof()) return;
+    const auto count = readCount(input, "soft body count", 1'000'000);
+    model.softBodies.resize(static_cast<std::size_t>(count));
+    for (auto& body : model.softBodies) {
+        body.name = readText(input, header.metadata.textEncoding);
+        body.englishName = readText(input, header.metadata.textEncoding);
+        body.shape = read<std::uint8_t>(input, "soft body shape");
+        body.material = readSignedIndex(input, header.settings[4], "soft body material");
+        body.group = read<std::uint8_t>(input, "soft body group");
+        body.collisionMask = read<std::uint16_t>(input, "soft body mask");
+        body.flags = read<std::uint8_t>(input, "soft body flags");
+        body.bendingLinkDistance = read<std::int32_t>(input, "soft body bending distance");
+        body.clusterCount = read<std::int32_t>(input, "soft body cluster count");
+        body.totalMass = read<float>(input, "soft body mass");
+        body.collisionMargin = read<float>(input, "soft body margin");
+        body.aeroModel = read<std::int32_t>(input, "soft body aero model");
+        body.config = readFloatArray<12>(input, "soft body config");
+        body.cluster = readFloatArray<6>(input, "soft body cluster");
+        for (auto& value : body.iteration) value = read<std::int32_t>(input, "soft body iteration");
+        body.materialConfig = readFloatArray<3>(input, "soft body material config");
+        const auto anchorCount = readCount(input, "soft body anchor count", 10'000'000);
+        body.anchors.resize(static_cast<std::size_t>(anchorCount));
+        for (auto& anchor : body.anchors) {
+            anchor.rigidBody = readSignedIndex(input, header.settings[7], "soft body anchor rigid body");
+            anchor.vertex = static_cast<std::int32_t>(readVertexIndex(input, header.settings[2]));
+            anchor.nearMode = read<std::uint8_t>(input, "soft body anchor near mode") != 0;
+        }
+        const auto pinCount = readCount(input, "soft body pin count", 100'000'000);
+        body.pinnedVertices.resize(static_cast<std::size_t>(pinCount));
+        for (auto& vertex : body.pinnedVertices) vertex = static_cast<std::int32_t>(readVertexIndex(input, header.settings[2]));
+    }
 }
 
 } // namespace
@@ -132,79 +398,52 @@ Header readHeader(std::istream& input, const std::filesystem::path& path) {
 PmxMetadata probePmx(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) throw std::runtime_error("cannot open PMX file: " + path.string());
-
     return readHeader(input, path).metadata;
 }
 
-PmxMesh loadPmxMesh(const std::filesystem::path& path) {
+PmxModel loadPmxModel(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) throw std::runtime_error("cannot open PMX file: " + path.string());
     const auto header = readHeader(input, path);
+    PmxModel model;
+    model.metadata = header.metadata;
+    model.sourcePath = path;
+    readVertices(input, header, model);
+    const auto indexCount = readCount(input, "index count");
+    if (indexCount % 3 != 0) throw std::runtime_error("PMX index count is not divisible by three");
+    model.indices.resize(static_cast<std::size_t>(indexCount));
+    for (auto& index : model.indices) {
+        index = readVertexIndex(input, header.settings[2]);
+        if (index >= model.vertices.size()) throw std::runtime_error("PMX vertex index out of range");
+    }
+    readMaterials(input, header, model);
+    readBones(input, header, model);
+    readMorphs(input, header, model);
+    readDisplayFrames(input, header, model);
+    readPhysics(input, header, model);
+    readSoftBodies(input, header, model);
+    return model;
+}
 
-    PmxMesh mesh;
-    mesh.metadata = header.metadata;
-    mesh.vertices.resize(static_cast<std::size_t>(mesh.metadata.vertexCount));
-    const auto boneIndexSize = header.settings[5];
+PmxMesh loadPmxMesh(const std::filesystem::path& path) {
+    auto model = loadPmxModel(path);
+    PmxMesh mesh { .metadata = std::move(model.metadata), .vertices = std::move(model.vertices),
+                   .indices = std::move(model.indices) };
+    if (mesh.vertices.empty()) return mesh;
+    auto minimum = mesh.vertices.front().position;
+    auto maximum = minimum;
+    for (const auto& vertex : mesh.vertices) {
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            minimum[axis] = std::min(minimum[axis], vertex.position[axis]);
+            maximum[axis] = std::max(maximum[axis], vertex.position[axis]);
+        }
+    }
+    const Float3 center { (minimum[0] + maximum[0]) * 0.5F, (minimum[1] + maximum[1]) * 0.5F,
+                          (minimum[2] + maximum[2]) * 0.5F };
+    const float scale = 1.8F / std::max({ maximum[0] - minimum[0], maximum[1] - minimum[1],
+                                          maximum[2] - minimum[2], 0.001F });
     for (auto& vertex : mesh.vertices) {
-        input.read(reinterpret_cast<char*>(vertex.position), sizeof(vertex.position));
-        input.read(reinterpret_cast<char*>(vertex.normal), sizeof(vertex.normal));
-        input.read(reinterpret_cast<char*>(vertex.uv), sizeof(vertex.uv));
-        if (!input) throw std::runtime_error("truncated PMX vertex data");
-        skip(input, static_cast<std::streamoff>(mesh.metadata.additionalUvCount) * 4 * sizeof(float),
-             "additional UVs");
-        const auto weight = read<std::uint8_t>(input, "weight type");
-        switch (weight) {
-        case 0: // BDEF1
-            skip(input, boneIndexSize, "BDEF1");
-            break;
-        case 1: // BDEF2
-            skip(input, 2 * boneIndexSize + static_cast<std::streamoff>(sizeof(float)), "BDEF2");
-            break;
-        case 2: // BDEF4
-        case 4: // QDEF
-            skip(input, 4 * boneIndexSize + 4 * static_cast<std::streamoff>(sizeof(float)), "BDEF4/QDEF");
-            break;
-        case 3: // SDEF
-            skip(input, 2 * boneIndexSize + 10 * static_cast<std::streamoff>(sizeof(float)), "SDEF");
-            break;
-        default:
-            throw std::runtime_error("unsupported PMX weight type");
-        }
-        skip(input, sizeof(float), "edge scale");
-    }
-
-    const auto indexCount = read<std::int32_t>(input, "index count");
-    if (indexCount < 0 || indexCount > 300'000'000 || indexCount % 3 != 0) {
-        throw std::runtime_error("invalid PMX index count");
-    }
-    mesh.indices.resize(static_cast<std::size_t>(indexCount));
-    const auto vertexIndexSize = header.settings[2];
-    for (auto& index : mesh.indices) {
-        index = readIndex(input, vertexIndexSize);
-        if (index >= mesh.vertices.size()) throw std::runtime_error("PMX vertex index out of range");
-    }
-
-    if (!mesh.vertices.empty()) {
-        std::array<float, 3> minimum { mesh.vertices[0].position[0], mesh.vertices[0].position[1],
-                                      mesh.vertices[0].position[2] };
-        auto maximum = minimum;
-        for (const auto& vertex : mesh.vertices) {
-            for (std::size_t axis = 0; axis < 3; ++axis) {
-                minimum[axis] = std::min(minimum[axis], vertex.position[axis]);
-                maximum[axis] = std::max(maximum[axis], vertex.position[axis]);
-            }
-        }
-        const std::array center { (minimum[0] + maximum[0]) * 0.5F,
-                                  (minimum[1] + maximum[1]) * 0.5F,
-                                  (minimum[2] + maximum[2]) * 0.5F };
-        const float extent = std::max({ maximum[0] - minimum[0], maximum[1] - minimum[1],
-                                        maximum[2] - minimum[2], 0.001F });
-        const float scale = 1.8F / extent;
-        for (auto& vertex : mesh.vertices) {
-            for (std::size_t axis = 0; axis < 3; ++axis) {
-                vertex.position[axis] = (vertex.position[axis] - center[axis]) * scale;
-            }
-        }
+        for (std::size_t axis = 0; axis < 3; ++axis) vertex.position[axis] = (vertex.position[axis] - center[axis]) * scale;
     }
     return mesh;
 }
