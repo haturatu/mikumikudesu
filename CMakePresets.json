@@ -1,0 +1,62 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "linux-debug",
+      "displayName": "Linux Vulkan Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "DAYO_BACKEND": "VULKAN",
+        "DAYO_ENABLE_VALIDATION": "ON"
+      }
+    },
+    {
+      "name": "linux-release",
+      "displayName": "Linux Vulkan Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "DAYO_BACKEND": "VULKAN",
+        "DAYO_ENABLE_VALIDATION": "OFF"
+      }
+    },
+    {
+      "name": "linux-system-only",
+      "displayName": "Linux Vulkan without fetched UI",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-system-only",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "DAYO_BACKEND": "VULKAN",
+        "DAYO_ENABLE_IMGUI": "OFF",
+        "DAYO_FETCH_DEPENDENCIES": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "linux-debug", "configurePreset": "linux-debug" },
+    { "name": "linux-release", "configurePreset": "linux-release" },
+    { "name": "linux-system-only", "configurePreset": "linux-system-only" }
+  ],
+  "testPresets": [
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux-system-only",
+      "configurePreset": "linux-system-only",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}
+
