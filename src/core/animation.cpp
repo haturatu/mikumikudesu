@@ -313,6 +313,11 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
     }
 
     std::vector<float> morphWeights(model_.morphs.size());
+    std::vector<Float3> impulseLinear(model_.rigidBodies.size());
+    std::vector<Float3> impulseAngular(model_.rigidBodies.size());
+    std::vector<Float3> impulseLinearLocal(model_.rigidBodies.size());
+    std::vector<Float3> impulseAngularLocal(model_.rigidBodies.size());
+    std::vector<bool> impulseReset(model_.rigidBodies.size());
     for (std::size_t i = 0; i < model_.morphs.size(); ++i) {
         if (const auto found = morphKeys.find(model_.morphs[i].name); found != morphKeys.end()) {
             morphWeights[i] = sampleMorph(found->second, frame);
@@ -368,6 +373,22 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
                         apply4(destination.toonAdd, offset.materialVectors[6]);
                     }
                 }
+            } else if (morph.type == 10 && offset.index >= 0
+                       && static_cast<std::size_t>(offset.index) < model_.rigidBodies.size()) {
+                const auto body = static_cast<std::size_t>(offset.index);
+                if (length(offset.vector3) <= 1e-8F && length(offset.tertiaryVector3) <= 1e-8F) {
+                    impulseReset[body] = true;
+                    impulseLinear[body] = {};
+                    impulseAngular[body] = {};
+                    impulseLinearLocal[body] = {};
+                    impulseAngularLocal[body] = {};
+                } else if (offset.local) {
+                    impulseLinearLocal[body] = add(impulseLinearLocal[body], mul(offset.vector3, weight));
+                    impulseAngularLocal[body] = add(impulseAngularLocal[body], mul(offset.tertiaryVector3, weight));
+                } else {
+                    impulseLinear[body] = add(impulseLinear[body], mul(offset.vector3, weight));
+                    impulseAngular[body] = add(impulseAngular[body], mul(offset.tertiaryVector3, weight));
+                }
             }
         }
         morphStack[index] = 0;
@@ -400,6 +421,21 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
             value.position = add(global[bone].position, rotate(global[bone].rotation, offset));
             value.rotation = multiply(global[bone].rotation, offsetRotation);
             physics_->setKinematicTransform(bodyIndex, value);
+        }
+        const float impulseScale = std::max(deltaSeconds, 0.0F) * 60.0F;
+        for (std::size_t body = 0; body < model_.rigidBodies.size(); ++body) {
+            if (impulseReset[body]) {
+                physics_->clearMotion(body);
+                continue;
+            }
+            if (length(impulseLinear[body]) > 0.0F || length(impulseAngular[body]) > 0.0F) {
+                physics_->applyImpulse(body, mul(impulseLinear[body], impulseScale),
+                                       mul(impulseAngular[body], impulseScale), false);
+            }
+            if (length(impulseLinearLocal[body]) > 0.0F || length(impulseAngularLocal[body]) > 0.0F) {
+                physics_->applyImpulse(body, mul(impulseLinearLocal[body], impulseScale),
+                                       mul(impulseAngularLocal[body], impulseScale), true);
+            }
         }
         physics_->step(deltaSeconds);
         for (std::size_t bodyIndex = 0; bodyIndex < model_.rigidBodies.size(); ++bodyIndex) {

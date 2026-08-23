@@ -259,6 +259,20 @@ void MmdPhysics::applyImpulse(std::size_t body, const Float3& linear, const Floa
 #endif
 }
 
+void MmdPhysics::clearMotion(std::size_t body) {
+#if DAYO_HAS_BULLET
+    if (body >= impl_->bodies.size()) throw std::out_of_range("PMX rigid body index");
+    impl_->bodies[body]->setLinearVelocity({ 0.0F, 0.0F, 0.0F });
+    impl_->bodies[body]->setAngularVelocity({ 0.0F, 0.0F, 0.0F });
+    impl_->bodies[body]->setInterpolationLinearVelocity({ 0.0F, 0.0F, 0.0F });
+    impl_->bodies[body]->setInterpolationAngularVelocity({ 0.0F, 0.0F, 0.0F });
+    impl_->bodies[body]->clearForces();
+    impl_->bodies[body]->activate(true);
+#else
+    static_cast<void>(body);
+#endif
+}
+
 PhysicsTransform MmdPhysics::bodyTransform(std::size_t body) const {
 #if DAYO_HAS_BULLET
     if (body >= impl_->bodies.size()) throw std::out_of_range("PMX rigid body index");
