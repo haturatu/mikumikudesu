@@ -1,6 +1,7 @@
 #include "core/asset.hpp"
 #include "core/animation.hpp"
 #include "core/image.hpp"
+#include "core/media.hpp"
 #include "core/model_probe.hpp"
 #include "core/motion.hpp"
 #include "core/physics.hpp"
@@ -104,6 +105,36 @@ int main() {
         ok &= check(model.materials.size() == 1 && model.bones.empty(), "complete PMX sections");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: PMX probe: " << exception.what() << '\n';
+        ok = false;
+    }
+    try {
+        const auto mediaPath = std::filesystem::temp_directory_path() / "mikumikudesu-media-test.wav";
+        {
+            std::ofstream output(mediaPath, std::ios::binary);
+            constexpr std::uint32_t sampleCount = 800;
+            output.write("RIFF", 4); append(output, 36U + sampleCount * 2U);
+            output.write("WAVEfmt ", 8); append(output, 16U);
+            append(output, static_cast<std::uint16_t>(1));
+            append(output, static_cast<std::uint16_t>(1));
+            append(output, 8'000U); append(output, 16'000U);
+            append(output, static_cast<std::uint16_t>(2));
+            append(output, static_cast<std::uint16_t>(16));
+            output.write("data", 4); append(output, sampleCount * 2U);
+            for (std::uint32_t i = 0; i < sampleCount; ++i) {
+                append(output, static_cast<std::int16_t>((i % 32U) * 512U));
+            }
+        }
+#if DAYO_HAS_MEDIA
+        dayo::core::MediaFile media(mediaPath);
+        ok &= check(media.info().hasAudio && !media.info().hasVideo, "FFmpeg media probing");
+        const auto audio = media.decodeAudio();
+        ok &= check(audio.channels == 2 && audio.sampleRate == 48'000 && !audio.samples.empty(),
+                    "FFmpeg audio decode and resample");
+#endif
+        std::error_code mediaError;
+        std::filesystem::remove(mediaPath, mediaError);
+    } catch (const std::exception& exception) {
+        std::cerr << "FAIL: media: " << exception.what() << '\n';
         ok = false;
     }
     try {

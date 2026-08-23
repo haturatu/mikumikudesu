@@ -16,6 +16,7 @@
 
 #include <charconv>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -129,6 +130,16 @@ int Application::run() {
             const int integerFrame = static_cast<int>(animationFrame_);
             if (integerFrame != uploadedAnimationFrame_) refreshAnimatedMesh(false, deltaSeconds);
         }
+        if (playing_ && videoMode_ && media_ != nullptr && media_->info().hasVideo) {
+            mediaSeconds_ += deltaSeconds;
+            if (media_->info().durationSeconds > 0.0 && mediaSeconds_ >= media_->info().durationSeconds) {
+                mediaSeconds_ = std::fmod(mediaSeconds_, media_->info().durationSeconds);
+                uploadedVideoFrame_ = -1;
+                if (media_->info().hasAudio) audioPlayer_.play(media_->decodeAudio());
+            }
+            const auto videoFrame = static_cast<std::int64_t>(mediaSeconds_ * media_->info().videoFramesPerSecond);
+            if (videoFrame != uploadedVideoFrame_) refreshVideoFrame();
+        }
         device->beginUiFrame();
         buildUi();
         device->renderFrame();
@@ -136,6 +147,7 @@ int Application::run() {
         if (options_.frameLimit && frameCount >= *options_.frameLimit) running = false;
     }
     device->waitIdle();
+    audioPlayer_.stop();
     log::info("Rendered ", frameCount, " frame(s); clean shutdown");
     return 0;
 }
@@ -149,6 +161,9 @@ void Application::handleAsset(const std::filesystem::path& path) {
     }
     if (kind == core::AssetKind::pmx) {
         try {
+            videoMode_ = false;
+            media_.reset();
+            audioPlayer_.stop();
             model_ = std::make_unique<core::PmxModel>(core::loadPmxModel(path));
             animator_ = std::make_unique<core::MmdAnimator>(*model_);
             physics_ = std::make_unique<core::MmdPhysics>(*model_);
@@ -193,6 +208,38 @@ void Application::handleAsset(const std::filesystem::path& path) {
             log::info("Loaded metadata: ", lastAsset_, " (", path.string(), ")");
         } catch (const std::exception& exception) {
             lastAsset_ = "PMX error: " + std::string(exception.what());
+            log::warn(lastAsset_);
+        }
+        return;
+    }
+    if (kind == core::AssetKind::audio || kind == core::AssetKind::video) {
+        try {
+            animator_.reset();
+            physics_.reset();
+            model_.reset();
+            motion_.reset();
+            pose_.reset();
+            media_ = std::make_unique<core::MediaFile>(path);
+            mediaSeconds_ = 0.0;
+            uploadedVideoFrame_ = -1;
+            videoMode_ = media_->info().hasVideo;
+            if (media_->info().hasAudio) audioPlayer_.play(media_->decodeAudio());
+            if (videoMode_) {
+                const std::array<graphics::PreviewVertex, 4> vertices {{
+                    {{ -0.9F, -0.9F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 0.0F, 1.0F }},
+                    {{  0.9F, -0.9F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 1.0F, 1.0F }},
+                    {{  0.9F,  0.9F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 1.0F, 0.0F }},
+                    {{ -0.9F,  0.9F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 0.0F, 0.0F }},
+                }};
+                const std::array<std::uint32_t, 6> indices { 0, 1, 2, 2, 3, 0 };
+                device_->uploadPreviewMesh(vertices, indices);
+                refreshVideoFrame();
+            }
+            lastAsset_ = std::string(core::toString(kind)) + " — "
+                       + std::to_string(media_->info().durationSeconds) + " s";
+            log::info("Loaded media: ", lastAsset_, " (", path.string(), ")");
+        } catch (const std::exception& exception) {
+            lastAsset_ = "Media error: " + std::string(exception.what());
             log::warn(lastAsset_);
         }
         return;
@@ -259,6 +306,19 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     uploadedAnimationFrame_ = static_cast<int>(animationFrame_);
 }
 
+void Application::refreshVideoFrame() {
+    if (!videoMode_ || media_ == nullptr || device_ == nullptr) return;
+    const auto image = media_->decodeVideoFrame(mediaSeconds_);
+    const std::array textures { graphics::PreviewTexture { image.width, image.height, image.pixels } };
+    device_->uploadPreviewTextures(textures);
+    graphics::PreviewMaterial material;
+    material.indexCount = 6;
+    material.textureSlot = 1;
+    const std::array materials { material };
+    device_->updatePreviewMaterials(materials);
+    uploadedVideoFrame_ = static_cast<std::int64_t>(mediaSeconds_ * media_->info().videoFramesPerSecond);
+}
+
 void Application::buildUi() {
 #if DAYO_HAS_IMGUI
     ImGui::SetNextWindowPos({ 24.0F, 24.0F }, ImGuiCond_FirstUseEver);
@@ -273,11 +333,18 @@ void Application::buildUi() {
         ImGui::Text("OIDN: %s", DAYO_HAS_OIDN ? "CPU available; HIP optional" : "not installed");
         ImGui::Text("Media: %s", DAYO_HAS_MEDIA ? "FFmpeg enabled" : "metadata/drop only");
         if (motion_ != nullptr) {
-            ImGui::Checkbox("Play", &playing_);
+            if (ImGui::Checkbox("Play", &playing_) && audioPlayer_.active()) audioPlayer_.setPaused(!playing_);
             float maximum = static_cast<float>(std::max(motion_->lastFrame, 1U));
             if (ImGui::SliderFloat("Frame", &animationFrame_, 0.0F, maximum, "%.1f")) {
                 refreshAnimatedMesh(false);
             }
+        }
+        if (media_ != nullptr) {
+            if (motion_ == nullptr && ImGui::Checkbox("Play", &playing_) && audioPlayer_.active()) {
+                audioPlayer_.setPaused(!playing_);
+            }
+            ImGui::Text("Media: %.2f / %.2f s%s%s", mediaSeconds_, media_->info().durationSeconds,
+                        media_->info().hasVideo ? " video" : "", media_->info().hasAudio ? " audio" : "");
         }
         if (physics_ != nullptr) {
             ImGui::Text("Bullet: %s (%zu bodies, %zu joints)", physics_->available() ? "enabled" : "unavailable",

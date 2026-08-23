@@ -64,15 +64,18 @@ add_library(dayo_core
   src/core/asset.cpp
   src/core/denoiser.cpp
   src/core/image.cpp
+  src/core/media.cpp
   src/core/model_probe.cpp
   src/core/motion.cpp
   src/core/physics.cpp
 )
 target_include_directories(dayo_core PUBLIC src)
 target_include_directories(dayo_core PRIVATE "${DAYO_STB_INCLUDE_DIR}")
+target_link_libraries(dayo_core PUBLIC SDL3::SDL3)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   set_source_files_properties(src/core/image.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-unused-but-set-variable")
   set_source_files_properties(src/core/physics.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-float-conversion")
+  set_source_files_properties(src/core/media.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-old-style-cast")
 endif()
 
 add_library(dayo_platform
@@ -194,6 +197,10 @@ if(DAYO_ENABLE_MEDIA)
       set(DAYO_HAS_MEDIA 1)
     endif()
   endif()
+endif()
+target_compile_definitions(dayo_core PUBLIC DAYO_HAS_MEDIA=${DAYO_HAS_MEDIA})
+if(DAYO_HAS_MEDIA)
+  target_link_libraries(dayo_core PUBLIC PkgConfig::FFMPEG)
 endif()
 
 add_executable(mikumikudesu

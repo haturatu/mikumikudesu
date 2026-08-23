@@ -4,6 +4,7 @@
 #include "core/animation.hpp"
 #include "core/image.hpp"
 #include "core/physics.hpp"
+#include "core/media.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -33,6 +34,7 @@ public:
 private:
     void handleAsset(const std::filesystem::path& path);
     void refreshAnimatedMesh(bool initialUpload, float deltaSeconds = 0.0F);
+    void refreshVideoFrame();
     void buildUi();
 
     Options options_;
@@ -42,10 +44,15 @@ private:
     std::unique_ptr<core::VpdPose> pose_;
     std::unique_ptr<core::MmdAnimator> animator_;
     std::unique_ptr<core::MmdPhysics> physics_;
+    std::unique_ptr<core::MediaFile> media_;
+    core::AudioPlayer audioPlayer_;
     std::vector<core::ImageRgba8> textures_;
     float animationFrame_ {};
     int uploadedAnimationFrame_ { -1 };
     bool playing_ { true };
+    bool videoMode_ {};
+    double mediaSeconds_ {};
+    std::int64_t uploadedVideoFrame_ { -1 };
     std::string lastAsset_ { "Drop PMX/VMD/VPD/media files into the window" };
 };
 
