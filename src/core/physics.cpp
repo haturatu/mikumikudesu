@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cmath>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -109,15 +110,25 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
     }
     impl_->constraints.reserve(model.joints.size());
     for (const auto& source : model.joints) {
-        if (source.bodyA < 0 || source.bodyB < 0
+        if (source.type != 0 || source.bodyA < 0 || source.bodyB < 0 || source.bodyA == source.bodyB
             || static_cast<std::size_t>(source.bodyA) >= impl_->bodies.size()
             || static_cast<std::size_t>(source.bodyB) >= impl_->bodies.size()) continue;
+        const auto& bodyA = impl_->bodies[static_cast<std::size_t>(source.bodyA)];
+        const auto& bodyB = impl_->bodies[static_cast<std::size_t>(source.bodyB)];
+        // Bullet cannot solve a 6DoF row when neither endpoint has inverse
+        // mass. A number of PMX files contain decorative static-static joints.
+        if (bodyA->getInvMass() <= 0.0F && bodyB->getInvMass() <= 0.0F) continue;
+        const auto finite3 = [](const Float3& value) {
+            return std::ranges::all_of(value, [](float component) { return std::isfinite(component); });
+        };
+        if (!finite3(source.position) || !finite3(source.rotation)
+            || !finite3(source.translationMinimum) || !finite3(source.translationMaximum)
+            || !finite3(source.rotationMinimum) || !finite3(source.rotationMaximum)) continue;
         const auto jointWorld = transform(source.position, source.rotation);
         const auto frameA = impl_->initialTransforms[static_cast<std::size_t>(source.bodyA)].inverse() * jointWorld;
         const auto frameB = impl_->initialTransforms[static_cast<std::size_t>(source.bodyB)].inverse() * jointWorld;
         auto joint = std::make_unique<btGeneric6DofSpringConstraint>(
-            *impl_->bodies[static_cast<std::size_t>(source.bodyA)],
-            *impl_->bodies[static_cast<std::size_t>(source.bodyB)], frameA, frameB, true);
+            *bodyA, *bodyB, frameA, frameB, true);
         joint->setLinearLowerLimit(vector(source.translationMinimum));
         joint->setLinearUpperLimit(vector(source.translationMaximum));
         joint->setAngularLowerLimit(vector(source.rotationMinimum));
