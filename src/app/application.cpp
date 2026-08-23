@@ -15,6 +15,7 @@
 #endif
 
 #include <charconv>
+#include <cctype>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -270,6 +271,28 @@ void Application::handleAsset(const std::filesystem::path& path) {
         }
         return;
     }
+    if (kind == core::AssetKind::effect) {
+        try {
+            effect_ = std::make_unique<core::EffectGraph>(core::loadEffectGraph(path));
+            auto filename = path.filename().string();
+            std::ranges::transform(filename, filename.begin(), [](unsigned char value) {
+                return static_cast<char>(std::tolower(value));
+            });
+            if (device_ != nullptr && filename.find("subayai") != std::string::npos) {
+                device_->selectRenderer(graphics::RendererKind::subayai);
+            } else if (device_ != nullptr && filename.find("bdpt") != std::string::npos) {
+                device_->selectRenderer(graphics::RendererKind::bdpt);
+            }
+            lastAsset_ = "Effect " + path.filename().string() + " — "
+                       + std::to_string(effect_->passes.size()) + " passes, "
+                       + std::to_string(effect_->textures.size()) + " textures";
+            log::info("Loaded effect graph: ", lastAsset_);
+        } catch (const std::exception& exception) {
+            lastAsset_ = "Effect error: " + std::string(exception.what());
+            log::warn(lastAsset_);
+        }
+        return;
+    }
     lastAsset_ = std::string(core::toString(kind)) + ": " + path.filename().string();
     log::info("Accepted ", core::toString(kind), " asset: ", path.string());
 }
@@ -349,6 +372,10 @@ void Application::buildUi() {
         if (physics_ != nullptr) {
             ImGui::Text("Bullet: %s (%zu bodies, %zu joints)", physics_->available() ? "enabled" : "unavailable",
                         physics_->bodyCount(), physics_->jointCount());
+        }
+        if (effect_ != nullptr) {
+            ImGui::Text("Effect graph: %zu passes / %zu textures / %zu samplers",
+                        effect_->passes.size(), effect_->textures.size(), effect_->samplers.size());
         }
         ImGui::Separator();
         ImGui::TextUnformatted("Subayai and BDPT are enabled only when Vulkan RT features are present.");

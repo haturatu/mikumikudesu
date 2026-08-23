@@ -5,6 +5,7 @@
 #include "core/image.hpp"
 #include "core/physics.hpp"
 #include "core/media.hpp"
+#include "core/effect.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -45,6 +46,7 @@ private:
     std::unique_ptr<core::MmdAnimator> animator_;
     std::unique_ptr<core::MmdPhysics> physics_;
     std::unique_ptr<core::MediaFile> media_;
+    std::unique_ptr<core::EffectGraph> effect_;
     core::AudioPlayer audioPlayer_;
     std::vector<core::ImageRgba8> textures_;
     float animationFrame_ {};

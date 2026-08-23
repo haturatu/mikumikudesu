@@ -2,11 +2,13 @@
 #include "core/animation.hpp"
 #include "core/image.hpp"
 #include "core/media.hpp"
+#include "core/effect.hpp"
 #include "core/model_probe.hpp"
 #include "core/motion.hpp"
 #include "core/physics.hpp"
 
 #include <array>
+#include <algorithm>
 #include <bit>
 #include <cstdint>
 #include <filesystem>
@@ -105,6 +107,27 @@ int main() {
         ok &= check(model.materials.size() == 1 && model.bones.empty(), "complete PMX sections");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: PMX probe: " << exception.what() << '\n';
+        ok = false;
+    }
+    try {
+        const auto previewEffect = dayo::core::loadEffectGraph(
+            std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo/renderer/Preview.fxdayo");
+        ok &= check(previewEffect.passes.size() == 5 && !previewEffect.hlsl.empty(),
+                    "Preview fxdayo graph");
+        const auto subayaiEffect = dayo::core::loadEffectGraph(
+            std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo/renderer/Subayai.fxdayo");
+        ok &= check(subayaiEffect.passes.size() >= 20 &&
+                    std::ranges::any_of(subayaiEffect.passes, [](const auto& pass) {
+                        return pass.type == dayo::core::EffectPassType::raytracing;
+                    }), "Subayai Jsonnet expansion");
+        const auto bdptEffect = dayo::core::loadEffectGraph(
+            std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo/renderer/BDPT.fxdayo");
+        ok &= check(!bdptEffect.passes.empty() &&
+                    std::ranges::any_of(bdptEffect.passes, [](const auto& pass) {
+                        return pass.type == dayo::core::EffectPassType::raytracing;
+                    }), "BDPT fxdayo graph");
+    } catch (const std::exception& exception) {
+        std::cerr << "FAIL: effect graph: " << exception.what() << '\n';
         ok = false;
     }
     try {

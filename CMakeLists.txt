@@ -63,6 +63,7 @@ add_library(dayo_core
   src/core/animation.cpp
   src/core/asset.cpp
   src/core/denoiser.cpp
+  src/core/effect.cpp
   src/core/image.cpp
   src/core/media.cpp
   src/core/model_probe.cpp
@@ -76,6 +77,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   set_source_files_properties(src/core/image.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-unused-but-set-variable")
   set_source_files_properties(src/core/physics.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-float-conversion")
   set_source_files_properties(src/core/media.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-old-style-cast")
+  set_source_files_properties(src/core/effect.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-shadow;-Wno-cpp;-Wno-deprecated-declarations")
 endif()
 
 add_library(dayo_platform
@@ -184,7 +186,31 @@ endif()
 target_compile_definitions(dayo_core PUBLIC DAYO_HAS_BULLET=${DAYO_HAS_BULLET})
 find_package(cereal CONFIG QUIET)
 find_package(directxtex CONFIG QUIET)
+set(DAYO_HAS_JSONNET 0)
 find_package(jsonnet CONFIG QUIET)
+if(TARGET jsonnet::libjsonnet)
+  set(DAYO_JSONNET_TARGET jsonnet::libjsonnet)
+  set(DAYO_HAS_JSONNET 1)
+elseif(DAYO_FETCH_DEPENDENCIES)
+  set(BUILD_JSONNET ON CACHE BOOL "" FORCE)
+  set(BUILD_JSONNETFMT OFF CACHE BOOL "" FORCE)
+  set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
+  set(USE_SYSTEM_GTEST OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(jsonnet_source
+    URL https://github.com/google/jsonnet/archive/refs/tags/v0.21.0.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  )
+  FetchContent_MakeAvailable(jsonnet_source)
+  set_property(TEST regression_test DIRECTORY "${jsonnet_source_SOURCE_DIR}/test_suite"
+               PROPERTY DISABLED TRUE)
+  set(DAYO_JSONNET_TARGET libjsonnet_static)
+  set(DAYO_HAS_JSONNET 1)
+endif()
+target_compile_definitions(dayo_core PUBLIC DAYO_HAS_JSONNET=${DAYO_HAS_JSONNET})
+if(DAYO_HAS_JSONNET)
+  target_link_libraries(dayo_core PUBLIC ${DAYO_JSONNET_TARGET} nlohmann_json::nlohmann_json)
+endif()
 
 set(DAYO_HAS_MEDIA 0)
 if(DAYO_ENABLE_MEDIA)
@@ -247,4 +273,4 @@ message(STATUS "FFmpeg detected: ${DAYO_HAS_MEDIA}")
 message(STATUS "Bullet physics: ${DAYO_HAS_BULLET}")
 message(STATUS "cereal detected: ${cereal_FOUND}")
 message(STATUS "DirectXTex detected: ${directxtex_FOUND}")
-message(STATUS "Jsonnet detected: ${jsonnet_FOUND}")
+message(STATUS "Jsonnet effects: ${DAYO_HAS_JSONNET}")
