@@ -110,6 +110,10 @@ int main() {
             std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo/res/dayoicon.png");
         ok &= check(icon.width > 0 && icon.height > 0 && icon.pixels.size() == icon.width * icon.height * 4U,
                     "RGBA image decode");
+        const auto dds = dayo::core::loadImageRgba8(
+            std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo/particle/Smoke.dds");
+        ok &= check(dds.width > 0 && dds.height > 0 && dds.pixels.size() == dds.width * dds.height * 4U,
+                    "DDS image decode");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: image load: " << exception.what() << '\n';
         ok = false;
