@@ -1341,6 +1341,8 @@ void VulkanDevice::clearPreviewResources() {
     uploadPreviewTextures(std::span<const PreviewTexture> {});
     previewMaterials_.clear();
     previewScene_ = {};
+    previewScene_.screenSource = PreviewScene::ScreenSource::white;
+    std::fill(swapchainInitialized_.begin(), swapchainInitialized_.end(), false);
     log::info("Cleared preview GPU resources");
 }
 
