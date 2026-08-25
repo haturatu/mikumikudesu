@@ -14,6 +14,10 @@ compile_commands.json
 *.lib
 *.exp
 
+# User-downloaded MMD model archives (model licenses do not permit redistribution)
+assets/models/*/*.zip
+assets/models/*/model/
+
 # Runtime output
 *.log
 MikuMikuDayo/shadercache/*

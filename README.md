@@ -76,6 +76,23 @@ ctest --preset linux-debug --output-on-failure
 ./build/linux-debug/mikumikudesu --asset model.pmx --asset motion.vmd
 ```
 
+### ミク・テトのサンプルモデル
+
+動作確認用として、配布元のアーカイブをローカルの`assets/models/`へ取得できます。
+アーカイブは再配布しない前提で`.gitignore`対象にし、各モデルのREADMEとテクスチャは展開したまま保持しています。
+
+- `assets/models/miku/model/miku.pmx` — Tda式初音ミク デフォ服ver（[BowlRoll #16344](https://bowlroll.net/file/16344)、作者: 金子卵黄/Tda。ReadMeの利用条件を優先）
+- `assets/models/teto/model/teto.pmx` — Tda式重音テトTypeS（[BowlRoll #11308](https://bowlroll.net/file/11308)、作者: Tda/やまもと。ReadMeの利用条件を優先）
+
+起動例:
+
+```bash
+./build/linux-debug/mikumikudesu --asset assets/models/miku/model/miku.pmx
+./build/linux-debug/mikumikudesu --asset assets/models/teto/model/teto.pmx
+```
+
+重音テトを使った作品の公開や改変時は、[重音テト公式ガイドライン](https://kasaneteto.jp/guidelines/)と各モデル付属READMEを確認してください。
+
 主なオプション:
 
 ```text
