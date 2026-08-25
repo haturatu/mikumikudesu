@@ -7,6 +7,10 @@
 #include "core/motion.hpp"
 #include "core/physics.hpp"
 #include "core/project.hpp"
+#include "core/editor.hpp"
+#include "core/output.hpp"
+#include "core/scene.hpp"
+#include "core/vmdayo.hpp"
 
 #include <array>
 #include <algorithm>
@@ -66,6 +70,11 @@ int main() {
         ok &= check(std::abs(camera.distance + 6.0F) < 0.001F
                     && std::abs(camera.position[1] - 2.0F) < 0.001F
                     && std::abs(camera.viewAngle - 40.0F) < 0.001F, "VMD camera interpolation");
+        ok &= check(std::abs(dayo::core::catmullRom(0.0F, 1.0F, 2.0F, 3.0F, 0.5F) - 1.5F) < 0.001F,
+                    "Catmull-Rom interpolation");
+        cameraMotion.interpolation = dayo::core::InterpolationMode::catmullRom;
+        const auto catmull = dayo::core::evaluateCamera(cameraMotion, 5.0F);
+        ok &= check(std::isfinite(catmull.distance), "Catmull-Rom camera evaluation");
     }
     try {
         const auto projectPath = std::filesystem::temp_directory_path() / "mikumikudesu-project-test.dayo";
@@ -73,6 +82,7 @@ int main() {
         project.renderer = "subayai";
         project.frame = 42.5F;
         project.playing = false;
+        project.embeddedVmdayo = { 0x56, 0x4D, 0x44, 0x01 };
         project.assets.push_back({ "pmx", std::filesystem::absolute("model.pmx") });
         project.assets.push_back({ "vmd", std::filesystem::absolute("motion.vmd") });
         dayo::core::saveProject(projectPath, project);
@@ -81,6 +91,8 @@ int main() {
                     ".dayo project settings round trip");
         ok &= check(loaded.assets.size() == 2 && loaded.assets[0].path.is_absolute(),
                     ".dayo relative asset round trip");
+        ok &= check(loaded.version == 3, ".dayo v3 writer");
+        ok &= check(loaded.embeddedVmdayo == project.embeddedVmdayo, ".dayo embedded VMdayo payload");
         {
             std::ofstream legacy(projectPath, std::ios::binary | std::ios::trunc);
             legacy << "[MikuMikuDayo]\n"
@@ -110,6 +122,36 @@ int main() {
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: project: " << exception.what() << '\n';
         ok = false;
+    }
+
+    try {
+        const auto vmdayoPath = std::filesystem::temp_directory_path() / "mikumikudesu-motion.vmdayo";
+        dayo::core::VmdayoDocument document;
+        document.modelName = "Miku";
+        document.motion.interpolation = dayo::core::InterpolationMode::catmullRom;
+        document.motion.morphs.push_back({ "smile", 10, 0.75F });
+        dayo::core::saveVmdayo(vmdayoPath, document);
+        const auto loaded = dayo::core::loadVmdayo(vmdayoPath);
+        ok &= check(loaded.motion.morphs.size() == 1 && loaded.motion.interpolation
+                    == dayo::core::InterpolationMode::catmullRom, "VMdayo round trip");
+        std::error_code vmdayoError;
+        std::filesystem::remove(vmdayoPath, vmdayoError);
+    } catch (const std::exception& exception) {
+        std::cerr << "FAIL: VMdayo: " << exception.what() << '\n';
+        ok = false;
+    }
+
+    {
+        dayo::core::Scene scene;
+        dayo::core::CommandHistory history;
+        history.execute(scene, std::make_unique<dayo::core::SetFrameCommand>(0.0F, 24.0F));
+        ok &= check(scene.timeline().frame == 24.0F && history.canUndo(), "editor command apply");
+        ok &= check(history.undo(scene) && scene.timeline().frame == 0.0F, "editor command undo");
+        ok &= check(history.redo(scene) && scene.timeline().frame == 24.0F, "editor command redo");
+        dayo::core::MaterialParameterBlock parameters;
+        parameters.set("roughness", 0.5F);
+        ok &= check(parameters.find("roughness") != nullptr && parameters.erase("roughness"),
+                    "material parameter block");
     }
 
     const auto path = std::filesystem::temp_directory_path() / "mikumikudesu-core-test.pmx";
@@ -174,6 +216,13 @@ int main() {
         ok &= check(mesh.indices.size() == 3 && mesh.indices[2] == 2, "PMX index loading");
         const auto model = dayo::core::loadPmxModel(path);
         ok &= check(model.materials.size() == 1 && model.bones.empty(), "complete PMX sections");
+        dayo::core::Scene scene;
+        static_cast<void>(scene.addModel(path));
+        static_cast<void>(scene.addModel(path));
+        ok &= check(scene.models().size() == 2 && scene.selectedModel() != nullptr,
+                    "multi-model scene instances");
+        scene.timeline().gravity.push_back({ 12, { 3.0F, { 0.0F, -1.0F, 0.0F }, 0.0F, 0.0F, false } });
+        ok &= check(scene.evaluatePhysicsSettings(12.0F).gravity == 3.0F, "animated gravity settings");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: PMX probe: " << exception.what() << '\n';
         ok = false;
@@ -195,8 +244,32 @@ int main() {
                     std::ranges::any_of(bdptEffect.passes, [](const auto& pass) {
                         return pass.type == dayo::core::EffectPassType::raytracing;
                     }), "BDPT fxdayo graph");
+        const auto compiled = dayo::core::compileEffectGraph(previewEffect);
+        ok &= check(compiled.passes.size() == previewEffect.passes.size(), "effect render graph compilation");
+        const auto stats = dayo::core::EffectExecutor {}.execute(compiled, {});
+        ok &= check(stats.rasterPasses > 0, "effect pass execution contract");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: effect graph: " << exception.what() << '\n';
+        ok = false;
+    }
+    try {
+        const auto outputDirectory = std::filesystem::temp_directory_path() / "mikumikudesu-output-test";
+        dayo::core::OutputSettings settings;
+        settings.directory = outputDirectory;
+        settings.firstFrame = settings.lastFrame = 3;
+        dayo::core::OutputQueue queue(settings);
+        dayo::core::ImageRgba8 image { 1, 1, { 255, 64, 32, 255 } };
+        queue.push(3, std::move(image));
+        queue.close();
+        ok &= check(queue.written() == 1 && std::filesystem::exists(outputDirectory / "frame_000003.ppm"),
+                    "asynchronous frame output");
+        dayo::core::ImageRgba8 pngImage { 1, 1, { 255, 64, 32, 255 } };
+        dayo::core::writeFrame(outputDirectory / "frame.png", pngImage, dayo::core::OutputFormat::png);
+        ok &= check(std::filesystem::file_size(outputDirectory / "frame.png") > 8, "PNG frame output");
+        std::error_code outputError;
+        std::filesystem::remove_all(outputDirectory, outputError);
+    } catch (const std::exception& exception) {
+        std::cerr << "FAIL: output: " << exception.what() << '\n';
         ok = false;
     }
     try {

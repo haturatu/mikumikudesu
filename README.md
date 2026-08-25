@@ -16,7 +16,14 @@ MikuMikuDayo 1.20をLinuxへ移植したネイティブ実行系です。元のW
 - PMX材質範囲、diffuse/ambient/specular/power、texture乗算/加算モーフ、VMDカメラ/照明
 - FFmpegによるWAV/MP3/M4A等の音声再生とMP4/AVI/MKV/MOV/WebM動画デコード
 - Jsonnetを実行した`.fxdayo`のtexture/sampler/pass/raster/compute/raytracing graph解析
-- `.dayo` v2の相対パス保存と原子的置換、v2再読込、旧版assetとbinary keyframeの復元
+- 複数PMXを保持できるScene（モデル別VMD/VPD/物理、表示切替、clone、背景画像/動画/音声の共存）
+- `.dayo` v1/v2互換読込、v3原子的保存、`.vmdayo`モーション文書の読込/保存
+- VMD Bézier/Linear/Catmull-Rom、外部親リンクの検証（循環参照検出）、重力key評価
+- PMX 2.1 soft-bodyの決定論的フォールバックシミュレーション
+- Undo/Redo CommandHistory、dirty flag/runtime mode、非同期連番フレーム出力（PPM/PNG）
+- MaterialParameterBlock、effect render-graph compile、失敗時に旧状態を保持するFX hot reload
+- screen.bmpのPreviousFrame/BackgroundVideo/BackgroundImage/White semanticsを持つrenderer契約
+- `.dayo` v2の相対パス保存と原子的置換、旧版assetとbinary keyframeの復元
 - Vulkan feature単位のPreview/Subayai/BDPT判定と、安全なPreviewフォールバック
 - OIDNのHIP→CPU runtime選択（OIDNは任意依存）
 - `DEBUG/INFO → stdout`、`WARN/ERROR → stderr`のログ規約
@@ -27,10 +34,10 @@ PreviewはLinux/AMDで実動します。SubayaiとBDPTについては、`.fxdayo
 検出までは移植済みですが、Vulkan acceleration structure/SBTと各passの実行器は未接続です。
 そのため`nativeSubayai`と`nativeBdpt`は意図的にfalseであり、対応していると偽装しません。
 
-また、PMX 2.1 soft-bodyは安全に解析しますが、現在のBullet worldではsimulation対象外です。
-旧Windows `.dayo`のcamera/light/shadow、bone/morph keyは読み込めます。外部親と重力keyは
-境界を保って読み飛ばし、現状のruntimeへは反映しません。複数モデル編集、ImGuizmo編集、
-動画書き出しも元Windows UI相当には未到達です。
+Subayai/BDPTのVulkan pass executor（acceleration structure/SBTを含む）は、featureのないAMD
+Vega等でも起動できるよう未接続のままです。RT対応GPUではbackend契約とgraph compileまでを
+検証し、未対応GPUでは不足featureを表示してPreviewへ戻します。OpenEXR encoderは任意依存の
+ため現在は未接続です（連番出力はPNG/PPM）。
 
 ## 必要環境
 
@@ -89,6 +96,11 @@ ctest --preset linux-debug --output-on-failure
 ```bash
 ./build/linux-debug/mikumikudesu --asset assets/models/miku/model/miku.pmx
 ./build/linux-debug/mikumikudesu --asset assets/models/teto/model/teto.pmx
+# 複数モデル + motion + 背景を同一Sceneへ読み込むこともできます
+./build/linux-debug/mikumikudesu \
+  --asset assets/models/miku/model/miku.pmx \
+  --asset assets/models/teto/model/teto.pmx \
+  --asset motion.vmd --asset background.png
 ```
 
 重音テトを使った作品の公開や改変時は、[重音テト公式ガイドライン](https://kasaneteto.jp/guidelines/)と各モデル付属READMEを確認してください。
@@ -136,7 +148,7 @@ WICには依存しません。OIDNは任意で、HIP deviceが使えなければ
 ```text
 src/
 ├── app/                     CLI、D&D、ImGui、main loop、project連携
-├── core/                    PMX/VMD/VPD、animation、Bullet、media、effect、project
+├── core/                    Scene、PMX/VMD/VPD/VMdayo、animation、Bullet、media、effect、project、output
 ├── platform/                SDL3 window/event/audio
 └── graphics/
     ├── device.hpp           API非依存device/resource契約
