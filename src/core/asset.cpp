@@ -23,6 +23,7 @@ AssetKind classifyAsset(const std::filesystem::path& path) {
     if (extension == ".pmx") return AssetKind::pmx;
     if (extension == ".vmd") return AssetKind::vmd;
     if (extension == ".vpd") return AssetKind::vpd;
+    if (extension == ".vmdayo") return AssetKind::vmdayo;
     if (extension == ".dayo") return AssetKind::project;
     if (extension == ".fxdayo") return AssetKind::effect;
 
@@ -42,6 +43,7 @@ std::string_view toString(AssetKind kind) noexcept {
     case AssetKind::pmx: return "PMX model";
     case AssetKind::vmd: return "VMD motion";
     case AssetKind::vpd: return "VPD pose";
+    case AssetKind::vmdayo: return "VMdayo motion";
     case AssetKind::image: return "image";
     case AssetKind::audio: return "audio";
     case AssetKind::video: return "video";

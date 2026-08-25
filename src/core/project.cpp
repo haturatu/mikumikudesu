@@ -46,6 +46,17 @@ Json parseHeader(std::ifstream& input, const std::filesystem::path& path) {
     return Json::parse(contents.substr(begin, end - begin + 1));
 }
 
+std::vector<std::uint8_t> readBinarySection(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return {};
+    const std::string contents((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    const auto marker = contents.find("[BinaryDayo]");
+    if (marker == std::string::npos) return {};
+    auto begin = marker + std::strlen("[BinaryDayo]");
+    while (begin < contents.size() && (contents[begin] == '\r' || contents[begin] == '\n')) ++begin;
+    return std::vector<std::uint8_t>(contents.begin() + static_cast<std::ptrdiff_t>(begin), contents.end());
+}
+
 void appendIfPresent(DayoProject& result, const Json& object, std::string_view field,
                      std::string kind, const std::filesystem::path& base) {
     const std::string key(field);
@@ -247,7 +258,7 @@ DayoProject loadProject(const std::filesystem::path& path) {
     if (root.contains("mikumikudesu")) {
         const auto& native = root.at("mikumikudesu");
         result.version = native.value("version", 2);
-        if (result.version > 2) {
+        if (result.version > 3) {
             throw std::runtime_error("unsupported .dayo project version "
                                      + std::to_string(result.version));
         }
@@ -261,6 +272,7 @@ DayoProject loadProject(const std::filesystem::path& path) {
                                           resolveAsset(base, asset.at("path").get<std::string>()) });
             }
         }
+        result.embeddedVmdayo = readBinarySection(path);
         return result;
     }
 
@@ -304,6 +316,7 @@ DayoProject loadProject(const std::filesystem::path& path) {
         embedded.shadows = motions[0].shadows;
         embedded.lastFrame = std::max(embedded.lastFrame, motions[0].lastFrame);
     }
+    result.embeddedVmdayo = readBinarySection(path);
     return result;
 }
 
@@ -320,7 +333,7 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
     }
     const Json root {
         { "mikumikudesu", {
-            { "version", 2 },
+            { "version", 3 },
             { "renderer", project.renderer },
             { "frame", project.frame },
             { "playing", project.playing },
@@ -334,6 +347,10 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
         if (!output) throw std::runtime_error("cannot write project: " + temporary.string());
         output << "[MikuMikuDayo]\n" << root.dump(2) << "\n[BinaryDayo]\n";
+        if (!project.embeddedVmdayo.empty()) {
+            output.write(reinterpret_cast<const char*>(project.embeddedVmdayo.data()),
+                         static_cast<std::streamsize>(project.embeddedVmdayo.size()));
+        }
         output.flush();
         if (!output) throw std::runtime_error("failed while writing project: " + temporary.string());
     }

@@ -102,6 +102,14 @@ std::array<float, N> parseVector(std::string value, std::string_view field) {
 
 } // namespace
 
+float catmullRom(float p0, float p1, float p2, float p3, float t) noexcept {
+    const float t2 = t * t;
+    const float t3 = t2 * t;
+    return 0.5F * ((2.0F * p1) + (-p0 + p2) * t
+        + (2.0F * p0 - 5.0F * p1 + 4.0F * p2 - p3) * t2
+        + (-p0 + 3.0F * p1 - 3.0F * p2 + p3) * t3);
+}
+
 std::string decodeCp932(std::string_view input) {
     if (input.empty()) return {};
     iconv_t converter = iconv_open("UTF-8", "CP932");
@@ -244,15 +252,25 @@ VmdCameraState evaluateCamera(const VmdMotion& motion, float frame) {
     if (static_cast<float>(next->frame) < frame) next = previous;
     const auto span = static_cast<float>(next->frame) - static_cast<float>(previous->frame);
     const float t = span > 1.0F ? std::clamp((frame - static_cast<float>(previous->frame)) / span, 0.0F, 1.0F) : 0.0F;
-    result.distance = previous->distance + (next->distance - previous->distance)
-                    * cameraBezier(t, next->interpolation, 16);
+    const auto previousIndex = static_cast<std::size_t>(previous - motion.cameras.data());
+    const auto nextIndex = static_cast<std::size_t>(next - motion.cameras.data());
+    const auto& before = motion.cameras[previousIndex == 0 ? previousIndex : previousIndex - 1];
+    const auto& after = motion.cameras[std::min(nextIndex + 1, motion.cameras.size() - 1)];
+    const float interpolation = motion.interpolation == InterpolationMode::linear
+        ? t : cameraBezier(t, next->interpolation, 16);
+    result.distance = motion.interpolation == InterpolationMode::catmullRom
+        ? catmullRom(before.distance, previous->distance, next->distance, after.distance, t)
+        : previous->distance + (next->distance - previous->distance) * interpolation;
     for (std::size_t axis = 0; axis < 3; ++axis) {
-        result.position[axis] = previous->position[axis]
-                              + (next->position[axis] - previous->position[axis])
-                              * cameraBezier(t, next->interpolation, axis * 4);
+        const float axisInterpolation = motion.interpolation == InterpolationMode::linear
+            ? t : cameraBezier(t, next->interpolation, axis * 4);
+        result.position[axis] = motion.interpolation == InterpolationMode::catmullRom
+            ? catmullRom(before.position[axis], previous->position[axis], next->position[axis], after.position[axis], t)
+            : previous->position[axis] + (next->position[axis] - previous->position[axis]) * axisInterpolation;
         result.rotation[axis] = previous->rotation[axis]
                               + (next->rotation[axis] - previous->rotation[axis])
-                              * cameraBezier(t, next->interpolation, 12);
+                              * (motion.interpolation == InterpolationMode::linear ? t
+                                 : cameraBezier(t, next->interpolation, 12));
     }
     result.viewAngle = static_cast<float>(previous->viewAngle)
                      + (static_cast<float>(next->viewAngle) - static_cast<float>(previous->viewAngle))

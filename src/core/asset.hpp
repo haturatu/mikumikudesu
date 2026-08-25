@@ -9,6 +9,7 @@ enum class AssetKind {
     pmx,
     vmd,
     vpd,
+    vmdayo,
     image,
     audio,
     video,
@@ -21,4 +22,3 @@ enum class AssetKind {
 [[nodiscard]] std::string_view toString(AssetKind kind) noexcept;
 
 } // namespace dayo::core
-
