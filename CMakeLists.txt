@@ -68,8 +68,12 @@ add_library(dayo_core
   src/core/media.cpp
   src/core/model_probe.cpp
   src/core/motion.cpp
+  src/core/editor.cpp
+  src/core/output.cpp
   src/core/physics.cpp
   src/core/project.cpp
+  src/core/scene.cpp
+  src/core/vmdayo.cpp
 )
 target_include_directories(dayo_core PUBLIC src)
 target_include_directories(dayo_core PRIVATE "${DAYO_STB_INCLUDE_DIR}")
@@ -78,6 +82,8 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   set_source_files_properties(src/core/image.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-unused-but-set-variable")
   set_source_files_properties(src/core/physics.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-float-conversion")
   set_source_files_properties(src/core/media.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-old-style-cast")
+  set_source_files_properties(src/core/output.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-missing-field-initializers")
+  set_source_files_properties(src/core/vmdayo.cpp PROPERTIES COMPILE_OPTIONS "-Wno-cpp;-Wno-deprecated-declarations")
   set_source_files_properties(src/core/effect.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-shadow;-Wno-cpp;-Wno-deprecated-declarations")
   set_source_files_properties(src/core/project.cpp PROPERTIES COMPILE_OPTIONS "-Wno-cpp;-Wno-deprecated-declarations")
 endif()

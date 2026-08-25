@@ -27,6 +27,7 @@ public:
     void updatePreviewVertices(std::span<const PreviewVertex> vertices) override;
     void updatePreviewMaterials(std::span<const PreviewMaterial> materials) override;
     void uploadPreviewTextures(std::span<const PreviewTexture> textures) override;
+    void clearPreviewResources() override;
     void updatePreviewScene(const PreviewScene& scene) override { previewScene_ = scene; }
     [[nodiscard]] BufferHandle createBuffer(const BufferDesc& desc) override;
     [[nodiscard]] TextureHandle createTexture(const TextureDesc& desc) override;

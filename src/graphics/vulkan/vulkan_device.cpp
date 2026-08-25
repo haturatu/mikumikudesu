@@ -1097,14 +1097,19 @@ void VulkanDevice::renderFrame() {
     vkCmdPipelineBarrier2(frame.commandBuffer, &toColorDependency);
 
     VkClearValue clear {};
-    clear.color = activeRenderer_ == RendererKind::preview
+    clear.color = !previewScene_.backgroundEnabled
+        || previewScene_.screenSource == PreviewScene::ScreenSource::white
+        ? VkClearColorValue {{ 1.0F, 1.0F, 1.0F, 1.0F }}
+        : activeRenderer_ == RendererKind::preview
         ? VkClearColorValue {{ 0.025F, 0.035F, 0.055F, 1.0F }}
         : VkClearColorValue {{ 0.055F, 0.025F, 0.045F, 1.0F }};
     const VkRenderingAttachmentInfo attachment {
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .imageView = swapchainViews_[imageIndex],
         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .loadOp = previewScene_.backgroundEnabled
+               && previewScene_.screenSource == PreviewScene::ScreenSource::previousFrame
+               && swapchainInitialized_[imageIndex] ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
         .clearValue = clear,
     };
@@ -1326,6 +1331,19 @@ void VulkanDevice::uploadPreviewTextures(std::span<const PreviewTexture> texture
         }
     }
     log::info("Uploaded ", textures.size(), " PMX texture(s) plus fallback");
+}
+
+void VulkanDevice::clearPreviewResources() {
+    waitIdle();
+    const std::array<PreviewVertex, 3> fallbackVertices {{ {}, {}, {} }};
+    const std::array<std::uint32_t, 3> fallbackIndices { 0, 1, 2 };
+    uploadPreviewMesh(fallbackVertices, fallbackIndices);
+    uploadPreviewTextures(std::span<const PreviewTexture> {});
+    previewMaterials_.clear();
+    previewScene_ = {};
+    previewScene_.screenSource = PreviewScene::ScreenSource::white;
+    std::fill(swapchainInitialized_.begin(), swapchainInitialized_.end(), false);
+    log::info("Cleared preview GPU resources");
 }
 
 std::uint32_t VulkanDevice::findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags flags) const {

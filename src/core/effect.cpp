@@ -5,6 +5,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 #if DAYO_HAS_JSONNET
 extern "C" {
@@ -64,6 +65,15 @@ std::vector<EffectAttachment> attachments(const nlohmann::json& parent, std::str
 #endif
 
 } // namespace
+
+const MaterialValue* MaterialParameterBlock::find(std::string_view name) const noexcept {
+    const auto found = values_.find(std::string(name));
+    return found == values_.end() ? nullptr : std::addressof(found->second);
+}
+
+bool MaterialParameterBlock::erase(std::string_view name) {
+    return values_.erase(std::string(name)) != 0;
+}
 
 EffectGraph loadEffectGraph(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
@@ -135,6 +145,76 @@ EffectGraph loadEffectGraph(const std::filesystem::path& path) {
     throw std::runtime_error("Jsonnet support was not built");
 #endif
     return graph;
+}
+
+CompiledEffect compileEffectGraph(const EffectGraph& graph) {
+    CompiledEffect result;
+    result.source = graph;
+    std::unordered_map<std::string, bool> writers;
+    for (const auto& pass : graph.passes) {
+        CompiledPass compiled { .name = pass.name, .type = pass.type, .resources = {}, .barriers = {} };
+        for (const auto& input : pass.renderTargets) {
+            if (input.name.empty()) continue;
+            compiled.resources.push_back({ input.name, true });
+            if (writers.contains(input.name)) compiled.barriers.push_back("write-after-write:" + input.name);
+            writers[input.name] = true;
+        }
+        for (const auto& input : pass.unorderedAccess) {
+            if (input.name.empty()) continue;
+            compiled.resources.push_back({ input.name, true });
+            if (writers.contains(input.name)) compiled.barriers.push_back("uav:" + input.name);
+            writers[input.name] = true;
+        }
+        if (!pass.depth.name.empty()) {
+            compiled.resources.push_back({ pass.depth.name, pass.depth.clear });
+            if (writers.contains(pass.depth.name)) compiled.barriers.push_back("depth:" + pass.depth.name);
+            writers[pass.depth.name] = true;
+        }
+        result.passes.push_back(std::move(compiled));
+    }
+    return result;
+}
+
+EffectExecutionStats EffectExecutor::execute(const CompiledEffect& effect,
+                                              const PassCallback& callback) const {
+    EffectExecutionStats stats;
+    for (const auto& pass : effect.passes) {
+        stats.barriers += pass.barriers.size();
+        switch (pass.type) {
+        case EffectPassType::rasterizer:
+        case EffectPassType::postprocess: ++stats.rasterPasses; break;
+        case EffectPassType::compute: ++stats.computePasses; break;
+        case EffectPassType::raytracing: ++stats.rayTracingPasses; break;
+        case EffectPassType::unknown: break;
+        }
+        if (callback) callback(pass);
+    }
+    return stats;
+}
+
+EffectHotReloader::EffectHotReloader(std::filesystem::path path) : path_(std::move(path)) {}
+
+bool EffectHotReloader::poll(std::string* error) {
+    std::error_code statusError;
+    const auto timestamp = std::filesystem::last_write_time(path_, statusError);
+    if (statusError) {
+        if (error != nullptr) *error = statusError.message();
+        return false;
+    }
+    if (graph_ && timestamp == timestamp_) return false;
+    try {
+        auto candidate = loadEffectGraph(path_);
+        // Compile before committing the candidate so broken Jsonnet/HLSL does
+        // not tear down the last known-good effect.
+        static_cast<void>(compileEffectGraph(candidate));
+        graph_ = std::move(candidate);
+        timestamp_ = timestamp;
+        dirty_ = true;
+        return true;
+    } catch (const std::exception& exception) {
+        if (error != nullptr) *error = exception.what();
+        return false;
+    }
 }
 
 const char* toString(EffectPassType type) noexcept {

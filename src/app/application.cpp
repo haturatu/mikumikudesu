@@ -7,6 +7,7 @@
 #include "core/log.hpp"
 #include "core/model_probe.hpp"
 #include "core/motion.hpp"
+#include "core/vmdayo.hpp"
 #include "graphics/device.hpp"
 #include "platform/window.hpp"
 
@@ -85,6 +86,27 @@ Options parseOptions(int argc, char** argv) {
 
 Application::Application(Options options) : options_(std::move(options)) {}
 
+void Application::resetProjectRuntimeState() {
+    scene_.clearProjectState();
+    if (device_ != nullptr) device_->clearPreviewResources();
+    effectReloader_.reset();
+    audioPlayer_.stop();
+    textures_.clear();
+    mediaSeconds_ = 0.0;
+    uploadedVideoFrame_ = -1;
+    videoMode_ = false;
+    animationFrame_ = 0.0F;
+    uploadedAnimationFrame_ = -1;
+    playing_ = true;
+    manualCamera_ = false;
+    cameraYaw_ = 0.0F;
+    cameraPitch_ = 0.0F;
+    cameraDistance_ = 3.0F;
+    normalization_ = {};
+    projectAssets_.clear();
+    history_.clear();
+}
+
 int Application::run() {
     platform::WindowOptions windowOptions;
     windowOptions.title = "mikumikudesu — SDL3 + Vulkan";
@@ -149,28 +171,39 @@ int Application::run() {
         const auto tick = std::chrono::steady_clock::now();
         const float deltaSeconds = std::chrono::duration<float>(tick - previousTick).count();
         previousTick = tick;
-        if (playing_ && motion_ != nullptr && motion_->lastFrame > 0) {
-            animationFrame_ = std::fmod(animationFrame_ + deltaSeconds * 30.0F,
-                                        static_cast<float>(motion_->lastFrame + 1));
+        if (scene_.advanceFrame(deltaSeconds, playing_)) {
+            animationFrame_ = scene_.timeline().frame;
             const int integerFrame = static_cast<int>(animationFrame_);
-            if (integerFrame != uploadedAnimationFrame_ && animator_ != nullptr) {
+            if (integerFrame != uploadedAnimationFrame_ && !scene_.models().empty()) {
                 refreshAnimatedMesh(false, deltaSeconds);
             }
             refreshPreviewScene();
         }
-        if (playing_ && videoMode_ && media_ != nullptr && media_->info().hasVideo) {
-            mediaSeconds_ += deltaSeconds;
-            if (media_->info().durationSeconds > 0.0 && mediaSeconds_ >= media_->info().durationSeconds) {
-                mediaSeconds_ = std::fmod(mediaSeconds_, media_->info().durationSeconds);
-                uploadedVideoFrame_ = -1;
-                if (media_->info().hasAudio) audioPlayer_.play(media_->decodeAudio());
+        auto* media = scene_.media();
+        if (effectReloader_) {
+            std::string reloadError;
+            if (effectReloader_->poll(&reloadError) && effectReloader_->current() != nullptr) {
+                scene_.setEffect(*effectReloader_->current());
+                log::info("Hot reloaded effect graph");
+            } else if (!reloadError.empty()) {
+                log::warn("FX hot reload deferred: ", reloadError);
             }
-            const auto videoFrame = static_cast<std::int64_t>(mediaSeconds_ * media_->info().videoFramesPerSecond);
+        }
+        if (playing_ && videoMode_ && media != nullptr && media->info().hasVideo) {
+            mediaSeconds_ += deltaSeconds;
+            if (media->info().durationSeconds > 0.0 && mediaSeconds_ >= media->info().durationSeconds) {
+                mediaSeconds_ = std::fmod(mediaSeconds_, media->info().durationSeconds);
+                uploadedVideoFrame_ = -1;
+                if (media->info().hasAudio) audioPlayer_.play(media->decodeAudio());
+            }
+            const auto videoFrame = static_cast<std::int64_t>(mediaSeconds_ * media->info().videoFramesPerSecond);
             if (videoFrame != uploadedVideoFrame_) refreshVideoFrame();
         }
         device->beginUiFrame();
         buildUi();
         device->renderFrame();
+        if (scene_.runtimeMode() == core::RuntimeMode::accumulate) scene_.advanceAccumulation();
+        else if (scene_.runtimeMode() == core::RuntimeMode::realtime) scene_.invalidateAccumulation();
         ++frameCount;
         if (options_.frameLimit && frameCount >= *options_.frameLimit) running = false;
     }
@@ -190,19 +223,19 @@ void Application::handleAsset(const std::filesystem::path& path) {
     if (kind == core::AssetKind::project) {
         try {
             const auto project = core::loadProject(path);
-            projectAssets_.clear();
+            resetProjectRuntimeState();
             if (project.renderer == "subayai") device_->selectRenderer(graphics::RendererKind::subayai);
             else if (project.renderer == "bdpt") device_->selectRenderer(graphics::RendererKind::bdpt);
             else device_->selectRenderer(graphics::RendererKind::preview);
             for (const auto& asset : project.assets) handleAsset(asset.path);
-            if (project.embeddedMotion && animator_ != nullptr) {
-                motion_ = std::make_unique<core::VmdMotion>(*project.embeddedMotion);
-                animator_->setMotion(motion_.get());
+            if (project.embeddedMotion) {
+                scene_.attachMotion(*project.embeddedMotion, scene_.selectedModelId());
                 manualCamera_ = false;
             }
             animationFrame_ = project.frame;
+            scene_.setFrame(animationFrame_);
             playing_ = project.playing;
-            if (animator_ != nullptr) refreshAnimatedMesh(false);
+            if (!scene_.models().empty()) refreshAnimatedMesh(false);
             lastAsset_ = "Project " + path.filename().string() + " — "
                        + std::to_string(project.assets.size()) + " assets";
             log::info("Loaded project: ", lastAsset_);
@@ -212,15 +245,29 @@ void Application::handleAsset(const std::filesystem::path& path) {
         }
         return;
     }
+    if (kind == core::AssetKind::vmdayo) {
+        try {
+            const auto document = core::loadVmdayo(path);
+            if (selectedModel() == nullptr) throw std::runtime_error("VMdayo requires a selected model");
+            scene_.attachMotion(document.motion, scene_.selectedModelId(), document.modelName);
+            animationFrame_ = 0.0F;
+            scene_.setFrame(animationFrame_);
+            refreshAnimatedMesh(false);
+            refreshPreviewScene();
+            lastAsset_ = "VMdayo " + path.filename().string();
+            projectAssets_.push_back({ "vmdayo", std::filesystem::absolute(path) });
+            log::info("Loaded VMdayo motion: ", path.string());
+        } catch (const std::exception& exception) {
+            lastAsset_ = "VMdayo error: " + std::string(exception.what());
+            log::warn(lastAsset_);
+        }
+        return;
+    }
     if (kind == core::AssetKind::image) {
         try {
             auto image = core::loadImageRgba8(path);
+            scene_.setBackgroundImage(path);
             videoMode_ = false;
-            media_.reset();
-            animator_.reset();
-            physics_.reset();
-            model_.reset();
-            audioPlayer_.stop();
             const std::array<graphics::PreviewVertex, 4> vertices {{
                 {{ -1.0F, -1.0F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 0.0F, 1.0F }},
                 {{  1.0F, -1.0F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 1.0F, 1.0F }},
@@ -228,18 +275,24 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 {{ -1.0F,  1.0F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 0.0F, 0.0F }},
             }};
             const std::array<std::uint32_t, 6> indices { 0, 1, 2, 2, 3, 0 };
-            device_->uploadPreviewMesh(vertices, indices);
-            const std::array previewTextures { graphics::PreviewTexture {
-                image.width, image.height, image.pixels } };
-            device_->uploadPreviewTextures(previewTextures);
-            graphics::PreviewMaterial material;
-            material.indexCount = 6;
-            material.textureSlot = 1;
-            const std::array materials { material };
-            device_->updatePreviewMaterials(materials);
-            graphics::PreviewScene scene;
-            scene.cameraDistance = 2.42F;
-            device_->updatePreviewScene(scene);
+            if (scene_.models().empty()) {
+                device_->uploadPreviewMesh(vertices, indices);
+                const std::array previewTextures { graphics::PreviewTexture {
+                    image.width, image.height, image.pixels } };
+                device_->uploadPreviewTextures(previewTextures);
+                graphics::PreviewMaterial material;
+                material.indexCount = 6;
+                material.textureSlot = 1;
+                const std::array materials { material };
+                device_->updatePreviewMaterials(materials);
+                graphics::PreviewScene preview;
+                preview.cameraDistance = 2.42F;
+                device_->updatePreviewScene(preview);
+            } else {
+                refreshPreviewTextures();
+                refreshAnimatedMesh(true);
+                refreshPreviewScene();
+            }
             lastAsset_ = "Image " + path.filename().string() + " — "
                        + std::to_string(image.width) + "x" + std::to_string(image.height);
             projectAssets_.push_back({ "image", std::filesystem::absolute(path) });
@@ -252,52 +305,23 @@ void Application::handleAsset(const std::filesystem::path& path) {
     }
     if (kind == core::AssetKind::pmx) {
         try {
-            videoMode_ = false;
-            media_.reset();
-            audioPlayer_.stop();
-            model_ = std::make_unique<core::PmxModel>(core::loadPmxModel(path));
-            normalization_ = core::previewNormalization(*model_);
-            animator_ = std::make_unique<core::MmdAnimator>(*model_);
-            physics_ = std::make_unique<core::MmdPhysics>(*model_);
-            animator_->setMotion(motion_.get());
-            animator_->setPose(pose_.get());
-            animator_->setPhysics(physics_.get());
-            textures_.clear();
-            textures_.resize(model_->textures.size());
-            std::size_t loadedTextures = 0;
-            for (std::size_t i = 0; i < model_->textures.size(); ++i) {
-                try {
-                    auto texturePath = model_->textures[i];
-                    if (!std::filesystem::exists(texturePath)) {
-                        // Some legacy ZIP extractors rewrite Japanese filenames. A same-stem
-                        // image beside the PMX is an unambiguous recovery for bundled assets.
-                        for (const auto& entry : std::filesystem::directory_iterator(model_->sourcePath.parent_path())) {
-                            if (!entry.is_regular_file() || entry.path().extension() != texturePath.extension()) continue;
-                            if (entry.path().stem() == model_->sourcePath.stem()) { texturePath = entry.path(); break; }
-                        }
-                    }
-                    textures_[i] = core::loadImageRgba8(texturePath);
-                    ++loadedTextures;
-                } catch (const std::exception& exception) {
-                    log::warn(exception.what());
-                }
-            }
-            std::vector<graphics::PreviewTexture> previewTextures;
-            previewTextures.reserve(textures_.size());
-            for (const auto& texture : textures_) {
-                previewTextures.push_back({ texture.width, texture.height, texture.pixels });
-            }
-            if (device_ != nullptr) device_->uploadPreviewTextures(previewTextures);
+            const auto modelId = scene_.addModel(path);
+            scene_.selectModel(modelId);
+            videoMode_ = scene_.media() != nullptr && scene_.media()->info().hasVideo;
+            normalization_ = scene_.selectedModel()->normalization;
+            refreshPreviewTextures();
             animationFrame_ = 0.0F;
+            scene_.setFrame(animationFrame_);
             uploadedAnimationFrame_ = -1;
             refreshAnimatedMesh(true);
             refreshPreviewScene();
-            lastAsset_ = "PMX " + model_->metadata.modelName + " — v"
-                       + std::to_string(model_->metadata.version) + ", vertices "
-                       + std::to_string(model_->metadata.vertexCount) + ", triangles "
-                       + std::to_string(model_->indices.size() / 3) + ", bones "
-                       + std::to_string(model_->bones.size()) + ", textures "
-                       + std::to_string(loadedTextures) + "/" + std::to_string(model_->textures.size());
+            const auto* model = selectedModel();
+            lastAsset_ = "PMX " + model->model->metadata.modelName + " — v"
+                       + std::to_string(model->model->metadata.version) + ", vertices "
+                       + std::to_string(model->model->metadata.vertexCount) + ", triangles "
+                       + std::to_string(model->model->indices.size() / 3) + ", bones "
+                       + std::to_string(model->model->bones.size()) + ", models "
+                       + std::to_string(scene_.models().size());
             log::info("Loaded metadata: ", lastAsset_, " (", path.string(), ")");
             projectAssets_.push_back({ "pmx", std::filesystem::absolute(path) });
         } catch (const std::exception& exception) {
@@ -308,17 +332,13 @@ void Application::handleAsset(const std::filesystem::path& path) {
     }
     if (kind == core::AssetKind::audio || kind == core::AssetKind::video) {
         try {
-            animator_.reset();
-            physics_.reset();
-            model_.reset();
-            motion_.reset();
-            pose_.reset();
-            media_ = std::make_unique<core::MediaFile>(path);
+            scene_.setMedia(path);
+            auto* media = scene_.media();
             mediaSeconds_ = 0.0;
             uploadedVideoFrame_ = -1;
-            videoMode_ = media_->info().hasVideo;
-            if (media_->info().hasAudio) audioPlayer_.play(media_->decodeAudio());
-            if (videoMode_) {
+            videoMode_ = media->info().hasVideo;
+            if (media->info().hasAudio) audioPlayer_.play(media->decodeAudio());
+            if (videoMode_ && scene_.models().empty()) {
                 const std::array<graphics::PreviewVertex, 4> vertices {{
                     {{ -0.9F, -0.9F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 0.0F, 1.0F }},
                     {{  0.9F, -0.9F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 1.0F, 1.0F }},
@@ -328,9 +348,12 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 const std::array<std::uint32_t, 6> indices { 0, 1, 2, 2, 3, 0 };
                 device_->uploadPreviewMesh(vertices, indices);
                 refreshVideoFrame();
+            } else if (!scene_.models().empty()) {
+                refreshPreviewTextures();
+                refreshAnimatedMesh(true);
             }
             lastAsset_ = std::string(core::toString(kind)) + " — "
-                       + std::to_string(media_->info().durationSeconds) + " s";
+                       + std::to_string(media->info().durationSeconds) + " s";
             log::info("Loaded media: ", lastAsset_, " (", path.string(), ")");
             projectAssets_.push_back({ kind == core::AssetKind::audio ? "audio" : "video",
                                        std::filesystem::absolute(path) });
@@ -342,13 +365,18 @@ void Application::handleAsset(const std::filesystem::path& path) {
     }
     if (kind == core::AssetKind::vmd) {
         try {
-            motion_ = std::make_unique<core::VmdMotion>(core::loadVmd(path));
+            scene_.attachMotion(path);
             manualCamera_ = false;
-            if (animator_ != nullptr) { animator_->setMotion(motion_.get()); animationFrame_ = 0.0F; refreshAnimatedMesh(false); }
+            animationFrame_ = 0.0F;
+            scene_.setFrame(animationFrame_);
+            if (selectedModel() != nullptr) refreshAnimatedMesh(false);
             refreshPreviewScene();
-            lastAsset_ = "VMD " + motion_->modelName + " — " + std::to_string(motion_->bones.size())
-                       + " bone keys, " + std::to_string(motion_->morphs.size()) + " morph keys, "
-                       + std::to_string(motion_->lastFrame) + " frames";
+            const auto* model = selectedModel();
+            const auto* motion = model != nullptr ? model->motion.get() : nullptr;
+            lastAsset_ = "VMD " + (motion != nullptr ? motion->modelName : path.filename().string())
+                       + " — " + std::to_string(motion != nullptr ? motion->bones.size() : 0) + " bone keys, "
+                       + std::to_string(motion != nullptr ? motion->morphs.size() : 0) + " morph keys, "
+                       + std::to_string(motion != nullptr ? motion->lastFrame : 0) + " frames";
             log::info("Loaded motion: ", lastAsset_, " (", path.string(), ")");
             projectAssets_.push_back({ "vmd", std::filesystem::absolute(path) });
         } catch (const std::exception& exception) {
@@ -359,9 +387,10 @@ void Application::handleAsset(const std::filesystem::path& path) {
     }
     if (kind == core::AssetKind::vpd) {
         try {
-            pose_ = std::make_unique<core::VpdPose>(core::loadVpd(path));
-            if (animator_ != nullptr) { animator_->setPose(pose_.get()); refreshAnimatedMesh(false); }
-            lastAsset_ = "VPD pose — " + std::to_string(pose_->bones.size()) + " bones";
+            scene_.attachPose(path);
+            if (selectedModel() != nullptr) refreshAnimatedMesh(false);
+            const auto* pose = selectedModel()->pose.get();
+            lastAsset_ = "VPD pose — " + std::to_string(pose->bones.size()) + " bones";
             log::info("Loaded pose: ", lastAsset_, " (", path.string(), ")");
             projectAssets_.push_back({ "vpd", std::filesystem::absolute(path) });
         } catch (const std::exception& exception) {
@@ -372,7 +401,10 @@ void Application::handleAsset(const std::filesystem::path& path) {
     }
     if (kind == core::AssetKind::effect) {
         try {
-            effect_ = std::make_unique<core::EffectGraph>(core::loadEffectGraph(path));
+            effectReloader_.emplace(path);
+            static_cast<void>(effectReloader_->poll());
+            if (effectReloader_->current() == nullptr) throw std::runtime_error("effect graph is empty");
+            scene_.setEffect(*effectReloader_->current());
             auto filename = path.filename().string();
             std::ranges::transform(filename, filename.begin(), [](unsigned char value) {
                 return static_cast<char>(std::tolower(value));
@@ -383,8 +415,8 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 device_->selectRenderer(graphics::RendererKind::bdpt);
             }
             lastAsset_ = "Effect " + path.filename().string() + " — "
-                       + std::to_string(effect_->passes.size()) + " passes, "
-                       + std::to_string(effect_->textures.size()) + " textures";
+                       + std::to_string(scene_.effect()->passes.size()) + " passes, "
+                       + std::to_string(scene_.effect()->textures.size()) + " textures";
             log::info("Loaded effect graph: ", lastAsset_);
             projectAssets_.push_back({ "effect", std::filesystem::absolute(path) });
         } catch (const std::exception& exception) {
@@ -398,46 +430,109 @@ void Application::handleAsset(const std::filesystem::path& path) {
 }
 
 void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
-    if (device_ == nullptr || model_ == nullptr || animator_ == nullptr) return;
-    auto frame = animator_->evaluate(animationFrame_, deltaSeconds);
-    core::normalizeForPreview(frame.vertices, *model_);
-    std::vector<graphics::PreviewVertex> vertices(frame.vertices.size());
-    for (std::size_t i = 0; i < frame.vertices.size(); ++i) {
-        std::memcpy(vertices[i].position, frame.vertices[i].position.data(), sizeof(vertices[i].position));
-        std::memcpy(vertices[i].normal, frame.vertices[i].normal.data(), sizeof(vertices[i].normal));
-        std::memcpy(vertices[i].uv, frame.vertices[i].uv.data(), sizeof(vertices[i].uv));
-    }
-    if (initialUpload) device_->uploadPreviewMesh(vertices, model_->indices);
-    else device_->updatePreviewVertices(vertices);
+    if (device_ == nullptr || scene_.models().empty()) return;
+    std::vector<graphics::PreviewVertex> vertices;
+    std::vector<std::uint32_t> indices;
     std::vector<graphics::PreviewMaterial> materials;
-    materials.reserve(model_->materials.size());
-    std::uint32_t firstIndex = 0;
-    for (std::size_t i = 0; i < model_->materials.size(); ++i) {
-        graphics::PreviewMaterial material;
-        material.firstIndex = firstIndex;
-        material.indexCount = model_->materials[i].indexCount;
-        material.doubleSided = (model_->materials[i].drawFlags & 0x01U) != 0;
-        material.textureSlot = model_->materials[i].textureIndex >= 0
-            ? static_cast<std::uint32_t>(model_->materials[i].textureIndex + 1) : 0U;
-        if (i < frame.materials.size()) {
-            const auto& animated = frame.materials[i];
-            std::copy(animated.diffuse.begin(), animated.diffuse.end(), material.diffuse);
-            std::copy(animated.ambient.begin(), animated.ambient.end(), material.ambient);
-            std::copy(animated.specular.begin(), animated.specular.end(), material.specular);
-            material.shininess = animated.shininess;
-            std::copy(animated.textureMultiply.begin(), animated.textureMultiply.end(), material.textureMultiply);
-            std::copy(animated.textureAdd.begin(), animated.textureAdd.end(), material.textureAdd);
+    for (const auto& instance : scene_.models()) {
+        if (!instance.visible || instance.model == nullptr || instance.animator == nullptr) continue;
+        const auto gravity = scene_.evaluatePhysicsSettings(animationFrame_);
+        if (instance.physics != nullptr) {
+            instance.physics->setGravity({ gravity.gravityDirection[0] * gravity.gravity,
+                                           gravity.gravityDirection[1] * gravity.gravity,
+                                           gravity.gravityDirection[2] * gravity.gravity });
+            instance.physics->setGravityNoise(gravity.noiseAmplitude, gravity.noiseFrequency);
+            instance.physics->setFloorCollision(gravity.floorCollision);
         }
-        materials.push_back(material);
-        firstIndex += material.indexCount;
+        const auto frame = instance.animator->evaluate(animationFrame_, deltaSeconds);
+        auto normalizedFrame = frame;
+        if (instance.softBody != nullptr && instance.softBody->available()) {
+            instance.softBody->step(deltaSeconds, { gravity.gravityDirection[0] * gravity.gravity,
+                                                    gravity.gravityDirection[1] * gravity.gravity,
+                                                    gravity.gravityDirection[2] * gravity.gravity });
+            instance.softBody->apply(normalizedFrame.vertices);
+        }
+        core::normalizeForPreview(normalizedFrame.vertices, *instance.model);
+        const auto textureBase = [&] {
+            std::size_t value = 0;
+            for (const auto& previous : scene_.models()) {
+                if (previous.id == instance.id) break;
+                value += previous.textures.size();
+            }
+            return static_cast<std::uint32_t>(value);
+        }();
+        const auto cloneCount = std::max(instance.cloneCount, 1U);
+        for (std::uint32_t clone = 0; clone < cloneCount; ++clone) {
+            const auto baseVertex = static_cast<std::uint32_t>(vertices.size());
+            const float cloneOffset = (static_cast<float>(clone)
+                                     - static_cast<float>(cloneCount - 1U) * 0.5F) * 2.2F;
+            for (const auto& source : normalizedFrame.vertices) {
+                graphics::PreviewVertex vertex;
+                std::memcpy(vertex.position, source.position.data(), sizeof(vertex.position));
+                vertex.position[0] += cloneOffset;
+                std::memcpy(vertex.normal, source.normal.data(), sizeof(vertex.normal));
+                std::memcpy(vertex.uv, source.uv.data(), sizeof(vertex.uv));
+                vertices.push_back(vertex);
+            }
+            for (const auto index : instance.model->indices) indices.push_back(baseVertex + index);
+            std::uint32_t firstIndex = static_cast<std::uint32_t>(indices.size() - instance.model->indices.size());
+            for (std::size_t materialIndex = 0; materialIndex < instance.model->materials.size(); ++materialIndex) {
+                graphics::PreviewMaterial material;
+                material.firstIndex = firstIndex;
+                material.indexCount = instance.model->materials[materialIndex].indexCount;
+                material.doubleSided = (instance.model->materials[materialIndex].drawFlags & 0x01U) != 0;
+                material.textureSlot = instance.model->materials[materialIndex].textureIndex >= 0
+                    ? textureBase + static_cast<std::uint32_t>(instance.model->materials[materialIndex].textureIndex) + 1U : 0U;
+                if (materialIndex < normalizedFrame.materials.size()) {
+                    const auto& animated = normalizedFrame.materials[materialIndex];
+                    std::copy(animated.diffuse.begin(), animated.diffuse.end(), material.diffuse);
+                    std::copy(animated.ambient.begin(), animated.ambient.end(), material.ambient);
+                    std::copy(animated.specular.begin(), animated.specular.end(), material.specular);
+                    material.shininess = animated.shininess;
+                    std::copy(animated.textureMultiply.begin(), animated.textureMultiply.end(), material.textureMultiply);
+                    std::copy(animated.textureAdd.begin(), animated.textureAdd.end(), material.textureAdd);
+                }
+                materials.push_back(material);
+                firstIndex += material.indexCount;
+            }
+        }
+    }
+    if (vertices.empty() || indices.empty()) return;
+    if (initialUpload) device_->uploadPreviewMesh(vertices, indices);
+    else {
+        try { device_->updatePreviewVertices(vertices); }
+        catch (const std::exception&) { device_->uploadPreviewMesh(vertices, indices); }
     }
     device_->updatePreviewMaterials(materials);
     uploadedAnimationFrame_ = static_cast<int>(animationFrame_);
+    scene_.clearDirty(core::DirtyFlag::geometry | core::DirtyFlag::material);
+}
+
+void Application::refreshPreviewTextures() {
+    if (device_ == nullptr) return;
+    textures_.clear();
+    for (const auto& instance : scene_.models()) {
+        textures_.insert(textures_.end(), instance.textures.begin(), instance.textures.end());
+    }
+    std::vector<graphics::PreviewTexture> previewTextures;
+    previewTextures.reserve(textures_.size());
+    for (const auto& texture : textures_) {
+        previewTextures.push_back({ texture.width, texture.height, texture.pixels });
+    }
+    device_->uploadPreviewTextures(previewTextures);
 }
 
 void Application::refreshVideoFrame() {
-    if (!videoMode_ || media_ == nullptr || device_ == nullptr) return;
-    const auto image = media_->decodeVideoFrame(mediaSeconds_);
+    auto* media = scene_.media();
+    if (!videoMode_ || media == nullptr || device_ == nullptr) return;
+    const auto image = media->decodeVideoFrame(mediaSeconds_);
+    if (!scene_.models().empty()) {
+        // With a model present, the frame is retained as the reserved
+        // background source and must not replace the model texture array.
+        scene_.setBackgroundScreenSource(core::ScreenTextureSource::backgroundVideo);
+        uploadedVideoFrame_ = static_cast<std::int64_t>(mediaSeconds_ * media->info().videoFramesPerSecond);
+        return;
+    }
     const std::array textures { graphics::PreviewTexture { image.width, image.height, image.pixels } };
     device_->uploadPreviewTextures(textures);
     graphics::PreviewMaterial material;
@@ -445,28 +540,45 @@ void Application::refreshVideoFrame() {
     material.textureSlot = 1;
     const std::array materials { material };
     device_->updatePreviewMaterials(materials);
-    uploadedVideoFrame_ = static_cast<std::int64_t>(mediaSeconds_ * media_->info().videoFramesPerSecond);
+    uploadedVideoFrame_ = static_cast<std::int64_t>(mediaSeconds_ * media->info().videoFramesPerSecond);
 }
 
 void Application::refreshPreviewScene() {
     if (device_ == nullptr) return;
+    const auto* model = selectedModel();
+    const auto* motion = scene_.cameraMotion() != nullptr ? scene_.cameraMotion()
+        : (model != nullptr ? model->motion.get() : nullptr);
     graphics::PreviewScene scene;
+    switch (scene_.background().screenSource) {
+    case core::ScreenTextureSource::previousFrame:
+        scene.screenSource = graphics::PreviewScene::ScreenSource::previousFrame; break;
+    case core::ScreenTextureSource::backgroundVideo:
+        scene.screenSource = graphics::PreviewScene::ScreenSource::backgroundVideo; break;
+    case core::ScreenTextureSource::backgroundImage:
+        scene.screenSource = graphics::PreviewScene::ScreenSource::backgroundImage; break;
+    case core::ScreenTextureSource::white:
+        scene.screenSource = graphics::PreviewScene::ScreenSource::white; break;
+    }
+    scene.screenCrop = scene_.background().crop == core::ScreenCropMode::crop4x3
+        ? graphics::PreviewScene::ScreenCrop::crop4x3 : graphics::PreviewScene::ScreenCrop::none;
+    scene.backgroundEnabled = scene_.background().enabled;
     scene.cameraRotation[0] = cameraPitch_;
     scene.cameraRotation[1] = cameraYaw_;
     scene.cameraDistance = cameraDistance_;
-    if (!manualCamera_ && motion_ != nullptr && !motion_->cameras.empty()) {
-        const auto camera = core::evaluateCamera(*motion_, animationFrame_);
+    if (!manualCamera_ && motion != nullptr && !motion->cameras.empty()) {
+        const auto camera = core::evaluateCamera(*motion, animationFrame_);
         std::copy(camera.rotation.begin(), camera.rotation.end(), scene.cameraRotation);
-        scene.cameraDistance = std::max(std::abs(camera.distance) * normalization_.scale, 0.4F);
+        const auto normalization = model != nullptr ? model->normalization : normalization_;
+        scene.cameraDistance = std::max(std::abs(camera.distance) * normalization.scale, 0.4F);
         for (std::size_t axis = 0; axis < 3; ++axis) {
-            scene.target[axis] = (camera.position[axis] - normalization_.center[axis]) * normalization_.scale;
+            scene.target[axis] = (camera.position[axis] - normalization.center[axis]) * normalization.scale;
         }
         scene.verticalFovRadians = std::clamp(camera.viewAngle, 1.0F, 179.0F)
                                  * 0.01745329252F;
         scene.perspective = camera.perspective;
     }
-    if (motion_ != nullptr && !motion_->lights.empty()) {
-        const auto light = core::evaluateLight(*motion_, animationFrame_);
+    if (motion != nullptr && !motion->lights.empty()) {
+        const auto light = core::evaluateLight(*motion, animationFrame_);
         std::copy(light.position.begin(), light.position.end(), scene.lightDirection);
     }
     device_->updatePreviewScene(scene);
@@ -475,8 +587,12 @@ void Application::refreshPreviewScene() {
 void Application::buildUi() {
 #if DAYO_HAS_IMGUI
     ImGui::SetNextWindowPos({ 24.0F, 24.0F }, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize({ 460.0F, 360.0F }, ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("mikumikudesu Linux Preview")) {
+    ImGui::SetNextWindowSize({ 460.0F, 420.0F }, ImGuiCond_FirstUseEver);
+    auto* model = selectedModel();
+    const auto* motion = scene_.cameraMotion() != nullptr ? scene_.cameraMotion()
+        : (model != nullptr ? model->motion.get() : nullptr);
+    auto* media = scene_.media();
+    if (ImGui::Begin("Renderer")) {
         ImGui::TextUnformatted("SDL3 + Vulkan native backend");
         ImGui::Separator();
         ImGui::Text("Renderer request: %s", graphics::toString(options_.renderer).data());
@@ -485,36 +601,105 @@ void Application::buildUi() {
         ImGui::TextUnformatted("Files: DAYO / PMX / VMD / VPD / images / audio / video / FXDAYO");
         ImGui::Text("OIDN: %s", DAYO_HAS_OIDN ? "CPU available; HIP optional" : "not installed");
         ImGui::Text("Media: %s", DAYO_HAS_MEDIA ? "FFmpeg enabled" : "metadata/drop only");
-        if (motion_ != nullptr) {
+        if (motion != nullptr) {
             if (ImGui::Checkbox("Play", &playing_) && audioPlayer_.active()) audioPlayer_.setPaused(!playing_);
-            float maximum = static_cast<float>(std::max(motion_->lastFrame, 1U));
+            float maximum = std::max(scene_.timeline().duration, 1.0F);
             if (ImGui::SliderFloat("Frame", &animationFrame_, 0.0F, maximum, "%.1f")) {
+                const auto before = scene_.timeline().frame;
+                history_.execute(scene_, std::make_unique<core::SetFrameCommand>(before, animationFrame_));
                 refreshAnimatedMesh(false);
                 refreshPreviewScene();
             }
         }
-        if (media_ != nullptr) {
-            if (motion_ == nullptr && ImGui::Checkbox("Play", &playing_) && audioPlayer_.active()) {
+        if (media != nullptr) {
+            if (motion == nullptr && ImGui::Checkbox("Play", &playing_) && audioPlayer_.active()) {
                 audioPlayer_.setPaused(!playing_);
             }
-            ImGui::Text("Media: %.2f / %.2f s%s%s", mediaSeconds_, media_->info().durationSeconds,
-                        media_->info().hasVideo ? " video" : "", media_->info().hasAudio ? " audio" : "");
+            ImGui::Text("Media: %.2f / %.2f s%s%s", mediaSeconds_, media->info().durationSeconds,
+                        media->info().hasVideo ? " video" : "", media->info().hasAudio ? " audio" : "");
         }
-        if (physics_ != nullptr) {
-            ImGui::Text("Bullet: %s (%zu bodies, %zu joints)", physics_->available() ? "enabled" : "unavailable",
-                        physics_->bodyCount(), physics_->jointCount());
+        if (model != nullptr && model->physics != nullptr) {
+            ImGui::Text("Bullet: %s (%zu bodies, %zu joints)", model->physics->available() ? "enabled" : "unavailable",
+                        model->physics->bodyCount(), model->physics->jointCount());
+            if (model->softBody != nullptr) {
+                ImGui::Text("Soft body: %s (%zu)", model->softBody->available() ? "fallback" : "none",
+                            model->softBody->bodyCount());
+            }
         }
-        if (effect_ != nullptr) {
+        if (scene_.effect() != nullptr) {
             ImGui::Text("Effect graph: %zu passes / %zu textures / %zu samplers",
-                        effect_->passes.size(), effect_->textures.size(), effect_->samplers.size());
+                        scene_.effect()->passes.size(), scene_.effect()->textures.size(), scene_.effect()->samplers.size());
         }
         ImGui::TextUnformatted("Camera: right-drag to orbit, wheel to zoom");
+        if (ImGui::Button("Undo")) {
+            if (history_.undo(scene_)) {
+                animationFrame_ = scene_.timeline().frame;
+                refreshAnimatedMesh(false);
+                refreshPreviewScene();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Redo")) {
+            if (history_.redo(scene_)) {
+                animationFrame_ = scene_.timeline().frame;
+                refreshAnimatedMesh(false);
+                refreshPreviewScene();
+            }
+        }
         if (manualCamera_ && ImGui::Button("Use VMD camera")) {
             manualCamera_ = false;
             refreshPreviewScene();
         }
         ImGui::Separator();
         ImGui::TextUnformatted("Subayai and BDPT are enabled only when Vulkan RT features are present.");
+    }
+    ImGui::End();
+
+    if (ImGui::Begin("Models")) {
+        ImGui::Text("%zu model instance(s)", scene_.models().size());
+        for (const auto& instance : scene_.models()) {
+            ImGui::PushID(static_cast<int>(instance.id));
+            bool selected = scene_.selectedModelId() == instance.id;
+            if (ImGui::Selectable(instance.displayName.c_str(), selected)) {
+                scene_.selectModel(instance.id);
+                normalization_ = instance.normalization;
+                refreshAnimatedMesh(true);
+                refreshPreviewScene();
+            }
+            ImGui::SameLine();
+            bool visible = instance.visible;
+            if (ImGui::Checkbox("Visible", &visible)) {
+                scene_.setModelVisible(instance.id, visible);
+                refreshAnimatedMesh(true);
+            }
+            ImGui::PopID();
+        }
+        if (model != nullptr) {
+            int clones = static_cast<int>(model->cloneCount);
+            if (ImGui::SliderInt("Clone count", &clones, 1, 16)) {
+                scene_.setCloneCount(model->id, static_cast<std::uint32_t>(clones));
+                refreshAnimatedMesh(true);
+            }
+        }
+    }
+    ImGui::End();
+
+    if (ImGui::Begin("Animation / Physics")) {
+        ImGui::Text("Timeline: %.1f / %.1f frames", animationFrame_, scene_.timeline().duration);
+        auto settings = scene_.physicsSettings();
+        bool physicsChanged = ImGui::DragFloat("Gravity", &settings.gravity, 0.01F, 0.0F, 100.0F);
+        physicsChanged |= ImGui::DragFloat3("Gravity direction", settings.gravityDirection.data(), 0.01F);
+        physicsChanged |= ImGui::DragFloat("Gravity noise amplitude", &settings.noiseAmplitude, 0.01F, 0.0F, 100.0F);
+        physicsChanged |= ImGui::DragFloat("Gravity noise frequency", &settings.noiseFrequency, 0.01F, 0.0F, 100.0F);
+        physicsChanged |= ImGui::Checkbox("Floor collision", &settings.floorCollision);
+        if (physicsChanged) scene_.setPhysicsSettings(settings);
+        int runtimeMode = static_cast<int>(scene_.runtimeMode());
+        if (ImGui::Combo("Runtime mode", &runtimeMode, "Accumulate\0Realtime\0Idle\0")) {
+            history_.execute(scene_, std::make_unique<core::SetRuntimeModeCommand>(
+                scene_.runtimeMode(), static_cast<core::RuntimeMode>(runtimeMode)));
+        }
+        ImGui::Text("Accumulated samples: %llu", static_cast<unsigned long long>(scene_.accumulatedSamples()));
+        if (ImGui::Button("Reset physics") && model != nullptr && model->physics != nullptr) model->physics->reset();
     }
     ImGui::End();
 #endif

@@ -182,7 +182,11 @@ void readMaterials(std::istream& input, const Header& header, PmxModel& model) {
     const auto textureCount = readCount(input, "texture count", 1'000'000);
     model.textures.reserve(static_cast<std::size_t>(textureCount));
     for (std::int32_t i = 0; i < textureCount; ++i) {
-        const auto value = readText(input, header.metadata.textEncoding);
+        auto value = readText(input, header.metadata.textEncoding);
+        // PMX files authored on Windows commonly store texture paths with
+        // backslashes. Normalize them before constructing a native path so
+        // the same archive resolves correctly on Linux and other POSIX hosts.
+        std::replace(value.begin(), value.end(), '\\', '/');
         const auto* utf8 = reinterpret_cast<const char8_t*>(value.c_str());
         model.textures.push_back((model.sourcePath.parent_path() / std::filesystem::path(utf8)).lexically_normal());
     }

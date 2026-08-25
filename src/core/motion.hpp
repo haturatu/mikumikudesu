@@ -36,6 +36,22 @@ struct VmdShadowKey { std::uint32_t frame {}; std::uint8_t mode {}; float distan
 struct VmdIkState { std::string name; bool enabled {}; };
 struct VmdIkKey { std::uint32_t frame {}; bool visible {}; std::vector<VmdIkState> states; };
 
+enum class InterpolationMode { linear, bezier, catmullRom };
+
+// Format-neutral motion document shared by VMD, VPD and VMdayo importers.
+// Keeping the tracks independent allows camera/light data to coexist with
+// model motion in a multi-model Scene.
+struct MotionDocument {
+    std::string modelName;
+    InterpolationMode interpolation { InterpolationMode::bezier };
+    std::vector<VmdBoneKey> bones;
+    std::vector<VmdMorphKey> morphs;
+    std::vector<VmdCameraKey> cameras;
+    std::vector<VmdLightKey> lights;
+    std::vector<VmdShadowKey> shadows;
+    std::vector<VmdIkKey> ik;
+};
+
 struct VmdMotion {
     std::string modelName;
     std::vector<VmdBoneKey> bones;
@@ -45,6 +61,7 @@ struct VmdMotion {
     std::vector<VmdShadowKey> shadows;
     std::vector<VmdIkKey> ik;
     std::uint32_t lastFrame {};
+    InterpolationMode interpolation { InterpolationMode::bezier };
 };
 
 struct VmdCameraState {
@@ -66,7 +83,10 @@ struct VpdPose { std::vector<VpdBonePose> bones; };
 [[nodiscard]] std::string decodeCp932(std::string_view input);
 [[nodiscard]] VmdMotion loadVmd(const std::filesystem::path& path);
 [[nodiscard]] VpdPose loadVpd(const std::filesystem::path& path);
+[[nodiscard]] MotionDocument toMotionDocument(const VmdMotion& motion);
+[[nodiscard]] VmdMotion toVmdMotion(MotionDocument document, std::string modelName = {});
 [[nodiscard]] VmdCameraState evaluateCamera(const VmdMotion& motion, float frame);
 [[nodiscard]] VmdLightKey evaluateLight(const VmdMotion& motion, float frame);
+[[nodiscard]] float catmullRom(float p0, float p1, float p2, float p3, float t) noexcept;
 
 } // namespace dayo::core
