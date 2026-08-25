@@ -105,7 +105,12 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
         const auto initial = transform(source.position, source.rotation);
         impl_->initialTransforms.push_back(initial);
         impl_->motionStates.push_back(std::make_unique<btDefaultMotionState>(initial));
-        const btScalar mass = source.mode == 0 ? 0.0F : source.mass;
+        // Some otherwise valid MMD models contain decorative rigid bodies with
+        // zero-sized collision geometry. Bullet's btEmptyShape cannot compute
+        // dynamic inertia, so keep those bodies as static placeholders. This
+        // preserves the PMX body index mapping while avoiding an assertion in
+        // btEmptyShape::calculateLocalInertia().
+        const btScalar mass = (source.mode == 0 || degenerate) ? 0.0F : source.mass;
         btVector3 inertia {};
         if (mass > 0.0F) impl_->shapes.back()->calculateLocalInertia(mass, inertia);
         btRigidBody::btRigidBodyConstructionInfo info(mass, impl_->motionStates.back().get(),
