@@ -117,6 +117,12 @@ int main() {
                     && legacy.embeddedMotion && legacy.embeddedMotion->bones.size() == 1
                     && legacy.embeddedMotion->bones[0].frame == 7,
                     "legacy .dayo binary keyframe import");
+        if (legacy.embeddedMotion) {
+            dayo::core::Scene embeddedScene;
+            embeddedScene.attachMotion(*legacy.embeddedMotion);
+            ok &= check(embeddedScene.timeline().duration == 7.0F,
+                        "embedded .dayo motion attachment updates timeline duration");
+        }
         std::error_code projectError;
         std::filesystem::remove(projectPath, projectError);
     } catch (const std::exception& exception) {
@@ -134,6 +140,10 @@ int main() {
         const auto loaded = dayo::core::loadVmdayo(vmdayoPath);
         ok &= check(loaded.motion.morphs.size() == 1 && loaded.motion.interpolation
                     == dayo::core::InterpolationMode::catmullRom, "VMdayo round trip");
+        dayo::core::Scene vmdayoScene;
+        vmdayoScene.attachMotion(loaded.motion, 0, loaded.modelName);
+        ok &= check(vmdayoScene.timeline().duration == 10.0F,
+                    "VMdayo attachment updates timeline duration");
         document.opaque = { 0x00, 0xFF, 0x56, 0x4D, 0x44 };
         dayo::core::saveVmdayo(vmdayoPath, document);
         const auto opaque = dayo::core::loadVmdayo(vmdayoPath);
@@ -154,6 +164,15 @@ int main() {
                     "scene timeline advances without selected model");
         scene.setRuntimeMode(dayo::core::RuntimeMode::idle);
         ok &= check(!scene.advanceFrame(0.5F, true), "idle runtime pauses scene timeline");
+        scene.setRuntimeMode(dayo::core::RuntimeMode::accumulate);
+        scene.setFrame(0.0F);
+        ok &= check(!scene.advanceFrame(0.5F, true) && scene.timeline().frame == 0.0F,
+                    "accumulate runtime freezes scene timeline");
+        scene.advanceAccumulation();
+        scene.advanceAccumulation();
+        scene.advanceAccumulation();
+        ok &= check(scene.accumulatedSamples() == 3,
+                    "accumulate runtime advances samples without advancing timeline");
         scene.setRuntimeMode(dayo::core::RuntimeMode::realtime);
         history.execute(scene, std::make_unique<dayo::core::SetFrameCommand>(0.0F, 24.0F));
         ok &= check(scene.timeline().frame == 24.0F && history.canUndo(), "editor command apply");
@@ -228,10 +247,20 @@ int main() {
         const auto model = dayo::core::loadPmxModel(path);
         ok &= check(model.materials.size() == 1 && model.bones.empty(), "complete PMX sections");
         dayo::core::Scene scene;
-        static_cast<void>(scene.addModel(path));
-        static_cast<void>(scene.addModel(path));
+        const auto firstModel = scene.addModel(path);
+        const auto secondModel = scene.addModel(path);
         ok &= check(scene.models().size() == 2 && scene.selectedModel() != nullptr,
                     "multi-model scene instances");
+        dayo::core::VmdMotion shortMotion;
+        shortMotion.morphs.push_back({ "smile", 20, 1.0F });
+        scene.attachMotion(std::move(shortMotion), firstModel);
+        dayo::core::VmdMotion longMotion;
+        longMotion.morphs.push_back({ "smile", 100, 1.0F });
+        scene.attachMotion(std::move(longMotion), secondModel);
+        ok &= check(scene.timeline().duration == 100.0F,
+                    "timeline duration follows the longest model motion");
+        ok &= check(scene.removeModel(secondModel) && scene.timeline().duration == 20.0F,
+                    "removing longest motion recalculates timeline duration");
         std::string parentError;
         ok &= check(!scene.addExternalParent({ 1, "missing", 2, "missing" }, &parentError)
                     && !parentError.empty() && !scene.hasExternalParentCycle(),
