@@ -178,6 +178,8 @@ int main() {
         ok &= check(scene.timeline().frame == 24.0F && history.canUndo(), "editor command apply");
         ok &= check(history.undo(scene) && scene.timeline().frame == 0.0F, "editor command undo");
         ok &= check(history.redo(scene) && scene.timeline().frame == 24.0F, "editor command redo");
+        history.clear();
+        ok &= check(!history.canUndo() && !history.canRedo(), "project reset clears command history");
         dayo::core::MaterialParameterBlock parameters;
         parameters.set("roughness", 0.5F);
         ok &= check(parameters.find("roughness") != nullptr && parameters.erase("roughness"),

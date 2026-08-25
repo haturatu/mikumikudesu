@@ -86,6 +86,21 @@ Options parseOptions(int argc, char** argv) {
 
 Application::Application(Options options) : options_(std::move(options)) {}
 
+void Application::resetProjectRuntimeState() {
+    scene_.clearProjectState();
+    effectReloader_.reset();
+    audioPlayer_.stop();
+    mediaSeconds_ = 0.0;
+    uploadedVideoFrame_ = -1;
+    videoMode_ = false;
+    animationFrame_ = 0.0F;
+    uploadedAnimationFrame_ = -1;
+    playing_ = true;
+    manualCamera_ = false;
+    projectAssets_.clear();
+    history_.clear();
+}
+
 int Application::run() {
     platform::WindowOptions windowOptions;
     windowOptions.title = "mikumikudesu — SDL3 + Vulkan";
@@ -202,8 +217,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
     if (kind == core::AssetKind::project) {
         try {
             const auto project = core::loadProject(path);
-            scene_.clearProjectState();
-            projectAssets_.clear();
+            resetProjectRuntimeState();
             if (project.renderer == "subayai") device_->selectRenderer(graphics::RendererKind::subayai);
             else if (project.renderer == "bdpt") device_->selectRenderer(graphics::RendererKind::bdpt);
             else device_->selectRenderer(graphics::RendererKind::preview);

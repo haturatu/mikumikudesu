@@ -32,6 +32,7 @@ public:
     int run();
 
 private:
+    void resetProjectRuntimeState();
     void handleAsset(const std::filesystem::path& path);
     void refreshAnimatedMesh(bool initialUpload, float deltaSeconds = 0.0F);
     void refreshVideoFrame();
