@@ -1,6 +1,7 @@
 #include "core/scene.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <unordered_map>
 #include <stdexcept>
@@ -110,28 +111,85 @@ bool Scene::hasExternalParentCycle() const noexcept {
     return false;
 }
 
-bool Scene::solveExternalParents() {
-    if (hasExternalParentCycle()) return false;
-    for (const auto& link : externalParents_) {
-        auto* parent = model(link.parentModel);
-        auto* child = model(link.childModel);
-        if (parent == nullptr || child == nullptr) continue;
-        const auto found = std::find_if(parent->model->bones.begin(), parent->model->bones.end(),
-                                        [&link](const auto& bone) { return bone.name == link.parentBone; });
-        if (found == parent->model->bones.end()) continue;
-        for (std::size_t axis = 0; axis < 3; ++axis) child->worldPosition[axis] = parent->worldPosition[axis] + found->position[axis];
-        child->worldRotation = parent->worldRotation;
-    }
-    if (!externalParents_.empty()) markDirty(DirtyFlag::geometry | DirtyFlag::camera);
-    return true;
-}
-
 PhysicsSettings Scene::evaluatePhysicsSettings(float frame) const noexcept {
     if (timeline_.gravity.empty()) return physicsSettings_;
     const auto found = std::upper_bound(timeline_.gravity.begin(), timeline_.gravity.end(), frame,
         [](float value, const auto& key) { return value < static_cast<float>(key.first); });
     if (found == timeline_.gravity.begin()) return found->second;
     return std::prev(found)->second;
+}
+
+void Scene::setFrame(float frame) noexcept {
+    if (!std::isfinite(frame)) return;
+    if (timeline_.frame == frame) return;
+    timeline_.frame = std::max(frame, 0.0F);
+    markDirty(DirtyFlag::camera | DirtyFlag::geometry | DirtyFlag::lighting);
+}
+
+void Scene::setTimelineDuration(float duration) noexcept {
+    if (!std::isfinite(duration)) return;
+    const auto value = std::max(duration, 0.0F);
+    if (timeline_.duration == value) return;
+    timeline_.duration = value;
+    markDirty(DirtyFlag::output);
+}
+
+void Scene::setGravityTrack(std::vector<std::pair<std::uint32_t, PhysicsSettings>> track) {
+    std::ranges::sort(track, [](const auto& left, const auto& right) { return left.first < right.first; });
+    timeline_.gravity = std::move(track);
+    markDirty(DirtyFlag::geometry | DirtyFlag::lighting);
+}
+
+bool Scene::advanceFrame(float deltaSeconds, bool playing) noexcept {
+    if (!playing || runtimeMode_ == RuntimeMode::idle || timeline_.duration <= 0.0F
+        || !std::isfinite(deltaSeconds) || deltaSeconds <= 0.0F) return false;
+    const float fps = timeline_.fps > 0.0F && std::isfinite(timeline_.fps) ? timeline_.fps : 30.0F;
+    const float period = timeline_.duration + 1.0F;
+    const float next = std::fmod(std::max(timeline_.frame, 0.0F) + deltaSeconds * fps, period);
+    if (next == timeline_.frame) return false;
+    setFrame(next);
+    return true;
+}
+
+void Scene::setPhysicsSettings(PhysicsSettings settings) noexcept {
+    if (!std::ranges::all_of(settings.gravityDirection, [](float value) { return std::isfinite(value); })) return;
+    if (!std::isfinite(settings.gravity) || !std::isfinite(settings.noiseAmplitude)
+        || !std::isfinite(settings.noiseFrequency)) return;
+    settings.gravity = std::max(settings.gravity, 0.0F);
+    settings.noiseAmplitude = std::max(settings.noiseAmplitude, 0.0F);
+    settings.noiseFrequency = std::max(settings.noiseFrequency, 0.0F);
+    physicsSettings_ = settings;
+    markDirty(DirtyFlag::geometry | DirtyFlag::lighting);
+}
+
+bool Scene::setModelVisible(ModelId id, bool visible) noexcept {
+    auto* instance = model(id);
+    if (instance == nullptr || instance->visible == visible) return false;
+    instance->visible = visible;
+    markDirty(DirtyFlag::geometry);
+    return true;
+}
+
+bool Scene::setCloneCount(ModelId id, std::uint32_t cloneCount) noexcept {
+    auto* instance = model(id);
+    if (instance == nullptr) return false;
+    const auto value = std::clamp(cloneCount, 1U, 1024U);
+    if (instance->cloneCount == value) return false;
+    instance->cloneCount = value;
+    markDirty(DirtyFlag::geometry);
+    return true;
+}
+
+void Scene::setBackgroundScreenSource(ScreenTextureSource source) noexcept {
+    if (background_.screenSource == source) return;
+    background_.screenSource = source;
+    markDirty(DirtyFlag::background);
+}
+
+void Scene::setBackgroundEnabled(bool enabled) noexcept {
+    if (background_.enabled == enabled) return;
+    background_.enabled = enabled;
+    markDirty(DirtyFlag::background);
 }
 
 void Scene::attachMotion(const std::filesystem::path& path, ModelId target) {

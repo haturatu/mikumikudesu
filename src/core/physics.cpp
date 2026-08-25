@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cmath>
+#include <numbers>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -26,10 +27,19 @@ struct MmdPhysics::Impl {
     std::vector<std::unique_ptr<btTypedConstraint>> constraints;
     std::vector<btTransform> initialTransforms;
     std::vector<std::uint8_t> modes;
+    std::unique_ptr<btStaticPlaneShape> floorShape;
+    std::unique_ptr<btDefaultMotionState> floorMotionState;
+    std::unique_ptr<btRigidBody> floorBody;
+    Float3 gravity { 0.0F, -9.8F, 0.0F };
+    float gravityNoiseAmplitude {};
+    float gravityNoiseFrequency {};
+    float elapsed {};
+    bool floorCollision {};
 
     ~Impl() {
         if (world == nullptr) return;
         for (auto& constraint : constraints) world->removeConstraint(constraint.get());
+        if (floorBody != nullptr) world->removeRigidBody(floorBody.get());
         for (auto& body : bodies) world->removeRigidBody(body.get());
     }
 #endif
@@ -77,7 +87,7 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
     impl_->solver = std::make_unique<btSequentialImpulseConstraintSolver>();
     impl_->world = std::make_unique<btDiscreteDynamicsWorld>(impl_->dispatcher.get(), impl_->broadphase.get(),
                                                              impl_->solver.get(), impl_->collisionConfiguration.get());
-    impl_->world->setGravity({ 0.0F, -9.8F, 0.0F });
+    impl_->world->setGravity(vector(impl_->gravity));
     impl_->shapes.reserve(model.rigidBodies.size());
     impl_->motionStates.reserve(model.rigidBodies.size());
     impl_->bodies.reserve(model.rigidBodies.size());
@@ -252,12 +262,24 @@ void MmdPhysics::reset() {
     }
     impl_->world->getBroadphase()->resetPool(impl_->dispatcher.get());
     impl_->world->getConstraintSolver()->reset();
+    impl_->elapsed = 0.0F;
+    impl_->world->setGravity(vector(impl_->gravity));
 #endif
 }
 
 void MmdPhysics::step(float deltaSeconds) {
 #if DAYO_HAS_BULLET
-    if (deltaSeconds > 0.0F) impl_->world->stepSimulation(std::min(deltaSeconds, 0.25F), 10, 1.0F / 120.0F);
+    if (deltaSeconds > 0.0F) {
+        const float dt = std::min(deltaSeconds, 0.25F);
+        impl_->elapsed += dt;
+        auto gravity = impl_->gravity;
+        if (impl_->gravityNoiseAmplitude > 0.0F && impl_->gravityNoiseFrequency > 0.0F) {
+            gravity[1] += impl_->gravityNoiseAmplitude
+                * std::sin(impl_->elapsed * impl_->gravityNoiseFrequency * 2.0F * std::numbers::pi_v<float>);
+        }
+        impl_->world->setGravity(vector(gravity));
+        impl_->world->stepSimulation(dt, 10, 1.0F / 120.0F);
+    }
 #else
     static_cast<void>(deltaSeconds);
 #endif
@@ -265,9 +287,40 @@ void MmdPhysics::step(float deltaSeconds) {
 
 void MmdPhysics::setGravity(const Float3& gravity) {
 #if DAYO_HAS_BULLET
+    impl_->gravity = gravity;
     impl_->world->setGravity(vector(gravity));
 #else
     static_cast<void>(gravity);
+#endif
+}
+
+void MmdPhysics::setGravityNoise(float amplitude, float frequency) {
+#if DAYO_HAS_BULLET
+    impl_->gravityNoiseAmplitude = std::max(amplitude, 0.0F);
+    impl_->gravityNoiseFrequency = std::max(frequency, 0.0F);
+#else
+    static_cast<void>(amplitude); static_cast<void>(frequency);
+#endif
+}
+
+void MmdPhysics::setFloorCollision(bool enabled) {
+#if DAYO_HAS_BULLET
+    if (impl_->floorCollision == enabled) return;
+    impl_->floorCollision = enabled;
+    if (!enabled) {
+        if (impl_->floorBody != nullptr) impl_->world->removeRigidBody(impl_->floorBody.get());
+        impl_->floorBody.reset();
+        impl_->floorMotionState.reset();
+        impl_->floorShape.reset();
+        return;
+    }
+    impl_->floorShape = std::make_unique<btStaticPlaneShape>(btVector3(0.0F, 1.0F, 0.0F), 0.0F);
+    impl_->floorMotionState = std::make_unique<btDefaultMotionState>(btTransform::getIdentity());
+    btRigidBody::btRigidBodyConstructionInfo info(0.0F, impl_->floorMotionState.get(), impl_->floorShape.get());
+    impl_->floorBody = std::make_unique<btRigidBody>(info);
+    impl_->world->addRigidBody(impl_->floorBody.get(), 1, -1);
+#else
+    static_cast<void>(enabled);
 #endif
 }
 

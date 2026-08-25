@@ -35,8 +35,7 @@ void CommandHistory::clear() noexcept {
 }
 
 void SetFrameCommand::set(Scene& scene, float frame) {
-    scene.timeline().frame = frame;
-    scene.markDirty(DirtyFlag::camera | DirtyFlag::geometry | DirtyFlag::lighting);
+    scene.setFrame(frame);
 }
 
 void SetFrameCommand::apply(Scene& scene) { set(scene, after_); }

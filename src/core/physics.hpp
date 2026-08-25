@@ -29,6 +29,8 @@ public:
     void reset();
     void step(float deltaSeconds);
     void setGravity(const Float3& gravity);
+    void setGravityNoise(float amplitude, float frequency);
+    void setFloorCollision(bool enabled);
     void setKinematicTransform(std::size_t body, const PhysicsTransform& transform);
     void applyImpulse(std::size_t body, const Float3& linear, const Float3& angular, bool local);
     void clearMotion(std::size_t body);

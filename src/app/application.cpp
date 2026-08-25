@@ -150,15 +150,10 @@ int Application::run() {
         const auto tick = std::chrono::steady_clock::now();
         const float deltaSeconds = std::chrono::duration<float>(tick - previousTick).count();
         previousTick = tick;
-        scene_.timeline().frame = animationFrame_;
-        scene_.solveExternalParents();
-        const auto* activeModel = selectedModel();
-        const auto* activeMotion = activeModel != nullptr ? activeModel->motion.get() : nullptr;
-        if (scene_.runtimeMode() != core::RuntimeMode::idle && playing_ && activeMotion != nullptr && activeMotion->lastFrame > 0) {
-            animationFrame_ = std::fmod(animationFrame_ + deltaSeconds * 30.0F,
-                                        static_cast<float>(activeMotion->lastFrame + 1));
+        if (scene_.advanceFrame(deltaSeconds, playing_)) {
+            animationFrame_ = scene_.timeline().frame;
             const int integerFrame = static_cast<int>(animationFrame_);
-            if (integerFrame != uploadedAnimationFrame_ && activeModel != nullptr) {
+            if (integerFrame != uploadedAnimationFrame_ && !scene_.models().empty()) {
                 refreshAnimatedMesh(false, deltaSeconds);
             }
             refreshPreviewScene();
@@ -223,6 +218,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 manualCamera_ = false;
             }
             animationFrame_ = project.frame;
+            scene_.setFrame(animationFrame_);
             playing_ = project.playing;
             if (!scene_.models().empty()) refreshAnimatedMesh(false);
             lastAsset_ = "Project " + path.filename().string() + " — "
@@ -254,6 +250,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             model->motion = std::move(motion);
             model->animator->setMotion(model->motion.get());
             animationFrame_ = 0.0F;
+            scene_.setFrame(animationFrame_);
             refreshAnimatedMesh(false);
             refreshPreviewScene();
             lastAsset_ = "VMdayo " + path.filename().string();
@@ -313,6 +310,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             normalization_ = scene_.selectedModel()->normalization;
             refreshPreviewTextures();
             animationFrame_ = 0.0F;
+            scene_.setFrame(animationFrame_);
             uploadedAnimationFrame_ = -1;
             refreshAnimatedMesh(true);
             refreshPreviewScene();
@@ -369,6 +367,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             scene_.attachMotion(path);
             manualCamera_ = false;
             animationFrame_ = 0.0F;
+            scene_.setFrame(animationFrame_);
             if (selectedModel() != nullptr) refreshAnimatedMesh(false);
             refreshPreviewScene();
             const auto* model = selectedModel();
@@ -441,6 +440,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             instance.physics->setGravity({ gravity.gravityDirection[0] * gravity.gravity,
                                            gravity.gravityDirection[1] * gravity.gravity,
                                            gravity.gravityDirection[2] * gravity.gravity });
+            instance.physics->setGravityNoise(gravity.noiseAmplitude, gravity.noiseFrequency);
+            instance.physics->setFloorCollision(gravity.floorCollision);
         }
         const auto frame = instance.animator->evaluate(animationFrame_, deltaSeconds);
         auto normalizedFrame = frame;
@@ -468,9 +469,6 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                 graphics::PreviewVertex vertex;
                 std::memcpy(vertex.position, source.position.data(), sizeof(vertex.position));
                 vertex.position[0] += cloneOffset;
-                vertex.position[0] += instance.worldPosition[0] * instance.normalization.scale;
-                vertex.position[1] += instance.worldPosition[1] * instance.normalization.scale;
-                vertex.position[2] += instance.worldPosition[2] * instance.normalization.scale;
                 std::memcpy(vertex.normal, source.normal.data(), sizeof(vertex.normal));
                 std::memcpy(vertex.uv, source.uv.data(), sizeof(vertex.uv));
                 vertices.push_back(vertex);
@@ -530,7 +528,7 @@ void Application::refreshVideoFrame() {
     if (!scene_.models().empty()) {
         // With a model present, the frame is retained as the reserved
         // background source and must not replace the model texture array.
-        scene_.background().screenSource = core::ScreenTextureSource::backgroundVideo;
+        scene_.setBackgroundScreenSource(core::ScreenTextureSource::backgroundVideo);
         uploadedVideoFrame_ = static_cast<std::int64_t>(mediaSeconds_ * media->info().videoFramesPerSecond);
         return;
     }
@@ -604,7 +602,7 @@ void Application::buildUi() {
         ImGui::Text("Media: %s", DAYO_HAS_MEDIA ? "FFmpeg enabled" : "metadata/drop only");
         if (motion != nullptr) {
             if (ImGui::Checkbox("Play", &playing_) && audioPlayer_.active()) audioPlayer_.setPaused(!playing_);
-            float maximum = static_cast<float>(std::max(motion->lastFrame, 1U));
+            float maximum = std::max(scene_.timeline().duration, 1.0F);
             if (ImGui::SliderFloat("Frame", &animationFrame_, 0.0F, maximum, "%.1f")) {
                 const auto before = scene_.timeline().frame;
                 history_.execute(scene_, std::make_unique<core::SetFrameCommand>(before, animationFrame_));
@@ -658,7 +656,7 @@ void Application::buildUi() {
 
     if (ImGui::Begin("Models")) {
         ImGui::Text("%zu model instance(s)", scene_.models().size());
-        for (auto& instance : scene_.models()) {
+        for (const auto& instance : scene_.models()) {
             ImGui::PushID(static_cast<int>(instance.id));
             bool selected = scene_.selectedModelId() == instance.id;
             if (ImGui::Selectable(instance.displayName.c_str(), selected)) {
@@ -668,8 +666,9 @@ void Application::buildUi() {
                 refreshPreviewScene();
             }
             ImGui::SameLine();
-            if (ImGui::Checkbox("Visible", &instance.visible)) {
-                scene_.markDirty(core::DirtyFlag::geometry);
+            bool visible = instance.visible;
+            if (ImGui::Checkbox("Visible", &visible)) {
+                scene_.setModelVisible(instance.id, visible);
                 refreshAnimatedMesh(true);
             }
             ImGui::PopID();
@@ -677,8 +676,7 @@ void Application::buildUi() {
         if (model != nullptr) {
             int clones = static_cast<int>(model->cloneCount);
             if (ImGui::SliderInt("Clone count", &clones, 1, 16)) {
-                model->cloneCount = static_cast<std::uint32_t>(clones);
-                scene_.markDirty(core::DirtyFlag::geometry);
+                scene_.setCloneCount(model->id, static_cast<std::uint32_t>(clones));
                 refreshAnimatedMesh(true);
             }
         }
@@ -687,9 +685,13 @@ void Application::buildUi() {
 
     if (ImGui::Begin("Animation / Physics")) {
         ImGui::Text("Timeline: %.1f / %.1f frames", animationFrame_, scene_.timeline().duration);
-        auto& settings = scene_.physicsSettings();
-        ImGui::DragFloat("Gravity", &settings.gravity, 0.01F, 0.0F, 100.0F);
-        ImGui::Checkbox("Floor collision", &settings.floorCollision);
+        auto settings = scene_.physicsSettings();
+        bool physicsChanged = ImGui::DragFloat("Gravity", &settings.gravity, 0.01F, 0.0F, 100.0F);
+        physicsChanged |= ImGui::DragFloat3("Gravity direction", settings.gravityDirection.data(), 0.01F);
+        physicsChanged |= ImGui::DragFloat("Gravity noise amplitude", &settings.noiseAmplitude, 0.01F, 0.0F, 100.0F);
+        physicsChanged |= ImGui::DragFloat("Gravity noise frequency", &settings.noiseFrequency, 0.01F, 0.0F, 100.0F);
+        physicsChanged |= ImGui::Checkbox("Floor collision", &settings.floorCollision);
+        if (physicsChanged) scene_.setPhysicsSettings(settings);
         int runtimeMode = static_cast<int>(scene_.runtimeMode());
         if (ImGui::Combo("Runtime mode", &runtimeMode, "Accumulate\0Realtime\0Idle\0")) {
             history_.execute(scene_, std::make_unique<core::SetRuntimeModeCommand>(

@@ -81,8 +81,6 @@ struct ModelInstance {
     bool visible { true };
     std::uint32_t cloneCount { 1 };
     PreviewNormalization normalization;
-    Float3 worldPosition {};
-    Float4 worldRotation { 0.0F, 0.0F, 0.0F, 1.0F };
     std::string displayName;
 };
 
@@ -121,8 +119,20 @@ public:
     [[nodiscard]] ModelId targetModel(ModelId requested = 0) const noexcept;
     bool addExternalParent(ExternalParentLink link, std::string* error = nullptr);
     [[nodiscard]] bool hasExternalParentCycle() const noexcept;
-    bool solveExternalParents();
     [[nodiscard]] PhysicsSettings evaluatePhysicsSettings(float frame) const noexcept;
+
+    void setFrame(float frame) noexcept;
+    void setTimelineDuration(float duration) noexcept;
+    void setGravityTrack(std::vector<std::pair<std::uint32_t, PhysicsSettings>> track);
+    // Advances the one Scene timeline shared by every model and camera track.
+    // Returns true when the frame changed; idle mode and empty timelines do
+    // not advance.
+    bool advanceFrame(float deltaSeconds, bool playing) noexcept;
+    void setPhysicsSettings(PhysicsSettings settings) noexcept;
+    bool setModelVisible(ModelId id, bool visible) noexcept;
+    bool setCloneCount(ModelId id, std::uint32_t cloneCount) noexcept;
+    void setBackgroundScreenSource(ScreenTextureSource source) noexcept;
+    void setBackgroundEnabled(bool enabled) noexcept;
 
     void setBackgroundImage(const std::filesystem::path& path);
     void setBackgroundVideo(const std::filesystem::path& path);
@@ -148,16 +158,11 @@ public:
                                   | DirtyFlag::background) noexcept;
     void setRuntimeMode(RuntimeMode mode) noexcept;
 
-    [[nodiscard]] std::vector<ModelInstance>& models() noexcept { return models_; }
     [[nodiscard]] const std::vector<ModelInstance>& models() const noexcept { return models_; }
-    [[nodiscard]] BackgroundState& background() noexcept { return background_; }
     [[nodiscard]] const BackgroundState& background() const noexcept { return background_; }
-    [[nodiscard]] Timeline& timeline() noexcept { return timeline_; }
     [[nodiscard]] const Timeline& timeline() const noexcept { return timeline_; }
-    [[nodiscard]] PhysicsSettings& physicsSettings() noexcept { return physicsSettings_; }
     [[nodiscard]] const PhysicsSettings& physicsSettings() const noexcept { return physicsSettings_; }
     [[nodiscard]] const std::vector<ExternalParentLink>& externalParents() const noexcept { return externalParents_; }
-    [[nodiscard]] std::vector<ExternalParentLink>& externalParents() noexcept { return externalParents_; }
     [[nodiscard]] const VmdMotion* cameraMotion() const noexcept { return cameraMotion_.get(); }
     [[nodiscard]] RuntimeMode runtimeMode() const noexcept { return runtimeMode_; }
     [[nodiscard]] ModelId selectedModelId() const noexcept { return selectedModel_; }
