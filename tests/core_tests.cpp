@@ -259,8 +259,11 @@ int main() {
         scene.attachMotion(std::move(longMotion), secondModel);
         ok &= check(scene.timeline().duration == 100.0F,
                     "timeline duration follows the longest model motion");
+        scene.setFrame(80.0F);
         ok &= check(scene.removeModel(secondModel) && scene.timeline().duration == 20.0F,
                     "removing longest motion recalculates timeline duration");
+        ok &= check(scene.timeline().frame == 20.0F,
+                    "removing longest motion clamps the current frame");
         std::string parentError;
         ok &= check(!scene.addExternalParent({ 1, "missing", 2, "missing" }, &parentError)
                     && !parentError.empty() && !scene.hasExternalParentCycle(),
@@ -272,6 +275,23 @@ int main() {
         scene.setPhysicsSettings({ 6.0F, { 0.0F, -1.0F, 0.0F }, 0.5F, 2.0F, true });
         ok &= check(scene.physicsSettings().floorCollision && scene.accumulatedSamples() == 0
                     && beforeDirty == 0, "physics settings invalidate accumulation");
+
+        dayo::core::VmdMotion cameraMotion;
+        cameraMotion.cameras.push_back({ 500, -45.0F, {}, {}, {}, 30, true });
+        scene.attachMotion(std::move(cameraMotion), firstModel);
+        scene.setFrame(400.0F);
+        ok &= check(scene.cameraMotion() != nullptr && scene.timeline().duration == 500.0F,
+                    "camera motion is attached as global scene state");
+        scene.clearProjectState();
+        ok &= check(scene.models().empty() && scene.cameraMotion() == nullptr
+                    && scene.timeline().duration == 0.0F && scene.timeline().frame == 0.0F,
+                    "project reset clears camera motion and timeline state");
+        const auto resetModel = scene.addModel(path);
+        dayo::core::VmdMotion resetMotion;
+        resetMotion.morphs.push_back({ "smile", 100, 1.0F });
+        scene.attachMotion(std::move(resetMotion), resetModel);
+        ok &= check(scene.cameraMotion() == nullptr && scene.timeline().duration == 100.0F,
+                    "new project motion is not shadowed by previous camera motion");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: PMX probe: " << exception.what() << '\n';
         ok = false;

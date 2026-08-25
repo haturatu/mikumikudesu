@@ -202,10 +202,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
     if (kind == core::AssetKind::project) {
         try {
             const auto project = core::loadProject(path);
-            scene_.clearModels();
-            scene_.clearBackground();
-            scene_.clearMedia();
-            scene_.clearEffect();
+            scene_.clearProjectState();
             projectAssets_.clear();
             if (project.renderer == "subayai") device_->selectRenderer(graphics::RendererKind::subayai);
             else if (project.renderer == "bdpt") device_->selectRenderer(graphics::RendererKind::bdpt);

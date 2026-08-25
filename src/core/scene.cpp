@@ -53,6 +53,25 @@ void Scene::clearModels() {
     markDirty(DirtyFlag::geometry | DirtyFlag::material);
 }
 
+void Scene::clearProjectState() {
+    models_.clear();
+    selectedModel_ = 0;
+    nextId_ = 1;
+    cameraMotion_.reset();
+    externalParents_.clear();
+    background_ = {};
+    media_.reset();
+    effect_.reset();
+    timeline_ = {};
+    timeline_.fps = 30.0F;
+    physicsSettings_ = {};
+    runtimeMode_ = RuntimeMode::realtime;
+    accumulatedSamples_ = 0;
+    dirty_ = DirtyFlag::camera | DirtyFlag::geometry | DirtyFlag::material
+           | DirtyFlag::lighting | DirtyFlag::effect | DirtyFlag::output
+           | DirtyFlag::background;
+}
+
 ModelInstance* Scene::model(ModelId id) noexcept {
     const auto found = std::find_if(models_.begin(), models_.end(), [id](auto& item) { return item.id == id; });
     return found == models_.end() ? nullptr : std::addressof(*found);
@@ -138,6 +157,11 @@ void Scene::recalculateTimelineDuration() noexcept {
     for (const auto& key : timeline_.ik) lastFrame = std::max(lastFrame, key.frame);
     for (const auto& key : timeline_.gravity) lastFrame = std::max(lastFrame, key.first);
     timeline_.duration = static_cast<float>(lastFrame);
+    if (timeline_.duration <= 0.0F || !std::isfinite(timeline_.frame)) {
+        timeline_.frame = 0.0F;
+    } else {
+        timeline_.frame = std::clamp(timeline_.frame, 0.0F, timeline_.duration);
+    }
 }
 
 void Scene::setFrame(float frame) noexcept {

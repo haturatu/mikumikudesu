@@ -114,6 +114,10 @@ public:
     [[nodiscard]] const ModelInstance* selectedModel() const noexcept;
     void selectModel(ModelId id) noexcept;
 
+    // Clears every asset and timeline-owned value before loading another
+    // project. This is intentionally separate from clearModels(), which may
+    // be used while keeping a global camera/light motion in the scene.
+    void clearProjectState();
     void attachMotion(const std::filesystem::path& path, ModelId target = 0);
     void attachMotion(VmdMotion motion, ModelId target = 0);
     void attachMotion(MotionDocument document, ModelId target = 0, std::string modelName = {});
