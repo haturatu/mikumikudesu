@@ -134,6 +134,10 @@ int main() {
         const auto loaded = dayo::core::loadVmdayo(vmdayoPath);
         ok &= check(loaded.motion.morphs.size() == 1 && loaded.motion.interpolation
                     == dayo::core::InterpolationMode::catmullRom, "VMdayo round trip");
+        document.opaque = { 0x00, 0xFF, 0x56, 0x4D, 0x44 };
+        dayo::core::saveVmdayo(vmdayoPath, document);
+        const auto opaque = dayo::core::loadVmdayo(vmdayoPath);
+        ok &= check(opaque.opaque == document.opaque, "opaque VMdayo payload preservation");
         std::error_code vmdayoError;
         std::filesystem::remove(vmdayoPath, vmdayoError);
     } catch (const std::exception& exception) {
@@ -144,6 +148,13 @@ int main() {
     {
         dayo::core::Scene scene;
         dayo::core::CommandHistory history;
+        scene.setTimelineDuration(10.0F);
+        scene.setFrame(0.0F);
+        ok &= check(scene.advanceFrame(0.5F, true) && scene.timeline().frame > 0.0F,
+                    "scene timeline advances without selected model");
+        scene.setRuntimeMode(dayo::core::RuntimeMode::idle);
+        ok &= check(!scene.advanceFrame(0.5F, true), "idle runtime pauses scene timeline");
+        scene.setRuntimeMode(dayo::core::RuntimeMode::realtime);
         history.execute(scene, std::make_unique<dayo::core::SetFrameCommand>(0.0F, 24.0F));
         ok &= check(scene.timeline().frame == 24.0F && history.canUndo(), "editor command apply");
         ok &= check(history.undo(scene) && scene.timeline().frame == 0.0F, "editor command undo");
@@ -221,8 +232,17 @@ int main() {
         static_cast<void>(scene.addModel(path));
         ok &= check(scene.models().size() == 2 && scene.selectedModel() != nullptr,
                     "multi-model scene instances");
-        scene.timeline().gravity.push_back({ 12, { 3.0F, { 0.0F, -1.0F, 0.0F }, 0.0F, 0.0F, false } });
+        std::string parentError;
+        ok &= check(!scene.addExternalParent({ 1, "missing", 2, "missing" }, &parentError)
+                    && !parentError.empty() && !scene.hasExternalParentCycle(),
+                    "external parent validation without fake solve");
+        scene.setGravityTrack({ { 12, { 3.0F, { 0.0F, -1.0F, 0.0F }, 0.0F, 0.0F, false } } });
         ok &= check(scene.evaluatePhysicsSettings(12.0F).gravity == 3.0F, "animated gravity settings");
+        const auto beforeDirty = scene.accumulatedSamples();
+        scene.advanceAccumulation();
+        scene.setPhysicsSettings({ 6.0F, { 0.0F, -1.0F, 0.0F }, 0.5F, 2.0F, true });
+        ok &= check(scene.physicsSettings().floorCollision && scene.accumulatedSamples() == 0
+                    && beforeDirty == 0, "physics settings invalidate accumulation");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: PMX probe: " << exception.what() << '\n';
         ok = false;
@@ -260,12 +280,24 @@ int main() {
         dayo::core::OutputQueue queue(settings);
         dayo::core::ImageRgba8 image { 1, 1, { 255, 64, 32, 255 } };
         queue.push(3, std::move(image));
+        static_cast<void>(queue.written());
         queue.close();
         ok &= check(queue.written() == 1 && std::filesystem::exists(outputDirectory / "frame_000003.ppm"),
                     "asynchronous frame output");
         dayo::core::ImageRgba8 pngImage { 1, 1, { 255, 64, 32, 255 } };
         dayo::core::writeFrame(outputDirectory / "frame.png", pngImage, dayo::core::OutputFormat::png);
         ok &= check(std::filesystem::file_size(outputDirectory / "frame.png") > 8, "PNG frame output");
+        ok &= check(queue.written() == 1, "thread-safe output counter");
+        dayo::core::OutputSettings failingSettings;
+        failingSettings.directory = outputDirectory;
+        failingSettings.format = dayo::core::OutputFormat::exr;
+        dayo::core::OutputQueue failingQueue(failingSettings);
+        failingQueue.push(0, dayo::core::ImageRgba8 { 1, 1, { 0, 0, 0, 255 } });
+        failingQueue.close();
+        bool propagated = false;
+        try { failingQueue.rethrowIfFailed(); }
+        catch (const std::exception&) { propagated = true; }
+        ok &= check(propagated, "output worker error propagation");
         std::error_code outputError;
         std::filesystem::remove_all(outputDirectory, outputError);
     } catch (const std::exception& exception) {
@@ -310,6 +342,7 @@ int main() {
         falling.position = { 0.0F, 2.0F, 0.0F };
         falling.mass = 1.0F;
         falling.mode = 1;
+        falling.collisionMask = 0xFFFFU;
         falling.bone = 0;
         physicsModel.rigidBodies.push_back(falling);
         dayo::core::MmdPhysics physics(physicsModel);
@@ -319,6 +352,11 @@ int main() {
         for (int i = 0; i < 60; ++i) physics.step(1.0F / 60.0F);
         const auto after = physics.bodyTransform(0);
         ok &= check(after.position[1] < before.position[1], "Bullet gravity simulation");
+        physics.setFloorCollision(true);
+        physics.reset();
+        for (int i = 0; i < 120; ++i) physics.step(1.0F / 60.0F);
+        ok &= check(physics.bodyTransform(0).position[1] > -0.1F, "Bullet floor collision setting");
+        physics.setGravityNoise(1.0F, 2.0F);
         physicsModel.vertices.resize(1);
         physicsModel.vertices[0].position = { 0.0F, 2.0F, 0.0F };
         physicsModel.vertices[0].normal = { 0.0F, 1.0F, 0.0F };

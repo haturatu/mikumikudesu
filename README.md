@@ -17,7 +17,7 @@ MikuMikuDayo 1.20をLinuxへ移植したネイティブ実行系です。元のW
 - FFmpegによるWAV/MP3/M4A等の音声再生とMP4/AVI/MKV/MOV/WebM動画デコード
 - Jsonnetを実行した`.fxdayo`のtexture/sampler/pass/raster/compute/raytracing graph解析
 - 複数PMXを保持できるScene（モデル別VMD/VPD/物理、表示切替、clone、背景画像/動画/音声の共存）
-- `.dayo` v1/v2互換読込、v3原子的保存、`.vmdayo`モーション文書の読込/保存
+- `.dayo` v1/v2互換読込、v3原子的保存、独自VMdayo-like motion文書の読込/保存と未知payload保持
 - VMD Bézier/Linear/Catmull-Rom、外部親リンクの検証（循環参照検出）、重力key評価
 - PMX 2.1 soft-bodyの決定論的フォールバックシミュレーション
 - Undo/Redo CommandHistory、dirty flag/runtime mode、非同期連番フレーム出力（PPM/PNG）
@@ -38,6 +38,8 @@ Subayai/BDPTのVulkan pass executor（acceleration structure/SBTを含む）は�
 Vega等でも起動できるよう未接続のままです。RT対応GPUではbackend契約とgraph compileまでを
 検証し、未対応GPUでは不足featureを表示してPreviewへ戻します。OpenEXR encoderは任意依存の
 ため現在は未接続です（連番出力はPNG/PPM）。
+`.vmdayo`は本家Windows 1.30とのbinary互換を主張しないnative VMdayo-like形式です。
+未知の入力はopaque payloadとして保持しますが、実Windows生成fixtureによる互換性保証はありません。
 
 ## 必要環境
 
@@ -148,7 +150,7 @@ WICには依存しません。OIDNは任意で、HIP deviceが使えなければ
 ```text
 src/
 ├── app/                     CLI、D&D、ImGui、main loop、project連携
-├── core/                    Scene、PMX/VMD/VPD/VMdayo、animation、Bullet、media、effect、project、output
+├── core/                    Scene、PMX/VMD/VPD/VMdayo-like、animation、Bullet、media、effect、project、output
 ├── platform/                SDL3 window/event/audio
 └── graphics/
     ├── device.hpp           API非依存device/resource契約
