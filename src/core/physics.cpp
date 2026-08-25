@@ -179,6 +179,43 @@ MmdPhysics::~MmdPhysics() = default;
 MmdPhysics::MmdPhysics(MmdPhysics&&) noexcept = default;
 MmdPhysics& MmdPhysics::operator=(MmdPhysics&&) noexcept = default;
 
+SoftBodySimulation::SoftBodySimulation(const PmxModel& model)
+    : initial_(model.vertices.size()), positions_(model.vertices.size()),
+      velocities_(model.vertices.size()), pinned_(model.vertices.size()), bodyCount_(model.softBodies.size()) {
+    for (std::size_t index = 0; index < model.vertices.size(); ++index) {
+        initial_[index] = model.vertices[index].position;
+        positions_[index] = initial_[index];
+    }
+    for (const auto& softBody : model.softBodies) {
+        for (const auto vertex : softBody.pinnedVertices) {
+            if (vertex >= 0 && static_cast<std::size_t>(vertex) < pinned_.size()) pinned_[static_cast<std::size_t>(vertex)] = 1;
+        }
+    }
+}
+
+void SoftBodySimulation::reset() {
+    positions_ = initial_;
+    std::fill(velocities_.begin(), velocities_.end(), Float3 {});
+}
+
+void SoftBodySimulation::step(float deltaSeconds, const Float3& gravity) {
+    if (!available() || deltaSeconds <= 0.0F) return;
+    const float dt = std::min(deltaSeconds, 0.05F);
+    for (std::size_t index = 0; index < positions_.size(); ++index) {
+        if (pinned_[index] != 0) { positions_[index] = initial_[index]; velocities_[index] = {}; continue; }
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            velocities_[index][axis] += gravity[axis] * dt;
+            velocities_[index][axis] *= 0.995F;
+            positions_[index][axis] += velocities_[index][axis] * dt;
+        }
+    }
+}
+
+void SoftBodySimulation::apply(std::span<PmxVertex> vertices) const {
+    const auto count = std::min(vertices.size(), positions_.size());
+    for (std::size_t index = 0; index < count; ++index) vertices[index].position = positions_[index];
+}
+
 bool MmdPhysics::available() const noexcept {
 #if DAYO_HAS_BULLET
     return impl_ != nullptr && impl_->world != nullptr;

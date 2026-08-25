@@ -97,11 +97,23 @@ struct PreviewScene {
     float verticalFovRadians { 0.785398163F };
     float lightDirection[3] { -0.5F, -1.0F, 0.5F };
     bool perspective { true };
+    enum class ScreenSource { previousFrame, backgroundVideo, backgroundImage, white } screenSource { ScreenSource::previousFrame };
+    enum class ScreenCrop { none, crop4x3 } screenCrop { ScreenCrop::none };
+    bool backgroundEnabled { true };
 };
 
 using BufferHandle = std::uint64_t;
 using TextureHandle = std::uint64_t;
 using PipelineHandle = std::uint64_t;
+using TextureViewHandle = std::uint64_t;
+using SamplerHandle = std::uint64_t;
+using ShaderHandle = std::uint64_t;
+using AccelerationStructureHandle = std::uint64_t;
+
+struct ShaderDesc { std::span<const std::uint32_t> spirv; std::string entryPoint { "main" }; };
+struct PipelineDesc { std::vector<ShaderHandle> shaders; bool compute {}; };
+struct RayTracingPipelineDesc { std::vector<ShaderHandle> rayGeneration; std::vector<ShaderHandle> miss; std::vector<ShaderHandle> closestHit; };
+struct DescriptorBinding { std::uint32_t slot {}; BufferHandle buffer {}; TextureViewHandle texture {}; SamplerHandle sampler {}; };
 
 class CommandList {
 public:
@@ -111,6 +123,12 @@ public:
     virtual void draw(std::uint32_t vertexCount, std::uint32_t instanceCount = 1) = 0;
     virtual void dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) = 0;
     virtual void traceRays(std::uint32_t width, std::uint32_t height) = 0;
+    virtual void bindResources(std::span<const DescriptorBinding>) {}
+    virtual void pushConstants(std::span<const std::byte>) {}
+    virtual void copyTexture(TextureHandle, TextureHandle) {}
+    virtual void clearTexture(TextureHandle) {}
+    virtual void generateMipmaps(TextureHandle) {}
+    virtual void buildAccelerationStructure(AccelerationStructureHandle) {}
 };
 
 class Device {
@@ -136,6 +154,18 @@ public:
 
     [[nodiscard]] virtual BufferHandle createBuffer(const BufferDesc& desc) = 0;
     [[nodiscard]] virtual TextureHandle createTexture(const TextureDesc& desc) = 0;
+    // Optional portions of the backend contract. Preview backends may leave
+    // these as zero; RT/FX backends override them when the Vulkan features are
+    // available. They intentionally are not pure virtual to keep fallback
+    // renderers usable on GPUs without ray tracing.
+    [[nodiscard]] virtual TextureViewHandle createTextureView(TextureHandle) { return 0; }
+    [[nodiscard]] virtual SamplerHandle createSampler() { return 0; }
+    [[nodiscard]] virtual ShaderHandle createShader(const ShaderDesc&) { return 0; }
+    [[nodiscard]] virtual PipelineHandle createGraphicsPipeline(const PipelineDesc&) { return 0; }
+    [[nodiscard]] virtual PipelineHandle createComputePipeline(const PipelineDesc&) { return 0; }
+    [[nodiscard]] virtual PipelineHandle createRayTracingPipeline(const RayTracingPipelineDesc&) { return 0; }
+    [[nodiscard]] virtual AccelerationStructureHandle createBLAS(BufferHandle) { return 0; }
+    [[nodiscard]] virtual AccelerationStructureHandle createTLAS(std::span<const AccelerationStructureHandle>) { return 0; }
 
 protected:
     Device() = default;
