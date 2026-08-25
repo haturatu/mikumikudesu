@@ -1333,6 +1333,17 @@ void VulkanDevice::uploadPreviewTextures(std::span<const PreviewTexture> texture
     log::info("Uploaded ", textures.size(), " PMX texture(s) plus fallback");
 }
 
+void VulkanDevice::clearPreviewResources() {
+    waitIdle();
+    const std::array<PreviewVertex, 3> fallbackVertices {{ {}, {}, {} }};
+    const std::array<std::uint32_t, 3> fallbackIndices { 0, 1, 2 };
+    uploadPreviewMesh(fallbackVertices, fallbackIndices);
+    uploadPreviewTextures(std::span<const PreviewTexture> {});
+    previewMaterials_.clear();
+    previewScene_ = {};
+    log::info("Cleared preview GPU resources");
+}
+
 std::uint32_t VulkanDevice::findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags flags) const {
     VkPhysicalDeviceMemoryProperties properties {};
     vkGetPhysicalDeviceMemoryProperties(physicalDevice_, &properties);

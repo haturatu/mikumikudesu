@@ -151,6 +151,9 @@ public:
     virtual void updatePreviewVertices(std::span<const PreviewVertex> vertices) = 0;
     virtual void updatePreviewMaterials(std::span<const PreviewMaterial> materials) = 0;
     virtual void uploadPreviewTextures(std::span<const PreviewTexture> textures) = 0;
+    // Returns the preview renderer to its empty/fallback state. Project
+    // lifecycle resets use this to release GPU resources from the old scene.
+    virtual void clearPreviewResources() = 0;
     virtual void updatePreviewScene(const PreviewScene& scene) = 0;
 
     [[nodiscard]] virtual BufferHandle createBuffer(const BufferDesc& desc) = 0;

@@ -88,8 +88,10 @@ Application::Application(Options options) : options_(std::move(options)) {}
 
 void Application::resetProjectRuntimeState() {
     scene_.clearProjectState();
+    if (device_ != nullptr) device_->clearPreviewResources();
     effectReloader_.reset();
     audioPlayer_.stop();
+    textures_.clear();
     mediaSeconds_ = 0.0;
     uploadedVideoFrame_ = -1;
     videoMode_ = false;
@@ -97,6 +99,10 @@ void Application::resetProjectRuntimeState() {
     uploadedAnimationFrame_ = -1;
     playing_ = true;
     manualCamera_ = false;
+    cameraYaw_ = 0.0F;
+    cameraPitch_ = 0.0F;
+    cameraDistance_ = 3.0F;
+    normalization_ = {};
     projectAssets_.clear();
     history_.clear();
 }
