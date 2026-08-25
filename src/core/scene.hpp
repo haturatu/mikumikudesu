@@ -115,18 +115,22 @@ public:
     void selectModel(ModelId id) noexcept;
 
     void attachMotion(const std::filesystem::path& path, ModelId target = 0);
+    void attachMotion(VmdMotion motion, ModelId target = 0);
+    void attachMotion(MotionDocument document, ModelId target = 0, std::string modelName = {});
     void attachPose(const std::filesystem::path& path, ModelId target = 0);
     [[nodiscard]] ModelId targetModel(ModelId requested = 0) const noexcept;
     bool addExternalParent(ExternalParentLink link, std::string* error = nullptr);
     [[nodiscard]] bool hasExternalParentCycle() const noexcept;
     [[nodiscard]] PhysicsSettings evaluatePhysicsSettings(float frame) const noexcept;
+    void recalculateTimelineDuration() noexcept;
 
     void setFrame(float frame) noexcept;
     void setTimelineDuration(float duration) noexcept;
     void setGravityTrack(std::vector<std::pair<std::uint32_t, PhysicsSettings>> track);
     // Advances the one Scene timeline shared by every model and camera track.
-    // Returns true when the frame changed; idle mode and empty timelines do
-    // not advance.
+    // Realtime playback is the only automatic timeline driver; accumulate
+    // keeps the current frame fixed while sampling and idle waits for edits.
+    // Returns true when the frame changed.
     bool advanceFrame(float deltaSeconds, bool playing) noexcept;
     void setPhysicsSettings(PhysicsSettings settings) noexcept;
     bool setModelVisible(ModelId id, bool visible) noexcept;

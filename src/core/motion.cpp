@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 namespace dayo::core {
 namespace {
@@ -235,6 +236,30 @@ VpdPose loadVpd(const std::filesystem::path& path) {
         cursor = close + 1;
     }
     return pose;
+}
+
+MotionDocument toMotionDocument(const VmdMotion& motion) {
+    return { motion.modelName, motion.interpolation, motion.bones, motion.morphs,
+             motion.cameras, motion.lights, motion.shadows, motion.ik };
+}
+
+VmdMotion toVmdMotion(MotionDocument document, std::string modelName) {
+    VmdMotion result;
+    result.modelName = modelName.empty() ? std::move(document.modelName) : std::move(modelName);
+    result.interpolation = document.interpolation;
+    result.bones = std::move(document.bones);
+    result.morphs = std::move(document.morphs);
+    result.cameras = std::move(document.cameras);
+    result.lights = std::move(document.lights);
+    result.shadows = std::move(document.shadows);
+    result.ik = std::move(document.ik);
+    for (const auto& key : result.bones) result.lastFrame = std::max(result.lastFrame, key.frame);
+    for (const auto& key : result.morphs) result.lastFrame = std::max(result.lastFrame, key.frame);
+    for (const auto& key : result.cameras) result.lastFrame = std::max(result.lastFrame, key.frame);
+    for (const auto& key : result.lights) result.lastFrame = std::max(result.lastFrame, key.frame);
+    for (const auto& key : result.shadows) result.lastFrame = std::max(result.lastFrame, key.frame);
+    for (const auto& key : result.ik) result.lastFrame = std::max(result.lastFrame, key.frame);
+    return result;
 }
 
 VmdCameraState evaluateCamera(const VmdMotion& motion, float frame) {

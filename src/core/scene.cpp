@@ -27,7 +27,6 @@ ModelId Scene::addModel(const std::filesystem::path& path) {
     refreshModelResources(instance);
     models_.push_back(std::move(instance));
     selectedModel_ = models_.back().id;
-    timeline_.duration = std::max(timeline_.duration, 0.0F);
     markDirty(DirtyFlag::geometry | DirtyFlag::material);
     return selectedModel_;
 }
@@ -37,6 +36,10 @@ bool Scene::removeModel(ModelId id) {
     if (found == models_.end()) return false;
     models_.erase(found);
     if (selectedModel_ == id) selectedModel_ = models_.empty() ? 0 : models_.front().id;
+    externalParents_.erase(std::remove_if(externalParents_.begin(), externalParents_.end(),
+        [id](const auto& link) { return link.parentModel == id || link.childModel == id; }), externalParents_.end());
+    timeline_.externalParents = externalParents_;
+    recalculateTimelineDuration();
     markDirty(DirtyFlag::geometry | DirtyFlag::material);
     return true;
 }
@@ -44,6 +47,9 @@ bool Scene::removeModel(ModelId id) {
 void Scene::clearModels() {
     models_.clear();
     selectedModel_ = 0;
+    externalParents_.clear();
+    timeline_.externalParents.clear();
+    recalculateTimelineDuration();
     markDirty(DirtyFlag::geometry | DirtyFlag::material);
 }
 
@@ -119,6 +125,21 @@ PhysicsSettings Scene::evaluatePhysicsSettings(float frame) const noexcept {
     return std::prev(found)->second;
 }
 
+void Scene::recalculateTimelineDuration() noexcept {
+    std::uint32_t lastFrame = 0;
+    const auto update = [&lastFrame](const VmdMotion* motion) {
+        if (motion != nullptr) lastFrame = std::max(lastFrame, motion->lastFrame);
+    };
+    update(cameraMotion_.get());
+    for (const auto& instance : models_) update(instance.motion.get());
+    for (const auto& key : timeline_.camera) lastFrame = std::max(lastFrame, key.frame);
+    for (const auto& key : timeline_.light) lastFrame = std::max(lastFrame, key.frame);
+    for (const auto& key : timeline_.shadow) lastFrame = std::max(lastFrame, key.frame);
+    for (const auto& key : timeline_.ik) lastFrame = std::max(lastFrame, key.frame);
+    for (const auto& key : timeline_.gravity) lastFrame = std::max(lastFrame, key.first);
+    timeline_.duration = static_cast<float>(lastFrame);
+}
+
 void Scene::setFrame(float frame) noexcept {
     if (!std::isfinite(frame)) return;
     if (timeline_.frame == frame) return;
@@ -137,11 +158,12 @@ void Scene::setTimelineDuration(float duration) noexcept {
 void Scene::setGravityTrack(std::vector<std::pair<std::uint32_t, PhysicsSettings>> track) {
     std::ranges::sort(track, [](const auto& left, const auto& right) { return left.first < right.first; });
     timeline_.gravity = std::move(track);
+    recalculateTimelineDuration();
     markDirty(DirtyFlag::geometry | DirtyFlag::lighting);
 }
 
 bool Scene::advanceFrame(float deltaSeconds, bool playing) noexcept {
-    if (!playing || runtimeMode_ == RuntimeMode::idle || timeline_.duration <= 0.0F
+    if (!playing || runtimeMode_ != RuntimeMode::realtime || timeline_.duration <= 0.0F
         || !std::isfinite(deltaSeconds) || deltaSeconds <= 0.0F) return false;
     const float fps = timeline_.fps > 0.0F && std::isfinite(timeline_.fps) ? timeline_.fps : 30.0F;
     const float period = timeline_.duration + 1.0F;
@@ -193,7 +215,17 @@ void Scene::setBackgroundEnabled(bool enabled) noexcept {
 }
 
 void Scene::attachMotion(const std::filesystem::path& path, ModelId target) {
-    auto motion = std::make_unique<VmdMotion>(loadVmd(path));
+    attachMotion(loadVmd(path), target);
+}
+
+void Scene::attachMotion(VmdMotion motion, ModelId target) {
+    auto modelName = motion.modelName;
+    auto document = toMotionDocument(motion);
+    attachMotion(std::move(document), target, std::move(modelName));
+}
+
+void Scene::attachMotion(MotionDocument document, ModelId target, std::string modelName) {
+    auto motion = std::make_unique<VmdMotion>(toVmdMotion(std::move(document), std::move(modelName)));
     // A camera/light-only VMD is global even when a model is selected. Model
     // motion remains the default for files containing bone or morph tracks.
     const bool cameraOnly = motion->bones.empty() && motion->morphs.empty()
@@ -202,7 +234,7 @@ void Scene::attachMotion(const std::filesystem::path& path, ModelId target) {
     if (destination != nullptr) {
         destination->motion = std::move(motion);
         destination->animator->setMotion(destination->motion.get());
-        timeline_.duration = std::max(timeline_.duration, static_cast<float>(destination->motion->lastFrame));
+        recalculateTimelineDuration();
     } else {
         // Camera/light VMDs are still useful without a model.
         cameraMotion_ = std::move(motion);
@@ -210,7 +242,7 @@ void Scene::attachMotion(const std::filesystem::path& path, ModelId target) {
         timeline_.light = cameraMotion_->lights;
         timeline_.shadow = cameraMotion_->shadows;
         timeline_.ik = cameraMotion_->ik;
-        timeline_.duration = std::max(timeline_.duration, static_cast<float>(cameraMotion_->lastFrame));
+        recalculateTimelineDuration();
     }
     markDirty(DirtyFlag::geometry | DirtyFlag::camera | DirtyFlag::lighting);
 }

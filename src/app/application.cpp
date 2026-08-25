@@ -211,10 +211,8 @@ void Application::handleAsset(const std::filesystem::path& path) {
             else if (project.renderer == "bdpt") device_->selectRenderer(graphics::RendererKind::bdpt);
             else device_->selectRenderer(graphics::RendererKind::preview);
             for (const auto& asset : project.assets) handleAsset(asset.path);
-            if (project.embeddedMotion && selectedModel() != nullptr) {
-                auto* target = selectedModel();
-                target->motion = std::make_unique<core::VmdMotion>(*project.embeddedMotion);
-                target->animator->setMotion(target->motion.get());
+            if (project.embeddedMotion) {
+                scene_.attachMotion(*project.embeddedMotion, scene_.selectedModelId());
                 manualCamera_ = false;
             }
             animationFrame_ = project.frame;
@@ -234,21 +232,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
         try {
             const auto document = core::loadVmdayo(path);
             if (selectedModel() == nullptr) throw std::runtime_error("VMdayo requires a selected model");
-            auto motion = std::make_unique<core::VmdMotion>();
-            motion->modelName = document.modelName;
-            motion->bones = document.motion.bones;
-            motion->morphs = document.motion.morphs;
-            motion->cameras = document.motion.cameras;
-            motion->lights = document.motion.lights;
-            motion->shadows = document.motion.shadows;
-            motion->ik = document.motion.ik;
-            motion->interpolation = document.motion.interpolation;
-            for (const auto& key : motion->bones) motion->lastFrame = std::max(motion->lastFrame, key.frame);
-            for (const auto& key : motion->morphs) motion->lastFrame = std::max(motion->lastFrame, key.frame);
-            for (const auto& key : motion->cameras) motion->lastFrame = std::max(motion->lastFrame, key.frame);
-            auto* model = selectedModel();
-            model->motion = std::move(motion);
-            model->animator->setMotion(model->motion.get());
+            scene_.attachMotion(document.motion, scene_.selectedModelId(), document.modelName);
             animationFrame_ = 0.0F;
             scene_.setFrame(animationFrame_);
             refreshAnimatedMesh(false);
