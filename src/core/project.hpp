@@ -24,8 +24,8 @@ struct DayoProject {
     bool playing { true };
     std::vector<ProjectAsset> assets;
     std::optional<VmdMotion> embeddedMotion;
-    // v3 stores the original .vmdayo keyframe payload verbatim. Keeping the
-    // opaque bytes lets the editor round-trip documents it does not yet know.
+    // v3 stores an opaque upstream keyframe payload verbatim. Keeping bytes
+    // losslessly is safer than claiming compatibility with an unknown format.
     std::vector<std::uint8_t> embeddedVmdayo;
 };
 

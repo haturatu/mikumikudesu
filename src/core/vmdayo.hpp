@@ -9,8 +9,10 @@
 
 namespace dayo::core {
 
-// .vmdayo is an auxiliary v3 motion document. Unknown fields are retained in
-// opaque so importing and exporting a project never destroys newer data.
+// This is mikumikudesu's VMdayo-like auxiliary v3 motion document. It is not
+// claimed to be binary-compatible with the proprietary Windows 1.30 writer.
+// Unknown/upstream bytes are retained in opaque so round-tripping never
+// destroys data that this reader does not understand.
 struct VmdayoDocument {
     int version { 1 };
     std::string modelName;

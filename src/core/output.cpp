@@ -5,6 +5,8 @@
 
 #include <condition_variable>
 #include <cstdio>
+#include <atomic>
+#include <exception>
 #include <fstream>
 #include <mutex>
 #include <queue>
@@ -47,18 +49,29 @@ struct OutputWorker {
     struct Item { std::uint32_t frame; ImageRgba8 image; };
     explicit OutputWorker(OutputSettings value) : settings(std::move(value)), thread([this] { run(); }) {}
     ~OutputWorker() { close(); }
-    void run() {
-        for (;;) {
-            Item item;
-            {
-                std::unique_lock lock(mutex);
-                condition.wait(lock, [this] { return done || !queue.empty(); });
-                if (queue.empty() && done) return;
-                item = std::move(queue.front());
-                queue.pop();
+    void run() noexcept {
+        try {
+            for (;;) {
+                Item item;
+                {
+                    std::unique_lock lock(mutex);
+                    condition.wait(lock, [this] { return done || !queue.empty(); });
+                    if (queue.empty() && done) return;
+                    item = std::move(queue.front());
+                    queue.pop();
+                }
+                writeFrame(outputPath(settings, item.frame), item.image, settings.format);
+                count.fetch_add(1, std::memory_order_relaxed);
             }
-            writeFrame(outputPath(settings, item.frame), item.image, settings.format);
-            ++count;
+        } catch (...) {
+            {
+                std::lock_guard lock(mutex);
+                error = std::current_exception();
+                done = true;
+                std::queue<Item> discarded;
+                queue.swap(discarded);
+            }
+            condition.notify_all();
         }
     }
     void push(Item item) {
@@ -83,7 +96,8 @@ struct OutputWorker {
     std::condition_variable condition;
     std::thread thread;
     bool done {};
-    std::uint64_t count {};
+    std::atomic_uint64_t count {};
+    std::exception_ptr error;
 };
 
 OutputQueue::OutputQueue(OutputSettings settings) : worker_(std::make_unique<OutputWorker>(std::move(settings))) {}
@@ -92,6 +106,17 @@ OutputQueue::OutputQueue(OutputQueue&&) noexcept = default;
 OutputQueue& OutputQueue::operator=(OutputQueue&&) noexcept = default;
 void OutputQueue::push(std::uint32_t frame, ImageRgba8 image) { worker_->push({ frame, std::move(image) }); }
 void OutputQueue::close() { if (worker_) worker_->close(); }
-std::uint64_t OutputQueue::written() const noexcept { return worker_ == nullptr ? 0 : worker_->count; }
+void OutputQueue::rethrowIfFailed() const {
+    if (worker_ == nullptr) return;
+    std::exception_ptr error;
+    {
+        std::lock_guard lock(worker_->mutex);
+        error = worker_->error;
+    }
+    if (error) std::rethrow_exception(error);
+}
+std::uint64_t OutputQueue::written() const noexcept {
+    return worker_ == nullptr ? 0 : worker_->count.load(std::memory_order_relaxed);
+}
 
 } // namespace dayo::core

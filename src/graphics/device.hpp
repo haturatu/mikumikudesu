@@ -6,6 +6,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <vector>
 
 namespace dayo::platform { class Window; }
@@ -154,18 +155,34 @@ public:
 
     [[nodiscard]] virtual BufferHandle createBuffer(const BufferDesc& desc) = 0;
     [[nodiscard]] virtual TextureHandle createTexture(const TextureDesc& desc) = 0;
-    // Optional portions of the backend contract. Preview backends may leave
-    // these as zero; RT/FX backends override them when the Vulkan features are
-    // available. They intentionally are not pure virtual to keep fallback
-    // renderers usable on GPUs without ray tracing.
-    [[nodiscard]] virtual TextureViewHandle createTextureView(TextureHandle) { return 0; }
-    [[nodiscard]] virtual SamplerHandle createSampler() { return 0; }
-    [[nodiscard]] virtual ShaderHandle createShader(const ShaderDesc&) { return 0; }
-    [[nodiscard]] virtual PipelineHandle createGraphicsPipeline(const PipelineDesc&) { return 0; }
-    [[nodiscard]] virtual PipelineHandle createComputePipeline(const PipelineDesc&) { return 0; }
-    [[nodiscard]] virtual PipelineHandle createRayTracingPipeline(const RayTracingPipelineDesc&) { return 0; }
-    [[nodiscard]] virtual AccelerationStructureHandle createBLAS(BufferHandle) { return 0; }
-    [[nodiscard]] virtual AccelerationStructureHandle createTLAS(std::span<const AccelerationStructureHandle>) { return 0; }
+    // Optional portions of the backend contract. Preview backends keep these
+    // methods unavailable; RT/FX backends override them when Vulkan features
+    // are available. Unsupported calls fail explicitly instead of returning
+    // a zero handle that could be mistaken for a valid resource.
+    [[nodiscard]] virtual TextureViewHandle createTextureView(TextureHandle) {
+        throw std::logic_error("Texture views are not implemented by this backend");
+    }
+    [[nodiscard]] virtual SamplerHandle createSampler() {
+        throw std::logic_error("Samplers are not implemented by this backend");
+    }
+    [[nodiscard]] virtual ShaderHandle createShader(const ShaderDesc&) {
+        throw std::logic_error("Shaders are not implemented by this backend");
+    }
+    [[nodiscard]] virtual PipelineHandle createGraphicsPipeline(const PipelineDesc&) {
+        throw std::logic_error("Graphics pipelines are not implemented by this backend");
+    }
+    [[nodiscard]] virtual PipelineHandle createComputePipeline(const PipelineDesc&) {
+        throw std::logic_error("Compute pipelines are not implemented by this backend");
+    }
+    [[nodiscard]] virtual PipelineHandle createRayTracingPipeline(const RayTracingPipelineDesc&) {
+        throw std::logic_error("Ray-tracing pipelines are not implemented by this backend");
+    }
+    [[nodiscard]] virtual AccelerationStructureHandle createBLAS(BufferHandle) {
+        throw std::logic_error("BLAS is not implemented by this backend");
+    }
+    [[nodiscard]] virtual AccelerationStructureHandle createTLAS(std::span<const AccelerationStructureHandle>) {
+        throw std::logic_error("TLAS is not implemented by this backend");
+    }
 
 protected:
     Device() = default;

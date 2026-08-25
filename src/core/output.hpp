@@ -39,6 +39,10 @@ public:
 
     void push(std::uint32_t frame, ImageRgba8 image);
     void close();
+    // Re-throws an encoder/IO failure captured by the worker. It is safe to
+    // call after close(), and is intentionally separate so destructors never
+    // throw.
+    void rethrowIfFailed() const;
     [[nodiscard]] std::uint64_t written() const noexcept;
 
 private:
