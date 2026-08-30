@@ -317,10 +317,16 @@ void solveIk(const PmxModel& model, const BoneOrder& order, std::vector<BoneRunt
                     ? poses[static_cast<std::size_t>(parent)].global.rotation : Quat { 0.0F, 0.0F, 0.0F, 1.0F };
                 const auto localDelta = multiply(multiply(conjugate(parentRotation), worldDelta), parentRotation);
                 poses[linkIndex].ikRotation = multiply(localDelta, poses[linkIndex].ikRotation);
-                rebuildBonePoses(model, order, poses, localScratch, globalScratch, globalState);
+                // An IK link may belong to the other physics phase. Apply the
+                // accumulated IK rotation directly so a phase-local rebuild
+                // cannot discard it before the next global-pose calculation.
+                poses[linkIndex].local.rotation = multiply(poses[linkIndex].ikRotation,
+                                                            poses[linkIndex].withoutIk.rotation);
                 poses[linkIndex].local.rotation = applyIkLimit(poses[linkIndex].local.rotation, link);
                 poses[linkIndex].ikRotation = multiply(poses[linkIndex].local.rotation,
                                                         conjugate(poses[linkIndex].withoutIk.rotation));
+                // Rebuild the current phase's append relationships while
+                // retaining the direct cross-phase link update above.
                 rebuildBonePoses(model, order, poses, localScratch, globalScratch, globalState);
             }
             if (reached || length(sub(poses[static_cast<std::size_t>(ik.ikTarget)].global.position,
