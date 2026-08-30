@@ -1,15 +1,15 @@
 #include "core/media.hpp"
 
+#include "core/ffmpeg_utils.hpp"
+
 #include <SDL3/SDL.h>
 
 #include <algorithm>
-#include <array>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string>
-#include <string_view>
 
 #if DAYO_HAS_MEDIA
 extern "C" {
@@ -27,25 +27,15 @@ namespace dayo::core {
 namespace {
 
 #if DAYO_HAS_MEDIA
-std::string ffmpegError(int error) {
-    std::array<char, AV_ERROR_MAX_STRING_SIZE> buffer {};
-    av_strerror(error, buffer.data(), buffer.size());
-    return buffer.data();
-}
-
-void checkFfmpeg(int result, std::string_view operation) {
-    if (result < 0) throw std::runtime_error(std::string(operation) + ": " + ffmpegError(result));
-}
-
 AVCodecContext* openDecoder(AVFormatContext* format, int streamIndex) {
     const auto* codec = avcodec_find_decoder(format->streams[streamIndex]->codecpar->codec_id);
     if (codec == nullptr) throw std::runtime_error("FFmpeg decoder is unavailable");
     auto* context = avcodec_alloc_context3(codec);
     if (context == nullptr) throw std::bad_alloc();
     try {
-        checkFfmpeg(avcodec_parameters_to_context(context, format->streams[streamIndex]->codecpar),
-                    "copy codec parameters");
-        checkFfmpeg(avcodec_open2(context, codec, nullptr), "open codec");
+        ffmpeg::check(avcodec_parameters_to_context(context, format->streams[streamIndex]->codecpar),
+                      "copy codec parameters");
+        ffmpeg::check(avcodec_open2(context, codec, nullptr), "open codec");
     } catch (...) {
         avcodec_free_context(&context);
         throw;
@@ -76,8 +66,8 @@ struct MediaFile::Impl {
 MediaFile::MediaFile(const std::filesystem::path& path) : impl_(std::make_unique<Impl>()) {
 #if DAYO_HAS_MEDIA
     auto name = path.string();
-    checkFfmpeg(avformat_open_input(&impl_->format, name.c_str(), nullptr, nullptr), "open media");
-    checkFfmpeg(avformat_find_stream_info(impl_->format, nullptr), "read media streams");
+    ffmpeg::check(avformat_open_input(&impl_->format, name.c_str(), nullptr, nullptr), "open media");
+    ffmpeg::check(avformat_find_stream_info(impl_->format, nullptr), "read media streams");
     impl_->audioStream = av_find_best_stream(impl_->format, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
     impl_->videoStream = av_find_best_stream(impl_->format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (impl_->audioStream >= 0) {
@@ -110,14 +100,14 @@ const MediaInfo& MediaFile::info() const noexcept { return impl_->info; }
 AudioBuffer MediaFile::decodeAudio() {
 #if DAYO_HAS_MEDIA
     if (impl_->audioCodec == nullptr) throw std::runtime_error("media has no audio stream");
-    checkFfmpeg(av_seek_frame(impl_->format, impl_->audioStream, 0, AVSEEK_FLAG_BACKWARD), "seek audio");
+    ffmpeg::check(av_seek_frame(impl_->format, impl_->audioStream, 0, AVSEEK_FLAG_BACKWARD), "seek audio");
     avcodec_flush_buffers(impl_->audioCodec);
     AVChannelLayout outputLayout = AV_CHANNEL_LAYOUT_STEREO;
     SwrContext* resampler = nullptr;
-    checkFfmpeg(swr_alloc_set_opts2(&resampler, &outputLayout, AV_SAMPLE_FMT_FLT, 48'000,
-                                     &impl_->audioCodec->ch_layout, impl_->audioCodec->sample_fmt,
-                                     impl_->audioCodec->sample_rate, 0, nullptr), "create audio resampler");
-    checkFfmpeg(swr_init(resampler), "initialize audio resampler");
+    ffmpeg::check(swr_alloc_set_opts2(&resampler, &outputLayout, AV_SAMPLE_FMT_FLT, 48'000,
+                                      &impl_->audioCodec->ch_layout, impl_->audioCodec->sample_fmt,
+                                      impl_->audioCodec->sample_rate, 0, nullptr), "create audio resampler");
+    ffmpeg::check(swr_init(resampler), "initialize audio resampler");
     AudioBuffer output;
     auto* packet = av_packet_alloc();
     auto* frame = av_frame_alloc();
@@ -126,7 +116,7 @@ AudioBuffer MediaFile::decodeAudio() {
         while (true) {
             const int result = avcodec_receive_frame(impl_->audioCodec, frame);
             if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) break;
-            checkFfmpeg(result, "decode audio frame");
+            ffmpeg::check(result, "decode audio frame");
             const int capacity = av_rescale_rnd(swr_get_delay(resampler, impl_->audioCodec->sample_rate)
                                                 + frame->nb_samples, 48'000,
                                                 impl_->audioCodec->sample_rate, AV_ROUND_UP);
@@ -136,19 +126,19 @@ AudioBuffer MediaFile::decodeAudio() {
             const int converted = swr_convert(resampler, destination, capacity,
                                                const_cast<const std::uint8_t**>(frame->extended_data),
                                                frame->nb_samples);
-            checkFfmpeg(converted, "resample audio");
+            ffmpeg::check(converted, "resample audio");
             output.samples.resize(begin + static_cast<std::size_t>(converted) * 2U);
             av_frame_unref(frame);
         }
     };
     while (av_read_frame(impl_->format, packet) >= 0) {
         if (packet->stream_index == impl_->audioStream) {
-            checkFfmpeg(avcodec_send_packet(impl_->audioCodec, packet), "submit audio packet");
+            ffmpeg::check(avcodec_send_packet(impl_->audioCodec, packet), "submit audio packet");
             receive();
         }
         av_packet_unref(packet);
     }
-    checkFfmpeg(avcodec_send_packet(impl_->audioCodec, nullptr), "flush audio decoder");
+    ffmpeg::check(avcodec_send_packet(impl_->audioCodec, nullptr), "flush audio decoder");
     receive();
     swr_free(&resampler);
     av_frame_free(&frame);
@@ -164,7 +154,7 @@ ImageRgba8 MediaFile::decodeVideoFrame(double seconds) {
     if (impl_->videoCodec == nullptr) throw std::runtime_error("media has no video stream");
     const auto* stream = impl_->format->streams[impl_->videoStream];
     const auto timestamp = static_cast<std::int64_t>(seconds / av_q2d(stream->time_base));
-    checkFfmpeg(av_seek_frame(impl_->format, impl_->videoStream, timestamp, AVSEEK_FLAG_BACKWARD), "seek video");
+    ffmpeg::check(av_seek_frame(impl_->format, impl_->videoStream, timestamp, AVSEEK_FLAG_BACKWARD), "seek video");
     avformat_flush(impl_->format);
     avcodec_flush_buffers(impl_->videoCodec);
     auto* packet = av_packet_alloc();
@@ -173,11 +163,11 @@ ImageRgba8 MediaFile::decodeVideoFrame(double seconds) {
     bool found = false;
     while (!found && av_read_frame(impl_->format, packet) >= 0) {
         if (packet->stream_index == impl_->videoStream) {
-            checkFfmpeg(avcodec_send_packet(impl_->videoCodec, packet), "submit video packet");
+            ffmpeg::check(avcodec_send_packet(impl_->videoCodec, packet), "submit video packet");
             while (true) {
                 const int result = avcodec_receive_frame(impl_->videoCodec, frame);
                 if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) break;
-                checkFfmpeg(result, "decode video frame");
+                ffmpeg::check(result, "decode video frame");
                 const auto pts = frame->best_effort_timestamp;
                 if (pts == AV_NOPTS_VALUE || static_cast<double>(pts) * av_q2d(stream->time_base) + 1e-6 >= seconds) {
                     found = true;

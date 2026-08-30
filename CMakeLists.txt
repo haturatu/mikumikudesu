@@ -64,7 +64,9 @@ add_library(dayo_core
   src/core/asset.cpp
   src/core/denoiser.cpp
   src/core/effect.cpp
+  src/core/ffmpeg_utils.cpp
   src/core/image.cpp
+  src/core/audio_export.cpp
   src/core/media.cpp
   src/core/model_probe.cpp
   src/core/motion.cpp
@@ -85,6 +87,8 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   set_source_files_properties(src/core/output.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-missing-field-initializers")
   set_source_files_properties(src/core/vmdayo.cpp PROPERTIES COMPILE_OPTIONS "-Wno-cpp;-Wno-deprecated-declarations")
   set_source_files_properties(src/core/effect.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-shadow;-Wno-cpp;-Wno-deprecated-declarations")
+  set_source_files_properties(src/core/audio_export.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-shadow;-Wno-deprecated-declarations")
+  set_source_files_properties(src/core/ffmpeg_utils.cpp PROPERTIES COMPILE_OPTIONS "-Wno-deprecated-declarations")
   set_source_files_properties(src/core/project.cpp PROPERTIES COMPILE_OPTIONS "-Wno-cpp;-Wno-deprecated-declarations")
 endif()
 
@@ -253,6 +257,8 @@ endif()
 
 add_executable(mikumikudesu
   src/app/application.cpp
+  src/app/audio_export_command.cpp
+  src/app/audio_export_job.cpp
   src/app/main.cpp
 )
 target_include_directories(mikumikudesu PRIVATE src)
@@ -286,6 +292,11 @@ if(BUILD_TESTING)
   add_test(NAME core COMMAND dayo_core_tests)
   add_test(NAME vulkan_probe COMMAND mikumikudesu --probe --hidden)
   set_tests_properties(vulkan_probe PROPERTIES TIMEOUT 20)
+  if(DAYO_HAS_MEDIA)
+    add_test(NAME audio_export_cli
+      COMMAND bash "${CMAKE_SOURCE_DIR}/tests/audio_export_cli.sh" "$<TARGET_FILE:mikumikudesu>")
+    set_tests_properties(audio_export_cli PROPERTIES TIMEOUT 20)
+  endif()
 endif()
 
 message(STATUS "mikumikudesu backend: ${DAYO_BACKEND}")
