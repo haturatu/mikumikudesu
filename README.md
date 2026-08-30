@@ -15,6 +15,7 @@ MikuMikuDayo 1.20をLinuxへ移植したネイティブ実行系です。元のW
 - PNG/JPEG/BMP/TGA/HDRとDDS（RGBA/BGRA、BC1～BC5）の読込、Vulkan sRGB texture upload
 - PMX材質範囲、diffuse/ambient/specular/power、texture乗算/加算モーフ、VMDカメラ/照明
 - FFmpegによるWAV/MP3/M4A等の音声再生とMP4/AVI/MKV/MOV/WebM動画デコード
+- FFmpegを使ったストリーミングAAC/M4A音声書き出し（CLI / 非同期ImGui UI）
 - Jsonnetを実行した`.fxdayo`のtexture/sampler/pass/raster/compute/raytracing graph解析
 - 複数PMXを保持できるScene（モデル別VMD/VPD/物理、表示切替、clone、背景画像/動画/音声の共存）
 - `.dayo` v1/v2互換読込、v3原子的保存、独自VMdayo-like motion文書の読込/保存と未知payload保持
@@ -116,7 +117,29 @@ ctest --preset linux-debug --output-on-failure
 --probe                          GPU featureをJSONで出力して終了
 --hidden --frames N              非表示windowでN frame描画するsmoke test
 --no-validation                 Vulkan validationを要求しない
+--export-m4a PATH               Vulkanなしで音声をM4A/AACへ書き出す
+--audio-source PATH             書き出す音声を明示（省略時はassetから一意に解決）
+--audio-bitrate KBPS            AAC bitrate（既定: 192）
+--audio-from SEC / --audio-to SEC  書き出し範囲（秒）
+--overwrite                     既存のM4Aを置換する
 ```
+
+音声だけを書き出す場合は、ウィンドウやVulkanを起動せずに実行します。
+
+```bash
+./build/linux-debug/mikumikudesu \
+  --asset music.wav \
+  --export-m4a music.m4a
+
+./build/linux-debug/mikumikudesu \
+  --audio-source music.wav \
+  --export-m4a chorus.m4a \
+  --audio-bitrate 256 \
+  --audio-from 35.0 --audio-to 78.5
+```
+
+出力は一時的な`.m4a.part`へ書き込み、成功時に完成ファイルへ原子的に置換します。Sceneの
+背景・再生用`MediaFile`や画像の`OutputQueue`とは独立した`AudioExporter`を使います。
 
 system packageのみで構成する場合:
 
