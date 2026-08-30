@@ -4,7 +4,9 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
+#include <span>
 #include <vector>
 
 namespace dayo::core {
@@ -24,6 +26,11 @@ struct AudioBuffer {
     std::vector<float> samples;
 };
 
+using AudioSampleCallback =
+    std::function<void(std::span<const float> samples,
+                       std::uint32_t sampleRate,
+                       std::uint32_t channels)>;
+
 class MediaFile {
 public:
     explicit MediaFile(const std::filesystem::path& path);
@@ -35,6 +42,7 @@ public:
 
     [[nodiscard]] const MediaInfo& info() const noexcept;
     [[nodiscard]] AudioBuffer decodeAudio();
+    void streamAudio(const AudioSampleCallback& callback);
     [[nodiscard]] ImageRgba8 decodeVideoFrame(double seconds);
 
 private:
