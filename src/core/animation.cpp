@@ -1,12 +1,17 @@
 #include "core/animation.hpp"
+#include "core/log.hpp"
 #include "core/physics.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <functional>
+#include <memory>
 #include <numbers>
+#include <numeric>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace dayo::core {
 namespace {
@@ -93,6 +98,18 @@ float bezier(float x, std::uint8_t x1, std::uint8_t y1, std::uint8_t x2, std::ui
 struct LocalPose { Float3 translation {}; Quat rotation { 0.0F, 0.0F, 0.0F, 1.0F }; };
 struct GlobalPose { Float3 position {}; Quat rotation { 0.0F, 0.0F, 0.0F, 1.0F }; };
 
+struct BoneRuntimePose {
+    LocalPose base;
+    LocalPose append;
+    LocalPose withoutIk;
+    LocalPose local;
+    GlobalPose global;
+    Quat ikRotation { 0.0F, 0.0F, 0.0F, 1.0F };
+};
+
+using BoneOrder = std::vector<std::size_t>;
+struct BoneOrders { BoneOrder beforePhysics; BoneOrder afterPhysics; };
+
 LocalPose sampleBone(const std::vector<const VmdBoneKey*>& keys, float frame) {
     if (keys.empty()) return {};
     const auto next = std::lower_bound(keys.begin(), keys.end(), frame,
@@ -128,9 +145,10 @@ float sampleMorph(const std::vector<const VmdMorphKey*>& keys, float frame) {
     return before->weight + (after->weight - before->weight) * t;
 }
 
-void calculateGlobals(const PmxModel& model, const std::vector<LocalPose>& local, std::vector<GlobalPose>& global) {
-    std::vector<std::uint8_t> state(model.bones.size());
-    std::function<void(std::size_t)> resolve = [&](std::size_t index) {
+void calculateGlobals(const PmxModel& model, const std::vector<LocalPose>& local, std::vector<GlobalPose>& global,
+                      std::vector<std::uint8_t>& state) {
+    std::fill(state.begin(), state.end(), std::uint8_t { 0 });
+    const auto resolve = [&](const auto& self, std::size_t index) -> void {
         if (state[index] == 2) return;
         if (state[index] == 1) { // malformed parent cycle
             global[index] = { add(model.bones[index].position, local[index].translation), local[index].rotation };
@@ -140,7 +158,7 @@ void calculateGlobals(const PmxModel& model, const std::vector<LocalPose>& local
         state[index] = 1;
         const auto parent = model.bones[index].parent;
         if (parent >= 0 && static_cast<std::size_t>(parent) < model.bones.size()) {
-            resolve(static_cast<std::size_t>(parent));
+            self(self, static_cast<std::size_t>(parent));
             const auto bindOffset = sub(model.bones[index].position, model.bones[static_cast<std::size_t>(parent)].position);
             global[index].position = add(global[static_cast<std::size_t>(parent)].position,
                 rotate(global[static_cast<std::size_t>(parent)].rotation, add(bindOffset, local[index].translation)));
@@ -151,45 +169,199 @@ void calculateGlobals(const PmxModel& model, const std::vector<LocalPose>& local
         }
         state[index] = 2;
     };
-    for (std::size_t i = 0; i < model.bones.size(); ++i) resolve(i);
+    for (std::size_t i = 0; i < model.bones.size(); ++i) resolve(resolve, i);
 }
 
-void solveIk(const PmxModel& model, std::vector<LocalPose>& local, std::vector<GlobalPose>& global) {
-    for (std::size_t ikIndex = 0; ikIndex < model.bones.size(); ++ikIndex) {
+BoneOrders makeBoneOrders(const PmxModel& model) {
+    BoneOrders result;
+    result.beforePhysics.reserve(model.bones.size());
+    result.afterPhysics.reserve(model.bones.size());
+    for (std::size_t index = 0; index < model.bones.size(); ++index) {
+        const auto afterPhysics = (model.bones[index].flags & 0x1000U) != 0;
+        (afterPhysics ? result.afterPhysics : result.beforePhysics).push_back(index);
+    }
+    const auto sortOrder = [&model](BoneOrder& order) {
+        std::stable_sort(order.begin(), order.end(), [&model](std::size_t left, std::size_t right) {
+            const auto& a = model.bones[left];
+            const auto& b = model.bones[right];
+            if (a.deformLayer != b.deformLayer) return a.deformLayer < b.deformLayer;
+            return left < right;
+        });
+    };
+    sortOrder(result.beforePhysics);
+    sortOrder(result.afterPhysics);
+    return result;
+}
+
+Float3 quaternionToEuler(Quat rotation) {
+    rotation = normalize(rotation);
+    const float roll = std::atan2(2.0F * (rotation[3] * rotation[0] + rotation[1] * rotation[2]),
+                                  1.0F - 2.0F * (rotation[0] * rotation[0] + rotation[1] * rotation[1]));
+    const float pitchArgument = std::clamp(2.0F * (rotation[3] * rotation[1] - rotation[2] * rotation[0]), -1.0F, 1.0F);
+    const float pitch = std::asin(pitchArgument);
+    const float yaw = std::atan2(2.0F * (rotation[3] * rotation[2] + rotation[0] * rotation[1]),
+                                 1.0F - 2.0F * (rotation[1] * rotation[1] + rotation[2] * rotation[2]));
+    return { roll, pitch, yaw };
+}
+
+Quat applyIkLimit(Quat rotation, const PmxIkLink& link) {
+    if (!link.limited) return normalize(rotation);
+    auto euler = quaternionToEuler(rotation);
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        const auto minimum = std::min(link.minimum[axis], link.maximum[axis]);
+        const auto maximum = std::max(link.minimum[axis], link.maximum[axis]);
+        euler[axis] = std::clamp(euler[axis], minimum, maximum);
+    }
+    return eulerRotation(euler);
+}
+
+void rebuildBonePoses(const PmxModel& model, const BoneOrder& order, std::vector<BoneRuntimePose>& poses,
+                      std::vector<LocalPose>& localScratch, std::vector<GlobalPose>& globalScratch,
+                      std::vector<std::uint8_t>& globalState) {
+    const Quat identity { 0.0F, 0.0F, 0.0F, 1.0F };
+    for (const auto index : order) {
+        poses[index].append = {};
+        poses[index].local = poses[index].base;
+    }
+    for (const auto index : order) {
+        auto& pose = poses[index];
+        const auto& bone = model.bones[index];
+        if (bone.inheritParent >= 0 && static_cast<std::size_t>(bone.inheritParent) < poses.size()) {
+            const auto parent = static_cast<std::size_t>(bone.inheritParent);
+            LocalPose appendSource;
+            if ((bone.flags & 0x0080U) != 0) {
+                // Local append reads the parent's calculated local transform,
+                // including its own append and IK result, without applying the
+                // parent's model-space hierarchy a second time.
+                appendSource = poses[parent].local;
+            } else if ((model.bones[parent].flags & 0x0300U) != 0) {
+                // Non-local append propagates the parent's append contribution
+                // for multiple-append chains, plus any IK rotation on that
+                // parent. A non-append parent contributes its user/morph pose.
+                appendSource = poses[parent].append;
+                appendSource.rotation = multiply(appendSource.rotation, poses[parent].ikRotation);
+            } else {
+                appendSource = poses[parent].base;
+                appendSource.rotation = multiply(appendSource.rotation, poses[parent].ikRotation);
+            }
+            if ((bone.flags & 0x0200U) != 0) {
+                pose.append.translation = mul(appendSource.translation, bone.inheritRatio);
+                pose.local.translation = add(pose.local.translation, pose.append.translation);
+            }
+            if ((bone.flags & 0x0100U) != 0) {
+                pose.append.rotation = slerp(identity, appendSource.rotation, bone.inheritRatio);
+                pose.local.rotation = multiply(pose.local.rotation, pose.append.rotation);
+            }
+        }
+        pose.withoutIk = pose.local;
+        pose.local.rotation = multiply(pose.ikRotation, pose.withoutIk.rotation);
+    }
+
+    for (std::size_t i = 0; i < poses.size(); ++i) localScratch[i] = poses[i].local;
+    calculateGlobals(model, localScratch, globalScratch, globalState);
+    for (std::size_t i = 0; i < poses.size(); ++i) poses[i].global = globalScratch[i];
+}
+
+const VmdIkKey* ikKeyAt(const VmdMotion* motion, float frame) {
+    if (motion == nullptr || motion->ik.empty()) return nullptr;
+    const auto sorted = std::is_sorted(motion->ik.begin(), motion->ik.end(),
+        [](const VmdIkKey& left, const VmdIkKey& right) { return left.frame < right.frame; });
+    if (sorted) {
+        const auto key = std::upper_bound(motion->ik.begin(), motion->ik.end(), frame,
+            [](float value, const VmdIkKey& item) { return value < static_cast<float>(item.frame); });
+        return key == motion->ik.begin() ? nullptr : std::addressof(*(key - 1));
+    }
+    const VmdIkKey* result = nullptr;
+    for (const auto& key : motion->ik) {
+        if (static_cast<float>(key.frame) <= frame
+            && (result == nullptr || key.frame >= result->frame)) result = std::addressof(key);
+    }
+    return result;
+}
+
+bool ikEnabledAt(const VmdMotion* motion, std::string_view name, float frame) {
+    const auto* key = ikKeyAt(motion, frame);
+    if (key == nullptr) return true;
+    for (const auto& state : key->states) {
+        if (state.name == name) return state.enabled;
+    }
+    return true;
+}
+
+void solveIk(const PmxModel& model, const BoneOrder& order, std::vector<BoneRuntimePose>& poses,
+             const VmdMotion* motion, float frame, std::vector<LocalPose>& localScratch,
+             std::vector<GlobalPose>& globalScratch, std::vector<std::uint8_t>& globalState) {
+    for (const auto ikIndex : order) {
         const auto& ik = model.bones[ikIndex];
-        if ((ik.flags & 0x0020U) == 0 || ik.ikTarget < 0 || static_cast<std::size_t>(ik.ikTarget) >= global.size()) continue;
+        if ((ik.flags & 0x0020U) == 0 || ik.ikTarget < 0
+            || static_cast<std::size_t>(ik.ikTarget) >= poses.size()
+            || !ikEnabledAt(motion, ik.name, frame)) continue;
         const int loops = std::clamp(ik.ikLoopCount, 0, 255);
         for (int loop = 0; loop < loops; ++loop) {
             bool reached = false;
             for (const auto& link : ik.ikLinks) {
-                if (link.bone < 0 || static_cast<std::size_t>(link.bone) >= global.size()) continue;
+                if (link.bone < 0 || static_cast<std::size_t>(link.bone) >= poses.size()) continue;
                 const auto linkIndex = static_cast<std::size_t>(link.bone);
                 const auto effector = static_cast<std::size_t>(ik.ikTarget);
-                const auto toEffector = normalized(sub(global[effector].position, global[linkIndex].position));
-                const auto toGoal = normalized(sub(global[ikIndex].position, global[linkIndex].position));
+                const auto toEffector = normalized(sub(poses[effector].global.position, poses[linkIndex].global.position));
+                const auto toGoal = normalized(sub(poses[ikIndex].global.position, poses[linkIndex].global.position));
                 const float cosine = std::clamp(dot(toEffector, toGoal), -1.0F, 1.0F);
                 float angle = std::acos(cosine);
                 if (angle < 1e-5F) { reached = true; continue; }
-                angle = std::min(angle, std::max(ik.ikLimitAngle, 1e-5F));
-                auto axis = normalized(cross(toEffector, toGoal));
+                if (ik.ikLimitAngle > 0.0F) angle = std::min(angle, ik.ikLimitAngle);
+                const auto axis = normalized(cross(toEffector, toGoal));
                 if (length(axis) < 1e-6F) continue;
                 const auto worldDelta = axisAngle(axis, angle);
                 const auto parent = model.bones[linkIndex].parent;
-                const auto parentRotation = parent >= 0 && static_cast<std::size_t>(parent) < global.size()
-                    ? global[static_cast<std::size_t>(parent)].rotation : Quat { 0.0F, 0.0F, 0.0F, 1.0F };
+                const auto parentRotation = parent >= 0 && static_cast<std::size_t>(parent) < poses.size()
+                    ? poses[static_cast<std::size_t>(parent)].global.rotation : Quat { 0.0F, 0.0F, 0.0F, 1.0F };
                 const auto localDelta = multiply(multiply(conjugate(parentRotation), worldDelta), parentRotation);
-                local[linkIndex].rotation = multiply(localDelta, local[linkIndex].rotation);
-                // Knee links are conventionally constrained to their local X axis.
-                if (link.limited && std::abs(link.minimum[1]) < 1e-4F && std::abs(link.maximum[1]) < 1e-4F
-                                 && std::abs(link.minimum[2]) < 1e-4F && std::abs(link.maximum[2]) < 1e-4F) {
-                    const float x = std::clamp(2.0F * std::atan2(local[linkIndex].rotation[0], local[linkIndex].rotation[3]),
-                                               link.minimum[0], link.maximum[0]);
-                    local[linkIndex].rotation = axisAngle({ 1.0F, 0.0F, 0.0F }, x);
-                }
-                calculateGlobals(model, local, global);
+                poses[linkIndex].ikRotation = multiply(localDelta, poses[linkIndex].ikRotation);
+                // An IK link may belong to the other physics phase. Apply the
+                // accumulated IK rotation directly so a phase-local rebuild
+                // cannot discard it before the next global-pose calculation.
+                poses[linkIndex].local.rotation = multiply(poses[linkIndex].ikRotation,
+                                                            poses[linkIndex].withoutIk.rotation);
+                poses[linkIndex].local.rotation = applyIkLimit(poses[linkIndex].local.rotation, link);
+                poses[linkIndex].ikRotation = multiply(poses[linkIndex].local.rotation,
+                                                        conjugate(poses[linkIndex].withoutIk.rotation));
+                // Rebuild the current phase's append relationships while
+                // retaining the direct cross-phase link update above.
+                rebuildBonePoses(model, order, poses, localScratch, globalScratch, globalState);
             }
-            if (reached || length(sub(global[static_cast<std::size_t>(ik.ikTarget)].position, global[ikIndex].position)) < 1e-4F) break;
+            if (reached || length(sub(poses[static_cast<std::size_t>(ik.ikTarget)].global.position,
+                                     poses[ikIndex].global.position)) < 1e-4F) break;
         }
+    }
+    rebuildBonePoses(model, order, poses, localScratch, globalScratch, globalState);
+}
+
+void logLimbDiagnostics(const PmxModel& model,
+                       const std::unordered_map<std::string_view, std::vector<const VmdBoneKey*>>& boneKeys,
+                       const std::vector<LocalPose>& local, const std::vector<GlobalPose>& global, float frame) {
+    if (static_cast<int>(frame) % 30 != 0) return;
+    static constexpr std::array<std::string_view, 16> names {
+        "左腕", "左腕捩", "左ひじ", "右腕", "右腕捩", "右ひじ",
+        "左足", "左ひざ", "左足首", "左足ＩＫ", "左足IK", "左足D",
+        "右足", "右ひざ", "右足首", "右足ＩＫ",
+    };
+    for (const auto name : names) {
+        const auto found = std::find_if(model.bones.begin(), model.bones.end(),
+            [name](const PmxBone& bone) { return bone.name == name; });
+        if (found == model.bones.end()) continue;
+        const auto index = static_cast<std::size_t>(found - model.bones.begin());
+        const auto motion = boneKeys.find(found->name);
+        const auto sampled = motion == boneKeys.end() ? LocalPose {} : sampleBone(motion->second, frame);
+        const auto& pose = local[index];
+        const auto& world = global[index];
+        log::debug("Bone sample: model=", model.metadata.modelName, ", frame=", frame,
+                   ", bone=", found->name,
+                   ", vmdRot=(", sampled.rotation[0], ",", sampled.rotation[1], ",",
+                   sampled.rotation[2], ",", sampled.rotation[3], ")",
+                   ", localRot=(", pose.rotation[0], ",", pose.rotation[1], ",",
+                   pose.rotation[2], ",", pose.rotation[3], ")",
+                   ", globalPos=(", world.position[0], ",", world.position[1], ",",
+                   world.position[2], ")");
     }
 }
 
@@ -262,10 +434,62 @@ void skinQdef(PmxVertex& vertex, const PmxModel& model, const std::vector<Global
 
 } // namespace
 
-MmdAnimator::MmdAnimator(const PmxModel& model) : model_(model) {}
-void MmdAnimator::setMotion(const VmdMotion* motion) { motion_ = motion; }
+struct MmdAnimator::Impl {
+    BoneOrders boneOrders;
+    std::vector<BoneRuntimePose> poses;
+    std::vector<LocalPose> localScratch;
+    std::vector<GlobalPose> globalScratch;
+    std::vector<std::uint8_t> globalState;
+};
+
+MmdAnimator::MmdAnimator(const PmxModel& model) : model_(model), impl_(std::make_unique<Impl>()) {
+    impl_->boneOrders = makeBoneOrders(model_);
+    impl_->poses.resize(model_.bones.size());
+    impl_->localScratch.resize(model_.bones.size());
+    impl_->globalScratch.resize(model_.bones.size());
+    impl_->globalState.resize(model_.bones.size());
+}
+MmdAnimator::~MmdAnimator() = default;
+void MmdAnimator::setMotion(const VmdMotion* motion) {
+    motion_ = motion;
+    if (motion_ == nullptr) return;
+
+    const auto compatibility = motionCompatibility();
+    log::info("Motion compatibility: PMX bones=", compatibility.pmxBoneCount,
+              ", VMD keys=", compatibility.vmdBoneKeyCount,
+              ", VMD tracks=", compatibility.vmdBoneTrackCount,
+              ", matched keys=", compatibility.matchedBoneKeyCount,
+              ", matched tracks=", compatibility.matchedBoneTrackCount,
+              ", unmatched tracks=", compatibility.vmdBoneTrackCount - compatibility.matchedBoneTrackCount);
+    if (compatibility.vmdBoneTrackCount > 0 && compatibility.matchedBoneTrackCount == 0) {
+        log::warn("Motion has no bone tracks compatible with the PMX model");
+    }
+}
 void MmdAnimator::setPose(const VpdPose* pose) { pose_ = pose; }
 void MmdAnimator::setPhysics(MmdPhysics* physics) { physics_ = physics; previousFrame_ = -1.0F; }
+
+MotionCompatibility MmdAnimator::motionCompatibility() const {
+    MotionCompatibility result;
+    result.pmxBoneCount = model_.bones.size();
+    if (motion_ == nullptr) return result;
+
+    std::unordered_set<std::string_view> pmxBones;
+    pmxBones.reserve(model_.bones.size());
+    for (const auto& bone : model_.bones) pmxBones.insert(bone.name);
+
+    std::unordered_set<std::string_view> vmdBones;
+    vmdBones.reserve(motion_->bones.size());
+    for (const auto& key : motion_->bones) {
+        ++result.vmdBoneKeyCount;
+        vmdBones.insert(key.name);
+        if (pmxBones.contains(key.name)) ++result.matchedBoneKeyCount;
+    }
+    result.vmdBoneTrackCount = vmdBones.size();
+    for (const auto name : vmdBones) {
+        if (pmxBones.contains(name)) ++result.matchedBoneTrackCount;
+    }
+    return result;
+}
 
 AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
     AnimatedModelFrame result;
@@ -289,14 +513,11 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
         for (const auto& key : motion_->morphs) morphKeys[key.name].push_back(&key);
         for (auto& [name, keys] : boneKeys) std::ranges::sort(keys, {}, &VmdBoneKey::frame);
         for (auto& [name, keys] : morphKeys) std::ranges::sort(keys, {}, &VmdMorphKey::frame);
-        if (!motion_->ik.empty()) {
-            const auto key = std::upper_bound(motion_->ik.begin(), motion_->ik.end(), frame,
-                [](float value, const VmdIkKey& item) { return value < static_cast<float>(item.frame); });
-            if (key != motion_->ik.begin()) result.visible = (key - 1)->visible;
-        }
+        if (const auto* key = ikKeyAt(motion_, frame); key != nullptr) result.visible = key->visible;
     }
 
-    std::vector<LocalPose> local(model_.bones.size());
+    auto& local = impl_->localScratch;
+    std::fill(local.begin(), local.end(), LocalPose {});
     for (std::size_t i = 0; i < model_.bones.size(); ++i) {
         if (const auto found = boneKeys.find(model_.bones[i].name); found != boneKeys.end()) local[i] = sampleBone(found->second, frame);
     }
@@ -395,25 +616,31 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
     };
     for (std::size_t i = 0; i < morphWeights.size(); ++i) applyMorph(i, morphWeights[i]);
 
-    // Append/inherit transforms are evaluated before IK, matching PMX deform order for the common case.
-    for (std::size_t i = 0; i < model_.bones.size(); ++i) {
-        const auto& bone = model_.bones[i];
-        if (bone.inheritParent < 0 || static_cast<std::size_t>(bone.inheritParent) >= local.size()) continue;
-        const auto parent = static_cast<std::size_t>(bone.inheritParent);
-        if ((bone.flags & 0x0200U) != 0) local[i].translation = add(local[i].translation, mul(local[parent].translation, bone.inheritRatio));
-        if ((bone.flags & 0x0100U) != 0) local[i].rotation = multiply(local[i].rotation,
-            slerp({ 0.0F, 0.0F, 0.0F, 1.0F }, local[parent].rotation, bone.inheritRatio));
+    auto& poses = impl_->poses;
+    const Quat identity { 0.0F, 0.0F, 0.0F, 1.0F };
+    for (std::size_t i = 0; i < local.size(); ++i) {
+        poses[i].base = local[i];
+        poses[i].append = {};
+        poses[i].withoutIk = local[i];
+        poses[i].local = local[i];
+        poses[i].ikRotation = identity;
     }
-
-    std::vector<GlobalPose> global(model_.bones.size());
-    calculateGlobals(model_, local, global);
-    solveIk(model_, local, global);
+    auto& global = impl_->globalScratch;
+    const auto& boneOrders = impl_->boneOrders;
+    rebuildBonePoses(model_, boneOrders.beforePhysics, poses, impl_->localScratch, impl_->globalScratch,
+                     impl_->globalState);
+    solveIk(model_, boneOrders.beforePhysics, poses, motion_, frame, impl_->localScratch, impl_->globalScratch,
+            impl_->globalState);
+    for (std::size_t i = 0; i < local.size(); ++i) local[i] = poses[i].local;
+    for (std::size_t i = 0; i < global.size(); ++i) global[i] = poses[i].global;
 
     if (physics_ != nullptr && physics_->available()) {
         if (previousFrame_ >= 0.0F && frame < previousFrame_) physics_->reset();
+        std::vector<bool> physicsBones(model_.bones.size());
         for (std::size_t bodyIndex = 0; bodyIndex < model_.rigidBodies.size(); ++bodyIndex) {
             const auto& body = model_.rigidBodies[bodyIndex];
-            if (body.mode != 0 || body.bone < 0 || static_cast<std::size_t>(body.bone) >= global.size()) continue;
+            if (physics_->bodyMode(bodyIndex) != 0 || body.bone < 0
+                || static_cast<std::size_t>(body.bone) >= global.size()) continue;
             const auto bone = static_cast<std::size_t>(body.bone);
             const auto offset = sub(body.position, model_.bones[bone].position);
             const auto offsetRotation = eulerRotation(body.rotation);
@@ -440,8 +667,10 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
         physics_->step(deltaSeconds);
         for (std::size_t bodyIndex = 0; bodyIndex < model_.rigidBodies.size(); ++bodyIndex) {
             const auto& body = model_.rigidBodies[bodyIndex];
-            if (body.mode == 0 || body.bone < 0 || static_cast<std::size_t>(body.bone) >= global.size()) continue;
+            if (physics_->bodyMode(bodyIndex) == 0 || body.bone < 0
+                || static_cast<std::size_t>(body.bone) >= global.size()) continue;
             const auto bone = static_cast<std::size_t>(body.bone);
+            physicsBones[bone] = true;
             const auto bodyPose = physics_->bodyTransform(bodyIndex);
             const auto offset = sub(body.position, model_.bones[bone].position);
             const auto boneRotation = multiply(bodyPose.rotation, conjugate(eulerRotation(body.rotation)));
@@ -457,8 +686,34 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
                 local[bone].rotation = boneRotation;
                 local[bone].translation = sub(bonePosition, model_.bones[bone].position);
             }
-            calculateGlobals(model_, local, global);
+            calculateGlobals(model_, local, global, impl_->globalState);
         }
+        // Physics supplies the local pose for dynamic rigid bodies. Keep the
+        // pre-physics pose for the first phase and feed sanitized dynamic
+        // results into the post-physics phase below.
+        for (std::size_t i = 0; i < physicsBones.size(); ++i) {
+            if (!physicsBones[i]) continue;
+            poses[i].base = local[i];
+            poses[i].local = local[i];
+            poses[i].withoutIk = local[i];
+            poses[i].append = {};
+            poses[i].ikRotation = identity;
+        }
+        for (std::size_t i = 0; i < global.size(); ++i) poses[i].global = global[i];
+    }
+    // 0x1000 bones are deliberately evaluated after Bullet. This is also
+    // performed when physics has no dynamic bodies so their VMD/IK result is
+    // still present in a model that only uses post-physics ordering.
+    rebuildBonePoses(model_, boneOrders.afterPhysics, poses, impl_->localScratch, impl_->globalScratch,
+                     impl_->globalState);
+    solveIk(model_, boneOrders.afterPhysics, poses, motion_, frame, impl_->localScratch, impl_->globalScratch,
+            impl_->globalState);
+    for (std::size_t i = 0; i < local.size(); ++i) {
+        local[i] = poses[i].local;
+        global[i] = poses[i].global;
+    }
+    if (previousFrame_ < 0.0F || static_cast<int>(previousFrame_) != static_cast<int>(frame)) {
+        logLimbDiagnostics(model_, boneKeys, local, global, frame);
     }
     previousFrame_ = frame;
 

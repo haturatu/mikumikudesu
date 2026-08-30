@@ -123,7 +123,11 @@ VulkanDevice::VulkanDevice(platform::Window& window, bool validation)
     createPipeline();
     createFrames();
     createUi();
-    const std::array<PreviewVertex, 3> fallbackVertices {{ {}, {}, {} }};
+    const std::array<PreviewVertex, 3> fallbackVertices {{
+        {{ 0.0F, -0.65F, 0.0F }, {}, {}},
+        {{ 0.65F, 0.55F, 0.0F }, {}, {}},
+        {{ -0.65F, 0.55F, 0.0F }, {}, {}},
+    }};
     const std::array<std::uint32_t, 3> fallbackIndices { 0, 1, 2 };
     uploadPreviewMesh(fallbackVertices, fallbackIndices);
     uploadPreviewTextures(std::span<const PreviewTexture> {});
@@ -134,6 +138,7 @@ VulkanDevice::~VulkanDevice() {
     if (device_ != VK_NULL_HANDLE) vkDeviceWaitIdle(device_);
     destroyUi();
     destroyPreviewMesh();
+    destroyPreviewBackground();
     destroyPreviewTextures();
     for (const auto& [handle, resource] : textures_) {
         static_cast<void>(handle);
@@ -614,6 +619,12 @@ void VulkanDevice::createPipeline() {
         .depthWriteEnable = VK_TRUE,
         .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
     };
+    const VkPipelineDepthStencilStateCreateInfo backgroundDepthStencil {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = VK_FALSE,
+        .depthWriteEnable = VK_FALSE,
+        .depthCompareOp = VK_COMPARE_OP_ALWAYS,
+    };
     const std::array dynamicStates { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
     const VkPipelineDynamicStateCreateInfo dynamic {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
@@ -657,14 +668,22 @@ void VulkanDevice::createPipeline() {
     };
     const auto result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo,
                                                    nullptr, &pipeline_);
+    auto backgroundPipelineInfo = pipelineInfo;
+    backgroundPipelineInfo.pDepthStencilState = &backgroundDepthStencil;
+    const auto backgroundResult = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1,
+                                                            &backgroundPipelineInfo, nullptr,
+                                                            &backgroundPipeline_);
     vkDestroyShaderModule(device_, fragment, nullptr);
     vkDestroyShaderModule(device_, vertex, nullptr);
     check(result, "create graphics pipeline");
+    check(backgroundResult, "create background graphics pipeline");
 }
 
 void VulkanDevice::destroyPipeline() {
+    if (backgroundPipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(device_, backgroundPipeline_, nullptr);
     if (pipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(device_, pipeline_, nullptr);
     if (pipelineLayout_ != VK_NULL_HANDLE) vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
+    backgroundPipeline_ = VK_NULL_HANDLE;
     pipeline_ = VK_NULL_HANDLE;
     pipelineLayout_ = VK_NULL_HANDLE;
 }
@@ -722,19 +741,28 @@ void VulkanDevice::destroyPreviewDescriptors() {
 }
 
 void VulkanDevice::destroyPreviewTextures() {
-    for (const auto& texture : previewTextures_) {
-        if (texture.view != VK_NULL_HANDLE) vkDestroyImageView(device_, texture.view, nullptr);
-        if (texture.image != VK_NULL_HANDLE) vkDestroyImage(device_, texture.image, nullptr);
-        if (texture.memory != VK_NULL_HANDLE) vkFreeMemory(device_, texture.memory, nullptr);
-    }
+    for (auto& texture : previewTextures_) destroyPreviewTextureResource(texture);
     previewTextures_.clear();
-    if (previewDescriptorPool_ != VK_NULL_HANDLE) {
-        check(vkResetDescriptorPool(device_, previewDescriptorPool_, 0), "reset preview descriptor pool");
-    }
 }
 
 void VulkanDevice::createPreviewTexture(std::uint32_t width, std::uint32_t height,
                                         std::span<const std::uint8_t> rgba) {
+    previewTextures_.push_back(createPreviewTextureResource(width, height, rgba));
+}
+
+void VulkanDevice::destroyPreviewTextureResource(PreviewTextureResource& texture) {
+    if (texture.descriptor != VK_NULL_HANDLE && previewDescriptorPool_ != VK_NULL_HANDLE) {
+        check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &texture.descriptor),
+              "free preview texture descriptor");
+    }
+    if (texture.view != VK_NULL_HANDLE) vkDestroyImageView(device_, texture.view, nullptr);
+    if (texture.image != VK_NULL_HANDLE) vkDestroyImage(device_, texture.image, nullptr);
+    if (texture.memory != VK_NULL_HANDLE) vkFreeMemory(device_, texture.memory, nullptr);
+    texture = {};
+}
+
+VulkanDevice::PreviewTextureResource VulkanDevice::createPreviewTextureResource(
+    std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> rgba) {
     const auto byteSize = static_cast<VkDeviceSize>(width) * height * 4U;
     if (width == 0 || height == 0 || rgba.size_bytes() != byteSize) {
         throw std::invalid_argument("invalid preview texture data");
@@ -902,7 +930,7 @@ void VulkanDevice::createPreviewTexture(std::uint32_t width, std::uint32_t heigh
         },
     };
     vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
-    previewTextures_.push_back(texture);
+    return texture;
 }
 
 void VulkanDevice::createFrames() {
@@ -1151,14 +1179,44 @@ void VulkanDevice::renderFrame() {
     std::copy_n(previewScene_.lightDirection, 3, constants.light.begin());
     constants.light[3] = swapchainExtent_.height == 0 ? 1.0F
         : static_cast<float>(swapchainExtent_.width) / static_cast<float>(swapchainExtent_.height);
-    if (previewMaterials_.empty()) {
-        if (!previewTextures_.empty()) vkCmdBindDescriptorSets(frame.commandBuffer,
-            VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1,
-            &previewTextures_.front().descriptor, 0, nullptr);
+    const bool hasBackground = previewScene_.backgroundEnabled
+        && previewScene_.screenSource == PreviewScene::ScreenSource::backgroundImage
+        && previewBackgroundTexture_.descriptor != VK_NULL_HANDLE
+        && previewBackgroundIndexCount_ != 0;
+    if (hasBackground) {
+        vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, backgroundPipeline_);
+        const VkDeviceSize backgroundOffset = 0;
+        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1,
+                               &previewBackgroundVertexBuffer_, &backgroundOffset);
+        vkCmdBindIndexBuffer(frame.commandBuffer, previewBackgroundIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1,
+                                &previewBackgroundTexture_.descriptor, 0, nullptr);
+        // The background texture is already the final image. Set diffuse to
+        // zero so the shared fragment shader's lighting path contributes no
+        // directional or specular light; ambient remains the unlit factor.
+        constants.diffuse = { 0.0F, 0.0F, 0.0F, 1.0F };
+        constants.ambientShininess = { 1.0F, 1.0F, 1.0F, 0.0F };
+        constants.specular = {};
+        constants.textureMultiply = { 1.0F, 1.0F, 1.0F, 1.0F };
+        constants.textureAdd = {};
         vkCmdPushConstants(frame.commandBuffer, pipelineLayout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(constants), &constants);
-        vkCmdDrawIndexed(frame.commandBuffer, previewIndexCount_, 1, 0, 0, 0);
+        vkCmdDrawIndexed(frame.commandBuffer, previewBackgroundIndexCount_, 1, 0, 0, 0);
+        vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer_, &vertexOffset);
+        vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
+    }
+    if (previewMaterials_.empty()) {
+        if (!hasBackground) {
+            if (!previewTextures_.empty()) vkCmdBindDescriptorSets(frame.commandBuffer,
+                VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1,
+                &previewTextures_.front().descriptor, 0, nullptr);
+            vkCmdPushConstants(frame.commandBuffer, pipelineLayout_,
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(constants), &constants);
+            vkCmdDrawIndexed(frame.commandBuffer, previewIndexCount_, 1, 0, 0, 0);
+        }
     } else {
         for (const auto& material : previewMaterials_) {
             if (material.indexCount == 0 || material.firstIndex >= previewIndexCount_) continue;
@@ -1251,6 +1309,53 @@ void VulkanDevice::destroyPreviewMesh() {
     previewIndexBuffer_ = VK_NULL_HANDLE;
     previewIndexMemory_ = VK_NULL_HANDLE;
     previewIndexCount_ = 0;
+    previewVertexUpdateCount_ = 0;
+}
+
+void VulkanDevice::destroyPreviewBackground() {
+    destroyPreviewTextureResource(previewBackgroundTexture_);
+    if (previewBackgroundIndexBuffer_ != VK_NULL_HANDLE) {
+        vkDestroyBuffer(device_, previewBackgroundIndexBuffer_, nullptr);
+    }
+    if (previewBackgroundIndexMemory_ != VK_NULL_HANDLE) {
+        vkFreeMemory(device_, previewBackgroundIndexMemory_, nullptr);
+    }
+    if (previewBackgroundVertexBuffer_ != VK_NULL_HANDLE) {
+        vkDestroyBuffer(device_, previewBackgroundVertexBuffer_, nullptr);
+    }
+    if (previewBackgroundVertexMemory_ != VK_NULL_HANDLE) {
+        vkFreeMemory(device_, previewBackgroundVertexMemory_, nullptr);
+    }
+    previewBackgroundVertexBuffer_ = VK_NULL_HANDLE;
+    previewBackgroundVertexMemory_ = VK_NULL_HANDLE;
+    previewBackgroundIndexBuffer_ = VK_NULL_HANDLE;
+    previewBackgroundIndexMemory_ = VK_NULL_HANDLE;
+    previewBackgroundIndexCount_ = 0;
+}
+
+void VulkanDevice::uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage,
+                                       VkBuffer& buffer, VkDeviceMemory& memory) {
+    const VkBufferCreateInfo bufferInfo {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = size,
+        .usage = usage,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    check(vkCreateBuffer(device_, &bufferInfo, nullptr, &buffer), "create preview mesh buffer");
+    VkMemoryRequirements requirements {};
+    vkGetBufferMemoryRequirements(device_, buffer, &requirements);
+    const VkMemoryAllocateInfo allocationInfo {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = requirements.size,
+        .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+    };
+    check(vkAllocateMemory(device_, &allocationInfo, nullptr, &memory), "allocate preview mesh memory");
+    check(vkBindBufferMemory(device_, buffer, memory, 0), "bind preview mesh memory");
+    void* mapped = nullptr;
+    check(vkMapMemory(device_, memory, 0, size, 0, &mapped), "map preview mesh memory");
+    std::memcpy(mapped, data, static_cast<std::size_t>(size));
+    vkUnmapMemory(device_, memory);
 }
 
 void VulkanDevice::uploadPreviewMesh(std::span<const PreviewVertex> vertices,
@@ -1259,37 +1364,12 @@ void VulkanDevice::uploadPreviewMesh(std::span<const PreviewVertex> vertices,
     waitIdle();
     destroyPreviewMesh();
 
-    auto upload = [this](const void* data, VkDeviceSize size, VkBufferUsageFlags usage,
-                         VkBuffer& buffer, VkDeviceMemory& memory) {
-        const VkBufferCreateInfo bufferInfo {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            .size = size,
-            .usage = usage,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        };
-        check(vkCreateBuffer(device_, &bufferInfo, nullptr, &buffer), "create preview mesh buffer");
-        VkMemoryRequirements requirements {};
-        vkGetBufferMemoryRequirements(device_, buffer, &requirements);
-        const VkMemoryAllocateInfo allocationInfo {
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .allocationSize = requirements.size,
-            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-        };
-        check(vkAllocateMemory(device_, &allocationInfo, nullptr, &memory), "allocate preview mesh memory");
-        check(vkBindBufferMemory(device_, buffer, memory, 0), "bind preview mesh memory");
-        void* mapped = nullptr;
-        check(vkMapMemory(device_, memory, 0, size, 0, &mapped), "map preview mesh memory");
-        std::memcpy(mapped, data, static_cast<std::size_t>(size));
-        vkUnmapMemory(device_, memory);
-    };
-
     try {
-        upload(vertices.data(), vertices.size_bytes(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-               previewVertexBuffer_, previewVertexMemory_);
+        uploadPreviewBuffer(vertices.data(), vertices.size_bytes(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                            previewVertexBuffer_, previewVertexMemory_);
         previewVertexSize_ = vertices.size_bytes();
-        upload(indices.data(), indices.size_bytes(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-               previewIndexBuffer_, previewIndexMemory_);
+        uploadPreviewBuffer(indices.data(), indices.size_bytes(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                            previewIndexBuffer_, previewIndexMemory_);
         previewIndexCount_ = static_cast<std::uint32_t>(indices.size());
     } catch (...) {
         destroyPreviewMesh();
@@ -1297,6 +1377,36 @@ void VulkanDevice::uploadPreviewMesh(std::span<const PreviewVertex> vertices,
     }
     log::info("Uploaded PMX preview mesh: ", vertices.size(), " vertices, ",
               indices.size() / 3, " triangles");
+}
+
+void VulkanDevice::uploadPreviewBackground(std::span<const PreviewTexture> textures) {
+    waitIdle();
+    destroyPreviewBackground();
+    if (textures.empty()) return;
+    const auto& texture = textures.front();
+    if (texture.width == 0 || texture.height == 0 || texture.rgba.empty()) {
+        throw std::invalid_argument("preview background texture is empty");
+    }
+
+    const std::array vertices {
+        PreviewVertex { { -1.0F, -1.0F, 0.0F }, {}, { 0.0F, 1.0F } },
+        PreviewVertex { {  1.0F, -1.0F, 0.0F }, {}, { 1.0F, 1.0F } },
+        PreviewVertex { {  1.0F,  1.0F, 0.0F }, {}, { 1.0F, 0.0F } },
+        PreviewVertex { { -1.0F,  1.0F, 0.0F }, {}, { 0.0F, 0.0F } },
+    };
+    const std::array<std::uint32_t, 6> indices { 0, 1, 2, 2, 3, 0 };
+    try {
+        uploadPreviewBuffer(vertices.data(), sizeof(vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                            previewBackgroundVertexBuffer_, previewBackgroundVertexMemory_);
+        uploadPreviewBuffer(indices.data(), sizeof(indices), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                            previewBackgroundIndexBuffer_, previewBackgroundIndexMemory_);
+        previewBackgroundIndexCount_ = static_cast<std::uint32_t>(indices.size());
+        previewBackgroundTexture_ = createPreviewTextureResource(texture.width, texture.height, texture.rgba);
+    } catch (...) {
+        destroyPreviewBackground();
+        throw;
+    }
+    log::info("Uploaded preview background: ", texture.width, "x", texture.height);
 }
 
 void VulkanDevice::updatePreviewVertices(std::span<const PreviewVertex> vertices) {
@@ -1311,6 +1421,12 @@ void VulkanDevice::updatePreviewVertices(std::span<const PreviewVertex> vertices
           "map animated preview vertices");
     std::memcpy(mapped, vertices.data(), vertices.size_bytes());
     vkUnmapMemory(device_, previewVertexMemory_);
+    ++previewVertexUpdateCount_;
+    if (previewVertexUpdateCount_ % 30 == 1) {
+        const auto& vertex = vertices.front().position;
+        log::debug("Updated animated preview vertex buffer: vertices=", vertices.size(),
+                   ", vertex0=(", vertex[0], ",", vertex[1], ",", vertex[2], ")");
+    }
 }
 
 void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> materials) {
@@ -1335,9 +1451,14 @@ void VulkanDevice::uploadPreviewTextures(std::span<const PreviewTexture> texture
 
 void VulkanDevice::clearPreviewResources() {
     waitIdle();
-    const std::array<PreviewVertex, 3> fallbackVertices {{ {}, {}, {} }};
+    const std::array<PreviewVertex, 3> fallbackVertices {{
+        {{ 0.0F, -0.65F, 0.0F }, {}, {}},
+        {{ 0.65F, 0.55F, 0.0F }, {}, {}},
+        {{ -0.65F, 0.55F, 0.0F }, {}, {}},
+    }};
     const std::array<std::uint32_t, 3> fallbackIndices { 0, 1, 2 };
     uploadPreviewMesh(fallbackVertices, fallbackIndices);
+    destroyPreviewBackground();
     uploadPreviewTextures(std::span<const PreviewTexture> {});
     previewMaterials_.clear();
     previewScene_ = {};

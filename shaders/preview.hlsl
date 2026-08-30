@@ -31,25 +31,14 @@ struct MaterialConstants
 
 VertexOutput VS(VertexInput input, uint vertexId : SV_VertexID)
 {
-    const float2 positions[3] = {
-        float2( 0.0, -0.65),
-        float2( 0.65, 0.55),
-        float2(-0.65, 0.55)
-    };
-    const float3 colors[3] = {
-        float3(0.12, 0.84, 0.78),
-        float3(0.95, 0.35, 0.64),
-        float3(0.45, 0.55, 1.00)
-    };
-
     VertexOutput output;
     output.uv = input.uv;
     output.normal = float3(0.0, 0.0, 1.0);
     output.viewPosition = float3(0.0, 0.0, 1.0);
     if (input.normal.x == 0.0 && input.normal.y == 0.0 && input.normal.z == 0.0)
     {
-        output.position = float4(positions[vertexId], 0.0, 1.0);
-        output.color = colors[vertexId];
+        output.position = float4(input.position.xy, 0.0, 1.0);
+        output.color = float3(1.0, 1.0, 1.0);
     }
     else
     {

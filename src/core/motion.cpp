@@ -209,6 +209,8 @@ VmdMotion loadVmd(const std::filesystem::path& path) {
         }
         updateLastFrame(motion, key.frame);
     }
+    std::stable_sort(motion.ik.begin(), motion.ik.end(),
+                     [](const VmdIkKey& left, const VmdIkKey& right) { return left.frame < right.frame; });
     return motion;
 }
 
@@ -253,6 +255,8 @@ VmdMotion toVmdMotion(MotionDocument document, std::string modelName) {
     result.lights = std::move(document.lights);
     result.shadows = std::move(document.shadows);
     result.ik = std::move(document.ik);
+    std::stable_sort(result.ik.begin(), result.ik.end(),
+                     [](const VmdIkKey& left, const VmdIkKey& right) { return left.frame < right.frame; });
     for (const auto& key : result.bones) result.lastFrame = std::max(result.lastFrame, key.frame);
     for (const auto& key : result.morphs) result.lastFrame = std::max(result.lastFrame, key.frame);
     for (const auto& key : result.cameras) result.lastFrame = std::max(result.lastFrame, key.frame);

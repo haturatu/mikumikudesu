@@ -20,6 +20,7 @@ ModelId Scene::addModel(const std::filesystem::path& path) {
     instance.model = std::make_shared<PmxModel>(loadPmxModel(path));
     instance.animator = std::make_unique<MmdAnimator>(*instance.model);
     instance.physics = std::make_unique<MmdPhysics>(*instance.model);
+    instance.animator->setPhysics(instance.physics.get());
     instance.softBody = std::make_unique<SoftBodySimulation>(*instance.model);
     instance.normalization = previewNormalization(*instance.model);
     instance.displayName = instance.model->metadata.modelName.empty()
@@ -296,7 +297,6 @@ void Scene::setBackgroundVideo(const std::filesystem::path& path) {
 void Scene::setMedia(const std::filesystem::path& path) {
     media_.emplace(path);
     if (media_->info().hasVideo) setBackgroundVideo(path);
-    else background_.screenSource = ScreenTextureSource::previousFrame;
     markDirty(DirtyFlag::background);
 }
 

@@ -269,26 +269,22 @@ void Application::handleAsset(const std::filesystem::path& path) {
             scene_.setBackgroundImage(path);
             videoMode_ = false;
             const std::array<graphics::PreviewVertex, 4> vertices {{
-                {{ -1.0F, -1.0F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 0.0F, 1.0F }},
-                {{  1.0F, -1.0F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 1.0F, 1.0F }},
-                {{  1.0F,  1.0F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 1.0F, 0.0F }},
-                {{ -1.0F,  1.0F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 0.0F, 0.0F }},
+                {{ -1.0F, -1.0F, 0.0F }, {}, { 0.0F, 1.0F }},
+                {{  1.0F, -1.0F, 0.0F }, {}, { 1.0F, 1.0F }},
+                {{  1.0F,  1.0F, 0.0F }, {}, { 1.0F, 0.0F }},
+                {{ -1.0F,  1.0F, 0.0F }, {}, { 0.0F, 0.0F }},
             }};
             const std::array<std::uint32_t, 6> indices { 0, 1, 2, 2, 3, 0 };
             if (scene_.models().empty()) {
                 device_->uploadPreviewMesh(vertices, indices);
-                const std::array previewTextures { graphics::PreviewTexture {
-                    image.width, image.height, image.pixels } };
-                device_->uploadPreviewTextures(previewTextures);
-                graphics::PreviewMaterial material;
-                material.indexCount = 6;
-                material.textureSlot = 1;
-                const std::array materials { material };
-                device_->updatePreviewMaterials(materials);
+                refreshPreviewBackground();
+                device_->updatePreviewMaterials(std::span<const graphics::PreviewMaterial> {});
                 graphics::PreviewScene preview;
                 preview.cameraDistance = 2.42F;
+                preview.screenSource = graphics::PreviewScene::ScreenSource::backgroundImage;
                 device_->updatePreviewScene(preview);
             } else {
+                refreshPreviewBackground();
                 refreshPreviewTextures();
                 refreshAnimatedMesh(true);
                 refreshPreviewScene();
@@ -365,18 +361,31 @@ void Application::handleAsset(const std::filesystem::path& path) {
     }
     if (kind == core::AssetKind::vmd) {
         try {
-            scene_.attachMotion(path);
+            auto motion = core::loadVmd(path);
+            const bool cameraOnly = motion.bones.empty() && motion.morphs.empty()
+                && (!motion.cameras.empty() || !motion.lights.empty());
+            const auto motionName = motion.modelName;
+            const auto boneKeyCount = motion.bones.size();
+            const auto morphKeyCount = motion.morphs.size();
+            const auto lastFrame = motion.lastFrame;
+            const auto cameraKeyCount = motion.cameras.size();
+            const auto lightKeyCount = motion.lights.size();
+            scene_.attachMotion(std::move(motion));
             manualCamera_ = false;
             animationFrame_ = 0.0F;
             scene_.setFrame(animationFrame_);
             if (selectedModel() != nullptr) refreshAnimatedMesh(false);
             refreshPreviewScene();
-            const auto* model = selectedModel();
-            const auto* motion = model != nullptr ? model->motion.get() : nullptr;
-            lastAsset_ = "VMD " + (motion != nullptr ? motion->modelName : path.filename().string())
-                       + " — " + std::to_string(motion != nullptr ? motion->bones.size() : 0) + " bone keys, "
-                       + std::to_string(motion != nullptr ? motion->morphs.size() : 0) + " morph keys, "
-                       + std::to_string(motion != nullptr ? motion->lastFrame : 0) + " frames";
+            if (cameraOnly) {
+                lastAsset_ = "VMD camera/light — " + std::to_string(cameraKeyCount) + " camera keys, "
+                           + std::to_string(lightKeyCount) + " light keys, "
+                           + std::to_string(lastFrame) + " frames";
+            } else {
+                lastAsset_ = "VMD " + (motionName.empty() ? path.filename().string() : motionName)
+                           + " — " + std::to_string(boneKeyCount) + " bone keys, "
+                           + std::to_string(morphKeyCount) + " morph keys, "
+                           + std::to_string(lastFrame) + " frames";
+            }
             log::info("Loaded motion: ", lastAsset_, " (", path.string(), ")");
             projectAssets_.push_back({ "vmd", std::filesystem::absolute(path) });
         } catch (const std::exception& exception) {
@@ -445,6 +454,12 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             instance.physics->setFloorCollision(gravity.floorCollision);
         }
         const auto frame = instance.animator->evaluate(animationFrame_, deltaSeconds);
+        if (!frame.vertices.empty() && (initialUpload || static_cast<int>(animationFrame_) % 30 == 0)) {
+            const auto& vertex = frame.vertices.front().position;
+            log::debug("Animation sample: model=", instance.displayName,
+                       ", frame=", animationFrame_,
+                       ", vertex0=(", vertex[0], ",", vertex[1], ",", vertex[2], ")");
+        }
         auto normalizedFrame = frame;
         if (instance.softBody != nullptr && instance.softBody->available()) {
             instance.softBody->step(deltaSeconds, { gravity.gravityDirection[0] * gravity.gravity,
@@ -520,6 +535,19 @@ void Application::refreshPreviewTextures() {
         previewTextures.push_back({ texture.width, texture.height, texture.pixels });
     }
     device_->uploadPreviewTextures(previewTextures);
+}
+
+void Application::refreshPreviewBackground() {
+    if (device_ == nullptr) return;
+    const auto& background = scene_.background();
+    if (background.screenSource != core::ScreenTextureSource::backgroundImage
+        || !background.image.has_value()) {
+        device_->uploadPreviewBackground({});
+        return;
+    }
+    const auto& image = *background.image;
+    const std::array textures { graphics::PreviewTexture { image.width, image.height, image.pixels } };
+    device_->uploadPreviewBackground(textures);
 }
 
 void Application::refreshVideoFrame() {

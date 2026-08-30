@@ -51,6 +51,10 @@ namespace {
 btVector3 vector(const Float3& value) { return { value[0], value[1], value[2] }; }
 Float3 vector(const btVector3& value) { return { value.x(), value.y(), value.z() }; }
 
+bool finite(const Float3& value) {
+    return std::ranges::all_of(value, [](float component) { return std::isfinite(component); });
+}
+
 btQuaternion rotation(const Float3& euler) {
     btQuaternion value;
     value.setEulerZYX(euler[2], euler[1], euler[0]);
@@ -112,7 +116,8 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
         default: throw std::runtime_error("unsupported PMX rigid body shape");
         }
         }
-        const auto initial = transform(source.position, source.rotation);
+        const bool invalidTransform = !finite(source.position) || !finite(source.rotation);
+        const auto initial = invalidTransform ? btTransform::getIdentity() : transform(source.position, source.rotation);
         impl_->initialTransforms.push_back(initial);
         impl_->motionStates.push_back(std::make_unique<btDefaultMotionState>(initial));
         // Some otherwise valid MMD models contain decorative rigid bodies with
@@ -120,18 +125,26 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
         // dynamic inertia, so keep those bodies as static placeholders. This
         // preserves the PMX body index mapping while avoiding an assertion in
         // btEmptyShape::calculateLocalInertia().
-        const btScalar mass = (source.mode == 0 || degenerate) ? 0.0F : source.mass;
+        const bool invalidMass = !std::isfinite(source.mass) || source.mass <= 0.0F;
+        const btScalar candidateMass = (source.mode == 0 || degenerate || invalidMass) ? 0.0F : source.mass;
         btVector3 inertia {};
-        if (mass > 0.0F) impl_->shapes.back()->calculateLocalInertia(mass, inertia);
-        btRigidBody::btRigidBodyConstructionInfo info(mass, impl_->motionStates.back().get(),
+        if (candidateMass > 0.0F) impl_->shapes.back()->calculateLocalInertia(candidateMass, inertia);
+        const bool unusableDynamicBody = candidateMass > 0.0F
+            && (!std::isfinite(inertia.x()) || !std::isfinite(inertia.y()) || !std::isfinite(inertia.z())
+                || inertia.length2() <= SIMD_EPSILON * SIMD_EPSILON);
+        const bool dynamicUsable = candidateMass > 0.0F && !unusableDynamicBody && !invalidTransform;
+        const btScalar effectiveMass = dynamicUsable ? candidateMass : 0.0F;
+        const auto effectiveMode = dynamicUsable ? source.mode : std::uint8_t { 0 };
+        if (!dynamicUsable) inertia = {};
+        btRigidBody::btRigidBodyConstructionInfo info(effectiveMass, impl_->motionStates.back().get(),
                                                       impl_->shapes.back().get(), inertia);
         info.m_linearDamping = source.linearDamping;
         info.m_angularDamping = source.angularDamping;
         info.m_restitution = source.restitution;
         info.m_friction = source.friction;
         impl_->bodies.push_back(std::make_unique<btRigidBody>(info));
-        impl_->modes.push_back(source.mode);
-        if (source.mode == 0) {
+        impl_->modes.push_back(effectiveMode);
+        if (effectiveMode == 0) {
             impl_->bodies.back()->setCollisionFlags(impl_->bodies.back()->getCollisionFlags()
                                                     | btCollisionObject::CF_KINEMATIC_OBJECT);
             impl_->bodies.back()->setActivationState(DISABLE_DEACTIVATION);
@@ -150,13 +163,10 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
         // Bullet cannot solve a 6DoF row when neither endpoint has inverse
         // mass. A number of PMX files contain decorative static-static joints.
         if (bodyA->getInvMass() <= 0.0F && bodyB->getInvMass() <= 0.0F) continue;
-        const auto finite3 = [](const Float3& value) {
-            return std::ranges::all_of(value, [](float component) { return std::isfinite(component); });
-        };
-        if (!finite3(source.position) || !finite3(source.rotation)
-            || !finite3(source.translationMinimum) || !finite3(source.translationMaximum)
-            || !finite3(source.rotationMinimum) || !finite3(source.rotationMaximum)
-            || !finite3(source.translationSpring) || !finite3(source.rotationSpring)) continue;
+        if (!finite(source.position) || !finite(source.rotation)
+            || !finite(source.translationMinimum) || !finite(source.translationMaximum)
+            || !finite(source.rotationMinimum) || !finite(source.rotationMaximum)
+            || !finite(source.translationSpring) || !finite(source.rotationSpring)) continue;
         const auto jointWorld = transform(source.position, source.rotation);
         const auto frameA = impl_->initialTransforms[static_cast<std::size_t>(source.bodyA)].inverse() * jointWorld;
         const auto frameB = impl_->initialTransforms[static_cast<std::size_t>(source.bodyB)].inverse() * jointWorld;
@@ -191,12 +201,25 @@ MmdPhysics& MmdPhysics::operator=(MmdPhysics&&) noexcept = default;
 
 SoftBodySimulation::SoftBodySimulation(const PmxModel& model)
     : initial_(model.vertices.size()), positions_(model.vertices.size()),
-      velocities_(model.vertices.size()), pinned_(model.vertices.size()), bodyCount_(model.softBodies.size()) {
+      velocities_(model.vertices.size()), pinned_(model.vertices.size()), active_(model.vertices.size()) {
     for (std::size_t index = 0; index < model.vertices.size(); ++index) {
         initial_[index] = model.vertices[index].position;
         positions_[index] = initial_[index];
     }
     for (const auto& softBody : model.softBodies) {
+        if (softBody.material < 0 || static_cast<std::size_t>(softBody.material) >= model.materials.size()) continue;
+        std::size_t firstIndex = 0;
+        for (std::size_t material = 0; material < static_cast<std::size_t>(softBody.material); ++material) {
+            firstIndex += model.materials[material].indexCount;
+        }
+        if (firstIndex >= model.indices.size()) continue;
+        const auto materialIndexCount = model.materials[static_cast<std::size_t>(softBody.material)].indexCount;
+        const auto lastIndex = firstIndex + std::min<std::size_t>(materialIndexCount, model.indices.size() - firstIndex);
+        for (std::size_t index = firstIndex; index < lastIndex; ++index) {
+            const auto vertex = model.indices[index];
+            if (vertex < active_.size()) active_[vertex] = 1;
+        }
+        ++bodyCount_;
         for (const auto vertex : softBody.pinnedVertices) {
             if (vertex >= 0 && static_cast<std::size_t>(vertex) < pinned_.size()) pinned_[static_cast<std::size_t>(vertex)] = 1;
         }
@@ -212,9 +235,11 @@ void SoftBodySimulation::step(float deltaSeconds, const Float3& gravity) {
     if (!available() || deltaSeconds <= 0.0F) return;
     const float dt = std::min(deltaSeconds, 0.05F);
     for (std::size_t index = 0; index < positions_.size(); ++index) {
+        if (active_[index] == 0) continue;
         if (pinned_[index] != 0) { positions_[index] = initial_[index]; velocities_[index] = {}; continue; }
         for (std::size_t axis = 0; axis < 3; ++axis) {
-            velocities_[index][axis] += gravity[axis] * dt;
+            const auto displacement = positions_[index][axis] - initial_[index][axis];
+            velocities_[index][axis] += (gravity[axis] - displacement * 4.0F) * dt;
             velocities_[index][axis] *= 0.995F;
             positions_[index][axis] += velocities_[index][axis] * dt;
         }
@@ -223,7 +248,15 @@ void SoftBodySimulation::step(float deltaSeconds, const Float3& gravity) {
 
 void SoftBodySimulation::apply(std::span<PmxVertex> vertices) const {
     const auto count = std::min(vertices.size(), positions_.size());
-    for (std::size_t index = 0; index < count; ++index) vertices[index].position = positions_[index];
+    for (std::size_t index = 0; index < count; ++index) {
+        if (active_[index] == 0) continue;
+        // The input vertices already contain VMD skinning and morph results.
+        // Apply only the simulated displacement instead of restoring bind
+        // positions over the animated mesh.
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            vertices[index].position[axis] += positions_[index][axis] - initial_[index][axis];
+        }
+    }
 }
 
 bool MmdPhysics::available() const noexcept {
@@ -246,6 +279,15 @@ std::size_t MmdPhysics::jointCount() const noexcept {
 #if DAYO_HAS_BULLET
     return impl_->constraints.size();
 #else
+    return 0;
+#endif
+}
+
+std::uint8_t MmdPhysics::bodyMode(std::size_t body) const noexcept {
+#if DAYO_HAS_BULLET
+    return impl_ != nullptr && body < impl_->modes.size() ? impl_->modes[body] : std::uint8_t { 0 };
+#else
+    static_cast<void>(body);
     return 0;
 #endif
 }
