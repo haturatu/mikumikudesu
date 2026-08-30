@@ -378,6 +378,27 @@ void MmdPhysics::setKinematicTransform(std::size_t body, const PhysicsTransform&
 #endif
 }
 
+void MmdPhysics::teleportBody(std::size_t body, const PhysicsTransform& value) {
+#if DAYO_HAS_BULLET
+    if (body >= impl_->bodies.size()) throw std::out_of_range("PMX rigid body index");
+    if (!finite(value)) return;
+    const auto world = transform(value);
+    auto& rigidBody = impl_->bodies[body];
+    rigidBody->setWorldTransform(world);
+    rigidBody->getMotionState()->setWorldTransform(world);
+    rigidBody->setInterpolationWorldTransform(world);
+    rigidBody->setLinearVelocity({ 0.0F, 0.0F, 0.0F });
+    rigidBody->setAngularVelocity({ 0.0F, 0.0F, 0.0F });
+    rigidBody->setInterpolationLinearVelocity({ 0.0F, 0.0F, 0.0F });
+    rigidBody->setInterpolationAngularVelocity({ 0.0F, 0.0F, 0.0F });
+    rigidBody->clearForces();
+    rigidBody->activate(true);
+    impl_->world->updateSingleAabb(rigidBody.get());
+#else
+    static_cast<void>(body); static_cast<void>(value);
+#endif
+}
+
 void MmdPhysics::applyImpulse(std::size_t body, const Float3& linear, const Float3& angular, bool local) {
 #if DAYO_HAS_BULLET
     if (body >= impl_->bodies.size()) throw std::out_of_range("PMX rigid body index");

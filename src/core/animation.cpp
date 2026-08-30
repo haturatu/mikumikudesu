@@ -637,23 +637,30 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
     if (physics_ != nullptr && physics_->available()) {
         const float frameDelta = frame - previousFrame_;
         const float expectedFrameDelta = std::max(deltaSeconds, 0.0F) * 30.0F;
-        const bool discontinuousSeek = previousFrame_ >= 0.0F
-            && (frameDelta < 0.0F
-                || (std::abs(frameDelta) > 1e-6F
-                    && (deltaSeconds <= 0.0F || std::abs(frameDelta - expectedFrameDelta) > 2.0F)));
+        const bool discontinuousSeek = (previousFrame_ < 0.0F && std::abs(frame) > 1e-6F)
+            || (previousFrame_ >= 0.0F
+                && (frameDelta < 0.0F
+                    || (std::abs(frameDelta) > 1e-6F
+                        && (deltaSeconds <= 0.0F || std::abs(frameDelta - expectedFrameDelta) > 2.0F))));
         if (discontinuousSeek) physics_->reset();
         std::vector<bool> physicsBones(model_.bones.size());
         for (std::size_t bodyIndex = 0; bodyIndex < model_.rigidBodies.size(); ++bodyIndex) {
             const auto& body = model_.rigidBodies[bodyIndex];
-            if (physics_->bodyMode(bodyIndex) != 0 || body.bone < 0
-                || static_cast<std::size_t>(body.bone) >= global.size()) continue;
+            if (body.bone < 0 || static_cast<std::size_t>(body.bone) >= global.size()) continue;
             const auto bone = static_cast<std::size_t>(body.bone);
             const auto offset = sub(body.position, model_.bones[bone].position);
             const auto offsetRotation = eulerRotation(body.rotation);
             PhysicsTransform value;
             value.position = add(global[bone].position, rotate(global[bone].rotation, offset));
             value.rotation = multiply(global[bone].rotation, offsetRotation);
-            physics_->setKinematicTransform(bodyIndex, value);
+            if (discontinuousSeek) {
+                // A seek invalidates the old dynamic chain state. Place every
+                // bone-bound body at the current animated pose before Bullet
+                // resumes, including mode 1 and mode 2 bodies.
+                physics_->teleportBody(bodyIndex, value);
+            } else if (physics_->bodyMode(bodyIndex) == 0) {
+                physics_->setKinematicTransform(bodyIndex, value);
+            }
         }
         const float impulseScale = std::max(deltaSeconds, 0.0F) * 60.0F;
         for (std::size_t body = 0; body < model_.rigidBodies.size(); ++body) {
