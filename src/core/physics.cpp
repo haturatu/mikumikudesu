@@ -120,9 +120,14 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
         // dynamic inertia, so keep those bodies as static placeholders. This
         // preserves the PMX body index mapping while avoiding an assertion in
         // btEmptyShape::calculateLocalInertia().
-        const btScalar mass = (source.mode == 0 || degenerate) ? 0.0F : source.mass;
+        const bool invalidMass = !std::isfinite(source.mass) || source.mass <= 0.0F;
+        const btScalar mass = (source.mode == 0 || degenerate || invalidMass) ? 0.0F : source.mass;
         btVector3 inertia {};
         if (mass > 0.0F) impl_->shapes.back()->calculateLocalInertia(mass, inertia);
+        const bool unusableDynamicBody = mass > 0.0F
+            && (!std::isfinite(inertia.x()) || !std::isfinite(inertia.y()) || !std::isfinite(inertia.z())
+                || inertia.length2() <= SIMD_EPSILON * SIMD_EPSILON);
+        const auto effectiveMode = (mass > 0.0F && !unusableDynamicBody) ? source.mode : std::uint8_t { 0 };
         btRigidBody::btRigidBodyConstructionInfo info(mass, impl_->motionStates.back().get(),
                                                       impl_->shapes.back().get(), inertia);
         info.m_linearDamping = source.linearDamping;
@@ -130,8 +135,8 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
         info.m_restitution = source.restitution;
         info.m_friction = source.friction;
         impl_->bodies.push_back(std::make_unique<btRigidBody>(info));
-        impl_->modes.push_back(source.mode);
-        if (source.mode == 0) {
+        impl_->modes.push_back(effectiveMode);
+        if (effectiveMode == 0) {
             impl_->bodies.back()->setCollisionFlags(impl_->bodies.back()->getCollisionFlags()
                                                     | btCollisionObject::CF_KINEMATIC_OBJECT);
             impl_->bodies.back()->setActivationState(DISABLE_DEACTIVATION);
