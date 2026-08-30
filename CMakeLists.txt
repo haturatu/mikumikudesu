@@ -67,6 +67,7 @@ add_library(dayo_core
   src/core/ffmpeg_utils.cpp
   src/core/image.cpp
   src/core/audio_export.cpp
+  src/core/video_export.cpp
   src/core/media.cpp
   src/core/model_probe.cpp
   src/core/motion.cpp
@@ -88,6 +89,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   set_source_files_properties(src/core/vmdayo.cpp PROPERTIES COMPILE_OPTIONS "-Wno-cpp;-Wno-deprecated-declarations")
   set_source_files_properties(src/core/effect.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-shadow;-Wno-cpp;-Wno-deprecated-declarations")
   set_source_files_properties(src/core/audio_export.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-shadow;-Wno-deprecated-declarations")
+  set_source_files_properties(src/core/video_export.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-shadow;-Wno-deprecated-declarations")
   set_source_files_properties(src/core/ffmpeg_utils.cpp PROPERTIES COMPILE_OPTIONS "-Wno-deprecated-declarations")
   set_source_files_properties(src/core/project.cpp PROPERTIES COMPILE_OPTIONS "-Wno-cpp;-Wno-deprecated-declarations")
 endif()
