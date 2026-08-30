@@ -706,6 +706,10 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
                 if (mode == 1) local[bone].translation = sub(bonePosition, model_.bones[bone].position);
             }
             calculateGlobals(model_, local, global, impl_->globalState);
+            if (mode == 2) {
+                const auto correction = sub(global[bone].position, bonePosition);
+                physics_->shiftBodyPosition(bodyIndex, correction);
+            }
         }
         // Physics supplies the local pose for dynamic rigid bodies. Keep the
         // pre-physics pose for the first phase and feed sanitized dynamic

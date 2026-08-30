@@ -26,11 +26,14 @@ struct MmdPhysics::Impl {
     std::vector<std::unique_ptr<btRigidBody>> bodies;
     std::vector<std::unique_ptr<btTypedConstraint>> constraints;
     std::vector<btTransform> initialTransforms;
+    std::vector<btTransform> kinematicStarts;
+    std::vector<btTransform> kinematicTargets;
+    std::vector<std::uint8_t> kinematicDirty;
     std::vector<std::uint8_t> modes;
     std::unique_ptr<btStaticPlaneShape> floorShape;
     std::unique_ptr<btDefaultMotionState> floorMotionState;
     std::unique_ptr<btRigidBody> floorBody;
-    Float3 gravity { 0.0F, -9.8F, 0.0F };
+    Float3 gravity { 0.0F, -98.0F, 0.0F };
     float gravityNoiseAmplitude {};
     float gravityNoiseFrequency {};
     float elapsed {};
@@ -70,6 +73,12 @@ btTransform transform(const PhysicsTransform& value) {
                        vector(value.position));
 }
 
+btTransform interpolate(const btTransform& from, const btTransform& to, btScalar amount) {
+    const auto rotation = from.getRotation().slerp(to.getRotation(), amount);
+    const auto position = from.getOrigin() * (1.0F - amount) + to.getOrigin() * amount;
+    return btTransform(rotation, position);
+}
+
 bool finite(const PhysicsTransform& value) {
     return std::ranges::all_of(value.position, [](float component) { return std::isfinite(component); })
         && std::ranges::all_of(value.rotation, [](float component) { return std::isfinite(component); });
@@ -96,6 +105,9 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
     impl_->motionStates.reserve(model.rigidBodies.size());
     impl_->bodies.reserve(model.rigidBodies.size());
     impl_->initialTransforms.reserve(model.rigidBodies.size());
+    impl_->kinematicStarts.reserve(model.rigidBodies.size());
+    impl_->kinematicTargets.reserve(model.rigidBodies.size());
+    impl_->kinematicDirty.reserve(model.rigidBodies.size());
     impl_->modes.reserve(model.rigidBodies.size());
     for (const auto& source : model.rigidBodies) {
         const Float3 safeSize {
@@ -119,6 +131,9 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
         const bool invalidTransform = !finite(source.position) || !finite(source.rotation);
         const auto initial = invalidTransform ? btTransform::getIdentity() : transform(source.position, source.rotation);
         impl_->initialTransforms.push_back(initial);
+        impl_->kinematicStarts.push_back(initial);
+        impl_->kinematicTargets.push_back(initial);
+        impl_->kinematicDirty.push_back(0);
         impl_->motionStates.push_back(std::make_unique<btDefaultMotionState>(initial));
         // Some otherwise valid MMD models contain decorative rigid bodies with
         // zero-sized collision geometry. Bullet's btEmptyShape cannot compute
@@ -150,7 +165,10 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
             impl_->bodies.back()->setActivationState(DISABLE_DEACTIVATION);
         }
         const short group = static_cast<short>(1U << std::min<std::uint8_t>(source.group, 15));
-        const short mask = static_cast<short>(source.collisionMask);
+        // PMX stores groups that must not collide; Bullet stores groups that
+        // are allowed to collide.
+        const auto allowedMask = static_cast<std::uint16_t>(~source.collisionMask);
+        const short mask = static_cast<short>(allowedMask);
         impl_->world->addRigidBody(impl_->bodies.back().get(), group, mask);
     }
     impl_->constraints.reserve(model.joints.size());
@@ -297,10 +315,16 @@ void MmdPhysics::reset() {
     for (std::size_t i = 0; i < impl_->bodies.size(); ++i) {
         impl_->bodies[i]->setWorldTransform(impl_->initialTransforms[i]);
         impl_->bodies[i]->getMotionState()->setWorldTransform(impl_->initialTransforms[i]);
+        impl_->bodies[i]->setInterpolationWorldTransform(impl_->initialTransforms[i]);
         impl_->bodies[i]->setLinearVelocity({ 0, 0, 0 });
         impl_->bodies[i]->setAngularVelocity({ 0, 0, 0 });
+        impl_->bodies[i]->setInterpolationLinearVelocity({ 0, 0, 0 });
+        impl_->bodies[i]->setInterpolationAngularVelocity({ 0, 0, 0 });
         impl_->bodies[i]->clearForces();
         impl_->bodies[i]->activate(true);
+        impl_->kinematicStarts[i] = impl_->initialTransforms[i];
+        impl_->kinematicTargets[i] = impl_->initialTransforms[i];
+        impl_->kinematicDirty[i] = 0;
     }
     impl_->world->getBroadphase()->resetPool(impl_->dispatcher.get());
     impl_->world->getConstraintSolver()->reset();
@@ -320,7 +344,29 @@ void MmdPhysics::step(float deltaSeconds) {
                 * std::sin(impl_->elapsed * impl_->gravityNoiseFrequency * 2.0F * std::numbers::pi_v<float>);
         }
         impl_->world->setGravity(vector(gravity));
-        impl_->world->stepSimulation(dt, 10, 1.0F / 120.0F);
+        constexpr float fixedStep = 1.0F / 120.0F;
+        const auto substeps = std::max(1, static_cast<int>(std::ceil(dt / fixedStep)));
+        const auto substep = dt / static_cast<float>(substeps);
+        for (int step = 0; step < substeps; ++step) {
+            const auto amount = static_cast<btScalar>(step + 1) / static_cast<btScalar>(substeps);
+            for (std::size_t body = 0; body < impl_->bodies.size(); ++body) {
+                if (impl_->modes[body] != 0 || impl_->kinematicDirty[body] == 0) continue;
+                const auto world = interpolate(impl_->kinematicStarts[body], impl_->kinematicTargets[body], amount);
+                impl_->bodies[body]->setWorldTransform(world);
+                impl_->bodies[body]->getMotionState()->setWorldTransform(world);
+                impl_->bodies[body]->setInterpolationWorldTransform(world);
+                impl_->world->updateSingleAabb(impl_->bodies[body].get());
+            }
+            impl_->world->stepSimulation(substep, 0, substep);
+        }
+        for (std::size_t body = 0; body < impl_->bodies.size(); ++body) {
+            if (impl_->kinematicDirty[body] == 0) continue;
+            impl_->bodies[body]->setWorldTransform(impl_->kinematicTargets[body]);
+            impl_->bodies[body]->getMotionState()->setWorldTransform(impl_->kinematicTargets[body]);
+            impl_->bodies[body]->setInterpolationWorldTransform(impl_->kinematicTargets[body]);
+            impl_->kinematicStarts[body] = impl_->kinematicTargets[body];
+            impl_->kinematicDirty[body] = 0;
+        }
     }
 #else
     static_cast<void>(deltaSeconds);
@@ -371,8 +417,11 @@ void MmdPhysics::setKinematicTransform(std::size_t body, const PhysicsTransform&
     if (body >= impl_->bodies.size()) throw std::out_of_range("PMX rigid body index");
     if (impl_->modes[body] != 0 || !finite(value)) return;
     const auto world = transform(value);
-    impl_->bodies[body]->setWorldTransform(world);
-    impl_->bodies[body]->getMotionState()->setWorldTransform(world);
+    if (impl_->kinematicDirty[body] == 0) {
+        impl_->kinematicStarts[body] = impl_->kinematicTargets[body];
+        impl_->kinematicDirty[body] = 1;
+    }
+    impl_->kinematicTargets[body] = world;
 #else
     static_cast<void>(body); static_cast<void>(value);
 #endif
@@ -394,8 +443,30 @@ void MmdPhysics::teleportBody(std::size_t body, const PhysicsTransform& value) {
     rigidBody->clearForces();
     rigidBody->activate(true);
     impl_->world->updateSingleAabb(rigidBody.get());
+    impl_->kinematicStarts[body] = world;
+    impl_->kinematicTargets[body] = world;
+    impl_->kinematicDirty[body] = 0;
 #else
     static_cast<void>(body); static_cast<void>(value);
+#endif
+}
+
+void MmdPhysics::shiftBodyPosition(std::size_t body, const Float3& delta) {
+#if DAYO_HAS_BULLET
+    if (body >= impl_->bodies.size()) throw std::out_of_range("PMX rigid body index");
+    if (!finite(delta)) return;
+    auto& rigidBody = impl_->bodies[body];
+    auto world = rigidBody->getWorldTransform();
+    world.setOrigin(world.getOrigin() + vector(delta));
+    rigidBody->setWorldTransform(world);
+    rigidBody->getMotionState()->setWorldTransform(world);
+    auto interpolation = rigidBody->getInterpolationWorldTransform();
+    interpolation.setOrigin(interpolation.getOrigin() + vector(delta));
+    rigidBody->setInterpolationWorldTransform(interpolation);
+    rigidBody->activate(true);
+    impl_->world->updateSingleAabb(rigidBody.get());
+#else
+    static_cast<void>(body); static_cast<void>(delta);
 #endif
 }
 
