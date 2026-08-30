@@ -519,11 +519,9 @@ int main() {
         postPhysicsModel.bones[1].name = "post-link";
         postPhysicsModel.bones[1].position = { 0.0F, 1.0F, 0.0F };
         postPhysicsModel.bones[1].parent = 0;
-        postPhysicsModel.bones[1].flags = 0x1000U;
         postPhysicsModel.bones[2].name = "post-effector";
         postPhysicsModel.bones[2].position = { 1.0F, 1.0F, 0.0F };
         postPhysicsModel.bones[2].parent = 1;
-        postPhysicsModel.bones[2].flags = 0x1000U;
         postPhysicsModel.bones[3].name = "post-ik";
         postPhysicsModel.bones[3].position = { 0.0F, 2.0F, 0.0F };
         postPhysicsModel.bones[3].parent = 0;
@@ -556,6 +554,16 @@ int main() {
         const auto postBodyAfter = postPhysics.bodyTransform(0);
         ok &= check(postBodyAfter.position != postBodyBefore.position && postPhysicsMovement > 1e-4F,
                     "post-physics IK uses the dynamic rigid-body result before skinning");
+
+        auto reversePhaseModel = postPhysicsModel;
+        reversePhaseModel.bones[1].flags = 0x1000U;
+        reversePhaseModel.bones[2].flags = 0x1000U;
+        reversePhaseModel.bones[3].flags = 0x0020U;
+        reversePhaseModel.rigidBodies.clear();
+        dayo::core::MmdAnimator reversePhaseAnimator(reversePhaseModel);
+        const auto reversePhaseFrame = reversePhaseAnimator.evaluate(0.0F);
+        ok &= check(reversePhaseFrame.vertices[0].position[1] > 1.0F,
+                    "pre-physics IK preserves a rotation on a post-physics link");
 #else
         ok &= check(!physics.available(), "optional Bullet fallback");
 #endif
