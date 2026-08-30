@@ -250,6 +250,7 @@ int main() {
         const auto model = dayo::core::loadPmxModel(path);
         ok &= check(model.materials.size() == 1 && model.bones.empty(), "complete PMX sections");
         dayo::core::Scene scene;
+        ok &= check(scene.physicsSettings().gravity == 98.0F, "MMD gravity default");
         const auto firstModel = scene.addModel(path);
         const auto secondModel = scene.addModel(path);
         ok &= check(scene.models().size() == 2 && scene.selectedModel() != nullptr,
@@ -399,7 +400,7 @@ int main() {
         falling.position = { 0.0F, 2.0F, 0.0F };
         falling.mass = 1.0F;
         falling.mode = 1;
-        falling.collisionMask = 0xFFFFU;
+        falling.collisionMask = 0;
         falling.bone = 0;
         physicsModel.rigidBodies.push_back(falling);
         dayo::core::MmdPhysics physics(physicsModel);
@@ -412,7 +413,8 @@ int main() {
         physics.setFloorCollision(true);
         physics.reset();
         for (int i = 0; i < 120; ++i) physics.step(1.0F / 60.0F);
-        ok &= check(physics.bodyTransform(0).position[1] > -0.1F, "Bullet floor collision setting");
+        ok &= check(physics.bodyTransform(0).position[1] > -0.1F,
+                    "PMX collision mask permits Bullet floor collision");
         physics.setGravityNoise(1.0F, 2.0F);
         physicsModel.vertices.resize(1);
         physicsModel.vertices[0].position = { 0.0F, 2.0F, 0.0F };
@@ -457,10 +459,105 @@ int main() {
         alignedPhysics.applyImpulse(0, {}, { 0.0F, 0.0F, 10.0F }, false);
         const auto alignedAfter = alignedAnimator.evaluate(1.0F, 1.0F / 30.0F);
         const auto alignedBodyAfter = alignedPhysics.bodyTransform(0);
-        ok &= check(alignedBodyAfter.position[1] < alignedBodyBefore.position[1]
+        ok &= check(std::abs(alignedBodyAfter.position[1] - alignedBodyBefore.position[1]) < 1e-4F
                     && std::abs(alignedAfter.vertices[0].position[1] - alignedBefore.vertices[0].position[1]) < 1e-4F
                     && std::abs(alignedAfter.vertices[1].position[1] - alignedBefore.vertices[1].position[1]) > 1e-4F,
-                    "PMX mode 2 preserves bone translation and imports physics rotation");
+                    "PMX mode 2 aligns body position, preserves bone translation, and imports rotation");
+
+        dayo::core::PmxModel skirtChainModel;
+        skirtChainModel.vertices.resize(2);
+        skirtChainModel.vertices[0].position = { 0.0F, 2.0F, 0.0F };
+        skirtChainModel.vertices[0].normal = { 0.0F, 1.0F, 0.0F };
+        skirtChainModel.vertices[0].bones[0] = 1;
+        skirtChainModel.vertices[1] = skirtChainModel.vertices[0];
+        skirtChainModel.vertices[1].position = { 0.0F, 3.0F, 0.0F };
+        skirtChainModel.vertices[1].bones[0] = 2;
+        skirtChainModel.bones.resize(3);
+        skirtChainModel.bones[0].name = "root";
+        skirtChainModel.bones[1].name = "skirt0";
+        skirtChainModel.bones[1].position = { 0.0F, 2.0F, 0.0F };
+        skirtChainModel.bones[1].parent = 0;
+        skirtChainModel.bones[2].name = "skirt1";
+        skirtChainModel.bones[2].position = { 0.0F, 3.0F, 0.0F };
+        skirtChainModel.bones[2].parent = 1;
+        dayo::core::PmxRigidBody skirtRoot;
+        skirtRoot.shape = 0;
+        skirtRoot.size = { 0.2F, 0.2F, 0.2F };
+        skirtRoot.position = { 0.0F, 0.0F, 0.0F };
+        skirtRoot.bone = 0;
+        skirtRoot.collisionMask = 0xFFFFU;
+        skirtChainModel.rigidBodies.push_back(skirtRoot);
+        auto skirtMode2 = skirtRoot;
+        skirtMode2.position = { 0.0F, 2.0F, 0.0F };
+        skirtMode2.bone = 1;
+        skirtMode2.mass = 0.2F;
+        skirtMode2.mode = 2;
+        skirtChainModel.rigidBodies.push_back(skirtMode2);
+        auto skirtMode1 = skirtMode2;
+        skirtMode1.position = { 0.0F, 3.0F, 0.0F };
+        skirtMode1.bone = 2;
+        skirtMode1.mode = 1;
+        skirtChainModel.rigidBodies.push_back(skirtMode1);
+        const auto addLockedJoint = [&skirtChainModel](std::int32_t bodyA, std::int32_t bodyB, float height) {
+            dayo::core::PmxJoint joint;
+            joint.bodyA = bodyA;
+            joint.bodyB = bodyB;
+            joint.position = { 0.0F, height, 0.0F };
+            joint.translationMinimum = {};
+            joint.translationMaximum = {};
+            joint.rotationMinimum = {};
+            joint.rotationMaximum = {};
+            skirtChainModel.joints.push_back(joint);
+        };
+        addLockedJoint(0, 1, 2.0F);
+        addLockedJoint(1, 2, 3.0F);
+        dayo::core::VmdMotion skirtChainMotion;
+        skirtChainMotion.bones.reserve(300);
+        for (std::uint32_t frame = 0; frame < 300; ++frame) {
+            dayo::core::VmdBoneKey key;
+            key.name = "root";
+            key.frame = frame;
+            const auto angle = (frame % 2 == 0 ? 0.35F : -0.35F);
+            key.translation = { (frame % 2 == 0 ? 1.5F : -1.5F),
+                                (frame % 3 == 0 ? 0.75F : -0.75F), 0.0F };
+            key.rotation = { 0.0F, 0.0F, std::sin(angle * 0.5F), std::cos(angle * 0.5F) };
+            skirtChainMotion.bones.push_back(key);
+        }
+        dayo::core::MmdPhysics skirtChainPhysics(skirtChainModel);
+        dayo::core::MmdAnimator skirtChainAnimator(skirtChainModel);
+        skirtChainAnimator.setMotion(&skirtChainMotion);
+        skirtChainAnimator.setPhysics(&skirtChainPhysics);
+        bool skirtChainStable = true;
+        for (std::uint32_t frame = 0; frame < 300; ++frame) {
+            const auto animated = skirtChainAnimator.evaluate(static_cast<float>(frame),
+                                                              frame == 0 ? 0.0F : 1.0F / 30.0F);
+            const auto angle = (frame % 2 == 0 ? 0.35F : -0.35F);
+            const auto expectedSkirt0 = dayo::core::Float3 {
+                (frame % 2 == 0 ? 1.5F : -1.5F) - 2.0F * std::sin(angle),
+                (frame % 3 == 0 ? 0.75F : -0.75F) + 2.0F * std::cos(angle), 0.0F,
+            };
+            const auto mode2Body = skirtChainPhysics.bodyTransform(1);
+            const auto mode1Body = skirtChainPhysics.bodyTransform(2);
+            dayo::core::PhysicsTransform expectedMode2;
+            expectedMode2.position = expectedSkirt0;
+            const auto finiteVector = [](const auto& value) {
+                return std::ranges::all_of(value, [](float component) { return std::isfinite(component); });
+            };
+            const auto bodyDistance = [](const auto& left, const auto& right) {
+                const auto x = left.position[0] - right.position[0];
+                const auto y = left.position[1] - right.position[1];
+                const auto z = left.position[2] - right.position[2];
+                return std::sqrt(x * x + y * y + z * z);
+            };
+            skirtChainStable = skirtChainStable && finiteVector(mode2Body.position)
+                && finiteVector(mode1Body.position) && animated.vertices.size() == 2
+                && finiteVector(animated.vertices[0].position) && finiteVector(animated.vertices[1].position)
+                && bodyDistance(mode2Body, expectedMode2) < 1e-3F
+                && bodyDistance(mode2Body, mode1Body) < 2.5F;
+            if (!skirtChainStable) break;
+        }
+        ok &= check(skirtChainStable,
+                    "mode 0 to mode 2 to mode 1 locked skirt chain stays finite and aligned during fast animation");
 
         dayo::core::PmxModel seekModel;
         seekModel.vertices.resize(1);
