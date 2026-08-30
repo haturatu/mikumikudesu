@@ -489,6 +489,24 @@ int main() {
         dayo::core::MmdPhysics invalidInertiaPhysics(invalidInertiaModel);
         ok &= check(invalidInertiaPhysics.bodyCount() == 2 && invalidInertiaPhysics.jointCount() == 0,
                     "invalid inertia body uses zero effective mass and skips its constraint");
+        ok &= check(invalidInertiaPhysics.bodyMode(0) == 0 && invalidInertiaPhysics.bodyMode(1) == 0,
+                    "invalid inertia body exposes its sanitized kinematic mode");
+        invalidInertiaModel.bones.resize(1);
+        invalidInertiaModel.bones[0].position = { 0.0F, 2.0F, 0.0F };
+        invalidInertiaModel.vertices.resize(1);
+        invalidInertiaModel.vertices[0].position = { 0.0F, 2.0F, 0.0F };
+        invalidInertiaModel.vertices[0].bones[0] = 0;
+        invalidInertiaModel.rigidBodies[0].bone = 0;
+        invalidInertiaModel.rigidBodies[0].position = { 0.0F, 2.0F, 0.0F };
+        invalidInertiaModel.rigidBodies[1].bone = 0;
+        invalidInertiaModel.rigidBodies[1].position = { 0.0F, 2.0F, 0.0F };
+        dayo::core::MmdPhysics sanitizedPhysics(invalidInertiaModel);
+        dayo::core::MmdAnimator sanitizedAnimator(invalidInertiaModel);
+        sanitizedAnimator.setPhysics(&sanitizedPhysics);
+        const auto sanitizedBefore = sanitizedAnimator.evaluate(0.0F, 0.0F);
+        const auto sanitizedAfter = sanitizedAnimator.evaluate(1.0F, 1.0F / 30.0F);
+        ok &= check(std::abs(sanitizedAfter.vertices[0].position[1] - sanitizedBefore.vertices[0].position[1]) < 1e-4F,
+                    "sanitized dynamic body does not snap its PMX bone");
 #else
         ok &= check(!physics.available(), "optional Bullet fallback");
 #endif
@@ -572,13 +590,20 @@ int main() {
         grantKey.rotation = { 0.0F, 0.0F, std::sin(std::numbers::pi_v<float> * 0.25F),
                               std::cos(std::numbers::pi_v<float> * 0.25F) };
         grantMotion.bones.push_back(grantKey);
+        dayo::core::VmdBoneKey appendBaseKey;
+        appendBaseKey.name = "grant-source";
+        appendBaseKey.frame = 0;
+        appendBaseKey.rotation = { 0.0F, 0.0F, std::sin(std::numbers::pi_v<float> * 0.125F),
+                                    std::cos(std::numbers::pi_v<float> * 0.125F) };
+        grantMotion.bones.push_back(appendBaseKey);
         grantMotion.lastFrame = 1;
         dayo::core::MmdAnimator grantAnimator(grantModel);
         grantAnimator.setMotion(&grantMotion);
         const auto granted = grantAnimator.evaluate(0.0F);
-        ok &= check(std::abs(granted.vertices[0].position[0]) < 1e-4F
-                    && std::abs(granted.vertices[0].position[1] - 2.0F) < 1e-4F,
-                    "PMX local append uses the source user transform");
+        const auto half = std::sqrt(0.5F);
+        ok &= check(std::abs(granted.vertices[0].position[0] + half) < 1e-4F
+                    && std::abs(granted.vertices[0].position[1] - (1.0F - half)) < 1e-4F,
+                    "PMX local append uses the source local transform");
 
         grantModel.bones[1].flags = 0x0100U;
         dayo::core::MmdAnimator nonLocalGrantAnimator(grantModel);
@@ -648,24 +673,55 @@ int main() {
                     && ikEnabled.vertices[0].position[1] > 1.0F,
                     "VMD IK state toggles PMX IK evaluation");
 
+        dayo::core::VmdMotion unsortedIkMotion = ikMotion;
+        unsortedIkMotion.ik = {
+            { 120, true, { { "ik", false } } },
+            { 0, true, { { "ik", true } } },
+            { 60, true, { { "ik", false } } },
+        };
+        dayo::core::MmdAnimator unsortedIkAnimator(ikModel);
+        unsortedIkAnimator.setMotion(&unsortedIkMotion);
+        const auto unsortedIkAt0 = unsortedIkAnimator.evaluate(0.0F);
+        const auto unsortedIkAt60 = unsortedIkAnimator.evaluate(60.0F);
+        ok &= check(unsortedIkAt0.vertices[0].position[1] > 1.0F
+                    && std::abs(unsortedIkAt60.vertices[0].position[1]) < 1e-4F,
+                    "VMD IK state evaluation handles unsorted keys");
+        const auto normalizedIk = dayo::core::toVmdMotion(dayo::core::toMotionDocument(unsortedIkMotion));
+        ok &= check(std::is_sorted(normalizedIk.ik.begin(), normalizedIk.ik.end(),
+                                   [](const auto& left, const auto& right) { return left.frame < right.frame; }),
+                    "VMD IK keys are sorted when attached");
+
         dayo::core::PmxModel noSoftBodyModel;
-        noSoftBodyModel.vertices.resize(1);
+        noSoftBodyModel.vertices.resize(2);
+        noSoftBodyModel.vertices[0].position = { 0.0F, 0.0F, 0.0F };
+        noSoftBodyModel.vertices[1].position = { 10.0F, 0.0F, 0.0F };
         dayo::core::SoftBodySimulation noSoftBody(noSoftBodyModel);
         ok &= check(!noSoftBody.available(), "soft-body fallback stays unavailable without PMX soft bodies");
+        noSoftBodyModel.indices = { 0, 1 };
+        dayo::core::PmxMaterial softMaterial;
+        softMaterial.indexCount = 1;
+        noSoftBodyModel.materials.push_back(softMaterial);
+        dayo::core::PmxMaterial rigidMaterial;
+        rigidMaterial.indexCount = 1;
+        noSoftBodyModel.materials.push_back(rigidMaterial);
         dayo::core::PmxSoftBody softBody;
+        softBody.material = 0;
         softBody.pinnedVertices = {};
         noSoftBodyModel.softBodies.push_back(softBody);
-        noSoftBodyModel.vertices[0].position = { 0.0F, 0.0F, 0.0F };
         dayo::core::SoftBodySimulation softSimulation(noSoftBodyModel);
-        std::vector<dayo::core::PmxVertex> skinned(1);
+        std::vector<dayo::core::PmxVertex> skinned(2);
         skinned[0].position = { 10.0F, 20.0F, 30.0F };
+        skinned[1].position = { 40.0F, 50.0F, 60.0F };
         softSimulation.step(1.0F / 30.0F, { 0.0F, -9.8F, 0.0F });
         softSimulation.apply(skinned);
         ok &= check(softSimulation.available() && softSimulation.bodyCount() == 1
                     && std::abs(skinned[0].position[0] - 10.0F) < 1e-4F
                     && std::abs(skinned[0].position[2] - 30.0F) < 1e-4F
-                    && skinned[0].position[1] < 20.0F,
-                    "soft-body fallback applies displacement after skinning");
+                    && skinned[0].position[1] < 20.0F
+                    && std::abs(skinned[1].position[0] - 40.0F) < 1e-4F
+                    && std::abs(skinned[1].position[1] - 50.0F) < 1e-4F
+                    && std::abs(skinned[1].position[2] - 60.0F) < 1e-4F,
+                    "soft-body fallback applies displacement only to its material vertices");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: PMX transform evaluation: " << exception.what() << '\n';
         ok = false;
