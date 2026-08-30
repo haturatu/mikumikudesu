@@ -120,6 +120,7 @@ private:
 
     VkPipelineLayout pipelineLayout_ {};
     VkPipeline pipeline_ {};
+    VkPipeline backgroundPipeline_ {};
     VkDescriptorSetLayout previewDescriptorSetLayout_ {};
     VkDescriptorPool previewDescriptorPool_ {};
     VkSampler previewSampler_ {};

@@ -619,6 +619,12 @@ void VulkanDevice::createPipeline() {
         .depthWriteEnable = VK_TRUE,
         .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
     };
+    const VkPipelineDepthStencilStateCreateInfo backgroundDepthStencil {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = VK_FALSE,
+        .depthWriteEnable = VK_FALSE,
+        .depthCompareOp = VK_COMPARE_OP_ALWAYS,
+    };
     const std::array dynamicStates { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
     const VkPipelineDynamicStateCreateInfo dynamic {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
@@ -662,14 +668,22 @@ void VulkanDevice::createPipeline() {
     };
     const auto result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo,
                                                    nullptr, &pipeline_);
+    auto backgroundPipelineInfo = pipelineInfo;
+    backgroundPipelineInfo.pDepthStencilState = &backgroundDepthStencil;
+    const auto backgroundResult = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1,
+                                                            &backgroundPipelineInfo, nullptr,
+                                                            &backgroundPipeline_);
     vkDestroyShaderModule(device_, fragment, nullptr);
     vkDestroyShaderModule(device_, vertex, nullptr);
     check(result, "create graphics pipeline");
+    check(backgroundResult, "create background graphics pipeline");
 }
 
 void VulkanDevice::destroyPipeline() {
+    if (backgroundPipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(device_, backgroundPipeline_, nullptr);
     if (pipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(device_, pipeline_, nullptr);
     if (pipelineLayout_ != VK_NULL_HANDLE) vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
+    backgroundPipeline_ = VK_NULL_HANDLE;
     pipeline_ = VK_NULL_HANDLE;
     pipelineLayout_ = VK_NULL_HANDLE;
 }
@@ -1170,6 +1184,7 @@ void VulkanDevice::renderFrame() {
         && previewBackgroundTexture_.descriptor != VK_NULL_HANDLE
         && previewBackgroundIndexCount_ != 0;
     if (hasBackground) {
+        vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, backgroundPipeline_);
         const VkDeviceSize backgroundOffset = 0;
         vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1,
                                &previewBackgroundVertexBuffer_, &backgroundOffset);
@@ -1185,6 +1200,7 @@ void VulkanDevice::renderFrame() {
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(constants), &constants);
         vkCmdDrawIndexed(frame.commandBuffer, previewBackgroundIndexCount_, 1, 0, 0, 0);
+        vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
         vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer_, &vertexOffset);
         vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     }
