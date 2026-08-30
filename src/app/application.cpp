@@ -361,18 +361,31 @@ void Application::handleAsset(const std::filesystem::path& path) {
     }
     if (kind == core::AssetKind::vmd) {
         try {
-            scene_.attachMotion(path);
+            auto motion = core::loadVmd(path);
+            const bool cameraOnly = motion.bones.empty() && motion.morphs.empty()
+                && (!motion.cameras.empty() || !motion.lights.empty());
+            const auto motionName = motion.modelName;
+            const auto boneKeyCount = motion.bones.size();
+            const auto morphKeyCount = motion.morphs.size();
+            const auto lastFrame = motion.lastFrame;
+            const auto cameraKeyCount = motion.cameras.size();
+            const auto lightKeyCount = motion.lights.size();
+            scene_.attachMotion(std::move(motion));
             manualCamera_ = false;
             animationFrame_ = 0.0F;
             scene_.setFrame(animationFrame_);
             if (selectedModel() != nullptr) refreshAnimatedMesh(false);
             refreshPreviewScene();
-            const auto* model = selectedModel();
-            const auto* motion = model != nullptr ? model->motion.get() : nullptr;
-            lastAsset_ = "VMD " + (motion != nullptr ? motion->modelName : path.filename().string())
-                       + " — " + std::to_string(motion != nullptr ? motion->bones.size() : 0) + " bone keys, "
-                       + std::to_string(motion != nullptr ? motion->morphs.size() : 0) + " morph keys, "
-                       + std::to_string(motion != nullptr ? motion->lastFrame : 0) + " frames";
+            if (cameraOnly) {
+                lastAsset_ = "VMD camera/light — " + std::to_string(cameraKeyCount) + " camera keys, "
+                           + std::to_string(lightKeyCount) + " light keys, "
+                           + std::to_string(lastFrame) + " frames";
+            } else {
+                lastAsset_ = "VMD " + (motionName.empty() ? path.filename().string() : motionName)
+                           + " — " + std::to_string(boneKeyCount) + " bone keys, "
+                           + std::to_string(morphKeyCount) + " morph keys, "
+                           + std::to_string(lastFrame) + " frames";
+            }
             log::info("Loaded motion: ", lastAsset_, " (", path.string(), ")");
             projectAssets_.push_back({ "vmd", std::filesystem::absolute(path) });
         } catch (const std::exception& exception) {
@@ -452,7 +465,10 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             instance.softBody->step(deltaSeconds, { gravity.gravityDirection[0] * gravity.gravity,
                                                     gravity.gravityDirection[1] * gravity.gravity,
                                                     gravity.gravityDirection[2] * gravity.gravity });
-            instance.softBody->apply(normalizedFrame.vertices);
+            // The fallback simulation currently stores model-space positions,
+            // so replacing the skinned frame here would undo VMD bone motion.
+            // Keep the simulation state available for diagnostics until it can
+            // be applied as a per-vertex post-skin offset.
         }
         core::normalizeForPreview(normalizedFrame.vertices, *instance.model);
         const auto textureBase = [&] {
