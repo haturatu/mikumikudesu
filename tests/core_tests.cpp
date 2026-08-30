@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <numbers>
 #include <string_view>
 
 namespace {
@@ -378,6 +379,11 @@ int main() {
         const auto audio = media.decodeAudio();
         ok &= check(audio.channels == 2 && audio.sampleRate == 48'000 && !audio.samples.empty(),
                     "FFmpeg audio decode and resample");
+        dayo::core::Scene backgroundScene;
+        backgroundScene.setBackgroundScreenSource(dayo::core::ScreenTextureSource::backgroundImage);
+        backgroundScene.setMedia(mediaPath);
+        ok &= check(backgroundScene.background().screenSource == dayo::core::ScreenTextureSource::backgroundImage,
+                    "audio-only media preserves the selected background source");
 #endif
         std::error_code mediaError;
         std::filesystem::remove(mediaPath, mediaError);
@@ -430,6 +436,49 @@ int main() {
         ok = false;
     }
     try {
+        dayo::core::PmxModel model;
+        model.metadata.modelName = "synthetic-motion-model";
+        model.vertices.resize(1);
+        model.vertices[0].position = { 0.0F, 2.0F, 0.0F };
+        model.vertices[0].normal = { 0.0F, 0.0F, 1.0F };
+        model.vertices[0].bones[0] = 1;
+        model.bones.resize(2);
+        model.bones[0].name = "root";
+        model.bones[0].position = { 0.0F, 0.0F, 0.0F };
+        model.bones[1].name = "child";
+        model.bones[1].position = { 0.0F, 1.0F, 0.0F };
+        model.bones[1].parent = 0;
+
+        dayo::core::VmdMotion motion;
+        dayo::core::VmdBoneKey first;
+        first.name = "child";
+        first.frame = 0;
+        first.interpolation.fill(127);
+        dayo::core::VmdBoneKey last = first;
+        last.frame = 10;
+        last.rotation = { 0.0F, 0.0F, std::sin(std::numbers::pi_v<float> * 0.25F),
+                          std::cos(std::numbers::pi_v<float> * 0.25F) };
+        motion.bones = { first, last };
+        motion.lastFrame = 10;
+
+        dayo::core::MmdAnimator animator(model);
+        animator.setMotion(&motion);
+        const auto compatibility = animator.motionCompatibility();
+        ok &= check(compatibility.vmdBoneTrackCount == 1 && compatibility.matchedBoneTrackCount == 1,
+                    "motion compatibility reports matched bone tracks");
+        const auto before = animator.evaluate(0.0F);
+        const auto after = animator.evaluate(10.0F);
+        ok &= check(before.vertices.size() == 1 && after.vertices.size() == 1
+                    && before.vertices[0].position != after.vertices[0].position,
+                    "matched VMD bone changes skinned vertices");
+        ok &= check(std::abs(after.vertices[0].position[0] + 1.0F) < 1e-4F
+                    && std::abs(after.vertices[0].position[1] - 1.0F) < 1e-4F,
+                    "skinned vertex follows the animated bone rotation");
+    } catch (const std::exception& exception) {
+        std::cerr << "FAIL: synthetic animation: " << exception.what() << '\n';
+        ok = false;
+    }
+    try {
         const auto icon = dayo::core::loadImageRgba8(
             std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo/res/dayoicon.png");
         ok &= check(icon.width > 0 && icon.height > 0 && icon.pixels.size() == icon.width * icon.height * 4U,
@@ -451,6 +500,7 @@ int main() {
         const auto motion = dayo::core::loadVmd(sampleVmd);
         ok &= check(!motion.modelName.empty(), "VMD CP932 model name");
         ok &= check(!motion.bones.empty(), "VMD bone keys");
+        bool evaluatedFixture = false;
         for (const auto& entry : std::filesystem::directory_iterator(
                  std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo/sample")) {
             if (entry.path().extension() != ".pmx") continue;
@@ -459,6 +509,9 @@ int main() {
                 if (candidate.metadata.modelName != motion.modelName || candidate.vertices.empty()) continue;
                 dayo::core::MmdAnimator animator(candidate);
                 animator.setMotion(&motion);
+                const auto compatibility = animator.motionCompatibility();
+                ok &= check(compatibility.matchedBoneTrackCount > 0,
+                            "sample VMD/PMX has compatible bone tracks");
                 const auto first = animator.evaluate(0.0F);
                 const auto animated = animator.evaluate(10.0F);
                 bool changed = false;
@@ -466,11 +519,13 @@ int main() {
                     if (first.vertices[i].position != animated.vertices[i].position) { changed = true; break; }
                 }
                 ok &= check(changed, "VMD CPU skinning changes vertices");
+                evaluatedFixture = true;
                 break;
             } catch (const std::exception&) {
                 // Some tiny effect descriptors use the PMX extension without model sections.
             }
         }
+        ok &= check(evaluatedFixture, "sample VMD has a matching PMX fixture");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: VMD load: " << exception.what() << '\n';
         ok = false;
