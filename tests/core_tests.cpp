@@ -479,6 +479,79 @@ int main() {
         ok = false;
     }
     try {
+        dayo::core::PmxModel grantModel;
+        grantModel.metadata.modelName = "synthetic-grant-model";
+        grantModel.vertices.resize(1);
+        grantModel.vertices[0].position = { 0.0F, 2.0F, 0.0F };
+        grantModel.vertices[0].normal = { 0.0F, 0.0F, 1.0F };
+        grantModel.vertices[0].bones[0] = 1;
+        grantModel.bones.resize(3);
+        grantModel.bones[0].name = "root";
+        grantModel.bones[1].name = "grant-target";
+        grantModel.bones[1].position = { 0.0F, 1.0F, 0.0F };
+        grantModel.bones[1].parent = 0;
+        grantModel.bones[1].deformLayer = 2;
+        grantModel.bones[1].flags = 0x0100U;
+        grantModel.bones[1].inheritParent = 2;
+        grantModel.bones[1].inheritRatio = 1.0F;
+        grantModel.bones[2].name = "grant-source";
+        grantModel.bones[2].parent = 0;
+        grantModel.bones[2].deformLayer = 1;
+
+        dayo::core::VmdMotion grantMotion;
+        dayo::core::VmdBoneKey grantKey;
+        grantKey.name = "grant-source";
+        grantKey.frame = 0;
+        grantKey.rotation = { 0.0F, 0.0F, std::sin(std::numbers::pi_v<float> * 0.25F),
+                              std::cos(std::numbers::pi_v<float> * 0.25F) };
+        grantMotion.bones.push_back(grantKey);
+        grantMotion.lastFrame = 1;
+        dayo::core::MmdAnimator grantAnimator(grantModel);
+        grantAnimator.setMotion(&grantMotion);
+        const auto granted = grantAnimator.evaluate(0.0F);
+        ok &= check(std::abs(granted.vertices[0].position[0] + 1.0F) < 1e-4F
+                    && std::abs(granted.vertices[0].position[1] - 1.0F) < 1e-4F,
+                    "PMX deform order applies append rotation from a later-index source bone");
+
+        dayo::core::PmxModel ikModel;
+        ikModel.metadata.modelName = "synthetic-ik-model";
+        ikModel.vertices.resize(1);
+        ikModel.vertices[0].position = { 1.5F, 0.0F, 0.0F };
+        ikModel.vertices[0].normal = { 0.0F, 0.0F, 1.0F };
+        ikModel.vertices[0].bones[0] = 2;
+        ikModel.bones.resize(4);
+        ikModel.bones[0].name = "root";
+        ikModel.bones[1].name = "ik-link";
+        ikModel.bones[1].parent = 0;
+        ikModel.bones[2].name = "ik-effector";
+        ikModel.bones[2].position = { 1.0F, 0.0F, 0.0F };
+        ikModel.bones[2].parent = 1;
+        ikModel.bones[3].name = "ik";
+        ikModel.bones[3].position = { 0.0F, 1.0F, 0.0F };
+        ikModel.bones[3].parent = 0;
+        ikModel.bones[3].flags = 0x0020U;
+        ikModel.bones[3].ikTarget = 2;
+        ikModel.bones[3].ikLoopCount = 8;
+        ikModel.bones[3].ikLimitAngle = std::numbers::pi_v<float> * 0.5F;
+        ikModel.bones[3].ikLinks.push_back({ 1, false, {}, {} });
+        dayo::core::VmdMotion ikMotion;
+        ikMotion.lastFrame = 1;
+        ikMotion.ik.push_back({ 0, true, { { "ik", true } } });
+        dayo::core::VmdMotion disabledIkMotion = ikMotion;
+        disabledIkMotion.ik[0].states[0].enabled = false;
+        dayo::core::MmdAnimator ikAnimator(ikModel);
+        ikAnimator.setMotion(&disabledIkMotion);
+        const auto ikDisabled = ikAnimator.evaluate(0.0F);
+        ikAnimator.setMotion(&ikMotion);
+        const auto ikEnabled = ikAnimator.evaluate(0.0F);
+        ok &= check(std::abs(ikDisabled.vertices[0].position[1]) < 1e-4F
+                    && ikEnabled.vertices[0].position[1] > 1.0F,
+                    "VMD IK state toggles PMX IK evaluation");
+    } catch (const std::exception& exception) {
+        std::cerr << "FAIL: PMX transform evaluation: " << exception.what() << '\n';
+        ok = false;
+    }
+    try {
         const auto icon = dayo::core::loadImageRgba8(
             std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo/res/dayoicon.png");
         ok &= check(icon.width > 0 && icon.height > 0 && icon.pixels.size() == icon.width * icon.height * 4U,
