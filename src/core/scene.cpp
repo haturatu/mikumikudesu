@@ -296,7 +296,6 @@ void Scene::setBackgroundVideo(const std::filesystem::path& path) {
 void Scene::setMedia(const std::filesystem::path& path) {
     media_.emplace(path);
     if (media_->info().hasVideo) setBackgroundVideo(path);
-    else background_.screenSource = ScreenTextureSource::previousFrame;
     markDirty(DirtyFlag::background);
 }
 
