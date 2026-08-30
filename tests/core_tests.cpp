@@ -429,6 +429,46 @@ int main() {
         ok &= check(physicalAfter.vertices[0].position[1] < physicalBefore.vertices[0].position[1],
                     "Bullet body drives PMX bone skinning");
 
+        dayo::core::PmxModel alignedModel;
+        alignedModel.vertices.resize(1);
+        alignedModel.vertices[0].position = { 0.0F, 2.0F, 0.0F };
+        alignedModel.vertices[0].normal = { 0.0F, 1.0F, 0.0F };
+        alignedModel.vertices[0].bones[0] = 0;
+        dayo::core::PmxBone alignedBone;
+        alignedBone.name = "aligned";
+        alignedBone.position = { 0.0F, 2.0F, 0.0F };
+        alignedModel.bones.push_back(alignedBone);
+        dayo::core::PmxRigidBody alignedBody;
+        alignedBody.shape = 0;
+        alignedBody.size = { 0.5F, 0.5F, 0.5F };
+        alignedBody.position = { 0.0F, 2.0F, 0.0F };
+        alignedBody.bone = 0;
+        alignedBody.mass = 1.0F;
+        alignedBody.mode = 2;
+        alignedBody.collisionMask = 0;
+        alignedModel.rigidBodies.push_back(alignedBody);
+        dayo::core::MmdPhysics alignedPhysics(alignedModel);
+        dayo::core::MmdAnimator alignedAnimator(alignedModel);
+        alignedAnimator.setPhysics(&alignedPhysics);
+        const auto alignedBefore = alignedAnimator.evaluate(0.0F, 0.0F);
+        const auto alignedBodyBefore = alignedPhysics.bodyTransform(0);
+        const auto alignedAfter = alignedAnimator.evaluate(1.0F, 1.0F / 30.0F);
+        const auto alignedBodyAfter = alignedPhysics.bodyTransform(0);
+        ok &= check(alignedBodyAfter.position[1] < alignedBodyBefore.position[1]
+                    && std::abs(alignedAfter.vertices[0].position[1] - alignedBefore.vertices[0].position[1]) < 1e-4F,
+                    "PMX mode 2 keeps animated bone translation while physics moves the rigid body");
+
+        dayo::core::MmdPhysics seekPhysics(physicsModel);
+        dayo::core::MmdAnimator seekAnimator(physicsModel);
+        seekAnimator.setPhysics(&seekPhysics);
+        static_cast<void>(seekAnimator.evaluate(0.0F, 0.0F));
+        static_cast<void>(seekAnimator.evaluate(1.0F, 1.0F / 30.0F));
+        const auto seekMoved = seekPhysics.bodyTransform(0);
+        static_cast<void>(seekAnimator.evaluate(1047.0F, 0.0F));
+        const auto seekReset = seekPhysics.bodyTransform(0);
+        ok &= check(seekMoved.position[1] < 2.0F && std::abs(seekReset.position[1] - 2.0F) < 1e-4F,
+                    "forward timeline seek resets Bullet state");
+
         dayo::core::PmxModel jointModel;
         jointModel.vertices.resize(1);
         jointModel.vertices[0].position = { 0.0F, 2.0F, 0.0F };
