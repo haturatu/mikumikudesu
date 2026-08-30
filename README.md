@@ -16,6 +16,7 @@ MikuMikuDayo 1.20をLinuxへ移植したネイティブ実行系です。元のW
 - PMX材質範囲、diffuse/ambient/specular/power、texture乗算/加算モーフ、VMDカメラ/照明
 - FFmpegによるWAV/MP3/M4A等の音声再生とMP4/AVI/MKV/MOV/WebM動画デコード
 - FFmpegを使ったストリーミングAAC/M4A音声書き出し（CLI / 非同期ImGui UI）
+- Vulkan Previewのオフスクリーンreadbackと、決定論的なタイムラインでのMP4動画書き出し（H.264/H.265/AV1 + AAC）
 - Jsonnetを実行した`.fxdayo`のtexture/sampler/pass/raster/compute/raytracing graph解析
 - 複数PMXを保持できるScene（モデル別VMD/VPD/物理、表示切替、clone、背景画像/動画/音声の共存）
 - `.dayo` v1/v2互換読込、v3原子的保存、独自VMdayo-like motion文書の読込/保存と未知payload保持
@@ -122,6 +123,13 @@ ctest --preset linux-debug --output-on-failure
 --audio-bitrate KBPS            AAC bitrate（既定: 192）
 --audio-from SEC / --audio-to SEC  書き出し範囲（秒）
 --overwrite                     既存のM4Aを置換する
+--export-video PATH             PreviewをMP4へ書き出す（Vulkanが必要）
+--video-width PX / --video-height PX  出力解像度（既定: 1920x1080）
+--video-fps FPS                 固定フレームレート（既定: 30）
+--video-codec h264|h265|av1     映像codec（既定: h264）
+--video-bitrate KBPS            映像bitrate（既定: 8000）
+--video-from-frame N / --video-to-frame N  フレーム範囲（0始まり）
+--no-audio                      MP4に音声streamを含めない
 ```
 
 音声だけを書き出す場合は、ウィンドウやVulkanを起動せずに実行します。
@@ -140,6 +148,27 @@ ctest --preset linux-debug --output-on-failure
 
 出力は一時的な`.m4a.part`へ書き込み、成功時に完成ファイルへ原子的に置換します。Sceneの
 背景・再生用`MediaFile`や画像の`OutputQueue`とは独立した`AudioExporter`を使います。
+
+動画を書き出す場合はPreview rendererでSceneをフレーム0から固定stepで評価し、指定解像度の
+offscreen Vulkan targetをCPUへreadbackしてMP4へ渡します。UIは動画に含めず、音声はassetから
+一意に解決します（複数ある場合は`--audio-source PATH`で指定）。映像・音声のエンコード中は
+`output.mp4.part`へ書き込み、完了時だけ`output.mp4`へ確定します。
+
+```bash
+./build/linux-debug/mikumikudesu \
+  --asset miku.pmx --asset dance.vmd --asset camera.vmd --asset music.wav \
+  --export-video dance.mp4 --video-width 1920 --video-height 1080 \
+  --video-fps 30 --video-codec h264 --video-bitrate 8000
+
+# 0〜300フレームを音声なしで書き出す
+./build/linux-debug/mikumikudesu \
+  --asset miku.pmx --asset dance.vmd --export-video preview.mp4 \
+  --video-to-frame 300 --no-audio
+```
+
+動画書き出しはGPUを使うため、音声書き出しのような完全headless処理ではありません。SDL/Vulkan
+のhidden windowとPreview deviceを起動します。Subayai/BDPTは現在のnative executor未実装のため、
+動画書き出しではPreview rendererを使用してください。
 
 system packageのみで構成する場合:
 
