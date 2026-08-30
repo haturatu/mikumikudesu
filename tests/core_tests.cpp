@@ -428,6 +428,67 @@ int main() {
         const auto physicalAfter = physicalAnimator.evaluate(1.0F, 1.0F / 30.0F);
         ok &= check(physicalAfter.vertices[0].position[1] < physicalBefore.vertices[0].position[1],
                     "Bullet body drives PMX bone skinning");
+
+        dayo::core::PmxModel jointModel;
+        jointModel.vertices.resize(1);
+        jointModel.vertices[0].position = { 0.0F, 2.0F, 0.0F };
+        jointModel.vertices[0].normal = { 0.0F, 1.0F, 0.0F };
+        jointModel.vertices[0].bones[0] = 1;
+        jointModel.bones.resize(2);
+        jointModel.bones[0].name = "root";
+        jointModel.bones[1].name = "dynamic";
+        jointModel.bones[1].position = { 0.0F, 2.0F, 0.0F };
+        jointModel.bones[1].parent = 0;
+        dayo::core::PmxRigidBody anchor;
+        anchor.shape = 0;
+        anchor.size = { 0.5F, 0.5F, 0.5F };
+        anchor.position = { 0.0F, 0.0F, 0.0F };
+        anchor.bone = 0;
+        anchor.collisionMask = 0;
+        jointModel.rigidBodies.push_back(anchor);
+        auto dynamic = anchor;
+        dynamic.position = { 0.0F, 2.0F, 0.0F };
+        dynamic.bone = 1;
+        dynamic.mass = 1.0F;
+        dynamic.mode = 1;
+        jointModel.rigidBodies.push_back(dynamic);
+        dayo::core::PmxJoint joint;
+        joint.bodyA = 0;
+        joint.bodyB = 1;
+        joint.position = { 0.0F, 2.0F, 0.0F };
+        joint.translationMinimum = { -100.0F, -100.0F, -100.0F };
+        joint.translationMaximum = { 100.0F, 100.0F, 100.0F };
+        joint.rotationMinimum = { -100.0F, -100.0F, -100.0F };
+        joint.rotationMaximum = { 100.0F, 100.0F, 100.0F };
+        jointModel.joints.push_back(joint);
+        dayo::core::MmdPhysics jointPhysics(jointModel);
+        ok &= check(jointPhysics.available() && jointPhysics.bodyCount() == 2 && jointPhysics.jointCount() == 1,
+                    "Bullet keeps a valid PMX joint constraint");
+        dayo::core::MmdAnimator jointAnimator(jointModel);
+        jointAnimator.setPhysics(&jointPhysics);
+        const auto jointBefore = jointAnimator.evaluate(0.0F, 0.0F);
+        const auto jointAfter = jointAnimator.evaluate(1.0F, 1.0F / 30.0F);
+        ok &= check(jointAfter.vertices[0].position[1] < jointBefore.vertices[0].position[1],
+                    "Bullet joint model still drives a dynamic PMX bone");
+
+        dayo::core::PmxModel invalidInertiaModel;
+        dayo::core::PmxRigidBody invalidInertiaBody;
+        invalidInertiaBody.shape = 0;
+        invalidInertiaBody.size = { 0.0F, 0.0F, 0.0F };
+        invalidInertiaBody.mass = 2.0F;
+        invalidInertiaBody.mode = 1;
+        invalidInertiaModel.rigidBodies.push_back(invalidInertiaBody);
+        auto invalidInertiaAnchor = invalidInertiaBody;
+        invalidInertiaAnchor.mass = 0.0F;
+        invalidInertiaAnchor.mode = 0;
+        invalidInertiaModel.rigidBodies.push_back(invalidInertiaAnchor);
+        dayo::core::PmxJoint invalidInertiaJoint;
+        invalidInertiaJoint.bodyA = 0;
+        invalidInertiaJoint.bodyB = 1;
+        invalidInertiaModel.joints.push_back(invalidInertiaJoint);
+        dayo::core::MmdPhysics invalidInertiaPhysics(invalidInertiaModel);
+        ok &= check(invalidInertiaPhysics.bodyCount() == 2 && invalidInertiaPhysics.jointCount() == 0,
+                    "invalid inertia body uses zero effective mass and skips its constraint");
 #else
         ok &= check(!physics.available(), "optional Bullet fallback");
 #endif
@@ -485,22 +546,28 @@ int main() {
         grantModel.vertices[0].position = { 0.0F, 2.0F, 0.0F };
         grantModel.vertices[0].normal = { 0.0F, 0.0F, 1.0F };
         grantModel.vertices[0].bones[0] = 1;
-        grantModel.bones.resize(3);
+        grantModel.bones.resize(4);
         grantModel.bones[0].name = "root";
         grantModel.bones[1].name = "grant-target";
         grantModel.bones[1].position = { 0.0F, 1.0F, 0.0F };
         grantModel.bones[1].parent = 0;
-        grantModel.bones[1].deformLayer = 2;
-        grantModel.bones[1].flags = 0x0100U;
+        grantModel.bones[1].deformLayer = 3;
+        grantModel.bones[1].flags = 0x0180U;
         grantModel.bones[1].inheritParent = 2;
         grantModel.bones[1].inheritRatio = 1.0F;
         grantModel.bones[2].name = "grant-source";
         grantModel.bones[2].parent = 0;
-        grantModel.bones[2].deformLayer = 1;
+        grantModel.bones[2].deformLayer = 2;
+        grantModel.bones[2].flags = 0x0100U;
+        grantModel.bones[2].inheritParent = 3;
+        grantModel.bones[2].inheritRatio = 1.0F;
+        grantModel.bones[3].name = "grant-source-root";
+        grantModel.bones[3].parent = 0;
+        grantModel.bones[3].deformLayer = 1;
 
         dayo::core::VmdMotion grantMotion;
         dayo::core::VmdBoneKey grantKey;
-        grantKey.name = "grant-source";
+        grantKey.name = "grant-source-root";
         grantKey.frame = 0;
         grantKey.rotation = { 0.0F, 0.0F, std::sin(std::numbers::pi_v<float> * 0.25F),
                               std::cos(std::numbers::pi_v<float> * 0.25F) };
@@ -509,9 +576,42 @@ int main() {
         dayo::core::MmdAnimator grantAnimator(grantModel);
         grantAnimator.setMotion(&grantMotion);
         const auto granted = grantAnimator.evaluate(0.0F);
-        ok &= check(std::abs(granted.vertices[0].position[0] + 1.0F) < 1e-4F
-                    && std::abs(granted.vertices[0].position[1] - 1.0F) < 1e-4F,
-                    "PMX deform order applies append rotation from a later-index source bone");
+        ok &= check(std::abs(granted.vertices[0].position[0]) < 1e-4F
+                    && std::abs(granted.vertices[0].position[1] - 2.0F) < 1e-4F,
+                    "PMX local append uses the source user transform");
+
+        grantModel.bones[1].flags = 0x0100U;
+        dayo::core::MmdAnimator nonLocalGrantAnimator(grantModel);
+        nonLocalGrantAnimator.setMotion(&grantMotion);
+        const auto nonLocalGranted = nonLocalGrantAnimator.evaluate(0.0F);
+        ok &= check(std::abs(nonLocalGranted.vertices[0].position[0] + 1.0F) < 1e-4F
+                    && std::abs(nonLocalGranted.vertices[0].position[1] - 1.0F) < 1e-4F,
+                    "PMX non-local append includes a multiple-append source");
+
+        dayo::core::PmxModel fixedAxisModel;
+        fixedAxisModel.vertices.resize(1);
+        fixedAxisModel.vertices[0].position = { 0.0F, 2.0F, 0.0F };
+        fixedAxisModel.vertices[0].normal = { 0.0F, 0.0F, 1.0F };
+        fixedAxisModel.vertices[0].bones[0] = 1;
+        fixedAxisModel.bones.resize(2);
+        fixedAxisModel.bones[0].name = "root";
+        fixedAxisModel.bones[1].name = "fixed-axis";
+        fixedAxisModel.bones[1].position = { 0.0F, 1.0F, 0.0F };
+        fixedAxisModel.bones[1].parent = 0;
+        fixedAxisModel.bones[1].flags = 0x0400U;
+        fixedAxisModel.bones[1].fixedAxis = { 0.0F, 0.0F, 1.0F };
+        dayo::core::VmdMotion fixedAxisMotion;
+        dayo::core::VmdBoneKey fixedAxisKey;
+        fixedAxisKey.name = "fixed-axis";
+        fixedAxisKey.frame = 0;
+        fixedAxisKey.rotation = { std::sin(std::numbers::pi_v<float> * 0.25F), 0.0F, 0.0F,
+                                   std::cos(std::numbers::pi_v<float> * 0.25F) };
+        fixedAxisMotion.bones.push_back(fixedAxisKey);
+        dayo::core::MmdAnimator fixedAxisAnimator(fixedAxisModel);
+        fixedAxisAnimator.setMotion(&fixedAxisMotion);
+        const auto fixedAxisFrame = fixedAxisAnimator.evaluate(0.0F);
+        ok &= check(fixedAxisFrame.vertices[0].position[2] > 0.5F,
+                    "PMX fixed axis does not project an imported VMD rotation");
 
         dayo::core::PmxModel ikModel;
         ikModel.metadata.modelName = "synthetic-ik-model";
@@ -547,6 +647,25 @@ int main() {
         ok &= check(std::abs(ikDisabled.vertices[0].position[1]) < 1e-4F
                     && ikEnabled.vertices[0].position[1] > 1.0F,
                     "VMD IK state toggles PMX IK evaluation");
+
+        dayo::core::PmxModel noSoftBodyModel;
+        noSoftBodyModel.vertices.resize(1);
+        dayo::core::SoftBodySimulation noSoftBody(noSoftBodyModel);
+        ok &= check(!noSoftBody.available(), "soft-body fallback stays unavailable without PMX soft bodies");
+        dayo::core::PmxSoftBody softBody;
+        softBody.pinnedVertices = {};
+        noSoftBodyModel.softBodies.push_back(softBody);
+        noSoftBodyModel.vertices[0].position = { 0.0F, 0.0F, 0.0F };
+        dayo::core::SoftBodySimulation softSimulation(noSoftBodyModel);
+        std::vector<dayo::core::PmxVertex> skinned(1);
+        skinned[0].position = { 10.0F, 20.0F, 30.0F };
+        softSimulation.step(1.0F / 30.0F, { 0.0F, -9.8F, 0.0F });
+        softSimulation.apply(skinned);
+        ok &= check(softSimulation.available() && softSimulation.bodyCount() == 1
+                    && std::abs(skinned[0].position[0] - 10.0F) < 1e-4F
+                    && std::abs(skinned[0].position[2] - 30.0F) < 1e-4F
+                    && skinned[0].position[1] < 20.0F,
+                    "soft-body fallback applies displacement after skinning");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: PMX transform evaluation: " << exception.what() << '\n';
         ok = false;
