@@ -26,6 +26,7 @@ public:
     [[nodiscard]] bool available() const noexcept;
     [[nodiscard]] std::size_t bodyCount() const noexcept;
     [[nodiscard]] std::size_t jointCount() const noexcept;
+    [[nodiscard]] std::uint8_t bodyMode(std::size_t body) const noexcept;
     void reset();
     void step(float deltaSeconds);
     void setGravity(const Float3& gravity);
@@ -58,6 +59,7 @@ private:
     std::vector<Float3> positions_;
     std::vector<Float3> velocities_;
     std::vector<std::uint8_t> pinned_;
+    std::vector<std::uint8_t> active_;
     std::size_t bodyCount_ {};
 };
 

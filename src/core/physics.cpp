@@ -201,12 +201,25 @@ MmdPhysics& MmdPhysics::operator=(MmdPhysics&&) noexcept = default;
 
 SoftBodySimulation::SoftBodySimulation(const PmxModel& model)
     : initial_(model.vertices.size()), positions_(model.vertices.size()),
-      velocities_(model.vertices.size()), pinned_(model.vertices.size()), bodyCount_(model.softBodies.size()) {
+      velocities_(model.vertices.size()), pinned_(model.vertices.size()), active_(model.vertices.size()) {
     for (std::size_t index = 0; index < model.vertices.size(); ++index) {
         initial_[index] = model.vertices[index].position;
         positions_[index] = initial_[index];
     }
     for (const auto& softBody : model.softBodies) {
+        if (softBody.material < 0 || static_cast<std::size_t>(softBody.material) >= model.materials.size()) continue;
+        std::size_t firstIndex = 0;
+        for (std::size_t material = 0; material < static_cast<std::size_t>(softBody.material); ++material) {
+            firstIndex += model.materials[material].indexCount;
+        }
+        if (firstIndex >= model.indices.size()) continue;
+        const auto materialIndexCount = model.materials[static_cast<std::size_t>(softBody.material)].indexCount;
+        const auto lastIndex = firstIndex + std::min<std::size_t>(materialIndexCount, model.indices.size() - firstIndex);
+        for (std::size_t index = firstIndex; index < lastIndex; ++index) {
+            const auto vertex = model.indices[index];
+            if (vertex < active_.size()) active_[vertex] = 1;
+        }
+        ++bodyCount_;
         for (const auto vertex : softBody.pinnedVertices) {
             if (vertex >= 0 && static_cast<std::size_t>(vertex) < pinned_.size()) pinned_[static_cast<std::size_t>(vertex)] = 1;
         }
@@ -222,6 +235,7 @@ void SoftBodySimulation::step(float deltaSeconds, const Float3& gravity) {
     if (!available() || deltaSeconds <= 0.0F) return;
     const float dt = std::min(deltaSeconds, 0.05F);
     for (std::size_t index = 0; index < positions_.size(); ++index) {
+        if (active_[index] == 0) continue;
         if (pinned_[index] != 0) { positions_[index] = initial_[index]; velocities_[index] = {}; continue; }
         for (std::size_t axis = 0; axis < 3; ++axis) {
             const auto displacement = positions_[index][axis] - initial_[index][axis];
@@ -235,6 +249,7 @@ void SoftBodySimulation::step(float deltaSeconds, const Float3& gravity) {
 void SoftBodySimulation::apply(std::span<PmxVertex> vertices) const {
     const auto count = std::min(vertices.size(), positions_.size());
     for (std::size_t index = 0; index < count; ++index) {
+        if (active_[index] == 0) continue;
         // The input vertices already contain VMD skinning and morph results.
         // Apply only the simulated displacement instead of restoring bind
         // positions over the animated mesh.
@@ -264,6 +279,15 @@ std::size_t MmdPhysics::jointCount() const noexcept {
 #if DAYO_HAS_BULLET
     return impl_->constraints.size();
 #else
+    return 0;
+#endif
+}
+
+std::uint8_t MmdPhysics::bodyMode(std::size_t body) const noexcept {
+#if DAYO_HAS_BULLET
+    return impl_ != nullptr && body < impl_->modes.size() ? impl_->modes[body] : std::uint8_t { 0 };
+#else
+    static_cast<void>(body);
     return 0;
 #endif
 }
