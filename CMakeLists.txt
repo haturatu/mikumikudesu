@@ -299,6 +299,9 @@ if(BUILD_TESTING)
     add_test(NAME audio_export_cli
       COMMAND bash "${CMAKE_SOURCE_DIR}/tests/audio_export_cli.sh" "$<TARGET_FILE:mikumikudesu>")
     set_tests_properties(audio_export_cli PROPERTIES TIMEOUT 20)
+    add_test(NAME video_export_cli
+      COMMAND bash "${CMAKE_SOURCE_DIR}/tests/video_export_cli.sh" "$<TARGET_FILE:mikumikudesu>")
+    set_tests_properties(video_export_cli PROPERTIES TIMEOUT 60)
   endif()
 endif()
 
