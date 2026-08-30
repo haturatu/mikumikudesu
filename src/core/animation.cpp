@@ -1,4 +1,5 @@
 #include "core/animation.hpp"
+#include "core/log.hpp"
 #include "core/physics.hpp"
 
 #include <algorithm>
@@ -7,6 +8,7 @@
 #include <numbers>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace dayo::core {
 namespace {
@@ -263,9 +265,46 @@ void skinQdef(PmxVertex& vertex, const PmxModel& model, const std::vector<Global
 } // namespace
 
 MmdAnimator::MmdAnimator(const PmxModel& model) : model_(model) {}
-void MmdAnimator::setMotion(const VmdMotion* motion) { motion_ = motion; }
+void MmdAnimator::setMotion(const VmdMotion* motion) {
+    motion_ = motion;
+    if (motion_ == nullptr) return;
+
+    const auto compatibility = motionCompatibility();
+    log::info("Motion compatibility: PMX bones=", compatibility.pmxBoneCount,
+              ", VMD keys=", compatibility.vmdBoneKeyCount,
+              ", VMD tracks=", compatibility.vmdBoneTrackCount,
+              ", matched keys=", compatibility.matchedBoneKeyCount,
+              ", matched tracks=", compatibility.matchedBoneTrackCount,
+              ", unmatched tracks=", compatibility.vmdBoneTrackCount - compatibility.matchedBoneTrackCount);
+    if (compatibility.vmdBoneTrackCount > 0 && compatibility.matchedBoneTrackCount == 0) {
+        log::warn("Motion has no bone tracks compatible with the PMX model");
+    }
+}
 void MmdAnimator::setPose(const VpdPose* pose) { pose_ = pose; }
 void MmdAnimator::setPhysics(MmdPhysics* physics) { physics_ = physics; previousFrame_ = -1.0F; }
+
+MotionCompatibility MmdAnimator::motionCompatibility() const {
+    MotionCompatibility result;
+    result.pmxBoneCount = model_.bones.size();
+    if (motion_ == nullptr) return result;
+
+    std::unordered_set<std::string_view> pmxBones;
+    pmxBones.reserve(model_.bones.size());
+    for (const auto& bone : model_.bones) pmxBones.insert(bone.name);
+
+    std::unordered_set<std::string_view> vmdBones;
+    vmdBones.reserve(motion_->bones.size());
+    for (const auto& key : motion_->bones) {
+        ++result.vmdBoneKeyCount;
+        vmdBones.insert(key.name);
+        if (pmxBones.contains(key.name)) ++result.matchedBoneKeyCount;
+    }
+    result.vmdBoneTrackCount = vmdBones.size();
+    for (const auto name : vmdBones) {
+        if (pmxBones.contains(name)) ++result.matchedBoneTrackCount;
+    }
+    return result;
+}
 
 AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
     AnimatedModelFrame result;

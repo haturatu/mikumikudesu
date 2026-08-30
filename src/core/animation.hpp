@@ -36,6 +36,14 @@ struct PreviewNormalization {
     float scale { 1.0F };
 };
 
+struct MotionCompatibility {
+    std::size_t pmxBoneCount {};
+    std::size_t vmdBoneKeyCount {};
+    std::size_t vmdBoneTrackCount {};
+    std::size_t matchedBoneKeyCount {};
+    std::size_t matchedBoneTrackCount {};
+};
+
 class MmdAnimator {
 public:
     explicit MmdAnimator(const PmxModel& model);
@@ -43,6 +51,7 @@ public:
     void setMotion(const VmdMotion* motion);
     void setPose(const VpdPose* pose);
     void setPhysics(MmdPhysics* physics);
+    [[nodiscard]] MotionCompatibility motionCompatibility() const;
     [[nodiscard]] AnimatedModelFrame evaluate(float frame, float deltaSeconds = 0.0F);
 
 private:
