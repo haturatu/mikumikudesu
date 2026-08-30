@@ -507,6 +507,55 @@ int main() {
         const auto sanitizedAfter = sanitizedAnimator.evaluate(1.0F, 1.0F / 30.0F);
         ok &= check(std::abs(sanitizedAfter.vertices[0].position[1] - sanitizedBefore.vertices[0].position[1]) < 1e-4F,
                     "sanitized dynamic body does not snap its PMX bone");
+
+        dayo::core::PmxModel postPhysicsModel;
+        postPhysicsModel.metadata.modelName = "synthetic-post-physics-ik-model";
+        postPhysicsModel.vertices.resize(1);
+        postPhysicsModel.vertices[0].position = { 1.0F, 1.0F, 0.0F };
+        postPhysicsModel.vertices[0].normal = { 0.0F, 0.0F, 1.0F };
+        postPhysicsModel.vertices[0].bones[0] = 1;
+        postPhysicsModel.bones.resize(4);
+        postPhysicsModel.bones[0].name = "root";
+        postPhysicsModel.bones[1].name = "post-link";
+        postPhysicsModel.bones[1].position = { 0.0F, 1.0F, 0.0F };
+        postPhysicsModel.bones[1].parent = 0;
+        postPhysicsModel.bones[1].flags = 0x1000U;
+        postPhysicsModel.bones[2].name = "post-effector";
+        postPhysicsModel.bones[2].position = { 1.0F, 1.0F, 0.0F };
+        postPhysicsModel.bones[2].parent = 1;
+        postPhysicsModel.bones[2].flags = 0x1000U;
+        postPhysicsModel.bones[3].name = "post-ik";
+        postPhysicsModel.bones[3].position = { 0.0F, 2.0F, 0.0F };
+        postPhysicsModel.bones[3].parent = 0;
+        postPhysicsModel.bones[3].flags = 0x1020U;
+        postPhysicsModel.bones[3].ikTarget = 2;
+        postPhysicsModel.bones[3].ikLoopCount = 8;
+        postPhysicsModel.bones[3].ikLimitAngle = std::numbers::pi_v<float> * 0.5F;
+        postPhysicsModel.bones[3].ikLinks.push_back({ 1, false, {}, {} });
+        dayo::core::PmxRigidBody postPhysicsBody;
+        postPhysicsBody.shape = 0;
+        postPhysicsBody.size = { 0.25F, 0.25F, 0.25F };
+        postPhysicsBody.position = { 0.0F, 2.0F, 0.0F };
+        postPhysicsBody.bone = 3;
+        postPhysicsBody.mass = 1.0F;
+        postPhysicsBody.mode = 1;
+        postPhysicsBody.collisionMask = 0;
+        postPhysicsModel.rigidBodies.push_back(postPhysicsBody);
+        dayo::core::MmdPhysics postPhysics(postPhysicsModel);
+        postPhysics.setGravity({ 9.8F, -9.8F, 0.0F });
+        dayo::core::MmdAnimator postPhysicsAnimator(postPhysicsModel);
+        postPhysicsAnimator.setPhysics(&postPhysics);
+        const auto postBodyBefore = postPhysics.bodyTransform(0);
+        const auto postPhysicsBefore = postPhysicsAnimator.evaluate(0.0F, 0.0F);
+        const auto postPhysicsAfter = postPhysicsAnimator.evaluate(1.0F, 1.0F / 30.0F);
+        const auto& beforeVertex = postPhysicsBefore.vertices[0].position;
+        const auto& afterVertex = postPhysicsAfter.vertices[0].position;
+        const auto postPhysicsMovement = std::abs(afterVertex[0] - beforeVertex[0])
+            + std::abs(afterVertex[1] - beforeVertex[1])
+            + std::abs(afterVertex[2] - beforeVertex[2]);
+        const auto postBodyAfter = postPhysics.bodyTransform(0);
+        ok &= check(postBodyAfter.position != postBodyBefore.position && postPhysicsMovement > 1e-4F,
+                    "post-physics IK uses the dynamic rigid-body result before skinning");
 #else
         ok &= check(!physics.available(), "optional Bullet fallback");
 #endif
