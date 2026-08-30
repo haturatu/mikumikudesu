@@ -465,10 +465,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             instance.softBody->step(deltaSeconds, { gravity.gravityDirection[0] * gravity.gravity,
                                                     gravity.gravityDirection[1] * gravity.gravity,
                                                     gravity.gravityDirection[2] * gravity.gravity });
-            // The fallback simulation currently stores model-space positions,
-            // so replacing the skinned frame here would undo VMD bone motion.
-            // Keep the simulation state available for diagnostics until it can
-            // be applied as a per-vertex post-skin offset.
+            instance.softBody->apply(normalizedFrame.vertices);
         }
         core::normalizeForPreview(normalizedFrame.vertices, *instance.model);
         const auto textureBase = [&] {

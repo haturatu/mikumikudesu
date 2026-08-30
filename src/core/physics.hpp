@@ -47,7 +47,7 @@ private:
 class SoftBodySimulation {
 public:
     explicit SoftBodySimulation(const PmxModel& model);
-    [[nodiscard]] bool available() const noexcept { return !positions_.empty(); }
+    [[nodiscard]] bool available() const noexcept { return bodyCount_ != 0 && !positions_.empty(); }
     [[nodiscard]] std::size_t bodyCount() const noexcept { return bodyCount_; }
     void reset();
     void step(float deltaSeconds, const Float3& gravity);

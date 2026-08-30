@@ -182,14 +182,6 @@ BoneOrder makeBoneOrder(const PmxModel& model) {
     return order;
 }
 
-Quat constrainToAxis(Quat rotation, const Float3& axis) {
-    const auto unitAxis = normalized(axis);
-    if (length(unitAxis) <= 1e-8F) return normalize(rotation);
-    rotation = normalize(rotation);
-    const float angle = 2.0F * std::atan2(dot({ rotation[0], rotation[1], rotation[2] }, unitAxis), rotation[3]);
-    return axisAngle(unitAxis, angle);
-}
-
 Float3 quaternionToEuler(Quat rotation) {
     rotation = normalize(rotation);
     const float roll = std::atan2(2.0F * (rotation[3] * rotation[0] + rotation[1] * rotation[2]),
@@ -220,16 +212,14 @@ void rebuildBonePoses(const PmxModel& model, const BoneOrder& order, std::vector
         const auto& bone = model.bones[index];
         if (bone.inheritParent >= 0 && static_cast<std::size_t>(bone.inheritParent) < poses.size()) {
             const auto parent = static_cast<std::size_t>(bone.inheritParent);
+            const auto& appendSource = (bone.flags & 0x0080U) != 0 ? poses[parent].base : poses[parent].local;
             if ((bone.flags & 0x0200U) != 0) {
-                pose.local.translation = add(pose.local.translation, mul(poses[parent].local.translation, bone.inheritRatio));
+                pose.local.translation = add(pose.local.translation, mul(appendSource.translation, bone.inheritRatio));
             }
             if ((bone.flags & 0x0100U) != 0) {
                 pose.local.rotation = multiply(pose.local.rotation,
-                    slerp(identity, poses[parent].local.rotation, bone.inheritRatio));
+                    slerp(identity, appendSource.rotation, bone.inheritRatio));
             }
-        }
-        if ((bone.flags & 0x0400U) != 0 && length(bone.fixedAxis) > 1e-8F) {
-            pose.local.rotation = constrainToAxis(pose.local.rotation, bone.fixedAxis);
         }
         pose.withoutIk = pose.local;
         pose.local.rotation = multiply(pose.ikRotation, pose.withoutIk.rotation);
@@ -571,12 +561,7 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
     std::vector<GlobalPose> global(model_.bones.size());
     for (std::size_t i = 0; i < global.size(); ++i) global[i] = poses[i].global;
 
-    // Bullet's generic 6DoF solver can assert on imported PMX constraint
-    // graphs that contain rows with no effective mass. Keep the VMD-solved
-    // pose authoritative for models with PMX joints; body-only physics still
-    // drives models that do not contain a PMX joint graph.
-    const bool physicsCanDriveBones = model_.joints.empty();
-    if (physics_ != nullptr && physics_->available() && physicsCanDriveBones) {
+    if (physics_ != nullptr && physics_->available()) {
         if (previousFrame_ >= 0.0F && frame < previousFrame_) physics_->reset();
         std::vector<bool> physicsBones(model_.bones.size());
         for (std::size_t bodyIndex = 0; bodyIndex < model_.rigidBodies.size(); ++bodyIndex) {
