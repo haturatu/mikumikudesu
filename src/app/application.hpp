@@ -37,6 +37,7 @@ private:
     void refreshAnimatedMesh(bool initialUpload, float deltaSeconds = 0.0F);
     void refreshVideoFrame();
     void refreshPreviewTextures();
+    void refreshPreviewBackground();
     void refreshPreviewScene();
     void buildUi();
     [[nodiscard]] core::ModelInstance* selectedModel() noexcept { return scene_.selectedModel(); }

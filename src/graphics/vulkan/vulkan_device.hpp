@@ -27,6 +27,7 @@ public:
     void updatePreviewVertices(std::span<const PreviewVertex> vertices) override;
     void updatePreviewMaterials(std::span<const PreviewMaterial> materials) override;
     void uploadPreviewTextures(std::span<const PreviewTexture> textures) override;
+    void uploadPreviewBackground(std::span<const PreviewTexture> textures) override;
     void clearPreviewResources() override;
     void updatePreviewScene(const PreviewScene& scene) override { previewScene_ = scene; }
     [[nodiscard]] BufferHandle createBuffer(const BufferDesc& desc) override;
@@ -77,14 +78,20 @@ private:
     void createPreviewDescriptors();
     void destroyPreviewDescriptors();
     void destroyPreviewTextures();
+    void destroyPreviewBackground();
+    void destroyPreviewTextureResource(PreviewTextureResource& texture);
     void createPreviewTexture(std::uint32_t width, std::uint32_t height,
                               std::span<const std::uint8_t> rgba);
+    [[nodiscard]] PreviewTextureResource createPreviewTextureResource(
+        std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> rgba);
     void createFrames();
     void destroyFrames();
     void createUi();
     void destroyUi();
     void recreateSwapchain();
     void destroyPreviewMesh();
+    void uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage,
+                             VkBuffer& buffer, VkDeviceMemory& memory);
     [[nodiscard]] std::uint32_t findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags flags) const;
 
     platform::Window& window_;
@@ -126,8 +133,15 @@ private:
     VkBuffer previewIndexBuffer_ {};
     VkDeviceMemory previewIndexMemory_ {};
     std::uint32_t previewIndexCount_ {};
+    std::uint64_t previewVertexUpdateCount_ {};
     std::vector<PreviewMaterial> previewMaterials_;
     std::vector<PreviewTextureResource> previewTextures_;
+    VkBuffer previewBackgroundVertexBuffer_ {};
+    VkDeviceMemory previewBackgroundVertexMemory_ {};
+    VkBuffer previewBackgroundIndexBuffer_ {};
+    VkDeviceMemory previewBackgroundIndexMemory_ {};
+    std::uint32_t previewBackgroundIndexCount_ {};
+    PreviewTextureResource previewBackgroundTexture_;
     PreviewScene previewScene_;
 
     std::uint64_t nextResourceHandle_ { 1 };

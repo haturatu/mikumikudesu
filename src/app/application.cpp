@@ -269,26 +269,22 @@ void Application::handleAsset(const std::filesystem::path& path) {
             scene_.setBackgroundImage(path);
             videoMode_ = false;
             const std::array<graphics::PreviewVertex, 4> vertices {{
-                {{ -1.0F, -1.0F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 0.0F, 1.0F }},
-                {{  1.0F, -1.0F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 1.0F, 1.0F }},
-                {{  1.0F,  1.0F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 1.0F, 0.0F }},
-                {{ -1.0F,  1.0F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 0.0F, 0.0F }},
+                {{ -1.0F, -1.0F, 0.0F }, {}, { 0.0F, 1.0F }},
+                {{  1.0F, -1.0F, 0.0F }, {}, { 1.0F, 1.0F }},
+                {{  1.0F,  1.0F, 0.0F }, {}, { 1.0F, 0.0F }},
+                {{ -1.0F,  1.0F, 0.0F }, {}, { 0.0F, 0.0F }},
             }};
             const std::array<std::uint32_t, 6> indices { 0, 1, 2, 2, 3, 0 };
             if (scene_.models().empty()) {
                 device_->uploadPreviewMesh(vertices, indices);
-                const std::array previewTextures { graphics::PreviewTexture {
-                    image.width, image.height, image.pixels } };
-                device_->uploadPreviewTextures(previewTextures);
-                graphics::PreviewMaterial material;
-                material.indexCount = 6;
-                material.textureSlot = 1;
-                const std::array materials { material };
-                device_->updatePreviewMaterials(materials);
+                refreshPreviewBackground();
+                device_->updatePreviewMaterials(std::span<const graphics::PreviewMaterial> {});
                 graphics::PreviewScene preview;
                 preview.cameraDistance = 2.42F;
+                preview.screenSource = graphics::PreviewScene::ScreenSource::backgroundImage;
                 device_->updatePreviewScene(preview);
             } else {
+                refreshPreviewBackground();
                 refreshPreviewTextures();
                 refreshAnimatedMesh(true);
                 refreshPreviewScene();
@@ -445,6 +441,12 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             instance.physics->setFloorCollision(gravity.floorCollision);
         }
         const auto frame = instance.animator->evaluate(animationFrame_, deltaSeconds);
+        if (!frame.vertices.empty() && (initialUpload || static_cast<int>(animationFrame_) % 30 == 0)) {
+            const auto& vertex = frame.vertices.front().position;
+            log::debug("Animation sample: model=", instance.displayName,
+                       ", frame=", animationFrame_,
+                       ", vertex0=(", vertex[0], ",", vertex[1], ",", vertex[2], ")");
+        }
         auto normalizedFrame = frame;
         if (instance.softBody != nullptr && instance.softBody->available()) {
             instance.softBody->step(deltaSeconds, { gravity.gravityDirection[0] * gravity.gravity,
@@ -520,6 +522,19 @@ void Application::refreshPreviewTextures() {
         previewTextures.push_back({ texture.width, texture.height, texture.pixels });
     }
     device_->uploadPreviewTextures(previewTextures);
+}
+
+void Application::refreshPreviewBackground() {
+    if (device_ == nullptr) return;
+    const auto& background = scene_.background();
+    if (background.screenSource != core::ScreenTextureSource::backgroundImage
+        || !background.image.has_value()) {
+        device_->uploadPreviewBackground({});
+        return;
+    }
+    const auto& image = *background.image;
+    const std::array textures { graphics::PreviewTexture { image.width, image.height, image.pixels } };
+    device_->uploadPreviewBackground(textures);
 }
 
 void Application::refreshVideoFrame() {
