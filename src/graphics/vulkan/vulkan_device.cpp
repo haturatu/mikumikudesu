@@ -1191,7 +1191,10 @@ void VulkanDevice::renderFrame() {
         vkCmdBindIndexBuffer(frame.commandBuffer, previewBackgroundIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1,
                                 &previewBackgroundTexture_.descriptor, 0, nullptr);
-        constants.diffuse = { 1.0F, 1.0F, 1.0F, 1.0F };
+        // The background texture is already the final image. Set diffuse to
+        // zero so the shared fragment shader's lighting path contributes no
+        // directional or specular light; ambient remains the unlit factor.
+        constants.diffuse = { 0.0F, 0.0F, 0.0F, 1.0F };
         constants.ambientShininess = { 1.0F, 1.0F, 1.0F, 0.0F };
         constants.specular = {};
         constants.textureMultiply = { 1.0F, 1.0F, 1.0F, 1.0F };

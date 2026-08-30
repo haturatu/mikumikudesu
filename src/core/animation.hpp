@@ -4,6 +4,7 @@
 #include "core/motion.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -47,6 +48,7 @@ struct MotionCompatibility {
 class MmdAnimator {
 public:
     explicit MmdAnimator(const PmxModel& model);
+    ~MmdAnimator();
 
     void setMotion(const VmdMotion* motion);
     void setPose(const VpdPose* pose);
@@ -55,11 +57,13 @@ public:
     [[nodiscard]] AnimatedModelFrame evaluate(float frame, float deltaSeconds = 0.0F);
 
 private:
+    struct Impl;
     const PmxModel& model_;
     const VmdMotion* motion_ {};
     const VpdPose* pose_ {};
     MmdPhysics* physics_ {};
     float previousFrame_ { -1.0F };
+    std::unique_ptr<Impl> impl_;
 };
 
 // Applies one stable model-space transform so animated vertices remain framed.
