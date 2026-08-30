@@ -430,10 +430,12 @@ int main() {
                     "Bullet body drives PMX bone skinning");
 
         dayo::core::PmxModel alignedModel;
-        alignedModel.vertices.resize(1);
+        alignedModel.vertices.resize(2);
         alignedModel.vertices[0].position = { 0.0F, 2.0F, 0.0F };
         alignedModel.vertices[0].normal = { 0.0F, 1.0F, 0.0F };
         alignedModel.vertices[0].bones[0] = 0;
+        alignedModel.vertices[1] = alignedModel.vertices[0];
+        alignedModel.vertices[1].position = { 1.0F, 2.0F, 0.0F };
         dayo::core::PmxBone alignedBone;
         alignedBone.name = "aligned";
         alignedBone.position = { 0.0F, 2.0F, 0.0F };
@@ -452,22 +454,69 @@ int main() {
         alignedAnimator.setPhysics(&alignedPhysics);
         const auto alignedBefore = alignedAnimator.evaluate(0.0F, 0.0F);
         const auto alignedBodyBefore = alignedPhysics.bodyTransform(0);
+        alignedPhysics.applyImpulse(0, {}, { 0.0F, 0.0F, 10.0F }, false);
         const auto alignedAfter = alignedAnimator.evaluate(1.0F, 1.0F / 30.0F);
         const auto alignedBodyAfter = alignedPhysics.bodyTransform(0);
         ok &= check(alignedBodyAfter.position[1] < alignedBodyBefore.position[1]
-                    && std::abs(alignedAfter.vertices[0].position[1] - alignedBefore.vertices[0].position[1]) < 1e-4F,
-                    "PMX mode 2 keeps animated bone translation while physics moves the rigid body");
+                    && std::abs(alignedAfter.vertices[0].position[1] - alignedBefore.vertices[0].position[1]) < 1e-4F
+                    && std::abs(alignedAfter.vertices[1].position[1] - alignedBefore.vertices[1].position[1]) > 1e-4F,
+                    "PMX mode 2 preserves bone translation and imports physics rotation");
 
-        dayo::core::MmdPhysics seekPhysics(physicsModel);
-        dayo::core::MmdAnimator seekAnimator(physicsModel);
+        dayo::core::PmxModel seekModel;
+        seekModel.vertices.resize(1);
+        seekModel.vertices[0].position = { 0.0F, 2.0F, 0.0F };
+        seekModel.vertices[0].normal = { 0.0F, 1.0F, 0.0F };
+        seekModel.vertices[0].bones[0] = 1;
+        seekModel.bones.resize(2);
+        seekModel.bones[0].name = "root";
+        seekModel.bones[0].position = { 0.0F, 0.0F, 0.0F };
+        seekModel.bones[1].name = "dynamic";
+        seekModel.bones[1].position = { 0.0F, 2.0F, 0.0F };
+        seekModel.bones[1].parent = 0;
+        dayo::core::PmxRigidBody seekAnchor;
+        seekAnchor.shape = 0;
+        seekAnchor.size = { 0.5F, 0.5F, 0.5F };
+        seekAnchor.position = { 0.0F, 0.0F, 0.0F };
+        seekAnchor.bone = 0;
+        seekAnchor.collisionMask = 0;
+        seekModel.rigidBodies.push_back(seekAnchor);
+        auto seekDynamic = seekAnchor;
+        seekDynamic.position = { 0.0F, 2.0F, 0.0F };
+        seekDynamic.bone = 1;
+        seekDynamic.mass = 1.0F;
+        seekDynamic.mode = 1;
+        seekModel.rigidBodies.push_back(seekDynamic);
+        dayo::core::PmxJoint seekJoint;
+        seekJoint.bodyA = 0;
+        seekJoint.bodyB = 1;
+        seekJoint.position = { 0.0F, 2.0F, 0.0F };
+        seekJoint.translationMinimum = { -100.0F, -100.0F, -100.0F };
+        seekJoint.translationMaximum = { 100.0F, 100.0F, 100.0F };
+        seekJoint.rotationMinimum = { -100.0F, -100.0F, -100.0F };
+        seekJoint.rotationMaximum = { 100.0F, 100.0F, 100.0F };
+        seekModel.joints.push_back(seekJoint);
+        dayo::core::MmdPhysics seekPhysics(seekModel);
+        dayo::core::MmdAnimator seekAnimator(seekModel);
+        dayo::core::VmdMotion seekMotion;
+        dayo::core::VmdBoneKey seekStart;
+        seekStart.name = "root";
+        seekStart.frame = 0;
+        dayo::core::VmdBoneKey seekTarget = seekStart;
+        seekTarget.frame = 1047;
+        seekTarget.translation = { 0.0F, 3.0F, 0.0F };
+        seekMotion.bones = { seekStart, seekTarget };
+        seekAnimator.setMotion(&seekMotion);
         seekAnimator.setPhysics(&seekPhysics);
         static_cast<void>(seekAnimator.evaluate(0.0F, 0.0F));
         static_cast<void>(seekAnimator.evaluate(1.0F, 1.0F / 30.0F));
-        const auto seekMoved = seekPhysics.bodyTransform(0);
+        const auto seekMoved = seekPhysics.bodyTransform(1);
         static_cast<void>(seekAnimator.evaluate(1047.0F, 0.0F));
-        const auto seekReset = seekPhysics.bodyTransform(0);
-        ok &= check(seekMoved.position[1] < 2.0F && std::abs(seekReset.position[1] - 2.0F) < 1e-4F,
-                    "forward timeline seek resets Bullet state");
+        const auto seekResetAnchor = seekPhysics.bodyTransform(0);
+        const auto seekResetDynamic = seekPhysics.bodyTransform(1);
+        ok &= check(seekMoved.position[1] < 2.0F
+                    && std::abs(seekResetAnchor.position[1] - 3.0F) < 1e-4F
+                    && std::abs(seekResetDynamic.position[1] - 5.0F) < 1e-4F,
+                    "forward timeline seek aligns Bullet state to the target bone pose");
 
         dayo::core::PmxModel jointModel;
         jointModel.vertices.resize(1);
