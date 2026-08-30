@@ -261,6 +261,7 @@ add_executable(mikumikudesu
   src/app/application.cpp
   src/app/audio_export_command.cpp
   src/app/audio_export_job.cpp
+  src/app/video_export_job.cpp
   src/app/main.cpp
 )
 target_include_directories(mikumikudesu PRIVATE src)

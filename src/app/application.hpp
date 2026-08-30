@@ -2,9 +2,11 @@
 
 #include "graphics/device.hpp"
 #include "app/audio_export_job.hpp"
+#include "app/video_export_job.hpp"
 #include "core/scene.hpp"
 #include "core/editor.hpp"
 #include "core/project.hpp"
+#include "core/video_export.hpp"
 
 #include <cstdint>
 #include <array>
@@ -25,6 +27,21 @@ struct AudioExportOptions {
     bool overwrite {};
 };
 
+struct VideoExportOptions {
+    std::filesystem::path destination;
+    std::optional<std::filesystem::path> audioSource;
+    std::uint32_t width { 1920 };
+    std::uint32_t height { 1080 };
+    double fps { 30.0 };
+    core::VideoCodec codec { core::VideoCodec::h264 };
+    std::uint32_t bitrate { 8'000'000 };
+    std::uint32_t audioBitrate { 192'000 };
+    std::optional<std::uint64_t> fromFrame;
+    std::optional<std::uint64_t> toFrame;
+    bool includeAudio { true };
+    bool overwrite {};
+};
+
 struct Options {
     bool probeOnly {};
     bool hidden {};
@@ -32,6 +49,7 @@ struct Options {
     std::optional<std::uint64_t> frameLimit;
     std::optional<std::filesystem::path> saveProject;
     std::optional<AudioExportOptions> audioExport;
+    std::optional<VideoExportOptions> videoExport;
     graphics::RendererKind renderer { graphics::RendererKind::preview };
     std::vector<std::filesystem::path> assets;
 };
@@ -54,6 +72,8 @@ private:
     void buildUi();
     void setAudioExportDestinationForSource(const std::filesystem::path& source);
     void buildAudioExportUi();
+    void buildVideoExportUi();
+    int runVideoExport();
     [[nodiscard]] core::ModelInstance* selectedModel() noexcept { return scene_.selectedModel(); }
     [[nodiscard]] const core::ModelInstance* selectedModel() const noexcept { return scene_.selectedModel(); }
 
@@ -63,6 +83,7 @@ private:
     core::CommandHistory history_;
     core::AudioPlayer audioPlayer_;
     AudioExportJob audioExportJob_;
+    VideoExportJob videoExportJob_;
     std::vector<core::ImageRgba8> textures_;
     float animationFrame_ {};
     int uploadedAnimationFrame_ { -1 };
@@ -85,6 +106,21 @@ private:
     float audioFromSeconds_ {};
     float audioToSeconds_ {};
     bool audioOverwrite_ {};
+    std::array<char, 1024> videoDestination_ {};
+    std::uint32_t videoWidth_ { 1920 };
+    std::uint32_t videoHeight_ { 1080 };
+    float videoFps_ { 30.0F };
+    int videoCodec_ {};
+    int videoBitrateKbps_ { 8000 };
+    int videoAudioBitrateKbps_ { 192 };
+    bool videoIncludeAudio_ { true };
+    std::uint64_t videoFromFrame_ {};
+    std::uint64_t videoToFrame_ {};
+    std::uint64_t videoNextFrame_ {};
+    bool videoExportFramesFinished_ {};
+    bool videoExportUiActive_ {};
+    bool videoRangeInitialized_ {};
+    std::string videoExportStatus_;
 };
 
 } // namespace dayo::app
