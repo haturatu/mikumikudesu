@@ -59,9 +59,10 @@ public:
     AudioPlayer(const AudioPlayer&) = delete;
     AudioPlayer& operator=(const AudioPlayer&) = delete;
 
-    void play(const AudioBuffer& audio);
+    void play(const AudioBuffer& audio, double startSeconds = 0.0);
     void stop();
     void setPaused(bool paused);
+    void setVolume(float volume);
     [[nodiscard]] bool active() const noexcept;
 
 private:

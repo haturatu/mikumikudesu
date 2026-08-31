@@ -1,4 +1,5 @@
 #include "core/project.hpp"
+#include "core/vmdayo.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -155,7 +156,7 @@ VmdMotion readSubset(BinaryReader& reader) {
             key.interpolation[channel + 8] = interpolation[channel * 4 + 2];
             key.interpolation[channel + 12] = interpolation[channel * 4 + 3];
         }
-        static_cast<void>(reader.value<std::uint8_t>("bone physics"));
+        key.physics = reader.value<std::uint8_t>("bone physics") != 0;
         motion.lastFrame = std::max(motion.lastFrame, key.frame);
         motion.bones.push_back(std::move(key));
     }
@@ -238,6 +239,15 @@ std::vector<VmdMotion> readLegacyMotions(const std::filesystem::path& path, int 
     if (marker == std::string::npos) return {};
     auto begin = marker + std::strlen("[BinaryDayo]");
     while (begin < contents.size() && (contents[begin] == '\r' || contents[begin] == '\n')) ++begin;
+    if (version >= 3) {
+        const auto bytes = std::span<const std::uint8_t>(
+            reinterpret_cast<const std::uint8_t*>(contents.data() + begin), contents.size() - begin);
+        std::vector<VmdMotion> result;
+        for (auto& document : parseVmdayoSubsets(bytes, modelCount + 1U)) {
+            result.push_back(toVmdMotion(std::move(document.motion), std::move(document.modelName)));
+        }
+        return result;
+    }
     BinaryReader reader(std::string_view(contents).substr(begin), version);
     std::vector<VmdMotion> result;
     result.reserve(modelCount + 1);
@@ -273,6 +283,35 @@ DayoProject loadProject(const std::filesystem::path& path) {
             }
         }
         result.embeddedVmdayo = readBinarySection(path);
+        if (!result.embeddedVmdayo.empty()) {
+            const auto modelCount = std::ranges::count_if(result.assets, [](const auto& asset) {
+                return asset.kind == "pmx";
+            });
+            try {
+                if (modelCount != 0U) {
+                    for (auto& document : parseVmdayoSubsets(result.embeddedVmdayo, modelCount + 1U)) {
+                        result.embeddedMotions.push_back(
+                            toVmdMotion(std::move(document.motion), std::move(document.modelName)));
+                    }
+                    result.embeddedMotion = result.embeddedMotions.size() > 1U
+                        ? result.embeddedMotions[1] : result.embeddedMotions[0];
+                    if (result.embeddedMotions.size() > 1U) {
+                        result.embeddedMotion->cameras = result.embeddedMotions[0].cameras;
+                        result.embeddedMotion->lights = result.embeddedMotions[0].lights;
+                        result.embeddedMotion->shadows = result.embeddedMotions[0].shadows;
+                    }
+                } else {
+                    const auto vmdayo = parseVmdayo(result.embeddedVmdayo);
+                    if (vmdayo.opaque.empty()) {
+                        result.embeddedMotion = toVmdMotion(vmdayo.motion, vmdayo.modelName);
+                        result.embeddedMotions.push_back(*result.embeddedMotion);
+                    }
+                }
+            } catch (const std::exception&) {
+                // Keep an unknown payload byte-for-byte; the asset and editor
+                // portion of the project remains usable.
+            }
+        }
         return result;
     }
 
@@ -309,6 +348,7 @@ DayoProject loadProject(const std::filesystem::path& path) {
         ? legacy.at("models").size() : std::size_t {};
     const auto motions = readLegacyMotions(path, result.version, modelCount);
     if (!motions.empty()) {
+        result.embeddedMotions = motions;
         result.embeddedMotion = motions.size() > 1 ? motions[1] : motions[0];
         auto& embedded = *result.embeddedMotion;
         embedded.cameras = motions[0].cameras;
@@ -331,7 +371,30 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
         assets.push_back({ { "kind", asset.kind },
                            { "path", portablePath(base, asset.path).generic_string() } });
     }
+    Json upstreamModels = Json::array();
+    int modelId = 1;
+    for (const auto& asset : project.assets) if (asset.kind == "pmx") {
+        upstreamModels.push_back({
+            { "cereal_class_version", 3 }, { "id", modelId++ },
+            { "filename", portablePath(base, asset.path).generic_string() },
+            { "bones", Json::array() }, { "morphs", Json::array() }, { "materials", Json::array() },
+        });
+    }
+    const Json upstreamEditor {
+        { "cereal_class_version", 3 }, { "frame", static_cast<int>(project.frame) },
+        { "animationStart", 0 }, { "animationEnd", -1 }, { "animationRepeat", false },
+        { "recordStart", 0 }, { "recordEnd", -1 }, { "samplesPerFrame", 16 },
+        { "motionBlur", false }, { "outputWidth", 1920 }, { "outputHeight", 1080 },
+        { "motionOrder", Json::array() }, { "postprocessOrder", Json::array() },
+        { "deformOrder", Json::array() }, { "rasterOrder", Json::array() },
+        { "recordFps", 30.0F }, { "animationSpeed", 1.0F },
+    };
     const Json root {
+        { "MikuMikuDayo", {
+            { "cereal_class_version", 3 }, { "ver", 3 }, { "assetPath", base.generic_string() },
+            { "editor", upstreamEditor }, { "fxinfo", Json::array() },
+            { "models", upstreamModels }, { "dayoVer", 130 },
+        } },
         { "mikumikudesu", {
             { "version", 3 },
             { "renderer", project.renderer },
@@ -347,9 +410,39 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
         if (!output) throw std::runtime_error("cannot write project: " + temporary.string());
         output << "[MikuMikuDayo]\n" << root.dump(2) << "\n[BinaryDayo]\n";
-        if (!project.embeddedVmdayo.empty()) {
-            output.write(reinterpret_cast<const char*>(project.embeddedVmdayo.data()),
-                         static_cast<std::streamsize>(project.embeddedVmdayo.size()));
+        auto payload = project.embeddedVmdayo;
+        if (payload.empty()) {
+            std::vector<VmdMotion> motions = project.embeddedMotions;
+            if (motions.empty() && project.embeddedMotion) {
+                VmdMotion camera;
+                camera.modelName = "Camera/Light";
+                camera.cameras = project.embeddedMotion->cameras;
+                camera.lights = project.embeddedMotion->lights;
+                camera.shadows = project.embeddedMotion->shadows;
+                auto model = *project.embeddedMotion;
+                model.cameras.clear(); model.lights.clear(); model.shadows.clear();
+                motions = { std::move(camera), std::move(model) };
+            }
+            const auto expected = upstreamModels.size() + 1U;
+            if (motions.empty()) motions.emplace_back();
+            motions.resize(expected);
+            for (std::size_t index = 0; index < motions.size(); ++index) {
+                VmdayoDocument document;
+                document.type = index == 0 ? 1 : 0;
+                document.modelName = index == 0 && motions[index].modelName.empty()
+                    ? "Camera/Light" : motions[index].modelName;
+                document.motion = toMotionDocument(motions[index]);
+                for (std::size_t model = 0; model < upstreamModels.size(); ++model) {
+                    const auto id = upstreamModels[model].at("id").get<std::int32_t>();
+                    document.modelDictionary[id] = upstreamModels[model].at("filename").get<std::string>();
+                }
+                auto subset = serializeVmdayoSubset(document);
+                payload.insert(payload.end(), subset.begin(), subset.end());
+            }
+        }
+        if (!payload.empty()) {
+            output.write(reinterpret_cast<const char*>(payload.data()),
+                         static_cast<std::streamsize>(payload.size()));
         }
         output.flush();
         if (!output) throw std::runtime_error("failed while writing project: " + temporary.string());

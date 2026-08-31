@@ -68,6 +68,18 @@ struct BackgroundState {
     bool enabled { true };
 };
 
+struct ModelExecutionOrder {
+    std::int32_t motion {};
+    std::int32_t deform {};
+    std::int32_t postprocess {};
+    std::int32_t raster {};
+};
+
+struct MaterialEditorState {
+    std::filesystem::path annotation;
+    MaterialParameterBlock parameters;
+};
+
 struct ModelInstance {
     ModelId id {};
     std::filesystem::path sourcePath;
@@ -80,6 +92,8 @@ struct ModelInstance {
     std::vector<ImageRgba8> textures;
     bool visible { true };
     std::uint32_t cloneCount { 1 };
+    ModelExecutionOrder order;
+    std::vector<MaterialEditorState> materialSettings;
     PreviewNormalization normalization;
     std::string displayName;
 };
@@ -121,6 +135,8 @@ public:
     void attachMotion(const std::filesystem::path& path, ModelId target = 0);
     void attachMotion(VmdMotion motion, ModelId target = 0);
     void attachMotion(MotionDocument document, ModelId target = 0, std::string modelName = {});
+    [[nodiscard]] const VmdMotion* motion(ModelId target = 0, bool global = false) const noexcept;
+    bool replaceMotion(VmdMotion motion, ModelId target = 0, bool global = false);
     void attachPose(const std::filesystem::path& path, ModelId target = 0);
     [[nodiscard]] ModelId targetModel(ModelId requested = 0) const noexcept;
     bool addExternalParent(ExternalParentLink link, std::string* error = nullptr);
@@ -141,6 +157,8 @@ public:
     bool setCloneCount(ModelId id, std::uint32_t cloneCount) noexcept;
     void setBackgroundScreenSource(ScreenTextureSource source) noexcept;
     void setBackgroundEnabled(bool enabled) noexcept;
+    void setBackgroundCrop(ScreenCropMode crop) noexcept;
+    void setBackgroundMode(BackgroundMode mode) noexcept;
 
     void setBackgroundImage(const std::filesystem::path& path);
     void setBackgroundVideo(const std::filesystem::path& path);

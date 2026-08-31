@@ -1,6 +1,7 @@
 #pragma once
 
 #include <iostream>
+#include <cstdlib>
 #include <mutex>
 #include <sstream>
 #include <string_view>
@@ -46,6 +47,9 @@ template <typename... Args> void warn(Args&&... args) {
 template <typename... Args> void error(Args&&... args) {
     write(Level::error, std::forward<Args>(args)...);
 }
+template <typename... Args> [[noreturn]] void fatal(Args&&... args) {
+    write(Level::error, std::forward<Args>(args)...);
+    std::exit(1);
+}
 
 } // namespace dayo::log
-

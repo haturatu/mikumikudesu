@@ -19,7 +19,7 @@ MikuMikuDayo 1.20をLinuxへ移植したネイティブ実行系です。元のW
 - Vulkan Previewのオフスクリーンreadbackと、決定論的なタイムラインでのMP4動画書き出し（H.264/H.265/AV1 + AAC）
 - Jsonnetを実行した`.fxdayo`のtexture/sampler/pass/raster/compute/raytracing graph解析
 - 複数PMXを保持できるScene（モデル別VMD/VPD/物理、表示切替、clone、背景画像/動画/音声の共存）
-- `.dayo` v1/v2互換読込、v3原子的保存、独自VMdayo-like motion文書の読込/保存と未知payload保持
+- `.dayo` v1/v2互換読込、Dayo 1.30 `.dayo` v3の複数subset読込/原子的保存、公式VMdayo v3の双方向変換と未知payload保持
 - VMD Bézier/Linear/Catmull-Rom、外部親リンクの検証（循環参照検出）、重力key評価
 - PMX 2.1 soft-bodyの決定論的フォールバックシミュレーション
 - Undo/Redo CommandHistory、dirty flag/runtime mode、非同期連番フレーム出力（PPM/PNG）
@@ -40,8 +40,10 @@ Subayai/BDPTのVulkan pass executor（acceleration structure/SBTを含む）は�
 Vega等でも起動できるよう未接続のままです。RT対応GPUではbackend契約とgraph compileまでを
 検証し、未対応GPUでは不足featureを表示してPreviewへ戻します。OpenEXR encoderは任意依存の
 ため現在は未接続です（連番出力はPNG/PPM）。
-`.vmdayo`は本家Windows 1.30とのbinary互換を主張しないnative VMdayo-like形式です。
-未知の入力はopaque payloadとして保持しますが、実Windows生成fixtureによる互換性保証はありません。
+`.vmdayo`は本家1.30ソースのv3レイアウト（header、model dictionary、metadata、全track、
+axis別MMD/Catmull-Rom方式）を実装しています。単体ファイルの二重headerと`.dayo`内の単一headerを
+区別し、カメラsubsetとモデル別subsetを双方向変換します。未知の入力はopaque payloadとして保持します。
+本家Windowsバイナリが生成したfixtureによる相互運用テストは、fixtureを同梱していないため未実施です。
 
 ## 必要環境
 
@@ -203,7 +205,7 @@ WICには依存しません。OIDNは任意で、HIP deviceが使えなければ
 ```text
 src/
 ├── app/                     CLI、D&D、ImGui、main loop、project連携
-├── core/                    Scene、PMX/VMD/VPD/VMdayo-like、animation、Bullet、media、effect、project、output
+├── core/                    Scene、PMX/VMD/VPD/VMdayo、animation、Bullet、media、effect、project、output
 ├── platform/                SDL3 window/event/audio
 └── graphics/
     ├── device.hpp           API非依存device/resource契約

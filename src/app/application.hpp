@@ -6,6 +6,7 @@
 #include "core/scene.hpp"
 #include "core/editor.hpp"
 #include "core/project.hpp"
+#include "core/output.hpp"
 #include "core/video_export.hpp"
 
 #include <cstdint>
@@ -63,6 +64,7 @@ public:
 
 private:
     void resetProjectRuntimeState();
+    [[nodiscard]] core::DayoProject currentProject() const;
     void handleAsset(const std::filesystem::path& path);
     void refreshAnimatedMesh(bool initialUpload, float deltaSeconds = 0.0F);
     void refreshVideoFrame();
@@ -73,6 +75,7 @@ private:
     void setAudioExportDestinationForSource(const std::filesystem::path& source);
     void buildAudioExportUi();
     void buildVideoExportUi();
+    void buildEditorUi();
     int runVideoExport();
     [[nodiscard]] core::ModelInstance* selectedModel() noexcept { return scene_.selectedModel(); }
     [[nodiscard]] const core::ModelInstance* selectedModel() const noexcept { return scene_.selectedModel(); }
@@ -91,6 +94,12 @@ private:
     float animationFrame_ {};
     int uploadedAnimationFrame_ { -1 };
     bool playing_ { true };
+    bool repeat_ { true };
+    float playbackSpeed_ { 1.0F };
+    float audioVolume_ { 1.0F };
+    float audioOffsetSeconds_ {};
+    core::AudioBuffer loadedAudio_;
+    std::vector<float> waveformPeaks_;
     bool videoMode_ {};
     double mediaSeconds_ {};
     std::int64_t uploadedVideoFrame_ { -1 };
@@ -128,6 +137,25 @@ private:
     bool videoExportUiActive_ {};
     bool videoRangeInitialized_ {};
     std::string videoExportStatus_;
+    core::MotionClipboard motionClipboard_;
+    std::vector<core::MotionKeyRef> selectedKeys_;
+    bool editGlobalMotion_ {};
+    bool recordCamera_ {};
+    int selectedBone_ {};
+    int selectedMorph_ {};
+    core::Float3 editedBoneTranslation_ {};
+    core::Float4 editedBoneRotation_ { 0.0F, 0.0F, 0.0F, 1.0F };
+    bool editedBonePhysics_ { true };
+    bool physicsDebug_ {};
+    float editedMorphWeight_ {};
+    core::VmdCameraKey editedCamera_;
+    std::array<char, 256> cameraParentBoneName_ {};
+    core::VmdLightKey editedLight_ { 0, { 0.6F, 0.6F, 0.6F }, { -0.5F, -1.0F, 0.5F } };
+    core::VmdShadowKey editedShadow_ { 0, 1, 50.0F };
+    core::OutputSettings sequenceOutput_;
+    std::string sequenceOutputStatus_;
+    std::array<char, 1024> projectDestination_ { 'p', 'r', 'o', 'j', 'e', 'c', 't', '.', 'd', 'a', 'y', 'o', '\0' };
+    std::string projectSaveStatus_;
 };
 
 } // namespace dayo::app

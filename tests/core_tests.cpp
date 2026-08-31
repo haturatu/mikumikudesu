@@ -52,6 +52,26 @@ int main() {
     ok &= check(dayo::core::classifyAsset("sound.M4A") == AssetKind::audio, "audio extension");
     ok &= check(dayo::core::classifyAsset("movie.webm") == AssetKind::video, "video extension");
     {
+        dayo::core::MotionDocument document;
+        document.bones.push_back({ .name = "arm", .frame = 5 });
+        document.morphs.push_back({ "smile", 10, 0.75F });
+        const std::vector<dayo::core::MotionKeyRef> selected {
+            { dayo::core::MotionTrack::bone, 0 },
+            { dayo::core::MotionTrack::morph, 0 },
+        };
+        const auto clipboard = dayo::core::MotionEditor::copy(document, selected);
+        const auto pasted = dayo::core::MotionEditor::paste(document, clipboard, 20);
+        ok &= check(pasted.size() == 2 && document.bones.size() == 2 && document.morphs.size() == 2
+                    && document.bones.back().frame == 20 && document.morphs.back().frame == 25,
+                    "motion editor copies and offsets mixed tracks");
+        dayo::core::MotionEditor::move(document,
+            { { dayo::core::MotionTrack::bone, 0 } }, -20);
+        ok &= check(document.bones.front().frame == 0, "motion editor clamps moved keys at frame zero");
+        dayo::core::MotionEditor::erase(document,
+            { { dayo::core::MotionTrack::morph, 0 } });
+        ok &= check(document.morphs.size() == 1, "motion editor deletes selected keys");
+    }
+    {
         dayo::core::VmdMotion cameraMotion;
         dayo::core::VmdCameraKey first;
         first.frame = 0;
@@ -96,6 +116,26 @@ int main() {
                     ".dayo relative asset round trip");
         ok &= check(loaded.version == 3, ".dayo v3 writer");
         ok &= check(loaded.embeddedVmdayo == project.embeddedVmdayo, ".dayo embedded VMdayo payload");
+        project.embeddedVmdayo.clear();
+        project.embeddedMotion.emplace();
+        project.embeddedMotion->modelName = "Miku";
+        project.embeddedMotion->morphs.push_back({ "smile", 24, 1.0F });
+        dayo::core::saveProject(projectPath, project);
+        const auto editableProject = dayo::core::loadProject(projectPath);
+        ok &= check(editableProject.embeddedMotion && editableProject.embeddedMotion->morphs.size() == 1
+                    && editableProject.embeddedMotion->morphs[0].frame == 24,
+                    ".dayo v3 editable VMdayo motion round trip");
+        ok &= check(editableProject.embeddedMotions.size() == 2
+                    && editableProject.embeddedMotions[0].modelName == "Camera/Light",
+                    ".dayo v3 camera and model subsets round trip");
+        {
+            std::ifstream saved(projectPath, std::ios::binary);
+            const std::string contents((std::istreambuf_iterator<char>(saved)),
+                                       std::istreambuf_iterator<char>());
+            ok &= check(contents.find("\"MikuMikuDayo\"") != std::string::npos
+                        && contents.find("\"cereal_class_version\": 3") != std::string::npos,
+                        "official .dayo v3 JSON header");
+        }
         {
             std::ofstream legacy(projectPath, std::ios::binary | std::ios::trunc);
             legacy << "[MikuMikuDayo]\n"
@@ -137,15 +177,64 @@ int main() {
         const auto vmdayoPath = std::filesystem::temp_directory_path() / "mikumikudesu-motion.vmdayo";
         dayo::core::VmdayoDocument document;
         document.modelName = "Miku";
+        document.modelDictionary.emplace(7, "Parent Model");
+        document.metadata.emplace("author", "mikumikudesu");
         document.motion.interpolation = dayo::core::InterpolationMode::catmullRom;
+        dayo::core::VmdBoneKey physicsBone;
+        physicsBone.name = "arm";
+        physicsBone.frame = 9;
+        physicsBone.physics = false;
+        physicsBone.methods = { 1, 0, 1, 0 };
+        document.motion.bones.push_back(physicsBone);
         document.motion.morphs.push_back({ "smile", 10, 0.75F });
+        dayo::core::VmdCameraKey cameraKey;
+        cameraKey.frame = 12;
+        cameraKey.distance = -30.0F;
+        cameraKey.viewAngle = 45;
+        cameraKey.parentModel = 2;
+        cameraKey.parentBone = 7;
+        cameraKey.parentBoneName = "head";
+        cameraKey.methods = { 1, 0, 1, 0, 1, 0 };
+        cameraKey.interpolation[0] = 17;
+        document.motion.cameras.push_back(cameraKey);
+        document.motion.lights.push_back({ 13, { 0.5F, 0.6F, 0.7F }, { -1.0F, -2.0F, 1.0F } });
+        document.motion.shadows.push_back({ 14, 2, 75.0F });
+        document.motion.ik.push_back({ 15, true, { { "leg IK", false } } });
+        document.motion.externalParents.push_back({ 16, 1, "parent", "child" });
+        document.motion.gravity.push_back({ 17, 9.8F, { 0.0F, -1.0F, 0.0F }, 0.1F, 2.0F });
         dayo::core::saveVmdayo(vmdayoPath, document);
+        {
+            std::ifstream vmdayoBytes(vmdayoPath, std::ios::binary);
+            std::array<char, 8> signature {};
+            vmdayoBytes.read(signature.data(), static_cast<std::streamsize>(signature.size()));
+            ok &= check(std::string_view(signature.data()) == "VMDAYO!", "official VMdayo binary signature");
+        }
         const auto loaded = dayo::core::loadVmdayo(vmdayoPath);
         ok &= check(loaded.motion.morphs.size() == 1 && loaded.motion.interpolation
                     == dayo::core::InterpolationMode::catmullRom, "VMdayo round trip");
+        ok &= check(loaded.version == 3 && loaded.motion.bones.size() == 1
+                    && !loaded.motion.bones[0].physics && loaded.motion.bones[0].methods[0] == 1,
+                    "VMdayo v3 bone track round trip");
+        ok &= check(loaded.motion.cameras.size() == 1
+                    && loaded.motion.cameras[0].parentModel == 2
+                    && loaded.motion.cameras[0].parentBone == 7
+                    && loaded.motion.cameras[0].parentBoneName == "head"
+                    && loaded.motion.cameras[0].methods[0] == 1
+                    && loaded.motion.cameras[0].interpolation[0] == 17,
+                    "VMdayo v3 camera tracking round trip");
+        ok &= check(loaded.motion.lights.size() == 1 && loaded.motion.shadows.size() == 1,
+                    "VMdayo v3 light and shadow tracks round trip");
+        ok &= check(loaded.motion.ik.size() == 1 && loaded.motion.ik[0].states.size() == 1
+                    && !loaded.motion.ik[0].states[0].enabled,
+                    "VMdayo v3 IK track round trip");
+        ok &= check(loaded.motion.externalParents.size() == 1 && loaded.motion.gravity.size() == 1,
+                    "VMdayo v3 extension tracks round trip");
+        ok &= check(loaded.modelDictionary.at(7) == "Parent Model"
+                    && loaded.metadata.at("author") == "mikumikudesu",
+                    "VMdayo v3 header dictionaries round trip");
         dayo::core::Scene vmdayoScene;
         vmdayoScene.attachMotion(loaded.motion, 0, loaded.modelName);
-        ok &= check(vmdayoScene.timeline().duration == 10.0F,
+        ok &= check(vmdayoScene.timeline().duration == 17.0F,
                     "VMdayo attachment updates timeline duration");
         document.opaque = { 0x00, 0xFF, 0x56, 0x4D, 0x44 };
         dayo::core::saveVmdayo(vmdayoPath, document);
@@ -322,7 +411,14 @@ int main() {
         ok &= check(subayaiEffect.passes.size() >= 20 &&
                     std::ranges::any_of(subayaiEffect.passes, [](const auto& pass) {
                         return pass.type == dayo::core::EffectPassType::raytracing;
-                    }), "Subayai Jsonnet expansion");
+                    }) && subayaiEffect.hlsl.find("resources.hlsli") != std::string::npos
+                    && !subayaiEffect.controllers.empty(), "Subayai Jsonnet expansion");
+        const auto rayPass = std::ranges::find_if(subayaiEffect.passes, [](const auto& pass) {
+            return pass.type == dayo::core::EffectPassType::raytracing;
+        });
+        ok &= check(rayPass != subayaiEffect.passes.end() && !rayPass->hitGroups.empty()
+                    && rayPass->maxPayloadSize != 0 && rayPass->maxRecursionDepth != 0,
+                    "Subayai ray-tracing pipeline metadata");
         const auto bdptEffect = dayo::core::loadEffectGraph(
             std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo/renderer/BDPT.fxdayo");
         ok &= check(!bdptEffect.passes.empty() &&
@@ -1091,6 +1187,19 @@ int main() {
         const auto motion = dayo::core::loadVmd(sampleVmd);
         ok &= check(!motion.modelName.empty(), "VMD CP932 model name");
         ok &= check(!motion.bones.empty(), "VMD bone keys");
+        const auto exportedVmd = std::filesystem::temp_directory_path() / "mikumikudesu-vmd-export-test.vmd";
+        dayo::core::saveVmd(exportedVmd, motion);
+        const auto exported = dayo::core::loadVmd(exportedVmd);
+        ok &= check(exported.modelName == motion.modelName
+                    && exported.bones.size() == motion.bones.size()
+                    && exported.morphs.size() == motion.morphs.size()
+                    && exported.cameras.size() == motion.cameras.size()
+                    && exported.lights.size() == motion.lights.size()
+                    && exported.shadows.size() == motion.shadows.size()
+                    && exported.ik.size() == motion.ik.size(),
+                    "VMD export round trip");
+        std::error_code exportError;
+        std::filesystem::remove(exportedVmd, exportError);
         bool evaluatedFixture = false;
         for (const auto& entry : std::filesystem::directory_iterator(
                  std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo/sample")) {

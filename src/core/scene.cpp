@@ -25,6 +25,9 @@ ModelId Scene::addModel(const std::filesystem::path& path) {
     instance.normalization = previewNormalization(*instance.model);
     instance.displayName = instance.model->metadata.modelName.empty()
         ? path.filename().string() : instance.model->metadata.modelName;
+    const auto order = static_cast<std::int32_t>(models_.size());
+    instance.order = { order, order, order, order };
+    instance.materialSettings.resize(instance.model->materials.size());
     refreshModelResources(instance);
     models_.push_back(std::move(instance));
     ++topologyGeneration_;
@@ -245,6 +248,18 @@ void Scene::setBackgroundEnabled(bool enabled) noexcept {
     markDirty(DirtyFlag::background);
 }
 
+void Scene::setBackgroundCrop(ScreenCropMode crop) noexcept {
+    if (background_.crop == crop) return;
+    background_.crop = crop;
+    markDirty(DirtyFlag::background);
+}
+
+void Scene::setBackgroundMode(BackgroundMode mode) noexcept {
+    if (background_.mode == mode) return;
+    background_.mode = mode;
+    markDirty(DirtyFlag::background | DirtyFlag::output);
+}
+
 void Scene::attachMotion(const std::filesystem::path& path, ModelId target) {
     attachMotion(loadVmd(path), target);
 }
@@ -260,7 +275,7 @@ void Scene::attachMotion(MotionDocument document, ModelId target, std::string mo
     // A camera/light-only VMD is global even when a model is selected. Model
     // motion remains the default for files containing bone or morph tracks.
     const bool cameraOnly = motion->bones.empty() && motion->morphs.empty()
-        && (!motion->cameras.empty() || !motion->lights.empty());
+        && (!motion->cameras.empty() || !motion->lights.empty() || !motion->shadows.empty());
     auto* destination = cameraOnly ? nullptr : model(targetModel(target));
     if (destination != nullptr) {
         destination->motion = std::move(motion);
@@ -276,6 +291,30 @@ void Scene::attachMotion(MotionDocument document, ModelId target, std::string mo
         recalculateTimelineDuration();
     }
     markDirty(DirtyFlag::geometry | DirtyFlag::camera | DirtyFlag::lighting);
+}
+
+const VmdMotion* Scene::motion(ModelId target, bool global) const noexcept {
+    if (global) return cameraMotion_.get();
+    const auto* instance = model(targetModel(target));
+    return instance == nullptr ? nullptr : instance->motion.get();
+}
+
+bool Scene::replaceMotion(VmdMotion motionValue, ModelId target, bool global) {
+    if (global) {
+        cameraMotion_ = std::make_unique<VmdMotion>(std::move(motionValue));
+        timeline_.camera = cameraMotion_->cameras;
+        timeline_.light = cameraMotion_->lights;
+        timeline_.shadow = cameraMotion_->shadows;
+        timeline_.ik = cameraMotion_->ik;
+    } else {
+        auto* instance = model(targetModel(target));
+        if (instance == nullptr) return false;
+        instance->motion = std::make_unique<VmdMotion>(std::move(motionValue));
+        instance->animator->setMotion(instance->motion.get());
+    }
+    recalculateTimelineDuration();
+    markDirty(DirtyFlag::geometry | DirtyFlag::camera | DirtyFlag::lighting);
+    return true;
 }
 
 void Scene::attachPose(const std::filesystem::path& path, ModelId target) {
