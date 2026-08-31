@@ -932,22 +932,10 @@ void Application::refreshVideoFrame() {
     const auto frameIndex = static_cast<std::int64_t>(mediaSeconds_ * media->info().videoFramesPerSecond);
     if (frameIndex == uploadedVideoFrame_) return;
     const auto image = media->decodeVideoFrame(mediaSeconds_);
-    if (!scene_.models().empty()) {
-        // With a model present, the frame is retained as the reserved
-        // background source and must not replace the model texture array.
-        scene_.setBackgroundScreenSource(core::ScreenTextureSource::backgroundVideo);
-        const std::array textures { graphics::PreviewTexture { image.width, image.height, image.pixels } };
-        device_->uploadPreviewBackground(textures);
-        uploadedVideoFrame_ = frameIndex;
-        return;
-    }
+    scene_.setBackgroundScreenSource(core::ScreenTextureSource::backgroundVideo);
     const std::array textures { graphics::PreviewTexture { image.width, image.height, image.pixels } };
-    device_->uploadPreviewTextures(textures);
-    graphics::PreviewMaterial material;
-    material.indexCount = 6;
-    material.textureSlot = 1;
-    const std::array materials { material };
-    device_->updatePreviewMaterials(materials);
+    device_->uploadPreviewBackground(textures);
+    if (scene_.models().empty()) device_->updatePreviewMaterials({});
     uploadedVideoFrame_ = frameIndex;
 }
 
