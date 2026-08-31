@@ -250,6 +250,33 @@ void calculateGlobals(const PmxModel& model, const std::vector<LocalPose>& local
     for (std::size_t i = 0; i < model.bones.size(); ++i) resolve(resolve, i);
 }
 
+void calculateGlobalSubtree(const PmxModel& model, const std::vector<LocalPose>& local,
+                            std::vector<GlobalPose>& global,
+                            const std::vector<std::vector<std::size_t>>& children,
+                            std::size_t root, std::vector<std::uint8_t>& state,
+                            std::vector<std::size_t>& touched) {
+    touched.clear();
+    const auto update = [&](const auto& self, std::size_t index) -> void {
+        if (state[index] != 0) return;
+        state[index] = 1;
+        touched.push_back(index);
+        const auto parent = model.bones[index].parent;
+        if (parent >= 0 && static_cast<std::size_t>(parent) < global.size()) {
+            const auto parentIndex = static_cast<std::size_t>(parent);
+            const auto bindOffset = sub(model.bones[index].position, model.bones[parentIndex].position);
+            global[index].position = add(global[parentIndex].position,
+                rotate(global[parentIndex].rotation, add(bindOffset, local[index].translation)));
+            global[index].rotation = multiply(global[parentIndex].rotation, local[index].rotation);
+        } else {
+            global[index].position = add(model.bones[index].position, local[index].translation);
+            global[index].rotation = local[index].rotation;
+        }
+        for (const auto child : children[index]) self(self, child);
+    };
+    update(update, root);
+    for (const auto index : touched) state[index] = 0;
+}
+
 BoneOrders makeBoneOrders(const PmxModel& model) {
     BoneOrders result;
     result.beforePhysics.reserve(model.bones.size());
@@ -521,6 +548,9 @@ struct MmdAnimator::Impl {
     std::unordered_map<std::string_view, BoneTrack> boneTracks;
     std::unordered_map<std::string_view, MorphTrack> morphTracks;
     std::unordered_map<std::uint32_t, BezierLut> bezierLuts;
+    std::vector<std::vector<std::size_t>> boneChildren;
+    std::vector<std::uint8_t> subtreeState;
+    std::vector<std::size_t> subtreeScratch;
 };
 
 MmdAnimator::MmdAnimator(const PmxModel& model) : model_(model), impl_(std::make_unique<Impl>()) {
@@ -529,6 +559,16 @@ MmdAnimator::MmdAnimator(const PmxModel& model) : model_(model), impl_(std::make
     impl_->localScratch.resize(model_.bones.size());
     impl_->globalScratch.resize(model_.bones.size());
     impl_->globalState.resize(model_.bones.size());
+    impl_->boneChildren.resize(model_.bones.size());
+    impl_->subtreeState.resize(model_.bones.size());
+    for (std::size_t index = 0; index < model_.bones.size(); ++index) {
+        const auto parent = model_.bones[index].parent;
+        if (parent >= 0 && static_cast<std::size_t>(parent) < model_.bones.size()
+            && static_cast<std::size_t>(parent) != index) {
+            impl_->boneChildren[static_cast<std::size_t>(parent)].push_back(index);
+        }
+    }
+    impl_->subtreeScratch.reserve(model_.bones.size());
 }
 MmdAnimator::~MmdAnimator() = default;
 void MmdAnimator::setMotion(const VmdMotion* motion) {
@@ -804,7 +844,8 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
                 local[bone].rotation = boneRotation;
                 if (mode == 1) local[bone].translation = sub(bonePosition, model_.bones[bone].position);
             }
-            calculateGlobals(model_, local, global, impl_->globalState);
+            calculateGlobalSubtree(model_, local, global, impl_->boneChildren, bone,
+                                   impl_->subtreeState, impl_->subtreeScratch);
             if (mode == 2) {
                 const auto correction = sub(global[bone].position, bonePosition);
                 physics_->shiftBodyPosition(bodyIndex, correction);
