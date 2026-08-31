@@ -368,7 +368,8 @@ VpdPose loadVpd(const std::filesystem::path& path) {
 
 MotionDocument toMotionDocument(const VmdMotion& motion) {
     return { motion.modelName, motion.interpolation, motion.bones, motion.morphs,
-             motion.cameras, motion.lights, motion.shadows, motion.ik };
+             motion.cameras, motion.lights, motion.shadows, motion.ik,
+             motion.externalParents, motion.gravity };
 }
 
 VmdMotion toVmdMotion(MotionDocument document, std::string modelName) {
@@ -381,6 +382,8 @@ VmdMotion toVmdMotion(MotionDocument document, std::string modelName) {
     result.lights = std::move(document.lights);
     result.shadows = std::move(document.shadows);
     result.ik = std::move(document.ik);
+    result.externalParents = std::move(document.externalParents);
+    result.gravity = std::move(document.gravity);
     std::stable_sort(result.ik.begin(), result.ik.end(),
                      [](const VmdIkKey& left, const VmdIkKey& right) { return left.frame < right.frame; });
     for (const auto& key : result.bones) result.lastFrame = std::max(result.lastFrame, key.frame);
@@ -389,6 +392,8 @@ VmdMotion toVmdMotion(MotionDocument document, std::string modelName) {
     for (const auto& key : result.lights) result.lastFrame = std::max(result.lastFrame, key.frame);
     for (const auto& key : result.shadows) result.lastFrame = std::max(result.lastFrame, key.frame);
     for (const auto& key : result.ik) result.lastFrame = std::max(result.lastFrame, key.frame);
+    for (const auto& key : result.externalParents) result.lastFrame = std::max(result.lastFrame, key.frame);
+    for (const auto& key : result.gravity) result.lastFrame = std::max(result.lastFrame, key.frame);
     return result;
 }
 

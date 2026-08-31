@@ -29,12 +29,30 @@ struct VmdCameraKey {
     std::array<std::uint8_t, 24> interpolation {};
     std::uint32_t viewAngle {};
     bool perspective {};
+    // VMdayo/.dayo extension; VMD export intentionally omits these fields.
+    std::int32_t parentModel { -1 };
+    std::int32_t parentBone { -1 };
 };
 
 struct VmdLightKey { std::uint32_t frame {}; Float3 color {}; Float3 position {}; };
 struct VmdShadowKey { std::uint32_t frame {}; std::uint8_t mode {}; float distance {}; };
 struct VmdIkState { std::string name; bool enabled {}; };
 struct VmdIkKey { std::uint32_t frame {}; bool visible {}; std::vector<VmdIkState> states; };
+
+struct VmdayoExternalParentKey {
+    std::uint32_t frame {};
+    std::int32_t parentModel { -1 };
+    std::string parentBone;
+    std::string childBone;
+};
+
+struct VmdayoGravityKey {
+    std::uint32_t frame {};
+    float strength { 98.0F };
+    Float3 direction { 0.0F, -1.0F, 0.0F };
+    float noiseAmplitude {};
+    float noiseFrequency {};
+};
 
 enum class InterpolationMode { linear, bezier, catmullRom };
 
@@ -50,6 +68,8 @@ struct MotionDocument {
     std::vector<VmdLightKey> lights;
     std::vector<VmdShadowKey> shadows;
     std::vector<VmdIkKey> ik;
+    std::vector<VmdayoExternalParentKey> externalParents;
+    std::vector<VmdayoGravityKey> gravity;
 };
 
 struct VmdMotion {
@@ -60,6 +80,8 @@ struct VmdMotion {
     std::vector<VmdLightKey> lights;
     std::vector<VmdShadowKey> shadows;
     std::vector<VmdIkKey> ik;
+    std::vector<VmdayoExternalParentKey> externalParents;
+    std::vector<VmdayoGravityKey> gravity;
     std::uint32_t lastFrame {};
     InterpolationMode interpolation { InterpolationMode::bezier };
 };

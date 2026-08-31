@@ -116,6 +116,15 @@ int main() {
                     ".dayo relative asset round trip");
         ok &= check(loaded.version == 3, ".dayo v3 writer");
         ok &= check(loaded.embeddedVmdayo == project.embeddedVmdayo, ".dayo embedded VMdayo payload");
+        project.embeddedVmdayo.clear();
+        project.embeddedMotion.emplace();
+        project.embeddedMotion->modelName = "Miku";
+        project.embeddedMotion->morphs.push_back({ "smile", 24, 1.0F });
+        dayo::core::saveProject(projectPath, project);
+        const auto editableProject = dayo::core::loadProject(projectPath);
+        ok &= check(editableProject.embeddedMotion && editableProject.embeddedMotion->morphs.size() == 1
+                    && editableProject.embeddedMotion->morphs[0].frame == 24,
+                    ".dayo v3 editable VMdayo motion round trip");
         {
             std::ofstream legacy(projectPath, std::ios::binary | std::ios::trunc);
             legacy << "[MikuMikuDayo]\n"
@@ -159,13 +168,34 @@ int main() {
         document.modelName = "Miku";
         document.motion.interpolation = dayo::core::InterpolationMode::catmullRom;
         document.motion.morphs.push_back({ "smile", 10, 0.75F });
+        dayo::core::VmdCameraKey cameraKey;
+        cameraKey.frame = 12;
+        cameraKey.distance = -30.0F;
+        cameraKey.viewAngle = 45;
+        cameraKey.parentModel = 2;
+        cameraKey.parentBone = 7;
+        cameraKey.interpolation[0] = 17;
+        document.motion.cameras.push_back(cameraKey);
+        document.motion.lights.push_back({ 13, { 0.5F, 0.6F, 0.7F }, { -1.0F, -2.0F, 1.0F } });
+        document.motion.shadows.push_back({ 14, 2, 75.0F });
+        document.motion.ik.push_back({ 15, true, { { "leg IK", false } } });
+        document.motion.externalParents.push_back({ 16, 1, "parent", "child" });
+        document.motion.gravity.push_back({ 17, 9.8F, { 0.0F, -1.0F, 0.0F }, 0.1F, 2.0F });
         dayo::core::saveVmdayo(vmdayoPath, document);
         const auto loaded = dayo::core::loadVmdayo(vmdayoPath);
         ok &= check(loaded.motion.morphs.size() == 1 && loaded.motion.interpolation
                     == dayo::core::InterpolationMode::catmullRom, "VMdayo round trip");
+        ok &= check(loaded.version == 3 && loaded.motion.cameras.size() == 1
+                    && loaded.motion.cameras[0].parentModel == 2
+                    && loaded.motion.cameras[0].parentBone == 7
+                    && loaded.motion.cameras[0].interpolation[0] == 17
+                    && loaded.motion.lights.size() == 1 && loaded.motion.shadows.size() == 1
+                    && loaded.motion.ik.size() == 1 && !loaded.motion.ik[0].states[0].enabled
+                    && loaded.motion.externalParents.size() == 1 && loaded.motion.gravity.size() == 1,
+                    "VMdayo v3 extended tracks round trip");
         dayo::core::Scene vmdayoScene;
         vmdayoScene.attachMotion(loaded.motion, 0, loaded.modelName);
-        ok &= check(vmdayoScene.timeline().duration == 10.0F,
+        ok &= check(vmdayoScene.timeline().duration == 17.0F,
                     "VMdayo attachment updates timeline duration");
         document.opaque = { 0x00, 0xFF, 0x56, 0x4D, 0x44 };
         dayo::core::saveVmdayo(vmdayoPath, document);

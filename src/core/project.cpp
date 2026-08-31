@@ -1,4 +1,5 @@
 #include "core/project.hpp"
+#include "core/vmdayo.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -273,6 +274,10 @@ DayoProject loadProject(const std::filesystem::path& path) {
             }
         }
         result.embeddedVmdayo = readBinarySection(path);
+        if (!result.embeddedVmdayo.empty()) {
+            const auto vmdayo = parseVmdayo(result.embeddedVmdayo);
+            if (vmdayo.opaque.empty()) result.embeddedMotion = toVmdMotion(vmdayo.motion, vmdayo.modelName);
+        }
         return result;
     }
 
@@ -347,9 +352,14 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
         if (!output) throw std::runtime_error("cannot write project: " + temporary.string());
         output << "[MikuMikuDayo]\n" << root.dump(2) << "\n[BinaryDayo]\n";
-        if (!project.embeddedVmdayo.empty()) {
-            output.write(reinterpret_cast<const char*>(project.embeddedVmdayo.data()),
-                         static_cast<std::streamsize>(project.embeddedVmdayo.size()));
+        auto payload = project.embeddedVmdayo;
+        if (payload.empty() && project.embeddedMotion) {
+            payload = serializeVmdayo({ 3, project.embeddedMotion->modelName,
+                toMotionDocument(*project.embeddedMotion), {} });
+        }
+        if (!payload.empty()) {
+            output.write(reinterpret_cast<const char*>(payload.data()),
+                         static_cast<std::streamsize>(payload.size()));
         }
         output.flush();
         if (!output) throw std::runtime_error("failed while writing project: " + temporary.string());
