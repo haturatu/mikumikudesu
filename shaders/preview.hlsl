@@ -3,6 +3,10 @@ struct VertexInput
     [[vk::location(0)]] float3 position : POSITION;
     [[vk::location(1)]] float3 normal : NORMAL;
     [[vk::location(2)]] float2 uv : TEXCOORD0;
+    [[vk::location(3)]] int4 bones : BLENDINDICES;
+    [[vk::location(4)]] float4 weights : BLENDWEIGHT;
+    [[vk::location(5)]] uint gpuSkinning : TEXCOORD2;
+    [[vk::location(6)]] float cloneOffset : TEXCOORD3;
 };
 
 struct VertexOutput
@@ -29,6 +33,19 @@ struct MaterialConstants
 [[vk::binding(0, 0)]] Texture2D<float4> baseTexture;
 [[vk::binding(1, 0)]] SamplerState baseSampler;
 
+struct BoneTransform
+{
+    float4 rotation;
+    float4 translation;
+};
+[[vk::binding(0, 1)]] StructuredBuffer<BoneTransform> boneTransforms;
+
+float3 rotateQuaternion(float4 quaternion, float3 value)
+{
+    return value + 2.0 * cross(quaternion.xyz,
+        cross(quaternion.xyz, value) + quaternion.w * value);
+}
+
 VertexOutput VS(VertexInput input, uint vertexId : SV_VertexID)
 {
     VertexOutput output;
@@ -42,8 +59,37 @@ VertexOutput VS(VertexInput input, uint vertexId : SV_VertexID)
     }
     else
     {
-        float3 p = input.position - material.target.xyz;
-        float3 n = normalize(input.normal);
+        float3 skinnedPosition = input.position;
+        float3 skinnedNormal = input.normal;
+        if (input.gpuSkinning != 0)
+        {
+            skinnedPosition = float3(0.0, 0.0, 0.0);
+            skinnedNormal = float3(0.0, 0.0, 0.0);
+            float totalWeight = 0.0;
+            [unroll]
+            for (uint influence = 0; influence < 4; ++influence)
+            {
+                if (input.bones[influence] < 0 || input.weights[influence] == 0.0) continue;
+                const BoneTransform bone = boneTransforms[input.bones[influence]];
+                skinnedPosition += (rotateQuaternion(bone.rotation, input.position)
+                                  + bone.translation.xyz) * input.weights[influence];
+                skinnedNormal += rotateQuaternion(bone.rotation, input.normal) * input.weights[influence];
+                totalWeight += input.weights[influence];
+            }
+            if (totalWeight > 0.000001)
+            {
+                skinnedPosition /= totalWeight;
+                skinnedNormal = normalize(skinnedNormal);
+            }
+            else
+            {
+                skinnedPosition = input.position;
+                skinnedNormal = input.normal;
+            }
+        }
+        skinnedPosition.x += input.cloneOffset;
+        float3 p = skinnedPosition - material.target.xyz;
+        float3 n = normalize(skinnedNormal);
         float3 s = sin(material.camera.xyz);
         float3 c = cos(material.camera.xyz);
         p.yz = float2(c.x * p.y - s.x * p.z, s.x * p.y + c.x * p.z);

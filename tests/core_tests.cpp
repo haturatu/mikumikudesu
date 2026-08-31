@@ -862,6 +862,7 @@ int main() {
         const auto before = animator.evaluate(0.0F);
         const auto after = animator.evaluate(10.0F);
         const auto seekBack = animator.evaluate(0.0F);
+        const auto gpuFrame = animator.evaluate(10.0F, 0.0F, true);
         ok &= check(before.vertices.size() == 1 && after.vertices.size() == 1
                     && before.vertices[0].position != after.vertices[0].position,
                     "matched VMD bone changes skinned vertices");
@@ -870,6 +871,31 @@ int main() {
                     "skinned vertex follows the animated bone rotation");
         ok &= check(seekBack.vertices[0].position == before.vertices[0].position,
                     "VMD track cursor falls back to binary search for backward seeks");
+        const auto& gpuBone = gpuFrame.bones[1];
+        const auto& bindPosition = gpuFrame.vertices[0].position;
+        const dayo::core::Float3 quaternionAxis {
+            gpuBone.rotation[0], gpuBone.rotation[1], gpuBone.rotation[2],
+        };
+        const auto dotAxis = quaternionAxis[0] * bindPosition[0]
+            + quaternionAxis[1] * bindPosition[1] + quaternionAxis[2] * bindPosition[2];
+        const auto dotSelf = quaternionAxis[0] * quaternionAxis[0]
+            + quaternionAxis[1] * quaternionAxis[1] + quaternionAxis[2] * quaternionAxis[2];
+        const dayo::core::Float3 crossAxis {
+            quaternionAxis[1] * bindPosition[2] - quaternionAxis[2] * bindPosition[1],
+            quaternionAxis[2] * bindPosition[0] - quaternionAxis[0] * bindPosition[2],
+            quaternionAxis[0] * bindPosition[1] - quaternionAxis[1] * bindPosition[0],
+        };
+        dayo::core::Float3 gpuPosition {};
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            gpuPosition[axis] = 2.0F * dotAxis * quaternionAxis[axis]
+                + (gpuBone.rotation[3] * gpuBone.rotation[3] - dotSelf) * bindPosition[axis]
+                + 2.0F * gpuBone.rotation[3] * crossAxis[axis] + gpuBone.translation[axis];
+        }
+        ok &= check(gpuFrame.bones.size() == model.bones.size()
+                    && gpuFrame.vertices[0].position == model.vertices[0].position
+                    && std::abs(gpuPosition[0] - after.vertices[0].position[0]) < 1e-4F
+                    && std::abs(gpuPosition[1] - after.vertices[0].position[1]) < 1e-4F,
+                    "GPU BDEF transform matches CPU skinning output");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: synthetic animation: " << exception.what() << '\n';
         ok = false;

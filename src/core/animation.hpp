@@ -13,7 +13,12 @@ namespace dayo::core {
 class MmdPhysics;
 
 struct AnimatedModelFrame {
+    struct BoneTransform {
+        Float4 rotation { 0.0F, 0.0F, 0.0F, 1.0F };
+        Float3 translation {};
+    };
     std::vector<PmxVertex> vertices;
+    std::vector<BoneTransform> bones;
     struct Material {
         Float4 diffuse {};
         Float3 specular {};
@@ -54,7 +59,8 @@ public:
     void setPose(const VpdPose* pose);
     void setPhysics(MmdPhysics* physics);
     [[nodiscard]] MotionCompatibility motionCompatibility() const;
-    [[nodiscard]] AnimatedModelFrame evaluate(float frame, float deltaSeconds = 0.0F);
+    [[nodiscard]] AnimatedModelFrame evaluate(float frame, float deltaSeconds = 0.0F,
+                                               bool gpuSkinning = false);
 
 private:
     struct Impl;

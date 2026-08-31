@@ -634,7 +634,7 @@ MotionCompatibility MmdAnimator::motionCompatibility() const {
     return result;
 }
 
-AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
+AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool gpuSkinning) {
     AnimatedModelFrame result;
     result.vertices = model_.vertices;
     result.materials.reserve(model_.materials.size());
@@ -880,6 +880,15 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
     }
     previousFrame_ = frame;
 
+    result.bones.reserve(global.size());
+    for (std::size_t index = 0; index < global.size(); ++index) {
+        AnimatedModelFrame::BoneTransform transform;
+        transform.rotation = global[index].rotation;
+        transform.translation = sub(global[index].position,
+            rotate(global[index].rotation, model_.bones[index].position));
+        result.bones.push_back(transform);
+    }
+
     for (auto& vertex : result.vertices) {
         if (vertex.weightType == PmxWeightType::sdef) {
             skinSdef(vertex, model_, global);
@@ -889,6 +898,7 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
             skinQdef(vertex, model_, global);
             continue;
         }
+        if (gpuSkinning) continue;
         Float3 position {};
         Float3 normal {};
         float totalWeight = 0.0F;
