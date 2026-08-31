@@ -24,7 +24,7 @@ struct OutputSettings {
 [[nodiscard]] std::filesystem::path outputPath(const OutputSettings& settings, std::uint32_t frame);
 void writeFrame(const std::filesystem::path& path, const ImageRgba8& image, OutputFormat format);
 
-class OutputWorker;
+struct OutputWorker;
 
 // The queue decouples rendering from encoding. PPM is dependency-free and is
 // the default; applications may plug in PNG/EXR encoders at the boundary.
