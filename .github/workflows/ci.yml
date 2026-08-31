@@ -56,8 +56,19 @@ jobs:
             libavutil-dev \
             libbullet-dev \
             libstb-dev \
+            libasound2-dev \
             libswresample-dev \
             libswscale-dev \
+            libxcursor-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxss-dev \
+            libxtst-dev \
+            libx11-dev \
+            libxext-dev \
+            libxrender-dev \
             libvulkan-dev \
             mesa-vulkan-drivers \
             ninja-build \
