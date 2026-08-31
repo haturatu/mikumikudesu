@@ -78,6 +78,25 @@ double sceneTimelineFps(const core::Scene& scene) noexcept {
     return std::isfinite(value) && value > 0.0 ? value : 30.0;
 }
 
+core::Float3 rotateQuaternion(const core::Float4& quaternion, const core::Float3& value) {
+    const core::Float3 axis { quaternion[0], quaternion[1], quaternion[2] };
+    const core::Float3 firstCross {
+        axis[1] * value[2] - axis[2] * value[1],
+        axis[2] * value[0] - axis[0] * value[2],
+        axis[0] * value[1] - axis[1] * value[0],
+    };
+    const core::Float3 nested {
+        axis[1] * firstCross[2] - axis[2] * firstCross[1],
+        axis[2] * firstCross[0] - axis[0] * firstCross[2],
+        axis[0] * firstCross[1] - axis[1] * firstCross[0],
+    };
+    return {
+        value[0] + 2.0F * (nested[0] + quaternion[3] * firstCross[0]),
+        value[1] + 2.0F * (nested[1] + quaternion[3] * firstCross[1]),
+        value[2] + 2.0F * (nested[2] + quaternion[3] * firstCross[2]),
+    };
+}
+
 std::uint64_t videoOutputFrameCount(std::uint64_t firstFrame,
                                     std::uint64_t lastFrame,
                                     double sourceFps,
@@ -844,6 +863,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     }
     std::size_t materialCursor = 0;
     std::uint32_t indexCursor = 0;
+    std::vector<graphics::PreviewBoneTransform> bones;
     for (const auto& instance : scene_.models()) {
         if (!instance.visible || instance.model == nullptr || instance.animator == nullptr) continue;
         const auto gravity = scene_.evaluatePhysicsSettings(animationFrame_);
@@ -854,7 +874,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             instance.physics->setGravityNoise(gravity.noiseAmplitude, gravity.noiseFrequency);
             instance.physics->setFloorCollision(gravity.floorCollision);
         }
-        auto frame = instance.animator->evaluate(animationFrame_, deltaSeconds);
+        const bool gpuSkinning = instance.softBody == nullptr || !instance.softBody->available();
+        auto frame = instance.animator->evaluate(animationFrame_, deltaSeconds, gpuSkinning);
         if (!frame.vertices.empty() && (initialUpload || static_cast<int>(animationFrame_) % 30 == 0)) {
             const auto& vertex = frame.vertices.front().position;
             log::debug("Animation sample: model=", instance.displayName,
@@ -868,6 +889,21 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             instance.softBody->apply(frame.vertices);
         }
         core::normalizeForPreview(frame.vertices, instance.normalization);
+        const auto boneBase = static_cast<std::int32_t>(bones.size());
+        if (gpuSkinning) {
+            bones.reserve(bones.size() + frame.bones.size());
+            for (const auto& source : frame.bones) {
+                graphics::PreviewBoneTransform bone;
+                std::copy(source.rotation.begin(), source.rotation.end(), bone.rotation);
+                const auto rotatedCenter = rotateQuaternion(source.rotation, instance.normalization.center);
+                for (std::size_t axis = 0; axis < 3; ++axis) {
+                    bone.translation[axis] = (rotatedCenter[axis] + source.translation[axis]
+                                            - instance.normalization.center[axis])
+                                           * instance.normalization.scale;
+                }
+                bones.push_back(bone);
+            }
+        }
         const auto textureBase = [&] {
             std::size_t value = 0;
             for (const auto& previous : scene_.models()) {
@@ -885,9 +921,21 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             for (const auto& source : frame.vertices) {
                 graphics::PreviewVertex vertex;
                 std::memcpy(vertex.position, source.position.data(), sizeof(vertex.position));
-                vertex.position[0] += cloneOffset;
                 std::memcpy(vertex.normal, source.normal.data(), sizeof(vertex.normal));
                 std::memcpy(vertex.uv, source.uv.data(), sizeof(vertex.uv));
+                const bool supported = gpuSkinning
+                    && source.weightType != core::PmxWeightType::sdef
+                    && source.weightType != core::PmxWeightType::qdef;
+                if (supported) {
+                    for (std::size_t influence = 0; influence < 4; ++influence) {
+                        vertex.bones[influence] = source.bones[influence] < 0
+                            || static_cast<std::size_t>(source.bones[influence]) >= frame.bones.size()
+                            ? -1 : boneBase + source.bones[influence];
+                        vertex.weights[influence] = source.weights[influence];
+                    }
+                    vertex.gpuSkinning = 1;
+                }
+                vertex.cloneOffset = cloneOffset;
                 vertices.push_back(vertex);
             }
             if (rebuildTopology) {
@@ -924,6 +972,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         animatedMaterialTemplates_ = materials;
         animatedTopologyGeneration_ = scene_.topologyGeneration();
     }
+    device_->updatePreviewBones(bones);
     if (initialUpload || rebuildTopology) device_->uploadPreviewMesh(vertices, animatedIndices_);
     else {
         try { device_->updatePreviewVertices(vertices); }

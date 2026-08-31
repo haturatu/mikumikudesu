@@ -26,6 +26,7 @@ public:
     void uploadPreviewMesh(std::span<const PreviewVertex> vertices,
                            std::span<const std::uint32_t> indices) override;
     void updatePreviewVertices(std::span<const PreviewVertex> vertices) override;
+    void updatePreviewBones(std::span<const PreviewBoneTransform> bones) override;
     void updatePreviewMaterials(std::span<const PreviewMaterial> materials) override;
     void uploadPreviewTextures(std::span<const PreviewTexture> textures) override;
     void uploadPreviewBackground(std::span<const PreviewTexture> textures) override;
@@ -49,6 +50,11 @@ private:
         VkDeviceMemory previewVertexMemory {};
         void* mappedPreviewVertices {};
         std::uint64_t previewVertexGeneration {};
+        VkBuffer previewBoneBuffer {};
+        VkDeviceMemory previewBoneMemory {};
+        void* mappedPreviewBones {};
+        VkDescriptorSet previewBoneDescriptor {};
+        std::uint64_t previewBoneGeneration {};
     };
 
     struct BufferResource {
@@ -118,6 +124,8 @@ private:
     void recreateSwapchain();
     void destroyPreviewMesh();
     void synchronizePreviewVertices(Frame& frame);
+    void destroyPreviewBones();
+    void synchronizePreviewBones(Frame& frame);
     void uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage,
                              VkBuffer& buffer, VkDeviceMemory& memory);
     [[nodiscard]] std::uint32_t findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags flags) const;
@@ -150,6 +158,7 @@ private:
     VkPipeline pipeline_ {};
     VkPipeline backgroundPipeline_ {};
     VkDescriptorSetLayout previewDescriptorSetLayout_ {};
+    VkDescriptorSetLayout previewSkinningDescriptorSetLayout_ {};
     VkDescriptorPool previewDescriptorPool_ {};
     VkSampler previewSampler_ {};
     VkDescriptorPool imguiDescriptorPool_ {};
@@ -158,6 +167,8 @@ private:
     std::size_t frameIndex_ {};
     VkDeviceSize previewVertexSize_ {};
     std::uint64_t previewVertexGeneration_ {};
+    VkDeviceSize previewBoneSize_ {};
+    std::uint64_t previewBoneGeneration_ {};
     VkBuffer previewIndexBuffer_ {};
     VkDeviceMemory previewIndexMemory_ {};
     std::uint32_t previewIndexCount_ {};

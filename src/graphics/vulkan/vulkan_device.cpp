@@ -130,6 +130,8 @@ VulkanDevice::VulkanDevice(platform::Window& window, bool validation)
     }};
     const std::array<std::uint32_t, 3> fallbackIndices { 0, 1, 2 };
     uploadPreviewMesh(fallbackVertices, fallbackIndices);
+    const std::array<PreviewBoneTransform, 1> identityBones {};
+    updatePreviewBones(identityBones);
     uploadPreviewTextures(std::span<const PreviewTexture> {});
     log::info("Vulkan device ready: ", capabilities_.gpuName, " (", capabilities_.driverName, ")");
 }
@@ -139,6 +141,7 @@ VulkanDevice::~VulkanDevice() {
     destroyUi();
     destroyOffscreenResource();
     destroyPreviewMesh();
+    destroyPreviewBones();
     destroyPreviewBackground();
     destroyPreviewTextures();
     for (const auto& [handle, resource] : textures_) {
@@ -570,6 +573,14 @@ void VulkanDevice::createPipeline() {
                                             offsetof(PreviewVertex, normal) },
         VkVertexInputAttributeDescription { 2, 0, VK_FORMAT_R32G32_SFLOAT,
                                             offsetof(PreviewVertex, uv) },
+        VkVertexInputAttributeDescription { 3, 0, VK_FORMAT_R32G32B32A32_SINT,
+                                            offsetof(PreviewVertex, bones) },
+        VkVertexInputAttributeDescription { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
+                                            offsetof(PreviewVertex, weights) },
+        VkVertexInputAttributeDescription { 5, 0, VK_FORMAT_R32_UINT,
+                                            offsetof(PreviewVertex, gpuSkinning) },
+        VkVertexInputAttributeDescription { 6, 0, VK_FORMAT_R32_SFLOAT,
+                                            offsetof(PreviewVertex, cloneOffset) },
     };
     const VkPipelineVertexInputStateCreateInfo vertexInput {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
@@ -637,10 +648,11 @@ void VulkanDevice::createPipeline() {
         .offset = 0,
         .size = sizeof(PreviewPushConstants),
     };
+    const std::array descriptorLayouts { previewDescriptorSetLayout_, previewSkinningDescriptorSetLayout_ };
     const VkPipelineLayoutCreateInfo layoutInfo {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = 1,
-        .pSetLayouts = &previewDescriptorSetLayout_,
+        .setLayoutCount = static_cast<std::uint32_t>(descriptorLayouts.size()),
+        .pSetLayouts = descriptorLayouts.data(),
         .pushConstantRangeCount = 1,
         .pPushConstantRanges = &pushConstant,
     };
@@ -703,9 +715,21 @@ void VulkanDevice::createPreviewDescriptors() {
     };
     check(vkCreateDescriptorSetLayout(device_, &layoutInfo, nullptr, &previewDescriptorSetLayout_),
           "create preview descriptor layout");
+    const VkDescriptorSetLayoutBinding skinningBinding {
+        0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr,
+    };
+    const VkDescriptorSetLayoutCreateInfo skinningLayoutInfo {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 1,
+        .pBindings = &skinningBinding,
+    };
+    check(vkCreateDescriptorSetLayout(device_, &skinningLayoutInfo, nullptr,
+                                      &previewSkinningDescriptorSetLayout_),
+          "create preview skinning descriptor layout");
     const std::array poolSizes {
         VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4096 },
         VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_SAMPLER, 4096 },
+        VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16 },
     };
     const VkDescriptorPoolCreateInfo poolInfo {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -736,9 +760,13 @@ void VulkanDevice::destroyPreviewDescriptors() {
     if (previewDescriptorSetLayout_ != VK_NULL_HANDLE) {
         vkDestroyDescriptorSetLayout(device_, previewDescriptorSetLayout_, nullptr);
     }
+    if (previewSkinningDescriptorSetLayout_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(device_, previewSkinningDescriptorSetLayout_, nullptr);
+    }
     previewSampler_ = VK_NULL_HANDLE;
     previewDescriptorPool_ = VK_NULL_HANDLE;
     previewDescriptorSetLayout_ = VK_NULL_HANDLE;
+    previewSkinningDescriptorSetLayout_ = VK_NULL_HANDLE;
 }
 
 void VulkanDevice::destroyPreviewTextures() {
@@ -1243,6 +1271,7 @@ void VulkanDevice::renderFrame() {
     auto& frame = frames_[frameIndex_];
     check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for frame");
     synchronizePreviewVertices(frame);
+    synchronizePreviewBones(frame);
 
     std::uint32_t imageIndex = 0;
     const auto acquire = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX,
@@ -1341,6 +1370,8 @@ void VulkanDevice::renderFrame() {
     vkCmdSetViewport(frame.commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
     vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 1, 1,
+                            &frame.previewBoneDescriptor, 0, nullptr);
     const VkDeviceSize vertexOffset = 0;
     vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &frame.previewVertexBuffer, &vertexOffset);
     vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
@@ -1596,6 +1627,7 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     createOffscreenResource(extent);
     auto& frame = frames_[frameIndex_];
     synchronizePreviewVertices(frame);
+    synchronizePreviewBones(frame);
     check(vkResetFences(device_, 1, &frame.inFlight), "reset offscreen fence");
     check(vkResetCommandPool(device_, frame.commandPool, 0), "reset offscreen command pool");
     const VkCommandBufferBeginInfo beginInfo {
@@ -1684,6 +1716,8 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     vkCmdSetViewport(frame.commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
     vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 1, 1,
+                            &frame.previewBoneDescriptor, 0, nullptr);
     const VkDeviceSize vertexOffset = 0;
     vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &frame.previewVertexBuffer, &vertexOffset);
     vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
@@ -1851,6 +1885,42 @@ void VulkanDevice::synchronizePreviewVertices(Frame& frame) {
     frame.previewVertexGeneration = previewVertexGeneration_;
 }
 
+void VulkanDevice::destroyPreviewBones() {
+    for (auto& frame : frames_) {
+        if (frame.previewBoneDescriptor != VK_NULL_HANDLE && previewDescriptorPool_ != VK_NULL_HANDLE) {
+            check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &frame.previewBoneDescriptor),
+                  "free preview bone descriptor");
+        }
+        if (frame.mappedPreviewBones != nullptr) vkUnmapMemory(device_, frame.previewBoneMemory);
+        if (frame.previewBoneBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(device_, frame.previewBoneBuffer, nullptr);
+        }
+        if (frame.previewBoneMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(device_, frame.previewBoneMemory, nullptr);
+        }
+        frame.previewBoneBuffer = VK_NULL_HANDLE;
+        frame.previewBoneMemory = VK_NULL_HANDLE;
+        frame.mappedPreviewBones = nullptr;
+        frame.previewBoneDescriptor = VK_NULL_HANDLE;
+        frame.previewBoneGeneration = 0;
+    }
+    previewBoneSize_ = 0;
+    previewBoneGeneration_ = 0;
+}
+
+void VulkanDevice::synchronizePreviewBones(Frame& frame) {
+    if (frame.previewBoneGeneration == previewBoneGeneration_ || previewBoneSize_ == 0) return;
+    const auto latest = std::find_if(frames_.begin(), frames_.end(), [this](const Frame& candidate) {
+        return candidate.previewBoneGeneration == previewBoneGeneration_;
+    });
+    if (latest == frames_.end() || latest->mappedPreviewBones == nullptr) return;
+    check(vkWaitForFences(device_, 1, &latest->inFlight, VK_TRUE, UINT64_MAX),
+          "wait for latest preview bones");
+    std::memcpy(frame.mappedPreviewBones, latest->mappedPreviewBones,
+                static_cast<std::size_t>(previewBoneSize_));
+    frame.previewBoneGeneration = previewBoneGeneration_;
+}
+
 void VulkanDevice::destroyPreviewBackground() {
     for (auto& frame : frames_) {
         if (frame.mappedBackgroundStaging != nullptr) {
@@ -1990,6 +2060,49 @@ void VulkanDevice::updatePreviewVertices(std::span<const PreviewVertex> vertices
     }
 }
 
+void VulkanDevice::updatePreviewBones(std::span<const PreviewBoneTransform> bones) {
+    const std::array<PreviewBoneTransform, 1> identity {};
+    if (bones.empty()) bones = identity;
+    const auto byteSize = static_cast<VkDeviceSize>(bones.size_bytes());
+    if (byteSize != previewBoneSize_) {
+        waitIdle();
+        destroyPreviewBones();
+        previewBoneSize_ = byteSize;
+        ++previewBoneGeneration_;
+        for (auto& frame : frames_) {
+            uploadPreviewBuffer(bones.data(), byteSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                frame.previewBoneBuffer, frame.previewBoneMemory);
+            check(vkMapMemory(device_, frame.previewBoneMemory, 0, byteSize, 0,
+                              &frame.mappedPreviewBones), "persistently map preview bones");
+            const VkDescriptorSetAllocateInfo setInfo {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                .descriptorPool = previewDescriptorPool_,
+                .descriptorSetCount = 1,
+                .pSetLayouts = &previewSkinningDescriptorSetLayout_,
+            };
+            check(vkAllocateDescriptorSets(device_, &setInfo, &frame.previewBoneDescriptor),
+                  "allocate preview bone descriptor");
+            const VkDescriptorBufferInfo bufferInfo { frame.previewBoneBuffer, 0, previewBoneSize_ };
+            const VkWriteDescriptorSet write {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = frame.previewBoneDescriptor,
+                .dstBinding = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .pBufferInfo = &bufferInfo,
+            };
+            vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+            frame.previewBoneGeneration = previewBoneGeneration_;
+        }
+        return;
+    }
+    auto& frame = frames_[frameIndex_];
+    check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX),
+          "wait for preview bone frame");
+    std::memcpy(frame.mappedPreviewBones, bones.data(), bones.size_bytes());
+    frame.previewBoneGeneration = ++previewBoneGeneration_;
+}
+
 void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> materials) {
     previewMaterials_.assign(materials.begin(), materials.end());
 }
@@ -2019,6 +2132,8 @@ void VulkanDevice::clearPreviewResources() {
     }};
     const std::array<std::uint32_t, 3> fallbackIndices { 0, 1, 2 };
     uploadPreviewMesh(fallbackVertices, fallbackIndices);
+    const std::array<PreviewBoneTransform, 1> identityBones {};
+    updatePreviewBones(identityBones);
     destroyPreviewBackground();
     uploadPreviewTextures(std::span<const PreviewTexture> {});
     previewMaterials_.clear();

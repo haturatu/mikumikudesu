@@ -72,6 +72,15 @@ struct PreviewVertex {
     float position[3] {};
     float normal[3] {};
     float uv[2] {};
+    std::int32_t bones[4] { -1, -1, -1, -1 };
+    float weights[4] { 1.0F, 0.0F, 0.0F, 0.0F };
+    std::uint32_t gpuSkinning {};
+    float cloneOffset {};
+};
+
+struct PreviewBoneTransform {
+    float rotation[4] { 0.0F, 0.0F, 0.0F, 1.0F };
+    float translation[4] {};
 };
 
 struct PreviewMaterial {
@@ -161,6 +170,7 @@ public:
     virtual void uploadPreviewMesh(std::span<const PreviewVertex> vertices,
                                    std::span<const std::uint32_t> indices) = 0;
     virtual void updatePreviewVertices(std::span<const PreviewVertex> vertices) = 0;
+    virtual void updatePreviewBones(std::span<const PreviewBoneTransform> bones) = 0;
     virtual void updatePreviewMaterials(std::span<const PreviewMaterial> materials) = 0;
     virtual void uploadPreviewTextures(std::span<const PreviewTexture> textures) = 0;
     virtual void uploadPreviewBackground(std::span<const PreviewTexture> textures) = 0;
