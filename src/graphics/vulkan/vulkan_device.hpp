@@ -41,6 +41,10 @@ private:
         VkSemaphore imageAvailable {};
         VkSemaphore renderFinished {};
         VkFence inFlight {};
+        VkBuffer backgroundStagingBuffer {};
+        VkDeviceMemory backgroundStagingMemory {};
+        void* mappedBackgroundStaging {};
+        bool backgroundUploadPending {};
     };
 
     struct BufferResource {
@@ -99,6 +103,10 @@ private:
                               std::span<const std::uint8_t> rgba);
     [[nodiscard]] PreviewTextureResource createPreviewTextureResource(
         std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> rgba);
+    [[nodiscard]] PreviewTextureResource createEmptyPreviewTextureResource(
+        std::uint32_t width, std::uint32_t height);
+    void createPreviewBackgroundStream(std::uint32_t width, std::uint32_t height);
+    void recordPreviewBackgroundUpload(VkCommandBuffer command, Frame& frame);
     void createFrames();
     void destroyFrames();
     void createUi();
@@ -158,6 +166,9 @@ private:
     VkDeviceMemory previewBackgroundIndexMemory_ {};
     std::uint32_t previewBackgroundIndexCount_ {};
     PreviewTextureResource previewBackgroundTexture_;
+    VkExtent2D previewBackgroundExtent_ {};
+    VkDeviceSize previewBackgroundByteSize_ {};
+    bool previewBackgroundInitialized_ {};
     PreviewScene previewScene_;
     OffscreenResource offscreen_;
 
