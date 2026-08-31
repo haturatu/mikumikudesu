@@ -3,6 +3,7 @@
 #include "core/image.hpp"
 #include "core/media.hpp"
 #include "core/audio_export.hpp"
+#include "core/video_export.hpp"
 #include "core/effect.hpp"
 #include "core/model_probe.hpp"
 #include "core/motion.hpp"
@@ -359,6 +360,8 @@ int main() {
     }
     try {
         const auto mediaPath = std::filesystem::temp_directory_path() / "mikumikudesu-media-test.wav";
+        const auto exportPath = std::filesystem::temp_directory_path() / "mikumikudesu-audio-export-test.m4a";
+        const auto videoPath = std::filesystem::temp_directory_path() / "mikumikudesu-video-export-test.mp4";
         {
             std::ofstream output(mediaPath, std::ios::binary);
             constexpr std::uint32_t sampleCount = 800;
@@ -380,7 +383,6 @@ int main() {
         const auto audio = media.decodeAudio();
         ok &= check(audio.channels == 2 && audio.sampleRate == 48'000 && !audio.samples.empty(),
                     "FFmpeg audio decode and resample");
-        const auto exportPath = std::filesystem::temp_directory_path() / "mikumikudesu-audio-export-test.m4a";
         dayo::core::AudioExportRequest exportRequest;
         exportRequest.source = mediaPath;
         exportRequest.destination = exportPath;
@@ -401,6 +403,41 @@ int main() {
         ok &= check(exportedAudio.sampleRate == 48'000 && exportedAudio.channels == 2
                     && !exportedAudio.samples.empty(),
                     "M4A export round trip decode");
+        dayo::core::VideoExportRequest videoRequest;
+        videoRequest.destination = videoPath;
+        videoRequest.width = 64;
+        videoRequest.height = 48;
+        videoRequest.fps = 10.0;
+        videoRequest.includeAudio = true;
+        videoRequest.overwrite = true;
+        dayo::core::VideoExporter videoExporter(videoRequest);
+        videoExporter.writeAudio(audio.samples, audio.sampleRate, audio.channels);
+        for (std::uint8_t value : { std::uint8_t { 32 }, std::uint8_t { 96 }, std::uint8_t { 192 } }) {
+            dayo::core::ImageRgba8 image;
+            image.width = videoRequest.width;
+            image.height = videoRequest.height;
+            image.pixels.resize(static_cast<std::size_t>(image.width) * image.height * 4U,
+                                value);
+            for (std::size_t index = 3; index < image.pixels.size(); index += 4) image.pixels[index] = 255;
+            videoExporter.writeVideoFrame(image);
+        }
+        const auto videoResult = videoExporter.finish();
+        ok &= check(dayo::core::canExportVideo() && videoResult.encodedFrames == 3
+                    && std::filesystem::exists(videoPath),
+                    "streaming H.264 MP4 export");
+        dayo::core::MediaFile exportedVideo(videoPath);
+        ok &= check(exportedVideo.info().hasVideo && exportedVideo.info().hasAudio
+                    && exportedVideo.info().videoWidth == 64 && exportedVideo.info().videoHeight == 48
+                    && exportedVideo.info().durationSeconds > 0.1,
+                    "MP4 export round trip metadata");
+        const auto exportedFrame = exportedVideo.decodeVideoFrame(0.1);
+        ok &= check(exportedFrame.width == 64 && exportedFrame.height == 48
+                    && !exportedFrame.pixels.empty(),
+                    "MP4 export round trip decode");
+        const auto exportedVideoAudio = exportedVideo.decodeAudio();
+        ok &= check(exportedVideoAudio.sampleRate == 48'000 && exportedVideoAudio.channels == 2
+                    && !exportedVideoAudio.samples.empty(),
+                    "MP4 video audio round trip decode");
         dayo::core::Scene backgroundScene;
         backgroundScene.setBackgroundScreenSource(dayo::core::ScreenTextureSource::backgroundImage);
         backgroundScene.setMedia(mediaPath);
@@ -410,6 +447,7 @@ int main() {
         std::error_code mediaError;
         std::filesystem::remove(mediaPath, mediaError);
         std::filesystem::remove(exportPath, mediaError);
+        std::filesystem::remove(videoPath, mediaError);
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: media: " << exception.what() << '\n';
         ok = false;

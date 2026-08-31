@@ -21,6 +21,7 @@ public:
     void resize() override;
     void beginUiFrame() override;
     void renderFrame() override;
+    [[nodiscard]] core::ImageRgba8 renderToImage(const RenderTargetDesc& target) override;
     void waitIdle() override;
     void uploadPreviewMesh(std::span<const PreviewVertex> vertices,
                            std::span<const std::uint32_t> indices) override;
@@ -66,6 +67,18 @@ private:
         VkDescriptorSet descriptor {};
     };
 
+    struct OffscreenResource {
+        VkImage colorImage {};
+        VkDeviceMemory colorMemory {};
+        VkImageView colorView {};
+        DepthResource depth;
+        VkBuffer stagingBuffer {};
+        VkDeviceMemory stagingMemory {};
+        VkDeviceSize stagingSize {};
+        VkExtent2D extent {};
+        bool colorInitialized {};
+    };
+
     void createInstance(bool validation);
     void createSurface();
     void selectPhysicalDevice();
@@ -80,6 +93,8 @@ private:
     void destroyPreviewTextures();
     void destroyPreviewBackground();
     void destroyPreviewTextureResource(PreviewTextureResource& texture);
+    void destroyOffscreenResource();
+    void createOffscreenResource(VkExtent2D extent);
     void createPreviewTexture(std::uint32_t width, std::uint32_t height,
                               std::span<const std::uint8_t> rgba);
     [[nodiscard]] PreviewTextureResource createPreviewTextureResource(
@@ -144,6 +159,7 @@ private:
     std::uint32_t previewBackgroundIndexCount_ {};
     PreviewTextureResource previewBackgroundTexture_;
     PreviewScene previewScene_;
+    OffscreenResource offscreen_;
 
     std::uint64_t nextResourceHandle_ { 1 };
     std::unordered_map<BufferHandle, BufferResource> buffers_;

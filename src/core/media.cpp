@@ -99,8 +99,26 @@ const MediaInfo& MediaFile::info() const noexcept { return impl_->info; }
 
 AudioBuffer MediaFile::decodeAudio() {
 #if DAYO_HAS_MEDIA
+    AudioBuffer output;
+    streamAudio([&](const std::span<const float> samples,
+                    const std::uint32_t sampleRate,
+                    const std::uint32_t channels) {
+        output.sampleRate = sampleRate;
+        output.channels = channels;
+        output.samples.insert(output.samples.end(), samples.begin(), samples.end());
+    });
+    return output;
+#else
+    throw std::runtime_error("FFmpeg support was not built");
+#endif
+}
+
+void MediaFile::streamAudio(const AudioSampleCallback& callback) {
+#if DAYO_HAS_MEDIA
     if (impl_->audioCodec == nullptr) throw std::runtime_error("media has no audio stream");
+    if (!callback) throw std::invalid_argument("audio sample callback is empty");
     ffmpeg::check(av_seek_frame(impl_->format, impl_->audioStream, 0, AVSEEK_FLAG_BACKWARD), "seek audio");
+    avformat_flush(impl_->format);
     avcodec_flush_buffers(impl_->audioCodec);
     AVChannelLayout outputLayout = AV_CHANNEL_LAYOUT_STEREO;
     SwrContext* resampler = nullptr;
@@ -108,43 +126,54 @@ AudioBuffer MediaFile::decodeAudio() {
                                       &impl_->audioCodec->ch_layout, impl_->audioCodec->sample_fmt,
                                       impl_->audioCodec->sample_rate, 0, nullptr), "create audio resampler");
     ffmpeg::check(swr_init(resampler), "initialize audio resampler");
-    AudioBuffer output;
     auto* packet = av_packet_alloc();
     auto* frame = av_frame_alloc();
-    if (packet == nullptr || frame == nullptr) throw std::bad_alloc();
-    auto receive = [&] {
-        while (true) {
-            const int result = avcodec_receive_frame(impl_->audioCodec, frame);
-            if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) break;
-            ffmpeg::check(result, "decode audio frame");
-            const int capacity = av_rescale_rnd(swr_get_delay(resampler, impl_->audioCodec->sample_rate)
-                                                + frame->nb_samples, 48'000,
-                                                impl_->audioCodec->sample_rate, AV_ROUND_UP);
-            const auto begin = output.samples.size();
-            output.samples.resize(begin + static_cast<std::size_t>(capacity) * 2U);
-            std::uint8_t* destination[] { reinterpret_cast<std::uint8_t*>(output.samples.data() + begin) };
-            const int converted = swr_convert(resampler, destination, capacity,
-                                               const_cast<const std::uint8_t**>(frame->extended_data),
-                                               frame->nb_samples);
-            ffmpeg::check(converted, "resample audio");
-            output.samples.resize(begin + static_cast<std::size_t>(converted) * 2U);
-            av_frame_unref(frame);
-        }
-    };
-    while (av_read_frame(impl_->format, packet) >= 0) {
-        if (packet->stream_index == impl_->audioStream) {
-            ffmpeg::check(avcodec_send_packet(impl_->audioCodec, packet), "submit audio packet");
-            receive();
-        }
-        av_packet_unref(packet);
+    if (packet == nullptr || frame == nullptr) {
+        av_frame_free(&frame);
+        av_packet_free(&packet);
+        swr_free(&resampler);
+        throw std::bad_alloc();
     }
-    ffmpeg::check(avcodec_send_packet(impl_->audioCodec, nullptr), "flush audio decoder");
-    receive();
+    try {
+        auto receive = [&] {
+            while (true) {
+                const int result = avcodec_receive_frame(impl_->audioCodec, frame);
+                if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) break;
+                ffmpeg::check(result, "decode audio frame");
+                const int capacity = av_rescale_rnd(swr_get_delay(resampler, impl_->audioCodec->sample_rate)
+                                                    + frame->nb_samples, 48'000,
+                                                    impl_->audioCodec->sample_rate, AV_ROUND_UP);
+                std::vector<float> samples(static_cast<std::size_t>(capacity) * 2U);
+                std::uint8_t* destination[] { reinterpret_cast<std::uint8_t*>(samples.data()) };
+                const int converted = swr_convert(resampler, destination, capacity,
+                                                   const_cast<const std::uint8_t**>(frame->extended_data),
+                                                   frame->nb_samples);
+                ffmpeg::check(converted, "resample audio");
+                samples.resize(static_cast<std::size_t>(converted) * 2U);
+                if (!samples.empty()) callback({ samples.data(), samples.size() }, 48'000, 2);
+                av_frame_unref(frame);
+            }
+        };
+        while (av_read_frame(impl_->format, packet) >= 0) {
+            if (packet->stream_index == impl_->audioStream) {
+                ffmpeg::check(avcodec_send_packet(impl_->audioCodec, packet), "submit audio packet");
+                receive();
+            }
+            av_packet_unref(packet);
+        }
+        ffmpeg::check(avcodec_send_packet(impl_->audioCodec, nullptr), "flush audio decoder");
+        receive();
+    } catch (...) {
+        av_frame_free(&frame);
+        av_packet_free(&packet);
+        swr_free(&resampler);
+        throw;
+    }
     swr_free(&resampler);
     av_frame_free(&frame);
     av_packet_free(&packet);
-    return output;
 #else
+    static_cast<void>(callback);
     throw std::runtime_error("FFmpeg support was not built");
 #endif
 }

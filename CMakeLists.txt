@@ -67,6 +67,7 @@ add_library(dayo_core
   src/core/ffmpeg_utils.cpp
   src/core/image.cpp
   src/core/audio_export.cpp
+  src/core/video_export.cpp
   src/core/media.cpp
   src/core/model_probe.cpp
   src/core/motion.cpp
@@ -88,6 +89,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   set_source_files_properties(src/core/vmdayo.cpp PROPERTIES COMPILE_OPTIONS "-Wno-cpp;-Wno-deprecated-declarations")
   set_source_files_properties(src/core/effect.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-shadow;-Wno-cpp;-Wno-deprecated-declarations")
   set_source_files_properties(src/core/audio_export.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-shadow;-Wno-deprecated-declarations")
+  set_source_files_properties(src/core/video_export.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-shadow;-Wno-deprecated-declarations")
   set_source_files_properties(src/core/ffmpeg_utils.cpp PROPERTIES COMPILE_OPTIONS "-Wno-deprecated-declarations")
   set_source_files_properties(src/core/project.cpp PROPERTIES COMPILE_OPTIONS "-Wno-cpp;-Wno-deprecated-declarations")
 endif()
@@ -259,6 +261,7 @@ add_executable(mikumikudesu
   src/app/application.cpp
   src/app/audio_export_command.cpp
   src/app/audio_export_job.cpp
+  src/app/video_export_job.cpp
   src/app/main.cpp
 )
 target_include_directories(mikumikudesu PRIVATE src)
@@ -296,6 +299,9 @@ if(BUILD_TESTING)
     add_test(NAME audio_export_cli
       COMMAND bash "${CMAKE_SOURCE_DIR}/tests/audio_export_cli.sh" "$<TARGET_FILE:mikumikudesu>")
     set_tests_properties(audio_export_cli PROPERTIES TIMEOUT 20)
+    add_test(NAME video_export_cli
+      COMMAND bash "${CMAKE_SOURCE_DIR}/tests/video_export_cli.sh" "$<TARGET_FILE:mikumikudesu>")
+    set_tests_properties(video_export_cli PROPERTIES TIMEOUT 60)
   endif()
 endif()
 

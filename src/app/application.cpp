@@ -8,6 +8,7 @@
 #include "core/model_probe.hpp"
 #include "core/motion.hpp"
 #include "core/vmdayo.hpp"
+#include "core/video_export.hpp"
 #include "graphics/device.hpp"
 #include "platform/window.hpp"
 
@@ -38,6 +39,13 @@ graphics::RendererKind parseRenderer(std::string_view value) {
     throw std::invalid_argument("unknown renderer: " + std::string(value));
 }
 
+core::VideoCodec parseVideoCodec(std::string_view value) {
+    if (value == "h264") return core::VideoCodec::h264;
+    if (value == "h265" || value == "hevc") return core::VideoCodec::h265;
+    if (value == "av1") return core::VideoCodec::av1;
+    throw std::invalid_argument("unknown video codec: " + std::string(value));
+}
+
 std::uint64_t parseFrameCount(std::string_view value) {
     std::uint64_t frames = 0;
     const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), frames);
@@ -45,6 +53,15 @@ std::uint64_t parseFrameCount(std::string_view value) {
         throw std::invalid_argument("--frames expects a positive integer");
     }
     return frames;
+}
+
+std::uint64_t parseNonNegativeFrame(std::string_view value, std::string_view option) {
+    std::uint64_t frame = 0;
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), frame);
+    if (error != std::errc {} || end != value.data() + value.size()) {
+        throw std::invalid_argument(std::string(option) + " expects a non-negative integer");
+    }
+    return frame;
 }
 
 std::uint32_t parsePositiveInteger(std::string_view value, std::string_view option) {
@@ -67,6 +84,20 @@ double parseSeconds(std::string_view value, std::string_view option) {
         return result;
     } catch (const std::exception&) {
         throw std::invalid_argument(std::string(option) + " expects a finite non-negative number");
+    }
+}
+
+double parsePositiveNumber(std::string_view value, std::string_view option) {
+    try {
+        std::size_t parsed = 0;
+        const std::string text(value);
+        const double result = std::stod(text, &parsed);
+        if (parsed != text.size() || !std::isfinite(result) || result <= 0.0) {
+            throw std::invalid_argument("");
+        }
+        return result;
+    } catch (const std::exception&) {
+        throw std::invalid_argument(std::string(option) + " expects a finite positive number");
     }
 }
 
@@ -98,34 +129,92 @@ Options parseOptions(int argc, char** argv) {
             if (++i >= argc) throw std::invalid_argument("--export-m4a requires a destination path");
             if (!options.audioExport) options.audioExport.emplace();
             options.audioExport->destination = argv[i];
+        } else if (argument == "--export-video") {
+            if (++i >= argc) throw std::invalid_argument("--export-video requires a destination path");
+            if (!options.videoExport) options.videoExport.emplace();
+            options.videoExport->destination = argv[i];
+        } else if (argument == "--video-width") {
+            if (++i >= argc) throw std::invalid_argument("--video-width requires a value");
+            if (!options.videoExport) options.videoExport.emplace();
+            options.videoExport->width = parsePositiveInteger(argv[i], "--video-width");
+        } else if (argument == "--video-height") {
+            if (++i >= argc) throw std::invalid_argument("--video-height requires a value");
+            if (!options.videoExport) options.videoExport.emplace();
+            options.videoExport->height = parsePositiveInteger(argv[i], "--video-height");
+        } else if (argument == "--video-fps") {
+            if (++i >= argc) throw std::invalid_argument("--video-fps requires a value");
+            if (!options.videoExport) options.videoExport.emplace();
+            options.videoExport->fps = parsePositiveNumber(argv[i], "--video-fps");
+        } else if (argument == "--video-codec") {
+            if (++i >= argc) throw std::invalid_argument("--video-codec requires a value");
+            if (!options.videoExport) options.videoExport.emplace();
+            options.videoExport->codec = parseVideoCodec(argv[i]);
+        } else if (argument == "--video-bitrate") {
+            if (++i >= argc) throw std::invalid_argument("--video-bitrate requires a value in kbps");
+            const auto kbps = parsePositiveInteger(argv[i], "--video-bitrate");
+            if (kbps > std::numeric_limits<std::uint32_t>::max() / 1000U) {
+                throw std::invalid_argument("--video-bitrate is too large");
+            }
+            if (!options.videoExport) options.videoExport.emplace();
+            options.videoExport->bitrate = kbps * 1000U;
+        } else if (argument == "--video-from-frame") {
+            if (++i >= argc) throw std::invalid_argument("--video-from-frame requires a value");
+            if (!options.videoExport) options.videoExport.emplace();
+            options.videoExport->fromFrame = parseNonNegativeFrame(argv[i], "--video-from-frame");
+        } else if (argument == "--video-to-frame") {
+            if (++i >= argc) throw std::invalid_argument("--video-to-frame requires a value");
+            if (!options.videoExport) options.videoExport.emplace();
+            options.videoExport->toFrame = parseNonNegativeFrame(argv[i], "--video-to-frame");
+        } else if (argument == "--no-audio") {
+            if (!options.videoExport) options.videoExport.emplace();
+            options.videoExport->includeAudio = false;
         } else if (argument == "--audio-source") {
             if (++i >= argc) throw std::invalid_argument("--audio-source requires a path");
-            if (!options.audioExport) options.audioExport.emplace();
-            options.audioExport->source = std::filesystem::path(argv[i]);
+            if (options.videoExport) options.videoExport->audioSource = std::filesystem::path(argv[i]);
+            else {
+                if (!options.audioExport) options.audioExport.emplace();
+                options.audioExport->source = std::filesystem::path(argv[i]);
+            }
         } else if (argument == "--audio-bitrate") {
             if (++i >= argc) throw std::invalid_argument("--audio-bitrate requires a value in kbps");
             const auto kbps = parsePositiveInteger(argv[i], "--audio-bitrate");
             if (kbps > std::numeric_limits<std::uint32_t>::max() / 1000U) {
                 throw std::invalid_argument("--audio-bitrate is too large");
             }
-            if (!options.audioExport) options.audioExport.emplace();
-            options.audioExport->bitrate = kbps * 1000U;
+            if (options.videoExport) options.videoExport->audioBitrate = kbps * 1000U;
+            else {
+                if (!options.audioExport) options.audioExport.emplace();
+                options.audioExport->bitrate = kbps * 1000U;
+            }
         } else if (argument == "--audio-from") {
             if (++i >= argc) throw std::invalid_argument("--audio-from requires seconds");
+            if (options.videoExport) {
+                throw std::invalid_argument("--audio-from is only available with --export-m4a");
+            }
             if (!options.audioExport) options.audioExport.emplace();
             options.audioExport->startSeconds = parseSeconds(argv[i], "--audio-from");
         } else if (argument == "--audio-to") {
             if (++i >= argc) throw std::invalid_argument("--audio-to requires seconds");
+            if (options.videoExport) {
+                throw std::invalid_argument("--audio-to is only available with --export-m4a");
+            }
             if (!options.audioExport) options.audioExport.emplace();
             options.audioExport->endSeconds = parseSeconds(argv[i], "--audio-to");
         } else if (argument == "--overwrite") {
-            if (!options.audioExport) options.audioExport.emplace();
-            options.audioExport->overwrite = true;
+            if (options.videoExport) options.videoExport->overwrite = true;
+            else {
+                if (!options.audioExport) options.audioExport.emplace();
+                options.audioExport->overwrite = true;
+            }
         } else if (argument == "--help" || argument == "-h") {
             log::info("Usage: mikumikudesu [--probe] [--hidden] [--frames N] "
                       "[--renderer preview|subayai|bdpt] [--asset PATH] "
                       "[--save-project PATH] [--export-m4a PATH] [--audio-source PATH] "
                       "[--audio-bitrate KBPS] [--audio-from SEC] [--audio-to SEC] "
+                      "[--export-video PATH] [--video-width PX] [--video-height PX] "
+                      "[--video-fps FPS] [--video-codec h264|h265|av1] "
+                      "[--video-bitrate KBPS] [--audio-bitrate KBPS] "
+                      "[--video-from-frame N] [--video-to-frame N] [--no-audio] "
                       "[--overwrite] [--no-validation]");
             options.probeOnly = true;
         } else if (!argument.empty() && argument.front() == '-') {
@@ -134,12 +223,22 @@ Options parseOptions(int argc, char** argv) {
             options.assets.emplace_back(argument);
         }
     }
+    if (options.videoExport && options.audioExport && options.audioExport->destination.empty()) {
+        if (options.audioExport->source) options.videoExport->audioSource = options.audioExport->source;
+        options.videoExport->audioBitrate = options.audioExport->bitrate;
+        options.videoExport->overwrite = options.videoExport->overwrite || options.audioExport->overwrite;
+        options.audioExport.reset();
+    }
     return options;
 }
 
 Application::Application(Options options) : options_(std::move(options)) {}
 
 void Application::resetProjectRuntimeState() {
+    videoExportJob_.cancel();
+    videoExportUiActive_ = false;
+    videoExportFramesFinished_ = false;
+    videoRangeInitialized_ = false;
     scene_.clearProjectState();
     if (device_ != nullptr) device_->clearPreviewResources();
     effectReloader_.reset();
@@ -165,9 +264,12 @@ void Application::resetProjectRuntimeState() {
 }
 
 int Application::run() {
+    if (options_.audioExport && options_.videoExport) {
+        throw std::invalid_argument("choose either --export-m4a or --export-video");
+    }
     platform::WindowOptions windowOptions;
     windowOptions.title = "mikumikudesu — SDL3 + Vulkan";
-    windowOptions.hidden = options_.hidden || options_.probeOnly;
+    windowOptions.hidden = options_.hidden || options_.probeOnly || options_.videoExport.has_value();
     auto window = platform::createWindow(windowOptions);
     auto device = graphics::createVulkanDevice(*window, options_.validation);
     device_ = device.get();
@@ -191,6 +293,7 @@ int Application::run() {
         std::cout << device->capabilities().json() << '\n';
         return 0;
     }
+    if (options_.videoExport) return runVideoExport();
 
     bool running = true;
     std::uint64_t frameCount = 0;
@@ -228,7 +331,38 @@ int Application::run() {
         const auto tick = std::chrono::steady_clock::now();
         const float deltaSeconds = std::chrono::duration<float>(tick - previousTick).count();
         previousTick = tick;
-        if (scene_.advanceFrame(deltaSeconds, playing_)) {
+        if (videoExportUiActive_) {
+            if (videoExportJob_.running() && !videoExportFramesFinished_) {
+                const auto& exportOptions = *options_.videoExport;
+                if (videoNextFrame_ <= videoToFrame_) {
+                    animationFrame_ = static_cast<float>(videoNextFrame_);
+                    scene_.setFrame(animationFrame_);
+                    refreshAnimatedMesh(videoNextFrame_ == 0U,
+                                        videoNextFrame_ == 0U ? 0.0F : static_cast<float>(1.0 / videoFps_));
+                    refreshPreviewScene();
+                    if (videoNextFrame_ >= videoFromFrame_) {
+                        try {
+                            videoExportJob_.submitFrame(device_->renderToImage(
+                                { exportOptions.width, exportOptions.height }));
+                        } catch (const std::exception& exception) {
+                            videoExportStatus_ = exception.what();
+                            videoExportJob_.cancel();
+                            videoExportFramesFinished_ = true;
+                            videoExportUiActive_ = false;
+                        }
+                    }
+                    ++videoNextFrame_;
+                } else {
+                    videoExportJob_.finishFrames();
+                    videoExportFramesFinished_ = true;
+                }
+            } else if (!videoExportFramesFinished_ && !videoExportJob_.running()) {
+                const auto error = videoExportJob_.error();
+                videoExportStatus_ = error ? *error : "Video export stopped unexpectedly";
+                videoExportFramesFinished_ = true;
+                videoExportUiActive_ = false;
+            }
+        } else if (scene_.advanceFrame(deltaSeconds, playing_)) {
             animationFrame_ = scene_.timeline().frame;
             const int integerFrame = static_cast<int>(animationFrame_);
             if (integerFrame != uploadedAnimationFrame_ && !scene_.models().empty()) {
@@ -267,6 +401,111 @@ int Application::run() {
     device->waitIdle();
     audioPlayer_.stop();
     log::info("Rendered ", frameCount, " frame(s); clean shutdown");
+    return 0;
+}
+
+int Application::runVideoExport() {
+    if (!options_.videoExport) throw std::invalid_argument("--export-video is required");
+    const auto& options = *options_.videoExport;
+    if (options.destination.empty()) throw std::invalid_argument("--export-video requires a destination path");
+    if (!core::canExportVideo(options.codec)) {
+        throw std::runtime_error("requested video encoder is unavailable");
+    }
+    if (device_ == nullptr) throw std::logic_error("video export has no graphics device");
+
+    std::optional<std::filesystem::path> audioSource;
+    if (options.includeAudio) {
+        if (options.audioSource) {
+            const auto source = std::filesystem::absolute(*options.audioSource);
+            core::MediaFile media(source);
+            if (!media.info().hasAudio) {
+                throw std::runtime_error("audio source has no audio stream: " + source.string());
+            }
+            audioSource = source;
+        } else {
+            std::vector<std::filesystem::path> candidates;
+            for (const auto& asset : options_.assets) {
+                const auto kind = core::classifyAsset(asset);
+                if (kind != core::AssetKind::audio && kind != core::AssetKind::video) continue;
+                const auto source = std::filesystem::absolute(asset);
+                core::MediaFile media(source);
+                if (media.info().hasAudio
+                    && std::find(candidates.begin(), candidates.end(), source) == candidates.end()) {
+                    candidates.push_back(source);
+                }
+            }
+            if (candidates.size() > 1) {
+                throw std::runtime_error("multiple audio sources found; use --audio-source PATH");
+            }
+            if (candidates.size() == 1) audioSource = candidates.front();
+            else if (!audioSource_.empty()) audioSource = audioSource_;
+        }
+        if (!audioSource) {
+            log::warn("Video export: no audio source found; exporting video only");
+        }
+    }
+
+    const auto timelineEnd = scene_.timeline().duration > 0.0F
+        ? static_cast<std::uint64_t>(std::ceil(scene_.timeline().duration)) : 0U;
+    const auto firstFrame = options.fromFrame.value_or(0U);
+    const auto lastFrame = options.toFrame.value_or(timelineEnd);
+    if (lastFrame < firstFrame) throw std::invalid_argument("video frame range is reversed");
+    if (lastFrame == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::invalid_argument("video frame range is too large");
+    }
+    const auto frameCount = lastFrame - firstFrame + 1U;
+
+    core::VideoExportRequest request;
+    request.destination = std::filesystem::absolute(options.destination);
+    request.width = options.width;
+    request.height = options.height;
+    request.fps = options.fps;
+    request.codec = options.codec;
+    request.bitrate = options.bitrate;
+    request.includeAudio = audioSource.has_value();
+    request.audioBitrate = options.audioBitrate;
+    request.overwrite = options.overwrite;
+
+    core::VideoExporter exporter(request);
+    if (audioSource) {
+        core::MediaFile media(*audioSource);
+        const auto maxSamples = static_cast<std::uint64_t>(std::ceil(
+            static_cast<double>(frameCount) / options.fps * 48'000.0)) * 2U;
+        std::uint64_t writtenSamples = 0;
+        media.streamAudio([&](std::span<const float> samples,
+                              std::uint32_t sampleRate,
+                              std::uint32_t channels) {
+            if (writtenSamples >= maxSamples) return;
+            const auto count = std::min<std::uint64_t>(samples.size(), maxSamples - writtenSamples);
+            exporter.writeAudio(samples.first(static_cast<std::size_t>(count)), sampleRate, channels);
+            writtenSamples += count;
+        });
+    }
+
+    const auto frameDuration = static_cast<float>(1.0 / options.fps);
+    animationFrame_ = 0.0F;
+    scene_.setFrame(0.0F);
+    uploadedAnimationFrame_ = -1;
+    // Simulate from frame zero even when the requested output range starts
+    // later. This preserves animation/physics state at the selected frame.
+    for (std::uint64_t frame = 0; frame <= lastFrame; ++frame) {
+        animationFrame_ = static_cast<float>(frame);
+        scene_.setFrame(animationFrame_);
+        refreshAnimatedMesh(frame == 0U, frame == 0U ? 0.0F : frameDuration);
+        refreshPreviewScene();
+        if (frame >= firstFrame) {
+            const auto image = device_->renderToImage({ request.width, request.height });
+            exporter.writeVideoFrame(image);
+            const auto processed = frame - firstFrame + 1U;
+            if (processed == frameCount || processed == 1U || processed % std::max<std::uint64_t>(1U, frameCount / 20U) == 0U) {
+                log::info("Video export: ", processed, "/", frameCount, " frames");
+            }
+        }
+    }
+    device_->waitIdle();
+    const auto result = exporter.finish();
+    log::info("Exported MP4: ", result.output.string(), " (",
+              result.durationSeconds, " s, ", result.encodedFrames, " frames)");
     return 0;
 }
 
@@ -390,8 +629,9 @@ void Application::handleAsset(const std::filesystem::path& path) {
             mediaSeconds_ = 0.0;
             uploadedVideoFrame_ = -1;
             videoMode_ = media->info().hasVideo;
-            if (media->info().hasAudio) audioPlayer_.play(media->decodeAudio());
+            if (media->info().hasAudio && !options_.videoExport) audioPlayer_.play(media->decodeAudio());
             if (media->info().hasAudio) {
+                audioSource_ = std::filesystem::absolute(path);
                 setAudioExportDestinationForSource(path);
                 audioToSeconds_ = static_cast<float>(std::max(0.0, media->info().durationSeconds));
             }
@@ -792,6 +1032,7 @@ void Application::buildUi() {
     }
     ImGui::End();
     buildAudioExportUi();
+    buildVideoExportUi();
 #endif
 }
 
@@ -865,6 +1106,105 @@ void Application::buildAudioExportUi() {
                         audioExportJob_.start(std::move(request));
                     } catch (const std::exception& exception) {
                         ImGui::TextWrapped("Export error: %s", exception.what());
+                    }
+                }
+            }
+        }
+    }
+    ImGui::End();
+#endif
+}
+
+void Application::buildVideoExportUi() {
+#if DAYO_HAS_IMGUI
+    ImGui::SetNextWindowPos({ 520.0F, 404.0F }, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize({ 420.0F, 410.0F }, ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Video Export")) {
+        if (!DAYO_HAS_MEDIA) {
+            ImGui::TextUnformatted("FFmpeg support is not available in this build.");
+        } else {
+            if (!videoRangeInitialized_) {
+                videoFromFrame_ = 0;
+                videoToFrame_ = scene_.timeline().duration > 0.0F
+                    ? static_cast<std::uint64_t>(std::ceil(scene_.timeline().duration)) : 0U;
+                videoRangeInitialized_ = true;
+            }
+            if (videoDestination_[0] == '\0' && !audioSource_.empty()) {
+                const auto destination = audioSource_.parent_path()
+                    / (audioSource_.stem().string() + ".mp4");
+                const auto text = destination.string();
+                const auto count = std::min(text.size(), videoDestination_.size() - 1U);
+                std::copy_n(text.data(), count, videoDestination_.data());
+                videoDestination_[count] = '\0';
+            }
+            ImGui::TextUnformatted("Format");
+            ImGui::SameLine(120.0F);
+            ImGui::TextUnformatted("MP4 / H.264, H.265 or AV1");
+            ImGui::TextUnformatted("Source");
+            ImGui::SameLine(120.0F);
+            if (audioSource_.empty()) ImGui::TextUnformatted("No audio source (optional)");
+            else ImGui::TextWrapped("%s", audioSource_.string().c_str());
+            ImGui::InputText("Output", videoDestination_.data(), videoDestination_.size());
+            int width = static_cast<int>(videoWidth_);
+            int height = static_cast<int>(videoHeight_);
+            if (ImGui::InputInt("Width", &width)) videoWidth_ = static_cast<std::uint32_t>(std::max(width, 1));
+            if (ImGui::InputInt("Height", &height)) videoHeight_ = static_cast<std::uint32_t>(std::max(height, 1));
+            ImGui::InputFloat("FPS", &videoFps_, 0.0F, 0.0F, "%.3f");
+            videoFps_ = std::max(videoFps_, 1.0F);
+            ImGui::Combo("Codec", &videoCodec_, "H.264\0H.265 / HEVC\0AV1\0");
+            ImGui::SliderInt("Video bitrate (kbps)", &videoBitrateKbps_, 500, 50000);
+            ImGui::SliderInt("Audio bitrate (kbps)", &videoAudioBitrateKbps_, 64, 512);
+            ImGui::Checkbox("Include audio", &videoIncludeAudio_);
+            auto from = static_cast<unsigned long long>(videoFromFrame_);
+            auto to = static_cast<unsigned long long>(videoToFrame_);
+            if (ImGui::InputScalar("From frame", ImGuiDataType_U64, &from)) videoFromFrame_ = from;
+            if (ImGui::InputScalar("To frame", ImGuiDataType_U64, &to)) videoToFrame_ = to;
+            ImGui::Checkbox("Overwrite existing file", &audioOverwrite_);
+            ImGui::Separator();
+
+            if (videoExportUiActive_ && videoExportJob_.running()) {
+                ImGui::ProgressBar(videoExportJob_.progress(), { -1.0F, 0.0F });
+                ImGui::Text("%.1f%%", static_cast<double>(videoExportJob_.progress()) * 100.0);
+                if (ImGui::Button("Cancel video export")) {
+                    videoExportJob_.cancel();
+                    videoExportFramesFinished_ = true;
+                    videoExportUiActive_ = false;
+                    videoExportStatus_ = "Cancelled";
+                }
+            } else {
+                if (!videoExportStatus_.empty()) ImGui::TextWrapped("%s", videoExportStatus_.c_str());
+                if (const auto error = videoExportJob_.error()) {
+                    ImGui::TextWrapped("Export error: %s", error->c_str());
+                }
+                if (const auto result = videoExportJob_.result()) {
+                    ImGui::TextWrapped("Exported: %s (%.2f s)", result->output.string().c_str(),
+                                       result->durationSeconds);
+                }
+                if (ImGui::Button("Export video")) {
+                    try {
+                        if (videoDestination_[0] == '\0') throw std::invalid_argument("video output is empty");
+                        if (videoToFrame_ < videoFromFrame_) throw std::invalid_argument("video frame range is reversed");
+                        core::VideoExportRequest request;
+                        request.destination = videoDestination_.data();
+                        request.width = videoWidth_;
+                        request.height = videoHeight_;
+                        request.fps = videoFps_;
+                        request.codec = static_cast<core::VideoCodec>(videoCodec_);
+                        request.bitrate = static_cast<std::uint32_t>(std::max(videoBitrateKbps_, 1)) * 1000U;
+                        request.audioBitrate = static_cast<std::uint32_t>(std::max(videoAudioBitrateKbps_, 1)) * 1000U;
+                        request.overwrite = audioOverwrite_;
+                        request.includeAudio = videoIncludeAudio_ && !audioSource_.empty();
+                        std::optional<std::filesystem::path> audioSource;
+                        if (request.includeAudio) audioSource = audioSource_;
+                        videoExportJob_.start(std::move(request), std::move(audioSource),
+                                              videoToFrame_ - videoFromFrame_ + 1U);
+                        videoNextFrame_ = 0;
+                        videoExportFramesFinished_ = false;
+                        videoExportUiActive_ = true;
+                        videoExportStatus_.clear();
+                        audioPlayer_.stop();
+                    } catch (const std::exception& exception) {
+                        videoExportStatus_ = std::string("Export error: ") + exception.what();
                     }
                 }
             }

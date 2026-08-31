@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/image.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -103,6 +105,11 @@ struct PreviewScene {
     bool backgroundEnabled { true };
 };
 
+struct RenderTargetDesc {
+    std::uint32_t width {};
+    std::uint32_t height {};
+};
+
 using BufferHandle = std::uint64_t;
 using TextureHandle = std::uint64_t;
 using PipelineHandle = std::uint64_t;
@@ -145,6 +152,11 @@ public:
     virtual void resize() = 0;
     virtual void beginUiFrame() = 0;
     virtual void renderFrame() = 0;
+    // Renders the current preview scene without ImGui and returns a CPU image.
+    // Backends that do not provide an offscreen target report this explicitly.
+    [[nodiscard]] virtual core::ImageRgba8 renderToImage(const RenderTargetDesc&) {
+        throw std::logic_error("offscreen rendering is not implemented by this backend");
+    }
     virtual void waitIdle() = 0;
     virtual void uploadPreviewMesh(std::span<const PreviewVertex> vertices,
                                    std::span<const std::uint32_t> indices) = 0;
