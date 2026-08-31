@@ -55,6 +55,7 @@ jobs:
             libavformat-dev \
             libavutil-dev \
             libbullet-dev \
+            libjsonnet-dev \
             libstb-dev \
             libasound2-dev \
             libswresample-dev \
@@ -115,6 +116,7 @@ jobs:
             libavformat-dev \
             libavutil-dev \
             libbullet-dev \
+            libjsonnet-dev \
             libstb-dev \
             libswresample-dev \
             libswscale-dev \
