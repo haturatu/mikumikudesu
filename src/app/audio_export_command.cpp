@@ -30,11 +30,11 @@ std::filesystem::path resolveAudioSource(const Options& options) {
     std::vector<std::filesystem::path> candidates;
     for (const auto& asset : options.assets) {
         const auto kind = core::classifyAsset(asset);
-        if (kind != core::AssetKind::audio && kind != core::AssetKind::video) continue;
+        if (kind != core::AssetKind::audio && kind != core::AssetKind::video)
+            continue;
         const auto source = std::filesystem::absolute(asset);
         core::MediaFile media(source);
-        if (media.info().hasAudio
-            && std::find(candidates.begin(), candidates.end(), source) == candidates.end()) {
+        if (media.info().hasAudio && std::find(candidates.begin(), candidates.end(), source) == candidates.end()) {
             candidates.push_back(source);
         }
     }
@@ -42,8 +42,7 @@ std::filesystem::path resolveAudioSource(const Options& options) {
         throw std::runtime_error("no audio source found; add an audio/video --asset or use --audio-source PATH");
     }
     if (candidates.size() != 1) {
-        throw std::runtime_error(
-            "multiple audio sources found; use --audio-source PATH");
+        throw std::runtime_error("multiple audio sources found; use --audio-source PATH");
     }
     return candidates.front();
 }
@@ -51,8 +50,10 @@ std::filesystem::path resolveAudioSource(const Options& options) {
 } // namespace
 
 int runAudioExport(const Options& options) {
-    if (!options.audioExport) throw std::invalid_argument("--export-m4a is required");
-    if (!core::canExportM4a()) throw std::runtime_error("M4A export requires FFmpeg with an AAC encoder");
+    if (!options.audioExport)
+        throw std::invalid_argument("--export-m4a is required");
+    if (!core::canExportM4a())
+        throw std::runtime_error("M4A export requires FFmpeg with an AAC encoder");
 
     const auto source = resolveAudioSource(options);
     core::AudioExportRequest request;
@@ -64,21 +65,19 @@ int runAudioExport(const Options& options) {
     request.overwrite = options.audioExport->overwrite;
 
     double lastReportedRatio = -1.0;
-    const auto result = core::exportM4a(
-        request,
-        [&](const core::AudioExportProgress& progress) {
-            const double ratio = progress.ratio();
-            if (progress.totalSeconds <= 0.0 || ratio >= 1.0 || ratio - lastReportedRatio >= 0.05) {
-                if (progress.totalSeconds > 0.0) {
-                    log::info("Audio export: ", static_cast<int>(std::round(ratio * 100.0)), "%");
-                } else {
-                    log::info("Audio export: processing");
-                }
-                lastReportedRatio = ratio;
+    const auto result = core::exportM4a(request, [&](const core::AudioExportProgress& progress) {
+        const double ratio = progress.ratio();
+        if (progress.totalSeconds <= 0.0 || ratio >= 1.0 || ratio - lastReportedRatio >= 0.05) {
+            if (progress.totalSeconds > 0.0) {
+                log::info("Audio export: ", static_cast<int>(std::round(ratio * 100.0)), "%");
+            } else {
+                log::info("Audio export: processing");
             }
-        });
-    log::info("Exported M4A: ", result.output.string(), " (",
-              result.durationSeconds, " s, ", result.encodedSamples, " samples)");
+            lastReportedRatio = ratio;
+        }
+    });
+    log::info("Exported M4A: ", result.output.string(), " (", result.durationSeconds, " s, ", result.encodedSamples,
+              " samples)");
     return 0;
 }
 

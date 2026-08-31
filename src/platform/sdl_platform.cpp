@@ -14,24 +14,25 @@ namespace dayo::platform {
 namespace {
 
 class SdlLifetime {
-public:
+  public:
     SdlLifetime() {
         if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD)) {
             throw std::runtime_error(std::string("SDL_Init failed: ") + SDL_GetError());
         }
         log::info("SDL ", SDL_GetVersion(), " initialized (video/audio/gamepad)");
     }
-    ~SdlLifetime() { SDL_Quit(); }
+    ~SdlLifetime() {
+        SDL_Quit();
+    }
 };
 
 class SdlWindow final : public Window {
-public:
-    explicit SdlWindow(const WindowOptions& options)
-        : lifetime_(std::make_shared<SdlLifetime>()) {
+  public:
+    explicit SdlWindow(const WindowOptions& options) : lifetime_(std::make_shared<SdlLifetime>()) {
         SDL_WindowFlags flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
-        if (options.hidden) flags |= SDL_WINDOW_HIDDEN;
-        window_ = SDL_CreateWindow(options.title.c_str(),
-                                   static_cast<int>(options.width),
+        if (options.hidden)
+            flags |= SDL_WINDOW_HIDDEN;
+        window_ = SDL_CreateWindow(options.title.c_str(), static_cast<int>(options.width),
                                    static_cast<int>(options.height), flags);
         if (window_ == nullptr) {
             throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
@@ -40,13 +41,22 @@ public:
     }
 
     ~SdlWindow() override {
-        if (window_ != nullptr) SDL_DestroyWindow(window_);
+        if (window_ != nullptr)
+            SDL_DestroyWindow(window_);
     }
 
-    SDL_Window* sdlHandle() const noexcept override { return window_; }
-    std::uint32_t pixelWidth() const noexcept override { return width_; }
-    std::uint32_t pixelHeight() const noexcept override { return height_; }
-    bool minimized() const noexcept override { return minimized_; }
+    SDL_Window* sdlHandle() const noexcept override {
+        return window_;
+    }
+    std::uint32_t pixelWidth() const noexcept override {
+        return width_;
+    }
+    std::uint32_t pixelHeight() const noexcept override {
+        return height_;
+    }
+    bool minimized() const noexcept override {
+        return minimized_;
+    }
 
     std::vector<WindowEvent> pollEvents() override {
         std::vector<WindowEvent> result;
@@ -58,12 +68,12 @@ public:
             switch (event.type) {
             case SDL_EVENT_QUIT:
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-                result.push_back({ WindowEvent::Type::quit, {}, 0.0F, 0.0F });
+                result.push_back({WindowEvent::Type::quit, {}, 0.0F, 0.0F});
                 break;
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
             case SDL_EVENT_WINDOW_RESIZED:
                 updateSize();
-                result.push_back({ WindowEvent::Type::resized, {}, 0.0F, 0.0F });
+                result.push_back({WindowEvent::Type::resized, {}, 0.0F, 0.0F});
                 break;
             case SDL_EVENT_WINDOW_MINIMIZED:
                 minimized_ = true;
@@ -71,22 +81,20 @@ public:
             case SDL_EVENT_WINDOW_RESTORED:
                 minimized_ = false;
                 updateSize();
-                result.push_back({ WindowEvent::Type::resized, {}, 0.0F, 0.0F });
+                result.push_back({WindowEvent::Type::resized, {}, 0.0F, 0.0F});
                 break;
             case SDL_EVENT_DROP_FILE:
                 if (event.drop.data != nullptr) {
-                    result.push_back({ WindowEvent::Type::fileDropped,
-                                       std::filesystem::path(event.drop.data) });
+                    result.push_back({WindowEvent::Type::fileDropped, std::filesystem::path(event.drop.data)});
                 }
                 break;
             case SDL_EVENT_MOUSE_MOTION:
                 if ((event.motion.state & SDL_BUTTON_RMASK) != 0U) {
-                    result.push_back({ WindowEvent::Type::cameraDragged, {},
-                                       event.motion.xrel, event.motion.yrel });
+                    result.push_back({WindowEvent::Type::cameraDragged, {}, event.motion.xrel, event.motion.yrel});
                 }
                 break;
             case SDL_EVENT_MOUSE_WHEEL:
-                result.push_back({ WindowEvent::Type::cameraZoomed, {}, event.wheel.y, 0.0F });
+                result.push_back({WindowEvent::Type::cameraZoomed, {}, event.wheel.y, 0.0F});
                 break;
             default:
                 break;
@@ -101,7 +109,7 @@ public:
         }
     }
 
-private:
+  private:
     void updateSize() {
         int width = 0;
         int height = 0;
@@ -114,10 +122,10 @@ private:
     }
 
     std::shared_ptr<SdlLifetime> lifetime_;
-    SDL_Window* window_ {};
-    std::uint32_t width_ {};
-    std::uint32_t height_ {};
-    bool minimized_ {};
+    SDL_Window* window_{};
+    std::uint32_t width_{};
+    std::uint32_t height_{};
+    bool minimized_{};
 };
 
 } // namespace

@@ -12,13 +12,13 @@ namespace dayo::core {
 enum class OutputFormat { ppm, png, exr };
 
 struct OutputSettings {
-    std::filesystem::path directory { "output" };
-    std::string filenamePattern { "frame_%06d" };
-    OutputFormat format { OutputFormat::ppm };
-    std::uint32_t firstFrame {};
-    std::uint32_t lastFrame {};
-    std::uint32_t samples { 1 };
-    bool motionBlur {};
+    std::filesystem::path directory{"output"};
+    std::string filenamePattern{"frame_%06d"};
+    OutputFormat format{OutputFormat::ppm};
+    std::uint32_t firstFrame{};
+    std::uint32_t lastFrame{};
+    std::uint32_t samples{1};
+    bool motionBlur{};
 };
 
 [[nodiscard]] std::filesystem::path outputPath(const OutputSettings& settings, std::uint32_t frame);
@@ -29,7 +29,7 @@ class OutputWorker;
 // The queue decouples rendering from encoding. PPM is dependency-free and is
 // the default; applications may plug in PNG/EXR encoders at the boundary.
 class OutputQueue {
-public:
+  public:
     explicit OutputQueue(OutputSettings settings);
     ~OutputQueue();
     OutputQueue(OutputQueue&&) noexcept;
@@ -45,7 +45,7 @@ public:
     void rethrowIfFailed() const;
     [[nodiscard]] std::uint64_t written() const noexcept;
 
-private:
+  private:
     std::unique_ptr<OutputWorker> worker_;
 };
 
