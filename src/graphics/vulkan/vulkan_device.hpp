@@ -45,6 +45,10 @@ private:
         VkDeviceMemory backgroundStagingMemory {};
         void* mappedBackgroundStaging {};
         bool backgroundUploadPending {};
+        VkBuffer previewVertexBuffer {};
+        VkDeviceMemory previewVertexMemory {};
+        void* mappedPreviewVertices {};
+        std::uint64_t previewVertexGeneration {};
     };
 
     struct BufferResource {
@@ -113,6 +117,7 @@ private:
     void destroyUi();
     void recreateSwapchain();
     void destroyPreviewMesh();
+    void synchronizePreviewVertices(Frame& frame);
     void uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage,
                              VkBuffer& buffer, VkDeviceMemory& memory);
     [[nodiscard]] std::uint32_t findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags flags) const;
@@ -151,9 +156,8 @@ private:
     bool uiInitialized_ {};
     std::array<Frame, 2> frames_ {};
     std::size_t frameIndex_ {};
-    VkBuffer previewVertexBuffer_ {};
-    VkDeviceMemory previewVertexMemory_ {};
     VkDeviceSize previewVertexSize_ {};
+    std::uint64_t previewVertexGeneration_ {};
     VkBuffer previewIndexBuffer_ {};
     VkDeviceMemory previewIndexMemory_ {};
     std::uint32_t previewIndexCount_ {};
