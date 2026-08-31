@@ -380,6 +380,7 @@ void writeSubset(BinaryWriter& writer, const MotionDocument& motion) {
     }
 
     std::vector<std::uint32_t> extraFrames;
+    extraFrames.reserve(motion.ik.size() + motion.externalParents.size());
     for (const auto& key : motion.ik)
         extraFrames.push_back(key.frame);
     for (const auto& key : motion.externalParents)

@@ -158,10 +158,7 @@ bool Scene::hasExternalParentCycle() const noexcept {
         state[id] = 2;
         return false;
     };
-    for (const auto& item : models_)
-        if (visit(item.id))
-            return true;
-    return false;
+    return std::ranges::any_of(models_, [&visit](const auto& item) { return visit(item.id); });
 }
 
 PhysicsSettings Scene::evaluatePhysicsSettings(float frame) const noexcept {

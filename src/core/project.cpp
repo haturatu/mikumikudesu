@@ -468,9 +468,9 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
                 document.modelName =
                     index == 0 && motions[index].modelName.empty() ? "Camera/Light" : motions[index].modelName;
                 document.motion = toMotionDocument(motions[index]);
-                for (std::size_t model = 0; model < upstreamModels.size(); ++model) {
-                    const auto id = upstreamModels[model].at("id").get<std::int32_t>();
-                    document.modelDictionary[id] = upstreamModels[model].at("filename").get<std::string>();
+                for (const auto& upstreamModel : upstreamModels) {
+                    const auto id = upstreamModel.at("id").get<std::int32_t>();
+                    document.modelDictionary[id] = upstreamModel.at("filename").get<std::string>();
                 }
                 auto subset = serializeVmdayoSubset(document);
                 payload.insert(payload.end(), subset.begin(), subset.end());
