@@ -12,6 +12,8 @@
 #include "graphics/device.hpp"
 #include "platform/window.hpp"
 
+#include <SDL3/SDL.h>
+
 #if DAYO_HAS_IMGUI
 #include <imgui.h>
 #endif
@@ -23,6 +25,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -1022,6 +1025,40 @@ void Application::refreshPreviewScene() {
 
 void Application::buildUi() {
 #if DAYO_HAS_IMGUI
+    if (!ImGui::GetIO().WantTextInput) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
+            if (recordCamera_) {
+                core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion {};
+                auto document = core::toMotionDocument(before);
+                core::VmdCameraKey key = editedCamera_;
+                key.frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
+                key.distance = -cameraDistance_ / std::max(normalization_.scale, 0.0001F);
+                key.rotation = { cameraPitch_, cameraYaw_, 0.0F };
+                std::erase_if(document.cameras, [&](const auto& item) { return item.frame == key.frame; });
+                document.cameras.push_back(key);
+                core::MotionEditor::normalize(document);
+                history_.execute(scene_, std::make_unique<core::EditMotionCommand>(0, true, before,
+                    core::toVmdMotion(std::move(document), before.modelName), "Record camera key"));
+            } else {
+                playing_ = !playing_;
+                if (audioPlayer_.active()) audioPlayer_.setPaused(!playing_);
+            }
+        }
+        if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
+            if (history_.undo(scene_)) {
+                animationFrame_ = scene_.timeline().frame;
+                refreshAnimatedMesh(false);
+                refreshPreviewScene();
+            }
+        }
+        if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
+            if (history_.redo(scene_)) {
+                animationFrame_ = scene_.timeline().frame;
+                refreshAnimatedMesh(false);
+                refreshPreviewScene();
+            }
+        }
+    }
     ImGui::SetNextWindowPos({ 24.0F, 24.0F }, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize({ 460.0F, 420.0F }, ImGuiCond_FirstUseEver);
     auto* model = selectedModel();
@@ -1220,11 +1257,20 @@ void Application::buildEditorUi() {
                 for (std::size_t i = 0; i < active->ik.size(); ++i) row(core::MotionTrack::ik, i, active->ik[i].frame, "IK / visibility");
             }
             ImGui::EndChild();
-            if (ImGui::Button("Copy") && !selectedKeys_.empty()) {
+            const bool keyWindowFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
+                && !ImGui::GetIO().WantTextInput;
+            const bool copyShortcut = keyWindowFocused && ImGui::GetIO().KeyCtrl
+                && ImGui::IsKeyPressed(ImGuiKey_C, false);
+            const bool cutShortcut = keyWindowFocused && ImGui::GetIO().KeyCtrl
+                && ImGui::IsKeyPressed(ImGuiKey_X, false);
+            const bool pasteShortcut = keyWindowFocused && ImGui::GetIO().KeyCtrl
+                && ImGui::IsKeyPressed(ImGuiKey_V, false);
+            const bool deleteShortcut = keyWindowFocused && ImGui::IsKeyPressed(ImGuiKey_Delete, false);
+            if ((ImGui::Button("Copy") || copyShortcut) && !selectedKeys_.empty()) {
                 motionClipboard_ = core::MotionEditor::copy(core::toMotionDocument(*active), selectedKeys_);
             }
             ImGui::SameLine();
-            if (ImGui::Button("Cut") && !selectedKeys_.empty()) {
+            if ((ImGui::Button("Cut") || cutShortcut) && !selectedKeys_.empty()) {
                 auto before = *active;
                 auto document = core::toMotionDocument(before);
                 motionClipboard_ = core::MotionEditor::copy(document, selectedKeys_);
@@ -1233,7 +1279,7 @@ void Application::buildEditorUi() {
                 execute(std::move(before), std::move(document), global, "Cut keys");
             }
             ImGui::SameLine();
-            if (ImGui::Button("Paste") && !motionClipboard_.empty()) {
+            if ((ImGui::Button("Paste") || pasteShortcut) && !motionClipboard_.empty()) {
                 auto before = *active;
                 auto document = core::toMotionDocument(before);
                 static_cast<void>(core::MotionEditor::paste(document, motionClipboard_,
@@ -1242,7 +1288,7 @@ void Application::buildEditorUi() {
                 execute(std::move(before), std::move(document), global, "Paste keys");
             }
             ImGui::SameLine();
-            if (ImGui::Button("Delete") && !selectedKeys_.empty()) {
+            if ((ImGui::Button("Delete") || deleteShortcut) && !selectedKeys_.empty()) {
                 auto before = *active;
                 auto document = core::toMotionDocument(before);
                 core::MotionEditor::erase(document, selectedKeys_);
@@ -1317,6 +1363,7 @@ void Application::buildEditorUi() {
     ImGui::End();
 
     if (ImGui::Begin("Camera / Light / Self Shadow")) {
+        ImGui::Checkbox("Realtime camera recording (Space registers)", &recordCamera_);
         ImGui::DragFloat3("Camera target", editedCamera_.position.data(), 0.01F);
         ImGui::DragFloat3("Camera rotation", editedCamera_.rotation.data(), 0.01F);
         ImGui::DragFloat("Camera distance", &editedCamera_.distance, 0.1F);
@@ -1379,6 +1426,10 @@ void Application::buildEditorUi() {
             if (ImGui::TreeNode("Model description")) {
                 ImGui::TextWrapped("%s", model->model->metadata.comment.c_str());
                 ImGui::TextUnformatted(model->sourcePath.parent_path().string().c_str());
+                if (ImGui::Button("Open model folder")) {
+                    const auto url = "file://" + model->sourcePath.parent_path().generic_string();
+                    if (!SDL_OpenURL(url.c_str())) lastAsset_ = std::string("Open folder: ") + SDL_GetError();
+                }
                 ImGui::TreePop();
             }
             if (!model->materialSettings.empty() && ImGui::TreeNode("Material annotations")) {
@@ -1423,7 +1474,28 @@ void Application::buildEditorUi() {
         }
         if (ImGui::Button("Copy borrowed-list")) {
             std::string credits;
-            for (const auto& asset : projectAssets_) credits += asset.kind + ": " + asset.path.string() + "\n";
+            std::vector<std::filesystem::path> scanned;
+            for (const auto& asset : projectAssets_) {
+                credits += asset.kind + ": " + asset.path.string() + "\n";
+                const auto directory = asset.path.parent_path();
+                if (std::find(scanned.begin(), scanned.end(), directory) != scanned.end()) continue;
+                scanned.push_back(directory);
+                std::error_code directoryError;
+                for (std::filesystem::directory_iterator iterator(directory, directoryError), end;
+                     !directoryError && iterator != end; iterator.increment(directoryError)) {
+                    auto extension = iterator->path().extension().string();
+                    std::ranges::transform(extension, extension.begin(), [](unsigned char value) {
+                        return static_cast<char>(std::tolower(value));
+                    });
+                    if (extension != ".url") continue;
+                    std::ifstream input(iterator->path());
+                    std::string line;
+                    while (std::getline(input, line)) if (line.starts_with("URL=")) {
+                        credits += "url: " + line.substr(4) + "\n";
+                        break;
+                    }
+                }
+            }
             if (model != nullptr && !model->model->metadata.comment.empty()) credits += model->model->metadata.comment + "\n";
             ImGui::SetClipboardText(credits.c_str());
         }

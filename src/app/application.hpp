@@ -136,6 +136,7 @@ private:
     core::MotionClipboard motionClipboard_;
     std::vector<core::MotionKeyRef> selectedKeys_;
     bool editGlobalMotion_ {};
+    bool recordCamera_ {};
     int selectedBone_ {};
     int selectedMorph_ {};
     core::Float3 editedBoneTranslation_ {};
