@@ -191,7 +191,7 @@ VmdMotion readSubset(BinaryReader& reader) {
             key.interpolation[channel * 4 + 2] = internal[channel * 4 + 1];
             key.interpolation[channel * 4 + 3] = internal[channel * 4 + 3];
         }
-        key.viewAngle = static_cast<std::uint32_t>(std::max(reader.value<float>("camera view angle"), 0.0F));
+        key.viewAngle = std::max(reader.value<float>("camera view angle"), 0.0F);
         key.perspective = reader.value<std::uint8_t>("camera perspective") != 0;
         static_cast<void>(reader.value<std::int32_t>("camera parent model"));
         static_cast<void>(reader.value<std::int32_t>("camera parent bone"));
@@ -295,8 +295,8 @@ DayoProject loadProject(const std::filesystem::path& path) {
         }
         result.embeddedVmdayo = readBinarySection(path);
         if (!result.embeddedVmdayo.empty()) {
-            const auto modelCount =
-                std::ranges::count_if(result.assets, [](const auto& asset) { return asset.kind == "pmx"; });
+            const auto modelCount = static_cast<std::size_t>(
+                std::ranges::count_if(result.assets, [](const auto& asset) { return asset.kind == "pmx"; }));
             try {
                 if (modelCount != 0U) {
                     for (auto& document : parseVmdayoSubsets(result.embeddedVmdayo, modelCount + 1U)) {

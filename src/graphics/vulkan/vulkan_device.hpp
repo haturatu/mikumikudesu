@@ -166,8 +166,10 @@ class VulkanDevice final : public Device {
     VkDescriptorSetLayout previewSkinningDescriptorSetLayout_{};
     VkDescriptorPool previewDescriptorPool_{};
     VkSampler previewSampler_{};
+#if DAYO_HAS_IMGUI
     VkDescriptorPool imguiDescriptorPool_{};
     bool uiInitialized_{};
+#endif
     std::array<Frame, 2> frames_{};
     std::size_t frameIndex_{};
     VkDeviceSize previewVertexSize_{};

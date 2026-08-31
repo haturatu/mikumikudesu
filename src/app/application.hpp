@@ -117,19 +117,23 @@ class Application {
     bool manualCamera_{};
     std::filesystem::path audioSource_;
     std::array<char, 1024> audioDestination_{};
+#if DAYO_HAS_IMGUI
     int audioBitrateKbps_{192};
     int audioRangeMode_{};
-    float audioFromSeconds_{};
-    float audioToSeconds_{};
     bool audioOverwrite_{};
     std::array<char, 1024> videoDestination_{};
     std::uint32_t videoWidth_{1920};
     std::uint32_t videoHeight_{1080};
+#endif
     float videoFps_{30.0F};
+#if DAYO_HAS_IMGUI
     int videoCodec_{};
     int videoBitrateKbps_{8000};
     int videoAudioBitrateKbps_{192};
     bool videoIncludeAudio_{true};
+#endif
+    float audioFromSeconds_{};
+    float audioToSeconds_{};
     std::uint64_t videoFromFrame_{};
     std::uint64_t videoToFrame_{};
     std::uint64_t videoNextFrame_{};
@@ -141,6 +145,7 @@ class Application {
     bool videoExportUiActive_{};
     bool videoRangeInitialized_{};
     std::string videoExportStatus_;
+#if DAYO_HAS_IMGUI
     core::MotionClipboard motionClipboard_;
     std::vector<core::MotionKeyRef> selectedKeys_;
     bool editGlobalMotion_{};
@@ -160,6 +165,7 @@ class Application {
     std::string sequenceOutputStatus_;
     std::array<char, 1024> projectDestination_{'p', 'r', 'o', 'j', 'e', 'c', 't', '.', 'd', 'a', 'y', 'o', '\0'};
     std::string projectSaveStatus_;
+#endif
 };
 
 } // namespace dayo::app
