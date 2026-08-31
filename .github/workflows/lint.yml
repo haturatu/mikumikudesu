@@ -72,7 +72,6 @@ jobs:
             libbullet-dev \
             libswresample-dev \
             libswscale-dev \
-            libsdl3-dev \
             libvulkan-dev \
             mesa-vulkan-drivers \
             ninja-build \
@@ -82,7 +81,7 @@ jobs:
         env:
           CC: clang
           CXX: clang++
-        run: cmake --preset linux-debug -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        run: cmake --preset linux-debug -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Run clang-tidy
         run: |

@@ -54,7 +54,24 @@ if(NOT Vulkan_FOUND)
     )
   endif()
 endif()
-find_package(SDL3 CONFIG REQUIRED)
+find_package(SDL3 CONFIG QUIET)
+if(NOT TARGET SDL3::SDL3)
+  if(NOT DAYO_FETCH_DEPENDENCIES)
+    message(FATAL_ERROR "SDL3 was not found. Install SDL3 or enable DAYO_FETCH_DEPENDENCIES")
+  endif()
+  message(STATUS "System SDL3 was not found; fetching SDL3 release-3.2.8")
+  set(SDL_SHARED ON CACHE BOOL "" FORCE)
+  set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+  set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+  set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+  set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    SDL3
+    URL https://github.com/libsdl-org/SDL/archive/refs/tags/release-3.2.8.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  )
+  FetchContent_MakeAvailable(SDL3)
+endif()
 
 find_path(DAYO_STB_INCLUDE_DIR stb_image.h PATH_SUFFIXES stb)
 if(NOT DAYO_STB_INCLUDE_DIR)

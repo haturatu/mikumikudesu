@@ -57,7 +57,6 @@ jobs:
             libstb-dev \
             libswresample-dev \
             libswscale-dev \
-            libsdl3-dev \
             libvulkan-dev \
             mesa-vulkan-drivers \
             ninja-build \
@@ -73,7 +72,7 @@ jobs:
             ccache-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.preset }}-
 
       - name: Configure
-        run: cmake --preset "${{ matrix.preset }}" -DDAYO_WARNINGS_AS_ERRORS=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        run: cmake --preset "${{ matrix.preset }}" -DDAYO_WARNINGS_AS_ERRORS=ON -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
         run: cmake --build --preset "${{ matrix.preset }}" --parallel
@@ -107,13 +106,38 @@ jobs:
             libstb-dev \
             libswresample-dev \
             libswscale-dev \
-            libsdl3-dev \
+            libasound2-dev \
+            libxcursor-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxss-dev \
+            libxtst-dev \
+            libx11-dev \
+            libxext-dev \
+            libxrender-dev \
             libvulkan-dev \
             mesa-vulkan-drivers \
             ninja-build \
             nlohmann-json3-dev \
             vulkan-validationlayers \
             xvfb
+
+      - name: Install system SDL3
+        run: |
+          git clone --depth 1 --branch release-3.2.8 \
+            https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/SDL3"
+          cmake -S "$RUNNER_TEMP/SDL3" -B "$RUNNER_TEMP/SDL3-build" -G Ninja \
+            -DSDL_SHARED=ON \
+            -DSDL_STATIC=OFF \
+            -DSDL_TEST_LIBRARY=OFF \
+            -DSDL_TESTS=OFF \
+            -DSDL_EXAMPLES=OFF \
+            -DSDL_INSTALL=ON
+          cmake --build "$RUNNER_TEMP/SDL3-build" --parallel
+          sudo cmake --install "$RUNNER_TEMP/SDL3-build" --prefix /usr/local
+          sudo ldconfig
 
       - name: Configure without FetchContent dependencies
         env:
