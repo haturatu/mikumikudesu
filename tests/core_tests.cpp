@@ -2,6 +2,7 @@
 #include "core/animation.hpp"
 #include "core/image.hpp"
 #include "core/media.hpp"
+#include "core/audio_export.hpp"
 #include "core/effect.hpp"
 #include "core/model_probe.hpp"
 #include "core/motion.hpp"
@@ -379,6 +380,27 @@ int main() {
         const auto audio = media.decodeAudio();
         ok &= check(audio.channels == 2 && audio.sampleRate == 48'000 && !audio.samples.empty(),
                     "FFmpeg audio decode and resample");
+        const auto exportPath = std::filesystem::temp_directory_path() / "mikumikudesu-audio-export-test.m4a";
+        dayo::core::AudioExportRequest exportRequest;
+        exportRequest.source = mediaPath;
+        exportRequest.destination = exportPath;
+        exportRequest.overwrite = true;
+        double exportRatio = 0.0;
+        const auto exportResult = dayo::core::exportM4a(
+            exportRequest,
+            [&](const dayo::core::AudioExportProgress& progress) { exportRatio = progress.ratio(); });
+        ok &= check(dayo::core::canExportM4a() && exportResult.encodedSamples > 0
+                    && exportRatio >= 0.99 && std::filesystem::exists(exportPath),
+                    "streaming AAC M4A export");
+        dayo::core::MediaFile exportedMedia(exportPath);
+        ok &= check(exportedMedia.info().hasAudio && !exportedMedia.info().hasVideo
+                    && exportedMedia.info().durationSeconds > 0.05
+                    && exportedMedia.info().durationSeconds < 0.2,
+                    "M4A export round trip metadata");
+        const auto exportedAudio = exportedMedia.decodeAudio();
+        ok &= check(exportedAudio.sampleRate == 48'000 && exportedAudio.channels == 2
+                    && !exportedAudio.samples.empty(),
+                    "M4A export round trip decode");
         dayo::core::Scene backgroundScene;
         backgroundScene.setBackgroundScreenSource(dayo::core::ScreenTextureSource::backgroundImage);
         backgroundScene.setMedia(mediaPath);
@@ -387,6 +409,7 @@ int main() {
 #endif
         std::error_code mediaError;
         std::filesystem::remove(mediaPath, mediaError);
+        std::filesystem::remove(exportPath, mediaError);
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: media: " << exception.what() << '\n';
         ok = false;

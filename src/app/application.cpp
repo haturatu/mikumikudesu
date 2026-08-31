@@ -23,6 +23,7 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
 #include <thread>
@@ -44,6 +45,29 @@ std::uint64_t parseFrameCount(std::string_view value) {
         throw std::invalid_argument("--frames expects a positive integer");
     }
     return frames;
+}
+
+std::uint32_t parsePositiveInteger(std::string_view value, std::string_view option) {
+    std::uint32_t result = 0;
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
+    if (error != std::errc {} || end != value.data() + value.size() || result == 0) {
+        throw std::invalid_argument(std::string(option) + " expects a positive integer");
+    }
+    return result;
+}
+
+double parseSeconds(std::string_view value, std::string_view option) {
+    try {
+        std::size_t parsed = 0;
+        const std::string text(value);
+        const double result = std::stod(text, &parsed);
+        if (parsed != text.size() || !std::isfinite(result) || result < 0.0) {
+            throw std::invalid_argument("");
+        }
+        return result;
+    } catch (const std::exception&) {
+        throw std::invalid_argument(std::string(option) + " expects a finite non-negative number");
+    }
 }
 
 } // namespace
@@ -70,10 +94,39 @@ Options parseOptions(int argc, char** argv) {
         } else if (argument == "--save-project") {
             if (++i >= argc) throw std::invalid_argument("--save-project requires a path");
             options.saveProject = std::filesystem::path(argv[i]);
+        } else if (argument == "--export-m4a") {
+            if (++i >= argc) throw std::invalid_argument("--export-m4a requires a destination path");
+            if (!options.audioExport) options.audioExport.emplace();
+            options.audioExport->destination = argv[i];
+        } else if (argument == "--audio-source") {
+            if (++i >= argc) throw std::invalid_argument("--audio-source requires a path");
+            if (!options.audioExport) options.audioExport.emplace();
+            options.audioExport->source = std::filesystem::path(argv[i]);
+        } else if (argument == "--audio-bitrate") {
+            if (++i >= argc) throw std::invalid_argument("--audio-bitrate requires a value in kbps");
+            const auto kbps = parsePositiveInteger(argv[i], "--audio-bitrate");
+            if (kbps > std::numeric_limits<std::uint32_t>::max() / 1000U) {
+                throw std::invalid_argument("--audio-bitrate is too large");
+            }
+            if (!options.audioExport) options.audioExport.emplace();
+            options.audioExport->bitrate = kbps * 1000U;
+        } else if (argument == "--audio-from") {
+            if (++i >= argc) throw std::invalid_argument("--audio-from requires seconds");
+            if (!options.audioExport) options.audioExport.emplace();
+            options.audioExport->startSeconds = parseSeconds(argv[i], "--audio-from");
+        } else if (argument == "--audio-to") {
+            if (++i >= argc) throw std::invalid_argument("--audio-to requires seconds");
+            if (!options.audioExport) options.audioExport.emplace();
+            options.audioExport->endSeconds = parseSeconds(argv[i], "--audio-to");
+        } else if (argument == "--overwrite") {
+            if (!options.audioExport) options.audioExport.emplace();
+            options.audioExport->overwrite = true;
         } else if (argument == "--help" || argument == "-h") {
             log::info("Usage: mikumikudesu [--probe] [--hidden] [--frames N] "
                       "[--renderer preview|subayai|bdpt] [--asset PATH] "
-                      "[--save-project PATH] [--no-validation]");
+                      "[--save-project PATH] [--export-m4a PATH] [--audio-source PATH] "
+                      "[--audio-bitrate KBPS] [--audio-from SEC] [--audio-to SEC] "
+                      "[--overwrite] [--no-validation]");
             options.probeOnly = true;
         } else if (!argument.empty() && argument.front() == '-') {
             throw std::invalid_argument("unknown option: " + std::string(argument));
@@ -91,6 +144,10 @@ void Application::resetProjectRuntimeState() {
     if (device_ != nullptr) device_->clearPreviewResources();
     effectReloader_.reset();
     audioPlayer_.stop();
+    audioSource_.clear();
+    audioDestination_.fill('\0');
+    audioFromSeconds_ = 0.0F;
+    audioToSeconds_ = 0.0F;
     textures_.clear();
     mediaSeconds_ = 0.0;
     uploadedVideoFrame_ = -1;
@@ -334,6 +391,10 @@ void Application::handleAsset(const std::filesystem::path& path) {
             uploadedVideoFrame_ = -1;
             videoMode_ = media->info().hasVideo;
             if (media->info().hasAudio) audioPlayer_.play(media->decodeAudio());
+            if (media->info().hasAudio) {
+                setAudioExportDestinationForSource(path);
+                audioToSeconds_ = static_cast<float>(std::max(0.0, media->info().durationSeconds));
+            }
             if (videoMode_ && scene_.models().empty()) {
                 const std::array<graphics::PreviewVertex, 4> vertices {{
                     {{ -0.9F, -0.9F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 0.0F, 1.0F }},
@@ -728,6 +789,86 @@ void Application::buildUi() {
         }
         ImGui::Text("Accumulated samples: %llu", static_cast<unsigned long long>(scene_.accumulatedSamples()));
         if (ImGui::Button("Reset physics") && model != nullptr && model->physics != nullptr) model->physics->reset();
+    }
+    ImGui::End();
+    buildAudioExportUi();
+#endif
+}
+
+void Application::setAudioExportDestinationForSource(const std::filesystem::path& source) {
+    audioSource_ = std::filesystem::absolute(source);
+    if (audioDestination_[0] == '\0') {
+        const auto destination = audioSource_.parent_path() / (audioSource_.stem().string() + ".m4a");
+        const auto text = destination.string();
+        const auto count = std::min(text.size(), audioDestination_.size() - 1U);
+        std::copy_n(text.data(), count, audioDestination_.data());
+        audioDestination_[count] = '\0';
+    }
+}
+
+void Application::buildAudioExportUi() {
+#if DAYO_HAS_IMGUI
+    ImGui::SetNextWindowPos({ 520.0F, 24.0F }, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize({ 420.0F, 360.0F }, ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Audio Export")) {
+        if (!DAYO_HAS_MEDIA) {
+            ImGui::TextUnformatted("FFmpeg support is not available in this build.");
+        } else {
+            ImGui::TextUnformatted("Format");
+            ImGui::SameLine(120.0F);
+            ImGui::TextUnformatted("M4A / AAC");
+            ImGui::TextUnformatted("Source");
+            ImGui::SameLine(120.0F);
+            if (audioSource_.empty()) ImGui::TextUnformatted("Load an audio or video asset first");
+            else ImGui::TextWrapped("%s", audioSource_.string().c_str());
+
+            ImGui::SliderInt("Bitrate (kbps)", &audioBitrateKbps_, 64, 512);
+            ImGui::TextUnformatted("Range");
+            ImGui::SameLine(120.0F);
+            ImGui::RadioButton("Full", &audioRangeMode_, 0);
+            ImGui::SameLine();
+            ImGui::RadioButton("Selection", &audioRangeMode_, 1);
+            if (audioRangeMode_ == 1) {
+                ImGui::DragFloat("From (seconds)", &audioFromSeconds_, 0.1F, 0.0F, audioToSeconds_);
+                ImGui::DragFloat("To (seconds)", &audioToSeconds_, 0.1F, audioFromSeconds_, 0.0F);
+            }
+            ImGui::InputText("Output", audioDestination_.data(), audioDestination_.size());
+            ImGui::Checkbox("Overwrite existing file", &audioOverwrite_);
+            ImGui::Separator();
+
+            if (audioExportJob_.running()) {
+                const float progress = audioExportJob_.progress();
+                ImGui::ProgressBar(progress, { -1.0F, 0.0F });
+                ImGui::Text("%.1f%%", static_cast<double>(progress) * 100.0);
+                if (audioExportJob_.totalSeconds() > 0.0) {
+                    ImGui::SameLine();
+                    ImGui::Text("%.2f / %.2f s", audioExportJob_.processedSeconds(),
+                                audioExportJob_.totalSeconds());
+                }
+                if (ImGui::Button("Cancel")) audioExportJob_.cancel();
+            } else {
+                const auto error = audioExportJob_.error();
+                if (error) ImGui::TextWrapped("Export error: %s", error->c_str());
+                const auto result = audioExportJob_.result();
+                if (result) ImGui::TextWrapped("Exported: %s", result->output.string().c_str());
+                if (ImGui::Button("Export")) {
+                    core::AudioExportRequest request;
+                    request.source = audioSource_;
+                    request.destination = std::filesystem::path(audioDestination_.data());
+                    request.bitrate = static_cast<std::uint32_t>(std::max(audioBitrateKbps_, 1)) * 1000U;
+                    request.overwrite = audioOverwrite_;
+                    if (audioRangeMode_ == 1) {
+                        request.startSeconds = static_cast<double>(audioFromSeconds_);
+                        request.endSeconds = static_cast<double>(audioToSeconds_);
+                    }
+                    try {
+                        audioExportJob_.start(std::move(request));
+                    } catch (const std::exception& exception) {
+                        ImGui::TextWrapped("Export error: %s", exception.what());
+                    }
+                }
+            }
+        }
     }
     ImGui::End();
 #endif
