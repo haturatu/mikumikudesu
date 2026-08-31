@@ -82,9 +82,11 @@ struct VideoExporter::Impl {
     SwrContext* resampler {};
     AVFrame* videoFrame {};
     AVPacket* packet {};
+    AVPacket* pendingAudioPacket {};
     std::array<std::vector<float>, 2> pendingAudio_;
     std::uint64_t videoFrames {};
     std::uint64_t audioSamples {};
+    std::uint64_t audioTargetSamples {};
     bool headerWritten {};
     bool finished {};
 
@@ -157,7 +159,8 @@ struct VideoExporter::Impl {
             if (scaler == nullptr) throw std::runtime_error("create video color converter failed");
             videoFrame = av_frame_alloc();
             packet = av_packet_alloc();
-            if (videoFrame == nullptr || packet == nullptr) throw std::bad_alloc();
+            pendingAudioPacket = av_packet_alloc();
+            if (videoFrame == nullptr || packet == nullptr || pendingAudioPacket == nullptr) throw std::bad_alloc();
             videoFrame->format = AV_PIX_FMT_YUV420P;
             videoFrame->width = static_cast<int>(request.width);
             videoFrame->height = static_cast<int>(request.height);
@@ -250,6 +253,12 @@ struct VideoExporter::Impl {
         freeFrame(frame);
     }
 
+    void writePendingAudioPacket() {
+        if (pendingAudioPacket == nullptr || pendingAudioPacket->data == nullptr) return;
+        ffmpeg::check(av_interleaved_write_frame(format, pendingAudioPacket), "write audio packet");
+        av_packet_unref(pendingAudioPacket);
+    }
+
     void receiveAudioPackets() {
         while (true) {
             const int result = avcodec_receive_packet(audioCodec, packet);
@@ -257,9 +266,32 @@ struct VideoExporter::Impl {
             ffmpeg::check(result, "receive encoded audio packet");
             av_packet_rescale_ts(packet, audioCodec->time_base, audioStream->time_base);
             packet->stream_index = audioStream->index;
-            ffmpeg::check(av_interleaved_write_frame(format, packet), "write audio packet");
+            writePendingAudioPacket();
+            ffmpeg::check(av_packet_ref(pendingAudioPacket, packet), "retain audio packet");
             av_packet_unref(packet);
         }
+    }
+
+    void markAudioPaddingAndWriteFinalPacket() {
+        if (pendingAudioPacket == nullptr || pendingAudioPacket->data == nullptr) return;
+        if (audioSamples > audioTargetSamples) {
+            const auto padding = std::min<std::uint64_t>(
+                audioSamples - audioTargetSamples, std::numeric_limits<std::uint32_t>::max());
+            std::size_t sideDataSize = 0;
+            auto* sideData = av_packet_get_side_data(
+                pendingAudioPacket, AV_PKT_DATA_SKIP_SAMPLES, &sideDataSize);
+            if (sideData == nullptr || sideDataSize < 10) {
+                sideData = av_packet_new_side_data(pendingAudioPacket, AV_PKT_DATA_SKIP_SAMPLES, 10);
+                if (sideData == nullptr) throw std::bad_alloc();
+                std::memset(sideData, 0, 10);
+            }
+            sideData[4] = static_cast<std::uint8_t>(padding & 0xffU);
+            sideData[5] = static_cast<std::uint8_t>((padding >> 8U) & 0xffU);
+            sideData[6] = static_cast<std::uint8_t>((padding >> 16U) & 0xffU);
+            sideData[7] = static_cast<std::uint8_t>((padding >> 24U) & 0xffU);
+            sideData[9] = 0;
+        }
+        writePendingAudioPacket();
     }
 
     void flushAudioResampler() {
@@ -305,6 +337,7 @@ struct VideoExporter::Impl {
         if (format != nullptr && format->pb != nullptr) avio_closep(&format->pb);
         freeFrame(videoFrame);
         freePacket(packet);
+        freePacket(pendingAudioPacket);
         if (resampler != nullptr) swr_free(&resampler);
         if (scaler != nullptr) {
             sws_freeContext(scaler);
@@ -402,6 +435,11 @@ VideoExportResult VideoExporter::finish() {
         impl_->encodePendingAudio(true);
         ffmpeg::check(avcodec_send_frame(impl_->audioCodec, nullptr), "flush AAC encoder");
         impl_->receiveAudioPackets();
+        const AVRational audioTimeBase { 1, impl_->audioCodec->sample_rate };
+        impl_->audioTargetSamples = av_rescale_q(
+            static_cast<std::int64_t>(impl_->videoFrames),
+            impl_->videoCodec->time_base, audioTimeBase);
+        impl_->markAudioPaddingAndWriteFinalPacket();
     }
     ffmpeg::check(avcodec_send_frame(impl_->videoCodec, nullptr), "flush video encoder");
     impl_->receiveVideoPackets();

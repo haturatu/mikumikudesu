@@ -1182,7 +1182,8 @@ void VulkanDevice::renderFrame() {
     constants.light[3] = swapchainExtent_.height == 0 ? 1.0F
         : static_cast<float>(swapchainExtent_.width) / static_cast<float>(swapchainExtent_.height);
     const bool hasBackground = previewScene_.backgroundEnabled
-        && previewScene_.screenSource == PreviewScene::ScreenSource::backgroundImage
+        && (previewScene_.screenSource == PreviewScene::ScreenSource::backgroundImage
+            || previewScene_.screenSource == PreviewScene::ScreenSource::backgroundVideo)
         && previewBackgroundTexture_.descriptor != VK_NULL_HANDLE
         && previewBackgroundIndexCount_ != 0;
     if (hasBackground) {
@@ -1521,7 +1522,8 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     std::copy_n(previewScene_.lightDirection, 3, constants.light.begin());
     constants.light[3] = static_cast<float>(extent.width) / static_cast<float>(extent.height);
     const bool hasBackground = previewScene_.backgroundEnabled
-        && previewScene_.screenSource == PreviewScene::ScreenSource::backgroundImage
+        && (previewScene_.screenSource == PreviewScene::ScreenSource::backgroundImage
+            || previewScene_.screenSource == PreviewScene::ScreenSource::backgroundVideo)
         && previewBackgroundTexture_.descriptor != VK_NULL_HANDLE
         && previewBackgroundIndexCount_ != 0;
     if (hasBackground) {

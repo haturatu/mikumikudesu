@@ -73,6 +73,33 @@ std::uint32_t parsePositiveInteger(std::string_view value, std::string_view opti
     return result;
 }
 
+double sceneTimelineFps(const core::Scene& scene) noexcept {
+    const auto value = static_cast<double>(scene.timeline().fps);
+    return std::isfinite(value) && value > 0.0 ? value : 30.0;
+}
+
+std::uint64_t videoOutputFrameCount(std::uint64_t firstFrame,
+                                    std::uint64_t lastFrame,
+                                    double sourceFps,
+                                    double outputFps) {
+    const auto intervals = static_cast<double>(lastFrame - firstFrame) * outputFps / sourceFps;
+    if (!std::isfinite(intervals)
+        || intervals > static_cast<double>(std::numeric_limits<std::uint64_t>::max() - 1U)) {
+        throw std::invalid_argument("video frame range produces too many output frames");
+    }
+    return static_cast<std::uint64_t>(std::ceil(std::max(intervals, 0.0) - 1e-9)) + 1U;
+}
+
+float videoSourceFrame(std::uint64_t outputFrame,
+                       std::uint64_t firstFrame,
+                       std::uint64_t lastFrame,
+                       double sourceFps,
+                       double outputFps) noexcept {
+    const auto value = static_cast<double>(firstFrame)
+        + static_cast<double>(outputFrame) * sourceFps / outputFps;
+    return static_cast<float>(std::min(static_cast<double>(lastFrame), value));
+}
+
 double parseSeconds(std::string_view value, std::string_view option) {
     try {
         std::size_t parsed = 0;
@@ -334,23 +361,48 @@ int Application::run() {
         if (videoExportUiActive_) {
             if (videoExportJob_.running() && !videoExportFramesFinished_) {
                 const auto& exportOptions = *options_.videoExport;
-                if (videoNextFrame_ <= videoToFrame_) {
-                    animationFrame_ = static_cast<float>(videoNextFrame_);
-                    scene_.setFrame(animationFrame_);
-                    refreshAnimatedMesh(videoNextFrame_ == 0U,
-                                        videoNextFrame_ == 0U ? 0.0F : static_cast<float>(1.0 / videoFps_));
-                    refreshPreviewScene();
-                    if (videoNextFrame_ >= videoFromFrame_) {
-                        try {
-                            videoExportJob_.submitFrame(device_->renderToImage(
-                                { exportOptions.width, exportOptions.height }));
-                        } catch (const std::exception& exception) {
-                            videoExportStatus_ = exception.what();
-                            videoExportJob_.cancel();
-                            videoExportFramesFinished_ = true;
-                            videoExportUiActive_ = false;
+                if (videoNextFrame_ < videoOutputFrameCount_) {
+                    if (!videoPreRollDone_) {
+                        animationFrame_ = 0.0F;
+                        scene_.setFrame(animationFrame_);
+                        refreshAnimatedMesh(true, 0.0F);
+                        refreshPreviewScene();
+                        if (videoFromFrame_ > 0U) {
+                            const auto sourceFrameDuration = static_cast<float>(1.0 / videoSourceFps_);
+                            for (std::uint64_t frame = 1; frame <= videoFromFrame_; ++frame) {
+                                animationFrame_ = static_cast<float>(frame);
+                                scene_.setFrame(animationFrame_);
+                                refreshAnimatedMesh(false, sourceFrameDuration);
+                                refreshPreviewScene();
+                            }
                         }
+                        videoPreRollDone_ = true;
+                        videoPreviousSourceFrame_ = static_cast<float>(videoFromFrame_);
                     }
+                    const auto sourceFrame = videoSourceFrame(
+                        videoNextFrame_, videoFromFrame_, videoToFrame_, videoSourceFps_, videoFps_);
+                    if (videoNextFrame_ != 0U) {
+                        animationFrame_ = sourceFrame;
+                        scene_.setFrame(animationFrame_);
+                        const auto delta = std::max(0.0F, sourceFrame - videoPreviousSourceFrame_)
+                            / static_cast<float>(videoSourceFps_);
+                        refreshAnimatedMesh(false, delta);
+                    }
+                    if (videoMode_) {
+                        mediaSeconds_ = std::max(0.0, static_cast<double>(sourceFrame) / videoSourceFps_);
+                        refreshVideoFrame();
+                    }
+                    refreshPreviewScene();
+                    try {
+                        videoExportJob_.submitFrame(device_->renderToImage(
+                            { exportOptions.width, exportOptions.height }));
+                    } catch (const std::exception& exception) {
+                        videoExportStatus_ = exception.what();
+                        videoExportJob_.cancel();
+                        videoExportFramesFinished_ = true;
+                        videoExportUiActive_ = false;
+                    }
+                    videoPreviousSourceFrame_ = sourceFrame;
                     ++videoNextFrame_;
                 } else {
                     videoExportJob_.finishFrames();
@@ -453,7 +505,8 @@ int Application::runVideoExport() {
     if (lastFrame == std::numeric_limits<std::uint64_t>::max()) {
         throw std::invalid_argument("video frame range is too large");
     }
-    const auto frameCount = lastFrame - firstFrame + 1U;
+    const auto sourceFps = sceneTimelineFps(scene_);
+    const auto frameCount = videoOutputFrameCount(firstFrame, lastFrame, sourceFps, options.fps);
 
     core::VideoExportRequest request;
     request.destination = std::filesystem::absolute(options.destination);
@@ -482,24 +535,44 @@ int Application::runVideoExport() {
         });
     }
 
-    const auto frameDuration = static_cast<float>(1.0 / options.fps);
-    animationFrame_ = 0.0F;
-    scene_.setFrame(0.0F);
+    const auto sourceFrameDuration = static_cast<float>(1.0 / sourceFps);
     uploadedAnimationFrame_ = -1;
-    // Simulate from frame zero even when the requested output range starts
-    // later. This preserves animation/physics state at the selected frame.
-    for (std::uint64_t frame = 0; frame <= lastFrame; ++frame) {
-        animationFrame_ = static_cast<float>(frame);
+    auto evaluateFrame = [&](float frame, float deltaSeconds, bool initialUpload) {
+        animationFrame_ = frame;
         scene_.setFrame(animationFrame_);
-        refreshAnimatedMesh(frame == 0U, frame == 0U ? 0.0F : frameDuration);
+        if (videoMode_ && scene_.media() != nullptr) {
+            mediaSeconds_ = std::max(0.0, static_cast<double>(frame) / sourceFps);
+        }
+        refreshAnimatedMesh(initialUpload, deltaSeconds);
+        if (videoMode_) refreshVideoFrame();
         refreshPreviewScene();
-        if (frame >= firstFrame) {
-            const auto image = device_->renderToImage({ request.width, request.height });
-            exporter.writeVideoFrame(image);
-            const auto processed = frame - firstFrame + 1U;
-            if (processed == frameCount || processed == 1U || processed % std::max<std::uint64_t>(1U, frameCount / 20U) == 0U) {
-                log::info("Video export: ", processed, "/", frameCount, " frames");
-            }
+    };
+
+    // Physics needs a continuous pre-roll when the requested range starts
+    // later than frame zero. Output samples themselves remain on the source
+    // timeline, so a 60 FPS export does not play a 30 FPS motion twice as fast.
+    if (firstFrame == 0U) {
+        evaluateFrame(0.0F, 0.0F, true);
+    } else {
+        evaluateFrame(0.0F, 0.0F, true);
+        for (std::uint64_t frame = 1; frame <= firstFrame; ++frame) {
+            evaluateFrame(static_cast<float>(frame), sourceFrameDuration, false);
+        }
+    }
+    auto previousSourceFrame = static_cast<float>(firstFrame);
+    for (std::uint64_t outputFrame = 0; outputFrame < frameCount; ++outputFrame) {
+        const auto sourceFrame = videoSourceFrame(outputFrame, firstFrame, lastFrame, sourceFps, options.fps);
+        if (outputFrame != 0U) {
+            const auto deltaSeconds = std::max(0.0F, sourceFrame - previousSourceFrame)
+                * sourceFrameDuration;
+            evaluateFrame(sourceFrame, deltaSeconds, false);
+        }
+        previousSourceFrame = sourceFrame;
+        const auto image = device_->renderToImage({ request.width, request.height });
+        exporter.writeVideoFrame(image);
+        if (outputFrame + 1U == frameCount || outputFrame == 0U
+            || (outputFrame + 1U) % std::max<std::uint64_t>(1U, frameCount / 20U) == 0U) {
+            log::info("Video export: ", outputFrame + 1U, "/", frameCount, " frames");
         }
     }
     device_->waitIdle();
@@ -606,6 +679,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             scene_.setFrame(animationFrame_);
             uploadedAnimationFrame_ = -1;
             refreshAnimatedMesh(true);
+            if (videoMode_) refreshVideoFrame();
             refreshPreviewScene();
             const auto* model = selectedModel();
             lastAsset_ = "PMX " + model->model->metadata.modelName + " — v"
@@ -648,6 +722,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             } else if (!scene_.models().empty()) {
                 refreshPreviewTextures();
                 refreshAnimatedMesh(true);
+                refreshVideoFrame();
             }
             lastAsset_ = std::string(core::toString(kind)) + " — "
                        + std::to_string(media->info().durationSeconds) + " s";
@@ -854,12 +929,16 @@ void Application::refreshPreviewBackground() {
 void Application::refreshVideoFrame() {
     auto* media = scene_.media();
     if (!videoMode_ || media == nullptr || device_ == nullptr) return;
+    const auto frameIndex = static_cast<std::int64_t>(mediaSeconds_ * media->info().videoFramesPerSecond);
+    if (frameIndex == uploadedVideoFrame_) return;
     const auto image = media->decodeVideoFrame(mediaSeconds_);
     if (!scene_.models().empty()) {
         // With a model present, the frame is retained as the reserved
         // background source and must not replace the model texture array.
         scene_.setBackgroundScreenSource(core::ScreenTextureSource::backgroundVideo);
-        uploadedVideoFrame_ = static_cast<std::int64_t>(mediaSeconds_ * media->info().videoFramesPerSecond);
+        const std::array textures { graphics::PreviewTexture { image.width, image.height, image.pixels } };
+        device_->uploadPreviewBackground(textures);
+        uploadedVideoFrame_ = frameIndex;
         return;
     }
     const std::array textures { graphics::PreviewTexture { image.width, image.height, image.pixels } };
@@ -869,7 +948,7 @@ void Application::refreshVideoFrame() {
     material.textureSlot = 1;
     const std::array materials { material };
     device_->updatePreviewMaterials(materials);
-    uploadedVideoFrame_ = static_cast<std::int64_t>(mediaSeconds_ * media->info().videoFramesPerSecond);
+    uploadedVideoFrame_ = frameIndex;
 }
 
 void Application::refreshPreviewScene() {
@@ -1196,9 +1275,14 @@ void Application::buildVideoExportUi() {
                         request.includeAudio = videoIncludeAudio_ && !audioSource_.empty();
                         std::optional<std::filesystem::path> audioSource;
                         if (request.includeAudio) audioSource = audioSource_;
+                        videoSourceFps_ = sceneTimelineFps(scene_);
+                        videoOutputFrameCount_ = videoOutputFrameCount(
+                            videoFromFrame_, videoToFrame_, videoSourceFps_, request.fps);
                         videoExportJob_.start(std::move(request), std::move(audioSource),
-                                              videoToFrame_ - videoFromFrame_ + 1U);
+                                              videoOutputFrameCount_);
                         videoNextFrame_ = 0;
+                        videoPreviousSourceFrame_ = 0.0F;
+                        videoPreRollDone_ = false;
                         videoExportFramesFinished_ = false;
                         videoExportUiActive_ = true;
                         videoExportStatus_.clear();

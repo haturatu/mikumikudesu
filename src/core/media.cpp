@@ -163,6 +163,18 @@ void MediaFile::streamAudio(const AudioSampleCallback& callback) {
         }
         ffmpeg::check(avcodec_send_packet(impl_->audioCodec, nullptr), "flush audio decoder");
         receive();
+        while (true) {
+            const int capacity = av_rescale_rnd(swr_get_delay(resampler, impl_->audioCodec->sample_rate),
+                                                48'000, impl_->audioCodec->sample_rate, AV_ROUND_UP);
+            if (capacity <= 0) break;
+            std::vector<float> samples(static_cast<std::size_t>(capacity) * 2U);
+            std::uint8_t* destination[] { reinterpret_cast<std::uint8_t*>(samples.data()) };
+            const int converted = swr_convert(resampler, destination, capacity, nullptr, 0);
+            ffmpeg::check(converted, "flush audio resampler");
+            if (converted == 0) break;
+            samples.resize(static_cast<std::size_t>(converted) * 2U);
+            callback({ samples.data(), samples.size() }, 48'000, 2);
+        }
     } catch (...) {
         av_frame_free(&frame);
         av_packet_free(&packet);

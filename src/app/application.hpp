@@ -117,6 +117,10 @@ private:
     std::uint64_t videoFromFrame_ {};
     std::uint64_t videoToFrame_ {};
     std::uint64_t videoNextFrame_ {};
+    std::uint64_t videoOutputFrameCount_ {};
+    double videoSourceFps_ { 30.0 };
+    float videoPreviousSourceFrame_ {};
+    bool videoPreRollDone_ {};
     bool videoExportFramesFinished_ {};
     bool videoExportUiActive_ {};
     bool videoRangeInitialized_ {};
