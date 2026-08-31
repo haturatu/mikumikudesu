@@ -61,7 +61,7 @@ private:
     std::vector<Float3> positions_;
     std::vector<Float3> velocities_;
     std::vector<std::uint8_t> pinned_;
-    std::vector<std::uint8_t> active_;
+    std::vector<std::uint32_t> activeVertices_;
     std::size_t bodyCount_ {};
 };
 
