@@ -121,6 +121,8 @@ public:
     void attachMotion(const std::filesystem::path& path, ModelId target = 0);
     void attachMotion(VmdMotion motion, ModelId target = 0);
     void attachMotion(MotionDocument document, ModelId target = 0, std::string modelName = {});
+    [[nodiscard]] const VmdMotion* motion(ModelId target = 0, bool global = false) const noexcept;
+    bool replaceMotion(VmdMotion motion, ModelId target = 0, bool global = false);
     void attachPose(const std::filesystem::path& path, ModelId target = 0);
     [[nodiscard]] ModelId targetModel(ModelId requested = 0) const noexcept;
     bool addExternalParent(ExternalParentLink link, std::string* error = nullptr);

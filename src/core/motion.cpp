@@ -24,6 +24,22 @@ T read(std::istream& input, std::string_view field) {
     return value;
 }
 
+template <typename T>
+void write(std::ostream& output, const T& value, std::string_view field) {
+    static_assert(std::is_trivially_copyable_v<T>);
+    output.write(reinterpret_cast<const char*>(&value), sizeof(value));
+    if (!output) throw std::runtime_error("failed while writing VMD " + std::string(field));
+}
+
+template <std::size_t N>
+void writeName(std::ostream& output, std::string_view value, std::string_view field) {
+    std::array<char, N> bytes {};
+    const auto encoded = encodeCp932(value);
+    std::copy_n(encoded.data(), std::min(encoded.size(), bytes.size()), bytes.data());
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!output) throw std::runtime_error("failed while writing VMD " + std::string(field));
+}
+
 template <std::size_t N>
 std::array<float, N> readFloatArray(std::istream& input, std::string_view field) {
     std::array<float, N> value {};
@@ -140,6 +156,40 @@ std::string decodeCp932(std::string_view input) {
     return output;
 }
 
+std::string encodeCp932(std::string_view input) {
+    if (input.empty()) return {};
+    iconv_t converter = iconv_open("CP932//TRANSLIT", "UTF-8");
+    if (converter == reinterpret_cast<iconv_t>(-1)) throw std::runtime_error("CP932 encoder is unavailable");
+    std::string output(input.size() * 2 + 16, '\0');
+    char* source = const_cast<char*>(input.data());
+    std::size_t sourceLeft = input.size();
+    char* destination = output.data();
+    std::size_t destinationLeft = output.size();
+    while (sourceLeft != 0) {
+        if (iconv(converter, &source, &sourceLeft, &destination, &destinationLeft) != static_cast<std::size_t>(-1)) continue;
+        if (errno == E2BIG) {
+            const auto used = static_cast<std::size_t>(destination - output.data());
+            output.resize(output.size() * 2);
+            destination = output.data() + used;
+            destinationLeft = output.size() - used;
+            continue;
+        }
+        if (errno == EILSEQ || errno == EINVAL) {
+            ++source;
+            --sourceLeft;
+            if (destinationLeft == 0) continue;
+            *destination++ = '?';
+            --destinationLeft;
+            continue;
+        }
+        iconv_close(converter);
+        throw std::runtime_error("CP932 conversion failed");
+    }
+    iconv_close(converter);
+    output.resize(static_cast<std::size_t>(destination - output.data()));
+    return output;
+}
+
 VmdMotion loadVmd(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) throw std::runtime_error("cannot open VMD file: " + path.string());
@@ -212,6 +262,82 @@ VmdMotion loadVmd(const std::filesystem::path& path) {
     std::stable_sort(motion.ik.begin(), motion.ik.end(),
                      [](const VmdIkKey& left, const VmdIkKey& right) { return left.frame < right.frame; });
     return motion;
+}
+
+void saveVmd(const std::filesystem::path& path, const VmdMotion& motion) {
+    if (path.empty()) throw std::invalid_argument("VMD path is empty");
+    const auto absolute = std::filesystem::absolute(path).lexically_normal();
+    std::filesystem::create_directories(absolute.parent_path());
+    auto temporary = absolute;
+    temporary += ".tmp";
+    {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        if (!output) throw std::runtime_error("cannot write VMD file: " + temporary.string());
+        std::array<char, 30> header {};
+        constexpr std::string_view signature = "Vocaloid Motion Data 0002";
+        std::copy(signature.begin(), signature.end(), header.begin());
+        output.write(header.data(), static_cast<std::streamsize>(header.size()));
+        writeName<20>(output, motion.modelName, "model name");
+        write(output, static_cast<std::uint32_t>(motion.bones.size()), "bone key count");
+        for (const auto& key : motion.bones) {
+            writeName<15>(output, key.name, "bone name");
+            write(output, key.frame, "bone frame");
+            write(output, key.translation, "bone translation");
+            write(output, key.rotation, "bone rotation");
+            write(output, key.interpolation, "bone interpolation");
+        }
+        write(output, static_cast<std::uint32_t>(motion.morphs.size()), "morph key count");
+        for (const auto& key : motion.morphs) {
+            writeName<15>(output, key.name, "morph name");
+            write(output, key.frame, "morph frame");
+            write(output, key.weight, "morph weight");
+        }
+        write(output, static_cast<std::uint32_t>(motion.cameras.size()), "camera key count");
+        for (const auto& key : motion.cameras) {
+            write(output, key.frame, "camera frame");
+            write(output, key.distance, "camera distance");
+            write(output, key.position, "camera position");
+            write(output, key.rotation, "camera rotation");
+            write(output, key.interpolation, "camera interpolation");
+            write(output, key.viewAngle, "camera view angle");
+            write(output, static_cast<std::uint8_t>(key.perspective ? 0 : 1), "camera perspective");
+        }
+        write(output, static_cast<std::uint32_t>(motion.lights.size()), "light key count");
+        for (const auto& key : motion.lights) {
+            write(output, key.frame, "light frame");
+            write(output, key.color, "light color");
+            write(output, key.position, "light position");
+        }
+        write(output, static_cast<std::uint32_t>(motion.shadows.size()), "shadow key count");
+        for (const auto& key : motion.shadows) {
+            write(output, key.frame, "shadow frame");
+            write(output, key.mode, "shadow mode");
+            write(output, key.distance, "shadow distance");
+        }
+        write(output, static_cast<std::uint32_t>(motion.ik.size()), "IK key count");
+        for (const auto& key : motion.ik) {
+            write(output, key.frame, "IK frame");
+            write(output, static_cast<std::uint8_t>(key.visible), "model visibility");
+            write(output, static_cast<std::uint32_t>(key.states.size()), "IK state count");
+            for (const auto& state : key.states) {
+                writeName<20>(output, state.name, "IK bone name");
+                write(output, static_cast<std::uint8_t>(state.enabled), "IK state");
+            }
+        }
+        output.flush();
+        if (!output) throw std::runtime_error("failed while writing VMD file: " + temporary.string());
+    }
+    std::error_code error;
+    std::filesystem::rename(temporary, absolute, error);
+    if (error) {
+        std::filesystem::remove(absolute, error);
+        error.clear();
+        std::filesystem::rename(temporary, absolute, error);
+    }
+    if (error) {
+        std::filesystem::remove(temporary);
+        throw std::runtime_error("cannot replace VMD file: " + error.message());
+    }
 }
 
 VpdPose loadVpd(const std::filesystem::path& path) {

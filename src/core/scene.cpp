@@ -272,6 +272,30 @@ void Scene::attachMotion(MotionDocument document, ModelId target, std::string mo
     markDirty(DirtyFlag::geometry | DirtyFlag::camera | DirtyFlag::lighting);
 }
 
+const VmdMotion* Scene::motion(ModelId target, bool global) const noexcept {
+    if (global) return cameraMotion_.get();
+    const auto* instance = model(targetModel(target));
+    return instance == nullptr ? nullptr : instance->motion.get();
+}
+
+bool Scene::replaceMotion(VmdMotion motionValue, ModelId target, bool global) {
+    if (global) {
+        cameraMotion_ = std::make_unique<VmdMotion>(std::move(motionValue));
+        timeline_.camera = cameraMotion_->cameras;
+        timeline_.light = cameraMotion_->lights;
+        timeline_.shadow = cameraMotion_->shadows;
+        timeline_.ik = cameraMotion_->ik;
+    } else {
+        auto* instance = model(targetModel(target));
+        if (instance == nullptr) return false;
+        instance->motion = std::make_unique<VmdMotion>(std::move(motionValue));
+        instance->animator->setMotion(instance->motion.get());
+    }
+    recalculateTimelineDuration();
+    markDirty(DirtyFlag::geometry | DirtyFlag::camera | DirtyFlag::lighting);
+    return true;
+}
+
 void Scene::attachPose(const std::filesystem::path& path, ModelId target) {
     auto* destination = model(targetModel(target));
     if (destination == nullptr) throw std::runtime_error("VPD requires a model target");

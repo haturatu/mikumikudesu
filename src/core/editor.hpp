@@ -3,6 +3,8 @@
 #include "core/scene.hpp"
 
 #include <memory>
+#include <cstdint>
+#include <string_view>
 #include <string>
 #include <vector>
 
@@ -55,6 +57,52 @@ public:
 private:
     RuntimeMode before_;
     RuntimeMode after_;
+};
+
+enum class MotionTrack { bone, morph, camera, light, shadow, ik };
+
+struct MotionKeyRef {
+    MotionTrack track {};
+    std::size_t index {};
+    friend bool operator==(const MotionKeyRef&, const MotionKeyRef&) = default;
+};
+
+struct MotionClipboard {
+    MotionDocument keys;
+    std::uint32_t originFrame {};
+    [[nodiscard]] bool empty() const noexcept;
+};
+
+class MotionEditor {
+public:
+    static void normalize(MotionDocument& document);
+    static void erase(MotionDocument& document, std::vector<MotionKeyRef> keys);
+    static void move(MotionDocument& document, const std::vector<MotionKeyRef>& keys, std::int64_t frameDelta);
+    [[nodiscard]] static MotionClipboard copy(const MotionDocument& document,
+                                              const std::vector<MotionKeyRef>& keys);
+    [[nodiscard]] static std::vector<MotionKeyRef> paste(MotionDocument& document,
+                                                         const MotionClipboard& clipboard,
+                                                         std::uint32_t destinationFrame);
+};
+
+// One snapshot command covers key insertion/deletion/move, pose, morph,
+// camera, light, shadow, IK, interpolation and VPD application atomically.
+class EditMotionCommand final : public EditCommand {
+public:
+    EditMotionCommand(ModelId target, bool global, VmdMotion before, VmdMotion after,
+                      std::string label = "Edit motion")
+        : target_(target), global_(global), before_(std::move(before)), after_(std::move(after)),
+          label_(std::move(label)) {}
+    void apply(Scene& scene) override;
+    void undo(Scene& scene) override;
+    [[nodiscard]] const char* name() const noexcept override { return label_.c_str(); }
+
+private:
+    ModelId target_ {};
+    bool global_ {};
+    VmdMotion before_;
+    VmdMotion after_;
+    std::string label_;
 };
 
 } // namespace dayo::core

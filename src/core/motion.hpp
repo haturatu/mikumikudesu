@@ -81,7 +81,9 @@ struct VpdBonePose {
 struct VpdPose { std::vector<VpdBonePose> bones; };
 
 [[nodiscard]] std::string decodeCp932(std::string_view input);
+[[nodiscard]] std::string encodeCp932(std::string_view input);
 [[nodiscard]] VmdMotion loadVmd(const std::filesystem::path& path);
+void saveVmd(const std::filesystem::path& path, const VmdMotion& motion);
 [[nodiscard]] VpdPose loadVpd(const std::filesystem::path& path);
 [[nodiscard]] MotionDocument toMotionDocument(const VmdMotion& motion);
 [[nodiscard]] VmdMotion toVmdMotion(MotionDocument document, std::string modelName = {});

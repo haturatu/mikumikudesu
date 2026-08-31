@@ -52,6 +52,26 @@ int main() {
     ok &= check(dayo::core::classifyAsset("sound.M4A") == AssetKind::audio, "audio extension");
     ok &= check(dayo::core::classifyAsset("movie.webm") == AssetKind::video, "video extension");
     {
+        dayo::core::MotionDocument document;
+        document.bones.push_back({ .name = "arm", .frame = 5 });
+        document.morphs.push_back({ "smile", 10, 0.75F });
+        const std::vector<dayo::core::MotionKeyRef> selected {
+            { dayo::core::MotionTrack::bone, 0 },
+            { dayo::core::MotionTrack::morph, 0 },
+        };
+        const auto clipboard = dayo::core::MotionEditor::copy(document, selected);
+        const auto pasted = dayo::core::MotionEditor::paste(document, clipboard, 20);
+        ok &= check(pasted.size() == 2 && document.bones.size() == 2 && document.morphs.size() == 2
+                    && document.bones.back().frame == 20 && document.morphs.back().frame == 25,
+                    "motion editor copies and offsets mixed tracks");
+        dayo::core::MotionEditor::move(document,
+            { { dayo::core::MotionTrack::bone, 0 } }, -20);
+        ok &= check(document.bones.front().frame == 0, "motion editor clamps moved keys at frame zero");
+        dayo::core::MotionEditor::erase(document,
+            { { dayo::core::MotionTrack::morph, 0 } });
+        ok &= check(document.morphs.size() == 1, "motion editor deletes selected keys");
+    }
+    {
         dayo::core::VmdMotion cameraMotion;
         dayo::core::VmdCameraKey first;
         first.frame = 0;
@@ -1052,6 +1072,19 @@ int main() {
         const auto motion = dayo::core::loadVmd(sampleVmd);
         ok &= check(!motion.modelName.empty(), "VMD CP932 model name");
         ok &= check(!motion.bones.empty(), "VMD bone keys");
+        const auto exportedVmd = std::filesystem::temp_directory_path() / "mikumikudesu-vmd-export-test.vmd";
+        dayo::core::saveVmd(exportedVmd, motion);
+        const auto exported = dayo::core::loadVmd(exportedVmd);
+        ok &= check(exported.modelName == motion.modelName
+                    && exported.bones.size() == motion.bones.size()
+                    && exported.morphs.size() == motion.morphs.size()
+                    && exported.cameras.size() == motion.cameras.size()
+                    && exported.lights.size() == motion.lights.size()
+                    && exported.shadows.size() == motion.shadows.size()
+                    && exported.ik.size() == motion.ik.size(),
+                    "VMD export round trip");
+        std::error_code exportError;
+        std::filesystem::remove(exportedVmd, exportError);
         bool evaluatedFixture = false;
         for (const auto& entry : std::filesystem::directory_iterator(
                  std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo/sample")) {
