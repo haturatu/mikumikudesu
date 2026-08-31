@@ -34,3 +34,5 @@ jobs:
         uses: github/codeql-action/analyze@v3
         with:
           category: /language:cpp
+          # Private repositories without Code Scanning enabled reject SARIF uploads.
+          upload: false
