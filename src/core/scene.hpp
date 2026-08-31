@@ -192,6 +192,7 @@ public:
     [[nodiscard]] const VmdMotion* cameraMotion() const noexcept { return cameraMotion_.get(); }
     [[nodiscard]] RuntimeMode runtimeMode() const noexcept { return runtimeMode_; }
     [[nodiscard]] ModelId selectedModelId() const noexcept { return selectedModel_; }
+    [[nodiscard]] std::uint64_t topologyGeneration() const noexcept { return topologyGeneration_; }
 
 private:
     void refreshModelResources(ModelInstance& instance);
@@ -209,6 +210,7 @@ private:
                      | DirtyFlag::background };
     RuntimeMode runtimeMode_ { RuntimeMode::realtime };
     std::uint64_t accumulatedSamples_ {};
+    std::uint64_t topologyGeneration_ { 1 };
 };
 
 } // namespace dayo::core

@@ -342,10 +342,18 @@ int main() {
         ok &= check(model.materials.size() == 1 && model.bones.empty(), "complete PMX sections");
         dayo::core::Scene scene;
         ok &= check(scene.physicsSettings().gravity == 98.0F, "MMD gravity default");
+        const auto initialTopologyGeneration = scene.topologyGeneration();
         const auto firstModel = scene.addModel(path);
         const auto secondModel = scene.addModel(path);
         ok &= check(scene.models().size() == 2 && scene.selectedModel() != nullptr,
                     "multi-model scene instances");
+        const auto modelTopologyGeneration = scene.topologyGeneration();
+        ok &= check(modelTopologyGeneration > initialTopologyGeneration
+                    && scene.setModelVisible(firstModel, false)
+                    && scene.setCloneCount(firstModel, 2)
+                    && scene.topologyGeneration() == modelTopologyGeneration + 2,
+                    "scene topology generation tracks visibility and clone changes");
+        static_cast<void>(scene.setModelVisible(firstModel, true));
         dayo::core::VmdMotion shortMotion;
         shortMotion.morphs.push_back({ "smile", 20, 1.0F });
         scene.attachMotion(std::move(shortMotion), firstModel);
@@ -377,9 +385,11 @@ int main() {
         scene.setFrame(400.0F);
         ok &= check(scene.cameraMotion() != nullptr && scene.timeline().duration == 500.0F,
                     "camera motion is attached as global scene state");
+        const auto beforeProjectResetGeneration = scene.topologyGeneration();
         scene.clearProjectState();
         ok &= check(scene.models().empty() && scene.cameraMotion() == nullptr
-                    && scene.timeline().duration == 0.0F && scene.timeline().frame == 0.0F,
+                    && scene.timeline().duration == 0.0F && scene.timeline().frame == 0.0F
+                    && scene.topologyGeneration() > beforeProjectResetGeneration,
                     "project reset clears camera motion and timeline state");
         const auto resetModel = scene.addModel(path);
         dayo::core::VmdMotion resetMotion;
@@ -947,12 +957,15 @@ int main() {
                     "motion compatibility reports matched bone tracks");
         const auto before = animator.evaluate(0.0F);
         const auto after = animator.evaluate(10.0F);
+        const auto seekBack = animator.evaluate(0.0F);
         ok &= check(before.vertices.size() == 1 && after.vertices.size() == 1
                     && before.vertices[0].position != after.vertices[0].position,
                     "matched VMD bone changes skinned vertices");
         ok &= check(std::abs(after.vertices[0].position[0] + 1.0F) < 1e-4F
                     && std::abs(after.vertices[0].position[1] - 1.0F) < 1e-4F,
                     "skinned vertex follows the animated bone rotation");
+        ok &= check(seekBack.vertices[0].position == before.vertices[0].position,
+                    "VMD track cursor falls back to binary search for backward seeks");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: synthetic animation: " << exception.what() << '\n';
         ok = false;

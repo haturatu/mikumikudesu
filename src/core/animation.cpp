@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <numbers>
 #include <numeric>
@@ -98,6 +99,61 @@ float bezier(float x, std::uint8_t x1, std::uint8_t y1, std::uint8_t x2, std::ui
 struct LocalPose { Float3 translation {}; Quat rotation { 0.0F, 0.0F, 0.0F, 1.0F }; };
 struct GlobalPose { Float3 position {}; Quat rotation { 0.0F, 0.0F, 0.0F, 1.0F }; };
 
+template <typename Key>
+struct KeyTrack {
+    std::vector<const Key*> keys;
+    std::size_t cursor {};
+    float sampledFrame { -std::numeric_limits<float>::infinity() };
+};
+
+using BezierLut = std::array<float, 256>;
+
+struct BoneTrack : KeyTrack<VmdBoneKey> {
+    std::vector<std::array<std::uint32_t, 4>> curves;
+    bool hasMethods {};
+};
+using MorphTrack = KeyTrack<VmdMorphKey>;
+
+std::uint32_t curveId(const VmdBoneKey& key, std::size_t axis) {
+    return static_cast<std::uint32_t>(key.interpolation[axis])
+        | (static_cast<std::uint32_t>(key.interpolation[axis + 4]) << 8U)
+        | (static_cast<std::uint32_t>(key.interpolation[axis + 8]) << 16U)
+        | (static_cast<std::uint32_t>(key.interpolation[axis + 12]) << 24U);
+}
+
+BezierLut makeBezierLut(std::uint32_t id) {
+    BezierLut result {};
+    const auto x1 = static_cast<std::uint8_t>(id);
+    const auto y1 = static_cast<std::uint8_t>(id >> 8U);
+    const auto x2 = static_cast<std::uint8_t>(id >> 16U);
+    const auto y2 = static_cast<std::uint8_t>(id >> 24U);
+    for (std::size_t i = 0; i < result.size(); ++i) {
+        result[i] = bezier(static_cast<float>(i) / static_cast<float>(result.size() - 1U), x1, y1, x2, y2);
+    }
+    return result;
+}
+
+float sampleBezier(const BezierLut& lut, float x) {
+    const float scaled = std::clamp(x, 0.0F, 1.0F) * static_cast<float>(lut.size() - 1U);
+    const auto first = static_cast<std::size_t>(scaled);
+    const auto second = std::min(first + 1U, lut.size() - 1U);
+    const float fraction = scaled - static_cast<float>(first);
+    return lut[first] + (lut[second] - lut[first]) * fraction;
+}
+
+template <typename Key>
+auto nextKey(KeyTrack<Key>& track, float frame) {
+    if (frame < track.sampledFrame) {
+        track.cursor = static_cast<std::size_t>(std::lower_bound(track.keys.begin(), track.keys.end(), frame,
+            [](const Key* key, float value) { return static_cast<float>(key->frame) < value; }) - track.keys.begin());
+    } else {
+        while (track.cursor < track.keys.size()
+               && static_cast<float>(track.keys[track.cursor]->frame) < frame) ++track.cursor;
+    }
+    track.sampledFrame = frame;
+    return track.keys.begin() + static_cast<std::ptrdiff_t>(track.cursor);
+}
+
 struct BoneRuntimePose {
     LocalPose base;
     LocalPose append;
@@ -165,15 +221,65 @@ LocalPose sampleBone(const std::vector<const VmdBoneKey*>& keys, float frame,
     return result;
 }
 
-float sampleMorph(const std::vector<const VmdMorphKey*>& keys, float frame) {
+LocalPose sampleBone(BoneTrack& track, const std::unordered_map<std::uint32_t, BezierLut>& luts,
+                     float frame, InterpolationMode fallbackMode = InterpolationMode::bezier) {
+    const auto& keys = track.keys;
+    if (keys.empty()) return {};
+    const auto next = nextKey<VmdBoneKey>(track, frame);
+    if (next == keys.begin()) return { (*next)->translation, normalize((*next)->rotation) };
+    if (next == keys.end()) return { keys.back()->translation, normalize(keys.back()->rotation) };
+    const auto* before = *(next - 1);
+    const auto* after = *next;
+    const auto previousIndex = static_cast<std::size_t>((next - keys.begin()) - 1);
+    const auto nextIndex = static_cast<std::size_t>(next - keys.begin());
+    const auto* previousControl = keys[previousIndex == 0 ? 0 : previousIndex - 1];
+    const auto* nextControl = keys[std::min(nextIndex + 1, keys.size() - 1)];
+    const float span = static_cast<float>(after->frame - before->frame);
+    const float linear = span > 0.0F ? (frame - static_cast<float>(before->frame)) / span : 0.0F;
+    const auto curveIndex = static_cast<std::size_t>(next - keys.begin());
+    const auto catmull = [&](std::size_t channel) {
+        return track.hasMethods ? after->methods[channel] == 1
+                                : fallbackMode == InterpolationMode::catmullRom;
+    };
+    LocalPose result;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        const float t = sampleBezier(luts.at(track.curves[curveIndex][axis]), linear);
+        result.translation[axis] = catmull(axis)
+            ? catmullRom(previousControl->translation[axis], before->translation[axis],
+                         after->translation[axis], nextControl->translation[axis], linear)
+            : before->translation[axis] + (after->translation[axis] - before->translation[axis]) * t;
+    }
+    const float rt = sampleBezier(luts.at(track.curves[curveIndex][3]), linear);
+    if (catmull(3)) {
+        Quat controls[4] { previousControl->rotation, before->rotation,
+                           after->rotation, nextControl->rotation };
+        const auto align = [](Quat& value, const Quat& reference) {
+            float product = 0.0F;
+            for (std::size_t i = 0; i < 4; ++i) product += value[i] * reference[i];
+            if (product < 0.0F) for (auto& component : value) component = -component;
+        };
+        align(controls[0], controls[1]); align(controls[2], controls[1]); align(controls[3], controls[2]);
+        Quat interpolated {};
+        for (std::size_t i = 0; i < 4; ++i) {
+            interpolated[i] = catmullRom(controls[0][i], controls[1][i], controls[2][i], controls[3][i], linear);
+        }
+        result.rotation = normalize(interpolated);
+    } else {
+        result.rotation = slerp(before->rotation, after->rotation, rt);
+    }
+    return result;
+}
+
+float sampleMorph(MorphTrack& track, float frame) {
+    const auto& keys = track.keys;
     if (keys.empty()) return 0.0F;
-    const auto next = std::lower_bound(keys.begin(), keys.end(), frame,
-        [](const VmdMorphKey* key, float value) { return static_cast<float>(key->frame) < value; });
+    const auto next = nextKey(track, frame);
     if (next == keys.begin()) return (*next)->weight;
     if (next == keys.end()) return keys.back()->weight;
     const auto* before = *(next - 1);
     const auto* after = *next;
-    const float t = (frame - static_cast<float>(before->frame)) / static_cast<float>(after->frame - before->frame);
+    const float t = (frame - static_cast<float>(before->frame))
+        / static_cast<float>(after->frame - before->frame);
     return before->weight + (after->weight - before->weight) * t;
 }
 
@@ -202,6 +308,33 @@ void calculateGlobals(const PmxModel& model, const std::vector<LocalPose>& local
         state[index] = 2;
     };
     for (std::size_t i = 0; i < model.bones.size(); ++i) resolve(resolve, i);
+}
+
+void calculateGlobalSubtree(const PmxModel& model, const std::vector<LocalPose>& local,
+                            std::vector<GlobalPose>& global,
+                            const std::vector<std::vector<std::size_t>>& children,
+                            std::size_t root, std::vector<std::uint8_t>& state,
+                            std::vector<std::size_t>& touched) {
+    touched.clear();
+    const auto update = [&](const auto& self, std::size_t index) -> void {
+        if (state[index] != 0) return;
+        state[index] = 1;
+        touched.push_back(index);
+        const auto parent = model.bones[index].parent;
+        if (parent >= 0 && static_cast<std::size_t>(parent) < global.size()) {
+            const auto parentIndex = static_cast<std::size_t>(parent);
+            const auto bindOffset = sub(model.bones[index].position, model.bones[parentIndex].position);
+            global[index].position = add(global[parentIndex].position,
+                rotate(global[parentIndex].rotation, add(bindOffset, local[index].translation)));
+            global[index].rotation = multiply(global[parentIndex].rotation, local[index].rotation);
+        } else {
+            global[index].position = add(model.bones[index].position, local[index].translation);
+            global[index].rotation = local[index].rotation;
+        }
+        for (const auto child : children[index]) self(self, child);
+    };
+    update(update, root);
+    for (const auto index : touched) state[index] = 0;
 }
 
 BoneOrders makeBoneOrders(const PmxModel& model) {
@@ -369,7 +502,7 @@ void solveIk(const PmxModel& model, const BoneOrder& order, std::vector<BoneRunt
 }
 
 void logLimbDiagnostics(const PmxModel& model,
-                       const std::unordered_map<std::string_view, std::vector<const VmdBoneKey*>>& boneKeys,
+                       const std::unordered_map<std::string_view, BoneTrack>& boneTracks,
                        const std::vector<LocalPose>& local, const std::vector<GlobalPose>& global, float frame) {
     if (static_cast<int>(frame) % 30 != 0) return;
     static constexpr std::array<std::string_view, 16> names {
@@ -382,8 +515,8 @@ void logLimbDiagnostics(const PmxModel& model,
             [name](const PmxBone& bone) { return bone.name == name; });
         if (found == model.bones.end()) continue;
         const auto index = static_cast<std::size_t>(found - model.bones.begin());
-        const auto motion = boneKeys.find(found->name);
-        const auto sampled = motion == boneKeys.end() ? LocalPose {} : sampleBone(motion->second, frame);
+        const auto motion = boneTracks.find(found->name);
+        const auto sampled = motion == boneTracks.end() ? LocalPose {} : sampleBone(motion->second.keys, frame);
         const auto& pose = local[index];
         const auto& world = global[index];
         log::debug("Bone sample: model=", model.metadata.modelName, ", frame=", frame,
@@ -472,6 +605,12 @@ struct MmdAnimator::Impl {
     std::vector<LocalPose> localScratch;
     std::vector<GlobalPose> globalScratch;
     std::vector<std::uint8_t> globalState;
+    std::unordered_map<std::string_view, BoneTrack> boneTracks;
+    std::unordered_map<std::string_view, MorphTrack> morphTracks;
+    std::unordered_map<std::uint32_t, BezierLut> bezierLuts;
+    std::vector<std::vector<std::size_t>> boneChildren;
+    std::vector<std::uint8_t> subtreeState;
+    std::vector<std::size_t> subtreeScratch;
 };
 
 MmdAnimator::MmdAnimator(const PmxModel& model) : model_(model), impl_(std::make_unique<Impl>()) {
@@ -480,11 +619,46 @@ MmdAnimator::MmdAnimator(const PmxModel& model) : model_(model), impl_(std::make
     impl_->localScratch.resize(model_.bones.size());
     impl_->globalScratch.resize(model_.bones.size());
     impl_->globalState.resize(model_.bones.size());
+    impl_->boneChildren.resize(model_.bones.size());
+    impl_->subtreeState.resize(model_.bones.size());
+    for (std::size_t index = 0; index < model_.bones.size(); ++index) {
+        const auto parent = model_.bones[index].parent;
+        if (parent >= 0 && static_cast<std::size_t>(parent) < model_.bones.size()
+            && static_cast<std::size_t>(parent) != index) {
+            impl_->boneChildren[static_cast<std::size_t>(parent)].push_back(index);
+        }
+    }
+    impl_->subtreeScratch.reserve(model_.bones.size());
 }
 MmdAnimator::~MmdAnimator() = default;
 void MmdAnimator::setMotion(const VmdMotion* motion) {
     motion_ = motion;
+    impl_->boneTracks.clear();
+    impl_->morphTracks.clear();
+    impl_->bezierLuts.clear();
+    previousFrame_ = -1.0F;
     if (motion_ == nullptr) return;
+
+    for (const auto& key : motion_->bones) impl_->boneTracks[key.name].keys.push_back(&key);
+    for (const auto& key : motion_->morphs) impl_->morphTracks[key.name].keys.push_back(&key);
+    for (auto& [name, track] : impl_->boneTracks) {
+        std::ranges::sort(track.keys, {}, &VmdBoneKey::frame);
+        track.hasMethods = std::ranges::any_of(track.keys, [](const auto* key) {
+            return std::ranges::any_of(key->methods, [](auto value) { return value != 0; });
+        });
+        track.curves.reserve(track.keys.size());
+        for (const auto* key : track.keys) {
+            std::array<std::uint32_t, 4> ids {};
+            for (std::size_t axis = 0; axis < ids.size(); ++axis) {
+                ids[axis] = curveId(*key, axis);
+                if (!impl_->bezierLuts.contains(ids[axis])) {
+                    impl_->bezierLuts.emplace(ids[axis], makeBezierLut(ids[axis]));
+                }
+            }
+            track.curves.push_back(ids);
+        }
+    }
+    for (auto& [name, track] : impl_->morphTracks) std::ranges::sort(track.keys, {}, &VmdMorphKey::frame);
 
     const auto compatibility = motionCompatibility();
     log::info("Motion compatibility: PMX bones=", compatibility.pmxBoneCount,
@@ -538,21 +712,15 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
         result.materials.push_back(animated);
     }
 
-    std::unordered_map<std::string_view, std::vector<const VmdBoneKey*>> boneKeys;
-    std::unordered_map<std::string_view, std::vector<const VmdMorphKey*>> morphKeys;
     if (motion_ != nullptr) {
-        for (const auto& key : motion_->bones) boneKeys[key.name].push_back(&key);
-        for (const auto& key : motion_->morphs) morphKeys[key.name].push_back(&key);
-        for (auto& [name, keys] : boneKeys) std::ranges::sort(keys, {}, &VmdBoneKey::frame);
-        for (auto& [name, keys] : morphKeys) std::ranges::sort(keys, {}, &VmdMorphKey::frame);
         if (const auto* key = ikKeyAt(motion_, frame); key != nullptr) result.visible = key->visible;
     }
 
     auto& local = impl_->localScratch;
     std::fill(local.begin(), local.end(), LocalPose {});
     for (std::size_t i = 0; i < model_.bones.size(); ++i) {
-        if (const auto found = boneKeys.find(model_.bones[i].name); found != boneKeys.end()) {
-            local[i] = sampleBone(found->second, frame,
+        if (const auto found = impl_->boneTracks.find(model_.bones[i].name); found != impl_->boneTracks.end()) {
+            local[i] = sampleBone(found->second, impl_->bezierLuts, frame,
                                   motion_ == nullptr ? InterpolationMode::bezier : motion_->interpolation);
         }
     }
@@ -575,7 +743,7 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
     std::vector<Float3> impulseAngularLocal(model_.rigidBodies.size());
     std::vector<bool> impulseReset(model_.rigidBodies.size());
     for (std::size_t i = 0; i < model_.morphs.size(); ++i) {
-        if (const auto found = morphKeys.find(model_.morphs[i].name); found != morphKeys.end()) {
+        if (const auto found = impl_->morphTracks.find(model_.morphs[i].name); found != impl_->morphTracks.end()) {
             morphWeights[i] = sampleMorph(found->second, frame);
         }
     }
@@ -740,7 +908,8 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
                 local[bone].rotation = boneRotation;
                 if (mode == 1) local[bone].translation = sub(bonePosition, model_.bones[bone].position);
             }
-            calculateGlobals(model_, local, global, impl_->globalState);
+            calculateGlobalSubtree(model_, local, global, impl_->boneChildren, bone,
+                                   impl_->subtreeState, impl_->subtreeScratch);
             if (mode == 2) {
                 const auto correction = sub(global[bone].position, bonePosition);
                 physics_->shiftBodyPosition(bodyIndex, correction);
@@ -771,7 +940,7 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
         global[i] = poses[i].global;
     }
     if (previousFrame_ < 0.0F || static_cast<int>(previousFrame_) != static_cast<int>(frame)) {
-        logLimbDiagnostics(model_, boneKeys, local, global, frame);
+        logLimbDiagnostics(model_, impl_->boneTracks, local, global, frame);
     }
     previousFrame_ = frame;
 
@@ -824,9 +993,7 @@ PreviewNormalization previewNormalization(const PmxModel& model) {
     return result;
 }
 
-void normalizeForPreview(std::vector<PmxVertex>& vertices, const PmxModel& model) {
-    if (vertices.empty() || model.vertices.empty()) return;
-    const auto normalization = previewNormalization(model);
+void normalizeForPreview(std::vector<PmxVertex>& vertices, const PreviewNormalization& normalization) {
     for (auto& vertex : vertices) for (std::size_t axis = 0; axis < 3; ++axis) {
         vertex.position[axis] = (vertex.position[axis] - normalization.center[axis]) * normalization.scale;
     }

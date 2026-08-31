@@ -67,7 +67,7 @@ private:
 };
 
 // Applies one stable model-space transform so animated vertices remain framed.
-void normalizeForPreview(std::vector<PmxVertex>& vertices, const PmxModel& model);
+void normalizeForPreview(std::vector<PmxVertex>& vertices, const PreviewNormalization& normalization);
 [[nodiscard]] PreviewNormalization previewNormalization(const PmxModel& model);
 
 } // namespace dayo::core

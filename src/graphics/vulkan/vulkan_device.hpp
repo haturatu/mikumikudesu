@@ -41,6 +41,14 @@ private:
         VkSemaphore imageAvailable {};
         VkSemaphore renderFinished {};
         VkFence inFlight {};
+        VkBuffer backgroundStagingBuffer {};
+        VkDeviceMemory backgroundStagingMemory {};
+        void* mappedBackgroundStaging {};
+        bool backgroundUploadPending {};
+        VkBuffer previewVertexBuffer {};
+        VkDeviceMemory previewVertexMemory {};
+        void* mappedPreviewVertices {};
+        std::uint64_t previewVertexGeneration {};
     };
 
     struct BufferResource {
@@ -99,12 +107,17 @@ private:
                               std::span<const std::uint8_t> rgba);
     [[nodiscard]] PreviewTextureResource createPreviewTextureResource(
         std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> rgba);
+    [[nodiscard]] PreviewTextureResource createEmptyPreviewTextureResource(
+        std::uint32_t width, std::uint32_t height);
+    void createPreviewBackgroundStream(std::uint32_t width, std::uint32_t height);
+    void recordPreviewBackgroundUpload(VkCommandBuffer command, Frame& frame);
     void createFrames();
     void destroyFrames();
     void createUi();
     void destroyUi();
     void recreateSwapchain();
     void destroyPreviewMesh();
+    void synchronizePreviewVertices(Frame& frame);
     void uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage,
                              VkBuffer& buffer, VkDeviceMemory& memory);
     [[nodiscard]] std::uint32_t findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags flags) const;
@@ -143,9 +156,8 @@ private:
     bool uiInitialized_ {};
     std::array<Frame, 2> frames_ {};
     std::size_t frameIndex_ {};
-    VkBuffer previewVertexBuffer_ {};
-    VkDeviceMemory previewVertexMemory_ {};
     VkDeviceSize previewVertexSize_ {};
+    std::uint64_t previewVertexGeneration_ {};
     VkBuffer previewIndexBuffer_ {};
     VkDeviceMemory previewIndexMemory_ {};
     std::uint32_t previewIndexCount_ {};
@@ -158,6 +170,9 @@ private:
     VkDeviceMemory previewBackgroundIndexMemory_ {};
     std::uint32_t previewBackgroundIndexCount_ {};
     PreviewTextureResource previewBackgroundTexture_;
+    VkExtent2D previewBackgroundExtent_ {};
+    VkDeviceSize previewBackgroundByteSize_ {};
+    bool previewBackgroundInitialized_ {};
     PreviewScene previewScene_;
     OffscreenResource offscreen_;
 

@@ -88,6 +88,9 @@ private:
     AudioExportJob audioExportJob_;
     VideoExportJob videoExportJob_;
     std::vector<core::ImageRgba8> textures_;
+    std::vector<std::uint32_t> animatedIndices_;
+    std::vector<graphics::PreviewMaterial> animatedMaterialTemplates_;
+    std::uint64_t animatedTopologyGeneration_ {};
     float animationFrame_ {};
     int uploadedAnimationFrame_ { -1 };
     bool playing_ { true };
