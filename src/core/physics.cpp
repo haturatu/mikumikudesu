@@ -157,7 +157,8 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
         // btEmptyShape::calculateLocalInertia().
         const bool invalidMass = !std::isfinite(source.mass) || source.mass <= 0.0F;
         const btScalar candidateMass = (source.mode == 0 || degenerate || invalidMass) ? 0.0F : source.mass;
-        btVector3 inertia {};
+        btVector3 inertia;
+        inertia.setZero();
         if (candidateMass > 0.0F)
             impl_->shapes.back()->calculateLocalInertia(candidateMass, inertia);
         const bool unusableDynamicBody =
@@ -167,7 +168,7 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
         const btScalar effectiveMass = dynamicUsable ? candidateMass : 0.0F;
         const auto effectiveMode = dynamicUsable ? source.mode : std::uint8_t{0};
         if (!dynamicUsable)
-            inertia = {};
+            inertia.setZero();
         btRigidBody::btRigidBodyConstructionInfo info(effectiveMass, impl_->motionStates.back().get(),
                                                       impl_->shapes.back().get(), inertia);
         info.m_linearDamping = source.linearDamping;
