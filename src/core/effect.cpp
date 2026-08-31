@@ -17,6 +17,7 @@ extern "C" {
 namespace dayo::core {
 namespace {
 
+#if DAYO_HAS_JSONNET
 EffectPassType passType(std::string_view value) {
     if (value == "rasterizer") return EffectPassType::rasterizer;
     if (value == "postprocess") return EffectPassType::postprocess;
@@ -24,6 +25,7 @@ EffectPassType passType(std::string_view value) {
     if (value == "raytracing") return EffectPassType::raytracing;
     return EffectPassType::unknown;
 }
+#endif
 
 #if DAYO_HAS_JSONNET
 std::string evaluateJsonnet(const std::filesystem::path& path, std::string_view source) {
