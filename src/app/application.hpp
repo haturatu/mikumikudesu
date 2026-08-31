@@ -64,6 +64,7 @@ public:
 
 private:
     void resetProjectRuntimeState();
+    [[nodiscard]] core::DayoProject currentProject() const;
     void handleAsset(const std::filesystem::path& path);
     void refreshAnimatedMesh(bool initialUpload, float deltaSeconds = 0.0F);
     void refreshVideoFrame();
@@ -145,10 +146,13 @@ private:
     bool physicsDebug_ {};
     float editedMorphWeight_ {};
     core::VmdCameraKey editedCamera_;
+    std::array<char, 256> cameraParentBoneName_ {};
     core::VmdLightKey editedLight_ { 0, { 0.6F, 0.6F, 0.6F }, { -0.5F, -1.0F, 0.5F } };
     core::VmdShadowKey editedShadow_ { 0, 1, 50.0F };
     core::OutputSettings sequenceOutput_;
     std::string sequenceOutputStatus_;
+    std::array<char, 1024> projectDestination_ { 'p', 'r', 'o', 'j', 'e', 'c', 't', '.', 'd', 'a', 'y', 'o', '\0' };
+    std::string projectSaveStatus_;
 };
 
 } // namespace dayo::app

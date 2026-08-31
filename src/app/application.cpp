@@ -311,12 +311,7 @@ int Application::run() {
 
     for (const auto& asset : options_.assets) handleAsset(asset);
     if (options_.saveProject) {
-        core::DayoProject project;
-        project.renderer = std::string(graphics::toString(device->activeRenderer()));
-        project.frame = animationFrame_;
-        project.playing = playing_;
-        project.assets = projectAssets_;
-        core::saveProject(*options_.saveProject, project);
+        core::saveProject(*options_.saveProject, currentProject());
         log::info("Saved project: ", options_.saveProject->string());
     }
     if (options_.probeOnly) {
@@ -466,6 +461,25 @@ int Application::run() {
     audioPlayer_.stop();
     log::info("Rendered ", frameCount, " frame(s); clean shutdown");
     return 0;
+}
+
+core::DayoProject Application::currentProject() const {
+    core::DayoProject project;
+    project.renderer = device_ == nullptr ? "preview"
+        : std::string(graphics::toString(device_->activeRenderer()));
+    project.frame = animationFrame_;
+    project.playing = playing_;
+    project.assets = projectAssets_;
+    core::VmdMotion camera = scene_.cameraMotion() == nullptr
+        ? core::VmdMotion {} : *scene_.cameraMotion();
+    if (camera.modelName.empty()) camera.modelName = "Camera/Light";
+    project.embeddedMotions.push_back(std::move(camera));
+    for (const auto& model : scene_.models()) {
+        auto motion = model.motion == nullptr ? core::VmdMotion {} : *model.motion;
+        if (motion.modelName.empty()) motion.modelName = model.displayName;
+        project.embeddedMotions.push_back(std::move(motion));
+    }
+    return project;
 }
 
 int Application::runVideoExport() {
@@ -1383,10 +1397,12 @@ void Application::buildEditorUi() {
         ImGui::Checkbox("Perspective", &editedCamera_.perspective);
         ImGui::InputInt("Camera parent model", &editedCamera_.parentModel);
         ImGui::InputInt("Camera parent bone", &editedCamera_.parentBone);
+        ImGui::InputText("Camera parent bone name", cameraParentBoneName_.data(), cameraParentBoneName_.size());
         if (ImGui::Button("Register camera")) {
             core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion {};
             auto document = core::toMotionDocument(before);
             editedCamera_.frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
+            editedCamera_.parentBoneName = cameraParentBoneName_.data();
             std::erase_if(document.cameras, [&](const auto& key) { return key.frame == editedCamera_.frame; });
             document.cameras.push_back(editedCamera_);
             core::MotionEditor::normalize(document);
@@ -1419,6 +1435,17 @@ void Application::buildEditorUi() {
     ImGui::End();
 
     if (ImGui::Begin("Project tools")) {
+        ImGui::InputText("Project file", projectDestination_.data(), projectDestination_.size());
+        if (ImGui::Button("Save Dayo 1.30 project")) {
+            try {
+                core::saveProject(projectDestination_.data(), currentProject());
+                projectSaveStatus_ = "Project saved";
+            } catch (const std::exception& error) {
+                projectSaveStatus_ = error.what();
+            }
+        }
+        if (!projectSaveStatus_.empty()) ImGui::TextWrapped("%s", projectSaveStatus_.c_str());
+        ImGui::Separator();
         auto background = scene_.background();
         int source = static_cast<int>(background.screenSource);
         if (ImGui::Combo("Background source", &source, "Previous frame\0Video\0Image\0White\0")) scene_.setBackgroundScreenSource(static_cast<core::ScreenTextureSource>(source));
@@ -1478,6 +1505,16 @@ void Application::buildEditorUi() {
                     const auto& parent = scene_.models()[static_cast<std::size_t>(parentIndex)];
                     if (!scene_.addExternalParent({ parent.id, parentBone.data(), model->id, childBone.data() }, &error)) {
                         lastAsset_ = "External parent: " + error;
+                    } else {
+                        core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion {};
+                        before.modelName = model->displayName;
+                        auto document = core::toMotionDocument(before);
+                        const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
+                        document.externalParents.push_back({ frame, static_cast<std::int32_t>(parent.id),
+                                                             parentBone.data(), childBone.data() });
+                        core::MotionEditor::normalize(document);
+                        execute(std::move(before), std::move(document), false,
+                                "Register external parent key");
                     }
                 }
                 ImGui::TreePop();
