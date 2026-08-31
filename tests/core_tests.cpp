@@ -369,7 +369,7 @@ int main() {
                     "physics settings invalidate accumulation");
 
         dayo::core::VmdMotion cameraMotion;
-        cameraMotion.cameras.push_back({500, -45.0F, {}, {}, {}, 30, true});
+        cameraMotion.cameras.push_back({500, -45.0F, {}, {}, {}, 30, true, -1, -1, {}, {}});
         scene.attachMotion(std::move(cameraMotion), firstModel);
         scene.setFrame(400.0F);
         ok &= check(scene.cameraMotion() != nullptr && scene.timeline().duration == 500.0F,
