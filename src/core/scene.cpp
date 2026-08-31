@@ -25,6 +25,9 @@ ModelId Scene::addModel(const std::filesystem::path& path) {
     instance.normalization = previewNormalization(*instance.model);
     instance.displayName = instance.model->metadata.modelName.empty()
         ? path.filename().string() : instance.model->metadata.modelName;
+    const auto order = static_cast<std::int32_t>(models_.size());
+    instance.order = { order, order, order, order };
+    instance.materialSettings.resize(instance.model->materials.size());
     refreshModelResources(instance);
     models_.push_back(std::move(instance));
     selectedModel_ = models_.back().id;
@@ -237,6 +240,18 @@ void Scene::setBackgroundEnabled(bool enabled) noexcept {
     if (background_.enabled == enabled) return;
     background_.enabled = enabled;
     markDirty(DirtyFlag::background);
+}
+
+void Scene::setBackgroundCrop(ScreenCropMode crop) noexcept {
+    if (background_.crop == crop) return;
+    background_.crop = crop;
+    markDirty(DirtyFlag::background);
+}
+
+void Scene::setBackgroundMode(BackgroundMode mode) noexcept {
+    if (background_.mode == mode) return;
+    background_.mode = mode;
+    markDirty(DirtyFlag::background | DirtyFlag::output);
 }
 
 void Scene::attachMotion(const std::filesystem::path& path, ModelId target) {

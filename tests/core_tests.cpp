@@ -167,6 +167,11 @@ int main() {
         dayo::core::VmdayoDocument document;
         document.modelName = "Miku";
         document.motion.interpolation = dayo::core::InterpolationMode::catmullRom;
+        dayo::core::VmdBoneKey physicsBone;
+        physicsBone.name = "arm";
+        physicsBone.frame = 9;
+        physicsBone.physics = false;
+        document.motion.bones.push_back(physicsBone);
         document.motion.morphs.push_back({ "smile", 10, 0.75F });
         dayo::core::VmdCameraKey cameraKey;
         cameraKey.frame = 12;
@@ -185,7 +190,8 @@ int main() {
         const auto loaded = dayo::core::loadVmdayo(vmdayoPath);
         ok &= check(loaded.motion.morphs.size() == 1 && loaded.motion.interpolation
                     == dayo::core::InterpolationMode::catmullRom, "VMdayo round trip");
-        ok &= check(loaded.version == 3 && loaded.motion.cameras.size() == 1
+        ok &= check(loaded.version == 3 && loaded.motion.bones.size() == 1
+                    && !loaded.motion.bones[0].physics && loaded.motion.cameras.size() == 1
                     && loaded.motion.cameras[0].parentModel == 2
                     && loaded.motion.cameras[0].parentBone == 7
                     && loaded.motion.cameras[0].interpolation[0] == 17

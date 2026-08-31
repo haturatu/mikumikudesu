@@ -17,6 +17,7 @@ struct VmdBoneKey {
     Float3 translation {};
     Float4 rotation { 0.0F, 0.0F, 0.0F, 1.0F };
     std::array<std::uint8_t, 64> interpolation {};
+    bool physics { true };
 };
 
 struct VmdMorphKey { std::string name; std::uint32_t frame {}; float weight {}; };

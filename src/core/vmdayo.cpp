@@ -48,7 +48,7 @@ Json motionJson(const MotionDocument& motion) {
     for (const auto& key : motion.bones) {
         result["bones"].push_back({ { "name", key.name }, { "frame", key.frame },
             { "translation", float3(key.translation) }, { "rotation", float4(key.rotation) },
-            { "interpolation", key.interpolation } });
+            { "interpolation", key.interpolation }, { "physics", key.physics } });
     }
     result["morphs"] = Json::array();
     for (const auto& key : motion.morphs)
@@ -92,7 +92,8 @@ MotionDocument readMotion(const Json& value) {
             result.bones.push_back({ item.value("name", ""), item.value("frame", 0U),
                 readFloat3(item.value("translation", Json::array())),
                 readFloat4(item.value("rotation", Json::array())),
-                readBytes<64>(item.value("interpolation", Json::array())) });
+                readBytes<64>(item.value("interpolation", Json::array())),
+                item.value("physics", true) });
         }
     }
     if (const auto morphs = value.find("morphs"); morphs != value.end() && morphs->is_array()) {

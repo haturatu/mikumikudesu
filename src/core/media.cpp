@@ -263,15 +263,21 @@ AudioPlayer::~AudioPlayer() { stop(); }
 AudioPlayer::AudioPlayer(AudioPlayer&&) noexcept = default;
 AudioPlayer& AudioPlayer::operator=(AudioPlayer&&) noexcept = default;
 
-void AudioPlayer::play(const AudioBuffer& audio) {
+void AudioPlayer::play(const AudioBuffer& audio, double startSeconds) {
     stop();
     if (audio.samples.empty()) return;
+    if (audio.channels == 0 || audio.sampleRate == 0) throw std::invalid_argument("invalid audio format");
     const SDL_AudioSpec spec { SDL_AUDIO_F32, static_cast<int>(audio.channels), static_cast<int>(audio.sampleRate) };
     impl_->stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
     if (impl_->stream == nullptr) throw std::runtime_error(std::string("open audio device: ") + SDL_GetError());
-    const auto byteCount = audio.samples.size() * sizeof(float);
+    const auto totalFrames = audio.samples.size() / audio.channels;
+    const auto duration = static_cast<double>(totalFrames) / audio.sampleRate;
+    const auto startFrame = static_cast<std::size_t>(std::clamp(startSeconds, 0.0, duration) * audio.sampleRate);
+    const auto startSample = std::min(startFrame * audio.channels, audio.samples.size());
+    const auto sampleCount = audio.samples.size() - startSample;
+    const auto byteCount = sampleCount * sizeof(float);
     if (byteCount > static_cast<std::size_t>(std::numeric_limits<int>::max())
-        || !SDL_PutAudioStreamData(impl_->stream, audio.samples.data(), static_cast<int>(byteCount))
+        || !SDL_PutAudioStreamData(impl_->stream, audio.samples.data() + startSample, static_cast<int>(byteCount))
         || !SDL_ResumeAudioStreamDevice(impl_->stream)) {
         const std::string error = SDL_GetError();
         stop();
@@ -291,6 +297,11 @@ void AudioPlayer::setPaused(bool paused) {
     const bool success = paused ? SDL_PauseAudioStreamDevice(impl_->stream)
                                 : SDL_ResumeAudioStreamDevice(impl_->stream);
     if (!success) throw std::runtime_error(std::string("change audio pause state: ") + SDL_GetError());
+}
+
+void AudioPlayer::setVolume(float volume) {
+    if (impl_ == nullptr || impl_->stream == nullptr) return;
+    SDL_SetAudioStreamGain(impl_->stream, std::clamp(volume, 0.0F, 1.0F));
 }
 
 bool AudioPlayer::active() const noexcept { return impl_ != nullptr && impl_->stream != nullptr; }

@@ -156,7 +156,7 @@ VmdMotion readSubset(BinaryReader& reader) {
             key.interpolation[channel + 8] = interpolation[channel * 4 + 2];
             key.interpolation[channel + 12] = interpolation[channel * 4 + 3];
         }
-        static_cast<void>(reader.value<std::uint8_t>("bone physics"));
+        key.physics = reader.value<std::uint8_t>("bone physics") != 0;
         motion.lastFrame = std::max(motion.lastFrame, key.frame);
         motion.bones.push_back(std::move(key));
     }
