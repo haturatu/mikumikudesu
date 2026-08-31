@@ -24,8 +24,10 @@ struct DayoProject {
     bool playing { true };
     std::vector<ProjectAsset> assets;
     std::optional<VmdMotion> embeddedMotion;
-    // v3 stores an opaque upstream keyframe payload verbatim. Keeping bytes
-    // losslessly is safer than claiming compatibility with an unknown format.
+    // Upstream v3 stores one camera/light subset followed by one subset per
+    // model. embeddedMotion remains as the merged single-model compatibility
+    // view used by older native projects and API clients.
+    std::vector<VmdMotion> embeddedMotions;
     std::vector<std::uint8_t> embeddedVmdayo;
 };
 

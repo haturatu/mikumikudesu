@@ -18,6 +18,7 @@ struct VmdBoneKey {
     Float4 rotation { 0.0F, 0.0F, 0.0F, 1.0F };
     std::array<std::uint8_t, 64> interpolation {};
     bool physics { true };
+    std::array<std::uint8_t, 4> methods {};
 };
 
 struct VmdMorphKey { std::string name; std::uint32_t frame {}; float weight {}; };
@@ -28,11 +29,13 @@ struct VmdCameraKey {
     Float3 position {};
     Float3 rotation {};
     std::array<std::uint8_t, 24> interpolation {};
-    std::uint32_t viewAngle {};
+    float viewAngle {};
     bool perspective {};
     // VMdayo/.dayo extension; VMD export intentionally omits these fields.
     std::int32_t parentModel { -1 };
     std::int32_t parentBone { -1 };
+    std::string parentBoneName;
+    std::array<std::uint8_t, 6> methods {};
 };
 
 struct VmdLightKey { std::uint32_t frame {}; Float3 color {}; Float3 position {}; };

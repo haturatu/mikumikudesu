@@ -269,7 +269,7 @@ void Scene::attachMotion(MotionDocument document, ModelId target, std::string mo
     // A camera/light-only VMD is global even when a model is selected. Model
     // motion remains the default for files containing bone or morph tracks.
     const bool cameraOnly = motion->bones.empty() && motion->morphs.empty()
-        && (!motion->cameras.empty() || !motion->lights.empty());
+        && (!motion->cameras.empty() || !motion->lights.empty() || !motion->shadows.empty());
     auto* destination = cameraOnly ? nullptr : model(targetModel(target));
     if (destination != nullptr) {
         destination->motion = std::move(motion);

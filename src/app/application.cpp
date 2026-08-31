@@ -609,7 +609,18 @@ void Application::handleAsset(const std::filesystem::path& path) {
             else if (project.renderer == "bdpt") device_->selectRenderer(graphics::RendererKind::bdpt);
             else device_->selectRenderer(graphics::RendererKind::preview);
             for (const auto& asset : project.assets) handleAsset(asset.path);
-            if (project.embeddedMotion) {
+            if (project.embeddedMotions.size() > 1U) {
+                scene_.attachMotion(project.embeddedMotions.front());
+                const auto& models = scene_.models();
+                const auto count = std::min(models.size(), project.embeddedMotions.size() - 1U);
+                for (std::size_t index = 0; index < count; ++index) {
+                    const auto& motion = project.embeddedMotions[index + 1U];
+                    if (!motion.bones.empty() || !motion.morphs.empty() || !motion.ik.empty()) {
+                        scene_.attachMotion(motion, models[index].id);
+                    }
+                }
+                manualCamera_ = false;
+            } else if (project.embeddedMotion) {
                 scene_.attachMotion(*project.embeddedMotion, scene_.selectedModelId());
                 manualCamera_ = false;
             }
@@ -1368,7 +1379,7 @@ void Application::buildEditorUi() {
         ImGui::DragFloat3("Camera rotation", editedCamera_.rotation.data(), 0.01F);
         ImGui::DragFloat("Camera distance", &editedCamera_.distance, 0.1F);
         int viewAngle = static_cast<int>(editedCamera_.viewAngle == 0 ? 30 : editedCamera_.viewAngle);
-        if (ImGui::SliderInt("FoV", &viewAngle, 1, 179)) editedCamera_.viewAngle = static_cast<std::uint32_t>(viewAngle);
+        if (ImGui::SliderInt("FoV", &viewAngle, 1, 179)) editedCamera_.viewAngle = static_cast<float>(viewAngle);
         ImGui::Checkbox("Perspective", &editedCamera_.perspective);
         ImGui::InputInt("Camera parent model", &editedCamera_.parentModel);
         ImGui::InputInt("Camera parent bone", &editedCamera_.parentBone);

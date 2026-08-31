@@ -227,7 +227,7 @@ VmdMotion loadVmd(const std::filesystem::path& path) {
         key.rotation = readFloatArray<3>(input, "camera rotation");
         input.read(reinterpret_cast<char*>(key.interpolation.data()), static_cast<std::streamsize>(key.interpolation.size()));
         if (!input) throw std::runtime_error("truncated VMD camera interpolation");
-        key.viewAngle = read<std::uint32_t>(input, "camera view angle");
+        key.viewAngle = static_cast<float>(read<std::uint32_t>(input, "camera view angle"));
         key.perspective = read<std::uint8_t>(input, "camera perspective") == 0;
         updateLastFrame(motion, key.frame);
     }
@@ -299,7 +299,8 @@ void saveVmd(const std::filesystem::path& path, const VmdMotion& motion) {
             write(output, key.position, "camera position");
             write(output, key.rotation, "camera rotation");
             write(output, key.interpolation, "camera interpolation");
-            write(output, key.viewAngle, "camera view angle");
+            write(output, static_cast<std::uint32_t>(std::clamp(key.viewAngle, 0.0F,
+                static_cast<float>(std::numeric_limits<std::uint32_t>::max()))), "camera view angle");
             write(output, static_cast<std::uint8_t>(key.perspective ? 0 : 1), "camera perspective");
         }
         write(output, static_cast<std::uint32_t>(motion.lights.size()), "light key count");
@@ -416,25 +417,35 @@ VmdCameraState evaluateCamera(const VmdMotion& motion, float frame) {
     const auto nextIndex = static_cast<std::size_t>(next - motion.cameras.data());
     const auto& before = motion.cameras[previousIndex == 0 ? previousIndex : previousIndex - 1];
     const auto& after = motion.cameras[std::min(nextIndex + 1, motion.cameras.size() - 1)];
+    const bool hasMethods = std::ranges::any_of(motion.cameras, [](const auto& key) {
+        return std::ranges::any_of(key.methods, [](auto value) { return value != 0; });
+    });
+    const auto useCatmull = [&](std::size_t channel) {
+        return hasMethods ? next->methods[channel] == 1
+                          : motion.interpolation == InterpolationMode::catmullRom;
+    };
     const float interpolation = motion.interpolation == InterpolationMode::linear
         ? t : cameraBezier(t, next->interpolation, 16);
-    result.distance = motion.interpolation == InterpolationMode::catmullRom
+    result.distance = useCatmull(4)
         ? catmullRom(before.distance, previous->distance, next->distance, after.distance, t)
         : previous->distance + (next->distance - previous->distance) * interpolation;
     for (std::size_t axis = 0; axis < 3; ++axis) {
         const float axisInterpolation = motion.interpolation == InterpolationMode::linear
             ? t : cameraBezier(t, next->interpolation, axis * 4);
-        result.position[axis] = motion.interpolation == InterpolationMode::catmullRom
+        result.position[axis] = useCatmull(axis)
             ? catmullRom(before.position[axis], previous->position[axis], next->position[axis], after.position[axis], t)
             : previous->position[axis] + (next->position[axis] - previous->position[axis]) * axisInterpolation;
-        result.rotation[axis] = previous->rotation[axis]
-                              + (next->rotation[axis] - previous->rotation[axis])
-                              * (motion.interpolation == InterpolationMode::linear ? t
-                                 : cameraBezier(t, next->interpolation, 12));
+        result.rotation[axis] = useCatmull(3)
+            ? catmullRom(before.rotation[axis], previous->rotation[axis], next->rotation[axis], after.rotation[axis], t)
+            : previous->rotation[axis] + (next->rotation[axis] - previous->rotation[axis])
+                * (motion.interpolation == InterpolationMode::linear ? t
+                   : cameraBezier(t, next->interpolation, 12));
     }
-    result.viewAngle = static_cast<float>(previous->viewAngle)
-                     + (static_cast<float>(next->viewAngle) - static_cast<float>(previous->viewAngle))
-                     * cameraBezier(t, next->interpolation, 20);
+    result.viewAngle = useCatmull(5)
+        ? catmullRom(before.viewAngle, previous->viewAngle, next->viewAngle, after.viewAngle, t)
+        : previous->viewAngle + (next->viewAngle - previous->viewAngle)
+            * (motion.interpolation == InterpolationMode::linear ? t
+               : cameraBezier(t, next->interpolation, 20));
     result.perspective = previous->perspective;
     return result;
 }

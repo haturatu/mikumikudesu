@@ -110,7 +110,8 @@ struct BoneRuntimePose {
 using BoneOrder = std::vector<std::size_t>;
 struct BoneOrders { BoneOrder beforePhysics; BoneOrder afterPhysics; };
 
-LocalPose sampleBone(const std::vector<const VmdBoneKey*>& keys, float frame) {
+LocalPose sampleBone(const std::vector<const VmdBoneKey*>& keys, float frame,
+                     InterpolationMode fallbackMode = InterpolationMode::bezier) {
     if (keys.empty()) return {};
     const auto next = std::lower_bound(keys.begin(), keys.end(), frame,
         [](const VmdBoneKey* key, float value) { return static_cast<float>(key->frame) < value; });
@@ -118,18 +119,49 @@ LocalPose sampleBone(const std::vector<const VmdBoneKey*>& keys, float frame) {
     if (next == keys.end()) return { keys.back()->translation, normalize(keys.back()->rotation) };
     const auto* before = *(next - 1);
     const auto* after = *next;
+    const auto previousIndex = static_cast<std::size_t>((next - keys.begin()) - 1);
+    const auto nextIndex = static_cast<std::size_t>(next - keys.begin());
+    const auto* previousControl = keys[previousIndex == 0 ? 0 : previousIndex - 1];
+    const auto* nextControl = keys[std::min(nextIndex + 1, keys.size() - 1)];
     const float span = static_cast<float>(after->frame - before->frame);
     const float linear = span > 0.0F ? (frame - static_cast<float>(before->frame)) / span : 0.0F;
+    const bool hasMethods = std::ranges::any_of(keys, [](const auto* key) {
+        return std::ranges::any_of(key->methods, [](auto value) { return value != 0; });
+    });
+    const auto catmull = [&](std::size_t channel) {
+        return hasMethods ? after->methods[channel] == 1 : fallbackMode == InterpolationMode::catmullRom;
+    };
     LocalPose result;
     for (std::size_t axis = 0; axis < 3; ++axis) {
         const auto offset = axis;
         const float t = bezier(linear, after->interpolation[offset], after->interpolation[offset + 4],
                                after->interpolation[offset + 8], after->interpolation[offset + 12]);
-        result.translation[axis] = before->translation[axis] + (after->translation[axis] - before->translation[axis]) * t;
+        result.translation[axis] = catmull(axis)
+            ? catmullRom(previousControl->translation[axis], before->translation[axis],
+                         after->translation[axis], nextControl->translation[axis], linear)
+            : before->translation[axis] + (after->translation[axis] - before->translation[axis]) * t;
     }
     const float rt = bezier(linear, after->interpolation[3], after->interpolation[7],
                             after->interpolation[11], after->interpolation[15]);
-    result.rotation = slerp(before->rotation, after->rotation, rt);
+    if (catmull(3)) {
+        Quat control0 = previousControl->rotation;
+        Quat control1 = before->rotation;
+        Quat control2 = after->rotation;
+        Quat control3 = nextControl->rotation;
+        const auto align = [](Quat& value, const Quat& reference) {
+            float product = 0.0F;
+            for (std::size_t i = 0; i < 4; ++i) product += value[i] * reference[i];
+            if (product < 0.0F) for (auto& component : value) component = -component;
+        };
+        align(control0, control1); align(control2, control1); align(control3, control2);
+        Quat interpolated {};
+        for (std::size_t i = 0; i < 4; ++i) {
+            interpolated[i] = catmullRom(control0[i], control1[i], control2[i], control3[i], linear);
+        }
+        result.rotation = normalize(interpolated);
+    } else {
+        result.rotation = slerp(before->rotation, after->rotation, rt);
+    }
     return result;
 }
 
@@ -519,7 +551,10 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
     auto& local = impl_->localScratch;
     std::fill(local.begin(), local.end(), LocalPose {});
     for (std::size_t i = 0; i < model_.bones.size(); ++i) {
-        if (const auto found = boneKeys.find(model_.bones[i].name); found != boneKeys.end()) local[i] = sampleBone(found->second, frame);
+        if (const auto found = boneKeys.find(model_.bones[i].name); found != boneKeys.end()) {
+            local[i] = sampleBone(found->second, frame,
+                                  motion_ == nullptr ? InterpolationMode::bezier : motion_->interpolation);
+        }
     }
     if (pose_ != nullptr) {
         for (const auto& value : pose_->bones) {

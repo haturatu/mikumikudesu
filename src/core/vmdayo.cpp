@@ -6,6 +6,8 @@
 #include <fstream>
 #include <algorithm>
 #include <iterator>
+#include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <system_error>
 
@@ -13,9 +15,6 @@ namespace dayo::core {
 namespace {
 
 using Json = nlohmann::json;
-
-Json float3(const Float3& value) { return { value[0], value[1], value[2] }; }
-Json float4(const Float4& value) { return { value[0], value[1], value[2], value[3] }; }
 
 Float3 readFloat3(const Json& value) {
     Float3 result {};
@@ -41,47 +40,6 @@ std::array<std::uint8_t, N> readBytes(const Json& value) {
     return result;
 }
 
-Json motionJson(const MotionDocument& motion) {
-    Json result = Json::object();
-    result["interpolation"] = static_cast<int>(motion.interpolation);
-    result["bones"] = Json::array();
-    for (const auto& key : motion.bones) {
-        result["bones"].push_back({ { "name", key.name }, { "frame", key.frame },
-            { "translation", float3(key.translation) }, { "rotation", float4(key.rotation) },
-            { "interpolation", key.interpolation }, { "physics", key.physics } });
-    }
-    result["morphs"] = Json::array();
-    for (const auto& key : motion.morphs)
-        result["morphs"].push_back({ { "name", key.name }, { "frame", key.frame }, { "weight", key.weight } });
-    result["cameras"] = Json::array();
-    for (const auto& key : motion.cameras) result["cameras"].push_back({
-        { "frame", key.frame }, { "distance", key.distance }, { "position", float3(key.position) },
-        { "rotation", float3(key.rotation) }, { "interpolation", key.interpolation },
-        { "viewAngle", key.viewAngle }, { "perspective", key.perspective },
-        { "parentModel", key.parentModel }, { "parentBone", key.parentBone } });
-    result["lights"] = Json::array();
-    for (const auto& key : motion.lights) result["lights"].push_back({
-        { "frame", key.frame }, { "color", float3(key.color) }, { "position", float3(key.position) } });
-    result["shadows"] = Json::array();
-    for (const auto& key : motion.shadows) result["shadows"].push_back({
-        { "frame", key.frame }, { "mode", key.mode }, { "distance", key.distance } });
-    result["ik"] = Json::array();
-    for (const auto& key : motion.ik) {
-        Json states = Json::array();
-        for (const auto& state : key.states) states.push_back({ { "name", state.name }, { "enabled", state.enabled } });
-        result["ik"].push_back({ { "frame", key.frame }, { "visible", key.visible }, { "states", std::move(states) } });
-    }
-    result["externalParents"] = Json::array();
-    for (const auto& key : motion.externalParents) result["externalParents"].push_back({
-        { "frame", key.frame }, { "parentModel", key.parentModel },
-        { "parentBone", key.parentBone }, { "childBone", key.childBone } });
-    result["gravity"] = Json::array();
-    for (const auto& key : motion.gravity) result["gravity"].push_back({
-        { "frame", key.frame }, { "strength", key.strength }, { "direction", float3(key.direction) },
-        { "noiseAmplitude", key.noiseAmplitude }, { "noiseFrequency", key.noiseFrequency } });
-    return result;
-}
-
 MotionDocument readMotion(const Json& value) {
     MotionDocument result;
     if (!value.is_object()) return result;
@@ -93,7 +51,7 @@ MotionDocument readMotion(const Json& value) {
                 readFloat3(item.value("translation", Json::array())),
                 readFloat4(item.value("rotation", Json::array())),
                 readBytes<64>(item.value("interpolation", Json::array())),
-                item.value("physics", true) });
+                item.value("physics", true), readBytes<4>(item.value("methods", Json::array())) });
         }
     }
     if (const auto morphs = value.find("morphs"); morphs != value.end() && morphs->is_array()) {
@@ -108,10 +66,12 @@ MotionDocument readMotion(const Json& value) {
             key.position = readFloat3(item.value("position", Json::array()));
             key.rotation = readFloat3(item.value("rotation", Json::array()));
             key.interpolation = readBytes<24>(item.value("interpolation", Json::array()));
-            key.viewAngle = item.value("viewAngle", 30U);
+            key.viewAngle = item.value("viewAngle", 30.0F);
             key.perspective = item.value("perspective", true);
             key.parentModel = item.value("parentModel", -1);
             key.parentBone = item.value("parentBone", -1);
+            key.parentBoneName = item.value("parentBoneName", "");
+            key.methods = readBytes<6>(item.value("methods", Json::array()));
             result.cameras.push_back(key);
         }
     }
@@ -150,6 +110,247 @@ MotionDocument readMotion(const Json& value) {
     return result;
 }
 
+constexpr std::array<std::uint8_t, 8> vmdayoSignature { 'V', 'M', 'D', 'A', 'Y', 'O', '!', 0 };
+
+class BinaryReader {
+public:
+    explicit BinaryReader(std::span<const std::uint8_t> bytes) : bytes_(bytes) {}
+
+    template <typename T>
+    T value(std::string_view field) {
+        static_assert(std::is_trivially_copyable_v<T>);
+        if (cursor_ + sizeof(T) > bytes_.size()) fail(field);
+        T result {};
+        std::memcpy(&result, bytes_.data() + cursor_, sizeof(T));
+        cursor_ += sizeof(T);
+        return result;
+    }
+
+    template <std::size_t N>
+    std::array<std::uint8_t, N> byteArray(std::string_view field) {
+        std::array<std::uint8_t, N> result {};
+        if (cursor_ + N > bytes_.size()) fail(field);
+        std::copy_n(bytes_.data() + cursor_, N, result.data());
+        cursor_ += N;
+        return result;
+    }
+
+    std::string text(std::string_view field) {
+        const auto count = value<std::int32_t>(field);
+        if (count < 0 || count > 16 * 1024 * 1024 || cursor_ + static_cast<std::size_t>(count) > bytes_.size()) fail(field);
+        std::string result(reinterpret_cast<const char*>(bytes_.data() + cursor_), static_cast<std::size_t>(count));
+        cursor_ += static_cast<std::size_t>(count);
+        return result;
+    }
+
+    std::int32_t count(std::string_view field) {
+        const auto result = value<std::int32_t>(field);
+        if (result < 0 || result > 10'000'000) fail(field);
+        return result;
+    }
+
+    [[nodiscard]] bool nextIsSignature() const noexcept {
+        return cursor_ + vmdayoSignature.size() <= bytes_.size()
+            && std::equal(vmdayoSignature.begin(), vmdayoSignature.end(), bytes_.begin() + static_cast<std::ptrdiff_t>(cursor_));
+    }
+
+    [[nodiscard]] std::size_t cursor() const noexcept { return cursor_; }
+
+private:
+    [[noreturn]] static void fail(std::string_view field) {
+        throw std::runtime_error("invalid VMdayo " + std::string(field));
+    }
+    std::span<const std::uint8_t> bytes_;
+    std::size_t cursor_ {};
+};
+
+class BinaryWriter {
+public:
+    template <typename T>
+    void value(const T& item) {
+        static_assert(std::is_trivially_copyable_v<T>);
+        const auto* begin = reinterpret_cast<const std::uint8_t*>(std::addressof(item));
+        bytes_.insert(bytes_.end(), begin, begin + sizeof(T));
+    }
+
+    void text(std::string_view item) {
+        if (item.size() > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
+            throw std::length_error("VMdayo string is too long");
+        }
+        value(static_cast<std::int32_t>(item.size()));
+        bytes_.insert(bytes_.end(), item.begin(), item.end());
+    }
+
+    [[nodiscard]] std::vector<std::uint8_t> take() && { return std::move(bytes_); }
+
+private:
+    std::vector<std::uint8_t> bytes_;
+};
+
+void readHeader(BinaryReader& reader, VmdayoDocument& document) {
+    const auto signature = reader.byteArray<8>("signature");
+    if (signature != vmdayoSignature) throw std::runtime_error("invalid VMdayo signature");
+    document.version = reader.value<std::int32_t>("version");
+    if (document.version < 3 || document.version > 3) throw std::runtime_error("unsupported VMdayo version");
+    document.type = reader.value<std::int32_t>("type");
+    document.modelName = reader.text("model name");
+    for (std::int32_t i = 0, count = reader.count("model dictionary count"); i < count; ++i) {
+        const auto id = reader.value<std::int32_t>("model id");
+        document.modelDictionary[id] = reader.text("model dictionary name");
+    }
+    for (std::int32_t i = 0, count = reader.count("metadata count"); i < count; ++i) {
+        auto key = reader.text("metadata key");
+        document.metadata[std::move(key)] = reader.text("metadata value");
+    }
+}
+
+void writeHeader(BinaryWriter& writer, const VmdayoDocument& document) {
+    writer.value(vmdayoSignature);
+    writer.value(std::int32_t { 3 });
+    const bool cameraOnly = document.motion.bones.empty() && document.motion.morphs.empty()
+        && (!document.motion.cameras.empty() || !document.motion.lights.empty() || !document.motion.shadows.empty());
+    writer.value(static_cast<std::int32_t>(document.type != 0 ? document.type : (cameraOnly ? 1 : 0)));
+    writer.text(document.modelName.empty() && cameraOnly ? "Camera/Light" : document.modelName);
+    writer.value(static_cast<std::int32_t>(document.modelDictionary.size()));
+    for (const auto& [id, name] : document.modelDictionary) { writer.value(id); writer.text(name); }
+    writer.value(static_cast<std::int32_t>(document.metadata.size()));
+    for (const auto& [key, value] : document.metadata) { writer.text(key); writer.text(value); }
+}
+
+MotionDocument readSubset(BinaryReader& reader) {
+    MotionDocument motion;
+    for (std::int32_t i = 0, count = reader.count("bone count"); i < count; ++i) {
+        VmdBoneKey key;
+        key.name = reader.text("bone name");
+        key.frame = static_cast<std::uint32_t>(reader.value<std::int32_t>("bone frame"));
+        key.translation = reader.value<Float3>("bone translation");
+        key.rotation = reader.value<Float4>("bone rotation");
+        const auto internal = reader.byteArray<16>("bone interpolation");
+        for (std::size_t channel = 0; channel < 4; ++channel) for (std::size_t point = 0; point < 4; ++point) {
+            key.interpolation[channel + point * 4] = internal[channel * 4 + point];
+        }
+        key.physics = reader.value<std::uint8_t>("bone physics") != 0;
+        key.methods = reader.byteArray<4>("bone methods");
+        motion.bones.push_back(std::move(key));
+    }
+    for (std::int32_t i = 0, count = reader.count("morph count"); i < count; ++i) {
+        motion.morphs.push_back({ reader.text("morph name"),
+            static_cast<std::uint32_t>(reader.value<std::int32_t>("morph frame")),
+            reader.value<float>("morph weight") });
+    }
+    for (std::int32_t i = 0, count = reader.count("camera count"); i < count; ++i) {
+        VmdCameraKey key;
+        key.frame = static_cast<std::uint32_t>(reader.value<std::int32_t>("camera frame"));
+        key.distance = reader.value<float>("camera distance");
+        key.position = reader.value<Float3>("camera target");
+        key.rotation = reader.value<Float3>("camera rotation");
+        key.interpolation = reader.byteArray<24>("camera interpolation");
+        key.viewAngle = reader.value<float>("camera view angle");
+        key.perspective = reader.value<std::uint8_t>("camera perspective") != 0;
+        key.parentModel = reader.value<std::int32_t>("camera parent model");
+        key.parentBone = reader.value<std::int32_t>("camera parent bone");
+        key.parentBoneName = reader.text("camera parent bone name");
+        key.methods = reader.byteArray<6>("camera methods");
+        motion.cameras.push_back(std::move(key));
+    }
+    for (std::int32_t i = 0, count = reader.count("light count"); i < count; ++i) {
+        motion.lights.push_back({ static_cast<std::uint32_t>(reader.value<std::int32_t>("light frame")),
+            reader.value<Float3>("light color"), reader.value<Float3>("light direction") });
+    }
+    for (std::int32_t i = 0, count = reader.count("shadow count"); i < count; ++i) {
+        motion.shadows.push_back({ static_cast<std::uint32_t>(reader.value<std::int32_t>("shadow frame")),
+            reader.value<std::uint8_t>("shadow mode"), reader.value<float>("shadow distance") });
+    }
+    for (std::int32_t i = 0, count = reader.count("extra count"); i < count; ++i) {
+        const auto frame = static_cast<std::uint32_t>(reader.value<std::int32_t>("extra frame"));
+        VmdIkKey key { frame, reader.value<std::uint8_t>("visibility") != 0, {} };
+        for (std::int32_t j = 0, states = reader.count("IK count"); j < states; ++j) {
+            key.states.push_back({ reader.text("IK name"), reader.value<std::uint8_t>("IK enabled") != 0 });
+        }
+        const auto parents = reader.count("external parent count");
+        for (std::int32_t j = 0; j < parents; ++j) {
+            motion.externalParents.push_back({ frame, reader.value<std::int32_t>("external parent model"),
+                reader.text("external parent bone"), reader.text("external child bone") });
+        }
+        if (parents == 0 || !key.visible || !key.states.empty()) motion.ik.push_back(std::move(key));
+    }
+    for (std::int32_t i = 0, count = reader.count("gravity count"); i < count; ++i) {
+        motion.gravity.push_back({ static_cast<std::uint32_t>(reader.value<std::int32_t>("gravity frame")),
+            reader.value<float>("gravity strength"), reader.value<Float3>("gravity direction"),
+            reader.value<float>("gravity noise amplitude"), reader.value<float>("gravity noise frequency") });
+    }
+    if (std::ranges::any_of(motion.bones, [](const auto& key) { return std::ranges::any_of(key.methods, [](auto method) { return method == 1; }); })
+        || std::ranges::any_of(motion.cameras, [](const auto& key) { return std::ranges::any_of(key.methods, [](auto method) { return method == 1; }); })) {
+        motion.interpolation = InterpolationMode::catmullRom;
+    }
+    MotionEditor::normalize(motion);
+    return motion;
+}
+
+void writeSubset(BinaryWriter& writer, const MotionDocument& motion) {
+    writer.value(static_cast<std::int32_t>(motion.bones.size()));
+    for (const auto& key : motion.bones) {
+        writer.text(key.name); writer.value(static_cast<std::int32_t>(key.frame));
+        writer.value(key.translation); writer.value(key.rotation);
+        std::array<std::uint8_t, 16> internal {};
+        for (std::size_t channel = 0; channel < 4; ++channel) for (std::size_t point = 0; point < 4; ++point) {
+            internal[channel * 4 + point] = key.interpolation[channel + point * 4];
+        }
+        writer.value(internal); writer.value(static_cast<std::uint8_t>(key.physics));
+        auto methods = key.methods;
+        if (motion.interpolation == InterpolationMode::catmullRom) methods.fill(1);
+        writer.value(methods);
+    }
+    writer.value(static_cast<std::int32_t>(motion.morphs.size()));
+    for (const auto& key : motion.morphs) { writer.text(key.name); writer.value(static_cast<std::int32_t>(key.frame)); writer.value(key.weight); }
+    writer.value(static_cast<std::int32_t>(motion.cameras.size()));
+    for (const auto& key : motion.cameras) {
+        writer.value(static_cast<std::int32_t>(key.frame)); writer.value(key.distance); writer.value(key.position);
+        writer.value(key.rotation); writer.value(key.interpolation); writer.value(key.viewAngle);
+        writer.value(static_cast<std::uint8_t>(key.perspective)); writer.value(key.parentModel); writer.value(key.parentBone);
+        writer.text(key.parentBoneName);
+        auto methods = key.methods;
+        if (motion.interpolation == InterpolationMode::catmullRom) methods.fill(1);
+        writer.value(methods);
+    }
+    writer.value(static_cast<std::int32_t>(motion.lights.size()));
+    for (const auto& key : motion.lights) { writer.value(static_cast<std::int32_t>(key.frame)); writer.value(key.color); writer.value(key.position); }
+    writer.value(static_cast<std::int32_t>(motion.shadows.size()));
+    for (const auto& key : motion.shadows) { writer.value(static_cast<std::int32_t>(key.frame)); writer.value(key.mode); writer.value(key.distance); }
+
+    std::vector<std::uint32_t> extraFrames;
+    for (const auto& key : motion.ik) extraFrames.push_back(key.frame);
+    for (const auto& key : motion.externalParents) extraFrames.push_back(key.frame);
+    std::ranges::sort(extraFrames);
+    extraFrames.erase(std::unique(extraFrames.begin(), extraFrames.end()), extraFrames.end());
+    writer.value(static_cast<std::int32_t>(extraFrames.size()));
+    for (const auto frame : extraFrames) {
+        const auto ik = std::ranges::find(motion.ik, frame, &VmdIkKey::frame);
+        writer.value(static_cast<std::int32_t>(frame));
+        writer.value(static_cast<std::uint8_t>(ik == motion.ik.end() || ik->visible));
+        writer.value(static_cast<std::int32_t>(ik == motion.ik.end() ? 0 : ik->states.size()));
+        if (ik != motion.ik.end()) for (const auto& state : ik->states) { writer.text(state.name); writer.value(static_cast<std::uint8_t>(state.enabled)); }
+        const auto parentCount = std::ranges::count(motion.externalParents, frame, &VmdayoExternalParentKey::frame);
+        writer.value(static_cast<std::int32_t>(parentCount));
+        for (const auto& parent : motion.externalParents) if (parent.frame == frame) {
+            writer.value(parent.parentModel); writer.text(parent.parentBone); writer.text(parent.childBone);
+        }
+    }
+    writer.value(static_cast<std::int32_t>(motion.gravity.size()));
+    for (const auto& key : motion.gravity) {
+        writer.value(static_cast<std::int32_t>(key.frame)); writer.value(key.strength); writer.value(key.direction);
+        writer.value(key.noiseAmplitude); writer.value(key.noiseFrequency);
+    }
+}
+
+std::vector<std::uint8_t> binarySubset(const VmdayoDocument& document, bool duplicateHeader) {
+    BinaryWriter writer;
+    writeHeader(writer, document);
+    if (duplicateHeader) writeHeader(writer, document);
+    writeSubset(writer, document.motion);
+    return std::move(writer).take();
+}
+
 } // namespace
 
 VmdayoDocument loadVmdayo(const std::filesystem::path& path) {
@@ -164,23 +365,54 @@ VmdayoDocument parseVmdayo(std::span<const std::uint8_t> bytes) {
     VmdayoDocument result;
     if (bytes.empty()) return result;
     try {
+        if (bytes.size() >= vmdayoSignature.size()
+            && std::equal(vmdayoSignature.begin(), vmdayoSignature.end(), bytes.begin())) {
+            BinaryReader reader(bytes);
+            readHeader(reader, result);
+            // Standalone .vmdayo repeats the header: once for routing and once
+            // as part of WriteSubset. A .dayo v3 embedded subset has one.
+            if (reader.nextIsSignature()) readHeader(reader, result);
+            result.motion = readSubset(reader);
+            result.motion.modelName = result.modelName;
+            return result;
+        }
         const auto root = Json::parse(bytes.begin(), bytes.end());
         result.version = root.value("version", 3);
         result.modelName = root.value("model", "");
         result.motion = readMotion(root.value("motion", Json::object()));
         return result;
-    } catch (const Json::exception&) {
+    } catch (const std::exception&) {
         result.opaque = { bytes.begin(), bytes.end() };
         return result;
     }
 }
 
+std::vector<VmdayoDocument> parseVmdayoSubsets(std::span<const std::uint8_t> bytes,
+                                               std::size_t count) {
+    std::vector<VmdayoDocument> result;
+    result.reserve(count);
+    BinaryReader reader(bytes);
+    for (std::size_t index = 0; index < count; ++index) {
+        VmdayoDocument document;
+        readHeader(reader, document);
+        document.motion = readSubset(reader);
+        document.motion.modelName = document.modelName;
+        result.push_back(std::move(document));
+    }
+    if (reader.cursor() != bytes.size()) {
+        throw std::runtime_error("unexpected trailing VMdayo subset data");
+    }
+    return result;
+}
+
 std::vector<std::uint8_t> serializeVmdayo(const VmdayoDocument& document) {
     if (!document.opaque.empty()) return document.opaque;
-    const Json root { { "format", "MikuMikuDayo VMdayo" }, { "version", document.version },
-                      { "model", document.modelName }, { "motion", motionJson(document.motion) } };
-    const auto bytes = root.dump(2) + '\n';
-    return { bytes.begin(), bytes.end() };
+    return binarySubset(document, true);
+}
+
+std::vector<std::uint8_t> serializeVmdayoSubset(const VmdayoDocument& document) {
+    if (!document.opaque.empty()) return document.opaque;
+    return binarySubset(document, false);
 }
 
 void saveVmdayo(const std::filesystem::path& path, const VmdayoDocument& document) {
