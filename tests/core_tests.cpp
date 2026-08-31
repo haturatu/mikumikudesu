@@ -429,7 +429,7 @@ int main() {
         dayo::core::MediaFile exportedVideo(videoPath);
         ok &= check(exportedVideo.info().hasVideo && exportedVideo.info().hasAudio
                     && exportedVideo.info().videoWidth == 64 && exportedVideo.info().videoHeight == 48
-                    && exportedVideo.info().durationSeconds > 0.1,
+                    && std::abs(exportedVideo.info().durationSeconds - 0.3) < 0.03,
                     "MP4 export round trip metadata");
         const auto exportedFrame = exportedVideo.decodeVideoFrame(0.1);
         ok &= check(exportedFrame.width == 64 && exportedFrame.height == 48
