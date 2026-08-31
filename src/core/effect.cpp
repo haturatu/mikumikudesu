@@ -88,7 +88,10 @@ EffectGraph loadEffectGraph(const std::filesystem::path& path) {
     }
     EffectGraph graph;
     graph.sourcePath = path;
-    graph.hlsl = source.substr(hlslStart + hlslMarker.size());
+    // Subayai keeps shared HLSL declarations before [YRZFX]. Preserve both
+    // HLSL regions so runtime shader compilation sees the complete source.
+    graph.hlsl = source.substr(0, jsonStart);
+    graph.hlsl += source.substr(hlslStart + hlslMarker.size());
 #if DAYO_HAS_JSONNET
     const auto jsonText = evaluateJsonnet(path, std::string_view(source).substr(
         jsonStart + jsonMarker.size(), hlslStart - jsonStart - jsonMarker.size()));
@@ -103,6 +106,7 @@ EffectGraph loadEffectGraph(const std::filesystem::path& path) {
             texture.name = value.value("name", "");
             texture.format = value.value("format", "");
             texture.view = value.value("view", "");
+            texture.conditions = strings(value, "conditions");
             if (const auto size = value.find("size"); size != value.end() && size->is_object()) {
                 if (const auto ratio = size->find("ratio"); ratio != size->end() && ratio->is_object()) {
                     texture.widthRatio = ratio->value("x", 1.0F);
@@ -117,6 +121,11 @@ EffectGraph loadEffectGraph(const std::filesystem::path& path) {
             value.value("name", ""), value.value("filter", ""),
             value.value("addressU", "WRAP"), value.value("addressV", "WRAP") });
     }
+    if (const auto values = fx.find("controllers"); values != fx.end() && values->is_array()) {
+        for (const auto& value : *values) if (value.is_object()) graph.controllers.push_back({
+            value.value("name", ""), value.value("controllerName", ""),
+            value.value("item", ""), value.value("type", "") });
+    }
     if (const auto values = fx.find("passes"); values != fx.end() && values->is_array()) {
         for (const auto& value : *values) {
             EffectPass pass;
@@ -127,6 +136,11 @@ EffectGraph loadEffectGraph(const std::filesystem::path& path) {
             pass.computeShader = value.value("computeShader", "");
             pass.rayGenerationShader = value.value("raygenShader", "");
             pass.missShaders = strings(value, "missShader");
+            if (const auto groups = value.find("hitGroup"); groups != value.end() && groups->is_array()) {
+                for (const auto& group : *groups) if (group.is_object()) pass.hitGroups.push_back({
+                    group.value("type", ""), group.value("closestHit", ""),
+                    group.value("anyHit", ""), group.value("intersection", "") });
+            }
             pass.macros = strings(value, "macros");
             pass.conditions = strings(value, "conditions");
             pass.renderTargets = attachments(value, "RTV");
@@ -135,6 +149,15 @@ EffectGraph loadEffectGraph(const std::filesystem::path& path) {
                 if (depth->is_string()) pass.depth.name = depth->get<std::string>();
                 else if (depth->is_object()) pass.depth = { depth->value("name", ""), depth->value("clear", false) };
             }
+            if (const auto size = value.find("outputSize"); size != value.end() && size->is_object()) {
+                if (const auto ratio = size->find("ratio"); ratio != size->end() && ratio->is_object()) {
+                    pass.outputWidthRatio = ratio->value("x", 1.0F);
+                    pass.outputHeightRatio = ratio->value("y", 1.0F);
+                }
+            }
+            pass.maxPayloadSize = value.value("maxPayloadSize", 0U);
+            pass.maxAttributeSize = value.value("maxAttributeSize", 0U);
+            pass.maxRecursionDepth = value.value("maxRecursionDepth", 1U);
             graph.passes.push_back(std::move(pass));
         }
     }
@@ -152,7 +175,24 @@ CompiledEffect compileEffectGraph(const EffectGraph& graph) {
     result.source = graph;
     std::unordered_map<std::string, bool> writers;
     for (const auto& pass : graph.passes) {
-        CompiledPass compiled { .name = pass.name, .type = pass.type, .resources = {}, .barriers = {} };
+        CompiledPass compiled {
+            .name = pass.name,
+            .type = pass.type,
+            .resources = {},
+            .barriers = {},
+            .vertexShader = pass.vertexShader,
+            .pixelShader = pass.pixelShader,
+            .computeShader = pass.computeShader,
+            .rayGenerationShader = pass.rayGenerationShader,
+            .missShaders = pass.missShaders,
+            .hitGroups = pass.hitGroups,
+            .conditions = pass.conditions,
+            .outputWidthRatio = pass.outputWidthRatio,
+            .outputHeightRatio = pass.outputHeightRatio,
+            .maxPayloadSize = pass.maxPayloadSize,
+            .maxAttributeSize = pass.maxAttributeSize,
+            .maxRecursionDepth = pass.maxRecursionDepth,
+        };
         for (const auto& input : pass.renderTargets) {
             if (input.name.empty()) continue;
             compiled.resources.push_back({ input.name, true });

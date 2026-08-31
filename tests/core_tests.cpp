@@ -368,7 +368,14 @@ int main() {
         ok &= check(subayaiEffect.passes.size() >= 20 &&
                     std::ranges::any_of(subayaiEffect.passes, [](const auto& pass) {
                         return pass.type == dayo::core::EffectPassType::raytracing;
-                    }), "Subayai Jsonnet expansion");
+                    }) && subayaiEffect.hlsl.find("resources.hlsli") != std::string::npos
+                    && !subayaiEffect.controllers.empty(), "Subayai Jsonnet expansion");
+        const auto rayPass = std::ranges::find_if(subayaiEffect.passes, [](const auto& pass) {
+            return pass.type == dayo::core::EffectPassType::raytracing;
+        });
+        ok &= check(rayPass != subayaiEffect.passes.end() && !rayPass->hitGroups.empty()
+                    && rayPass->maxPayloadSize != 0 && rayPass->maxRecursionDepth != 0,
+                    "Subayai ray-tracing pipeline metadata");
         const auto bdptEffect = dayo::core::loadEffectGraph(
             std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo/renderer/BDPT.fxdayo");
         ok &= check(!bdptEffect.passes.empty() &&

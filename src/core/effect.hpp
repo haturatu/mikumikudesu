@@ -22,6 +22,7 @@ struct EffectTexture {
     std::string view;
     float widthRatio { 1.0F };
     float heightRatio { 1.0F };
+    std::vector<std::string> conditions;
 };
 
 struct EffectSampler {
@@ -36,6 +37,13 @@ struct EffectAttachment {
     bool clear {};
 };
 
+struct EffectHitGroup {
+    std::string type;
+    std::string closestHit;
+    std::string anyHit;
+    std::string intersection;
+};
+
 struct EffectPass {
     std::string name;
     EffectPassType type { EffectPassType::unknown };
@@ -44,11 +52,24 @@ struct EffectPass {
     std::string computeShader;
     std::string rayGenerationShader;
     std::vector<std::string> missShaders;
+    std::vector<EffectHitGroup> hitGroups;
     std::vector<std::string> macros;
     std::vector<std::string> conditions;
     std::vector<EffectAttachment> renderTargets;
     std::vector<EffectAttachment> unorderedAccess;
     EffectAttachment depth;
+    float outputWidthRatio { 1.0F };
+    float outputHeightRatio { 1.0F };
+    std::uint32_t maxPayloadSize {};
+    std::uint32_t maxAttributeSize {};
+    std::uint32_t maxRecursionDepth { 1 };
+};
+
+struct EffectController {
+    std::string name;
+    std::string controllerName;
+    std::string item;
+    std::string type;
 };
 
 struct EffectGraph {
@@ -56,6 +77,7 @@ struct EffectGraph {
     std::string category;
     std::vector<EffectTexture> textures;
     std::vector<EffectSampler> samplers;
+    std::vector<EffectController> controllers;
     std::vector<EffectPass> passes;
     std::string generatedCode;
     std::string hlsl;
@@ -88,6 +110,18 @@ struct CompiledPass {
     EffectPassType type { EffectPassType::unknown };
     std::vector<EffectResourceBinding> resources;
     std::vector<std::string> barriers;
+    std::string vertexShader;
+    std::string pixelShader;
+    std::string computeShader;
+    std::string rayGenerationShader;
+    std::vector<std::string> missShaders;
+    std::vector<EffectHitGroup> hitGroups;
+    std::vector<std::string> conditions;
+    float outputWidthRatio { 1.0F };
+    float outputHeightRatio { 1.0F };
+    std::uint32_t maxPayloadSize {};
+    std::uint32_t maxAttributeSize {};
+    std::uint32_t maxRecursionDepth { 1 };
 };
 
 struct CompiledEffect {
