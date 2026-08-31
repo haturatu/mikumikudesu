@@ -1242,6 +1242,7 @@ void VulkanDevice::renderFrame() {
 #endif
     auto& frame = frames_[frameIndex_];
     check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for frame");
+    synchronizePreviewVertices(frame);
 
     std::uint32_t imageIndex = 0;
     const auto acquire = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX,
@@ -1341,7 +1342,7 @@ void VulkanDevice::renderFrame() {
     vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
     vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     const VkDeviceSize vertexOffset = 0;
-    vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer_, &vertexOffset);
+    vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &frame.previewVertexBuffer, &vertexOffset);
     vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     PreviewPushConstants constants;
     std::copy_n(previewScene_.cameraRotation, 3, constants.camera.begin());
@@ -1378,7 +1379,7 @@ void VulkanDevice::renderFrame() {
                            0, sizeof(constants), &constants);
         vkCmdDrawIndexed(frame.commandBuffer, previewBackgroundIndexCount_, 1, 0, 0, 0);
         vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer_, &vertexOffset);
+        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &frame.previewVertexBuffer, &vertexOffset);
         vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     }
     if (previewMaterials_.empty()) {
@@ -1594,6 +1595,7 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     const VkExtent2D extent { target.width, target.height };
     createOffscreenResource(extent);
     auto& frame = frames_[frameIndex_];
+    synchronizePreviewVertices(frame);
     check(vkResetFences(device_, 1, &frame.inFlight), "reset offscreen fence");
     check(vkResetCommandPool(device_, frame.commandPool, 0), "reset offscreen command pool");
     const VkCommandBufferBeginInfo beginInfo {
@@ -1683,7 +1685,7 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
     vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     const VkDeviceSize vertexOffset = 0;
-    vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer_, &vertexOffset);
+    vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &frame.previewVertexBuffer, &vertexOffset);
     vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     PreviewPushConstants constants;
     std::copy_n(previewScene_.cameraRotation, 3, constants.camera.begin());
@@ -1716,7 +1718,7 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
                            0, sizeof(constants), &constants);
         vkCmdDrawIndexed(frame.commandBuffer, previewBackgroundIndexCount_, 1, 0, 0, 0);
         vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer_, &vertexOffset);
+        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &frame.previewVertexBuffer, &vertexOffset);
         vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     }
     if (previewMaterials_.empty()) {
@@ -1813,15 +1815,40 @@ void VulkanDevice::waitIdle() {
 void VulkanDevice::destroyPreviewMesh() {
     if (previewIndexBuffer_ != VK_NULL_HANDLE) vkDestroyBuffer(device_, previewIndexBuffer_, nullptr);
     if (previewIndexMemory_ != VK_NULL_HANDLE) vkFreeMemory(device_, previewIndexMemory_, nullptr);
-    if (previewVertexBuffer_ != VK_NULL_HANDLE) vkDestroyBuffer(device_, previewVertexBuffer_, nullptr);
-    if (previewVertexMemory_ != VK_NULL_HANDLE) vkFreeMemory(device_, previewVertexMemory_, nullptr);
-    previewVertexBuffer_ = VK_NULL_HANDLE;
-    previewVertexMemory_ = VK_NULL_HANDLE;
+    for (auto& frame : frames_) {
+        if (frame.mappedPreviewVertices != nullptr) {
+            vkUnmapMemory(device_, frame.previewVertexMemory);
+        }
+        if (frame.previewVertexBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(device_, frame.previewVertexBuffer, nullptr);
+        }
+        if (frame.previewVertexMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(device_, frame.previewVertexMemory, nullptr);
+        }
+        frame.previewVertexBuffer = VK_NULL_HANDLE;
+        frame.previewVertexMemory = VK_NULL_HANDLE;
+        frame.mappedPreviewVertices = nullptr;
+        frame.previewVertexGeneration = 0;
+    }
     previewVertexSize_ = 0;
+    previewVertexGeneration_ = 0;
     previewIndexBuffer_ = VK_NULL_HANDLE;
     previewIndexMemory_ = VK_NULL_HANDLE;
     previewIndexCount_ = 0;
     previewVertexUpdateCount_ = 0;
+}
+
+void VulkanDevice::synchronizePreviewVertices(Frame& frame) {
+    if (frame.previewVertexGeneration == previewVertexGeneration_ || previewVertexSize_ == 0) return;
+    const auto latest = std::find_if(frames_.begin(), frames_.end(), [this](const Frame& candidate) {
+        return candidate.previewVertexGeneration == previewVertexGeneration_;
+    });
+    if (latest == frames_.end() || latest->mappedPreviewVertices == nullptr) return;
+    check(vkWaitForFences(device_, 1, &latest->inFlight, VK_TRUE, UINT64_MAX),
+          "wait for latest animated vertices");
+    std::memcpy(frame.mappedPreviewVertices, latest->mappedPreviewVertices,
+                static_cast<std::size_t>(previewVertexSize_));
+    frame.previewVertexGeneration = previewVertexGeneration_;
 }
 
 void VulkanDevice::destroyPreviewBackground() {
@@ -1895,8 +1922,14 @@ void VulkanDevice::uploadPreviewMesh(std::span<const PreviewVertex> vertices,
     destroyPreviewMesh();
 
     try {
-        uploadPreviewBuffer(vertices.data(), vertices.size_bytes(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                            previewVertexBuffer_, previewVertexMemory_);
+        for (auto& frame : frames_) {
+            uploadPreviewBuffer(vertices.data(), vertices.size_bytes(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                frame.previewVertexBuffer, frame.previewVertexMemory);
+            check(vkMapMemory(device_, frame.previewVertexMemory, 0, vertices.size_bytes(), 0,
+                              &frame.mappedPreviewVertices), "persistently map preview vertices");
+        }
+        ++previewVertexGeneration_;
+        for (auto& frame : frames_) frame.previewVertexGeneration = previewVertexGeneration_;
         previewVertexSize_ = vertices.size_bytes();
         uploadPreviewBuffer(indices.data(), indices.size_bytes(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                             previewIndexBuffer_, previewIndexMemory_);
@@ -1941,17 +1974,14 @@ void VulkanDevice::uploadPreviewBackground(std::span<const PreviewTexture> textu
 }
 
 void VulkanDevice::updatePreviewVertices(std::span<const PreviewVertex> vertices) {
-    if (vertices.size_bytes() != previewVertexSize_ || previewVertexMemory_ == VK_NULL_HANDLE) {
+    auto& frame = frames_[frameIndex_];
+    if (vertices.size_bytes() != previewVertexSize_ || frame.mappedPreviewVertices == nullptr) {
         throw std::invalid_argument("preview vertex update has a different size");
     }
-    // The preview path uses coherent host memory. Waiting here is conservative and
-    // will be replaced by per-frame staging when the GPU skinning path is selected.
-    waitIdle();
-    void* mapped = nullptr;
-    check(vkMapMemory(device_, previewVertexMemory_, 0, previewVertexSize_, 0, &mapped),
-          "map animated preview vertices");
-    std::memcpy(mapped, vertices.data(), vertices.size_bytes());
-    vkUnmapMemory(device_, previewVertexMemory_);
+    check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX),
+          "wait for animated vertex frame");
+    std::memcpy(frame.mappedPreviewVertices, vertices.data(), vertices.size_bytes());
+    frame.previewVertexGeneration = ++previewVertexGeneration_;
     ++previewVertexUpdateCount_;
     if (previewVertexUpdateCount_ % 30 == 1) {
         const auto& vertex = vertices.front().position;
