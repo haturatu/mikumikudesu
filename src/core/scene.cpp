@@ -27,6 +27,7 @@ ModelId Scene::addModel(const std::filesystem::path& path) {
         ? path.filename().string() : instance.model->metadata.modelName;
     refreshModelResources(instance);
     models_.push_back(std::move(instance));
+    ++topologyGeneration_;
     selectedModel_ = models_.back().id;
     markDirty(DirtyFlag::geometry | DirtyFlag::material);
     return selectedModel_;
@@ -36,6 +37,7 @@ bool Scene::removeModel(ModelId id) {
     const auto found = std::find_if(models_.begin(), models_.end(), [id](const auto& item) { return item.id == id; });
     if (found == models_.end()) return false;
     models_.erase(found);
+    ++topologyGeneration_;
     if (selectedModel_ == id) selectedModel_ = models_.empty() ? 0 : models_.front().id;
     externalParents_.erase(std::remove_if(externalParents_.begin(), externalParents_.end(),
         [id](const auto& link) { return link.parentModel == id || link.childModel == id; }), externalParents_.end());
@@ -46,6 +48,7 @@ bool Scene::removeModel(ModelId id) {
 }
 
 void Scene::clearModels() {
+    if (!models_.empty()) ++topologyGeneration_;
     models_.clear();
     selectedModel_ = 0;
     externalParents_.clear();
@@ -55,6 +58,7 @@ void Scene::clearModels() {
 }
 
 void Scene::clearProjectState() {
+    ++topologyGeneration_;
     models_.clear();
     selectedModel_ = 0;
     nextId_ = 1;
@@ -213,6 +217,7 @@ bool Scene::setModelVisible(ModelId id, bool visible) noexcept {
     auto* instance = model(id);
     if (instance == nullptr || instance->visible == visible) return false;
     instance->visible = visible;
+    ++topologyGeneration_;
     markDirty(DirtyFlag::geometry);
     return true;
 }
@@ -223,6 +228,7 @@ bool Scene::setCloneCount(ModelId id, std::uint32_t cloneCount) noexcept {
     const auto value = std::clamp(cloneCount, 1U, 1024U);
     if (instance->cloneCount == value) return false;
     instance->cloneCount = value;
+    ++topologyGeneration_;
     markDirty(DirtyFlag::geometry);
     return true;
 }

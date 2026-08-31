@@ -277,6 +277,7 @@ void Application::resetProjectRuntimeState() {
     textures_.clear();
     animatedIndices_.clear();
     animatedMaterialTemplates_.clear();
+    animatedTopologyGeneration_ = 0;
     mediaSeconds_ = 0.0;
     uploadedVideoFrame_ = -1;
     videoMode_ = false;
@@ -828,7 +829,9 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         indexCount += instance.model->indices.size() * clones;
         materialCount += instance.model->materials.size() * clones;
     }
-    const bool rebuildTopology = initialUpload || animatedIndices_.size() != indexCount
+    const bool rebuildTopology = initialUpload
+        || animatedTopologyGeneration_ != scene_.topologyGeneration()
+        || animatedIndices_.size() != indexCount
         || animatedMaterialTemplates_.size() != materialCount;
     std::vector<graphics::PreviewVertex> vertices;
     vertices.reserve(vertexCount);
@@ -917,7 +920,10 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         }
     }
     if (vertices.empty() || animatedIndices_.empty()) return;
-    if (rebuildTopology) animatedMaterialTemplates_ = materials;
+    if (rebuildTopology) {
+        animatedMaterialTemplates_ = materials;
+        animatedTopologyGeneration_ = scene_.topologyGeneration();
+    }
     if (initialUpload || rebuildTopology) device_->uploadPreviewMesh(vertices, animatedIndices_);
     else {
         try { device_->updatePreviewVertices(vertices); }

@@ -106,7 +106,7 @@ struct KeyTrack {
     float sampledFrame { -std::numeric_limits<float>::infinity() };
 };
 
-using BezierLut = std::array<float, 128>;
+using BezierLut = std::array<float, 256>;
 
 struct BoneTrack : KeyTrack<VmdBoneKey> {
     std::vector<std::array<std::uint32_t, 4>> curves;
