@@ -149,8 +149,9 @@ ctest --preset linux-debug --output-on-failure
 出力は一時的な`.m4a.part`へ書き込み、成功時に完成ファイルへ原子的に置換します。Sceneの
 背景・再生用`MediaFile`や画像の`OutputQueue`とは独立した`AudioExporter`を使います。
 
-動画を書き出す場合はPreview rendererでSceneをフレーム0から固定stepで評価し、指定解像度の
-offscreen Vulkan targetをCPUへreadbackしてMP4へ渡します。UIは動画に含めず、音声はassetから
+動画を書き出す場合はPreview rendererでSceneをタイムラインFPSのstepで評価し、指定解像度の
+offscreen Vulkan targetをCPUへreadbackしてMP4へ渡します。`--video-fps`を変更してもモーションの
+再生速度は変わりません。UIは動画に含めず、音声はassetから
 一意に解決します（複数ある場合は`--audio-source PATH`で指定）。映像・音声のエンコード中は
 `output.mp4.part`へ書き込み、完了時だけ`output.mp4`へ確定します。
 
