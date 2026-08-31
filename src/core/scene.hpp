@@ -44,7 +44,7 @@ enum class DirtyFlag : std::uint32_t {
 constexpr DirtyFlag& operator|=(DirtyFlag& left, DirtyFlag right) noexcept { return left = left | right; }
 
 struct PhysicsSettings {
-    float gravity { 9.8F };
+    float gravity { 98.0F };
     Float3 gravityDirection { 0.0F, -1.0F, 0.0F };
     float noiseAmplitude {};
     float noiseFrequency {};

@@ -33,6 +33,8 @@ public:
     void setGravityNoise(float amplitude, float frequency);
     void setFloorCollision(bool enabled);
     void setKinematicTransform(std::size_t body, const PhysicsTransform& transform);
+    void teleportBody(std::size_t body, const PhysicsTransform& transform);
+    void shiftBodyPosition(std::size_t body, const Float3& delta);
     void applyImpulse(std::size_t body, const Float3& linear, const Float3& angular, bool local);
     void clearMotion(std::size_t body);
     [[nodiscard]] PhysicsTransform bodyTransform(std::size_t body) const;

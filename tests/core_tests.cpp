@@ -3,6 +3,7 @@
 #include "core/image.hpp"
 #include "core/media.hpp"
 #include "core/audio_export.hpp"
+#include "core/video_export.hpp"
 #include "core/effect.hpp"
 #include "core/model_probe.hpp"
 #include "core/motion.hpp"
@@ -251,6 +252,7 @@ int main() {
         const auto model = dayo::core::loadPmxModel(path);
         ok &= check(model.materials.size() == 1 && model.bones.empty(), "complete PMX sections");
         dayo::core::Scene scene;
+        ok &= check(scene.physicsSettings().gravity == 98.0F, "MMD gravity default");
         const auto firstModel = scene.addModel(path);
         const auto secondModel = scene.addModel(path);
         ok &= check(scene.models().size() == 2 && scene.selectedModel() != nullptr,
@@ -359,6 +361,8 @@ int main() {
     }
     try {
         const auto mediaPath = std::filesystem::temp_directory_path() / "mikumikudesu-media-test.wav";
+        const auto exportPath = std::filesystem::temp_directory_path() / "mikumikudesu-audio-export-test.m4a";
+        const auto videoPath = std::filesystem::temp_directory_path() / "mikumikudesu-video-export-test.mp4";
         {
             std::ofstream output(mediaPath, std::ios::binary);
             constexpr std::uint32_t sampleCount = 800;
@@ -380,7 +384,6 @@ int main() {
         const auto audio = media.decodeAudio();
         ok &= check(audio.channels == 2 && audio.sampleRate == 48'000 && !audio.samples.empty(),
                     "FFmpeg audio decode and resample");
-        const auto exportPath = std::filesystem::temp_directory_path() / "mikumikudesu-audio-export-test.m4a";
         dayo::core::AudioExportRequest exportRequest;
         exportRequest.source = mediaPath;
         exportRequest.destination = exportPath;
@@ -401,6 +404,41 @@ int main() {
         ok &= check(exportedAudio.sampleRate == 48'000 && exportedAudio.channels == 2
                     && !exportedAudio.samples.empty(),
                     "M4A export round trip decode");
+        dayo::core::VideoExportRequest videoRequest;
+        videoRequest.destination = videoPath;
+        videoRequest.width = 64;
+        videoRequest.height = 48;
+        videoRequest.fps = 10.0;
+        videoRequest.includeAudio = true;
+        videoRequest.overwrite = true;
+        dayo::core::VideoExporter videoExporter(videoRequest);
+        videoExporter.writeAudio(audio.samples, audio.sampleRate, audio.channels);
+        for (std::uint8_t value : { std::uint8_t { 32 }, std::uint8_t { 96 }, std::uint8_t { 192 } }) {
+            dayo::core::ImageRgba8 image;
+            image.width = videoRequest.width;
+            image.height = videoRequest.height;
+            image.pixels.resize(static_cast<std::size_t>(image.width) * image.height * 4U,
+                                value);
+            for (std::size_t index = 3; index < image.pixels.size(); index += 4) image.pixels[index] = 255;
+            videoExporter.writeVideoFrame(image);
+        }
+        const auto videoResult = videoExporter.finish();
+        ok &= check(dayo::core::canExportVideo() && videoResult.encodedFrames == 3
+                    && std::filesystem::exists(videoPath),
+                    "streaming H.264 MP4 export");
+        dayo::core::MediaFile exportedVideo(videoPath);
+        ok &= check(exportedVideo.info().hasVideo && exportedVideo.info().hasAudio
+                    && exportedVideo.info().videoWidth == 64 && exportedVideo.info().videoHeight == 48
+                    && std::abs(exportedVideo.info().durationSeconds - 0.3) < 0.03,
+                    "MP4 export round trip metadata");
+        const auto exportedFrame = exportedVideo.decodeVideoFrame(0.1);
+        ok &= check(exportedFrame.width == 64 && exportedFrame.height == 48
+                    && !exportedFrame.pixels.empty(),
+                    "MP4 export round trip decode");
+        const auto exportedVideoAudio = exportedVideo.decodeAudio();
+        ok &= check(exportedVideoAudio.sampleRate == 48'000 && exportedVideoAudio.channels == 2
+                    && !exportedVideoAudio.samples.empty(),
+                    "MP4 video audio round trip decode");
         dayo::core::Scene backgroundScene;
         backgroundScene.setBackgroundScreenSource(dayo::core::ScreenTextureSource::backgroundImage);
         backgroundScene.setMedia(mediaPath);
@@ -410,6 +448,7 @@ int main() {
         std::error_code mediaError;
         std::filesystem::remove(mediaPath, mediaError);
         std::filesystem::remove(exportPath, mediaError);
+        std::filesystem::remove(videoPath, mediaError);
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: media: " << exception.what() << '\n';
         ok = false;
@@ -422,7 +461,7 @@ int main() {
         falling.position = { 0.0F, 2.0F, 0.0F };
         falling.mass = 1.0F;
         falling.mode = 1;
-        falling.collisionMask = 0xFFFFU;
+        falling.collisionMask = 0;
         falling.bone = 0;
         physicsModel.rigidBodies.push_back(falling);
         dayo::core::MmdPhysics physics(physicsModel);
@@ -435,7 +474,8 @@ int main() {
         physics.setFloorCollision(true);
         physics.reset();
         for (int i = 0; i < 120; ++i) physics.step(1.0F / 60.0F);
-        ok &= check(physics.bodyTransform(0).position[1] > -0.1F, "Bullet floor collision setting");
+        ok &= check(physics.bodyTransform(0).position[1] > -0.1F,
+                    "PMX collision mask permits Bullet floor collision");
         physics.setGravityNoise(1.0F, 2.0F);
         physicsModel.vertices.resize(1);
         physicsModel.vertices[0].position = { 0.0F, 2.0F, 0.0F };
@@ -451,6 +491,190 @@ int main() {
         const auto physicalAfter = physicalAnimator.evaluate(1.0F, 1.0F / 30.0F);
         ok &= check(physicalAfter.vertices[0].position[1] < physicalBefore.vertices[0].position[1],
                     "Bullet body drives PMX bone skinning");
+
+        dayo::core::PmxModel alignedModel;
+        alignedModel.vertices.resize(2);
+        alignedModel.vertices[0].position = { 0.0F, 2.0F, 0.0F };
+        alignedModel.vertices[0].normal = { 0.0F, 1.0F, 0.0F };
+        alignedModel.vertices[0].bones[0] = 0;
+        alignedModel.vertices[1] = alignedModel.vertices[0];
+        alignedModel.vertices[1].position = { 1.0F, 2.0F, 0.0F };
+        dayo::core::PmxBone alignedBone;
+        alignedBone.name = "aligned";
+        alignedBone.position = { 0.0F, 2.0F, 0.0F };
+        alignedModel.bones.push_back(alignedBone);
+        dayo::core::PmxRigidBody alignedBody;
+        alignedBody.shape = 0;
+        alignedBody.size = { 0.5F, 0.5F, 0.5F };
+        alignedBody.position = { 0.0F, 2.0F, 0.0F };
+        alignedBody.bone = 0;
+        alignedBody.mass = 1.0F;
+        alignedBody.mode = 2;
+        alignedBody.collisionMask = 0;
+        alignedModel.rigidBodies.push_back(alignedBody);
+        dayo::core::MmdPhysics alignedPhysics(alignedModel);
+        dayo::core::MmdAnimator alignedAnimator(alignedModel);
+        alignedAnimator.setPhysics(&alignedPhysics);
+        const auto alignedBefore = alignedAnimator.evaluate(0.0F, 0.0F);
+        const auto alignedBodyBefore = alignedPhysics.bodyTransform(0);
+        alignedPhysics.applyImpulse(0, {}, { 0.0F, 0.0F, 10.0F }, false);
+        const auto alignedAfter = alignedAnimator.evaluate(1.0F, 1.0F / 30.0F);
+        const auto alignedBodyAfter = alignedPhysics.bodyTransform(0);
+        ok &= check(std::abs(alignedBodyAfter.position[1] - alignedBodyBefore.position[1]) < 1e-4F
+                    && std::abs(alignedAfter.vertices[0].position[1] - alignedBefore.vertices[0].position[1]) < 1e-4F
+                    && std::abs(alignedAfter.vertices[1].position[1] - alignedBefore.vertices[1].position[1]) > 1e-4F,
+                    "PMX mode 2 aligns body position, preserves bone translation, and imports rotation");
+
+        dayo::core::PmxModel skirtChainModel;
+        skirtChainModel.vertices.resize(2);
+        skirtChainModel.vertices[0].position = { 0.0F, 2.0F, 0.0F };
+        skirtChainModel.vertices[0].normal = { 0.0F, 1.0F, 0.0F };
+        skirtChainModel.vertices[0].bones[0] = 1;
+        skirtChainModel.vertices[1] = skirtChainModel.vertices[0];
+        skirtChainModel.vertices[1].position = { 0.0F, 3.0F, 0.0F };
+        skirtChainModel.vertices[1].bones[0] = 2;
+        skirtChainModel.bones.resize(3);
+        skirtChainModel.bones[0].name = "root";
+        skirtChainModel.bones[1].name = "skirt0";
+        skirtChainModel.bones[1].position = { 0.0F, 2.0F, 0.0F };
+        skirtChainModel.bones[1].parent = 0;
+        skirtChainModel.bones[2].name = "skirt1";
+        skirtChainModel.bones[2].position = { 0.0F, 3.0F, 0.0F };
+        skirtChainModel.bones[2].parent = 1;
+        dayo::core::PmxRigidBody skirtRoot;
+        skirtRoot.shape = 0;
+        skirtRoot.size = { 0.2F, 0.2F, 0.2F };
+        skirtRoot.position = { 0.0F, 0.0F, 0.0F };
+        skirtRoot.bone = 0;
+        skirtRoot.collisionMask = 0xFFFFU;
+        skirtChainModel.rigidBodies.push_back(skirtRoot);
+        auto skirtMode2 = skirtRoot;
+        skirtMode2.position = { 0.0F, 2.0F, 0.0F };
+        skirtMode2.bone = 1;
+        skirtMode2.mass = 0.2F;
+        skirtMode2.mode = 2;
+        skirtChainModel.rigidBodies.push_back(skirtMode2);
+        auto skirtMode1 = skirtMode2;
+        skirtMode1.position = { 0.0F, 3.0F, 0.0F };
+        skirtMode1.bone = 2;
+        skirtMode1.mode = 1;
+        skirtChainModel.rigidBodies.push_back(skirtMode1);
+        const auto addLockedJoint = [&skirtChainModel](std::int32_t bodyA, std::int32_t bodyB, float height) {
+            dayo::core::PmxJoint joint;
+            joint.bodyA = bodyA;
+            joint.bodyB = bodyB;
+            joint.position = { 0.0F, height, 0.0F };
+            joint.translationMinimum = {};
+            joint.translationMaximum = {};
+            joint.rotationMinimum = {};
+            joint.rotationMaximum = {};
+            skirtChainModel.joints.push_back(joint);
+        };
+        addLockedJoint(0, 1, 2.0F);
+        addLockedJoint(1, 2, 3.0F);
+        dayo::core::VmdMotion skirtChainMotion;
+        skirtChainMotion.bones.reserve(300);
+        for (std::uint32_t frame = 0; frame < 300; ++frame) {
+            dayo::core::VmdBoneKey key;
+            key.name = "root";
+            key.frame = frame;
+            const auto angle = (frame % 2 == 0 ? 0.35F : -0.35F);
+            key.translation = { (frame % 2 == 0 ? 1.5F : -1.5F),
+                                (frame % 3 == 0 ? 0.75F : -0.75F), 0.0F };
+            key.rotation = { 0.0F, 0.0F, std::sin(angle * 0.5F), std::cos(angle * 0.5F) };
+            skirtChainMotion.bones.push_back(key);
+        }
+        dayo::core::MmdPhysics skirtChainPhysics(skirtChainModel);
+        dayo::core::MmdAnimator skirtChainAnimator(skirtChainModel);
+        skirtChainAnimator.setMotion(&skirtChainMotion);
+        skirtChainAnimator.setPhysics(&skirtChainPhysics);
+        bool skirtChainStable = true;
+        for (std::uint32_t frame = 0; frame < 300; ++frame) {
+            const auto animated = skirtChainAnimator.evaluate(static_cast<float>(frame),
+                                                              frame == 0 ? 0.0F : 1.0F / 30.0F);
+            const auto angle = (frame % 2 == 0 ? 0.35F : -0.35F);
+            const auto expectedSkirt0 = dayo::core::Float3 {
+                (frame % 2 == 0 ? 1.5F : -1.5F) - 2.0F * std::sin(angle),
+                (frame % 3 == 0 ? 0.75F : -0.75F) + 2.0F * std::cos(angle), 0.0F,
+            };
+            const auto mode2Body = skirtChainPhysics.bodyTransform(1);
+            const auto mode1Body = skirtChainPhysics.bodyTransform(2);
+            dayo::core::PhysicsTransform expectedMode2;
+            expectedMode2.position = expectedSkirt0;
+            const auto finiteVector = [](const auto& value) {
+                return std::ranges::all_of(value, [](float component) { return std::isfinite(component); });
+            };
+            const auto bodyDistance = [](const auto& left, const auto& right) {
+                const auto x = left.position[0] - right.position[0];
+                const auto y = left.position[1] - right.position[1];
+                const auto z = left.position[2] - right.position[2];
+                return std::sqrt(x * x + y * y + z * z);
+            };
+            skirtChainStable = skirtChainStable && finiteVector(mode2Body.position)
+                && finiteVector(mode1Body.position) && animated.vertices.size() == 2
+                && finiteVector(animated.vertices[0].position) && finiteVector(animated.vertices[1].position)
+                && bodyDistance(mode2Body, expectedMode2) < 1e-3F
+                && bodyDistance(mode2Body, mode1Body) < 2.5F;
+            if (!skirtChainStable) break;
+        }
+        ok &= check(skirtChainStable,
+                    "mode 0 to mode 2 to mode 1 locked skirt chain stays finite and aligned during fast animation");
+
+        dayo::core::PmxModel seekModel;
+        seekModel.vertices.resize(1);
+        seekModel.vertices[0].position = { 0.0F, 2.0F, 0.0F };
+        seekModel.vertices[0].normal = { 0.0F, 1.0F, 0.0F };
+        seekModel.vertices[0].bones[0] = 1;
+        seekModel.bones.resize(2);
+        seekModel.bones[0].name = "root";
+        seekModel.bones[0].position = { 0.0F, 0.0F, 0.0F };
+        seekModel.bones[1].name = "dynamic";
+        seekModel.bones[1].position = { 0.0F, 2.0F, 0.0F };
+        seekModel.bones[1].parent = 0;
+        dayo::core::PmxRigidBody seekAnchor;
+        seekAnchor.shape = 0;
+        seekAnchor.size = { 0.5F, 0.5F, 0.5F };
+        seekAnchor.position = { 0.0F, 0.0F, 0.0F };
+        seekAnchor.bone = 0;
+        seekAnchor.collisionMask = 0;
+        seekModel.rigidBodies.push_back(seekAnchor);
+        auto seekDynamic = seekAnchor;
+        seekDynamic.position = { 0.0F, 2.0F, 0.0F };
+        seekDynamic.bone = 1;
+        seekDynamic.mass = 1.0F;
+        seekDynamic.mode = 1;
+        seekModel.rigidBodies.push_back(seekDynamic);
+        dayo::core::PmxJoint seekJoint;
+        seekJoint.bodyA = 0;
+        seekJoint.bodyB = 1;
+        seekJoint.position = { 0.0F, 2.0F, 0.0F };
+        seekJoint.translationMinimum = { -100.0F, -100.0F, -100.0F };
+        seekJoint.translationMaximum = { 100.0F, 100.0F, 100.0F };
+        seekJoint.rotationMinimum = { -100.0F, -100.0F, -100.0F };
+        seekJoint.rotationMaximum = { 100.0F, 100.0F, 100.0F };
+        seekModel.joints.push_back(seekJoint);
+        dayo::core::MmdPhysics seekPhysics(seekModel);
+        dayo::core::MmdAnimator seekAnimator(seekModel);
+        dayo::core::VmdMotion seekMotion;
+        dayo::core::VmdBoneKey seekStart;
+        seekStart.name = "root";
+        seekStart.frame = 0;
+        dayo::core::VmdBoneKey seekTarget = seekStart;
+        seekTarget.frame = 1047;
+        seekTarget.translation = { 0.0F, 3.0F, 0.0F };
+        seekMotion.bones = { seekStart, seekTarget };
+        seekAnimator.setMotion(&seekMotion);
+        seekAnimator.setPhysics(&seekPhysics);
+        static_cast<void>(seekAnimator.evaluate(0.0F, 0.0F));
+        static_cast<void>(seekAnimator.evaluate(1.0F, 1.0F / 30.0F));
+        const auto seekMoved = seekPhysics.bodyTransform(1);
+        static_cast<void>(seekAnimator.evaluate(1047.0F, 0.0F));
+        const auto seekResetAnchor = seekPhysics.bodyTransform(0);
+        const auto seekResetDynamic = seekPhysics.bodyTransform(1);
+        ok &= check(seekMoved.position[1] < 2.0F
+                    && std::abs(seekResetAnchor.position[1] - 3.0F) < 1e-4F
+                    && std::abs(seekResetDynamic.position[1] - 5.0F) < 1e-4F,
+                    "forward timeline seek aligns Bullet state to the target bone pose");
 
         dayo::core::PmxModel jointModel;
         jointModel.vertices.resize(1);

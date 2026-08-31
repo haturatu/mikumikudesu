@@ -137,6 +137,7 @@ VulkanDevice::VulkanDevice(platform::Window& window, bool validation)
 VulkanDevice::~VulkanDevice() {
     if (device_ != VK_NULL_HANDLE) vkDeviceWaitIdle(device_);
     destroyUi();
+    destroyOffscreenResource();
     destroyPreviewMesh();
     destroyPreviewBackground();
     destroyPreviewTextures();
@@ -1046,6 +1047,7 @@ void VulkanDevice::recreateSwapchain() {
     if (window_.pixelWidth() == 0 || window_.pixelHeight() == 0) return;
     check(vkDeviceWaitIdle(device_), "wait before swapchain recreation");
     destroyUi();
+    destroyOffscreenResource();
     destroyPipeline();
     destroySwapchain();
     createSwapchain();
@@ -1180,7 +1182,8 @@ void VulkanDevice::renderFrame() {
     constants.light[3] = swapchainExtent_.height == 0 ? 1.0F
         : static_cast<float>(swapchainExtent_.width) / static_cast<float>(swapchainExtent_.height);
     const bool hasBackground = previewScene_.backgroundEnabled
-        && previewScene_.screenSource == PreviewScene::ScreenSource::backgroundImage
+        && (previewScene_.screenSource == PreviewScene::ScreenSource::backgroundImage
+            || previewScene_.screenSource == PreviewScene::ScreenSource::backgroundVideo)
         && previewBackgroundTexture_.descriptor != VK_NULL_HANDLE
         && previewBackgroundIndexCount_ != 0;
     if (hasBackground) {
@@ -1292,6 +1295,343 @@ void VulkanDevice::renderFrame() {
     }
     swapchainInitialized_[imageIndex] = true;
     frameIndex_ = (frameIndex_ + 1) % frames_.size();
+}
+
+void VulkanDevice::destroyOffscreenResource() {
+    if (device_ == VK_NULL_HANDLE) return;
+    if (offscreen_.stagingBuffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(device_, offscreen_.stagingBuffer, nullptr);
+    }
+    if (offscreen_.stagingMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(device_, offscreen_.stagingMemory, nullptr);
+    }
+    if (offscreen_.colorView != VK_NULL_HANDLE) vkDestroyImageView(device_, offscreen_.colorView, nullptr);
+    if (offscreen_.colorImage != VK_NULL_HANDLE) vkDestroyImage(device_, offscreen_.colorImage, nullptr);
+    if (offscreen_.colorMemory != VK_NULL_HANDLE) vkFreeMemory(device_, offscreen_.colorMemory, nullptr);
+    if (offscreen_.depth.view != VK_NULL_HANDLE) vkDestroyImageView(device_, offscreen_.depth.view, nullptr);
+    if (offscreen_.depth.image != VK_NULL_HANDLE) vkDestroyImage(device_, offscreen_.depth.image, nullptr);
+    if (offscreen_.depth.memory != VK_NULL_HANDLE) vkFreeMemory(device_, offscreen_.depth.memory, nullptr);
+    offscreen_ = {};
+}
+
+void VulkanDevice::createOffscreenResource(VkExtent2D extent) {
+    if (extent.width == 0 || extent.height == 0) throw std::invalid_argument("offscreen target is empty");
+    if (offscreen_.extent.width == extent.width && offscreen_.extent.height == extent.height
+        && offscreen_.colorImage != VK_NULL_HANDLE) return;
+    destroyOffscreenResource();
+
+    const VkImageCreateInfo colorInfo {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = swapchainFormat_,
+        .extent = { extent.width, extent.height, 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    check(vkCreateImage(device_, &colorInfo, nullptr, &offscreen_.colorImage), "create offscreen color image");
+    VkMemoryRequirements colorRequirements {};
+    vkGetImageMemoryRequirements(device_, offscreen_.colorImage, &colorRequirements);
+    const VkMemoryAllocateInfo colorAllocation {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = colorRequirements.size,
+        .memoryTypeIndex = findMemoryType(colorRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+    };
+    check(vkAllocateMemory(device_, &colorAllocation, nullptr, &offscreen_.colorMemory),
+          "allocate offscreen color memory");
+    check(vkBindImageMemory(device_, offscreen_.colorImage, offscreen_.colorMemory, 0),
+          "bind offscreen color memory");
+    const VkImageViewCreateInfo colorViewInfo {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = offscreen_.colorImage,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = swapchainFormat_,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    check(vkCreateImageView(device_, &colorViewInfo, nullptr, &offscreen_.colorView),
+          "create offscreen color view");
+
+    const VkImageCreateInfo depthInfo {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = VK_FORMAT_D32_SFLOAT,
+        .extent = { extent.width, extent.height, 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    check(vkCreateImage(device_, &depthInfo, nullptr, &offscreen_.depth.image), "create offscreen depth image");
+    VkMemoryRequirements depthRequirements {};
+    vkGetImageMemoryRequirements(device_, offscreen_.depth.image, &depthRequirements);
+    const VkMemoryAllocateInfo depthAllocation {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = depthRequirements.size,
+        .memoryTypeIndex = findMemoryType(depthRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+    };
+    check(vkAllocateMemory(device_, &depthAllocation, nullptr, &offscreen_.depth.memory),
+          "allocate offscreen depth memory");
+    check(vkBindImageMemory(device_, offscreen_.depth.image, offscreen_.depth.memory, 0),
+          "bind offscreen depth memory");
+    const VkImageViewCreateInfo depthViewInfo {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = offscreen_.depth.image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = VK_FORMAT_D32_SFLOAT,
+        .subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 },
+    };
+    check(vkCreateImageView(device_, &depthViewInfo, nullptr, &offscreen_.depth.view),
+          "create offscreen depth view");
+
+    offscreen_.stagingSize = static_cast<VkDeviceSize>(extent.width) * extent.height * 4U;
+    const VkBufferCreateInfo stagingInfo {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = offscreen_.stagingSize,
+        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    check(vkCreateBuffer(device_, &stagingInfo, nullptr, &offscreen_.stagingBuffer),
+          "create offscreen staging buffer");
+    VkMemoryRequirements stagingRequirements {};
+    vkGetBufferMemoryRequirements(device_, offscreen_.stagingBuffer, &stagingRequirements);
+    const VkMemoryAllocateInfo stagingAllocation {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = stagingRequirements.size,
+        .memoryTypeIndex = findMemoryType(stagingRequirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+    };
+    check(vkAllocateMemory(device_, &stagingAllocation, nullptr, &offscreen_.stagingMemory),
+          "allocate offscreen staging memory");
+    check(vkBindBufferMemory(device_, offscreen_.stagingBuffer, offscreen_.stagingMemory, 0),
+          "bind offscreen staging memory");
+    offscreen_.extent = extent;
+}
+
+core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
+    if (activeRenderer_ != RendererKind::preview) {
+        throw std::runtime_error("video export currently supports the Preview renderer only");
+    }
+    if (target.width == 0 || target.height == 0) throw std::invalid_argument("video dimensions must be non-zero");
+    waitIdle();
+    const VkExtent2D extent { target.width, target.height };
+    createOffscreenResource(extent);
+    auto& frame = frames_[frameIndex_];
+    check(vkResetFences(device_, 1, &frame.inFlight), "reset offscreen fence");
+    check(vkResetCommandPool(device_, frame.commandPool, 0), "reset offscreen command pool");
+    const VkCommandBufferBeginInfo beginInfo {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    check(vkBeginCommandBuffer(frame.commandBuffer, &beginInfo), "begin offscreen command buffer");
+
+    const VkImageMemoryBarrier2 toColor {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = offscreen_.colorInitialized ? VK_PIPELINE_STAGE_2_TRANSFER_BIT
+                                                     : VK_PIPELINE_STAGE_2_NONE,
+        .srcAccessMask = offscreen_.colorInitialized ? VK_ACCESS_2_TRANSFER_READ_BIT : 0U,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        .oldLayout = offscreen_.colorInitialized ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+                                                  : VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = offscreen_.colorImage,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    const VkImageMemoryBarrier2 toDepth {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = offscreen_.depth.initialized ? VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT
+                                                     : VK_PIPELINE_STAGE_2_NONE,
+        .srcAccessMask = offscreen_.depth.initialized
+            ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : 0U,
+        .dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
+        .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                       | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        .oldLayout = offscreen_.depth.initialized ? VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
+                                                   : VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = offscreen_.depth.image,
+        .subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 },
+    };
+    const std::array renderBarriers { toColor, toDepth };
+    const VkDependencyInfo renderDependency {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = static_cast<std::uint32_t>(renderBarriers.size()),
+        .pImageMemoryBarriers = renderBarriers.data(),
+    };
+    vkCmdPipelineBarrier2(frame.commandBuffer, &renderDependency);
+
+    VkClearValue clear {};
+    clear.color = !previewScene_.backgroundEnabled
+        || previewScene_.screenSource == PreviewScene::ScreenSource::white
+        ? VkClearColorValue {{ 1.0F, 1.0F, 1.0F, 1.0F }}
+        : VkClearColorValue {{ 0.025F, 0.035F, 0.055F, 1.0F }};
+    const VkRenderingAttachmentInfo colorAttachment {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = offscreen_.colorView,
+        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue = clear,
+    };
+    VkClearValue depthClear {};
+    depthClear.depthStencil = { 1.0F, 0 };
+    const VkRenderingAttachmentInfo depthAttachment {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = offscreen_.depth.view,
+        .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue = depthClear,
+    };
+    const VkRenderingInfo renderingInfo {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+        .renderArea = { { 0, 0 }, extent },
+        .layerCount = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &colorAttachment,
+        .pDepthAttachment = &depthAttachment,
+    };
+    vkCmdBeginRendering(frame.commandBuffer, &renderingInfo);
+    offscreen_.depth.initialized = true;
+    const VkViewport viewport { 0.0F, 0.0F, static_cast<float>(extent.width),
+                                static_cast<float>(extent.height), 0.0F, 1.0F };
+    const VkRect2D scissor { { 0, 0 }, extent };
+    vkCmdSetViewport(frame.commandBuffer, 0, 1, &viewport);
+    vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
+    vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+    const VkDeviceSize vertexOffset = 0;
+    vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer_, &vertexOffset);
+    vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
+    PreviewPushConstants constants;
+    std::copy_n(previewScene_.cameraRotation, 3, constants.camera.begin());
+    constants.camera[3] = previewScene_.cameraDistance;
+    std::copy_n(previewScene_.target, 3, constants.target.begin());
+    constants.target[3] = previewScene_.perspective ? previewScene_.verticalFovRadians
+                                                   : -previewScene_.verticalFovRadians;
+    std::copy_n(previewScene_.lightDirection, 3, constants.light.begin());
+    constants.light[3] = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+    const bool hasBackground = previewScene_.backgroundEnabled
+        && (previewScene_.screenSource == PreviewScene::ScreenSource::backgroundImage
+            || previewScene_.screenSource == PreviewScene::ScreenSource::backgroundVideo)
+        && previewBackgroundTexture_.descriptor != VK_NULL_HANDLE
+        && previewBackgroundIndexCount_ != 0;
+    if (hasBackground) {
+        vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, backgroundPipeline_);
+        const VkDeviceSize backgroundOffset = 0;
+        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1,
+                               &previewBackgroundVertexBuffer_, &backgroundOffset);
+        vkCmdBindIndexBuffer(frame.commandBuffer, previewBackgroundIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1,
+                                &previewBackgroundTexture_.descriptor, 0, nullptr);
+        constants.diffuse = { 0.0F, 0.0F, 0.0F, 1.0F };
+        constants.ambientShininess = { 1.0F, 1.0F, 1.0F, 0.0F };
+        constants.specular = {};
+        constants.textureMultiply = { 1.0F, 1.0F, 1.0F, 1.0F };
+        constants.textureAdd = {};
+        vkCmdPushConstants(frame.commandBuffer, pipelineLayout_,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(constants), &constants);
+        vkCmdDrawIndexed(frame.commandBuffer, previewBackgroundIndexCount_, 1, 0, 0, 0);
+        vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer_, &vertexOffset);
+        vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
+    }
+    if (previewMaterials_.empty()) {
+        if (!hasBackground) {
+            if (!previewTextures_.empty()) vkCmdBindDescriptorSets(frame.commandBuffer,
+                VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1,
+                &previewTextures_.front().descriptor, 0, nullptr);
+            vkCmdPushConstants(frame.commandBuffer, pipelineLayout_,
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(constants), &constants);
+            vkCmdDrawIndexed(frame.commandBuffer, previewIndexCount_, 1, 0, 0, 0);
+        }
+    } else {
+        for (const auto& material : previewMaterials_) {
+            if (material.indexCount == 0 || material.firstIndex >= previewIndexCount_) continue;
+            std::copy_n(material.diffuse, 4, constants.diffuse.begin());
+            std::copy_n(material.ambient, 3, constants.ambientShininess.begin());
+            constants.ambientShininess[3] = material.shininess;
+            std::copy_n(material.specular, 3, constants.specular.begin());
+            std::copy_n(material.textureMultiply, 4, constants.textureMultiply.begin());
+            std::copy_n(material.textureAdd, 4, constants.textureAdd.begin());
+            vkCmdPushConstants(frame.commandBuffer, pipelineLayout_,
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(constants), &constants);
+            if (!previewTextures_.empty()) {
+                const auto slot = std::min<std::size_t>(material.textureSlot, previewTextures_.size() - 1);
+                vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    pipelineLayout_, 0, 1, &previewTextures_[slot].descriptor, 0, nullptr);
+            }
+            const auto count = std::min(material.indexCount, previewIndexCount_ - material.firstIndex);
+            vkCmdDrawIndexed(frame.commandBuffer, count, 1, material.firstIndex, 0, 0);
+        }
+    }
+    vkCmdEndRendering(frame.commandBuffer);
+
+    const VkImageMemoryBarrier2 toTransfer {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = offscreen_.colorImage,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    const VkDependencyInfo transferDependency {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &toTransfer,
+    };
+    vkCmdPipelineBarrier2(frame.commandBuffer, &transferDependency);
+    const VkBufferImageCopy copy {
+        .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .imageExtent = { extent.width, extent.height, 1 },
+    };
+    vkCmdCopyImageToBuffer(frame.commandBuffer, offscreen_.colorImage,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, offscreen_.stagingBuffer, 1, &copy);
+    offscreen_.colorInitialized = true;
+    check(vkEndCommandBuffer(frame.commandBuffer), "end offscreen command buffer");
+    const VkSubmitInfo submitInfo {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &frame.commandBuffer,
+    };
+    check(vkQueueSubmit(queue_, 1, &submitInfo, frame.inFlight), "submit offscreen frame");
+    check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for offscreen frame");
+
+    core::ImageRgba8 image;
+    image.width = target.width;
+    image.height = target.height;
+    image.pixels.resize(static_cast<std::size_t>(offscreen_.stagingSize));
+    void* mapped = nullptr;
+    check(vkMapMemory(device_, offscreen_.stagingMemory, 0, offscreen_.stagingSize, 0, &mapped),
+          "map offscreen frame");
+    std::memcpy(image.pixels.data(), mapped, image.pixels.size());
+    vkUnmapMemory(device_, offscreen_.stagingMemory);
+    if (swapchainFormat_ == VK_FORMAT_B8G8R8A8_UNORM
+        || swapchainFormat_ == VK_FORMAT_B8G8R8A8_SRGB) {
+        for (std::size_t index = 0; index < image.pixels.size(); index += 4) {
+            std::swap(image.pixels[index], image.pixels[index + 2]);
+        }
+    }
+    frameIndex_ = (frameIndex_ + 1) % frames_.size();
+    return image;
 }
 
 void VulkanDevice::waitIdle() {

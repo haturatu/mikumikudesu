@@ -635,19 +635,32 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
     for (std::size_t i = 0; i < global.size(); ++i) global[i] = poses[i].global;
 
     if (physics_ != nullptr && physics_->available()) {
-        if (previousFrame_ >= 0.0F && frame < previousFrame_) physics_->reset();
+        const float frameDelta = frame - previousFrame_;
+        const float expectedFrameDelta = std::max(deltaSeconds, 0.0F) * 30.0F;
+        const bool discontinuousSeek = (previousFrame_ < 0.0F && std::abs(frame) > 1e-6F)
+            || (previousFrame_ >= 0.0F
+                && (frameDelta < 0.0F
+                    || (std::abs(frameDelta) > 1e-6F
+                        && (deltaSeconds <= 0.0F || std::abs(frameDelta - expectedFrameDelta) > 2.0F))));
+        if (discontinuousSeek) physics_->reset();
         std::vector<bool> physicsBones(model_.bones.size());
         for (std::size_t bodyIndex = 0; bodyIndex < model_.rigidBodies.size(); ++bodyIndex) {
             const auto& body = model_.rigidBodies[bodyIndex];
-            if (physics_->bodyMode(bodyIndex) != 0 || body.bone < 0
-                || static_cast<std::size_t>(body.bone) >= global.size()) continue;
+            if (body.bone < 0 || static_cast<std::size_t>(body.bone) >= global.size()) continue;
             const auto bone = static_cast<std::size_t>(body.bone);
             const auto offset = sub(body.position, model_.bones[bone].position);
             const auto offsetRotation = eulerRotation(body.rotation);
             PhysicsTransform value;
             value.position = add(global[bone].position, rotate(global[bone].rotation, offset));
             value.rotation = multiply(global[bone].rotation, offsetRotation);
-            physics_->setKinematicTransform(bodyIndex, value);
+            if (discontinuousSeek) {
+                // A seek invalidates the old dynamic chain state. Place every
+                // bone-bound body at the current animated pose before Bullet
+                // resumes, including mode 1 and mode 2 bodies.
+                physics_->teleportBody(bodyIndex, value);
+            } else if (physics_->bodyMode(bodyIndex) == 0) {
+                physics_->setKinematicTransform(bodyIndex, value);
+            }
         }
         const float impulseScale = std::max(deltaSeconds, 0.0F) * 60.0F;
         for (std::size_t body = 0; body < model_.rigidBodies.size(); ++body) {
@@ -667,7 +680,8 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
         physics_->step(deltaSeconds);
         for (std::size_t bodyIndex = 0; bodyIndex < model_.rigidBodies.size(); ++bodyIndex) {
             const auto& body = model_.rigidBodies[bodyIndex];
-            if (physics_->bodyMode(bodyIndex) == 0 || body.bone < 0
+            const auto mode = physics_->bodyMode(bodyIndex);
+            if (mode == 0 || body.bone < 0
                 || static_cast<std::size_t>(body.bone) >= global.size()) continue;
             const auto bone = static_cast<std::size_t>(body.bone);
             physicsBones[bone] = true;
@@ -675,18 +689,27 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds) {
             const auto offset = sub(body.position, model_.bones[bone].position);
             const auto boneRotation = multiply(bodyPose.rotation, conjugate(eulerRotation(body.rotation)));
             const auto bonePosition = sub(bodyPose.position, rotate(boneRotation, offset));
+            // PMX mode 1 is fully physics-driven. Mode 2 is physics plus
+            // bone alignment: keep the animated/local bone translation and
+            // import only the rigid body's rotation.
             const auto parent = model_.bones[bone].parent;
             if (parent >= 0 && static_cast<std::size_t>(parent) < global.size()) {
                 const auto parentIndex = static_cast<std::size_t>(parent);
                 local[bone].rotation = multiply(conjugate(global[parentIndex].rotation), boneRotation);
-                const auto bindOffset = sub(model_.bones[bone].position, model_.bones[parentIndex].position);
-                local[bone].translation = sub(rotate(conjugate(global[parentIndex].rotation),
-                                                     sub(bonePosition, global[parentIndex].position)), bindOffset);
+                if (mode == 1) {
+                    const auto bindOffset = sub(model_.bones[bone].position, model_.bones[parentIndex].position);
+                    local[bone].translation = sub(rotate(conjugate(global[parentIndex].rotation),
+                                                         sub(bonePosition, global[parentIndex].position)), bindOffset);
+                }
             } else {
                 local[bone].rotation = boneRotation;
-                local[bone].translation = sub(bonePosition, model_.bones[bone].position);
+                if (mode == 1) local[bone].translation = sub(bonePosition, model_.bones[bone].position);
             }
             calculateGlobals(model_, local, global, impl_->globalState);
+            if (mode == 2) {
+                const auto correction = sub(global[bone].position, bonePosition);
+                physics_->shiftBodyPosition(bodyIndex, correction);
+            }
         }
         // Physics supplies the local pose for dynamic rigid bodies. Keep the
         // pre-physics pose for the first phase and feed sanitized dynamic
