@@ -124,8 +124,8 @@ bool materialMorphCanReduceAlpha(const float* multiply, const float* add) {
 bool materialCanBeTransparent(const graphics::PreviewMaterial& material) {
     const bool toonCanReduceAlpha = material.toonMode == 0U && material.toonTextureHasTransparency;
     const bool sphereCanReduceAlpha = material.sphereMode != 0U && material.sphereTextureHasTransparency;
-    return material.diffuse[3] < 0.98F || material.textureHasTransparency || toonCanReduceAlpha || sphereCanReduceAlpha ||
-           materialMorphCanReduceAlpha(material.textureMultiply, material.textureAdd) ||
+    return material.diffuse[3] < 0.98F || material.textureHasTransparency || toonCanReduceAlpha ||
+           sphereCanReduceAlpha || materialMorphCanReduceAlpha(material.textureMultiply, material.textureAdd) ||
            materialMorphCanReduceAlpha(material.toonMultiply, material.toonAdd) ||
            materialMorphCanReduceAlpha(material.sphereMultiply, material.sphereAdd);
 }
@@ -1055,6 +1055,37 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                 bones.push_back(bone);
             }
         }
+        std::vector<core::Float3> boundsPositions;
+        boundsPositions.reserve(frame.vertices.size());
+        for (const auto& source : frame.vertices) {
+            auto position = source.position;
+            if (gpuSkinning) {
+                core::Float3 transformed{};
+                float totalWeight = 0.0F;
+                const std::size_t influenceCount = source.weightType == core::PmxWeightType::bdef1
+                                                       ? 1
+                                                       : (source.weightType == core::PmxWeightType::bdef2 ||
+                                                                  source.weightType == core::PmxWeightType::sdef
+                                                              ? 2
+                                                              : 4);
+                for (std::size_t influence = 0; influence < influenceCount; ++influence) {
+                    const auto boneIndex = source.bones[influence];
+                    const auto weight = source.weights[influence];
+                    if (boneIndex < 0 || static_cast<std::size_t>(boneIndex) >= frame.bones.size() || weight == 0.0F)
+                        continue;
+                    const auto& bone = bones[static_cast<std::size_t>(boneBase) + static_cast<std::size_t>(boneIndex)];
+                    const auto rotated = rotateQuaternion(
+                        {bone.rotation[0], bone.rotation[1], bone.rotation[2], bone.rotation[3]}, position);
+                    for (std::size_t axis = 0; axis < 3; ++axis)
+                        transformed[axis] += (rotated[axis] + bone.translation[axis]) * weight;
+                    totalWeight += weight;
+                }
+                if (totalWeight > 1e-6F)
+                    position = {transformed[0] / totalWeight, transformed[1] / totalWeight,
+                                transformed[2] / totalWeight};
+            }
+            boundsPositions.push_back(position);
+        }
         const auto textureBase = [&] {
             std::size_t value = 0;
             for (const auto& previous : scene_.models()) {
@@ -1131,11 +1162,13 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                     material.toonTextureHasTransparency =
                         sourceMaterial.toonMode == 0 && sourceMaterial.toonTextureIndex >= 0 &&
                         static_cast<std::size_t>(sourceMaterial.toonTextureIndex) < instance.textures.size() &&
-                        hasTransparentPixels(instance.textures[static_cast<std::size_t>(sourceMaterial.toonTextureIndex)]);
+                        hasTransparentPixels(
+                            instance.textures[static_cast<std::size_t>(sourceMaterial.toonTextureIndex)]);
                     material.sphereTextureHasTransparency =
                         sourceMaterial.sphereMode != 0 && sourceMaterial.sphereTextureIndex >= 0 &&
                         static_cast<std::size_t>(sourceMaterial.sphereTextureIndex) < instance.textures.size() &&
-                        hasTransparentPixels(instance.textures[static_cast<std::size_t>(sourceMaterial.sphereTextureIndex)]);
+                        hasTransparentPixels(
+                            instance.textures[static_cast<std::size_t>(sourceMaterial.sphereTextureIndex)]);
                     materials.push_back(material);
                     draws.push_back({});
                 }
@@ -1170,14 +1203,14 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                     }
                     return value;
                 }();
-                for (std::size_t index = 0; index < sourceMaterial.indexCount &&
-                                            materialIndexStart + index < instance.model->indices.size();
+                for (std::size_t index = 0;
+                     index < sourceMaterial.indexCount && materialIndexStart + index < instance.model->indices.size();
                      ++index) {
                     const auto vertexIndex = instance.model->indices[materialIndexStart + index];
-                    if (vertexIndex >= frame.vertices.size())
+                    if (vertexIndex >= boundsPositions.size())
                         continue;
                     for (std::size_t axis = 0; axis < 3; ++axis) {
-                        boundsCenter[axis] += frame.vertices[vertexIndex].position[axis];
+                        boundsCenter[axis] += boundsPositions[vertexIndex][axis];
                     }
                     ++boundVertexCount;
                 }
