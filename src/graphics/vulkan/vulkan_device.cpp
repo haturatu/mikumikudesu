@@ -111,10 +111,7 @@ float previewDrawDepth(const PreviewDraw& draw, const PreviewPushConstants& cons
     const float cx = std::cos(constants.camera[0]);
     const float sy = std::sin(constants.camera[1]);
     const float cy = std::cos(constants.camera[1]);
-    const float rotatedY = cx * y - sx * z;
-    const float rotatedZ = sx * y + cx * z;
-    y = rotatedY;
-    z = rotatedZ;
+    z = sx * y + cx * z;
     z = -sy * x + cy * z;
     z += std::max(constants.camera[3], 0.1F);
     return z;
