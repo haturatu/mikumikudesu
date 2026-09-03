@@ -77,7 +77,7 @@ jobs:
             xvfb
 
       - name: Restore compiler cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.preset }}-${{ github.ref_name }}
