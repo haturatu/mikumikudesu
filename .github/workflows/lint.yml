@@ -1,0 +1,104 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  format:
+    name: Format and shell checks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Install lint dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y clang-format shellcheck shfmt
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+
+      - name: Install Gersemi
+        run: |
+          python -m venv "$RUNNER_TEMP/gersemi"
+          "$RUNNER_TEMP/gersemi/bin/pip" install --disable-pip-version-check gersemi==0.28.1
+
+      - name: Check C++ formatting
+        run: find src tests -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) -print0 | xargs -0 clang-format --dry-run --Werror
+
+      - name: Check CMake formatting
+        run: |
+          "$RUNNER_TEMP/gersemi/bin/gersemi" --check --warnings-as-errors \
+            --definitions cmake/CompileHlsl.cmake -- .
+
+      - name: Check shell formatting
+        run: find scripts tests -type f -name '*.sh' -print0 | xargs -0 shfmt -ln bash -d -i 2 -ci
+
+      - name: Run ShellCheck
+        run: find scripts tests -type f -name '*.sh' -print0 | xargs -0 shellcheck --severity=warning
+
+  clang-tidy:
+    name: clang-tidy
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            ccache \
+            glslc \
+            libavcodec-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libbullet-dev \
+            libasound2-dev \
+            libswresample-dev \
+            libswscale-dev \
+            libxcursor-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxss-dev \
+            libxtst-dev \
+            libx11-dev \
+            libxext-dev \
+            libxrender-dev \
+            libvulkan-dev \
+            mesa-vulkan-drivers \
+            ninja-build \
+            xvfb
+
+      - name: Configure with compile commands
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake --preset linux-debug -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Run clang-tidy
+        run: |
+          mapfile -t sources < <(find src tests -type f -name '*.cpp' -print)
+          run-clang-tidy -p build/linux-debug -j 2 \
+            -header-filter '(^|/)(src|tests)/' \
+            -warnings-as-errors '*' \
+            "${sources[@]}"

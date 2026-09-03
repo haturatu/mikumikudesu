@@ -12,27 +12,25 @@
 namespace dayo::core {
 
 struct MediaInfo {
-    bool hasAudio {};
-    bool hasVideo {};
-    double durationSeconds {};
-    double videoFramesPerSecond {};
-    std::uint32_t videoWidth {};
-    std::uint32_t videoHeight {};
+    bool hasAudio{};
+    bool hasVideo{};
+    double durationSeconds{};
+    double videoFramesPerSecond{};
+    std::uint32_t videoWidth{};
+    std::uint32_t videoHeight{};
 };
 
 struct AudioBuffer {
-    std::uint32_t sampleRate { 48'000 };
-    std::uint32_t channels { 2 };
+    std::uint32_t sampleRate{48'000};
+    std::uint32_t channels{2};
     std::vector<float> samples;
 };
 
 using AudioSampleCallback =
-    std::function<void(std::span<const float> samples,
-                       std::uint32_t sampleRate,
-                       std::uint32_t channels)>;
+    std::function<void(std::span<const float> samples, std::uint32_t sampleRate, std::uint32_t channels)>;
 
 class MediaFile {
-public:
+  public:
     explicit MediaFile(const std::filesystem::path& path);
     ~MediaFile();
     MediaFile(MediaFile&&) noexcept;
@@ -45,13 +43,13 @@ public:
     void streamAudio(const AudioSampleCallback& callback);
     [[nodiscard]] ImageRgba8 decodeVideoFrame(double seconds);
 
-private:
+  private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
 
 class AudioPlayer {
-public:
+  public:
     AudioPlayer();
     ~AudioPlayer();
     AudioPlayer(AudioPlayer&&) noexcept;
@@ -65,7 +63,7 @@ public:
     void setVolume(float volume);
     [[nodiscard]] bool active() const noexcept;
 
-private:
+  private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

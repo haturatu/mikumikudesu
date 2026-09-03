@@ -3,44 +3,44 @@
 
 #include <nlohmann/json.hpp>
 
-#include <fstream>
-#include <cctype>
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
+#include <cstring>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <system_error>
-#include <cstring>
 
 namespace dayo::core {
 namespace {
 
 using Json = nlohmann::json;
 
-std::filesystem::path resolveAsset(const std::filesystem::path& base,
-                                   const std::filesystem::path& value) {
-    if (value.empty()) return {};
-    if (value.is_absolute()) return value.lexically_normal();
+std::filesystem::path resolveAsset(const std::filesystem::path& base, const std::filesystem::path& value) {
+    if (value.empty())
+        return {};
+    if (value.is_absolute())
+        return value.lexically_normal();
     return std::filesystem::absolute(base / value).lexically_normal();
 }
 
-std::filesystem::path portablePath(const std::filesystem::path& base,
-                                   const std::filesystem::path& value) {
-    if (value.empty()) return {};
+std::filesystem::path portablePath(const std::filesystem::path& base, const std::filesystem::path& value) {
+    if (value.empty())
+        return {};
     std::error_code error;
     const auto relative = std::filesystem::relative(value, base, error);
-    if (!error && !relative.empty()) return relative;
+    if (!error && !relative.empty())
+        return relative;
     return value;
 }
 
 Json parseHeader(std::ifstream& input, const std::filesystem::path& path) {
-    const std::string contents((std::istreambuf_iterator<char>(input)),
-                               std::istreambuf_iterator<char>());
+    const std::string contents((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
     const auto begin = contents.find('{');
     const auto marker = contents.find("[BinaryDayo]");
-    const auto end = marker == std::string::npos ? contents.rfind('}')
-                                                  : contents.rfind('}', marker);
+    const auto end = marker == std::string::npos ? contents.rfind('}') : contents.rfind('}', marker);
     if (begin == std::string::npos || end == std::string::npos || end < begin) {
         throw std::runtime_error("invalid .dayo JSON header: " + path.string());
     }
@@ -49,32 +49,37 @@ Json parseHeader(std::ifstream& input, const std::filesystem::path& path) {
 
 std::vector<std::uint8_t> readBinarySection(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
-    if (!input) return {};
+    if (!input)
+        return {};
     const std::string contents((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
     const auto marker = contents.find("[BinaryDayo]");
-    if (marker == std::string::npos) return {};
+    if (marker == std::string::npos)
+        return {};
     auto begin = marker + std::strlen("[BinaryDayo]");
-    while (begin < contents.size() && (contents[begin] == '\r' || contents[begin] == '\n')) ++begin;
+    while (begin < contents.size() && (contents[begin] == '\r' || contents[begin] == '\n'))
+        ++begin;
     return std::vector<std::uint8_t>(contents.begin() + static_cast<std::ptrdiff_t>(begin), contents.end());
 }
 
-void appendIfPresent(DayoProject& result, const Json& object, std::string_view field,
-                     std::string kind, const std::filesystem::path& base) {
+void appendIfPresent(DayoProject& result, const Json& object, std::string_view field, std::string kind,
+                     const std::filesystem::path& base) {
     const std::string key(field);
-    if (!object.contains(key) || !object.at(key).is_string()) return;
+    if (!object.contains(key) || !object.at(key).is_string())
+        return;
     auto value = object.at(key).get<std::string>();
-    if (!value.empty()) result.assets.push_back(ProjectAsset { std::move(kind), resolveAsset(base, value) });
+    if (!value.empty())
+        result.assets.push_back(ProjectAsset{std::move(kind), resolveAsset(base, value)});
 }
 
 class BinaryReader {
-public:
+  public:
     BinaryReader(std::string_view bytes, int version) : bytes_(bytes), version_(version) {}
 
-    template <typename T>
-    T value(std::string_view field) {
+    template <typename T> T value(std::string_view field) {
         static_assert(std::is_trivially_copyable_v<T>);
-        if (cursor_ + sizeof(T) > bytes_.size()) fail(field);
-        T result {};
+        if (cursor_ + sizeof(T) > bytes_.size())
+            fail(field);
+        T result{};
         std::memcpy(&result, bytes_.data() + cursor_, sizeof(T));
         cursor_ += sizeof(T);
         return result;
@@ -82,16 +87,19 @@ public:
 
     std::string text(std::string_view field) {
         const auto count = value<std::int32_t>(field);
-        if (count < 0 || count > 1'000'000) fail(field);
+        if (count < 0 || count > 1'000'000)
+            fail(field);
         if (version_ != 0) {
             const auto size = static_cast<std::size_t>(count);
-            if (cursor_ + size > bytes_.size()) fail(field);
+            if (cursor_ + size > bytes_.size())
+                fail(field);
             std::string result(bytes_.substr(cursor_, size));
             cursor_ += size;
             return result;
         }
         const auto size = static_cast<std::size_t>(count) * 2U;
-        if (cursor_ + size > bytes_.size()) fail(field);
+        if (cursor_ + size > bytes_.size())
+            fail(field);
         std::string result;
         result.reserve(static_cast<std::size_t>(count) * 3U);
         for (std::int32_t i = 0; i < count; ++i) {
@@ -107,7 +115,8 @@ public:
                     codepoint = 0x10000U + ((codepoint - 0xD800U) << 10U) + trail - 0xDC00U;
                 }
             }
-            if (codepoint <= 0x7FU) result.push_back(static_cast<char>(codepoint));
+            if (codepoint <= 0x7FU)
+                result.push_back(static_cast<char>(codepoint));
             else if (codepoint <= 0x7FFU) {
                 result.push_back(static_cast<char>(0xC0U | (codepoint >> 6U)));
                 result.push_back(static_cast<char>(0x80U | (codepoint & 0x3FU)));
@@ -127,17 +136,18 @@ public:
 
     std::int32_t count(std::string_view field) {
         const auto result = value<std::int32_t>(field);
-        if (result < 0 || result > 10'000'000) fail(field);
+        if (result < 0 || result > 10'000'000)
+            fail(field);
         return result;
     }
 
-private:
+  private:
     [[noreturn]] static void fail(std::string_view field) {
         throw std::runtime_error("invalid legacy .dayo binary " + std::string(field));
     }
     std::string_view bytes_;
-    std::size_t cursor_ {};
-    int version_ {};
+    std::size_t cursor_{};
+    int version_{};
 };
 
 VmdMotion readSubset(BinaryReader& reader) {
@@ -181,7 +191,7 @@ VmdMotion readSubset(BinaryReader& reader) {
             key.interpolation[channel * 4 + 2] = internal[channel * 4 + 1];
             key.interpolation[channel * 4 + 3] = internal[channel * 4 + 3];
         }
-        key.viewAngle = static_cast<std::uint32_t>(std::max(reader.value<float>("camera view angle"), 0.0F));
+        key.viewAngle = std::max(reader.value<float>("camera view angle"), 0.0F);
         key.perspective = reader.value<std::uint8_t>("camera perspective") != 0;
         static_cast<void>(reader.value<std::int32_t>("camera parent model"));
         static_cast<void>(reader.value<std::int32_t>("camera parent bone"));
@@ -206,11 +216,9 @@ VmdMotion readSubset(BinaryReader& reader) {
     }
     for (std::int32_t i = 0, count = reader.count("extra count"); i < count; ++i) {
         const auto frame = static_cast<std::uint32_t>(reader.value<std::int32_t>("extra frame"));
-        VmdIkKey key { .frame = frame,
-                       .visible = reader.value<std::uint8_t>("visibility") != 0,
-                       .states = {} };
+        VmdIkKey key{.frame = frame, .visible = reader.value<std::uint8_t>("visibility") != 0, .states = {}};
         for (std::int32_t j = 0, states = reader.count("IK count"); j < states; ++j) {
-            key.states.push_back({ reader.text("IK name"), reader.value<std::uint8_t>("IK enabled") != 0 });
+            key.states.push_back({reader.text("IK name"), reader.value<std::uint8_t>("IK enabled") != 0});
         }
         for (std::int32_t j = 0, parents = reader.count("external parent count"); j < parents; ++j) {
             static_cast<void>(reader.value<std::int32_t>("external parent model"));
@@ -231,17 +239,18 @@ VmdMotion readSubset(BinaryReader& reader) {
     return motion;
 }
 
-std::vector<VmdMotion> readLegacyMotions(const std::filesystem::path& path, int version,
-                                         std::size_t modelCount) {
+std::vector<VmdMotion> readLegacyMotions(const std::filesystem::path& path, int version, std::size_t modelCount) {
     std::ifstream input(path, std::ios::binary);
     const std::string contents((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
     const auto marker = contents.find("[BinaryDayo]");
-    if (marker == std::string::npos) return {};
+    if (marker == std::string::npos)
+        return {};
     auto begin = marker + std::strlen("[BinaryDayo]");
-    while (begin < contents.size() && (contents[begin] == '\r' || contents[begin] == '\n')) ++begin;
+    while (begin < contents.size() && (contents[begin] == '\r' || contents[begin] == '\n'))
+        ++begin;
     if (version >= 3) {
-        const auto bytes = std::span<const std::uint8_t>(
-            reinterpret_cast<const std::uint8_t*>(contents.data() + begin), contents.size() - begin);
+        const auto bytes = std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(contents.data() + begin),
+                                                         contents.size() - begin);
         std::vector<VmdMotion> result;
         for (auto& document : parseVmdayoSubsets(bytes, modelCount + 1U)) {
             result.push_back(toVmdMotion(std::move(document.motion), std::move(document.modelName)));
@@ -252,7 +261,8 @@ std::vector<VmdMotion> readLegacyMotions(const std::filesystem::path& path, int 
     std::vector<VmdMotion> result;
     result.reserve(modelCount + 1);
     result.push_back(readSubset(reader)); // camera/light subset
-    for (std::size_t model = 0; model < modelCount; ++model) result.push_back(readSubset(reader));
+    for (std::size_t model = 0; model < modelCount; ++model)
+        result.push_back(readSubset(reader));
     return result;
 }
 
@@ -260,7 +270,8 @@ std::vector<VmdMotion> readLegacyMotions(const std::filesystem::path& path, int 
 
 DayoProject loadProject(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
-    if (!input) throw std::runtime_error("cannot open project: " + path.string());
+    if (!input)
+        throw std::runtime_error("cannot open project: " + path.string());
     const auto root = parseHeader(input, path);
     const auto base = std::filesystem::absolute(path).parent_path();
 
@@ -269,32 +280,31 @@ DayoProject loadProject(const std::filesystem::path& path) {
         const auto& native = root.at("mikumikudesu");
         result.version = native.value("version", 2);
         if (result.version > 3) {
-            throw std::runtime_error("unsupported .dayo project version "
-                                     + std::to_string(result.version));
+            throw std::runtime_error("unsupported .dayo project version " + std::to_string(result.version));
         }
         result.renderer = native.value("renderer", "preview");
         result.frame = native.value("frame", 0.0F);
         result.playing = native.value("playing", true);
         if (native.contains("assets") && native.at("assets").is_array()) {
             for (const auto& asset : native.at("assets")) {
-                if (!asset.is_object() || !asset.contains("path") || !asset.at("path").is_string()) continue;
-                result.assets.push_back({ asset.value("kind", "unknown"),
-                                          resolveAsset(base, asset.at("path").get<std::string>()) });
+                if (!asset.is_object() || !asset.contains("path") || !asset.at("path").is_string())
+                    continue;
+                result.assets.push_back(
+                    {asset.value("kind", "unknown"), resolveAsset(base, asset.at("path").get<std::string>())});
             }
         }
         result.embeddedVmdayo = readBinarySection(path);
         if (!result.embeddedVmdayo.empty()) {
-            const auto modelCount = std::ranges::count_if(result.assets, [](const auto& asset) {
-                return asset.kind == "pmx";
-            });
+            const auto modelCount = static_cast<std::size_t>(
+                std::ranges::count_if(result.assets, [](const auto& asset) { return asset.kind == "pmx"; }));
             try {
                 if (modelCount != 0U) {
                     for (auto& document : parseVmdayoSubsets(result.embeddedVmdayo, modelCount + 1U)) {
                         result.embeddedMotions.push_back(
                             toVmdMotion(std::move(document.motion), std::move(document.modelName)));
                     }
-                    result.embeddedMotion = result.embeddedMotions.size() > 1U
-                        ? result.embeddedMotions[1] : result.embeddedMotions[0];
+                    result.embeddedMotion =
+                        result.embeddedMotions.size() > 1U ? result.embeddedMotions[1] : result.embeddedMotions[0];
                     if (result.embeddedMotions.size() > 1U) {
                         result.embeddedMotion->cameras = result.embeddedMotions[0].cameras;
                         result.embeddedMotion->lights = result.embeddedMotions[0].lights;
@@ -339,13 +349,15 @@ DayoProject loadProject(const std::filesystem::path& path) {
             appendIfPresent(result, effect, "filename", "effect", legacyBase);
             if (effect.contains("filename") && effect.at("filename").is_string()) {
                 auto name = std::filesystem::path(effect.at("filename").get<std::string>()).stem().string();
-                for (auto& character : name) character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
-                if (name == "subayai" || name == "bdpt" || name == "preview") result.renderer = name;
+                for (auto& character : name)
+                    character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+                if (name == "subayai" || name == "bdpt" || name == "preview")
+                    result.renderer = name;
             }
         }
     }
-    const auto modelCount = legacy.contains("models") && legacy.at("models").is_array()
-        ? legacy.at("models").size() : std::size_t {};
+    const auto modelCount =
+        legacy.contains("models") && legacy.at("models").is_array() ? legacy.at("models").size() : std::size_t{};
     const auto motions = readLegacyMotions(path, result.version, modelCount);
     if (!motions.empty()) {
         result.embeddedMotions = motions;
@@ -361,54 +373,75 @@ DayoProject loadProject(const std::filesystem::path& path) {
 }
 
 void saveProject(const std::filesystem::path& path, const DayoProject& project) {
-    if (path.empty()) throw std::invalid_argument("project path is empty");
+    if (path.empty())
+        throw std::invalid_argument("project path is empty");
     const auto absolute = std::filesystem::absolute(path).lexically_normal();
     const auto base = absolute.parent_path();
     std::filesystem::create_directories(base);
 
     Json assets = Json::array();
     for (const auto& asset : project.assets) {
-        assets.push_back({ { "kind", asset.kind },
-                           { "path", portablePath(base, asset.path).generic_string() } });
+        assets.push_back({{"kind", asset.kind}, {"path", portablePath(base, asset.path).generic_string()}});
     }
     Json upstreamModels = Json::array();
     int modelId = 1;
-    for (const auto& asset : project.assets) if (asset.kind == "pmx") {
-        upstreamModels.push_back({
-            { "cereal_class_version", 3 }, { "id", modelId++ },
-            { "filename", portablePath(base, asset.path).generic_string() },
-            { "bones", Json::array() }, { "morphs", Json::array() }, { "materials", Json::array() },
-        });
-    }
-    const Json upstreamEditor {
-        { "cereal_class_version", 3 }, { "frame", static_cast<int>(project.frame) },
-        { "animationStart", 0 }, { "animationEnd", -1 }, { "animationRepeat", false },
-        { "recordStart", 0 }, { "recordEnd", -1 }, { "samplesPerFrame", 16 },
-        { "motionBlur", false }, { "outputWidth", 1920 }, { "outputHeight", 1080 },
-        { "motionOrder", Json::array() }, { "postprocessOrder", Json::array() },
-        { "deformOrder", Json::array() }, { "rasterOrder", Json::array() },
-        { "recordFps", 30.0F }, { "animationSpeed", 1.0F },
+    for (const auto& asset : project.assets)
+        if (asset.kind == "pmx") {
+            upstreamModels.push_back({
+                {"cereal_class_version", 3},
+                {"id", modelId++},
+                {"filename", portablePath(base, asset.path).generic_string()},
+                {"bones", Json::array()},
+                {"morphs", Json::array()},
+                {"materials", Json::array()},
+            });
+        }
+    const Json upstreamEditor{
+        {"cereal_class_version", 3},
+        {"frame", static_cast<int>(project.frame)},
+        {"animationStart", 0},
+        {"animationEnd", -1},
+        {"animationRepeat", false},
+        {"recordStart", 0},
+        {"recordEnd", -1},
+        {"samplesPerFrame", 16},
+        {"motionBlur", false},
+        {"outputWidth", 1920},
+        {"outputHeight", 1080},
+        {"motionOrder", Json::array()},
+        {"postprocessOrder", Json::array()},
+        {"deformOrder", Json::array()},
+        {"rasterOrder", Json::array()},
+        {"recordFps", 30.0F},
+        {"animationSpeed", 1.0F},
     };
-    const Json root {
-        { "MikuMikuDayo", {
-            { "cereal_class_version", 3 }, { "ver", 3 }, { "assetPath", base.generic_string() },
-            { "editor", upstreamEditor }, { "fxinfo", Json::array() },
-            { "models", upstreamModels }, { "dayoVer", 130 },
-        } },
-        { "mikumikudesu", {
-            { "version", 3 },
-            { "renderer", project.renderer },
-            { "frame", project.frame },
-            { "playing", project.playing },
-            { "assets", std::move(assets) },
-        } },
+    const Json root{
+        {"MikuMikuDayo",
+         {
+             {"cereal_class_version", 3},
+             {"ver", 3},
+             {"assetPath", base.generic_string()},
+             {"editor", upstreamEditor},
+             {"fxinfo", Json::array()},
+             {"models", upstreamModels},
+             {"dayoVer", 130},
+         }},
+        {"mikumikudesu",
+         {
+             {"version", 3},
+             {"renderer", project.renderer},
+             {"frame", project.frame},
+             {"playing", project.playing},
+             {"assets", std::move(assets)},
+         }},
     };
 
     auto temporary = absolute;
     temporary += ".tmp";
     {
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-        if (!output) throw std::runtime_error("cannot write project: " + temporary.string());
+        if (!output)
+            throw std::runtime_error("cannot write project: " + temporary.string());
         output << "[MikuMikuDayo]\n" << root.dump(2) << "\n[BinaryDayo]\n";
         auto payload = project.embeddedVmdayo;
         if (payload.empty()) {
@@ -420,32 +453,35 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
                 camera.lights = project.embeddedMotion->lights;
                 camera.shadows = project.embeddedMotion->shadows;
                 auto model = *project.embeddedMotion;
-                model.cameras.clear(); model.lights.clear(); model.shadows.clear();
-                motions = { std::move(camera), std::move(model) };
+                model.cameras.clear();
+                model.lights.clear();
+                model.shadows.clear();
+                motions = {std::move(camera), std::move(model)};
             }
             const auto expected = upstreamModels.size() + 1U;
-            if (motions.empty()) motions.emplace_back();
+            if (motions.empty())
+                motions.emplace_back();
             motions.resize(expected);
             for (std::size_t index = 0; index < motions.size(); ++index) {
                 VmdayoDocument document;
                 document.type = index == 0 ? 1 : 0;
-                document.modelName = index == 0 && motions[index].modelName.empty()
-                    ? "Camera/Light" : motions[index].modelName;
+                document.modelName =
+                    index == 0 && motions[index].modelName.empty() ? "Camera/Light" : motions[index].modelName;
                 document.motion = toMotionDocument(motions[index]);
-                for (std::size_t model = 0; model < upstreamModels.size(); ++model) {
-                    const auto id = upstreamModels[model].at("id").get<std::int32_t>();
-                    document.modelDictionary[id] = upstreamModels[model].at("filename").get<std::string>();
+                for (const auto& upstreamModel : upstreamModels) {
+                    const auto id = upstreamModel.at("id").get<std::int32_t>();
+                    document.modelDictionary[id] = upstreamModel.at("filename").get<std::string>();
                 }
                 auto subset = serializeVmdayoSubset(document);
                 payload.insert(payload.end(), subset.begin(), subset.end());
             }
         }
         if (!payload.empty()) {
-            output.write(reinterpret_cast<const char*>(payload.data()),
-                         static_cast<std::streamsize>(payload.size()));
+            output.write(reinterpret_cast<const char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
         }
         output.flush();
-        if (!output) throw std::runtime_error("failed while writing project: " + temporary.string());
+        if (!output)
+            throw std::runtime_error("failed while writing project: " + temporary.string());
     }
     std::error_code error;
     std::filesystem::rename(temporary, absolute, error);

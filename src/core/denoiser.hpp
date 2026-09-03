@@ -7,7 +7,7 @@ namespace dayo::core {
 enum class DenoiserBackend { unavailable, cpu, hip };
 
 struct DenoiserStatus {
-    DenoiserBackend backend { DenoiserBackend::unavailable };
+    DenoiserBackend backend{DenoiserBackend::unavailable};
     std::string detail;
 };
 
@@ -17,4 +17,3 @@ struct DenoiserStatus {
 [[nodiscard]] DenoiserStatus selectDenoiser();
 
 } // namespace dayo::core
-

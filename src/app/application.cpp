@@ -1,14 +1,14 @@
 #include "app/application.hpp"
 
-#include "core/asset.hpp"
 #include "core/animation.hpp"
+#include "core/asset.hpp"
 #include "core/denoiser.hpp"
 #include "core/image.hpp"
 #include "core/log.hpp"
 #include "core/model_probe.hpp"
 #include "core/motion.hpp"
-#include "core/vmdayo.hpp"
 #include "core/video_export.hpp"
+#include "core/vmdayo.hpp"
 #include "graphics/device.hpp"
 #include "platform/window.hpp"
 
@@ -18,10 +18,10 @@
 #include <imgui.h>
 #endif
 
-#include <charconv>
-#include <cctype>
 #include <algorithm>
 #include <array>
+#include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -36,23 +36,29 @@ namespace dayo::app {
 namespace {
 
 graphics::RendererKind parseRenderer(std::string_view value) {
-    if (value == "preview") return graphics::RendererKind::preview;
-    if (value == "subayai") return graphics::RendererKind::subayai;
-    if (value == "bdpt") return graphics::RendererKind::bdpt;
+    if (value == "preview")
+        return graphics::RendererKind::preview;
+    if (value == "subayai")
+        return graphics::RendererKind::subayai;
+    if (value == "bdpt")
+        return graphics::RendererKind::bdpt;
     throw std::invalid_argument("unknown renderer: " + std::string(value));
 }
 
 core::VideoCodec parseVideoCodec(std::string_view value) {
-    if (value == "h264") return core::VideoCodec::h264;
-    if (value == "h265" || value == "hevc") return core::VideoCodec::h265;
-    if (value == "av1") return core::VideoCodec::av1;
+    if (value == "h264")
+        return core::VideoCodec::h264;
+    if (value == "h265" || value == "hevc")
+        return core::VideoCodec::h265;
+    if (value == "av1")
+        return core::VideoCodec::av1;
     throw std::invalid_argument("unknown video codec: " + std::string(value));
 }
 
 std::uint64_t parseFrameCount(std::string_view value) {
     std::uint64_t frames = 0;
     const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), frames);
-    if (error != std::errc {} || end != value.data() + value.size() || frames == 0) {
+    if (error != std::errc{} || end != value.data() + value.size() || frames == 0) {
         throw std::invalid_argument("--frames expects a positive integer");
     }
     return frames;
@@ -61,7 +67,7 @@ std::uint64_t parseFrameCount(std::string_view value) {
 std::uint64_t parseNonNegativeFrame(std::string_view value, std::string_view option) {
     std::uint64_t frame = 0;
     const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), frame);
-    if (error != std::errc {} || end != value.data() + value.size()) {
+    if (error != std::errc{} || end != value.data() + value.size()) {
         throw std::invalid_argument(std::string(option) + " expects a non-negative integer");
     }
     return frame;
@@ -70,7 +76,7 @@ std::uint64_t parseNonNegativeFrame(std::string_view value, std::string_view opt
 std::uint32_t parsePositiveInteger(std::string_view value, std::string_view option) {
     std::uint32_t result = 0;
     const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
-    if (error != std::errc {} || end != value.data() + value.size() || result == 0) {
+    if (error != std::errc{} || end != value.data() + value.size() || result == 0) {
         throw std::invalid_argument(std::string(option) + " expects a positive integer");
     }
     return result;
@@ -82,13 +88,13 @@ double sceneTimelineFps(const core::Scene& scene) noexcept {
 }
 
 core::Float3 rotateQuaternion(const core::Float4& quaternion, const core::Float3& value) {
-    const core::Float3 axis { quaternion[0], quaternion[1], quaternion[2] };
-    const core::Float3 firstCross {
+    const core::Float3 axis{quaternion[0], quaternion[1], quaternion[2]};
+    const core::Float3 firstCross{
         axis[1] * value[2] - axis[2] * value[1],
         axis[2] * value[0] - axis[0] * value[2],
         axis[0] * value[1] - axis[1] * value[0],
     };
-    const core::Float3 nested {
+    const core::Float3 nested{
         axis[1] * firstCross[2] - axis[2] * firstCross[1],
         axis[2] * firstCross[0] - axis[0] * firstCross[2],
         axis[0] * firstCross[1] - axis[1] * firstCross[0],
@@ -117,25 +123,18 @@ core::Float3 normalizePreviewPoint(const core::Float3& point,
     };
 }
 
-std::uint64_t videoOutputFrameCount(std::uint64_t firstFrame,
-                                    std::uint64_t lastFrame,
-                                    double sourceFps,
+std::uint64_t videoOutputFrameCount(std::uint64_t firstFrame, std::uint64_t lastFrame, double sourceFps,
                                     double outputFps) {
     const auto intervals = static_cast<double>(lastFrame - firstFrame) * outputFps / sourceFps;
-    if (!std::isfinite(intervals)
-        || intervals > static_cast<double>(std::numeric_limits<std::uint64_t>::max() - 1U)) {
+    if (!std::isfinite(intervals) || intervals > static_cast<double>(std::numeric_limits<std::uint64_t>::max() - 1U)) {
         throw std::invalid_argument("video frame range produces too many output frames");
     }
     return static_cast<std::uint64_t>(std::ceil(std::max(intervals, 0.0) - 1e-9)) + 1U;
 }
 
-float videoSourceFrame(std::uint64_t outputFrame,
-                       std::uint64_t firstFrame,
-                       std::uint64_t lastFrame,
-                       double sourceFps,
+float videoSourceFrame(std::uint64_t outputFrame, std::uint64_t firstFrame, std::uint64_t lastFrame, double sourceFps,
                        double outputFps) noexcept {
-    const auto value = static_cast<double>(firstFrame)
-        + static_cast<double>(outputFrame) * sourceFps / outputFps;
+    const auto value = static_cast<double>(firstFrame) + static_cast<double>(outputFrame) * sourceFps / outputFps;
     return static_cast<float>(std::min(static_cast<double>(lastFrame), value));
 }
 
@@ -180,96 +179,131 @@ Options parseOptions(int argc, char** argv) {
         } else if (argument == "--no-validation") {
             options.validation = false;
         } else if (argument == "--renderer") {
-            if (++i >= argc) throw std::invalid_argument("--renderer requires a value");
+            if (++i >= argc)
+                throw std::invalid_argument("--renderer requires a value");
             options.renderer = parseRenderer(argv[i]);
         } else if (argument == "--frames") {
-            if (++i >= argc) throw std::invalid_argument("--frames requires a value");
+            if (++i >= argc)
+                throw std::invalid_argument("--frames requires a value");
             options.frameLimit = parseFrameCount(argv[i]);
         } else if (argument == "--model" || argument == "--asset") {
-            if (++i >= argc) throw std::invalid_argument(std::string(argument) + " requires a path");
+            if (++i >= argc)
+                throw std::invalid_argument(std::string(argument) + " requires a path");
             options.assets.emplace_back(argv[i]);
         } else if (argument == "--save-project") {
-            if (++i >= argc) throw std::invalid_argument("--save-project requires a path");
+            if (++i >= argc)
+                throw std::invalid_argument("--save-project requires a path");
             options.saveProject = std::filesystem::path(argv[i]);
         } else if (argument == "--export-m4a") {
-            if (++i >= argc) throw std::invalid_argument("--export-m4a requires a destination path");
-            if (!options.audioExport) options.audioExport.emplace();
+            if (++i >= argc)
+                throw std::invalid_argument("--export-m4a requires a destination path");
+            if (!options.audioExport)
+                options.audioExport.emplace();
             options.audioExport->destination = argv[i];
         } else if (argument == "--export-video") {
-            if (++i >= argc) throw std::invalid_argument("--export-video requires a destination path");
-            if (!options.videoExport) options.videoExport.emplace();
+            if (++i >= argc)
+                throw std::invalid_argument("--export-video requires a destination path");
+            if (!options.videoExport)
+                options.videoExport.emplace();
             options.videoExport->destination = argv[i];
         } else if (argument == "--video-width") {
-            if (++i >= argc) throw std::invalid_argument("--video-width requires a value");
-            if (!options.videoExport) options.videoExport.emplace();
+            if (++i >= argc)
+                throw std::invalid_argument("--video-width requires a value");
+            if (!options.videoExport)
+                options.videoExport.emplace();
             options.videoExport->width = parsePositiveInteger(argv[i], "--video-width");
         } else if (argument == "--video-height") {
-            if (++i >= argc) throw std::invalid_argument("--video-height requires a value");
-            if (!options.videoExport) options.videoExport.emplace();
+            if (++i >= argc)
+                throw std::invalid_argument("--video-height requires a value");
+            if (!options.videoExport)
+                options.videoExport.emplace();
             options.videoExport->height = parsePositiveInteger(argv[i], "--video-height");
         } else if (argument == "--video-fps") {
-            if (++i >= argc) throw std::invalid_argument("--video-fps requires a value");
-            if (!options.videoExport) options.videoExport.emplace();
+            if (++i >= argc)
+                throw std::invalid_argument("--video-fps requires a value");
+            if (!options.videoExport)
+                options.videoExport.emplace();
             options.videoExport->fps = parsePositiveNumber(argv[i], "--video-fps");
         } else if (argument == "--video-codec") {
-            if (++i >= argc) throw std::invalid_argument("--video-codec requires a value");
-            if (!options.videoExport) options.videoExport.emplace();
+            if (++i >= argc)
+                throw std::invalid_argument("--video-codec requires a value");
+            if (!options.videoExport)
+                options.videoExport.emplace();
             options.videoExport->codec = parseVideoCodec(argv[i]);
         } else if (argument == "--video-bitrate") {
-            if (++i >= argc) throw std::invalid_argument("--video-bitrate requires a value in kbps");
+            if (++i >= argc)
+                throw std::invalid_argument("--video-bitrate requires a value in kbps");
             const auto kbps = parsePositiveInteger(argv[i], "--video-bitrate");
             if (kbps > std::numeric_limits<std::uint32_t>::max() / 1000U) {
                 throw std::invalid_argument("--video-bitrate is too large");
             }
-            if (!options.videoExport) options.videoExport.emplace();
+            if (!options.videoExport)
+                options.videoExport.emplace();
             options.videoExport->bitrate = kbps * 1000U;
         } else if (argument == "--video-from-frame") {
-            if (++i >= argc) throw std::invalid_argument("--video-from-frame requires a value");
-            if (!options.videoExport) options.videoExport.emplace();
+            if (++i >= argc)
+                throw std::invalid_argument("--video-from-frame requires a value");
+            if (!options.videoExport)
+                options.videoExport.emplace();
             options.videoExport->fromFrame = parseNonNegativeFrame(argv[i], "--video-from-frame");
         } else if (argument == "--video-to-frame") {
-            if (++i >= argc) throw std::invalid_argument("--video-to-frame requires a value");
-            if (!options.videoExport) options.videoExport.emplace();
+            if (++i >= argc)
+                throw std::invalid_argument("--video-to-frame requires a value");
+            if (!options.videoExport)
+                options.videoExport.emplace();
             options.videoExport->toFrame = parseNonNegativeFrame(argv[i], "--video-to-frame");
         } else if (argument == "--no-audio") {
-            if (!options.videoExport) options.videoExport.emplace();
+            if (!options.videoExport)
+                options.videoExport.emplace();
             options.videoExport->includeAudio = false;
         } else if (argument == "--audio-source") {
-            if (++i >= argc) throw std::invalid_argument("--audio-source requires a path");
-            if (options.videoExport) options.videoExport->audioSource = std::filesystem::path(argv[i]);
+            if (++i >= argc)
+                throw std::invalid_argument("--audio-source requires a path");
+            if (options.videoExport)
+                options.videoExport->audioSource = std::filesystem::path(argv[i]);
             else {
-                if (!options.audioExport) options.audioExport.emplace();
+                if (!options.audioExport)
+                    options.audioExport.emplace();
                 options.audioExport->source = std::filesystem::path(argv[i]);
             }
         } else if (argument == "--audio-bitrate") {
-            if (++i >= argc) throw std::invalid_argument("--audio-bitrate requires a value in kbps");
+            if (++i >= argc)
+                throw std::invalid_argument("--audio-bitrate requires a value in kbps");
             const auto kbps = parsePositiveInteger(argv[i], "--audio-bitrate");
             if (kbps > std::numeric_limits<std::uint32_t>::max() / 1000U) {
                 throw std::invalid_argument("--audio-bitrate is too large");
             }
-            if (options.videoExport) options.videoExport->audioBitrate = kbps * 1000U;
+            if (options.videoExport)
+                options.videoExport->audioBitrate = kbps * 1000U;
             else {
-                if (!options.audioExport) options.audioExport.emplace();
+                if (!options.audioExport)
+                    options.audioExport.emplace();
                 options.audioExport->bitrate = kbps * 1000U;
             }
         } else if (argument == "--audio-from") {
-            if (++i >= argc) throw std::invalid_argument("--audio-from requires seconds");
+            if (++i >= argc)
+                throw std::invalid_argument("--audio-from requires seconds");
             if (options.videoExport) {
                 throw std::invalid_argument("--audio-from is only available with --export-m4a");
             }
-            if (!options.audioExport) options.audioExport.emplace();
+            if (!options.audioExport)
+                options.audioExport.emplace();
             options.audioExport->startSeconds = parseSeconds(argv[i], "--audio-from");
         } else if (argument == "--audio-to") {
-            if (++i >= argc) throw std::invalid_argument("--audio-to requires seconds");
+            if (++i >= argc)
+                throw std::invalid_argument("--audio-to requires seconds");
             if (options.videoExport) {
                 throw std::invalid_argument("--audio-to is only available with --export-m4a");
             }
-            if (!options.audioExport) options.audioExport.emplace();
+            if (!options.audioExport)
+                options.audioExport.emplace();
             options.audioExport->endSeconds = parseSeconds(argv[i], "--audio-to");
         } else if (argument == "--overwrite") {
-            if (options.videoExport) options.videoExport->overwrite = true;
+            if (options.videoExport)
+                options.videoExport->overwrite = true;
             else {
-                if (!options.audioExport) options.audioExport.emplace();
+                if (!options.audioExport)
+                    options.audioExport.emplace();
                 options.audioExport->overwrite = true;
             }
         } else if (argument == "--help" || argument == "-h") {
@@ -290,7 +324,8 @@ Options parseOptions(int argc, char** argv) {
         }
     }
     if (options.videoExport && options.audioExport && options.audioExport->destination.empty()) {
-        if (options.audioExport->source) options.videoExport->audioSource = options.audioExport->source;
+        if (options.audioExport->source)
+            options.videoExport->audioSource = options.audioExport->source;
         options.videoExport->audioBitrate = options.audioExport->bitrate;
         options.videoExport->overwrite = options.videoExport->overwrite || options.audioExport->overwrite;
         options.audioExport.reset();
@@ -306,7 +341,8 @@ void Application::resetProjectRuntimeState() {
     videoExportFramesFinished_ = false;
     videoRangeInitialized_ = false;
     scene_.clearProjectState();
-    if (device_ != nullptr) device_->clearPreviewResources();
+    if (device_ != nullptr)
+        device_->clearPreviewResources();
     effectReloader_.reset();
     audioPlayer_.stop();
     audioSource_.clear();
@@ -348,7 +384,8 @@ int Application::run() {
     log::info("Denoiser: ", denoiser.detail);
     log::info("Media: ", DAYO_HAS_MEDIA ? "FFmpeg available" : "FFmpeg development libraries not found");
 
-    for (const auto& asset : options_.assets) handleAsset(asset);
+    for (const auto& asset : options_.assets)
+        handleAsset(asset);
     if (options_.saveProject) {
         core::saveProject(*options_.saveProject, currentProject());
         log::info("Saved project: ", options_.saveProject->string());
@@ -357,7 +394,8 @@ int Application::run() {
         std::cout << device->capabilities().json() << '\n';
         return 0;
     }
-    if (options_.videoExport) return runVideoExport();
+    if (options_.videoExport)
+        return runVideoExport();
 
     bool running = true;
     std::uint64_t frameCount = 0;
@@ -387,7 +425,8 @@ int Application::run() {
                 break;
             }
         }
-        if (!running) break;
+        if (!running)
+            break;
         if (window->minimized() || window->pixelWidth() == 0 || window->pixelHeight() == 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
             continue;
@@ -416,13 +455,13 @@ int Application::run() {
                         videoPreRollDone_ = true;
                         videoPreviousSourceFrame_ = static_cast<float>(videoFromFrame_);
                     }
-                    const auto sourceFrame = videoSourceFrame(
-                        videoNextFrame_, videoFromFrame_, videoToFrame_, videoSourceFps_, videoFps_);
+                    const auto sourceFrame =
+                        videoSourceFrame(videoNextFrame_, videoFromFrame_, videoToFrame_, videoSourceFps_, videoFps_);
                     if (videoNextFrame_ != 0U) {
                         animationFrame_ = sourceFrame;
                         scene_.setFrame(animationFrame_);
-                        const auto delta = std::max(0.0F, sourceFrame - videoPreviousSourceFrame_)
-                            / static_cast<float>(videoSourceFps_);
+                        const auto delta = std::max(0.0F, sourceFrame - videoPreviousSourceFrame_) /
+                                           static_cast<float>(videoSourceFps_);
                         refreshAnimatedMesh(false, delta);
                     }
                     if (videoMode_) {
@@ -431,8 +470,8 @@ int Application::run() {
                     }
                     refreshPreviewScene();
                     try {
-                        videoExportJob_.submitFrame(device_->renderToImage(
-                            { exportOptions.width, exportOptions.height }));
+                        videoExportJob_.submitFrame(
+                            device_->renderToImage({exportOptions.width, exportOptions.height}));
                     } catch (const std::exception& exception) {
                         videoExportStatus_ = exception.what();
                         videoExportJob_.cancel();
@@ -472,7 +511,8 @@ int Application::run() {
         if (playing_ && videoMode_ && media != nullptr && media->info().hasVideo) {
             mediaSeconds_ += deltaSeconds * static_cast<double>(playbackSpeed_);
             if (media->info().durationSeconds > 0.0 && mediaSeconds_ >= media->info().durationSeconds) {
-                if (repeat_) mediaSeconds_ = std::fmod(mediaSeconds_, media->info().durationSeconds);
+                if (repeat_)
+                    mediaSeconds_ = std::fmod(mediaSeconds_, media->info().durationSeconds);
                 else {
                     mediaSeconds_ = media->info().durationSeconds;
                     playing_ = false;
@@ -480,21 +520,26 @@ int Application::run() {
                 }
                 uploadedVideoFrame_ = -1;
                 if (repeat_ && media->info().hasAudio) {
-                    if (loadedAudio_.samples.empty()) loadedAudio_ = media->decodeAudio();
+                    if (loadedAudio_.samples.empty())
+                        loadedAudio_ = media->decodeAudio();
                     audioPlayer_.play(loadedAudio_, std::max(0.0F, audioOffsetSeconds_));
                     audioPlayer_.setVolume(audioVolume_);
                 }
             }
             const auto videoFrame = static_cast<std::int64_t>(mediaSeconds_ * media->info().videoFramesPerSecond);
-            if (videoFrame != uploadedVideoFrame_) refreshVideoFrame();
+            if (videoFrame != uploadedVideoFrame_)
+                refreshVideoFrame();
         }
         device->beginUiFrame();
         buildUi();
         device->renderFrame();
-        if (scene_.runtimeMode() == core::RuntimeMode::accumulate) scene_.advanceAccumulation();
-        else if (scene_.runtimeMode() == core::RuntimeMode::realtime) scene_.invalidateAccumulation();
+        if (scene_.runtimeMode() == core::RuntimeMode::accumulate)
+            scene_.advanceAccumulation();
+        else if (scene_.runtimeMode() == core::RuntimeMode::realtime)
+            scene_.invalidateAccumulation();
         ++frameCount;
-        if (options_.frameLimit && frameCount >= *options_.frameLimit) running = false;
+        if (options_.frameLimit && frameCount >= *options_.frameLimit)
+            running = false;
     }
     device->waitIdle();
     audioPlayer_.stop();
@@ -504,31 +549,34 @@ int Application::run() {
 
 core::DayoProject Application::currentProject() const {
     core::DayoProject project;
-    project.renderer = device_ == nullptr ? "preview"
-        : std::string(graphics::toString(device_->activeRenderer()));
+    project.renderer = device_ == nullptr ? "preview" : std::string(graphics::toString(device_->activeRenderer()));
     project.frame = animationFrame_;
     project.playing = playing_;
     project.assets = projectAssets_;
-    core::VmdMotion camera = scene_.cameraMotion() == nullptr
-        ? core::VmdMotion {} : *scene_.cameraMotion();
-    if (camera.modelName.empty()) camera.modelName = "Camera/Light";
+    core::VmdMotion camera = scene_.cameraMotion() == nullptr ? core::VmdMotion{} : *scene_.cameraMotion();
+    if (camera.modelName.empty())
+        camera.modelName = "Camera/Light";
     project.embeddedMotions.push_back(std::move(camera));
     for (const auto& model : scene_.models()) {
-        auto motion = model.motion == nullptr ? core::VmdMotion {} : *model.motion;
-        if (motion.modelName.empty()) motion.modelName = model.displayName;
+        auto motion = model.motion == nullptr ? core::VmdMotion{} : *model.motion;
+        if (motion.modelName.empty())
+            motion.modelName = model.displayName;
         project.embeddedMotions.push_back(std::move(motion));
     }
     return project;
 }
 
 int Application::runVideoExport() {
-    if (!options_.videoExport) throw std::invalid_argument("--export-video is required");
+    if (!options_.videoExport)
+        throw std::invalid_argument("--export-video is required");
     const auto& options = *options_.videoExport;
-    if (options.destination.empty()) throw std::invalid_argument("--export-video requires a destination path");
+    if (options.destination.empty())
+        throw std::invalid_argument("--export-video requires a destination path");
     if (!core::canExportVideo(options.codec)) {
         throw std::runtime_error("requested video encoder is unavailable");
     }
-    if (device_ == nullptr) throw std::logic_error("video export has no graphics device");
+    if (device_ == nullptr)
+        throw std::logic_error("video export has no graphics device");
 
     std::optional<std::filesystem::path> audioSource;
     if (options.includeAudio) {
@@ -543,30 +591,34 @@ int Application::runVideoExport() {
             std::vector<std::filesystem::path> candidates;
             for (const auto& asset : options_.assets) {
                 const auto kind = core::classifyAsset(asset);
-                if (kind != core::AssetKind::audio && kind != core::AssetKind::video) continue;
+                if (kind != core::AssetKind::audio && kind != core::AssetKind::video)
+                    continue;
                 const auto source = std::filesystem::absolute(asset);
                 core::MediaFile media(source);
-                if (media.info().hasAudio
-                    && std::find(candidates.begin(), candidates.end(), source) == candidates.end()) {
+                if (media.info().hasAudio &&
+                    std::find(candidates.begin(), candidates.end(), source) == candidates.end()) {
                     candidates.push_back(source);
                 }
             }
             if (candidates.size() > 1) {
                 throw std::runtime_error("multiple audio sources found; use --audio-source PATH");
             }
-            if (candidates.size() == 1) audioSource = candidates.front();
-            else if (!audioSource_.empty()) audioSource = audioSource_;
+            if (candidates.size() == 1)
+                audioSource = candidates.front();
+            else if (!audioSource_.empty())
+                audioSource = audioSource_;
         }
         if (!audioSource) {
             log::warn("Video export: no audio source found; exporting video only");
         }
     }
 
-    const auto timelineEnd = scene_.timeline().duration > 0.0F
-        ? static_cast<std::uint64_t>(std::ceil(scene_.timeline().duration)) : 0U;
+    const auto timelineEnd =
+        scene_.timeline().duration > 0.0F ? static_cast<std::uint64_t>(std::ceil(scene_.timeline().duration)) : 0U;
     const auto firstFrame = options.fromFrame.value_or(0U);
     const auto lastFrame = options.toFrame.value_or(timelineEnd);
-    if (lastFrame < firstFrame) throw std::invalid_argument("video frame range is reversed");
+    if (lastFrame < firstFrame)
+        throw std::invalid_argument("video frame range is reversed");
     if (lastFrame == std::numeric_limits<std::uint64_t>::max()) {
         throw std::invalid_argument("video frame range is too large");
     }
@@ -587,13 +639,12 @@ int Application::runVideoExport() {
     core::VideoExporter exporter(request);
     if (audioSource) {
         core::MediaFile media(*audioSource);
-        const auto maxSamples = static_cast<std::uint64_t>(std::ceil(
-            static_cast<double>(frameCount) / options.fps * 48'000.0)) * 2U;
+        const auto maxSamples =
+            static_cast<std::uint64_t>(std::ceil(static_cast<double>(frameCount) / options.fps * 48'000.0)) * 2U;
         std::uint64_t writtenSamples = 0;
-        media.streamAudio([&](std::span<const float> samples,
-                              std::uint32_t sampleRate,
-                              std::uint32_t channels) {
-            if (writtenSamples >= maxSamples) return;
+        media.streamAudio([&](std::span<const float> samples, std::uint32_t sampleRate, std::uint32_t channels) {
+            if (writtenSamples >= maxSamples)
+                return;
             const auto count = std::min<std::uint64_t>(samples.size(), maxSamples - writtenSamples);
             exporter.writeAudio(samples.first(static_cast<std::size_t>(count)), sampleRate, channels);
             writtenSamples += count;
@@ -609,7 +660,8 @@ int Application::runVideoExport() {
             mediaSeconds_ = std::max(0.0, static_cast<double>(frame) / sourceFps);
         }
         refreshAnimatedMesh(initialUpload, deltaSeconds);
-        if (videoMode_) refreshVideoFrame();
+        if (videoMode_)
+            refreshVideoFrame();
         refreshPreviewScene();
     };
 
@@ -628,22 +680,21 @@ int Application::runVideoExport() {
     for (std::uint64_t outputFrame = 0; outputFrame < frameCount; ++outputFrame) {
         const auto sourceFrame = videoSourceFrame(outputFrame, firstFrame, lastFrame, sourceFps, options.fps);
         if (outputFrame != 0U) {
-            const auto deltaSeconds = std::max(0.0F, sourceFrame - previousSourceFrame)
-                * sourceFrameDuration;
+            const auto deltaSeconds = std::max(0.0F, sourceFrame - previousSourceFrame) * sourceFrameDuration;
             evaluateFrame(sourceFrame, deltaSeconds, false);
         }
         previousSourceFrame = sourceFrame;
-        const auto image = device_->renderToImage({ request.width, request.height });
+        const auto image = device_->renderToImage({request.width, request.height});
         exporter.writeVideoFrame(image);
-        if (outputFrame + 1U == frameCount || outputFrame == 0U
-            || (outputFrame + 1U) % std::max<std::uint64_t>(1U, frameCount / 20U) == 0U) {
+        if (outputFrame + 1U == frameCount || outputFrame == 0U ||
+            (outputFrame + 1U) % std::max<std::uint64_t>(1U, frameCount / 20U) == 0U) {
             log::info("Video export: ", outputFrame + 1U, "/", frameCount, " frames");
         }
     }
     device_->waitIdle();
     const auto result = exporter.finish();
-    log::info("Exported MP4: ", result.output.string(), " (",
-              result.durationSeconds, " s, ", result.encodedFrames, " frames)");
+    log::info("Exported MP4: ", result.output.string(), " (", result.durationSeconds, " s, ", result.encodedFrames,
+              " frames)");
     return 0;
 }
 
@@ -658,10 +709,14 @@ void Application::handleAsset(const std::filesystem::path& path) {
         try {
             const auto project = core::loadProject(path);
             resetProjectRuntimeState();
-            if (project.renderer == "subayai") device_->selectRenderer(graphics::RendererKind::subayai);
-            else if (project.renderer == "bdpt") device_->selectRenderer(graphics::RendererKind::bdpt);
-            else device_->selectRenderer(graphics::RendererKind::preview);
-            for (const auto& asset : project.assets) handleAsset(asset.path);
+            if (project.renderer == "subayai")
+                device_->selectRenderer(graphics::RendererKind::subayai);
+            else if (project.renderer == "bdpt")
+                device_->selectRenderer(graphics::RendererKind::bdpt);
+            else
+                device_->selectRenderer(graphics::RendererKind::preview);
+            for (const auto& asset : project.assets)
+                handleAsset(asset.path);
             if (project.embeddedMotions.size() > 1U) {
                 scene_.attachMotion(project.embeddedMotions.front());
                 const auto& models = scene_.models();
@@ -680,9 +735,10 @@ void Application::handleAsset(const std::filesystem::path& path) {
             animationFrame_ = project.frame;
             scene_.setFrame(animationFrame_);
             playing_ = project.playing;
-            if (!scene_.models().empty()) refreshAnimatedMesh(false);
-            lastAsset_ = "Project " + path.filename().string() + " — "
-                       + std::to_string(project.assets.size()) + " assets";
+            if (!scene_.models().empty())
+                refreshAnimatedMesh(false);
+            lastAsset_ =
+                "Project " + path.filename().string() + " — " + std::to_string(project.assets.size()) + " assets";
             log::info("Loaded project: ", lastAsset_);
         } catch (const std::exception& exception) {
             lastAsset_ = "Project error: " + std::string(exception.what());
@@ -693,14 +749,15 @@ void Application::handleAsset(const std::filesystem::path& path) {
     if (kind == core::AssetKind::vmdayo) {
         try {
             const auto document = core::loadVmdayo(path);
-            if (selectedModel() == nullptr) throw std::runtime_error("VMdayo requires a selected model");
+            if (selectedModel() == nullptr)
+                throw std::runtime_error("VMdayo requires a selected model");
             scene_.attachMotion(document.motion, scene_.selectedModelId(), document.modelName);
             animationFrame_ = 0.0F;
             scene_.setFrame(animationFrame_);
             refreshAnimatedMesh(false);
             refreshPreviewScene();
             lastAsset_ = "VMdayo " + path.filename().string();
-            projectAssets_.push_back({ "vmdayo", std::filesystem::absolute(path) });
+            projectAssets_.push_back({"vmdayo", std::filesystem::absolute(path)});
             log::info("Loaded VMdayo motion: ", path.string());
         } catch (const std::exception& exception) {
             lastAsset_ = "VMdayo error: " + std::string(exception.what());
@@ -713,13 +770,13 @@ void Application::handleAsset(const std::filesystem::path& path) {
             auto image = core::loadImageRgba8(path);
             scene_.setBackgroundImage(path);
             videoMode_ = false;
-            const std::array<graphics::PreviewVertex, 4> vertices {{
-                {{ -1.0F, -1.0F, 0.0F }, {}, { 0.0F, 1.0F }},
-                {{  1.0F, -1.0F, 0.0F }, {}, { 1.0F, 1.0F }},
-                {{  1.0F,  1.0F, 0.0F }, {}, { 1.0F, 0.0F }},
-                {{ -1.0F,  1.0F, 0.0F }, {}, { 0.0F, 0.0F }},
+            const std::array<graphics::PreviewVertex, 4> vertices{{
+                {{-1.0F, -1.0F, 0.0F}, {}, {0.0F, 1.0F}},
+                {{1.0F, -1.0F, 0.0F}, {}, {1.0F, 1.0F}},
+                {{1.0F, 1.0F, 0.0F}, {}, {1.0F, 0.0F}},
+                {{-1.0F, 1.0F, 0.0F}, {}, {0.0F, 0.0F}},
             }};
-            const std::array<std::uint32_t, 6> indices { 0, 1, 2, 2, 3, 0 };
+            const std::array<std::uint32_t, 6> indices{0, 1, 2, 2, 3, 0};
             if (scene_.models().empty()) {
                 device_->uploadPreviewMesh(vertices, indices);
                 refreshPreviewBackground();
@@ -735,9 +792,9 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 refreshAnimatedMesh(true);
                 refreshPreviewScene();
             }
-            lastAsset_ = "Image " + path.filename().string() + " — "
-                       + std::to_string(image.width) + "x" + std::to_string(image.height);
-            projectAssets_.push_back({ "image", std::filesystem::absolute(path) });
+            lastAsset_ = "Image " + path.filename().string() + " — " + std::to_string(image.width) + "x" +
+                         std::to_string(image.height);
+            projectAssets_.push_back({"image", std::filesystem::absolute(path)});
             log::info("Loaded image: ", lastAsset_);
         } catch (const std::exception& exception) {
             lastAsset_ = "Image error: " + std::string(exception.what());
@@ -756,17 +813,17 @@ void Application::handleAsset(const std::filesystem::path& path) {
             scene_.setFrame(animationFrame_);
             uploadedAnimationFrame_ = -1;
             refreshAnimatedMesh(true);
-            if (videoMode_) refreshVideoFrame();
+            if (videoMode_)
+                refreshVideoFrame();
             refreshPreviewScene();
             const auto* model = selectedModel();
-            lastAsset_ = "PMX " + model->model->metadata.modelName + " — v"
-                       + std::to_string(model->model->metadata.version) + ", vertices "
-                       + std::to_string(model->model->metadata.vertexCount) + ", triangles "
-                       + std::to_string(model->model->indices.size() / 3) + ", bones "
-                       + std::to_string(model->model->bones.size()) + ", models "
-                       + std::to_string(scene_.models().size());
+            lastAsset_ =
+                "PMX " + model->model->metadata.modelName + " — v" + std::to_string(model->model->metadata.version) +
+                ", vertices " + std::to_string(model->model->metadata.vertexCount) + ", triangles " +
+                std::to_string(model->model->indices.size() / 3) + ", bones " +
+                std::to_string(model->model->bones.size()) + ", models " + std::to_string(scene_.models().size());
             log::info("Loaded metadata: ", lastAsset_, " (", path.string(), ")");
-            projectAssets_.push_back({ "pmx", std::filesystem::absolute(path) });
+            projectAssets_.push_back({"pmx", std::filesystem::absolute(path)});
         } catch (const std::exception& exception) {
             lastAsset_ = "PMX error: " + std::string(exception.what());
             log::warn(lastAsset_);
@@ -791,7 +848,8 @@ void Application::handleAsset(const std::filesystem::path& path) {
                         float peak = 0.0F;
                         for (auto frame = begin; frame < std::min(end, frames); ++frame) {
                             for (std::uint32_t channel = 0; channel < loadedAudio_.channels; ++channel) {
-                                peak = std::max(peak, std::abs(loadedAudio_.samples[frame * loadedAudio_.channels + channel]));
+                                peak = std::max(
+                                    peak, std::abs(loadedAudio_.samples[frame * loadedAudio_.channels + channel]));
                             }
                         }
                         waveformPeaks_[bucket] = peak;
@@ -806,13 +864,13 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 audioToSeconds_ = static_cast<float>(std::max(0.0, media->info().durationSeconds));
             }
             if (videoMode_ && scene_.models().empty()) {
-                const std::array<graphics::PreviewVertex, 4> vertices {{
-                    {{ -0.9F, -0.9F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 0.0F, 1.0F }},
-                    {{  0.9F, -0.9F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 1.0F, 1.0F }},
-                    {{  0.9F,  0.9F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 1.0F, 0.0F }},
-                    {{ -0.9F,  0.9F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 0.0F, 0.0F }},
+                const std::array<graphics::PreviewVertex, 4> vertices{{
+                    {{-0.9F, -0.9F, 0.0F}, {0.0F, 0.0F, 1.0F}, {0.0F, 1.0F}},
+                    {{0.9F, -0.9F, 0.0F}, {0.0F, 0.0F, 1.0F}, {1.0F, 1.0F}},
+                    {{0.9F, 0.9F, 0.0F}, {0.0F, 0.0F, 1.0F}, {1.0F, 0.0F}},
+                    {{-0.9F, 0.9F, 0.0F}, {0.0F, 0.0F, 1.0F}, {0.0F, 0.0F}},
                 }};
-                const std::array<std::uint32_t, 6> indices { 0, 1, 2, 2, 3, 0 };
+                const std::array<std::uint32_t, 6> indices{0, 1, 2, 2, 3, 0};
                 device_->uploadPreviewMesh(vertices, indices);
                 refreshVideoFrame();
             } else if (!scene_.models().empty()) {
@@ -820,11 +878,11 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 refreshAnimatedMesh(true);
                 refreshVideoFrame();
             }
-            lastAsset_ = std::string(core::toString(kind)) + " — "
-                       + std::to_string(media->info().durationSeconds) + " s";
+            lastAsset_ =
+                std::string(core::toString(kind)) + " — " + std::to_string(media->info().durationSeconds) + " s";
             log::info("Loaded media: ", lastAsset_, " (", path.string(), ")");
-            projectAssets_.push_back({ kind == core::AssetKind::audio ? "audio" : "video",
-                                       std::filesystem::absolute(path) });
+            projectAssets_.push_back(
+                {kind == core::AssetKind::audio ? "audio" : "video", std::filesystem::absolute(path)});
         } catch (const std::exception& exception) {
             lastAsset_ = "Media error: " + std::string(exception.what());
             log::warn(lastAsset_);
@@ -834,8 +892,8 @@ void Application::handleAsset(const std::filesystem::path& path) {
     if (kind == core::AssetKind::vmd) {
         try {
             auto motion = core::loadVmd(path);
-            const bool cameraOnly = motion.bones.empty() && motion.morphs.empty()
-                && (!motion.cameras.empty() || !motion.lights.empty());
+            const bool cameraOnly =
+                motion.bones.empty() && motion.morphs.empty() && (!motion.cameras.empty() || !motion.lights.empty());
             const auto motionName = motion.modelName;
             const auto boneKeyCount = motion.bones.size();
             const auto morphKeyCount = motion.morphs.size();
@@ -846,20 +904,19 @@ void Application::handleAsset(const std::filesystem::path& path) {
             manualCamera_ = false;
             animationFrame_ = 0.0F;
             scene_.setFrame(animationFrame_);
-            if (selectedModel() != nullptr) refreshAnimatedMesh(false);
+            if (selectedModel() != nullptr)
+                refreshAnimatedMesh(false);
             refreshPreviewScene();
             if (cameraOnly) {
-                lastAsset_ = "VMD camera/light — " + std::to_string(cameraKeyCount) + " camera keys, "
-                           + std::to_string(lightKeyCount) + " light keys, "
-                           + std::to_string(lastFrame) + " frames";
+                lastAsset_ = "VMD camera/light — " + std::to_string(cameraKeyCount) + " camera keys, " +
+                             std::to_string(lightKeyCount) + " light keys, " + std::to_string(lastFrame) + " frames";
             } else {
-                lastAsset_ = "VMD " + (motionName.empty() ? path.filename().string() : motionName)
-                           + " — " + std::to_string(boneKeyCount) + " bone keys, "
-                           + std::to_string(morphKeyCount) + " morph keys, "
-                           + std::to_string(lastFrame) + " frames";
+                lastAsset_ = "VMD " + (motionName.empty() ? path.filename().string() : motionName) + " — " +
+                             std::to_string(boneKeyCount) + " bone keys, " + std::to_string(morphKeyCount) +
+                             " morph keys, " + std::to_string(lastFrame) + " frames";
             }
             log::info("Loaded motion: ", lastAsset_, " (", path.string(), ")");
-            projectAssets_.push_back({ "vmd", std::filesystem::absolute(path) });
+            projectAssets_.push_back({"vmd", std::filesystem::absolute(path)});
         } catch (const std::exception& exception) {
             lastAsset_ = "VMD error: " + std::string(exception.what());
             log::warn(lastAsset_);
@@ -869,11 +926,12 @@ void Application::handleAsset(const std::filesystem::path& path) {
     if (kind == core::AssetKind::vpd) {
         try {
             scene_.attachPose(path);
-            if (selectedModel() != nullptr) refreshAnimatedMesh(false);
+            if (selectedModel() != nullptr)
+                refreshAnimatedMesh(false);
             const auto* pose = selectedModel()->pose.get();
             lastAsset_ = "VPD pose — " + std::to_string(pose->bones.size()) + " bones";
             log::info("Loaded pose: ", lastAsset_, " (", path.string(), ")");
-            projectAssets_.push_back({ "vpd", std::filesystem::absolute(path) });
+            projectAssets_.push_back({"vpd", std::filesystem::absolute(path)});
         } catch (const std::exception& exception) {
             lastAsset_ = "VPD error: " + std::string(exception.what());
             log::warn(lastAsset_);
@@ -884,22 +942,21 @@ void Application::handleAsset(const std::filesystem::path& path) {
         try {
             effectReloader_.emplace(path);
             static_cast<void>(effectReloader_->poll());
-            if (effectReloader_->current() == nullptr) throw std::runtime_error("effect graph is empty");
+            if (effectReloader_->current() == nullptr)
+                throw std::runtime_error("effect graph is empty");
             scene_.setEffect(*effectReloader_->current());
             auto filename = path.filename().string();
-            std::ranges::transform(filename, filename.begin(), [](unsigned char value) {
-                return static_cast<char>(std::tolower(value));
-            });
+            std::ranges::transform(filename, filename.begin(),
+                                   [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
             if (device_ != nullptr && filename.find("subayai") != std::string::npos) {
                 device_->selectRenderer(graphics::RendererKind::subayai);
             } else if (device_ != nullptr && filename.find("bdpt") != std::string::npos) {
                 device_->selectRenderer(graphics::RendererKind::bdpt);
             }
-            lastAsset_ = "Effect " + path.filename().string() + " — "
-                       + std::to_string(scene_.effect()->passes.size()) + " passes, "
-                       + std::to_string(scene_.effect()->textures.size()) + " textures";
+            lastAsset_ = "Effect " + path.filename().string() + " — " + std::to_string(scene_.effect()->passes.size()) +
+                         " passes, " + std::to_string(scene_.effect()->textures.size()) + " textures";
             log::info("Loaded effect graph: ", lastAsset_);
-            projectAssets_.push_back({ "effect", std::filesystem::absolute(path) });
+            projectAssets_.push_back({"effect", std::filesystem::absolute(path)});
         } catch (const std::exception& exception) {
             lastAsset_ = "Effect error: " + std::string(exception.what());
             log::warn(lastAsset_);
@@ -911,28 +968,28 @@ void Application::handleAsset(const std::filesystem::path& path) {
 }
 
 void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
-    if (device_ == nullptr || scene_.models().empty()) return;
+    if (device_ == nullptr || scene_.models().empty())
+        return;
     std::size_t vertexCount = 0;
     std::size_t indexCount = 0;
     std::size_t materialCount = 0;
     for (const auto& instance : scene_.models()) {
-        if (!instance.visible || instance.model == nullptr || instance.animator == nullptr) continue;
+        if (!instance.visible || instance.model == nullptr || instance.animator == nullptr)
+            continue;
         const auto clones = std::max(instance.cloneCount, 1U);
         vertexCount += instance.model->vertices.size() * clones;
         indexCount += instance.model->indices.size() * clones;
         materialCount += instance.model->materials.size() * clones;
     }
-    const bool rebuildTopology = initialUpload
-        || animatedTopologyGeneration_ != scene_.topologyGeneration()
-        || animatedIndices_.size() != indexCount
-        || animatedMaterialTemplates_.size() != materialCount
-        || animatedDraws_.size() != materialCount;
+    const bool rebuildTopology = initialUpload || animatedTopologyGeneration_ != scene_.topologyGeneration() ||
+                                 animatedIndices_.size() != indexCount ||
+                                 animatedMaterialTemplates_.size() != materialCount ||
+                                 animatedDraws_.size() != materialCount;
     std::vector<graphics::PreviewVertex> vertices;
     vertices.reserve(vertexCount);
-    std::vector<graphics::PreviewMaterial> materials = rebuildTopology
-        ? std::vector<graphics::PreviewMaterial> {} : animatedMaterialTemplates_;
-    std::vector<graphics::PreviewDraw> draws = rebuildTopology
-        ? std::vector<graphics::PreviewDraw> {} : animatedDraws_;
+    std::vector<graphics::PreviewMaterial> materials =
+        rebuildTopology ? std::vector<graphics::PreviewMaterial>{} : animatedMaterialTemplates_;
+    std::vector<graphics::PreviewDraw> draws = rebuildTopology ? std::vector<graphics::PreviewDraw>{} : animatedDraws_;
     if (rebuildTopology) {
         animatedIndices_.clear();
         animatedIndices_.reserve(indexCount);
@@ -943,12 +1000,13 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     std::uint32_t indexCursor = 0;
     std::vector<graphics::PreviewBoneTransform> bones;
     for (const auto& instance : scene_.models()) {
-        if (!instance.visible || instance.model == nullptr || instance.animator == nullptr) continue;
+        if (!instance.visible || instance.model == nullptr || instance.animator == nullptr)
+            continue;
         const auto gravity = scene_.evaluatePhysicsSettings(animationFrame_);
         if (instance.physics != nullptr) {
-            instance.physics->setGravity({ gravity.gravityDirection[0] * gravity.gravity,
-                                           gravity.gravityDirection[1] * gravity.gravity,
-                                           gravity.gravityDirection[2] * gravity.gravity });
+            instance.physics->setGravity({gravity.gravityDirection[0] * gravity.gravity,
+                                          gravity.gravityDirection[1] * gravity.gravity,
+                                          gravity.gravityDirection[2] * gravity.gravity});
             instance.physics->setGravityNoise(gravity.noiseAmplitude, gravity.noiseFrequency);
             instance.physics->setFloorCollision(gravity.floorCollision);
         }
@@ -956,14 +1014,13 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         auto frame = instance.animator->evaluate(animationFrame_, deltaSeconds, gpuSkinning);
         if (!frame.vertices.empty() && (initialUpload || static_cast<int>(animationFrame_) % 30 == 0)) {
             const auto& vertex = frame.vertices.front().position;
-            log::debug("Animation sample: model=", instance.displayName,
-                       ", frame=", animationFrame_,
-                       ", vertex0=(", vertex[0], ",", vertex[1], ",", vertex[2], ")");
+            log::debug("Animation sample: model=", instance.displayName, ", frame=", animationFrame_, ", vertex0=(",
+                       vertex[0], ",", vertex[1], ",", vertex[2], ")");
         }
         if (instance.softBody != nullptr && instance.softBody->available()) {
-            instance.softBody->step(deltaSeconds, { gravity.gravityDirection[0] * gravity.gravity,
-                                                    gravity.gravityDirection[1] * gravity.gravity,
-                                                    gravity.gravityDirection[2] * gravity.gravity });
+            instance.softBody->step(deltaSeconds, {gravity.gravityDirection[0] * gravity.gravity,
+                                                   gravity.gravityDirection[1] * gravity.gravity,
+                                                   gravity.gravityDirection[2] * gravity.gravity});
             instance.softBody->apply(frame.vertices);
         }
         core::normalizeForPreview(frame.vertices, instance.normalization);
@@ -975,9 +1032,9 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                 std::copy(source.rotation.begin(), source.rotation.end(), bone.rotation);
                 const auto rotatedCenter = rotateQuaternion(source.rotation, instance.normalization.center);
                 for (std::size_t axis = 0; axis < 3; ++axis) {
-                    bone.translation[axis] = (rotatedCenter[axis] + source.translation[axis]
-                                            - instance.normalization.center[axis])
-                                           * instance.normalization.scale;
+                    bone.translation[axis] =
+                        (rotatedCenter[axis] + source.translation[axis] - instance.normalization.center[axis]) *
+                        instance.normalization.scale;
                 }
                 bones.push_back(bone);
             }
@@ -985,7 +1042,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         const auto textureBase = [&] {
             std::size_t value = 0;
             for (const auto& previous : scene_.models()) {
-                if (previous.id == instance.id) break;
+                if (previous.id == instance.id)
+                    break;
                 value += previous.textures.size();
             }
             return static_cast<std::uint32_t>(value);
@@ -994,8 +1052,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         for (std::uint32_t clone = 0; clone < cloneCount; ++clone) {
             const auto baseVertex = static_cast<std::uint32_t>(vertices.size());
             const auto firstCloneIndex = indexCursor;
-            const float cloneOffset = (static_cast<float>(clone)
-                                     - static_cast<float>(cloneCount - 1U) * 0.5F) * 2.2F;
+            const float cloneOffset = (static_cast<float>(clone) - static_cast<float>(cloneCount - 1U) * 0.5F) * 2.2F;
             for (const auto& source : frame.vertices) {
                 graphics::PreviewVertex vertex;
                 std::memcpy(vertex.position, source.position.data(), sizeof(vertex.position));
@@ -1004,9 +1061,11 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                 const bool supported = gpuSkinning;
                 if (supported) {
                     for (std::size_t influence = 0; influence < 4; ++influence) {
-                        vertex.bones[influence] = source.bones[influence] < 0
-                            || static_cast<std::size_t>(source.bones[influence]) >= frame.bones.size()
-                            ? -1 : boneBase + source.bones[influence];
+                        vertex.bones[influence] =
+                            source.bones[influence] < 0 ||
+                                    static_cast<std::size_t>(source.bones[influence]) >= frame.bones.size()
+                                ? -1
+                                : boneBase + source.bones[influence];
                         vertex.weights[influence] = source.weights[influence];
                     }
                     const auto normalizedC = normalizePreviewPoint(source.sdefC, instance.normalization);
@@ -1024,7 +1083,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                 vertices.push_back(vertex);
             }
             if (rebuildTopology) {
-                for (const auto index : instance.model->indices) animatedIndices_.push_back(baseVertex + index);
+                for (const auto index : instance.model->indices)
+                    animatedIndices_.push_back(baseVertex + index);
             }
             indexCursor += static_cast<std::uint32_t>(instance.model->indices.size());
             std::uint32_t firstIndex = firstCloneIndex;
@@ -1084,7 +1144,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                     std::copy(animated.ambient.begin(), animated.ambient.end(), material.ambient);
                     std::copy(animated.specular.begin(), animated.specular.end(), material.specular);
                     material.shininess = animated.shininess;
-                    std::copy(animated.textureMultiply.begin(), animated.textureMultiply.end(), material.textureMultiply);
+                    std::copy(animated.textureMultiply.begin(), animated.textureMultiply.end(),
+                              material.textureMultiply);
                     std::copy(animated.textureAdd.begin(), animated.textureAdd.end(), material.textureAdd);
                     std::copy(animated.sphereMultiply.begin(), animated.sphereMultiply.end(), material.sphereMultiply);
                     std::copy(animated.sphereAdd.begin(), animated.sphereAdd.end(), material.sphereAdd);
@@ -1098,17 +1159,22 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             }
         }
     }
-    if (vertices.empty() || animatedIndices_.empty()) return;
+    if (vertices.empty() || animatedIndices_.empty())
+        return;
     if (rebuildTopology) {
         animatedMaterialTemplates_ = materials;
         animatedDraws_ = draws;
         animatedTopologyGeneration_ = scene_.topologyGeneration();
     }
     device_->updatePreviewBones(bones);
-    if (initialUpload || rebuildTopology) device_->uploadPreviewMesh(vertices, animatedIndices_);
+    if (initialUpload || rebuildTopology)
+        device_->uploadPreviewMesh(vertices, animatedIndices_);
     else {
-        try { device_->updatePreviewVertices(vertices); }
-        catch (const std::exception&) { device_->uploadPreviewMesh(vertices, animatedIndices_); }
+        try {
+            device_->updatePreviewVertices(vertices);
+        } catch (const std::exception&) {
+            device_->uploadPreviewMesh(vertices, animatedIndices_);
+        }
     }
     device_->updatePreviewMaterials(materials);
     device_->updatePreviewDraws(draws);
@@ -1117,7 +1183,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
 }
 
 void Application::refreshPreviewTextures() {
-    if (device_ == nullptr) return;
+    if (device_ == nullptr)
+        return;
     textures_.clear();
     for (const auto& instance : scene_.models()) {
         textures_.insert(textures_.end(), instance.textures.begin(), instance.textures.end());
@@ -1132,26 +1199,28 @@ void Application::refreshPreviewTextures() {
 }
 
 void Application::refreshPreviewBackground() {
-    if (device_ == nullptr) return;
+    if (device_ == nullptr)
+        return;
     const auto& background = scene_.background();
-    if (background.screenSource != core::ScreenTextureSource::backgroundImage
-        || !background.image.has_value()) {
+    if (background.screenSource != core::ScreenTextureSource::backgroundImage || !background.image.has_value()) {
         device_->uploadPreviewBackground({});
         return;
     }
     const auto& image = *background.image;
-    const std::array textures { graphics::PreviewTexture { image.width, image.height, image.pixels } };
+    const std::array textures{graphics::PreviewTexture{image.width, image.height, image.pixels}};
     device_->uploadPreviewBackground(textures);
 }
 
 void Application::refreshVideoFrame() {
     auto* media = scene_.media();
-    if (!videoMode_ || media == nullptr || device_ == nullptr) return;
+    if (!videoMode_ || media == nullptr || device_ == nullptr)
+        return;
     const auto frameIndex = static_cast<std::int64_t>(mediaSeconds_ * media->info().videoFramesPerSecond);
-    if (frameIndex == uploadedVideoFrame_) return;
+    if (frameIndex == uploadedVideoFrame_)
+        return;
     const auto image = media->decodeVideoFrame(mediaSeconds_);
     scene_.setBackgroundScreenSource(core::ScreenTextureSource::backgroundVideo);
-    const std::array textures { graphics::PreviewTexture { image.width, image.height, image.pixels } };
+    const std::array textures{graphics::PreviewTexture{image.width, image.height, image.pixels}};
     device_->uploadPreviewBackground(textures);
     if (scene_.models().empty()) {
         device_->updatePreviewMaterials({});
@@ -1161,23 +1230,29 @@ void Application::refreshVideoFrame() {
 }
 
 void Application::refreshPreviewScene() {
-    if (device_ == nullptr) return;
+    if (device_ == nullptr)
+        return;
     const auto* model = selectedModel();
-    const auto* motion = scene_.cameraMotion() != nullptr ? scene_.cameraMotion()
-        : (model != nullptr ? model->motion.get() : nullptr);
+    const auto* motion =
+        scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
     graphics::PreviewScene scene;
     switch (scene_.background().screenSource) {
     case core::ScreenTextureSource::previousFrame:
-        scene.screenSource = graphics::PreviewScene::ScreenSource::previousFrame; break;
+        scene.screenSource = graphics::PreviewScene::ScreenSource::previousFrame;
+        break;
     case core::ScreenTextureSource::backgroundVideo:
-        scene.screenSource = graphics::PreviewScene::ScreenSource::backgroundVideo; break;
+        scene.screenSource = graphics::PreviewScene::ScreenSource::backgroundVideo;
+        break;
     case core::ScreenTextureSource::backgroundImage:
-        scene.screenSource = graphics::PreviewScene::ScreenSource::backgroundImage; break;
+        scene.screenSource = graphics::PreviewScene::ScreenSource::backgroundImage;
+        break;
     case core::ScreenTextureSource::white:
-        scene.screenSource = graphics::PreviewScene::ScreenSource::white; break;
+        scene.screenSource = graphics::PreviewScene::ScreenSource::white;
+        break;
     }
     scene.screenCrop = scene_.background().crop == core::ScreenCropMode::crop4x3
-        ? graphics::PreviewScene::ScreenCrop::crop4x3 : graphics::PreviewScene::ScreenCrop::none;
+                           ? graphics::PreviewScene::ScreenCrop::crop4x3
+                           : graphics::PreviewScene::ScreenCrop::none;
     scene.backgroundEnabled = scene_.background().enabled;
     scene.cameraRotation[0] = cameraPitch_;
     scene.cameraRotation[1] = cameraYaw_;
@@ -1190,8 +1265,7 @@ void Application::refreshPreviewScene() {
         for (std::size_t axis = 0; axis < 3; ++axis) {
             scene.target[axis] = (camera.position[axis] - normalization.center[axis]) * normalization.scale;
         }
-        scene.verticalFovRadians = std::clamp(camera.viewAngle, 1.0F, 179.0F)
-                                 * 0.01745329252F;
+        scene.verticalFovRadians = std::clamp(camera.viewAngle, 1.0F, 179.0F) * 0.01745329252F;
         scene.perspective = camera.perspective;
     }
     if (motion != nullptr && !motion->lights.empty()) {
@@ -1206,20 +1280,22 @@ void Application::buildUi() {
     if (!ImGui::GetIO().WantTextInput) {
         if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
             if (recordCamera_) {
-                core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion {};
+                core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
                 auto document = core::toMotionDocument(before);
                 core::VmdCameraKey key = editedCamera_;
                 key.frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
                 key.distance = -cameraDistance_ / std::max(normalization_.scale, 0.0001F);
-                key.rotation = { cameraPitch_, cameraYaw_, 0.0F };
+                key.rotation = {cameraPitch_, cameraYaw_, 0.0F};
                 std::erase_if(document.cameras, [&](const auto& item) { return item.frame == key.frame; });
                 document.cameras.push_back(key);
                 core::MotionEditor::normalize(document);
-                history_.execute(scene_, std::make_unique<core::EditMotionCommand>(0, true, before,
-                    core::toVmdMotion(std::move(document), before.modelName), "Record camera key"));
+                history_.execute(scene_, std::make_unique<core::EditMotionCommand>(
+                                             0, true, before, core::toVmdMotion(std::move(document), before.modelName),
+                                             "Record camera key"));
             } else {
                 playing_ = !playing_;
-                if (audioPlayer_.active()) audioPlayer_.setPaused(!playing_);
+                if (audioPlayer_.active())
+                    audioPlayer_.setPaused(!playing_);
             }
         }
         if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
@@ -1237,11 +1313,11 @@ void Application::buildUi() {
             }
         }
     }
-    ImGui::SetNextWindowPos({ 24.0F, 24.0F }, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize({ 460.0F, 420.0F }, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos({24.0F, 24.0F}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize({460.0F, 420.0F}, ImGuiCond_FirstUseEver);
     auto* model = selectedModel();
-    const auto* motion = scene_.cameraMotion() != nullptr ? scene_.cameraMotion()
-        : (model != nullptr ? model->motion.get() : nullptr);
+    const auto* motion =
+        scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
     auto* media = scene_.media();
     if (ImGui::Begin("Renderer")) {
         ImGui::TextUnformatted("SDL3 + Vulkan native backend");
@@ -1253,7 +1329,8 @@ void Application::buildUi() {
         ImGui::Text("OIDN: %s", DAYO_HAS_OIDN ? "CPU available; HIP optional" : "not installed");
         ImGui::Text("Media: %s", DAYO_HAS_MEDIA ? "FFmpeg enabled" : "metadata/drop only");
         if (motion != nullptr) {
-            if (ImGui::Checkbox("Play", &playing_) && audioPlayer_.active()) audioPlayer_.setPaused(!playing_);
+            if (ImGui::Checkbox("Play", &playing_) && audioPlayer_.active())
+                audioPlayer_.setPaused(!playing_);
             float maximum = std::max(scene_.timeline().duration, 1.0F);
             if (ImGui::SliderFloat("Frame", &animationFrame_, 0.0F, maximum, "%.1f")) {
                 const auto before = scene_.timeline().frame;
@@ -1278,8 +1355,8 @@ void Application::buildUi() {
             }
         }
         if (scene_.effect() != nullptr) {
-            ImGui::Text("Effect graph: %zu passes / %zu textures / %zu samplers",
-                        scene_.effect()->passes.size(), scene_.effect()->textures.size(), scene_.effect()->samplers.size());
+            ImGui::Text("Effect graph: %zu passes / %zu textures / %zu samplers", scene_.effect()->passes.size(),
+                        scene_.effect()->textures.size(), scene_.effect()->samplers.size());
         }
         ImGui::TextUnformatted("Camera: right-drag to orbit, wheel to zoom");
         if (ImGui::Button("Undo")) {
@@ -1339,16 +1416,17 @@ void Application::buildUi() {
         ImGui::Text("Timeline: %.1f / %.1f frames", animationFrame_, scene_.timeline().duration);
         ImGui::Checkbox("Repeat", &repeat_);
         ImGui::SliderFloat("Playback speed", &playbackSpeed_, 0.1F, 4.0F, "%.2fx");
-        if (ImGui::SliderFloat("Volume", &audioVolume_, 0.0F, 1.0F)) audioPlayer_.setVolume(audioVolume_);
-        if (ImGui::DragFloat("Audio offset", &audioOffsetSeconds_, 0.01F, -60.0F, 60.0F, "%.2f s")
-            && !loadedAudio_.samples.empty()) {
+        if (ImGui::SliderFloat("Volume", &audioVolume_, 0.0F, 1.0F))
+            audioPlayer_.setVolume(audioVolume_);
+        if (ImGui::DragFloat("Audio offset", &audioOffsetSeconds_, 0.01F, -60.0F, 60.0F, "%.2f s") &&
+            !loadedAudio_.samples.empty()) {
             audioPlayer_.play(loadedAudio_, std::max(0.0F, audioOffsetSeconds_));
             audioPlayer_.setVolume(audioVolume_);
             audioPlayer_.setPaused(!playing_);
         }
         if (!waveformPeaks_.empty()) {
-            ImGui::PlotLines("Waveform", waveformPeaks_.data(), static_cast<int>(waveformPeaks_.size()),
-                0, nullptr, 0.0F, 1.0F, { 0.0F, 72.0F });
+            ImGui::PlotLines("Waveform", waveformPeaks_.data(), static_cast<int>(waveformPeaks_.size()), 0, nullptr,
+                             0.0F, 1.0F, {0.0F, 72.0F});
         }
         auto settings = scene_.physicsSettings();
         bool physicsChanged = ImGui::DragFloat("Gravity", &settings.gravity, 0.01F, 0.0F, 100.0F);
@@ -1356,14 +1434,16 @@ void Application::buildUi() {
         physicsChanged |= ImGui::DragFloat("Gravity noise amplitude", &settings.noiseAmplitude, 0.01F, 0.0F, 100.0F);
         physicsChanged |= ImGui::DragFloat("Gravity noise frequency", &settings.noiseFrequency, 0.01F, 0.0F, 100.0F);
         physicsChanged |= ImGui::Checkbox("Floor collision", &settings.floorCollision);
-        if (physicsChanged) scene_.setPhysicsSettings(settings);
+        if (physicsChanged)
+            scene_.setPhysicsSettings(settings);
         int runtimeMode = static_cast<int>(scene_.runtimeMode());
         if (ImGui::Combo("Runtime mode", &runtimeMode, "Accumulate\0Realtime\0Idle\0")) {
             history_.execute(scene_, std::make_unique<core::SetRuntimeModeCommand>(
-                scene_.runtimeMode(), static_cast<core::RuntimeMode>(runtimeMode)));
+                                         scene_.runtimeMode(), static_cast<core::RuntimeMode>(runtimeMode)));
         }
         ImGui::Text("Accumulated samples: %llu", static_cast<unsigned long long>(scene_.accumulatedSamples()));
-        if (ImGui::Button("Reset physics") && model != nullptr && model->physics != nullptr) model->physics->reset();
+        if (ImGui::Button("Reset physics") && model != nullptr && model->physics != nullptr)
+            model->physics->reset();
         ImGui::SameLine();
         if (ImGui::Button("Update one frame") && model != nullptr) {
             refreshAnimatedMesh(false, 1.0F / 30.0F);
@@ -1372,15 +1452,16 @@ void Application::buildUi() {
         ImGui::Checkbox("Rigid body debug", &physicsDebug_);
         if (physicsDebug_ && model != nullptr && model->physics != nullptr) {
             const auto count = model->physics->bodyCount();
-            if (ImGui::BeginChild("rigid-body-debug", { 0.0F, 120.0F }, true)) {
+            if (ImGui::BeginChild("rigid-body-debug", {0.0F, 120.0F}, true)) {
                 ImGuiListClipper clipper;
                 clipper.Begin(static_cast<int>(count));
-                while (clipper.Step()) for (int body = clipper.DisplayStart; body < clipper.DisplayEnd; ++body) {
-                    const auto transform = model->physics->bodyTransform(static_cast<std::size_t>(body));
-                    ImGui::Text("%d  mode %u  P %.2f %.2f %.2f", body,
-                        model->physics->bodyMode(static_cast<std::size_t>(body)),
-                        transform.position[0], transform.position[1], transform.position[2]);
-                }
+                while (clipper.Step())
+                    for (int body = clipper.DisplayStart; body < clipper.DisplayEnd; ++body) {
+                        const auto transform = model->physics->bodyTransform(static_cast<std::size_t>(body));
+                        ImGui::Text("%d  mode %u  P %.2f %.2f %.2f", body,
+                                    model->physics->bodyMode(static_cast<std::size_t>(body)), transform.position[0],
+                                    transform.position[1], transform.position[2]);
+                    }
             }
             ImGui::EndChild();
         }
@@ -1397,52 +1478,63 @@ void Application::buildEditorUi() {
     auto* model = selectedModel();
     const bool global = editGlobalMotion_;
     const auto* active = global ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
-    const auto target = model != nullptr ? model->id : core::ModelId {};
+    const auto target = model != nullptr ? model->id : core::ModelId{};
     const auto execute = [&](core::VmdMotion before, core::MotionDocument document, bool globalMotion,
                              std::string label) {
         auto after = core::toVmdMotion(std::move(document), before.modelName);
-        history_.execute(scene_, std::make_unique<core::EditMotionCommand>(
-            target, globalMotion, std::move(before), std::move(after), std::move(label)));
+        history_.execute(scene_, std::make_unique<core::EditMotionCommand>(target, globalMotion, std::move(before),
+                                                                           std::move(after), std::move(label)));
         refreshAnimatedMesh(false);
         refreshPreviewScene();
     };
 
     if (ImGui::Begin("Keyframes")) {
-        if (ImGui::Checkbox("Edit global camera/light motion", &editGlobalMotion_)) selectedKeys_.clear();
+        if (ImGui::Checkbox("Edit global camera/light motion", &editGlobalMotion_))
+            selectedKeys_.clear();
         if (active == nullptr) {
             ImGui::TextUnformatted("Load a VMD/VMdayo motion to edit keyframes.");
         } else {
-            ImGui::Text("Bone %zu  Morph %zu  Camera %zu  Light %zu  Shadow %zu  IK %zu",
-                active->bones.size(), active->morphs.size(), active->cameras.size(), active->lights.size(),
-                active->shadows.size(), active->ik.size());
-            auto row = [&](core::MotionTrack track, std::size_t index, std::uint32_t frame,
-                           const std::string& name) {
-                const core::MotionKeyRef key { track, index };
+            ImGui::Text("Bone %zu  Morph %zu  Camera %zu  Light %zu  Shadow %zu  IK %zu", active->bones.size(),
+                        active->morphs.size(), active->cameras.size(), active->lights.size(), active->shadows.size(),
+                        active->ik.size());
+            auto row = [&](core::MotionTrack track, std::size_t index, std::uint32_t frame, const std::string& name) {
+                const core::MotionKeyRef key{track, index};
                 const bool selected = std::find(selectedKeys_.begin(), selectedKeys_.end(), key) != selectedKeys_.end();
-                const auto label = name + "  @ " + std::to_string(frame) + "##"
-                    + std::to_string(static_cast<int>(track)) + ":" + std::to_string(index);
-                if (!ImGui::Selectable(label.c_str(), selected)) return;
-                if (!ImGui::GetIO().KeyCtrl) selectedKeys_.clear();
+                const auto label = name + "  @ " + std::to_string(frame) + "##" +
+                                   std::to_string(static_cast<int>(track)) + ":" + std::to_string(index);
+                if (!ImGui::Selectable(label.c_str(), selected))
+                    return;
+                if (!ImGui::GetIO().KeyCtrl)
+                    selectedKeys_.clear();
                 const auto found = std::find(selectedKeys_.begin(), selectedKeys_.end(), key);
-                if (found == selectedKeys_.end()) selectedKeys_.push_back(key); else selectedKeys_.erase(found);
+                if (found == selectedKeys_.end())
+                    selectedKeys_.push_back(key);
+                else
+                    selectedKeys_.erase(found);
             };
-            if (ImGui::BeginChild("key-list", { 0.0F, 220.0F }, true)) {
-                for (std::size_t i = 0; i < active->bones.size(); ++i) row(core::MotionTrack::bone, i, active->bones[i].frame, active->bones[i].name);
-                for (std::size_t i = 0; i < active->morphs.size(); ++i) row(core::MotionTrack::morph, i, active->morphs[i].frame, active->morphs[i].name);
-                for (std::size_t i = 0; i < active->cameras.size(); ++i) row(core::MotionTrack::camera, i, active->cameras[i].frame, "Camera");
-                for (std::size_t i = 0; i < active->lights.size(); ++i) row(core::MotionTrack::light, i, active->lights[i].frame, "Light");
-                for (std::size_t i = 0; i < active->shadows.size(); ++i) row(core::MotionTrack::shadow, i, active->shadows[i].frame, "Self shadow");
-                for (std::size_t i = 0; i < active->ik.size(); ++i) row(core::MotionTrack::ik, i, active->ik[i].frame, "IK / visibility");
+            if (ImGui::BeginChild("key-list", {0.0F, 220.0F}, true)) {
+                for (std::size_t i = 0; i < active->bones.size(); ++i)
+                    row(core::MotionTrack::bone, i, active->bones[i].frame, active->bones[i].name);
+                for (std::size_t i = 0; i < active->morphs.size(); ++i)
+                    row(core::MotionTrack::morph, i, active->morphs[i].frame, active->morphs[i].name);
+                for (std::size_t i = 0; i < active->cameras.size(); ++i)
+                    row(core::MotionTrack::camera, i, active->cameras[i].frame, "Camera");
+                for (std::size_t i = 0; i < active->lights.size(); ++i)
+                    row(core::MotionTrack::light, i, active->lights[i].frame, "Light");
+                for (std::size_t i = 0; i < active->shadows.size(); ++i)
+                    row(core::MotionTrack::shadow, i, active->shadows[i].frame, "Self shadow");
+                for (std::size_t i = 0; i < active->ik.size(); ++i)
+                    row(core::MotionTrack::ik, i, active->ik[i].frame, "IK / visibility");
             }
             ImGui::EndChild();
-            const bool keyWindowFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
-                && !ImGui::GetIO().WantTextInput;
-            const bool copyShortcut = keyWindowFocused && ImGui::GetIO().KeyCtrl
-                && ImGui::IsKeyPressed(ImGuiKey_C, false);
-            const bool cutShortcut = keyWindowFocused && ImGui::GetIO().KeyCtrl
-                && ImGui::IsKeyPressed(ImGuiKey_X, false);
-            const bool pasteShortcut = keyWindowFocused && ImGui::GetIO().KeyCtrl
-                && ImGui::IsKeyPressed(ImGuiKey_V, false);
+            const bool keyWindowFocused =
+                ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput;
+            const bool copyShortcut =
+                keyWindowFocused && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C, false);
+            const bool cutShortcut =
+                keyWindowFocused && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_X, false);
+            const bool pasteShortcut =
+                keyWindowFocused && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V, false);
             const bool deleteShortcut = keyWindowFocused && ImGui::IsKeyPressed(ImGuiKey_Delete, false);
             if ((ImGui::Button("Copy") || copyShortcut) && !selectedKeys_.empty()) {
                 motionClipboard_ = core::MotionEditor::copy(core::toMotionDocument(*active), selectedKeys_);
@@ -1460,8 +1552,8 @@ void Application::buildEditorUi() {
             if ((ImGui::Button("Paste") || pasteShortcut) && !motionClipboard_.empty()) {
                 auto before = *active;
                 auto document = core::toMotionDocument(before);
-                static_cast<void>(core::MotionEditor::paste(document, motionClipboard_,
-                    static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F))));
+                static_cast<void>(core::MotionEditor::paste(
+                    document, motionClipboard_, static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F))));
                 selectedKeys_.clear();
                 execute(std::move(before), std::move(document), global, "Paste keys");
             }
@@ -1480,11 +1572,15 @@ void Application::buildEditorUi() {
                 document.interpolation = static_cast<core::InterpolationMode>(interpolation);
                 execute(std::move(before), std::move(document), global, "Set interpolation");
             }
-            static std::array<char, 1024> exportPath {};
+            static std::array<char, 1024> exportPath{};
             ImGui::InputText("VMD destination", exportPath.data(), exportPath.size());
             if (ImGui::Button("Export VMD") && exportPath[0] != '\0') {
-                try { core::saveVmd(exportPath.data(), *active); lastAsset_ = "Exported VMD"; }
-                catch (const std::exception& error) { lastAsset_ = error.what(); }
+                try {
+                    core::saveVmd(exportPath.data(), *active);
+                    lastAsset_ = "Exported VMD";
+                } catch (const std::exception& error) {
+                    lastAsset_ = error.what();
+                }
             }
         }
     }
@@ -1498,20 +1594,24 @@ void Application::buildEditorUi() {
             if (!bones.empty()) {
                 selectedBone_ = std::clamp(selectedBone_, 0, static_cast<int>(bones.size() - 1));
                 if (ImGui::BeginCombo("Bone", bones[static_cast<std::size_t>(selectedBone_)].name.c_str())) {
-                    for (std::size_t i = 0; i < bones.size(); ++i) if (ImGui::Selectable(bones[i].name.c_str(), selectedBone_ == static_cast<int>(i))) selectedBone_ = static_cast<int>(i);
+                    for (std::size_t i = 0; i < bones.size(); ++i)
+                        if (ImGui::Selectable(bones[i].name.c_str(), selectedBone_ == static_cast<int>(i)))
+                            selectedBone_ = static_cast<int>(i);
                     ImGui::EndCombo();
                 }
                 ImGui::DragFloat3("Translation", editedBoneTranslation_.data(), 0.01F);
                 ImGui::DragFloat4("Rotation quaternion", editedBoneRotation_.data(), 0.01F, -1.0F, 1.0F);
                 ImGui::Checkbox("Bone physics", &editedBonePhysics_);
                 if (ImGui::Button("Register bone")) {
-                    core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion {};
+                    core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
                     before.modelName = model->displayName;
                     auto document = core::toMotionDocument(before);
                     const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
                     const auto& name = bones[static_cast<std::size_t>(selectedBone_)].name;
-                    std::erase_if(document.bones, [&](const auto& key) { return key.frame == frame && key.name == name; });
-                    document.bones.push_back({ name, frame, editedBoneTranslation_, editedBoneRotation_, {}, editedBonePhysics_ });
+                    std::erase_if(document.bones,
+                                  [&](const auto& key) { return key.frame == frame && key.name == name; });
+                    document.bones.push_back(
+                        {name, frame, editedBoneTranslation_, editedBoneRotation_, {}, editedBonePhysics_});
                     core::MotionEditor::normalize(document);
                     execute(std::move(before), std::move(document), false, "Register bone key");
                 }
@@ -1520,18 +1620,21 @@ void Application::buildEditorUi() {
             if (!morphs.empty()) {
                 selectedMorph_ = std::clamp(selectedMorph_, 0, static_cast<int>(morphs.size() - 1));
                 if (ImGui::BeginCombo("Morph", morphs[static_cast<std::size_t>(selectedMorph_)].name.c_str())) {
-                    for (std::size_t i = 0; i < morphs.size(); ++i) if (ImGui::Selectable(morphs[i].name.c_str(), selectedMorph_ == static_cast<int>(i))) selectedMorph_ = static_cast<int>(i);
+                    for (std::size_t i = 0; i < morphs.size(); ++i)
+                        if (ImGui::Selectable(morphs[i].name.c_str(), selectedMorph_ == static_cast<int>(i)))
+                            selectedMorph_ = static_cast<int>(i);
                     ImGui::EndCombo();
                 }
                 ImGui::SliderFloat("Weight", &editedMorphWeight_, 0.0F, 1.0F);
                 if (ImGui::Button("Register morph")) {
-                    core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion {};
+                    core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
                     before.modelName = model->displayName;
                     auto document = core::toMotionDocument(before);
                     const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
                     const auto& name = morphs[static_cast<std::size_t>(selectedMorph_)].name;
-                    std::erase_if(document.morphs, [&](const auto& key) { return key.frame == frame && key.name == name; });
-                    document.morphs.push_back({ name, frame, editedMorphWeight_ });
+                    std::erase_if(document.morphs,
+                                  [&](const auto& key) { return key.frame == frame && key.name == name; });
+                    document.morphs.push_back({name, frame, editedMorphWeight_});
                     core::MotionEditor::normalize(document);
                     execute(std::move(before), std::move(document), false, "Register morph key");
                 }
@@ -1546,13 +1649,14 @@ void Application::buildEditorUi() {
         ImGui::DragFloat3("Camera rotation", editedCamera_.rotation.data(), 0.01F);
         ImGui::DragFloat("Camera distance", &editedCamera_.distance, 0.1F);
         int viewAngle = static_cast<int>(editedCamera_.viewAngle == 0 ? 30 : editedCamera_.viewAngle);
-        if (ImGui::SliderInt("FoV", &viewAngle, 1, 179)) editedCamera_.viewAngle = static_cast<float>(viewAngle);
+        if (ImGui::SliderInt("FoV", &viewAngle, 1, 179))
+            editedCamera_.viewAngle = static_cast<float>(viewAngle);
         ImGui::Checkbox("Perspective", &editedCamera_.perspective);
         ImGui::InputInt("Camera parent model", &editedCamera_.parentModel);
         ImGui::InputInt("Camera parent bone", &editedCamera_.parentBone);
         ImGui::InputText("Camera parent bone name", cameraParentBoneName_.data(), cameraParentBoneName_.size());
         if (ImGui::Button("Register camera")) {
-            core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion {};
+            core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
             auto document = core::toMotionDocument(before);
             editedCamera_.frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
             editedCamera_.parentBoneName = cameraParentBoneName_.data();
@@ -1564,7 +1668,7 @@ void Application::buildEditorUi() {
         ImGui::ColorEdit3("Light color", editedLight_.color.data());
         ImGui::DragFloat3("Light direction", editedLight_.position.data(), 0.01F);
         if (ImGui::Button("Register light")) {
-            core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion {};
+            core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
             auto document = core::toMotionDocument(before);
             editedLight_.frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
             std::erase_if(document.lights, [&](const auto& key) { return key.frame == editedLight_.frame; });
@@ -1573,10 +1677,11 @@ void Application::buildEditorUi() {
             execute(std::move(before), std::move(document), true, "Register light key");
         }
         int shadowMode = editedShadow_.mode;
-        if (ImGui::Combo("Self shadow", &shadowMode, "None\0Mode 1\0Mode 2\0")) editedShadow_.mode = static_cast<std::uint8_t>(shadowMode);
+        if (ImGui::Combo("Self shadow", &shadowMode, "None\0Mode 1\0Mode 2\0"))
+            editedShadow_.mode = static_cast<std::uint8_t>(shadowMode);
         ImGui::DragFloat("Shadow distance", &editedShadow_.distance, 0.1F, 0.0F, 10'000.0F);
         if (ImGui::Button("Register self shadow")) {
-            core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion {};
+            core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
             auto document = core::toMotionDocument(before);
             editedShadow_.frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
             std::erase_if(document.shadows, [&](const auto& key) { return key.frame == editedShadow_.frame; });
@@ -1597,17 +1702,22 @@ void Application::buildEditorUi() {
                 projectSaveStatus_ = error.what();
             }
         }
-        if (!projectSaveStatus_.empty()) ImGui::TextWrapped("%s", projectSaveStatus_.c_str());
+        if (!projectSaveStatus_.empty())
+            ImGui::TextWrapped("%s", projectSaveStatus_.c_str());
         ImGui::Separator();
         auto background = scene_.background();
         int source = static_cast<int>(background.screenSource);
-        if (ImGui::Combo("Background source", &source, "Previous frame\0Video\0Image\0White\0")) scene_.setBackgroundScreenSource(static_cast<core::ScreenTextureSource>(source));
+        if (ImGui::Combo("Background source", &source, "Previous frame\0Video\0Image\0White\0"))
+            scene_.setBackgroundScreenSource(static_cast<core::ScreenTextureSource>(source));
         bool enabled = background.enabled;
-        if (ImGui::Checkbox("Background enabled", &enabled)) scene_.setBackgroundEnabled(enabled);
+        if (ImGui::Checkbox("Background enabled", &enabled))
+            scene_.setBackgroundEnabled(enabled);
         bool crop = background.crop == core::ScreenCropMode::crop4x3;
-        if (ImGui::Checkbox("Crop 4:3", &crop)) scene_.setBackgroundCrop(crop ? core::ScreenCropMode::crop4x3 : core::ScreenCropMode::none);
+        if (ImGui::Checkbox("Crop 4:3", &crop))
+            scene_.setBackgroundCrop(crop ? core::ScreenCropMode::crop4x3 : core::ScreenCropMode::none);
         bool alpha = background.mode == core::BackgroundMode::alpha;
-        if (ImGui::Checkbox("Alpha background", &alpha)) scene_.setBackgroundMode(alpha ? core::BackgroundMode::alpha : core::BackgroundMode::opaque);
+        if (ImGui::Checkbox("Alpha background", &alpha))
+            scene_.setBackgroundMode(alpha ? core::BackgroundMode::alpha : core::BackgroundMode::opaque);
         if (model != nullptr) {
             ImGui::SeparatorText("Model order");
             ImGui::DragInt("Motion order", &model->order.motion, 1.0F, 0, 1024);
@@ -1619,7 +1729,8 @@ void Application::buildEditorUi() {
                 ImGui::TextUnformatted(model->sourcePath.parent_path().string().c_str());
                 if (ImGui::Button("Open model folder")) {
                     const auto url = "file://" + model->sourcePath.parent_path().generic_string();
-                    if (!SDL_OpenURL(url.c_str())) lastAsset_ = std::string("Open folder: ") + SDL_GetError();
+                    if (!SDL_OpenURL(url.c_str()))
+                        lastAsset_ = std::string("Open folder: ") + SDL_GetError();
                 }
                 ImGui::TreePop();
             }
@@ -1629,10 +1740,12 @@ void Application::buildEditorUi() {
                 const auto& materials = model->model->materials;
                 const char* preview = materials[static_cast<std::size_t>(materialIndex)].name.c_str();
                 if (ImGui::BeginCombo("Material", preview)) {
-                    for (std::size_t i = 0; i < materials.size(); ++i) if (ImGui::Selectable(materials[i].name.c_str(), materialIndex == static_cast<int>(i))) materialIndex = static_cast<int>(i);
+                    for (std::size_t i = 0; i < materials.size(); ++i)
+                        if (ImGui::Selectable(materials[i].name.c_str(), materialIndex == static_cast<int>(i)))
+                            materialIndex = static_cast<int>(i);
                     ImGui::EndCombo();
                 }
-                static std::array<char, 1024> annotation {};
+                static std::array<char, 1024> annotation{};
                 ImGui::InputText("Annotation / MatDesc", annotation.data(), annotation.size());
                 if (ImGui::Button("Apply material annotation")) {
                     model->materialSettings[static_cast<std::size_t>(materialIndex)].annotation = annotation.data();
@@ -1642,12 +1755,15 @@ void Application::buildEditorUi() {
             }
             if (scene_.models().size() > 1 && ImGui::TreeNode("External parent")) {
                 static int parentIndex = 0;
-                static std::array<char, 256> parentBone {};
-                static std::array<char, 256> childBone {};
+                static std::array<char, 256> parentBone{};
+                static std::array<char, 256> childBone{};
                 parentIndex = std::clamp(parentIndex, 0, static_cast<int>(scene_.models().size() - 1));
-                if (ImGui::BeginCombo("Parent model", scene_.models()[static_cast<std::size_t>(parentIndex)].displayName.c_str())) {
+                if (ImGui::BeginCombo("Parent model",
+                                      scene_.models()[static_cast<std::size_t>(parentIndex)].displayName.c_str())) {
                     for (std::size_t i = 0; i < scene_.models().size(); ++i) {
-                        if (ImGui::Selectable(scene_.models()[i].displayName.c_str(), parentIndex == static_cast<int>(i))) parentIndex = static_cast<int>(i);
+                        if (ImGui::Selectable(scene_.models()[i].displayName.c_str(),
+                                              parentIndex == static_cast<int>(i)))
+                            parentIndex = static_cast<int>(i);
                     }
                     ImGui::EndCombo();
                 }
@@ -1656,18 +1772,18 @@ void Application::buildEditorUi() {
                 if (ImGui::Button("Add external parent")) {
                     std::string error;
                     const auto& parent = scene_.models()[static_cast<std::size_t>(parentIndex)];
-                    if (!scene_.addExternalParent({ parent.id, parentBone.data(), model->id, childBone.data() }, &error)) {
+                    if (!scene_.addExternalParent({parent.id, parentBone.data(), model->id, childBone.data()},
+                                                  &error)) {
                         lastAsset_ = "External parent: " + error;
                     } else {
-                        core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion {};
+                        core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
                         before.modelName = model->displayName;
                         auto document = core::toMotionDocument(before);
                         const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
-                        document.externalParents.push_back({ frame, static_cast<std::int32_t>(parent.id),
-                                                             parentBone.data(), childBone.data() });
+                        document.externalParents.push_back(
+                            {frame, static_cast<std::int32_t>(parent.id), parentBone.data(), childBone.data()});
                         core::MotionEditor::normalize(document);
-                        execute(std::move(before), std::move(document), false,
-                                "Register external parent key");
+                        execute(std::move(before), std::move(document), false, "Register external parent key");
                     }
                 }
                 ImGui::TreePop();
@@ -1679,66 +1795,84 @@ void Application::buildEditorUi() {
             for (const auto& asset : projectAssets_) {
                 credits += asset.kind + ": " + asset.path.string() + "\n";
                 const auto directory = asset.path.parent_path();
-                if (std::find(scanned.begin(), scanned.end(), directory) != scanned.end()) continue;
+                if (std::find(scanned.begin(), scanned.end(), directory) != scanned.end())
+                    continue;
                 scanned.push_back(directory);
                 std::error_code directoryError;
                 for (std::filesystem::directory_iterator iterator(directory, directoryError), end;
                      !directoryError && iterator != end; iterator.increment(directoryError)) {
                     auto extension = iterator->path().extension().string();
-                    std::ranges::transform(extension, extension.begin(), [](unsigned char value) {
-                        return static_cast<char>(std::tolower(value));
-                    });
-                    if (extension != ".url") continue;
+                    std::ranges::transform(extension, extension.begin(),
+                                           [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+                    if (extension != ".url")
+                        continue;
                     std::ifstream input(iterator->path());
                     std::string line;
-                    while (std::getline(input, line)) if (line.starts_with("URL=")) {
-                        credits += "url: " + line.substr(4) + "\n";
-                        break;
-                    }
+                    while (std::getline(input, line))
+                        if (line.starts_with("URL=")) {
+                            credits += "url: " + line.substr(4) + "\n";
+                            break;
+                        }
                 }
             }
-            if (model != nullptr && !model->model->metadata.comment.empty()) credits += model->model->metadata.comment + "\n";
+            if (model != nullptr && !model->model->metadata.comment.empty())
+                credits += model->model->metadata.comment + "\n";
             ImGui::SetClipboardText(credits.c_str());
         }
         if (ImGui::TreeNode("Shortcuts")) {
-            ImGui::TextUnformatted("Space: Play / Pause\nCtrl+Z: Undo\nCtrl+Y: Redo\nCtrl+C/X/V: Copy/Cut/Paste keys\nDelete: Delete selected keys");
+            ImGui::TextUnformatted("Space: Play / Pause\nCtrl+Z: Undo\nCtrl+Y: Redo\nCtrl+C/X/V: Copy/Cut/Paste "
+                                   "keys\nDelete: Delete selected keys");
             ImGui::TreePop();
         }
         if (ImGui::TreeNode("Image sequence output")) {
-            static std::array<char, 1024> outputDirectory { 'o', 'u', 't', 'p', 'u', 't', '\0' };
+            static std::array<char, 1024> outputDirectory{'o', 'u', 't', 'p', 'u', 't', '\0'};
             ImGui::InputText("Directory", outputDirectory.data(), outputDirectory.size());
             int first = static_cast<int>(sequenceOutput_.firstFrame);
             int last = static_cast<int>(sequenceOutput_.lastFrame);
             int samples = static_cast<int>(sequenceOutput_.samples);
-            if (ImGui::InputInt("First frame", &first)) sequenceOutput_.firstFrame = static_cast<std::uint32_t>(std::max(first, 0));
-            if (ImGui::InputInt("Last frame", &last)) sequenceOutput_.lastFrame = static_cast<std::uint32_t>(std::max(last, 0));
-            if (ImGui::InputInt("Samples", &samples)) sequenceOutput_.samples = static_cast<std::uint32_t>(std::clamp(samples, 1, 4096));
+            if (ImGui::InputInt("First frame", &first))
+                sequenceOutput_.firstFrame = static_cast<std::uint32_t>(std::max(first, 0));
+            if (ImGui::InputInt("Last frame", &last))
+                sequenceOutput_.lastFrame = static_cast<std::uint32_t>(std::max(last, 0));
+            if (ImGui::InputInt("Samples", &samples))
+                sequenceOutput_.samples = static_cast<std::uint32_t>(std::clamp(samples, 1, 4096));
             ImGui::Checkbox("Motion blur", &sequenceOutput_.motionBlur);
             int format = static_cast<int>(sequenceOutput_.format);
-            if (ImGui::Combo("Format", &format, "PPM\0PNG\0EXR\0")) sequenceOutput_.format = static_cast<core::OutputFormat>(format);
+            if (ImGui::Combo("Format", &format, "PPM\0PNG\0EXR\0"))
+                sequenceOutput_.format = static_cast<core::OutputFormat>(format);
             if (ImGui::Button("Render sequence")) {
                 const auto restoreFrame = scene_.timeline().frame;
                 try {
-                    if (sequenceOutput_.lastFrame < sequenceOutput_.firstFrame) throw std::invalid_argument("last frame precedes first frame");
+                    if (sequenceOutput_.lastFrame < sequenceOutput_.firstFrame)
+                        throw std::invalid_argument("last frame precedes first frame");
                     sequenceOutput_.directory = outputDirectory.data();
                     core::OutputQueue output(sequenceOutput_);
-                    for (std::uint32_t frame = sequenceOutput_.firstFrame; frame <= sequenceOutput_.lastFrame; ++frame) {
+                    for (std::uint32_t frame = sequenceOutput_.firstFrame; frame <= sequenceOutput_.lastFrame;
+                         ++frame) {
                         core::ImageRgba8 image;
                         std::vector<std::uint64_t> sum;
                         for (std::uint32_t sample = 0; sample < sequenceOutput_.samples; ++sample) {
-                            const float offset = sequenceOutput_.motionBlur
-                                ? static_cast<float>(sample) / static_cast<float>(sequenceOutput_.samples) : 0.0F;
+                            const float offset =
+                                sequenceOutput_.motionBlur
+                                    ? static_cast<float>(sample) / static_cast<float>(sequenceOutput_.samples)
+                                    : 0.0F;
                             scene_.setFrame(static_cast<float>(frame) + offset);
                             animationFrame_ = scene_.timeline().frame;
                             refreshAnimatedMesh(false);
                             refreshPreviewScene();
-                            auto rendered = device_->renderToImage({ videoWidth_, videoHeight_ });
-                            if (sum.empty()) { image = rendered; sum.resize(rendered.pixels.size()); }
-                            for (std::size_t i = 0; i < rendered.pixels.size(); ++i) sum[i] += rendered.pixels[i];
+                            auto rendered = device_->renderToImage({videoWidth_, videoHeight_});
+                            if (sum.empty()) {
+                                image = rendered;
+                                sum.resize(rendered.pixels.size());
+                            }
+                            for (std::size_t i = 0; i < rendered.pixels.size(); ++i)
+                                sum[i] += rendered.pixels[i];
                         }
-                        for (std::size_t i = 0; i < image.pixels.size(); ++i) image.pixels[i] = static_cast<std::uint8_t>(sum[i] / sequenceOutput_.samples);
+                        for (std::size_t i = 0; i < image.pixels.size(); ++i)
+                            image.pixels[i] = static_cast<std::uint8_t>(sum[i] / sequenceOutput_.samples);
                         output.push(frame, std::move(image));
-                        if (frame == std::numeric_limits<std::uint32_t>::max()) break;
+                        if (frame == std::numeric_limits<std::uint32_t>::max())
+                            break;
                     }
                     output.close();
                     output.rethrowIfFailed();
@@ -1761,17 +1895,21 @@ void Application::buildEditorUi() {
         if (const auto* effect = scene_.effect()) {
             const auto compiled = core::compileEffectGraph(*effect);
             ImGui::Text("Resources: %zu", effect->textures.size());
-            for (const auto& texture : effect->textures) ImGui::BulletText("%s (%s)", texture.name.c_str(), texture.format.c_str());
+            for (const auto& texture : effect->textures)
+                ImGui::BulletText("%s (%s)", texture.name.c_str(), texture.format.c_str());
             ImGui::SeparatorText("Passes");
             for (const auto& pass : compiled.passes) {
                 if (ImGui::TreeNode(pass.name.c_str())) {
                     ImGui::Text("Type: %s", core::toString(pass.type));
-                    for (const auto& barrier : pass.barriers) ImGui::BulletText("Barrier: %s", barrier.c_str());
-                    for (const auto& resource : pass.resources) ImGui::BulletText("%s %s", resource.write ? "Write" : "Read", resource.resource.c_str());
+                    for (const auto& barrier : pass.barriers)
+                        ImGui::BulletText("Barrier: %s", barrier.c_str());
+                    for (const auto& resource : pass.resources)
+                        ImGui::BulletText("%s %s", resource.write ? "Write" : "Read", resource.resource.c_str());
                     ImGui::TreePop();
                 }
             }
-        } else ImGui::TextUnformatted("Load an .fxdayo file to inspect resources and passes.");
+        } else
+            ImGui::TextUnformatted("Load an .fxdayo file to inspect resources and passes.");
     }
     ImGui::End();
 #endif
@@ -1790,8 +1928,8 @@ void Application::setAudioExportDestinationForSource(const std::filesystem::path
 
 void Application::buildAudioExportUi() {
 #if DAYO_HAS_IMGUI
-    ImGui::SetNextWindowPos({ 520.0F, 24.0F }, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize({ 420.0F, 360.0F }, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos({520.0F, 24.0F}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize({420.0F, 360.0F}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Audio Export")) {
         if (!DAYO_HAS_MEDIA) {
             ImGui::TextUnformatted("FFmpeg support is not available in this build.");
@@ -1801,8 +1939,10 @@ void Application::buildAudioExportUi() {
             ImGui::TextUnformatted("M4A / AAC");
             ImGui::TextUnformatted("Source");
             ImGui::SameLine(120.0F);
-            if (audioSource_.empty()) ImGui::TextUnformatted("Load an audio or video asset first");
-            else ImGui::TextWrapped("%s", audioSource_.string().c_str());
+            if (audioSource_.empty())
+                ImGui::TextUnformatted("Load an audio or video asset first");
+            else
+                ImGui::TextWrapped("%s", audioSource_.string().c_str());
 
             ImGui::SliderInt("Bitrate (kbps)", &audioBitrateKbps_, 64, 512);
             ImGui::TextUnformatted("Range");
@@ -1820,19 +1960,21 @@ void Application::buildAudioExportUi() {
 
             if (audioExportJob_.running()) {
                 const float progress = audioExportJob_.progress();
-                ImGui::ProgressBar(progress, { -1.0F, 0.0F });
+                ImGui::ProgressBar(progress, {-1.0F, 0.0F});
                 ImGui::Text("%.1f%%", static_cast<double>(progress) * 100.0);
                 if (audioExportJob_.totalSeconds() > 0.0) {
                     ImGui::SameLine();
-                    ImGui::Text("%.2f / %.2f s", audioExportJob_.processedSeconds(),
-                                audioExportJob_.totalSeconds());
+                    ImGui::Text("%.2f / %.2f s", audioExportJob_.processedSeconds(), audioExportJob_.totalSeconds());
                 }
-                if (ImGui::Button("Cancel")) audioExportJob_.cancel();
+                if (ImGui::Button("Cancel"))
+                    audioExportJob_.cancel();
             } else {
                 const auto error = audioExportJob_.error();
-                if (error) ImGui::TextWrapped("Export error: %s", error->c_str());
+                if (error)
+                    ImGui::TextWrapped("Export error: %s", error->c_str());
                 const auto result = audioExportJob_.result();
-                if (result) ImGui::TextWrapped("Exported: %s", result->output.string().c_str());
+                if (result)
+                    ImGui::TextWrapped("Exported: %s", result->output.string().c_str());
                 if (ImGui::Button("Export")) {
                     core::AudioExportRequest request;
                     request.source = audioSource_;
@@ -1858,8 +2000,8 @@ void Application::buildAudioExportUi() {
 
 void Application::buildVideoExportUi() {
 #if DAYO_HAS_IMGUI
-    ImGui::SetNextWindowPos({ 520.0F, 404.0F }, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize({ 420.0F, 410.0F }, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos({520.0F, 404.0F}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize({420.0F, 410.0F}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Video Export")) {
         if (!DAYO_HAS_MEDIA) {
             ImGui::TextUnformatted("FFmpeg support is not available in this build.");
@@ -1867,12 +2009,12 @@ void Application::buildVideoExportUi() {
             if (!videoRangeInitialized_) {
                 videoFromFrame_ = 0;
                 videoToFrame_ = scene_.timeline().duration > 0.0F
-                    ? static_cast<std::uint64_t>(std::ceil(scene_.timeline().duration)) : 0U;
+                                    ? static_cast<std::uint64_t>(std::ceil(scene_.timeline().duration))
+                                    : 0U;
                 videoRangeInitialized_ = true;
             }
             if (videoDestination_[0] == '\0' && !audioSource_.empty()) {
-                const auto destination = audioSource_.parent_path()
-                    / (audioSource_.stem().string() + ".mp4");
+                const auto destination = audioSource_.parent_path() / (audioSource_.stem().string() + ".mp4");
                 const auto text = destination.string();
                 const auto count = std::min(text.size(), videoDestination_.size() - 1U);
                 std::copy_n(text.data(), count, videoDestination_.data());
@@ -1883,13 +2025,17 @@ void Application::buildVideoExportUi() {
             ImGui::TextUnformatted("MP4 / H.264, H.265 or AV1");
             ImGui::TextUnformatted("Source");
             ImGui::SameLine(120.0F);
-            if (audioSource_.empty()) ImGui::TextUnformatted("No audio source (optional)");
-            else ImGui::TextWrapped("%s", audioSource_.string().c_str());
+            if (audioSource_.empty())
+                ImGui::TextUnformatted("No audio source (optional)");
+            else
+                ImGui::TextWrapped("%s", audioSource_.string().c_str());
             ImGui::InputText("Output", videoDestination_.data(), videoDestination_.size());
             int width = static_cast<int>(videoWidth_);
             int height = static_cast<int>(videoHeight_);
-            if (ImGui::InputInt("Width", &width)) videoWidth_ = static_cast<std::uint32_t>(std::max(width, 1));
-            if (ImGui::InputInt("Height", &height)) videoHeight_ = static_cast<std::uint32_t>(std::max(height, 1));
+            if (ImGui::InputInt("Width", &width))
+                videoWidth_ = static_cast<std::uint32_t>(std::max(width, 1));
+            if (ImGui::InputInt("Height", &height))
+                videoHeight_ = static_cast<std::uint32_t>(std::max(height, 1));
             ImGui::InputFloat("FPS", &videoFps_, 0.0F, 0.0F, "%.3f");
             videoFps_ = std::max(videoFps_, 1.0F);
             ImGui::Combo("Codec", &videoCodec_, "H.264\0H.265 / HEVC\0AV1\0");
@@ -1898,13 +2044,15 @@ void Application::buildVideoExportUi() {
             ImGui::Checkbox("Include audio", &videoIncludeAudio_);
             auto from = static_cast<unsigned long long>(videoFromFrame_);
             auto to = static_cast<unsigned long long>(videoToFrame_);
-            if (ImGui::InputScalar("From frame", ImGuiDataType_U64, &from)) videoFromFrame_ = from;
-            if (ImGui::InputScalar("To frame", ImGuiDataType_U64, &to)) videoToFrame_ = to;
+            if (ImGui::InputScalar("From frame", ImGuiDataType_U64, &from))
+                videoFromFrame_ = from;
+            if (ImGui::InputScalar("To frame", ImGuiDataType_U64, &to))
+                videoToFrame_ = to;
             ImGui::Checkbox("Overwrite existing file", &audioOverwrite_);
             ImGui::Separator();
 
             if (videoExportUiActive_ && videoExportJob_.running()) {
-                ImGui::ProgressBar(videoExportJob_.progress(), { -1.0F, 0.0F });
+                ImGui::ProgressBar(videoExportJob_.progress(), {-1.0F, 0.0F});
                 ImGui::Text("%.1f%%", static_cast<double>(videoExportJob_.progress()) * 100.0);
                 if (ImGui::Button("Cancel video export")) {
                     videoExportJob_.cancel();
@@ -1913,7 +2061,8 @@ void Application::buildVideoExportUi() {
                     videoExportStatus_ = "Cancelled";
                 }
             } else {
-                if (!videoExportStatus_.empty()) ImGui::TextWrapped("%s", videoExportStatus_.c_str());
+                if (!videoExportStatus_.empty())
+                    ImGui::TextWrapped("%s", videoExportStatus_.c_str());
                 if (const auto error = videoExportJob_.error()) {
                     ImGui::TextWrapped("Export error: %s", error->c_str());
                 }
@@ -1923,8 +2072,10 @@ void Application::buildVideoExportUi() {
                 }
                 if (ImGui::Button("Export video")) {
                     try {
-                        if (videoDestination_[0] == '\0') throw std::invalid_argument("video output is empty");
-                        if (videoToFrame_ < videoFromFrame_) throw std::invalid_argument("video frame range is reversed");
+                        if (videoDestination_[0] == '\0')
+                            throw std::invalid_argument("video output is empty");
+                        if (videoToFrame_ < videoFromFrame_)
+                            throw std::invalid_argument("video frame range is reversed");
                         core::VideoExportRequest request;
                         request.destination = videoDestination_.data();
                         request.width = videoWidth_;
@@ -1936,12 +2087,12 @@ void Application::buildVideoExportUi() {
                         request.overwrite = audioOverwrite_;
                         request.includeAudio = videoIncludeAudio_ && !audioSource_.empty();
                         std::optional<std::filesystem::path> audioSource;
-                        if (request.includeAudio) audioSource = audioSource_;
+                        if (request.includeAudio)
+                            audioSource = audioSource_;
                         videoSourceFps_ = sceneTimelineFps(scene_);
-                        videoOutputFrameCount_ = videoOutputFrameCount(
-                            videoFromFrame_, videoToFrame_, videoSourceFps_, request.fps);
-                        videoExportJob_.start(std::move(request), std::move(audioSource),
-                                              videoOutputFrameCount_);
+                        videoOutputFrameCount_ =
+                            videoOutputFrameCount(videoFromFrame_, videoToFrame_, videoSourceFps_, request.fps);
+                        videoExportJob_.start(std::move(request), std::move(audioSource), videoOutputFrameCount_);
                         videoNextFrame_ = 0;
                         videoPreviousSourceFrame_ = 0.0F;
                         videoPreRollDone_ = false;
