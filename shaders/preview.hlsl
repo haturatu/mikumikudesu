@@ -337,18 +337,15 @@ float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0
     const float3 normal = normalize(input.normal);
     const float3 lightDirection = normalize(-scene.light.xyz);
     const float noLight = dot(normal, lightDirection);
-    const float diffuseLight = saturate(noLight);
     const float3 halfVector = normalize(lightDirection + normalize(-input.viewPosition));
     const float specularLight = pow(max(1e-6, dot(normal, halfVector)), material.ambientShininess.w);
     float4 color = float4(saturate(material.ambientShininess.xyz
-                                  + material.diffuse.rgb * diffuseLight), material.diffuse.a) * sampled;
+                                  + material.diffuse.rgb), material.diffuse.a) * sampled;
 
     const uint toonMode = (material.flags >> 1U) & 0x03U;
     if (toonMode == 0U)
     {
-        color *= applyTextureMorphRgb(toonTexture.Sample(clampSampler,
-                            float2(0.0, 0.5 - noLight * 0.5)),
-                            material.toonMultiply, material.toonAdd, 1.0.xxx);
+        color *= toonTexture.Sample(clampSampler, float2(0.0, 0.5 - noLight * 0.5));
     }
     else if (toonMode == 1U)
     {
