@@ -10,12 +10,12 @@
 namespace dayo::core {
 
 struct PhysicsTransform {
-    Float3 position {};
-    Float4 rotation { 0.0F, 0.0F, 0.0F, 1.0F };
+    Float3 position{};
+    Float4 rotation{0.0F, 0.0F, 0.0F, 1.0F};
 };
 
 class MmdPhysics {
-public:
+  public:
     explicit MmdPhysics(const PmxModel& model);
     ~MmdPhysics();
     MmdPhysics(MmdPhysics&&) noexcept;
@@ -39,7 +39,7 @@ public:
     void clearMotion(std::size_t body);
     [[nodiscard]] PhysicsTransform bodyTransform(std::size_t body) const;
 
-private:
+  private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
@@ -48,21 +48,25 @@ private:
 // path; this deterministic solver keeps cloth/hair moving when Bullet's
 // optional soft-body module is unavailable.
 class SoftBodySimulation {
-public:
+  public:
     explicit SoftBodySimulation(const PmxModel& model);
-    [[nodiscard]] bool available() const noexcept { return bodyCount_ != 0 && !positions_.empty(); }
-    [[nodiscard]] std::size_t bodyCount() const noexcept { return bodyCount_; }
+    [[nodiscard]] bool available() const noexcept {
+        return bodyCount_ != 0 && !positions_.empty();
+    }
+    [[nodiscard]] std::size_t bodyCount() const noexcept {
+        return bodyCount_;
+    }
     void reset();
     void step(float deltaSeconds, const Float3& gravity);
     void apply(std::span<PmxVertex> vertices) const;
 
-private:
+  private:
     std::vector<Float3> initial_;
     std::vector<Float3> positions_;
     std::vector<Float3> velocities_;
     std::vector<std::uint8_t> pinned_;
     std::vector<std::uint32_t> activeVertices_;
-    std::size_t bodyCount_ {};
+    std::size_t bodyCount_{};
 };
 
 } // namespace dayo::core

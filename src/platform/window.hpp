@@ -12,22 +12,22 @@ union SDL_Event;
 namespace dayo::platform {
 
 struct WindowOptions {
-    std::string title { "mikumikudesu" };
-    std::uint32_t width { 1280 };
-    std::uint32_t height { 720 };
-    bool hidden {};
+    std::string title{"mikumikudesu"};
+    std::uint32_t width{1280};
+    std::uint32_t height{720};
+    bool hidden{};
 };
 
 struct WindowEvent {
     enum class Type { quit, resized, fileDropped, cameraDragged, cameraZoomed };
-    Type type {};
+    Type type{};
     std::filesystem::path path;
-    float x {};
-    float y {};
+    float x{};
+    float y{};
 };
 
 class Window {
-public:
+  public:
     virtual ~Window() = default;
     Window(const Window&) = delete;
     Window& operator=(const Window&) = delete;
@@ -39,7 +39,7 @@ public:
     virtual std::vector<WindowEvent> pollEvents() = 0;
     virtual void setTitle(const std::string& title) = 0;
 
-protected:
+  protected:
     Window() = default;
 };
 

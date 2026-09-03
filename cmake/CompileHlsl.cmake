@@ -10,19 +10,35 @@ function(dayo_compile_hlsl output_var)
 
   find_program(DAYO_DXC NAMES dxc HINTS ENV VULKAN_SDK PATH_SUFFIXES bin)
   if(DAYO_DXC)
-    set(command
-      "${DAYO_DXC}" -spirv -fspv-target-env=vulkan1.3
-      -fvk-use-dx-layout -enable-16bit-types
-      -E "${ARG_ENTRY}" -T "${ARG_PROFILE}"
-      "${source_abs}" -Fo "${output}"
+    set(
+      command
+      "${DAYO_DXC}"
+      -spirv
+      -fspv-target-env=vulkan1.3
+      -fvk-use-dx-layout
+      -enable-16bit-types
+      -E
+      "${ARG_ENTRY}"
+      -T
+      "${ARG_PROFILE}"
+      "${source_abs}"
+      -Fo
+      "${output}"
     )
     set(compiler_name "DXC")
   else()
     find_program(DAYO_GLSLC NAMES glslc REQUIRED)
-    set(command
-      "${DAYO_GLSLC}" -x hlsl --target-env=vulkan1.3
-      -fshader-stage=${ARG_STAGE} -fentry-point=${ARG_ENTRY}
-      "${source_abs}" -o "${output}"
+    set(
+      command
+      "${DAYO_GLSLC}"
+      -x
+      hlsl
+      --target-env=vulkan1.3
+      -fshader-stage=${ARG_STAGE}
+      -fentry-point=${ARG_ENTRY}
+      "${source_abs}"
+      -o
+      "${output}"
     )
     set(compiler_name "glslc fallback")
   endif()
@@ -44,4 +60,3 @@ function(dayo_compile_hlsl output_var)
   )
   set(${output_var} "${output}" PARENT_SCOPE)
 endfunction()
-

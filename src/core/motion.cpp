@@ -15,68 +15,72 @@
 namespace dayo::core {
 namespace {
 
-template <typename T>
-T read(std::istream& input, std::string_view field) {
+template <typename T> T read(std::istream& input, std::string_view field) {
     static_assert(std::is_trivially_copyable_v<T>);
-    T value {};
+    T value{};
     input.read(reinterpret_cast<char*>(&value), sizeof(value));
-    if (!input) throw std::runtime_error("truncated VMD while reading " + std::string(field));
+    if (!input)
+        throw std::runtime_error("truncated VMD while reading " + std::string(field));
     return value;
 }
 
-template <typename T>
-void write(std::ostream& output, const T& value, std::string_view field) {
+template <typename T> void write(std::ostream& output, const T& value, std::string_view field) {
     static_assert(std::is_trivially_copyable_v<T>);
     output.write(reinterpret_cast<const char*>(&value), sizeof(value));
-    if (!output) throw std::runtime_error("failed while writing VMD " + std::string(field));
+    if (!output)
+        throw std::runtime_error("failed while writing VMD " + std::string(field));
 }
 
-template <std::size_t N>
-void writeName(std::ostream& output, std::string_view value, std::string_view field) {
-    std::array<char, N> bytes {};
+template <std::size_t N> void writeName(std::ostream& output, std::string_view value, std::string_view field) {
+    std::array<char, N> bytes{};
     const auto encoded = encodeCp932(value);
     std::copy_n(encoded.data(), std::min(encoded.size(), bytes.size()), bytes.data());
     output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    if (!output) throw std::runtime_error("failed while writing VMD " + std::string(field));
+    if (!output)
+        throw std::runtime_error("failed while writing VMD " + std::string(field));
 }
 
-template <std::size_t N>
-std::array<float, N> readFloatArray(std::istream& input, std::string_view field) {
-    std::array<float, N> value {};
+template <std::size_t N> std::array<float, N> readFloatArray(std::istream& input, std::string_view field) {
+    std::array<float, N> value{};
     input.read(reinterpret_cast<char*>(value.data()), static_cast<std::streamsize>(sizeof(value)));
-    if (!input) throw std::runtime_error("truncated VMD while reading " + std::string(field));
+    if (!input)
+        throw std::runtime_error("truncated VMD while reading " + std::string(field));
     return value;
 }
 
-template <std::size_t N>
-std::string readName(std::istream& input, std::string_view field) {
-    std::array<char, N> value {};
+template <std::size_t N> std::string readName(std::istream& input, std::string_view field) {
+    std::array<char, N> value{};
     input.read(value.data(), static_cast<std::streamsize>(value.size()));
-    if (!input) throw std::runtime_error("truncated VMD while reading " + std::string(field));
+    if (!input)
+        throw std::runtime_error("truncated VMD while reading " + std::string(field));
     const auto end = std::find(value.begin(), value.end(), '\0');
     return decodeCp932(std::string_view(value.data(), static_cast<std::size_t>(end - value.begin())));
 }
 
 std::uint32_t readCount(std::istream& input, std::string_view field, std::uint32_t maximum = 100'000'000U) {
     const auto value = read<std::uint32_t>(input, field);
-    if (value > maximum) throw std::runtime_error("invalid VMD " + std::string(field));
+    if (value > maximum)
+        throw std::runtime_error("invalid VMD " + std::string(field));
     return value;
 }
 
-void updateLastFrame(VmdMotion& motion, std::uint32_t frame) { motion.lastFrame = std::max(motion.lastFrame, frame); }
+void updateLastFrame(VmdMotion& motion, std::uint32_t frame) {
+    motion.lastFrame = std::max(motion.lastFrame, frame);
+}
 
 std::string trim(std::string value) {
     const auto first = value.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) return {};
+    if (first == std::string::npos)
+        return {};
     const auto last = value.find_last_not_of(" \t\r\n");
     return value.substr(first, last - first + 1);
 }
 
 float parseFloat(std::string_view input, std::string_view field) {
-    float value {};
+    float value{};
     const auto begin = input.data();
     const auto [end, error] = std::from_chars(begin, begin + input.size(), value);
-    if (error != std::errc {} || end != begin + input.size()) {
+    if (error != std::errc{} || end != begin + input.size()) {
         throw std::runtime_error("invalid VPD " + std::string(field));
     }
     return value;
@@ -92,26 +96,29 @@ float cameraBezier(float x, const std::array<std::uint8_t, 24>& values, std::siz
     for (int iteration = 0; iteration < 16; ++iteration) {
         const float value = (low + high) * 0.5F;
         const float inverse = 1.0F - value;
-        const float curveX = 3.0F * inverse * inverse * value * x1
-                           + 3.0F * inverse * value * value * x2 + value * value * value;
-        if (curveX < x) low = value; else high = value;
+        const float curveX =
+            3.0F * inverse * inverse * value * x1 + 3.0F * inverse * value * value * x2 + value * value * value;
+        if (curveX < x)
+            low = value;
+        else
+            high = value;
     }
     const float value = (low + high) * 0.5F;
     const float inverse = 1.0F - value;
-    return 3.0F * inverse * inverse * value * y1
-         + 3.0F * inverse * value * value * y2 + value * value * value;
+    return 3.0F * inverse * inverse * value * y1 + 3.0F * inverse * value * value * y2 + value * value * value;
 }
 
-template <std::size_t N>
-std::array<float, N> parseVector(std::string value, std::string_view field) {
-    if (!value.empty() && value.back() == ';') value.pop_back();
-    std::array<float, N> result {};
+template <std::size_t N> std::array<float, N> parseVector(std::string value, std::string_view field) {
+    if (!value.empty() && value.back() == ';')
+        value.pop_back();
+    std::array<float, N> result{};
     std::size_t begin = 0;
     for (std::size_t i = 0; i < N; ++i) {
         const auto end = value.find(',', begin);
         const auto part = trim(value.substr(begin, end == std::string::npos ? end : end - begin));
         result[i] = parseFloat(part, field);
-        if (i + 1 < N && end == std::string::npos) throw std::runtime_error("short VPD vector");
+        if (i + 1 < N && end == std::string::npos)
+            throw std::runtime_error("short VPD vector");
         begin = end == std::string::npos ? value.size() : end + 1;
     }
     return result;
@@ -122,27 +129,30 @@ std::array<float, N> parseVector(std::string value, std::string_view field) {
 float catmullRom(float p0, float p1, float p2, float p3, float t) noexcept {
     const float t2 = t * t;
     const float t3 = t2 * t;
-    return 0.5F * ((2.0F * p1) + (-p0 + p2) * t
-        + (2.0F * p0 - 5.0F * p1 + 4.0F * p2 - p3) * t2
-        + (-p0 + 3.0F * p1 - 3.0F * p2 + p3) * t3);
+    return 0.5F * ((2.0F * p1) + (-p0 + p2) * t + (2.0F * p0 - 5.0F * p1 + 4.0F * p2 - p3) * t2 +
+                   (-p0 + 3.0F * p1 - 3.0F * p2 + p3) * t3);
 }
 
 std::string decodeCp932(std::string_view input) {
-    if (input.empty()) return {};
+    if (input.empty())
+        return {};
     iconv_t converter = iconv_open("UTF-8", "CP932");
-    if (converter == reinterpret_cast<iconv_t>(-1)) throw std::runtime_error("CP932 converter is unavailable");
+    if (converter == reinterpret_cast<iconv_t>(-1))
+        throw std::runtime_error("CP932 converter is unavailable");
     std::string output(input.size() * 4 + 4, '\0');
     char* source = const_cast<char*>(input.data());
     std::size_t sourceLeft = input.size();
     char* destination = output.data();
     std::size_t destinationLeft = output.size();
     while (sourceLeft != 0) {
-        if (iconv(converter, &source, &sourceLeft, &destination, &destinationLeft) != static_cast<std::size_t>(-1)) continue;
+        if (iconv(converter, &source, &sourceLeft, &destination, &destinationLeft) != static_cast<std::size_t>(-1))
+            continue;
         if (errno == EILSEQ || errno == EINVAL) {
             ++source;
             --sourceLeft;
             constexpr std::string_view replacement = "\xEF\xBF\xBD";
-            if (destinationLeft < replacement.size()) break;
+            if (destinationLeft < replacement.size())
+                break;
             std::memcpy(destination, replacement.data(), replacement.size());
             destination += replacement.size();
             destinationLeft -= replacement.size();
@@ -157,16 +167,19 @@ std::string decodeCp932(std::string_view input) {
 }
 
 std::string encodeCp932(std::string_view input) {
-    if (input.empty()) return {};
+    if (input.empty())
+        return {};
     iconv_t converter = iconv_open("CP932//TRANSLIT", "UTF-8");
-    if (converter == reinterpret_cast<iconv_t>(-1)) throw std::runtime_error("CP932 encoder is unavailable");
+    if (converter == reinterpret_cast<iconv_t>(-1))
+        throw std::runtime_error("CP932 encoder is unavailable");
     std::string output(input.size() * 2 + 16, '\0');
     char* source = const_cast<char*>(input.data());
     std::size_t sourceLeft = input.size();
     char* destination = output.data();
     std::size_t destinationLeft = output.size();
     while (sourceLeft != 0) {
-        if (iconv(converter, &source, &sourceLeft, &destination, &destinationLeft) != static_cast<std::size_t>(-1)) continue;
+        if (iconv(converter, &source, &sourceLeft, &destination, &destinationLeft) != static_cast<std::size_t>(-1))
+            continue;
         if (errno == E2BIG) {
             const auto used = static_cast<std::size_t>(destination - output.data());
             output.resize(output.size() * 2);
@@ -177,7 +190,8 @@ std::string encodeCp932(std::string_view input) {
         if (errno == EILSEQ || errno == EINVAL) {
             ++source;
             --sourceLeft;
-            if (destinationLeft == 0) continue;
+            if (destinationLeft == 0)
+                continue;
             *destination++ = '?';
             --destinationLeft;
             continue;
@@ -192,8 +206,9 @@ std::string encodeCp932(std::string_view input) {
 
 VmdMotion loadVmd(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
-    if (!input) throw std::runtime_error("cannot open VMD file: " + path.string());
-    std::array<char, 30> header {};
+    if (!input)
+        throw std::runtime_error("cannot open VMD file: " + path.string());
+    std::array<char, 30> header{};
     input.read(header.data(), static_cast<std::streamsize>(header.size()));
     constexpr std::string_view signature = "Vocaloid Motion Data 0002";
     if (!input || std::string_view(header.data(), signature.size()) != signature) {
@@ -207,8 +222,10 @@ VmdMotion loadVmd(const std::filesystem::path& path) {
         key.frame = read<std::uint32_t>(input, "bone frame");
         key.translation = readFloatArray<3>(input, "bone translation");
         key.rotation = readFloatArray<4>(input, "bone rotation");
-        input.read(reinterpret_cast<char*>(key.interpolation.data()), static_cast<std::streamsize>(key.interpolation.size()));
-        if (!input) throw std::runtime_error("truncated VMD bone interpolation");
+        input.read(reinterpret_cast<char*>(key.interpolation.data()),
+                   static_cast<std::streamsize>(key.interpolation.size()));
+        if (!input)
+            throw std::runtime_error("truncated VMD bone interpolation");
         updateLastFrame(motion, key.frame);
     }
     motion.morphs.resize(readCount(input, "morph key count"));
@@ -218,20 +235,24 @@ VmdMotion loadVmd(const std::filesystem::path& path) {
         key.weight = read<float>(input, "morph weight");
         updateLastFrame(motion, key.frame);
     }
-    if (input.peek() == std::char_traits<char>::eof()) return motion;
+    if (input.peek() == std::char_traits<char>::eof())
+        return motion;
     motion.cameras.resize(readCount(input, "camera key count"));
     for (auto& key : motion.cameras) {
         key.frame = read<std::uint32_t>(input, "camera frame");
         key.distance = read<float>(input, "camera distance");
         key.position = readFloatArray<3>(input, "camera position");
         key.rotation = readFloatArray<3>(input, "camera rotation");
-        input.read(reinterpret_cast<char*>(key.interpolation.data()), static_cast<std::streamsize>(key.interpolation.size()));
-        if (!input) throw std::runtime_error("truncated VMD camera interpolation");
+        input.read(reinterpret_cast<char*>(key.interpolation.data()),
+                   static_cast<std::streamsize>(key.interpolation.size()));
+        if (!input)
+            throw std::runtime_error("truncated VMD camera interpolation");
         key.viewAngle = static_cast<float>(read<std::uint32_t>(input, "camera view angle"));
         key.perspective = read<std::uint8_t>(input, "camera perspective") == 0;
         updateLastFrame(motion, key.frame);
     }
-    if (input.peek() == std::char_traits<char>::eof()) return motion;
+    if (input.peek() == std::char_traits<char>::eof())
+        return motion;
     motion.lights.resize(readCount(input, "light key count"));
     for (auto& key : motion.lights) {
         key.frame = read<std::uint32_t>(input, "light frame");
@@ -239,7 +260,8 @@ VmdMotion loadVmd(const std::filesystem::path& path) {
         key.position = readFloatArray<3>(input, "light position");
         updateLastFrame(motion, key.frame);
     }
-    if (input.peek() == std::char_traits<char>::eof()) return motion;
+    if (input.peek() == std::char_traits<char>::eof())
+        return motion;
     motion.shadows.resize(readCount(input, "shadow key count"));
     for (auto& key : motion.shadows) {
         key.frame = read<std::uint32_t>(input, "shadow frame");
@@ -247,7 +269,8 @@ VmdMotion loadVmd(const std::filesystem::path& path) {
         key.distance = read<float>(input, "shadow distance");
         updateLastFrame(motion, key.frame);
     }
-    if (input.peek() == std::char_traits<char>::eof()) return motion;
+    if (input.peek() == std::char_traits<char>::eof())
+        return motion;
     motion.ik.resize(readCount(input, "IK key count"));
     for (auto& key : motion.ik) {
         key.frame = read<std::uint32_t>(input, "IK frame");
@@ -265,15 +288,17 @@ VmdMotion loadVmd(const std::filesystem::path& path) {
 }
 
 void saveVmd(const std::filesystem::path& path, const VmdMotion& motion) {
-    if (path.empty()) throw std::invalid_argument("VMD path is empty");
+    if (path.empty())
+        throw std::invalid_argument("VMD path is empty");
     const auto absolute = std::filesystem::absolute(path).lexically_normal();
     std::filesystem::create_directories(absolute.parent_path());
     auto temporary = absolute;
     temporary += ".tmp";
     {
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-        if (!output) throw std::runtime_error("cannot write VMD file: " + temporary.string());
-        std::array<char, 30> header {};
+        if (!output)
+            throw std::runtime_error("cannot write VMD file: " + temporary.string());
+        std::array<char, 30> header{};
         constexpr std::string_view signature = "Vocaloid Motion Data 0002";
         std::copy(signature.begin(), signature.end(), header.begin());
         output.write(header.data(), static_cast<std::streamsize>(header.size()));
@@ -299,8 +324,10 @@ void saveVmd(const std::filesystem::path& path, const VmdMotion& motion) {
             write(output, key.position, "camera position");
             write(output, key.rotation, "camera rotation");
             write(output, key.interpolation, "camera interpolation");
-            write(output, static_cast<std::uint32_t>(std::clamp(key.viewAngle, 0.0F,
-                static_cast<float>(std::numeric_limits<std::uint32_t>::max()))), "camera view angle");
+            write(output,
+                  static_cast<std::uint32_t>(
+                      std::clamp(key.viewAngle, 0.0F, static_cast<float>(std::numeric_limits<std::uint32_t>::max()))),
+                  "camera view angle");
             write(output, static_cast<std::uint8_t>(key.perspective ? 0 : 1), "camera perspective");
         }
         write(output, static_cast<std::uint32_t>(motion.lights.size()), "light key count");
@@ -326,7 +353,8 @@ void saveVmd(const std::filesystem::path& path, const VmdMotion& motion) {
             }
         }
         output.flush();
-        if (!output) throw std::runtime_error("failed while writing VMD file: " + temporary.string());
+        if (!output)
+            throw std::runtime_error("failed while writing VMD file: " + temporary.string());
     }
     std::error_code error;
     std::filesystem::rename(temporary, absolute, error);
@@ -343,24 +371,30 @@ void saveVmd(const std::filesystem::path& path, const VmdMotion& motion) {
 
 VpdPose loadVpd(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
-    if (!input) throw std::runtime_error("cannot open VPD file: " + path.string());
+    if (!input)
+        throw std::runtime_error("cannot open VPD file: " + path.string());
     std::string bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
     auto text = decodeCp932(bytes);
-    if (text.find("Vocaloid Pose Data file") == std::string::npos) throw std::runtime_error("unsupported VPD file");
+    if (text.find("Vocaloid Pose Data file") == std::string::npos)
+        throw std::runtime_error("unsupported VPD file");
     VpdPose pose;
     std::size_t cursor = 0;
     while ((cursor = text.find("Bone", cursor)) != std::string::npos) {
         const auto open = text.find('{', cursor);
         const auto nameEnd = open == std::string::npos ? open : text.find('{', open + 1);
         const auto close = nameEnd == std::string::npos ? nameEnd : text.find('}', nameEnd + 1);
-        if (open == std::string::npos || nameEnd == std::string::npos || close == std::string::npos) break;
+        if (open == std::string::npos || nameEnd == std::string::npos || close == std::string::npos)
+            break;
         VpdBonePose bone;
         bone.name = trim(text.substr(open + 1, nameEnd - open - 1));
         const auto translationEnd = text.find('\n', nameEnd + 1);
-        const auto rotationEnd = translationEnd == std::string::npos ? translationEnd : text.find('\n', translationEnd + 1);
-        if (translationEnd == std::string::npos || rotationEnd == std::string::npos) break;
+        const auto rotationEnd =
+            translationEnd == std::string::npos ? translationEnd : text.find('\n', translationEnd + 1);
+        if (translationEnd == std::string::npos || rotationEnd == std::string::npos)
+            break;
         bone.translation = parseVector<3>(trim(text.substr(nameEnd + 1, translationEnd - nameEnd - 1)), "translation");
-        bone.rotation = parseVector<4>(trim(text.substr(translationEnd + 1, rotationEnd - translationEnd - 1)), "rotation");
+        bone.rotation =
+            parseVector<4>(trim(text.substr(translationEnd + 1, rotationEnd - translationEnd - 1)), "rotation");
         pose.bones.push_back(std::move(bone));
         cursor = close + 1;
     }
@@ -368,9 +402,8 @@ VpdPose loadVpd(const std::filesystem::path& path) {
 }
 
 MotionDocument toMotionDocument(const VmdMotion& motion) {
-    return { motion.modelName, motion.interpolation, motion.bones, motion.morphs,
-             motion.cameras, motion.lights, motion.shadows, motion.ik,
-             motion.externalParents, motion.gravity };
+    return {motion.modelName, motion.interpolation, motion.bones, motion.morphs,          motion.cameras,
+            motion.lights,    motion.shadows,       motion.ik,    motion.externalParents, motion.gravity};
 }
 
 VmdMotion toVmdMotion(MotionDocument document, std::string modelName) {
@@ -387,30 +420,43 @@ VmdMotion toVmdMotion(MotionDocument document, std::string modelName) {
     result.gravity = std::move(document.gravity);
     std::stable_sort(result.ik.begin(), result.ik.end(),
                      [](const VmdIkKey& left, const VmdIkKey& right) { return left.frame < right.frame; });
-    for (const auto& key : result.bones) result.lastFrame = std::max(result.lastFrame, key.frame);
-    for (const auto& key : result.morphs) result.lastFrame = std::max(result.lastFrame, key.frame);
-    for (const auto& key : result.cameras) result.lastFrame = std::max(result.lastFrame, key.frame);
-    for (const auto& key : result.lights) result.lastFrame = std::max(result.lastFrame, key.frame);
-    for (const auto& key : result.shadows) result.lastFrame = std::max(result.lastFrame, key.frame);
-    for (const auto& key : result.ik) result.lastFrame = std::max(result.lastFrame, key.frame);
-    for (const auto& key : result.externalParents) result.lastFrame = std::max(result.lastFrame, key.frame);
-    for (const auto& key : result.gravity) result.lastFrame = std::max(result.lastFrame, key.frame);
+    for (const auto& key : result.bones)
+        result.lastFrame = std::max(result.lastFrame, key.frame);
+    for (const auto& key : result.morphs)
+        result.lastFrame = std::max(result.lastFrame, key.frame);
+    for (const auto& key : result.cameras)
+        result.lastFrame = std::max(result.lastFrame, key.frame);
+    for (const auto& key : result.lights)
+        result.lastFrame = std::max(result.lastFrame, key.frame);
+    for (const auto& key : result.shadows)
+        result.lastFrame = std::max(result.lastFrame, key.frame);
+    for (const auto& key : result.ik)
+        result.lastFrame = std::max(result.lastFrame, key.frame);
+    for (const auto& key : result.externalParents)
+        result.lastFrame = std::max(result.lastFrame, key.frame);
+    for (const auto& key : result.gravity)
+        result.lastFrame = std::max(result.lastFrame, key.frame);
     return result;
 }
 
 VmdCameraState evaluateCamera(const VmdMotion& motion, float frame) {
     VmdCameraState result;
-    if (motion.cameras.empty()) return result;
+    if (motion.cameras.empty())
+        return result;
     const VmdCameraKey* previous = &motion.cameras.front();
     const VmdCameraKey* next = previous;
     for (const auto& key : motion.cameras) {
-        if (static_cast<float>(key.frame) <= frame
-            && (static_cast<float>(previous->frame) > frame || key.frame >= previous->frame)) previous = &key;
-        if (static_cast<float>(key.frame) >= frame
-            && (static_cast<float>(next->frame) < frame || key.frame <= next->frame)) next = &key;
+        if (static_cast<float>(key.frame) <= frame &&
+            (static_cast<float>(previous->frame) > frame || key.frame >= previous->frame))
+            previous = &key;
+        if (static_cast<float>(key.frame) >= frame &&
+            (static_cast<float>(next->frame) < frame || key.frame <= next->frame))
+            next = &key;
     }
-    if (static_cast<float>(previous->frame) > frame) previous = next;
-    if (static_cast<float>(next->frame) < frame) next = previous;
+    if (static_cast<float>(previous->frame) > frame)
+        previous = next;
+    if (static_cast<float>(next->frame) < frame)
+        next = previous;
     const auto span = static_cast<float>(next->frame) - static_cast<float>(previous->frame);
     const float t = span > 1.0F ? std::clamp((frame - static_cast<float>(previous->frame)) / span, 0.0F, 1.0F) : 0.0F;
     const auto previousIndex = static_cast<std::size_t>(previous - motion.cameras.data());
@@ -421,50 +467,58 @@ VmdCameraState evaluateCamera(const VmdMotion& motion, float frame) {
         return std::ranges::any_of(key.methods, [](auto value) { return value != 0; });
     });
     const auto useCatmull = [&](std::size_t channel) {
-        return hasMethods ? next->methods[channel] == 1
-                          : motion.interpolation == InterpolationMode::catmullRom;
+        return hasMethods ? next->methods[channel] == 1 : motion.interpolation == InterpolationMode::catmullRom;
     };
-    const float interpolation = motion.interpolation == InterpolationMode::linear
-        ? t : cameraBezier(t, next->interpolation, 16);
-    result.distance = useCatmull(4)
-        ? catmullRom(before.distance, previous->distance, next->distance, after.distance, t)
-        : previous->distance + (next->distance - previous->distance) * interpolation;
+    const float interpolation =
+        motion.interpolation == InterpolationMode::linear ? t : cameraBezier(t, next->interpolation, 16);
+    result.distance = useCatmull(4) ? catmullRom(before.distance, previous->distance, next->distance, after.distance, t)
+                                    : previous->distance + (next->distance - previous->distance) * interpolation;
     for (std::size_t axis = 0; axis < 3; ++axis) {
-        const float axisInterpolation = motion.interpolation == InterpolationMode::linear
-            ? t : cameraBezier(t, next->interpolation, axis * 4);
-        result.position[axis] = useCatmull(axis)
-            ? catmullRom(before.position[axis], previous->position[axis], next->position[axis], after.position[axis], t)
-            : previous->position[axis] + (next->position[axis] - previous->position[axis]) * axisInterpolation;
+        const float axisInterpolation =
+            motion.interpolation == InterpolationMode::linear ? t : cameraBezier(t, next->interpolation, axis * 4);
+        result.position[axis] =
+            useCatmull(axis)
+                ? catmullRom(before.position[axis], previous->position[axis], next->position[axis],
+                             after.position[axis], t)
+                : previous->position[axis] + (next->position[axis] - previous->position[axis]) * axisInterpolation;
         result.rotation[axis] = useCatmull(3)
-            ? catmullRom(before.rotation[axis], previous->rotation[axis], next->rotation[axis], after.rotation[axis], t)
-            : previous->rotation[axis] + (next->rotation[axis] - previous->rotation[axis])
-                * (motion.interpolation == InterpolationMode::linear ? t
-                   : cameraBezier(t, next->interpolation, 12));
+                                    ? catmullRom(before.rotation[axis], previous->rotation[axis], next->rotation[axis],
+                                                 after.rotation[axis], t)
+                                    : previous->rotation[axis] + (next->rotation[axis] - previous->rotation[axis]) *
+                                                                     (motion.interpolation == InterpolationMode::linear
+                                                                          ? t
+                                                                          : cameraBezier(t, next->interpolation, 12));
     }
     result.viewAngle = useCatmull(5)
-        ? catmullRom(before.viewAngle, previous->viewAngle, next->viewAngle, after.viewAngle, t)
-        : previous->viewAngle + (next->viewAngle - previous->viewAngle)
-            * (motion.interpolation == InterpolationMode::linear ? t
-               : cameraBezier(t, next->interpolation, 20));
+                           ? catmullRom(before.viewAngle, previous->viewAngle, next->viewAngle, after.viewAngle, t)
+                           : previous->viewAngle + (next->viewAngle - previous->viewAngle) *
+                                                       (motion.interpolation == InterpolationMode::linear
+                                                            ? t
+                                                            : cameraBezier(t, next->interpolation, 20));
     result.perspective = previous->perspective;
     return result;
 }
 
 VmdLightKey evaluateLight(const VmdMotion& motion, float frame) {
     VmdLightKey result;
-    result.color = { 0.6F, 0.6F, 0.6F };
-    result.position = { -0.5F, -1.0F, 0.5F };
-    if (motion.lights.empty()) return result;
+    result.color = {0.6F, 0.6F, 0.6F};
+    result.position = {-0.5F, -1.0F, 0.5F};
+    if (motion.lights.empty())
+        return result;
     const VmdLightKey* previous = &motion.lights.front();
     const VmdLightKey* next = previous;
     for (const auto& key : motion.lights) {
-        if (static_cast<float>(key.frame) <= frame
-            && (static_cast<float>(previous->frame) > frame || key.frame >= previous->frame)) previous = &key;
-        if (static_cast<float>(key.frame) >= frame
-            && (static_cast<float>(next->frame) < frame || key.frame <= next->frame)) next = &key;
+        if (static_cast<float>(key.frame) <= frame &&
+            (static_cast<float>(previous->frame) > frame || key.frame >= previous->frame))
+            previous = &key;
+        if (static_cast<float>(key.frame) >= frame &&
+            (static_cast<float>(next->frame) < frame || key.frame <= next->frame))
+            next = &key;
     }
-    if (static_cast<float>(previous->frame) > frame) previous = next;
-    if (static_cast<float>(next->frame) < frame) next = previous;
+    if (static_cast<float>(previous->frame) > frame)
+        previous = next;
+    if (static_cast<float>(next->frame) < frame)
+        next = previous;
     const auto span = static_cast<float>(next->frame) - static_cast<float>(previous->frame);
     const float t = span > 0.0F ? std::clamp((frame - static_cast<float>(previous->frame)) / span, 0.0F, 1.0F) : 0.0F;
     for (std::size_t axis = 0; axis < 3; ++axis) {

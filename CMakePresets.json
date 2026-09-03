@@ -39,12 +39,23 @@
         "DAYO_ENABLE_IMGUI": "OFF",
         "DAYO_FETCH_DEPENDENCIES": "OFF"
       }
+    },
+    {
+      "name": "linux-sanitize",
+      "displayName": "Linux Vulkan ASan/UBSan",
+      "inherits": "linux-debug",
+      "binaryDir": "${sourceDir}/build/linux-sanitize",
+      "cacheVariables": {
+        "DAYO_ENABLE_SANITIZERS": "ON",
+        "DAYO_WARNINGS_AS_ERRORS": "ON"
+      }
     }
   ],
   "buildPresets": [
     { "name": "linux-debug", "configurePreset": "linux-debug" },
     { "name": "linux-release", "configurePreset": "linux-release" },
-    { "name": "linux-system-only", "configurePreset": "linux-system-only" }
+    { "name": "linux-system-only", "configurePreset": "linux-system-only" },
+    { "name": "linux-sanitize", "configurePreset": "linux-sanitize" }
   ],
   "testPresets": [
     {
@@ -53,10 +64,19 @@
       "output": { "outputOnFailure": true }
     },
     {
+      "name": "linux-release",
+      "configurePreset": "linux-release",
+      "output": { "outputOnFailure": true }
+    },
+    {
       "name": "linux-system-only",
       "configurePreset": "linux-system-only",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux-sanitize",
+      "configurePreset": "linux-sanitize",
       "output": { "outputOnFailure": true }
     }
   ]
 }
-

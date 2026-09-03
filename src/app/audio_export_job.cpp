@@ -12,8 +12,10 @@ AudioExportJob::~AudioExportJob() {
 }
 
 void AudioExportJob::start(core::AudioExportRequest request) {
-    if (running()) throw std::logic_error("audio export is already running");
-    if (worker_.joinable()) worker_.join();
+    if (running())
+        throw std::logic_error("audio export is already running");
+    if (worker_.joinable())
+        worker_.join();
     {
         std::scoped_lock lock(mutex_);
         error_.reset();
@@ -54,7 +56,8 @@ void AudioExportJob::start(core::AudioExportRequest request) {
 }
 
 void AudioExportJob::cancel() noexcept {
-    if (worker_.joinable()) worker_.request_stop();
+    if (worker_.joinable())
+        worker_.request_stop();
 }
 
 std::optional<std::string> AudioExportJob::error() const {

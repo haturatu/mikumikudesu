@@ -1,0 +1,20 @@
+name: AMD Linux smoke test
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: RADV / Vulkan / renderer smoke
+    runs-on: [self-hosted, linux, amd, vulkan]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Run AMD smoke test
+        run: ./scripts/check-linux-amd.sh

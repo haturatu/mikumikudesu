@@ -1,0 +1,87 @@
+name: Sanitizers
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sanitizer-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  asan-ubsan:
+    name: Clang / ASan + UBSan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            ccache \
+            ffmpeg \
+            glslc \
+            libavcodec-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libbullet-dev \
+            libstb-dev \
+            libasound2-dev \
+            libswresample-dev \
+            libswscale-dev \
+            libxcursor-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxss-dev \
+            libxtst-dev \
+            libx11-dev \
+            libxext-dev \
+            libxrender-dev \
+            libvulkan-dev \
+            mesa-vulkan-drivers \
+            ninja-build \
+            vulkan-validationlayers \
+            xvfb
+
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-clang-linux-sanitize-${{ github.ref_name }}
+          restore-keys: |
+            ccache-${{ runner.os }}-clang-linux-sanitize-
+
+      - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake --preset linux-sanitize -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        run: cmake --build --preset linux-sanitize --parallel
+
+      - name: Test under sanitizers
+        env:
+          # Vulkan/SDL drivers allocate process-lifetime objects outside the application.
+          # Keep ASan/UBSan enabled while avoiding third-party shutdown leak noise.
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset linux-sanitize --output-on-failure
+
+      - name: Show compiler cache statistics
+        if: always()
+        run: ccache --show-stats

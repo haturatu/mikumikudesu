@@ -1,0 +1,168 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  build:
+    name: ${{ matrix.compiler }} / ${{ matrix.preset }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: GCC
+            cc: gcc
+            cxx: g++
+            preset: linux-debug
+          - compiler: Clang
+            cc: clang
+            cxx: clang++
+            preset: linux-debug
+          - compiler: GCC
+            cc: gcc
+            cxx: g++
+            preset: linux-release
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            ccache \
+            ffmpeg \
+            glslc \
+            libavcodec-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libbullet-dev \
+            libjsonnet-dev \
+            libstb-dev \
+            libasound2-dev \
+            libswresample-dev \
+            libswscale-dev \
+            libxcursor-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxss-dev \
+            libxtst-dev \
+            libx11-dev \
+            libxext-dev \
+            libxrender-dev \
+            libvulkan-dev \
+            mesa-vulkan-drivers \
+            ninja-build \
+            vulkan-validationlayers \
+            xvfb
+
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.preset }}-${{ github.ref_name }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.preset }}-
+
+      - name: Configure
+        run: cmake --preset "${{ matrix.preset }}" -DDAYO_WARNINGS_AS_ERRORS=ON -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        run: cmake --build --preset "${{ matrix.preset }}" --parallel
+
+      - name: Test
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset "${{ matrix.preset }}" --output-on-failure
+
+      - name: Show compiler cache statistics
+        if: always()
+        run: ccache --show-stats
+
+  system-dependencies-only:
+    name: GCC / linux-system-only
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            ffmpeg \
+            glslc \
+            libavcodec-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libbullet-dev \
+            libjsonnet-dev \
+            libstb-dev \
+            libswresample-dev \
+            libswscale-dev \
+            libasound2-dev \
+            libxcursor-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxss-dev \
+            libxtst-dev \
+            libx11-dev \
+            libxext-dev \
+            libxrender-dev \
+            libvulkan-dev \
+            mesa-vulkan-drivers \
+            ninja-build \
+            nlohmann-json3-dev \
+            vulkan-validationlayers \
+            xvfb
+
+      - name: Install system SDL3
+        run: |
+          git clone --depth 1 --branch release-3.2.8 \
+            https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/SDL3"
+          cmake -S "$RUNNER_TEMP/SDL3" -B "$RUNNER_TEMP/SDL3-build" -G Ninja \
+            -DSDL_SHARED=ON \
+            -DSDL_STATIC=OFF \
+            -DSDL_TEST_LIBRARY=OFF \
+            -DSDL_TESTS=OFF \
+            -DSDL_EXAMPLES=OFF \
+            -DSDL_INSTALL=ON
+          cmake --build "$RUNNER_TEMP/SDL3-build" --parallel
+          sudo cmake --install "$RUNNER_TEMP/SDL3-build" --prefix /usr/local
+          sudo ldconfig
+
+      - name: Configure without FetchContent dependencies
+        env:
+          CC: gcc
+          CXX: g++
+        run: cmake --preset linux-system-only -DDAYO_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build --preset linux-system-only --parallel
+
+      - name: Test
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset linux-system-only --output-on-failure

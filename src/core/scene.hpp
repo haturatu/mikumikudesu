@@ -1,9 +1,9 @@
 #pragma once
 
+#include "core/animation.hpp"
 #include "core/effect.hpp"
 #include "core/image.hpp"
 #include "core/media.hpp"
-#include "core/animation.hpp"
 #include "core/motion.hpp"
 #include "core/physics.hpp"
 
@@ -41,20 +41,22 @@ enum class DirtyFlag : std::uint32_t {
 [[nodiscard]] constexpr DirtyFlag operator&(DirtyFlag left, DirtyFlag right) noexcept {
     return static_cast<DirtyFlag>(static_cast<std::uint32_t>(left) & static_cast<std::uint32_t>(right));
 }
-constexpr DirtyFlag& operator|=(DirtyFlag& left, DirtyFlag right) noexcept { return left = left | right; }
+constexpr DirtyFlag& operator|=(DirtyFlag& left, DirtyFlag right) noexcept {
+    return left = left | right;
+}
 
 struct PhysicsSettings {
-    float gravity { 98.0F };
-    Float3 gravityDirection { 0.0F, -1.0F, 0.0F };
-    float noiseAmplitude {};
-    float noiseFrequency {};
-    bool floorCollision {};
+    float gravity{98.0F};
+    Float3 gravityDirection{0.0F, -1.0F, 0.0F};
+    float noiseAmplitude{};
+    float noiseFrequency{};
+    bool floorCollision{};
 };
 
 struct ExternalParentLink {
-    ModelId parentModel {};
+    ModelId parentModel{};
     std::string parentBone;
-    ModelId childModel {};
+    ModelId childModel{};
     std::string childBone;
 };
 
@@ -62,17 +64,17 @@ struct BackgroundState {
     std::optional<ImageRgba8> image;
     std::optional<std::filesystem::path> imagePath;
     std::optional<std::filesystem::path> videoPath;
-    ScreenTextureSource screenSource { ScreenTextureSource::white };
-    ScreenCropMode crop { ScreenCropMode::none };
-    BackgroundMode mode { BackgroundMode::opaque };
-    bool enabled { true };
+    ScreenTextureSource screenSource{ScreenTextureSource::white};
+    ScreenCropMode crop{ScreenCropMode::none};
+    BackgroundMode mode{BackgroundMode::opaque};
+    bool enabled{true};
 };
 
 struct ModelExecutionOrder {
-    std::int32_t motion {};
-    std::int32_t deform {};
-    std::int32_t postprocess {};
-    std::int32_t raster {};
+    std::int32_t motion{};
+    std::int32_t deform{};
+    std::int32_t postprocess{};
+    std::int32_t raster{};
 };
 
 struct MaterialEditorState {
@@ -81,7 +83,7 @@ struct MaterialEditorState {
 };
 
 struct ModelInstance {
-    ModelId id {};
+    ModelId id{};
     std::filesystem::path sourcePath;
     std::shared_ptr<PmxModel> model;
     std::unique_ptr<MmdAnimator> animator;
@@ -90,8 +92,8 @@ struct ModelInstance {
     std::unique_ptr<VmdMotion> motion;
     std::unique_ptr<VpdPose> pose;
     std::vector<ImageRgba8> textures;
-    bool visible { true };
-    std::uint32_t cloneCount { 1 };
+    bool visible{true};
+    std::uint32_t cloneCount{1};
     ModelExecutionOrder order;
     std::vector<MaterialEditorState> materialSettings;
     PreviewNormalization normalization;
@@ -99,9 +101,9 @@ struct ModelInstance {
 };
 
 struct Timeline {
-    float frame {};
-    float fps { 30.0F };
-    float duration {};
+    float frame{};
+    float fps{30.0F};
+    float duration{};
     std::vector<VmdCameraKey> camera;
     std::vector<VmdLightKey> light;
     std::vector<VmdShadowKey> shadow;
@@ -111,7 +113,7 @@ struct Timeline {
 };
 
 class Scene {
-public:
+  public:
     Scene();
     ~Scene();
     Scene(Scene&&) noexcept;
@@ -176,28 +178,52 @@ public:
     void markDirty(DirtyFlag flags) noexcept;
     [[nodiscard]] DirtyFlag dirtyFlags() const noexcept;
     [[nodiscard]] bool dirty(DirtyFlag flags) const noexcept;
-    [[nodiscard]] std::uint64_t accumulatedSamples() const noexcept { return accumulatedSamples_; }
-    void advanceAccumulation() noexcept { ++accumulatedSamples_; }
-    void invalidateAccumulation() noexcept { accumulatedSamples_ = 0; }
-    void clearDirty(DirtyFlag flags = DirtyFlag::camera | DirtyFlag::geometry | DirtyFlag::material
-                                  | DirtyFlag::lighting | DirtyFlag::effect | DirtyFlag::output
-                                  | DirtyFlag::background) noexcept;
+    [[nodiscard]] std::uint64_t accumulatedSamples() const noexcept {
+        return accumulatedSamples_;
+    }
+    void advanceAccumulation() noexcept {
+        ++accumulatedSamples_;
+    }
+    void invalidateAccumulation() noexcept {
+        accumulatedSamples_ = 0;
+    }
+    void clearDirty(DirtyFlag flags = DirtyFlag::camera | DirtyFlag::geometry | DirtyFlag::material |
+                                      DirtyFlag::lighting | DirtyFlag::effect | DirtyFlag::output |
+                                      DirtyFlag::background) noexcept;
     void setRuntimeMode(RuntimeMode mode) noexcept;
 
-    [[nodiscard]] const std::vector<ModelInstance>& models() const noexcept { return models_; }
-    [[nodiscard]] const BackgroundState& background() const noexcept { return background_; }
-    [[nodiscard]] const Timeline& timeline() const noexcept { return timeline_; }
-    [[nodiscard]] const PhysicsSettings& physicsSettings() const noexcept { return physicsSettings_; }
-    [[nodiscard]] const std::vector<ExternalParentLink>& externalParents() const noexcept { return externalParents_; }
-    [[nodiscard]] const VmdMotion* cameraMotion() const noexcept { return cameraMotion_.get(); }
-    [[nodiscard]] RuntimeMode runtimeMode() const noexcept { return runtimeMode_; }
-    [[nodiscard]] ModelId selectedModelId() const noexcept { return selectedModel_; }
-    [[nodiscard]] std::uint64_t topologyGeneration() const noexcept { return topologyGeneration_; }
+    [[nodiscard]] const std::vector<ModelInstance>& models() const noexcept {
+        return models_;
+    }
+    [[nodiscard]] const BackgroundState& background() const noexcept {
+        return background_;
+    }
+    [[nodiscard]] const Timeline& timeline() const noexcept {
+        return timeline_;
+    }
+    [[nodiscard]] const PhysicsSettings& physicsSettings() const noexcept {
+        return physicsSettings_;
+    }
+    [[nodiscard]] const std::vector<ExternalParentLink>& externalParents() const noexcept {
+        return externalParents_;
+    }
+    [[nodiscard]] const VmdMotion* cameraMotion() const noexcept {
+        return cameraMotion_.get();
+    }
+    [[nodiscard]] RuntimeMode runtimeMode() const noexcept {
+        return runtimeMode_;
+    }
+    [[nodiscard]] ModelId selectedModelId() const noexcept {
+        return selectedModel_;
+    }
+    [[nodiscard]] std::uint64_t topologyGeneration() const noexcept {
+        return topologyGeneration_;
+    }
 
-private:
+  private:
     void refreshModelResources(ModelInstance& instance);
-    ModelId nextId_ { 1 };
-    ModelId selectedModel_ {};
+    ModelId nextId_{1};
+    ModelId selectedModel_{};
     std::vector<ModelInstance> models_;
     std::unique_ptr<VmdMotion> cameraMotion_;
     BackgroundState background_;
@@ -206,11 +232,11 @@ private:
     std::vector<ExternalParentLink> externalParents_;
     std::optional<MediaFile> media_;
     std::optional<EffectGraph> effect_;
-    DirtyFlag dirty_ { DirtyFlag::camera | DirtyFlag::geometry | DirtyFlag::material | DirtyFlag::lighting
-                     | DirtyFlag::background };
-    RuntimeMode runtimeMode_ { RuntimeMode::realtime };
-    std::uint64_t accumulatedSamples_ {};
-    std::uint64_t topologyGeneration_ { 1 };
+    DirtyFlag dirty_{DirtyFlag::camera | DirtyFlag::geometry | DirtyFlag::material | DirtyFlag::lighting |
+                     DirtyFlag::background};
+    RuntimeMode runtimeMode_{RuntimeMode::realtime};
+    std::uint64_t accumulatedSamples_{};
+    std::uint64_t topologyGeneration_{1};
 };
 
 } // namespace dayo::core

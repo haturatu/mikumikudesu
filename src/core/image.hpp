@@ -7,8 +7,8 @@
 namespace dayo::core {
 
 struct ImageRgba8 {
-    std::uint32_t width {};
-    std::uint32_t height {};
+    std::uint32_t width{};
+    std::uint32_t height{};
     std::vector<std::uint8_t> pixels;
 };
 

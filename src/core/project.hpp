@@ -2,10 +2,10 @@
 
 #include "core/motion.hpp"
 
-#include <filesystem>
 #include <cstdint>
-#include <string>
+#include <filesystem>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace dayo::core {
@@ -18,10 +18,10 @@ struct ProjectAsset {
 struct DayoProject {
     // Version 3 is the native format used by the Linux editor. Older
     // Windows projects remain readable through the compatibility reader.
-    int version { 3 };
-    std::string renderer { "preview" };
-    float frame {};
-    bool playing { true };
+    int version{3};
+    std::string renderer{"preview"};
+    float frame{};
+    bool playing{true};
     std::vector<ProjectAsset> assets;
     std::optional<VmdMotion> embeddedMotion;
     // Upstream v3 stores one camera/light subset followed by one subset per

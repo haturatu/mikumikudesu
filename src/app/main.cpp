@@ -9,7 +9,8 @@
 int main(int argc, char** argv) {
     try {
         auto options = dayo::app::parseOptions(argc, argv);
-        if (options.audioExport) return dayo::app::runAudioExport(options);
+        if (options.audioExport)
+            return dayo::app::runAudioExport(options);
         dayo::app::Application application(std::move(options));
         return application.run();
     } catch (const std::exception& exception) {
