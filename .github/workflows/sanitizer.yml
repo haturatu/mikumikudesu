@@ -57,7 +57,7 @@ jobs:
             xvfb
 
       - name: Restore compiler cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-${{ runner.os }}-clang-linux-sanitize-${{ github.ref_name }}
