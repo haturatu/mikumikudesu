@@ -116,6 +116,20 @@ bool hasTransparentPixels(const core::ImageRgba8& image) {
     return false;
 }
 
+bool materialMorphCanReduceAlpha(const float* multiply, const float* add) {
+    constexpr float epsilon = 1e-4F;
+    return std::abs(multiply[3] - 1.0F) > epsilon || std::abs(add[3]) > epsilon;
+}
+
+bool materialCanBeTransparent(const graphics::PreviewMaterial& material) {
+    const bool toonCanReduceAlpha = material.toonMode == 0U && material.toonTextureHasTransparency;
+    const bool sphereCanReduceAlpha = material.sphereMode != 0U && material.sphereTextureHasTransparency;
+    return material.diffuse[3] < 0.98F || material.textureHasTransparency || toonCanReduceAlpha || sphereCanReduceAlpha ||
+           materialMorphCanReduceAlpha(material.textureMultiply, material.textureAdd) ||
+           materialMorphCanReduceAlpha(material.toonMultiply, material.toonAdd) ||
+           materialMorphCanReduceAlpha(material.sphereMultiply, material.sphereAdd);
+}
+
 core::Float3 normalizePreviewPoint(const core::Float3& point, const core::PreviewNormalization& normalization) {
     return {
         (point[0] - normalization.center[0]) * normalization.scale,
@@ -998,6 +1012,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         draws.reserve(materialCount);
     }
     std::size_t materialCursor = 0;
+    std::size_t drawCursor = 0;
     std::uint32_t indexCursor = 0;
     std::vector<graphics::PreviewBoneTransform> bones;
     for (const auto& instance : scene_.models()) {
@@ -1090,9 +1105,9 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             indexCursor += static_cast<std::uint32_t>(instance.model->indices.size());
             std::uint32_t firstIndex = firstCloneIndex;
             for (std::size_t materialIndex = 0; materialIndex < instance.model->materials.size(); ++materialIndex) {
+                const auto& sourceMaterial = instance.model->materials[materialIndex];
                 if (rebuildTopology) {
                     graphics::PreviewMaterial material;
-                    const auto& sourceMaterial = instance.model->materials[materialIndex];
                     material.doubleSided = (sourceMaterial.drawFlags & 0x01U) != 0;
                     material.edgeEnabled = (sourceMaterial.drawFlags & 0x10U) != 0;
                     material.textureSlot =
@@ -1113,38 +1128,16 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                         sourceMaterial.textureIndex >= 0 &&
                         static_cast<std::size_t>(sourceMaterial.textureIndex) < instance.textures.size() &&
                         hasTransparentPixels(instance.textures[static_cast<std::size_t>(sourceMaterial.textureIndex)]);
+                    material.toonTextureHasTransparency =
+                        sourceMaterial.toonMode == 0 && sourceMaterial.toonTextureIndex >= 0 &&
+                        static_cast<std::size_t>(sourceMaterial.toonTextureIndex) < instance.textures.size() &&
+                        hasTransparentPixels(instance.textures[static_cast<std::size_t>(sourceMaterial.toonTextureIndex)]);
+                    material.sphereTextureHasTransparency =
+                        sourceMaterial.sphereMode != 0 && sourceMaterial.sphereTextureIndex >= 0 &&
+                        static_cast<std::size_t>(sourceMaterial.sphereTextureIndex) < instance.textures.size() &&
+                        hasTransparentPixels(instance.textures[static_cast<std::size_t>(sourceMaterial.sphereTextureIndex)]);
                     materials.push_back(material);
-                    graphics::PreviewDraw draw;
-                    draw.firstIndex = firstIndex;
-                    draw.indexCount = sourceMaterial.indexCount;
-                    draw.materialIndex = static_cast<std::uint32_t>(materials.size() - 1U);
-                    core::Float3 boundsCenter{};
-                    std::size_t boundVertexCount = 0;
-                    const auto materialIndexStart = [&] {
-                        std::size_t value = 0;
-                        for (std::size_t index = 0; index < materialIndex; ++index) {
-                            value += instance.model->materials[index].indexCount;
-                        }
-                        return value;
-                    }();
-                    for (std::size_t index = 0; index < sourceMaterial.indexCount &&
-                                                materialIndexStart + index < instance.model->indices.size();
-                         ++index) {
-                        const auto vertexIndex = instance.model->indices[materialIndexStart + index];
-                        if (vertexIndex >= frame.vertices.size())
-                            continue;
-                        for (std::size_t axis = 0; axis < 3; ++axis) {
-                            boundsCenter[axis] += frame.vertices[vertexIndex].position[axis];
-                        }
-                        ++boundVertexCount;
-                    }
-                    if (boundVertexCount != 0) {
-                        for (std::size_t axis = 0; axis < 3; ++axis) {
-                            draw.boundsCenter[axis] = boundsCenter[axis] / static_cast<float>(boundVertexCount);
-                        }
-                    }
-                    draw.boundsCenter[0] += cloneOffset;
-                    draws.push_back(draw);
+                    draws.push_back({});
                 }
                 auto& material = materials[materialCursor++];
                 if (materialIndex < frame.materials.size()) {
@@ -1163,7 +1156,37 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                     std::copy(animated.edgeColor.begin(), animated.edgeColor.end(), material.edgeColor);
                     material.edgeSize = animated.edgeSize;
                 }
-                material.transparent = material.textureHasTransparency || material.diffuse[3] < 0.98F;
+                material.transparent = materialCanBeTransparent(material);
+                auto& draw = draws[drawCursor++];
+                draw.firstIndex = firstIndex;
+                draw.indexCount = sourceMaterial.indexCount;
+                draw.materialIndex = static_cast<std::uint32_t>(materialCursor - 1U);
+                core::Float3 boundsCenter{};
+                std::size_t boundVertexCount = 0;
+                const auto materialIndexStart = [&] {
+                    std::size_t value = 0;
+                    for (std::size_t index = 0; index < materialIndex; ++index) {
+                        value += instance.model->materials[index].indexCount;
+                    }
+                    return value;
+                }();
+                for (std::size_t index = 0; index < sourceMaterial.indexCount &&
+                                            materialIndexStart + index < instance.model->indices.size();
+                     ++index) {
+                    const auto vertexIndex = instance.model->indices[materialIndexStart + index];
+                    if (vertexIndex >= frame.vertices.size())
+                        continue;
+                    for (std::size_t axis = 0; axis < 3; ++axis) {
+                        boundsCenter[axis] += frame.vertices[vertexIndex].position[axis];
+                    }
+                    ++boundVertexCount;
+                }
+                if (boundVertexCount != 0) {
+                    for (std::size_t axis = 0; axis < 3; ++axis) {
+                        draw.boundsCenter[axis] = boundsCenter[axis] / static_cast<float>(boundVertexCount);
+                    }
+                }
+                draw.boundsCenter[0] += cloneOffset;
                 firstIndex += instance.model->materials[materialIndex].indexCount;
             }
         }

@@ -120,6 +120,8 @@ struct PreviewMaterial {
     bool edgeEnabled{};
     bool transparent{};
     bool textureHasTransparency{};
+    bool toonTextureHasTransparency{};
+    bool sphereTextureHasTransparency{};
     std::uint32_t textureSlot{};
     std::uint32_t toonTextureSlot{};
     std::uint32_t sphereTextureSlot{};
