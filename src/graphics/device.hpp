@@ -128,28 +128,28 @@ struct PreviewMaterial {
 };
 
 struct PreviewDraw {
-    std::uint32_t firstIndex {};
-    std::uint32_t indexCount {};
-    std::uint32_t materialIndex {};
-    float boundsCenter[3] {};
+    std::uint32_t firstIndex{};
+    std::uint32_t indexCount{};
+    std::uint32_t materialIndex{};
+    float boundsCenter[3]{};
 };
 
 // This is the renderer-facing storage-buffer layout. Keep it explicitly
 // vector-aligned so it matches the StructuredBuffer declaration in preview.hlsl.
 struct PreviewMaterialGpu {
-    float diffuse[4] {};
-    float ambientShininess[4] {};
-    float specular[4] {};
-    float textureMultiply[4] {};
-    float textureAdd[4] {};
-    float sphereMultiply[4] {};
-    float sphereAdd[4] {};
-    float toonMultiply[4] {};
-    float toonAdd[4] {};
-    float edgeColor[4] {};
-    float edgeSize {};
-    std::uint32_t flags {};
-    std::uint32_t reserved[2] {};
+    float diffuse[4]{};
+    float ambientShininess[4]{};
+    float specular[4]{};
+    float textureMultiply[4]{};
+    float textureAdd[4]{};
+    float sphereMultiply[4]{};
+    float sphereAdd[4]{};
+    float toonMultiply[4]{};
+    float toonAdd[4]{};
+    float edgeColor[4]{};
+    float edgeSize{};
+    std::uint32_t flags{};
+    std::uint32_t reserved[2]{};
 };
 static_assert(sizeof(PreviewMaterialGpu) == 176);
 
@@ -157,7 +157,7 @@ struct PreviewTexture {
     std::uint32_t width{};
     std::uint32_t height{};
     std::span<const std::uint8_t> rgba;
-    bool hasTransparency {};
+    bool hasTransparency{};
 };
 
 struct PreviewScene {
@@ -178,9 +178,9 @@ struct PreviewScene {
 };
 
 struct PreviewPushConstants {
-    std::array<float, 4> camera {};
-    std::array<float, 4> target {};
-    std::array<float, 4> light {};
+    std::array<float, 4> camera{};
+    std::array<float, 4> target{};
+    std::array<float, 4> light{};
 };
 static_assert(sizeof(PreviewPushConstants) == 48);
 

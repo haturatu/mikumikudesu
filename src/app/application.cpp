@@ -107,15 +107,16 @@ core::Float3 rotateQuaternion(const core::Float4& quaternion, const core::Float3
 }
 
 bool hasTransparentPixels(const core::ImageRgba8& image) {
-    if (image.pixels.size() < 4) return false;
+    if (image.pixels.size() < 4)
+        return false;
     for (std::size_t index = 3; index < image.pixels.size(); index += 4) {
-        if (image.pixels[index] < 250U) return true;
+        if (image.pixels[index] < 250U)
+            return true;
     }
     return false;
 }
 
-core::Float3 normalizePreviewPoint(const core::Float3& point,
-                                   const core::PreviewNormalization& normalization) {
+core::Float3 normalizePreviewPoint(const core::Float3& point, const core::PreviewNormalization& normalization) {
     return {
         (point[0] - normalization.center[0]) * normalization.scale,
         (point[1] - normalization.center[1]) * normalization.scale,
@@ -780,8 +781,8 @@ void Application::handleAsset(const std::filesystem::path& path) {
             if (scene_.models().empty()) {
                 device_->uploadPreviewMesh(vertices, indices);
                 refreshPreviewBackground();
-                device_->updatePreviewMaterials(std::span<const graphics::PreviewMaterial> {});
-                device_->updatePreviewDraws(std::span<const graphics::PreviewDraw> {});
+                device_->updatePreviewMaterials(std::span<const graphics::PreviewMaterial>{});
+                device_->updatePreviewDraws(std::span<const graphics::PreviewDraw>{});
                 graphics::PreviewScene preview;
                 preview.cameraDistance = 2.42F;
                 preview.screenSource = graphics::PreviewScene::ScreenSource::backgroundImage;
@@ -1094,23 +1095,30 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                     const auto& sourceMaterial = instance.model->materials[materialIndex];
                     material.doubleSided = (sourceMaterial.drawFlags & 0x01U) != 0;
                     material.edgeEnabled = (sourceMaterial.drawFlags & 0x10U) != 0;
-                    material.textureSlot = sourceMaterial.textureIndex >= 0
-                        ? textureBase + static_cast<std::uint32_t>(sourceMaterial.textureIndex) + 1U : 0U;
-                    material.sphereTextureSlot = sourceMaterial.sphereTextureIndex >= 0
-                        ? textureBase + static_cast<std::uint32_t>(sourceMaterial.sphereTextureIndex) + 1U : 0U;
-                    material.toonTextureSlot = sourceMaterial.toonMode == 0 && sourceMaterial.toonTextureIndex >= 0
-                        ? textureBase + static_cast<std::uint32_t>(sourceMaterial.toonTextureIndex) + 1U : 0U;
+                    material.textureSlot =
+                        sourceMaterial.textureIndex >= 0
+                            ? textureBase + static_cast<std::uint32_t>(sourceMaterial.textureIndex) + 1U
+                            : 0U;
+                    material.sphereTextureSlot =
+                        sourceMaterial.sphereTextureIndex >= 0
+                            ? textureBase + static_cast<std::uint32_t>(sourceMaterial.sphereTextureIndex) + 1U
+                            : 0U;
+                    material.toonTextureSlot =
+                        sourceMaterial.toonMode == 0 && sourceMaterial.toonTextureIndex >= 0
+                            ? textureBase + static_cast<std::uint32_t>(sourceMaterial.toonTextureIndex) + 1U
+                            : 0U;
                     material.sphereMode = sourceMaterial.sphereMode;
                     material.toonMode = sourceMaterial.toonMode;
-                    material.textureHasTransparency = sourceMaterial.textureIndex >= 0
-                        && static_cast<std::size_t>(sourceMaterial.textureIndex) < instance.textures.size()
-                        && hasTransparentPixels(instance.textures[static_cast<std::size_t>(sourceMaterial.textureIndex)]);
+                    material.textureHasTransparency =
+                        sourceMaterial.textureIndex >= 0 &&
+                        static_cast<std::size_t>(sourceMaterial.textureIndex) < instance.textures.size() &&
+                        hasTransparentPixels(instance.textures[static_cast<std::size_t>(sourceMaterial.textureIndex)]);
                     materials.push_back(material);
                     graphics::PreviewDraw draw;
                     draw.firstIndex = firstIndex;
                     draw.indexCount = sourceMaterial.indexCount;
                     draw.materialIndex = static_cast<std::uint32_t>(materials.size() - 1U);
-                    core::Float3 boundsCenter {};
+                    core::Float3 boundsCenter{};
                     std::size_t boundVertexCount = 0;
                     const auto materialIndexStart = [&] {
                         std::size_t value = 0;
@@ -1119,10 +1127,12 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                         }
                         return value;
                     }();
-                    for (std::size_t index = 0; index < sourceMaterial.indexCount
-                                               && materialIndexStart + index < instance.model->indices.size(); ++index) {
+                    for (std::size_t index = 0; index < sourceMaterial.indexCount &&
+                                                materialIndexStart + index < instance.model->indices.size();
+                         ++index) {
                         const auto vertexIndex = instance.model->indices[materialIndexStart + index];
-                        if (vertexIndex >= frame.vertices.size()) continue;
+                        if (vertexIndex >= frame.vertices.size())
+                            continue;
                         for (std::size_t axis = 0; axis < 3; ++axis) {
                             boundsCenter[axis] += frame.vertices[vertexIndex].position[axis];
                         }
@@ -1130,8 +1140,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                     }
                     if (boundVertexCount != 0) {
                         for (std::size_t axis = 0; axis < 3; ++axis) {
-                            draw.boundsCenter[axis] = boundsCenter[axis]
-                                / static_cast<float>(boundVertexCount);
+                            draw.boundsCenter[axis] = boundsCenter[axis] / static_cast<float>(boundVertexCount);
                         }
                     }
                     draw.boundsCenter[0] += cloneOffset;
@@ -1192,8 +1201,7 @@ void Application::refreshPreviewTextures() {
     std::vector<graphics::PreviewTexture> previewTextures;
     previewTextures.reserve(textures_.size());
     for (const auto& texture : textures_) {
-        previewTextures.push_back({ texture.width, texture.height, texture.pixels,
-                                    hasTransparentPixels(texture) });
+        previewTextures.push_back({texture.width, texture.height, texture.pixels, hasTransparentPixels(texture)});
     }
     device_->uploadPreviewTextures(previewTextures);
 }
