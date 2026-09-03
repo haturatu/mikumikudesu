@@ -1627,6 +1627,10 @@ void VulkanDevice::renderFrame() {
     vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 1, 1,
                             &frame.previewBoneDescriptor, 0, nullptr);
+    if (frame.previewMaterialDescriptor != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 2, 1,
+                                &frame.previewMaterialDescriptor, 0, nullptr);
+    }
     const VkDeviceSize vertexOffset = 0;
     vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &frame.previewVertexBuffer, &vertexOffset);
     vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
@@ -1940,6 +1944,10 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 1, 1,
                             &frame.previewBoneDescriptor, 0, nullptr);
+    if (frame.previewMaterialDescriptor != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 2, 1,
+                                &frame.previewMaterialDescriptor, 0, nullptr);
+    }
     const VkDeviceSize vertexOffset = 0;
     vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &frame.previewVertexBuffer, &vertexOffset);
     vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
