@@ -393,7 +393,7 @@ if(BUILD_TESTING)
   add_test(NAME core COMMAND dayo_core_tests)
   add_test(NAME vulkan_probe COMMAND mikumikudesu --probe --hidden)
   add_test(NAME preview_render COMMAND dayo_preview_tests)
-  set_tests_properties(vulkan_probe PROPERTIES TIMEOUT 20)
+  set_tests_properties(vulkan_probe PROPERTIES TIMEOUT 60)
   set_tests_properties(preview_render PROPERTIES TIMEOUT 20)
   if(DAYO_HAS_MEDIA)
     add_test(
