@@ -2208,7 +2208,7 @@ void VulkanDevice::refreshPreviewMaterialDescriptors() {
                 .dstBinding = 0,
                 .descriptorCount = 1,
                 .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                .pImageInfo = &images[0],
+                .pImageInfo = images.data(),
             },
             VkWriteDescriptorSet{
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -2216,7 +2216,7 @@ void VulkanDevice::refreshPreviewMaterialDescriptors() {
                 .dstBinding = 1,
                 .descriptorCount = 1,
                 .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                .pImageInfo = &images[1],
+                .pImageInfo = images.data() + 1,
             },
             VkWriteDescriptorSet{
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -2224,7 +2224,7 @@ void VulkanDevice::refreshPreviewMaterialDescriptors() {
                 .dstBinding = 2,
                 .descriptorCount = 1,
                 .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                .pImageInfo = &images[2],
+                .pImageInfo = images.data() + 2,
             },
             VkWriteDescriptorSet{
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
