@@ -992,6 +992,46 @@ int main() {
                     && std::abs(gpuPosition[0] - after.vertices[0].position[0]) < 1e-4F
                     && std::abs(gpuPosition[1] - after.vertices[0].position[1]) < 1e-4F,
                     "GPU BDEF transform matches CPU skinning output");
+
+        dayo::core::PmxModel sdefModel;
+        sdefModel.vertices.resize(1);
+        sdefModel.vertices[0].position = { 1.0F, 0.0F, 0.0F };
+        sdefModel.vertices[0].normal = { 0.0F, 1.0F, 0.0F };
+        sdefModel.vertices[0].weightType = dayo::core::PmxWeightType::sdef;
+        sdefModel.vertices[0].bones = { 0, 1, -1, -1 };
+        sdefModel.vertices[0].weights = { 0.5F, 0.5F, 0.0F, 0.0F };
+        sdefModel.vertices[0].sdefC = { 0.0F, 0.0F, 0.0F };
+        sdefModel.vertices[0].sdefR0 = { 0.0F, 0.0F, 0.0F };
+        sdefModel.vertices[0].sdefR1 = { 0.0F, 0.0F, 0.0F };
+        sdefModel.bones.resize(2);
+        sdefModel.bones[0].name = "sdef-root";
+        sdefModel.bones[1].name = "sdef-static";
+        dayo::core::VmdMotion sdefMotion;
+        sdefMotion.bones.push_back({ .name = "sdef-root", .frame = 0,
+                                     .rotation = { 0.0F, 0.0F,
+                                                   std::sin(std::numbers::pi_v<float> * 0.25F),
+                                                   std::cos(std::numbers::pi_v<float> * 0.25F) } });
+        dayo::core::MmdAnimator sdefCpuAnimator(sdefModel);
+        dayo::core::MmdAnimator sdefGpuAnimator(sdefModel);
+        sdefCpuAnimator.setMotion(&sdefMotion);
+        sdefGpuAnimator.setMotion(&sdefMotion);
+        const auto sdefCpu = sdefCpuAnimator.evaluate(0.0F, 0.0F, false);
+        const auto sdefGpu = sdefGpuAnimator.evaluate(0.0F, 0.0F, true);
+        ok &= check(sdefGpu.vertices[0].position == sdefModel.vertices[0].position
+                    && sdefCpu.vertices[0].position != sdefGpu.vertices[0].position,
+                    "GPU SDEF path preserves source data for shader deformation");
+
+        sdefModel.vertices[0].weightType = dayo::core::PmxWeightType::qdef;
+        sdefModel.vertices[0].weights = { 0.5F, 0.5F, 0.0F, 0.0F };
+        dayo::core::MmdAnimator qdefCpuAnimator(sdefModel);
+        dayo::core::MmdAnimator qdefGpuAnimator(sdefModel);
+        qdefCpuAnimator.setMotion(&sdefMotion);
+        qdefGpuAnimator.setMotion(&sdefMotion);
+        const auto qdefCpu = qdefCpuAnimator.evaluate(0.0F, 0.0F, false);
+        const auto qdefGpu = qdefGpuAnimator.evaluate(0.0F, 0.0F, true);
+        ok &= check(qdefGpu.vertices[0].position == sdefModel.vertices[0].position
+                    && qdefCpu.vertices[0].position != qdefGpu.vertices[0].position,
+                    "GPU QDEF path preserves source data for dual-quaternion deformation");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: synthetic animation: " << exception.what() << '\n';
         ok = false;
