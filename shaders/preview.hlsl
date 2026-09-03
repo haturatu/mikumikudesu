@@ -312,17 +312,17 @@ VertexOutput EdgeVS(VertexInput input, uint materialIndex : SV_InstanceID)
     return makeVertex(input, materialIndex, 1);
 }
 
-float4 applyTextureMorph(float4 sample, float4 multiply, float4 add)
+float4 applyTextureMorphRgb(float4 sample, float4 multiply, float4 add, float3 neutral)
 {
-    return lerp(float4(1.0, 1.0, 1.0, 1.0), sample * multiply + add,
-                saturate(multiply.a + add.a));
+    sample.rgb = lerp(neutral, sample.rgb * multiply.rgb + add.rgb, multiply.a + add.a);
+    return sample;
 }
 
 float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0
 {
     const PreviewMaterialData material = previewMaterials[input.materialIndex];
-    const float4 sampled = applyTextureMorph(baseTexture.Sample(repeatSampler, input.uv),
-                                              material.textureMultiply, material.textureAdd);
+    const float4 sampled = applyTextureMorphRgb(baseTexture.Sample(repeatSampler, input.uv),
+                                                 material.textureMultiply, material.textureAdd, 1.0.xxx);
     if (input.color.x == 0.0 && input.color.y == 0.0 && input.color.z == 0.0)
         return sampled;
 
@@ -346,9 +346,9 @@ float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0
     const uint toonMode = (material.flags >> 1U) & 0x03U;
     if (toonMode == 0U)
     {
-        color *= applyTextureMorph(toonTexture.Sample(clampSampler,
-                        float2(0.0, 0.5 - noLight * 0.5)),
-                        material.toonMultiply, material.toonAdd);
+        color *= applyTextureMorphRgb(toonTexture.Sample(clampSampler,
+                            float2(0.0, 0.5 - noLight * 0.5)),
+                            material.toonMultiply, material.toonAdd, 1.0.xxx);
     }
     else if (toonMode == 1U)
     {
@@ -358,8 +358,9 @@ float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0
     const uint sphereMode = (material.flags >> 3U) & 0x03U;
     if (sphereMode == 1U || sphereMode == 2U)
     {
-        const float4 sphere = applyTextureMorph(sphereTexture.Sample(repeatSampler, input.sphereUv),
-                                                 material.sphereMultiply, material.sphereAdd);
+        const float4 sphere = applyTextureMorphRgb(
+            sphereTexture.Sample(repeatSampler, input.sphereUv), material.sphereMultiply, material.sphereAdd,
+            sphereMode == 1U ? 1.0.xxx : 0.0.xxx);
         color.rgb = sphereMode == 1U ? color.rgb * sphere.rgb : color.rgb + sphere.rgb;
         color.a *= sphere.a;
     }

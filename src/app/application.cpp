@@ -116,18 +116,10 @@ bool hasTransparentPixels(const core::ImageRgba8& image) {
     return false;
 }
 
-bool materialMorphCanReduceAlpha(const float* multiply, const float* add) {
-    constexpr float epsilon = 1e-4F;
-    return std::abs(multiply[3] - 1.0F) > epsilon || std::abs(add[3]) > epsilon;
-}
-
 bool materialCanBeTransparent(const graphics::PreviewMaterial& material) {
     const bool toonCanReduceAlpha = material.toonMode == 0U && material.toonTextureHasTransparency;
     const bool sphereCanReduceAlpha = material.sphereMode != 0U && material.sphereTextureHasTransparency;
-    return material.diffuse[3] < 0.98F || material.textureHasTransparency || toonCanReduceAlpha ||
-           sphereCanReduceAlpha || materialMorphCanReduceAlpha(material.textureMultiply, material.textureAdd) ||
-           materialMorphCanReduceAlpha(material.toonMultiply, material.toonAdd) ||
-           materialMorphCanReduceAlpha(material.sphereMultiply, material.sphereAdd);
+    return material.diffuse[3] < 0.98F || material.textureHasTransparency || toonCanReduceAlpha || sphereCanReduceAlpha;
 }
 
 core::Float3 normalizePreviewPoint(const core::Float3& point, const core::PreviewNormalization& normalization) {
