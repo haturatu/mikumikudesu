@@ -103,7 +103,7 @@ VkBufferUsageFlags toVkUsage(BufferDesc::Usage usage) {
     return 0;
 }
 
-float previewDrawDistanceSquared(const PreviewDraw& draw, const PreviewPushConstants& constants) {
+float previewDrawDepth(const PreviewDraw& draw, const PreviewPushConstants& constants) {
     float x = draw.boundsCenter[0] - constants.target[0];
     float y = draw.boundsCenter[1] - constants.target[1];
     float z = draw.boundsCenter[2] - constants.target[2];
@@ -111,22 +111,13 @@ float previewDrawDistanceSquared(const PreviewDraw& draw, const PreviewPushConst
     const float cx = std::cos(constants.camera[0]);
     const float sy = std::sin(constants.camera[1]);
     const float cy = std::cos(constants.camera[1]);
-    const float sz = std::sin(constants.camera[2]);
-    const float cz = std::cos(constants.camera[2]);
     const float rotatedY = cx * y - sx * z;
     const float rotatedZ = sx * y + cx * z;
     y = rotatedY;
     z = rotatedZ;
-    const float rotatedX = cy * x + sy * z;
-    const float rotatedZ2 = -sy * x + cy * z;
-    x = rotatedX;
-    z = rotatedZ2;
-    const float rotatedX2 = cz * x - sz * y;
-    const float rotatedY2 = sz * x + cz * y;
-    x = rotatedX2;
-    y = rotatedY2;
+    z = -sy * x + cy * z;
     z += std::max(constants.camera[3], 0.1F);
-    return x * x + y * y + z * z;
+    return z;
 }
 
 } // namespace
@@ -1501,7 +1492,7 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
     for (const auto* item : opaque)
         draw(*item, pipeline_);
     std::stable_sort(transparent.begin(), transparent.end(), [&](const auto* left, const auto* right) {
-        return previewDrawDistanceSquared(*left, constants) > previewDrawDistanceSquared(*right, constants);
+        return previewDrawDepth(*left, constants) > previewDrawDepth(*right, constants);
     });
     for (const auto* item : transparent)
         draw(*item, transparentPipeline_);

@@ -1055,6 +1055,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                 bones.push_back(bone);
             }
         }
+        // Transparent sorting only needs an approximate animated position. Reuse the GPU bone transforms
+        // for a weighted position estimate so GPU skinning does not leave the sort bounds in rest pose.
         std::vector<core::Float3> boundsPositions;
         boundsPositions.reserve(frame.vertices.size());
         for (const auto& source : frame.vertices) {
