@@ -954,11 +954,11 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
     }
 
     for (auto& vertex : result.vertices) {
-        if (vertex.weightType == PmxWeightType::sdef) {
+        if (!gpuSkinning && vertex.weightType == PmxWeightType::sdef) {
             skinSdef(vertex, model_, global);
             continue;
         }
-        if (vertex.weightType == PmxWeightType::qdef) {
+        if (!gpuSkinning && vertex.weightType == PmxWeightType::qdef) {
             skinQdef(vertex, model_, global);
             continue;
         }
