@@ -87,6 +87,19 @@
         "DAYO_ENABLE_VALIDATION": "OFF",
         "DAYO_ENABLE_PGO_GENERATE": "ON"
       }
+    },
+    {
+      "name": "linux-pgo-use",
+      "displayName": "Linux Vulkan PGO optimized build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-pgo-use",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "DAYO_BACKEND": "VULKAN",
+        "DAYO_ENABLE_VALIDATION": "OFF",
+        "DAYO_ENABLE_PGO_USE": "ON",
+        "DAYO_PGO_PROFILE_DIR": "${sourceDir}/build/linux-pgo-generate/pgo"
+      }
     }
   ],
   "buildPresets": [
@@ -96,7 +109,8 @@
     { "name": "linux-system-only", "configurePreset": "linux-system-only" },
     { "name": "linux-sanitize", "configurePreset": "linux-sanitize" },
     { "name": "linux-clang-thinlto", "configurePreset": "linux-clang-thinlto" },
-    { "name": "linux-pgo-generate", "configurePreset": "linux-pgo-generate" }
+    { "name": "linux-pgo-generate", "configurePreset": "linux-pgo-generate" },
+    { "name": "linux-pgo-use", "configurePreset": "linux-pgo-use" }
   ],
   "testPresets": [
     {

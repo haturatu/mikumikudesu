@@ -162,10 +162,22 @@ cmake --build --preset linux-clang-thinlto
 ```
 
 For representative profile-guided optimization, first build and run the
-profile-generation preset through a realistic workload, then configure a
-release build with `-DDAYO_ENABLE_PGO_USE=ON` and the same
-`-DDAYO_PGO_PROFILE_DIR=...` directory. PGO is intentionally opt-in because
-profile data is workload-specific and must not be committed.
+profile-generation preset through a realistic workload. Clang writes
+per-process `.profraw` files into the configured profile directory; merge them
+before configuring the use build:
+
+```bash
+cmake --preset linux-pgo-generate
+cmake --build --preset linux-pgo-generate
+./build/linux-pgo-generate/mikumikudesu --asset model.pmx
+cmake --build build/linux-pgo-generate --target dayo_pgo_merge
+cmake --preset linux-pgo-use
+cmake --build --preset linux-pgo-use
+```
+
+The Clang path uses `llvm-profdata merge` and `-fprofile-instr-use`; GCC keeps
+its `-fprofile-use`/`-fprofile-correction` flow. PGO is intentionally opt-in
+because profile data is workload-specific and must not be committed.
 
 ### ミク・テトのサンプルモデル
 

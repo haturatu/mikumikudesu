@@ -41,6 +41,16 @@ endif()
 if(DAYO_ENABLE_THIN_LTO AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   message(FATAL_ERROR "DAYO_ENABLE_THIN_LTO currently requires Clang")
 endif()
+if(DAYO_ENABLE_PGO_USE AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+  set(DAYO_CLANG_PGO_PROFILE "${DAYO_PGO_PROFILE_DIR}/default.profdata")
+  if(NOT EXISTS "${DAYO_CLANG_PGO_PROFILE}")
+    message(FATAL_ERROR "Clang PGO profile not found: ${DAYO_CLANG_PGO_PROFILE}")
+  endif()
+endif()
+if(DAYO_ENABLE_PGO_GENERATE AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+  find_program(DAYO_LLVM_PROFDATA_EXECUTABLE NAMES llvm-profdata REQUIRED)
+  file(MAKE_DIRECTORY "${DAYO_PGO_PROFILE_DIR}")
+endif()
 
 if(NOT DAYO_BACKEND STREQUAL "VULKAN")
   message(
@@ -410,11 +420,20 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
       target_link_options(${target} PRIVATE -flto=thin)
     endif()
     if(DAYO_ENABLE_PGO_GENERATE)
-      target_compile_options(${target} PRIVATE "-fprofile-generate=${DAYO_PGO_PROFILE_DIR}")
-      target_link_options(${target} PRIVATE "-fprofile-generate=${DAYO_PGO_PROFILE_DIR}")
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(${target} PRIVATE -fprofile-instr-generate)
+        target_link_options(${target} PRIVATE "-fprofile-instr-generate=${DAYO_PGO_PROFILE_DIR}/%p.profraw")
+      else()
+        target_compile_options(${target} PRIVATE "-fprofile-generate=${DAYO_PGO_PROFILE_DIR}")
+        target_link_options(${target} PRIVATE "-fprofile-generate=${DAYO_PGO_PROFILE_DIR}")
+      endif()
     elseif(DAYO_ENABLE_PGO_USE)
-      target_compile_options(${target} PRIVATE "-fprofile-use=${DAYO_PGO_PROFILE_DIR}" -fprofile-correction)
-      target_link_options(${target} PRIVATE "-fprofile-use=${DAYO_PGO_PROFILE_DIR}")
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(${target} PRIVATE "-fprofile-instr-use=${DAYO_CLANG_PGO_PROFILE}")
+      else()
+        target_compile_options(${target} PRIVATE "-fprofile-use=${DAYO_PGO_PROFILE_DIR}" -fprofile-correction)
+        target_link_options(${target} PRIVATE "-fprofile-use=${DAYO_PGO_PROFILE_DIR}")
+      endif()
     endif()
   endforeach()
   target_compile_options(dayo_graphics PRIVATE -Wno-missing-field-initializers)
@@ -445,6 +464,18 @@ else()
   install(TARGETS mikumikudesu RUNTIME DESTINATION bin)
 endif()
 include(cmake/InstallMikuMikuDayo.cmake)
+if(DAYO_ENABLE_PGO_GENERATE AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+  add_custom_target(
+    dayo_pgo_merge
+    COMMAND "${CMAKE_COMMAND}"
+            -DLLVM_PROFDATA="${DAYO_LLVM_PROFDATA_EXECUTABLE}"
+            -DPGO_PROFILE_DIR="${DAYO_PGO_PROFILE_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MergePgoProfiles.cmake"
+    DEPENDS mikumikudesu
+    USES_TERMINAL
+    COMMENT "Merging Clang PGO profiles"
+  )
+endif()
 
 if(BUILD_TESTING)
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
