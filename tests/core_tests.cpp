@@ -12,8 +12,9 @@
 #include "core/profiling.hpp"
 #include "core/project.hpp"
 #include "core/scene.hpp"
-#include "core/task_scheduler.hpp"
+#include "core/subayai_hair.hpp"
 #include "core/subayai_material.hpp"
+#include "core/task_scheduler.hpp"
 #include "core/video_export.hpp"
 #include "core/vmdayo.hpp"
 #include "graphics/timestamp.hpp"
@@ -376,12 +377,14 @@ int main() {
         const auto category = dayo::core::loadSubayaiMaterialPreset(metalPath, schema);
         const auto categoryValue = category.parameters.find("Category");
         const auto roughness = hair.parameters.find("Roughness");
+        const auto hairMaterial = dayo::core::makeSubayaiHairMaterial(hair.parameters);
         ok &=
             check(anisotropy != nullptr && std::get<float>(*anisotropy) == 0.75F, "Subayai hair anisotropy annotation");
         ok &= check(ior != nullptr && std::get<std::array<float, 2>>(*ior)[0] == 1.5F, "Subayai IOR annotation");
         ok &= check(categoryValue != nullptr && std::get<std::int32_t>(*categoryValue) == 2, "Subayai enum annotation");
         ok &= check(roughness != nullptr && std::get<float>(*roughness) == 0.5F, "Subayai schema default values");
-
+        ok &= check(hairMaterial.anisotropy == 0.75F && hairMaterial.ior[0] == 1.5F && hairMaterial.autoNormal == 1.0F,
+                    "Subayai hair material parameters");
         const auto expressionPath = std::filesystem::temp_directory_path() / "mikumikudesu-subayai-expression.txt";
         {
             std::ofstream output(expressionPath);
