@@ -287,7 +287,10 @@ VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, ui
         output.position = float4(p.x * focal / aspect, -p.y * focal, z, p.z);
     } else {
         const float extent = max(scene.camera.w, 0.1) * tan(max(-scene.target.w, 0.05) * 0.5);
-        output.position = float4(p.x / (aspect * extent), -p.y / extent, p.z * 0.01, 1.0);
+        const float nearPlane = 0.05;
+        const float farPlane = 100.0;
+        const float z = (p.z - nearPlane) / (farPlane - nearPlane);
+        output.position = float4(p.x / (aspect * extent), -p.y / extent, z, 1.0);
     }
     if (edgePass != 0)
     {
