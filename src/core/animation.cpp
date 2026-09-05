@@ -947,6 +947,10 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
         if (discontinuousSeek)
             physics_->reset();
         std::vector<bool> physicsBones(model_.bones.size());
+        // Animated rigid-body centers sampled before Bullet runs. Mode 2
+        // needs them afterwards to rebuild the bone from the animated
+        // center plus the simulated rotation (upstream parity).
+        std::vector<Float3> mode2Centers(model_.rigidBodies.size());
         for (std::size_t bodyIndex = 0; bodyIndex < model_.rigidBodies.size(); ++bodyIndex) {
             const auto& body = model_.rigidBodies[bodyIndex];
             if (body.bone < 0 || static_cast<std::size_t>(body.bone) >= global.size())
@@ -965,6 +969,8 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
             } else if (physics_->bodyMode(bodyIndex) == 0) {
                 physics_->setKinematicTransform(bodyIndex, value);
             }
+            if (physics_->bodyMode(bodyIndex) == 2)
+                mode2Centers[bodyIndex] = value.position;
         }
         const float impulseScale = std::max(deltaSeconds, 0.0F) * 60.0F;
         for (std::size_t body = 0; body < model_.rigidBodies.size(); ++body) {
@@ -992,31 +998,33 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
             const auto bodyPose = physics_->bodyTransform(bodyIndex);
             const auto offset = sub(body.position, model_.bones[bone].position);
             const auto boneRotation = multiply(bodyPose.rotation, conjugate(eulerRotation(body.rotation)));
-            const auto bonePosition = sub(bodyPose.position, rotate(boneRotation, offset));
-            // PMX mode 1 is fully physics-driven. Mode 2 is physics plus
-            // bone alignment: keep the animated/local bone translation and
-            // import only the rigid body's rotation.
+            // PMX mode 1 is fully physics-driven: the bone follows the
+            // simulated rigid-body center. PMX mode 2 mirrors upstream
+            // DynamicAndBoneMergeMotionState: the Bullet body keeps the
+            // solver position, while the bone is rebuilt from the animated
+            // rigid-body center plus the simulated rotation. Only when the
+            // bind offset is zero does this reduce to keeping the animated
+            // bone translation.
+            const auto& rigidCenter = mode == 2 ? mode2Centers[bodyIndex] : bodyPose.position;
+            const auto targetBonePosition = sub(rigidCenter, rotate(boneRotation, offset));
             const auto parent = model_.bones[bone].parent;
             if (parent >= 0 && static_cast<std::size_t>(parent) < global.size()) {
                 const auto parentIndex = static_cast<std::size_t>(parent);
                 local[bone].rotation = multiply(conjugate(global[parentIndex].rotation), boneRotation);
-                if (mode == 1) {
-                    const auto bindOffset = sub(model_.bones[bone].position, model_.bones[parentIndex].position);
-                    local[bone].translation = sub(rotate(conjugate(global[parentIndex].rotation),
-                                                         sub(bonePosition, global[parentIndex].position)),
-                                                  bindOffset);
-                }
+                const auto bindOffset = sub(model_.bones[bone].position, model_.bones[parentIndex].position);
+                local[bone].translation = sub(rotate(conjugate(global[parentIndex].rotation),
+                                                     sub(targetBonePosition, global[parentIndex].position)),
+                                              bindOffset);
             } else {
                 local[bone].rotation = boneRotation;
-                if (mode == 1)
-                    local[bone].translation = sub(bonePosition, model_.bones[bone].position);
+                local[bone].translation = sub(targetBonePosition, model_.bones[bone].position);
             }
             calculateGlobalSubtree(model_, local, global, impl_->boneChildren, bone, impl_->subtreeState,
                                    impl_->subtreeScratch);
-            if (mode == 2) {
-                const auto correction = sub(global[bone].position, bonePosition);
-                physics_->shiftBodyPosition(bodyIndex, correction);
-            }
+            // The simulated body itself is deliberately left where the
+            // solver put it. Forcing it back onto the bone here used to
+            // discard the contact/joint solution every frame, letting cloth
+            // such as skirts rest inside colliders like thighs.
         }
         // Physics supplies the local pose for dynamic rigid bodies. Keep the
         // pre-physics pose for the first phase and feed sanitized dynamic
