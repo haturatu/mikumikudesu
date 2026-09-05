@@ -2,6 +2,7 @@
 
 #include "graphics/device.hpp"
 #include "graphics/preview_gpu_scene.hpp"
+#include "graphics/preview_render_plan.hpp"
 
 #include <vulkan/vulkan.h>
 
@@ -168,7 +169,9 @@ class VulkanDevice final : public Device {
     void refreshPreviewMaterialDescriptors();
     void destroyPreviewBindlessDescriptor();
     void refreshPreviewBindlessDescriptor();
-    void recordPreviewModel(VkCommandBuffer command, const PreviewPushConstants& constants);
+    [[nodiscard]] PreviewRenderPlan buildPreviewRenderPlan(bool includeUi) const noexcept;
+    void recordPreviewModel(VkCommandBuffer command, const PreviewPushConstants& constants,
+                            const PreviewRenderPlan& plan);
     void uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer,
                              VkDeviceMemory& memory, VkDeviceSize allocationSize = 0);
     [[nodiscard]] std::uint32_t findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags flags) const;

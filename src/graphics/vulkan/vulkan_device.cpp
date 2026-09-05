@@ -1671,9 +1671,26 @@ void VulkanDevice::beginUiFrame() {
 #endif
 }
 
-void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPushConstants& constants) {
+PreviewRenderPlan VulkanDevice::buildPreviewRenderPlan(bool includeUi) const noexcept {
+    const bool hasModelData = previewIndexBuffer_ != VK_NULL_HANDLE && previewIndexCount_ != 0;
+    const bool hasMaterialDraws = !previewGpuScene_.materials.empty() && !previewGpuScene_.draws.empty();
+    return {
+        .background = previewGpuScene_.view.backgroundEnabled &&
+                      (previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::backgroundImage ||
+                       previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::backgroundVideo) &&
+                      previewBackgroundTexture_.descriptor != VK_NULL_HANDLE && previewBackgroundIndexCount_ != 0,
+        .model = hasModelData,
+        .transparent = hasModelData && hasMaterialDraws,
+        .edge =
+            hasModelData && hasMaterialDraws && previewGpuScene_.view.outlineEnabled && edgePipeline_ != VK_NULL_HANDLE,
+        .ui = includeUi,
+    };
+}
+
+void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPushConstants& constants,
+                                      const PreviewRenderPlan& plan) {
     auto& frame = frames_[frameIndex_];
-    if (frame.previewMaterialDescriptor == VK_NULL_HANDLE)
+    if (!plan.model || frame.previewMaterialDescriptor == VK_NULL_HANDLE)
         return;
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 2, 1,
                             &frame.previewMaterialDescriptor, 0, nullptr);
@@ -1709,7 +1726,7 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
         vkCmdDrawIndexed(command, count, drawConstants.instanceCount, item.firstIndex, 0, 0);
     };
 
-    if (previewGpuScene_.materials.empty() || previewGpuScene_.draws.empty()) {
+    if (!plan.transparent) {
         if (!previewTextures_.empty()) {
             const auto descriptor = previewTextures_.front().descriptor;
             vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
@@ -1726,7 +1743,7 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
     for (const auto& item : previewGpuScene_.draws)
         draw(item, transparentPipeline_);
 
-    if (!previewGpuScene_.view.outlineEnabled || edgePipeline_ == VK_NULL_HANDLE)
+    if (!plan.edge)
         return;
     for (const auto& item : previewGpuScene_.draws)
         draw(item, edgePipeline_);
@@ -1880,12 +1897,8 @@ void VulkanDevice::renderFrame() {
                        static_cast<float>(previewGpuScene_.view.debugFlags), 0.0F, 0.0F};
     constants.viewport = {static_cast<float>(swapchainExtent_.width), static_cast<float>(swapchainExtent_.height), 0.0F,
                           0.0F};
-    const bool hasBackground = previewGpuScene_.view.backgroundEnabled &&
-                               (previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::backgroundImage ||
-                                previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::backgroundVideo) &&
-                               previewBackgroundTexture_.descriptor != VK_NULL_HANDLE &&
-                               previewBackgroundIndexCount_ != 0;
-    if (hasBackground) {
+    const auto plan = buildPreviewRenderPlan(true);
+    if (plan.background) {
         vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, backgroundPipeline_);
         const VkDeviceSize backgroundOffset = 0;
         vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewBackgroundVertexBuffer_, &backgroundOffset);
@@ -1899,13 +1912,14 @@ void VulkanDevice::renderFrame() {
         vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
         vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     }
-    if (!hasBackground) {
+    if (!plan.background) {
         vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
         vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     }
-    recordPreviewModel(frame.commandBuffer, constants);
+    recordPreviewModel(frame.commandBuffer, constants, plan);
 #if DAYO_HAS_IMGUI
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.commandBuffer);
+    if (plan.ui)
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.commandBuffer);
 #endif
     vkCmdEndRendering(frame.commandBuffer);
     if (frame.timestampQueryPool != VK_NULL_HANDLE)
@@ -2240,12 +2254,8 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     constants.debug = {static_cast<float>(previewGpuScene_.view.debugMaterial),
                        static_cast<float>(previewGpuScene_.view.debugFlags), 0.0F, 0.0F};
     constants.viewport = {static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0F, 0.0F};
-    const bool hasBackground = previewGpuScene_.view.backgroundEnabled &&
-                               (previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::backgroundImage ||
-                                previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::backgroundVideo) &&
-                               previewBackgroundTexture_.descriptor != VK_NULL_HANDLE &&
-                               previewBackgroundIndexCount_ != 0;
-    if (hasBackground) {
+    const auto plan = buildPreviewRenderPlan(false);
+    if (plan.background) {
         vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, backgroundPipeline_);
         const VkDeviceSize backgroundOffset = 0;
         vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewBackgroundVertexBuffer_, &backgroundOffset);
@@ -2259,11 +2269,11 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
         vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
         vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     }
-    if (!hasBackground) {
+    if (!plan.background) {
         vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
         vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     }
-    recordPreviewModel(frame.commandBuffer, constants);
+    recordPreviewModel(frame.commandBuffer, constants, plan);
     vkCmdEndRendering(frame.commandBuffer);
     if (frame.timestampQueryPool != VK_NULL_HANDLE)
         vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timestampQueryPool, 1);
