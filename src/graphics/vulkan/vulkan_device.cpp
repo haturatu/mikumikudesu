@@ -21,6 +21,7 @@
 #include <array>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <set>
 #include <span>
@@ -48,6 +49,26 @@ VkDeviceSize growPreviewCapacity(VkDeviceSize required) {
         capacity *= 2;
     }
     return capacity;
+}
+
+bool samePreviewMaterial(const PreviewMaterial& left, const PreviewMaterial& right) {
+    return std::equal(std::begin(left.diffuse), std::end(left.diffuse), std::begin(right.diffuse)) &&
+           std::equal(std::begin(left.ambient), std::end(left.ambient), std::begin(right.ambient)) &&
+           left.shininess == right.shininess &&
+           std::equal(std::begin(left.specular), std::end(left.specular), std::begin(right.specular)) &&
+           std::equal(std::begin(left.textureMultiply), std::end(left.textureMultiply),
+                      std::begin(right.textureMultiply)) &&
+           std::equal(std::begin(left.textureAdd), std::end(left.textureAdd), std::begin(right.textureAdd)) &&
+           std::equal(std::begin(left.sphereMultiply), std::end(left.sphereMultiply),
+                      std::begin(right.sphereMultiply)) &&
+           std::equal(std::begin(left.sphereAdd), std::end(left.sphereAdd), std::begin(right.sphereAdd)) &&
+           std::equal(std::begin(left.toonMultiply), std::end(left.toonMultiply), std::begin(right.toonMultiply)) &&
+           std::equal(std::begin(left.toonAdd), std::end(left.toonAdd), std::begin(right.toonAdd)) &&
+           std::equal(std::begin(left.edgeColor), std::end(left.edgeColor), std::begin(right.edgeColor)) &&
+           left.edgeSize == right.edgeSize && left.doubleSided == right.doubleSided &&
+           left.edgeEnabled == right.edgeEnabled && left.textureSlot == right.textureSlot &&
+           left.toonTextureSlot == right.toonTextureSlot && left.sphereTextureSlot == right.sphereTextureSlot &&
+           left.toonMode == right.toonMode && left.sphereMode == right.sphereMode;
 }
 
 VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -2970,6 +2991,20 @@ void VulkanDevice::updatePreviewBones(std::span<const PreviewBoneTransform> bone
 }
 
 void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> materials) {
+    const auto unchanged = std::numeric_limits<std::size_t>::max();
+    std::size_t firstDirty = unchanged;
+    std::size_t lastDirty = 0;
+    if (previewGpuScene_.materials.size() != materials.size()) {
+        firstDirty = 0;
+        lastDirty = std::max(previewGpuScene_.materials.size(), materials.size()) - 1U;
+    } else {
+        for (std::size_t index = 0; index < materials.size(); ++index) {
+            if (samePreviewMaterial(previewGpuScene_.materials[index], materials[index]))
+                continue;
+            firstDirty = std::min(firstDirty, index);
+            lastDirty = index;
+        }
+    }
     previewGpuScene_.materials.assign(materials.begin(), materials.end());
     refreshPreviewMaterialDescriptors();
 
@@ -3042,10 +3077,16 @@ void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> mater
         }
     } else {
         previewMaterialSize_ = byteSize;
+        if (firstDirty == unchanged)
+            return;
+        const auto first = std::min(firstDirty, previewGpuScene_.materialData.size() - 1U);
+        const auto last = std::min(lastDirty, previewGpuScene_.materialData.size() - 1U);
+        const auto offset = first * sizeof(PreviewMaterialGpu);
+        const auto size = (last - first + 1U) * sizeof(PreviewMaterialGpu);
         auto& frame = frames_[frameIndex_];
         check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for preview material frame");
-        std::memcpy(frame.mappedPreviewMaterials, previewGpuScene_.materialData.data(),
-                    static_cast<std::size_t>(byteSize));
+        std::memcpy(static_cast<std::byte*>(frame.mappedPreviewMaterials) + offset,
+                    previewGpuScene_.materialData.data() + first, size);
         frame.previewMaterialGeneration = ++previewMaterialGeneration_;
     }
 }
