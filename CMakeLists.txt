@@ -106,6 +106,7 @@ add_library(
   src/core/profiling.cpp
   src/core/project.cpp
   src/core/scene.cpp
+  src/core/upload_ring.cpp
   src/core/vmdayo.cpp
 )
 target_include_directories(dayo_core PUBLIC src)
@@ -364,6 +365,8 @@ install(FILES MikuMikuDayo/licence/MikuMikuDayo.txt DESTINATION share/mikumikude
 if(BUILD_TESTING)
   add_executable(dayo_core_tests tests/core_tests.cpp)
   target_link_libraries(dayo_core_tests PRIVATE dayo_core)
+  add_executable(dayo_upload_ring_tests tests/upload_ring_tests.cpp)
+  target_link_libraries(dayo_upload_ring_tests PRIVATE dayo_core)
   add_executable(dayo_preview_tests tests/preview_render_tests.cpp)
   target_include_directories(dayo_preview_tests PRIVATE src)
   target_link_libraries(dayo_preview_tests PRIVATE dayo_platform dayo_graphics)
@@ -409,6 +412,7 @@ if(BUILD_TESTING)
   endif()
 
   add_test(NAME core COMMAND dayo_core_tests)
+  add_test(NAME upload_ring COMMAND dayo_upload_ring_tests)
   add_test(NAME upstream_compat COMMAND dayo_upstream_compat_tests)
   set_tests_properties(upstream_compat PROPERTIES LABELS "upstream" TIMEOUT 60)
   add_test(NAME vulkan_probe COMMAND mikumikudesu --probe --hidden)
