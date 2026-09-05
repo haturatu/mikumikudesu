@@ -1279,6 +1279,37 @@ int main() {
                         std::abs(gpuPosition[1] - after.vertices[0].position[1]) < 1e-4F,
                     "GPU BDEF transform matches CPU skinning output");
 
+        dayo::core::PmxModel vertexMorphModel;
+        vertexMorphModel.vertices.resize(2);
+        vertexMorphModel.vertices[0].position = {0.0F, 0.0F, 0.0F};
+        vertexMorphModel.vertices[1].position = {0.0F, 0.0F, 0.0F};
+        dayo::core::PmxMorph vertexMorph;
+        vertexMorph.name = "two-offsets";
+        vertexMorph.type = 1;
+        dayo::core::PmxMorphOffset firstVertexOffset;
+        firstVertexOffset.index = 0;
+        firstVertexOffset.vector3 = {1.0F, 0.0F, 0.0F};
+        dayo::core::PmxMorphOffset secondVertexOffset;
+        secondVertexOffset.index = 1;
+        secondVertexOffset.vector3 = {0.0F, 1.0F, 0.0F};
+        vertexMorph.offsets = {firstVertexOffset, secondVertexOffset};
+        vertexMorphModel.morphs.push_back(vertexMorph);
+        dayo::core::VmdMotion vertexMorphMotion;
+        vertexMorphMotion.morphs.push_back({.name = "two-offsets", .frame = 0, .weight = 0.5F});
+        dayo::core::MmdAnimator vertexMorphCpuAnimator(vertexMorphModel);
+        dayo::core::MmdAnimator vertexMorphGpuAnimator(vertexMorphModel);
+        vertexMorphCpuAnimator.setMotion(&vertexMorphMotion);
+        vertexMorphGpuAnimator.setMotion(&vertexMorphMotion);
+        const auto vertexMorphCpu = vertexMorphCpuAnimator.evaluate(0.0F, 0.0F, false);
+        const auto vertexMorphGpu = vertexMorphGpuAnimator.evaluate(0.0F, 0.0F, true);
+        ok &= check(std::abs(vertexMorphCpu.vertices[0].position[0] - 0.5F) < 1e-4F &&
+                        std::abs(vertexMorphCpu.vertices[1].position[1] - 0.5F) < 1e-4F &&
+                        vertexMorphGpu.vertices[0].position == vertexMorphModel.vertices[0].position &&
+                        vertexMorphGpu.vertices[1].position == vertexMorphModel.vertices[1].position &&
+                        vertexMorphGpu.morphWeights.size() == 1 &&
+                        std::abs(vertexMorphGpu.morphWeights[0] - 0.5F) < 1e-4F,
+                    "GPU vertex morph weight is accumulated once for multiple vertex offsets");
+
         dayo::core::PmxModel sdefModel;
         sdefModel.vertices.resize(1);
         sdefModel.vertices[0].position = {1.0F, 0.0F, 0.0F};

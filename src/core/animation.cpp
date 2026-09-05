@@ -843,17 +843,18 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
             return;
         morphStack[index] = 1;
         const auto& morph = model_.morphs[index];
+        if (gpuSkinning && morph.type == 1) {
+            result.morphWeights[index] += weight;
+            morphStack[index] = 0;
+            return;
+        }
         for (const auto& offset : morph.offsets) {
             if (morph.type == 0 || morph.type == 9)
                 applyMorph(static_cast<std::size_t>(offset.index), weight * offset.scalar);
             else if (morph.type == 1 && offset.index >= 0 &&
                      static_cast<std::size_t>(offset.index) < result.vertices.size()) {
-                if (gpuSkinning) {
-                    result.morphWeights[index] += weight;
-                } else {
-                    result.vertices[static_cast<std::size_t>(offset.index)].position = add(
-                        result.vertices[static_cast<std::size_t>(offset.index)].position, mul(offset.vector3, weight));
-                }
+                result.vertices[static_cast<std::size_t>(offset.index)].position = add(
+                    result.vertices[static_cast<std::size_t>(offset.index)].position, mul(offset.vector3, weight));
             } else if (morph.type == 2 && offset.index >= 0 && static_cast<std::size_t>(offset.index) < local.size()) {
                 const auto bone = static_cast<std::size_t>(offset.index);
                 local[bone].translation = add(local[bone].translation, mul(offset.vector3, weight));
