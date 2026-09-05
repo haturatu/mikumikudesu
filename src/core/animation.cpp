@@ -939,13 +939,19 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
     if (physics_ != nullptr && physics_->available()) {
         const float frameDelta = frame - previousFrame_;
         const float expectedFrameDelta = std::max(deltaSeconds, 0.0F) * 30.0F;
+        // A zero-delta call can still advance a sequence one VMD frame; only
+        // a larger jump is treated as a discontinuous seek.
+        const bool zeroDeltaSeek = deltaSeconds <= 0.0F && frameDelta > 2.0F;
+        const bool frameProgressionMismatch =
+            deltaSeconds > 0.0F && std::abs(frameDelta) > 1e-6F && std::abs(frameDelta - expectedFrameDelta) > 2.0F;
         const bool discontinuousSeek =
             (previousFrame_ < 0.0F && std::abs(frame) > 1e-6F) ||
-            (previousFrame_ >= 0.0F &&
-             (frameDelta < 0.0F || (std::abs(frameDelta) > 1e-6F &&
-                                    (deltaSeconds <= 0.0F || std::abs(frameDelta - expectedFrameDelta) > 2.0F))));
+            (previousFrame_ >= 0.0F && (frameDelta < 0.0F || zeroDeltaSeek || frameProgressionMismatch));
         if (discontinuousSeek)
             physics_->reset();
+        float physicsDelta = std::max(deltaSeconds, 0.0F);
+        if (!discontinuousSeek && previousFrame_ >= 0.0F && frameDelta > 1e-6F)
+            physicsDelta = frameDelta / 30.0F;
         std::vector<bool> physicsBones(model_.bones.size());
         // Animated rigid-body centers sampled before Bullet runs. Mode 2
         // needs them afterwards to rebuild the bone from the animated
@@ -972,7 +978,7 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
             if (physics_->bodyMode(bodyIndex) == 2)
                 mode2Centers[bodyIndex] = value.position;
         }
-        const float impulseScale = std::max(deltaSeconds, 0.0F) * 60.0F;
+        const float impulseScale = physicsDelta * 60.0F;
         for (std::size_t body = 0; body < model_.rigidBodies.size(); ++body) {
             if (impulseReset[body]) {
                 physics_->clearMotion(body);
@@ -987,7 +993,7 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
                                        mul(impulseAngularLocal[body], impulseScale), true);
             }
         }
-        physics_->step(deltaSeconds);
+        physics_->step(physicsDelta);
         for (std::size_t bodyIndex = 0; bodyIndex < model_.rigidBodies.size(); ++bodyIndex) {
             const auto& body = model_.rigidBodies[bodyIndex];
             const auto mode = physics_->bodyMode(bodyIndex);
