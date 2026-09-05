@@ -195,11 +195,12 @@ struct PreviewPushConstants {
     std::array<float, 4> light{};
     std::uint32_t materialIndex{};
     std::uint32_t instanceCount{1};
+    std::array<std::uint32_t, 2> materialPadding{};
     std::array<float, 4> lightColor{};
     std::array<float, 4> viewport{};
     std::array<float, 4> debug{};
 };
-static_assert(sizeof(PreviewPushConstants) == 104);
+static_assert(sizeof(PreviewPushConstants) == 112);
 
 struct RenderTargetDesc {
     std::uint32_t width{};
