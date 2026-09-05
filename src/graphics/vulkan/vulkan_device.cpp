@@ -654,7 +654,7 @@ void VulkanDevice::createPipelineCache() {
         .pInitialData = initialData.data(),
     };
     auto result = vkCreatePipelineCache(device_, &createInfo, nullptr, &pipelineCache_);
-    if (result == VK_ERROR_INVALID_PIPELINE_CACHE_DATA && !initialData.empty()) {
+    if (result != VK_SUCCESS && !initialData.empty()) {
         log::warn("Ignoring incompatible Vulkan pipeline cache");
         createInfo.initialDataSize = 0;
         createInfo.pInitialData = nullptr;
