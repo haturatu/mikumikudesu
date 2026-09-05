@@ -958,6 +958,9 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
         float physicsDelta = std::max(deltaSeconds, 0.0F);
         if (!discontinuousSeek && previousFrame_ >= 0.0F && frameDelta > 1e-6F)
             physicsDelta = frameDelta / 30.0F;
+        std::vector<Float3> animatedBonePositions(global.size());
+        for (std::size_t i = 0; i < global.size(); ++i)
+            animatedBonePositions[i] = global[i].position;
         std::vector<bool> physicsBones(model_.bones.size());
         for (std::size_t bodyIndex = 0; bodyIndex < model_.rigidBodies.size(); ++bodyIndex) {
             const auto& body = model_.rigidBodies[bodyIndex];
@@ -1005,17 +1008,16 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
             const auto offset = sub(body.position, model_.bones[bone].position);
             const auto boneRotation = multiply(bodyPose.rotation, conjugate(eulerRotation(body.rotation)));
             // PMX mode 1 is fully physics-driven: the bone follows the
-            // simulated rigid-body center. PMX mode 2 mirrors upstream
-            // DynamicAndBoneMergeMotionState: the Bullet body keeps the
-            // solver position, while the bone is rebuilt from the animated
-            // rigid-body center plus the simulated rotation. Only when the
-            // bind offset is zero does this reduce to keeping the animated
-            // bone translation.
-            // global[bone] may already contain the updated physics transform
-            // of a mode 2 ancestor processed earlier in this loop.
-            const auto animatedRigidCenter = add(global[bone].position, rotate(global[bone].rotation, offset));
-            const auto rigidCenter = mode == 2 ? animatedRigidCenter : bodyPose.position;
-            const auto targetBonePosition = sub(rigidCenter, rotate(boneRotation, offset));
+            // simulated rigid-body center. PMX mode 2 (DynamicAndBoneMerge)
+            // imports only the simulated rotation; its global translation
+            // remains at the animated pre-physics position regardless of the
+            // rigid body's bind offset. Use the snapshot because global[bone]
+            // may already contain a physics-updated mode 2 ancestor.
+            Float3 targetBonePosition;
+            if (mode == 2)
+                targetBonePosition = animatedBonePositions[bone];
+            else
+                targetBonePosition = sub(bodyPose.position, rotate(boneRotation, offset));
             const auto parent = model_.bones[bone].parent;
             if (parent >= 0 && static_cast<std::size_t>(parent) < global.size()) {
                 const auto parentIndex = static_cast<std::size_t>(parent);

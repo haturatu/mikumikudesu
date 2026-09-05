@@ -179,6 +179,7 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
                                                       impl_->shapes.back().get(), inertia);
         info.m_linearDamping = source.linearDamping;
         info.m_angularDamping = source.angularDamping;
+        info.m_additionalDamping = true;
         info.m_restitution = source.restitution;
         info.m_friction = source.friction;
         impl_->bodies.push_back(std::make_unique<btRigidBody>(info));
