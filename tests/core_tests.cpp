@@ -414,6 +414,7 @@ int main() {
         std::filesystem::remove(schemaPath, cleanupError);
         std::filesystem::remove(hairPath, cleanupError);
         std::filesystem::remove(metalPath, cleanupError);
+        std::filesystem::remove(expressionPath, cleanupError);
     }
 
     const auto path = std::filesystem::temp_directory_path() / "mikumikudesu-core-test.pmx";

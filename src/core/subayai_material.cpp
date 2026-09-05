@@ -1,6 +1,7 @@
 #include "core/subayai_material.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <fstream>
 #include <sstream>
@@ -63,6 +64,107 @@ float floating(std::string_view value, const std::filesystem::path& path, std::s
     return result;
 }
 
+bool isAnimatedExpression(std::string_view value) {
+    bool expectsOperand = true;
+    bool hasExpressionOperator = false;
+    bool previousWasIdentifier = false;
+    std::size_t parenthesisDepth = 0;
+
+    for (std::size_t index = 0; index < value.size();) {
+        const auto character = static_cast<unsigned char>(value[index]);
+        if (std::isspace(character)) {
+            ++index;
+            continue;
+        }
+
+        if (std::isdigit(character) || value[index] == '.') {
+            if (!expectsOperand)
+                return false;
+            ++index;
+            while (index < value.size() &&
+                   (std::isdigit(static_cast<unsigned char>(value[index])) || value[index] == '.'))
+                ++index;
+            if (index < value.size() && (value[index] == 'e' || value[index] == 'E')) {
+                ++index;
+                if (index < value.size() && (value[index] == '+' || value[index] == '-'))
+                    ++index;
+                while (index < value.size() && std::isdigit(static_cast<unsigned char>(value[index])))
+                    ++index;
+            }
+            expectsOperand = false;
+            previousWasIdentifier = false;
+            continue;
+        }
+
+        if (std::isalpha(character) || value[index] == '_') {
+            if (!expectsOperand)
+                return false;
+            ++index;
+            while (index < value.size() &&
+                   (std::isalnum(static_cast<unsigned char>(value[index])) || value[index] == '_'))
+                ++index;
+            expectsOperand = false;
+            previousWasIdentifier = true;
+            continue;
+        }
+
+        switch (value[index]) {
+        case '(':
+            if (!expectsOperand && !previousWasIdentifier)
+                return false;
+            ++parenthesisDepth;
+            ++index;
+            expectsOperand = true;
+            previousWasIdentifier = false;
+            hasExpressionOperator = true;
+            continue;
+        case ')':
+            if (expectsOperand || parenthesisDepth == 0)
+                return false;
+            --parenthesisDepth;
+            ++index;
+            expectsOperand = false;
+            previousWasIdentifier = false;
+            hasExpressionOperator = true;
+            continue;
+        case ',':
+            if (expectsOperand || parenthesisDepth == 0)
+                return false;
+            ++index;
+            expectsOperand = true;
+            previousWasIdentifier = false;
+            hasExpressionOperator = true;
+            continue;
+        case '+':
+        case '-':
+            ++index;
+            if (expectsOperand) {
+                previousWasIdentifier = false;
+                continue;
+            }
+            expectsOperand = true;
+            previousWasIdentifier = false;
+            hasExpressionOperator = true;
+            continue;
+        case '*':
+        case '/':
+        case '%':
+        case '^':
+            if (expectsOperand)
+                return false;
+            ++index;
+            expectsOperand = true;
+            previousWasIdentifier = false;
+            hasExpressionOperator = true;
+            continue;
+        default:
+            return false;
+        }
+    }
+
+    return !value.empty() && !expectsOperand && parenthesisDepth == 0 && hasExpressionOperator;
+}
+
 std::string textureName(std::string name) {
     if (name.starts_with("_T"))
         name.erase(0, 2);
@@ -90,6 +192,14 @@ MaterialValue parseValue(std::string_view name, std::string_view text, const Sub
         throw std::runtime_error("empty Subayai material value at " + path.string() + ':' + std::to_string(lineNumber));
 
     const auto definition = definitionFor(schema, name, values.size(), path, lineNumber);
+    if (schema != nullptr && values.size() != definition.components)
+        throw std::runtime_error("Subayai material parameter " + std::string(name) + " expects " +
+                                 std::to_string(definition.components) + " component(s), got " +
+                                 std::to_string(values.size()) + " at " + path.string() + ':' +
+                                 std::to_string(lineNumber));
+    if (values.size() > 4)
+        throw std::runtime_error("Subayai material values have more than four components at " + path.string() + ':' +
+                                 std::to_string(lineNumber));
     if (definition.type == SubayaiParameterType::texture)
         return std::filesystem::path(std::string(text));
 
@@ -118,7 +228,9 @@ MaterialValue parseValue(std::string_view name, std::string_view text, const Sub
             // Subayai permits animated expressions such as
             // `5*(sin(Time*2*pi)+1)` in scalar fields. Keep those expressions
             // intact for a future executor instead of rejecting the preset.
-            return std::string(text);
+            if (definition.components == 1 && isAnimatedExpression(values.front()))
+                return std::string(values.front());
+            throw;
         }
         switch (values.size()) {
         case 1:
