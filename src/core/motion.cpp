@@ -220,7 +220,7 @@ VmdMotion loadVmd(const std::filesystem::path& path) {
     }
     VmdMotion motion;
     motion.modelName = readName<20>(input, "model name");
-    motion.bones.resize(readCount(input, budget, "bone key count", 1'000'000U, 116, sizeof(VmdBoneKey)));
+    motion.bones.resize(readCount(input, budget, "bone key count", 1'000'000U, 111, sizeof(VmdBoneKey)));
     for (auto& key : motion.bones) {
         key.name = readName<15>(input, "bone name");
         key.frame = read<std::uint32_t>(input, "bone frame");
