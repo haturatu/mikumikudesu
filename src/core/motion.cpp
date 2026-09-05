@@ -122,7 +122,24 @@ template <std::size_t N> std::array<float, N> parseVector(std::string value, std
             throw std::runtime_error("short VPD vector");
         begin = end == std::string::npos ? value.size() : end + 1;
     }
+    if (begin < value.size() && !trim(value.substr(begin)).empty())
+        throw std::runtime_error("long VPD vector");
     return result;
+}
+
+std::string nextLine(std::string_view text, std::size_t& cursor) {
+    if (cursor >= text.size())
+        return {};
+    const auto end = text.find('\n', cursor);
+    const auto line = text.substr(cursor, end == std::string::npos ? end : end - cursor);
+    cursor = end == std::string::npos ? text.size() : end + 1;
+    return trim(std::string(line));
+}
+
+std::string removeOptionalTerminator(std::string value) {
+    if (!value.empty() && value.back() == ';')
+        value.pop_back();
+    return trim(std::move(value));
 }
 
 } // namespace
@@ -389,24 +406,28 @@ VpdPose loadVpd(const std::filesystem::path& path) {
         throw std::runtime_error("unsupported VPD file");
     VpdPose pose;
     std::size_t cursor = 0;
-    while ((cursor = text.find("Bone", cursor)) != std::string::npos) {
-        const auto open = text.find('{', cursor);
-        const auto nameEnd = open == std::string::npos ? open : text.find('{', open + 1);
-        const auto close = nameEnd == std::string::npos ? nameEnd : text.find('}', nameEnd + 1);
-        if (open == std::string::npos || nameEnd == std::string::npos || close == std::string::npos)
-            break;
+    while (cursor < text.size()) {
+        const auto line = nextLine(text, cursor);
+        if (line.empty())
+            continue;
+        if (line.rfind("Bone", 0) != 0)
+            continue;
+        const auto open = line.find('{');
+        if (open == std::string::npos)
+            throw std::runtime_error("malformed VPD bone header");
         VpdBonePose bone;
-        bone.name = trim(text.substr(open + 1, nameEnd - open - 1));
-        const auto translationEnd = text.find('\n', nameEnd + 1);
-        const auto rotationEnd =
-            translationEnd == std::string::npos ? translationEnd : text.find('\n', translationEnd + 1);
-        if (translationEnd == std::string::npos || rotationEnd == std::string::npos)
-            break;
-        bone.translation = parseVector<3>(trim(text.substr(nameEnd + 1, translationEnd - nameEnd - 1)), "translation");
-        bone.rotation =
-            parseVector<4>(trim(text.substr(translationEnd + 1, rotationEnd - translationEnd - 1)), "rotation");
+        const auto name = nextLine(text, cursor);
+        const auto translation = nextLine(text, cursor);
+        const auto rotation = nextLine(text, cursor);
+        const auto close = nextLine(text, cursor);
+        if (name.empty() || translation.empty() || rotation.empty() || close != "}")
+            throw std::runtime_error("malformed VPD bone block");
+        bone.name = removeOptionalTerminator(name);
+        if (bone.name.empty())
+            throw std::runtime_error("malformed VPD bone name");
+        bone.translation = parseVector<3>(translation, "translation");
+        bone.rotation = parseVector<4>(rotation, "rotation");
         pose.bones.push_back(std::move(bone));
-        cursor = close + 1;
     }
     return pose;
 }
