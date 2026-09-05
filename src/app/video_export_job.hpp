@@ -4,6 +4,7 @@
 #include "core/video_export.hpp"
 
 #include <atomic>
+#include <cstddef>
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
@@ -16,6 +17,8 @@ namespace dayo::app {
 
 class VideoExportJob {
   public:
+    static constexpr std::size_t kFrameQueueCapacity = 3;
+
     VideoExportJob() = default;
     ~VideoExportJob();
     VideoExportJob(const VideoExportJob&) = delete;
