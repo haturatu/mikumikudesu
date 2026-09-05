@@ -1845,10 +1845,17 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     }
     if (target.width == 0 || target.height == 0)
         throw std::invalid_argument("video dimensions must be non-zero");
-    waitIdle();
     const VkExtent2D extent{target.width, target.height};
-    createOffscreenResource(extent);
     auto& frame = frames_[frameIndex_];
+    check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for offscreen frame slot");
+    if (offscreen_.colorImage != VK_NULL_HANDLE &&
+        (offscreen_.extent.width != extent.width || offscreen_.extent.height != extent.height)) {
+        // The offscreen image is shared by the bounded readback path. A size
+        // change destroys it, so wait for every prior submission before
+        // replacing the resource.
+        waitIdle();
+    }
+    createOffscreenResource(extent);
     resolveTimestampQuery(frame);
     synchronizePreviewVertices(frame);
     synchronizePreviewBones(frame);
