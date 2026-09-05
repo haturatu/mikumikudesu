@@ -17,6 +17,7 @@
 #include "core/task_scheduler.hpp"
 #include "core/video_export.hpp"
 #include "core/vmdayo.hpp"
+#include "graphics/render_graph.hpp"
 #include "graphics/timestamp.hpp"
 
 #include <algorithm>
@@ -465,6 +466,26 @@ int main() {
         });
         scheduler.wait(upload);
         ok &= check(dependencyOrder.load() == 3 && upload.valid(), "task scheduler dependency graph");
+    }
+    {
+        using dayo::graphics::RenderGraphLite;
+        using dayo::graphics::RenderResourceState;
+        RenderGraphLite graph;
+        const auto color = graph.createResource("color");
+        const auto depth = graph.createResource("depth");
+        static_cast<void>(graph.addPass("opaque", {{color, RenderResourceState::colorAttachment, true},
+                                                   {depth, RenderResourceState::depthAttachment, true}}));
+        static_cast<void>(graph.addPass("post", {{color, RenderResourceState::shaderRead, false}}));
+        const auto plan = graph.compile();
+        const auto lifetime = graph.lifetimes();
+        ok &= check(plan.size() == 2 && plan[1].dependencies.size() == 1 && plan[1].dependencies.front() == 0,
+                    "render graph tracks pass dependencies");
+        ok &= check(plan[1].barriers.size() == 1 &&
+                        plan[1].barriers.front().before == RenderResourceState::colorAttachment &&
+                        plan[1].barriers.front().after == RenderResourceState::shaderRead,
+                    "render graph tracks resource barriers");
+        ok &= check(lifetime[color].firstPass == 0 && lifetime[color].lastPass == 1 && lifetime[depth].lastPass == 0,
+                    "render graph tracks resource lifetimes");
     }
     {
         const auto schemaPath = std::filesystem::temp_directory_path() / "mikumikudesu-subayai-template.txt";
