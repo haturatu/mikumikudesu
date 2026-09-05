@@ -526,7 +526,9 @@ int main() {
         falling.position = {0.0F, 2.0F, 0.0F};
         falling.mass = 1.0F;
         falling.mode = 1;
-        falling.collisionMask = 0;
+        // MikuMikuDayo convention: the raw mask is Bullet's allowed mask,
+        // so 0xffff collides with every group including the floor.
+        falling.collisionMask = 0xFFFFU;
         falling.bone = 0;
         physicsModel.rigidBodies.push_back(falling);
         dayo::core::MmdPhysics physics(physicsModel);
@@ -680,9 +682,9 @@ int main() {
         skirtRoot.size = {0.2F, 0.2F, 0.2F};
         skirtRoot.position = {0.0F, 0.0F, 0.0F};
         skirtRoot.bone = 0;
-        // PMX masks list groups that must NOT collide, so 0xFFFF would
-        // isolate every body in this chain. Use 0 to exercise collisions.
-        skirtRoot.collisionMask = 0;
+        // MikuMikuDayo convention: the raw mask is Bullet's allowed mask,
+        // so 0xffff lets every body in this chain collide.
+        skirtRoot.collisionMask = 0xFFFFU;
         skirtChainModel.rigidBodies.push_back(skirtRoot);
         auto skirtMode2 = skirtRoot;
         skirtMode2.position = {0.0F, 2.0F, 0.0F};
@@ -787,7 +789,8 @@ int main() {
             body.position = position;
             body.bone = bone;
             body.group = group;
-            body.collisionMask = 0;
+            // MikuMikuDayo convention: 0xffff collides with every group.
+            body.collisionMask = 0xFFFFU;
             body.mode = mode;
             body.mass = mass;
             body.linearDamping = 0.2F;
@@ -797,7 +800,7 @@ int main() {
         skirtCollisionModel.rigidBodies.push_back(
             makeCollisionBody(1, {0.12F, 0.35F, 0.12F}, {0.3F, 1.2F, 0.0F}, 1, 1, 0, 0.0F));
         skirtCollisionModel.rigidBodies.push_back(
-            makeCollisionBody(1, {0.1F, 0.1F, 0.1F}, {0.3F, 1.8F, 0.3F}, 0, 2, 0, 0.0F));
+            makeCollisionBody(1, {0.1F, 0.08F, 0.1F}, {0.3F, 1.95F, 0.3F}, 0, 2, 0, 0.0F));
         skirtCollisionModel.rigidBodies.push_back(
             makeCollisionBody(1, {0.12F, 0.2F, 0.04F}, {0.3F, 1.5F, 0.3F}, 2, 3, 2, 0.3F));
         skirtCollisionModel.rigidBodies.push_back(
@@ -821,7 +824,7 @@ int main() {
             joint.rotationSpring = {};
             skirtCollisionModel.joints.push_back(joint);
         };
-        addLooseJoint(1, 2, {0.3F, 1.65F, 0.3F});
+        addLooseJoint(1, 2, {0.3F, 1.8F, 0.3F});
         addLooseJoint(2, 3, {0.3F, 1.25F, 0.32F});
         dayo::core::VmdMotion skirtCollisionMotion;
         skirtCollisionMotion.bones.reserve(300);
@@ -871,6 +874,48 @@ int main() {
         ok &= check(finalSkirtVertices.size() == 2 && initialSkirtVertices.size() == 2 &&
                         finalSkirtVertices[1].position[2] - initialSkirtVertices[1].position[2] > 0.05F,
                     "skinned mode 1 skirt tip follows the pushed chain");
+
+        // Teto-pattern collision masks under the MikuMikuDayo convention:
+        // legs use group 0 / mask 0xffff and collide with everything, while
+        // skirt panels use groups 14-15 / mask 0x3fff and collide with the
+        // body but never with each other. Measured on Tda式重音テトTypeS
+        // (100 rigid bodies: 84 mode 1, 0 mode 2). Zero gravity isolates the
+        // contact response so overlap can only resolve via collision.
+        dayo::core::PmxModel tetoMaskModel;
+        const auto makeMaskBody = [](std::uint8_t group, std::uint16_t mask, std::uint8_t mode,
+                                     dayo::core::Float3 position, float mass, dayo::core::Float3 size) {
+            dayo::core::PmxRigidBody body;
+            body.shape = 1;
+            body.size = size;
+            body.position = position;
+            body.group = group;
+            body.collisionMask = mask;
+            body.mode = mode;
+            body.mass = mass;
+            body.linearDamping = 1.0F;
+            body.angularDamping = 1.0F;
+            return body;
+        };
+        tetoMaskModel.rigidBodies.push_back(makeMaskBody(0, 0xFFFFU, 0, {0.0F, 1.0F, 0.0F}, 0.0F, {0.2F, 0.2F, 0.2F}));
+        tetoMaskModel.rigidBodies.push_back(
+            makeMaskBody(14, 0x3FFFU, 1, {0.25F, 1.0F, 0.0F}, 0.5F, {0.15F, 0.15F, 0.15F}));
+        tetoMaskModel.rigidBodies.push_back(
+            makeMaskBody(15, 0x3FFFU, 1, {0.45F, 1.0F, 0.0F}, 0.5F, {0.15F, 0.15F, 0.15F}));
+        dayo::core::MmdPhysics tetoMaskPhysics(tetoMaskModel);
+        tetoMaskPhysics.setGravity({0.0F, 0.0F, 0.0F});
+        for (int step = 0; step < 120; ++step)
+            tetoMaskPhysics.step(1.0F / 30.0F);
+        const auto tetoLeg = tetoMaskPhysics.bodyTransform(0);
+        const auto tetoSkirtA = tetoMaskPhysics.bodyTransform(1);
+        const auto tetoSkirtB = tetoMaskPhysics.bodyTransform(2);
+        const auto tetoLegSkirtGap = (tetoSkirtA.position[0] - 0.15F) - (tetoLeg.position[0] + 0.2F);
+        const auto tetoSkirtOverlap = (tetoSkirtA.position[0] + 0.15F) - (tetoSkirtB.position[0] - 0.15F);
+        ok &= check(vectorFinite(tetoLeg.position) && vectorFinite(tetoSkirtA.position) &&
+                        vectorFinite(tetoSkirtB.position),
+                    "teto-pattern mask collision stays finite");
+        ok &= check(tetoLegSkirtGap > -0.05F, "leg collider pushes the overlapping skirt panel out");
+        ok &= check(std::abs(tetoSkirtB.position[0] - 0.45F) < 1e-3F && tetoSkirtOverlap > 0.0F,
+                    "skirt panels keep their exclusion and stay interpenetrated");
         dayo::core::PmxModel seekModel;
         seekModel.vertices.resize(1);
         seekModel.vertices[0].position = {0.0F, 2.0F, 0.0F};

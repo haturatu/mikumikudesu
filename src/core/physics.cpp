@@ -142,6 +142,9 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
                 throw std::runtime_error("unsupported PMX rigid body shape");
             }
         }
+        // Upstream MikuMikuDayo sets an explicit 0.01 margin on every rigid
+        // shape instead of relying on the Bullet default.
+        impl_->shapes.back()->setMargin(0.01F);
         const bool invalidTransform = !finite(source.position) || !finite(source.rotation);
         const auto initial =
             invalidTransform ? btTransform::getIdentity() : transform(source.position, source.rotation);
@@ -183,10 +186,14 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
             impl_->bodies.back()->setActivationState(DISABLE_DEACTIVATION);
         }
         const short group = static_cast<short>(1U << std::min<std::uint8_t>(source.group, 15));
-        // PMX stores groups that must not collide; Bullet stores groups that
-        // are allowed to collide.
-        const auto allowedMask = static_cast<std::uint16_t>(~source.collisionMask);
-        const short mask = static_cast<short>(allowedMask);
+        // Pass the PMX mask to Bullet unchanged, matching upstream
+        // MikuMikuDayo (groupMask = r.passGroup). Real models are authored
+        // for this convention: e.g. Tda-style legs use group 0 / mask
+        // 0xffff (collide with everything) while skirt panels use groups
+        // 14-15 / mask 0x3fff (collide with the body, not each other).
+        // Inverting the mask here used to leave legs colliding with nothing
+        // while enabling skirt self-collision instead.
+        const short mask = static_cast<short>(source.collisionMask);
         impl_->world->addRigidBody(impl_->bodies.back().get(), group, mask);
     }
     impl_->constraints.reserve(model.joints.size());
@@ -224,7 +231,10 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
             }
         }
         joint->setEquilibriumPoint();
-        impl_->world->addConstraint(joint.get(), true);
+        // Upstream adds the constraint without disabling collision between
+        // the linked bodies, so joint-connected pairs (e.g. hip to top
+        // skirt row) still collide subject to their masks.
+        impl_->world->addConstraint(joint.get());
         impl_->constraints.push_back(std::move(joint));
     }
 #else
