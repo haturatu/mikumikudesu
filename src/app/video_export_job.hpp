@@ -4,8 +4,8 @@
 #include "core/video_export.hpp"
 
 #include <atomic>
-#include <cstddef>
 #include <condition_variable>
+#include <cstddef>
 #include <deque>
 #include <filesystem>
 #include <mutex>
