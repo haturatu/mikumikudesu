@@ -13,6 +13,7 @@
 #include "core/project.hpp"
 #include "core/scene.hpp"
 #include "core/task_scheduler.hpp"
+#include "core/subayai_material.hpp"
 #include "core/video_export.hpp"
 #include "core/vmdayo.hpp"
 #include "graphics/timestamp.hpp"
@@ -345,6 +346,74 @@ int main() {
         scheduler.parallelFor(
             2, [&](std::size_t) { scheduler.parallelFor(4, [&](std::size_t) { nested.fetch_add(1); }); });
         ok &= check(nested.load() == 8, "task scheduler runs nested batches inline");
+    }
+    {
+        const auto schemaPath = std::filesystem::temp_directory_path() / "mikumikudesu-subayai-template.txt";
+        const auto hairPath = std::filesystem::temp_directory_path() / "mikumikudesu-subayai-hair.txt";
+        const auto metalPath = std::filesystem::temp_directory_path() / "mikumikudesu-subayai-metal.txt";
+        {
+            std::ofstream output(schemaPath);
+            output << "i.1 : Category\n"
+                      "_E Category : default=0, glass=1, metal=2\n"
+                      "f.1 : Roughness\n"
+                      "f.1 : Anisotropy\n"
+                      "f.2 : IOR\n"
+                      "f.1 : AutoNormal\n"
+                      "Roughness : 0.5\n";
+        }
+        {
+            std::ofstream output(hairPath);
+            output << "Anisotropy : 0.75\nIOR : 1.5,0\nAutoNormal : 1\n";
+        }
+        {
+            std::ofstream output(metalPath);
+            output << "Category : metal\n";
+        }
+        const auto schema = dayo::core::loadSubayaiMaterialSchema(schemaPath);
+        const auto hair = dayo::core::loadSubayaiMaterialPreset(hairPath, schema);
+        const auto anisotropy = hair.parameters.find("Anisotropy");
+        const auto ior = hair.parameters.find("IOR");
+        const auto category = dayo::core::loadSubayaiMaterialPreset(metalPath, schema);
+        const auto categoryValue = category.parameters.find("Category");
+        const auto roughness = hair.parameters.find("Roughness");
+        ok &=
+            check(anisotropy != nullptr && std::get<float>(*anisotropy) == 0.75F, "Subayai hair anisotropy annotation");
+        ok &= check(ior != nullptr && std::get<std::array<float, 2>>(*ior)[0] == 1.5F, "Subayai IOR annotation");
+        ok &= check(categoryValue != nullptr && std::get<std::int32_t>(*categoryValue) == 2, "Subayai enum annotation");
+        ok &= check(roughness != nullptr && std::get<float>(*roughness) == 0.5F, "Subayai schema default values");
+
+        const auto expressionPath = std::filesystem::temp_directory_path() / "mikumikudesu-subayai-expression.txt";
+        {
+            std::ofstream output(expressionPath);
+            output << "Roughness : 5*(sin(Time*2*pi)+1)\n";
+        }
+        const auto expressionPreset = dayo::core::loadSubayaiMaterialPreset(expressionPath, schema);
+        const auto expression = expressionPreset.parameters.find("Roughness");
+        ok &= check(expression != nullptr && std::holds_alternative<std::string>(*expression),
+                    "Subayai scalar animated expression");
+
+        const auto expectInvalidPreset = [&](std::string_view contents, std::string_view message) {
+            std::ofstream output(expressionPath, std::ios::trunc);
+            output << contents;
+            output.close();
+            bool threw = false;
+            try {
+                static_cast<void>(dayo::core::loadSubayaiMaterialPreset(expressionPath, schema));
+            } catch (const std::runtime_error&) {
+                threw = true;
+            }
+            ok &= check(threw, message);
+        };
+        expectInvalidPreset("IOR : 1.5\n", "Subayai rejects a short vector");
+        expectInvalidPreset("IOR : 1.5,0,123\n", "Subayai rejects a long vector");
+        expectInvalidPreset("IOR : 1.5,oops\n", "Subayai rejects invalid vector expressions");
+        expectInvalidPreset("Roughness : foo\n", "Subayai rejects arbitrary scalar text");
+        expectInvalidPreset("Roughness : 0.5wat\n", "Subayai rejects adjacent scalar text");
+        std::error_code cleanupError;
+        std::filesystem::remove(expressionPath, cleanupError);
+        std::filesystem::remove(schemaPath, cleanupError);
+        std::filesystem::remove(hairPath, cleanupError);
+        std::filesystem::remove(metalPath, cleanupError);
     }
 
     const auto path = std::filesystem::temp_directory_path() / "mikumikudesu-core-test.pmx";

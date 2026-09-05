@@ -110,7 +110,8 @@ struct EffectGraph {
 };
 
 using MaterialValue = std::variant<float, std::int32_t, bool, std::array<float, 2>, std::array<float, 3>,
-                                   std::array<float, 4>, std::filesystem::path>;
+                                   std::array<float, 4>, std::array<std::int32_t, 2>, std::array<std::int32_t, 3>,
+                                   std::array<std::int32_t, 4>, std::filesystem::path, std::string>;
 
 class MaterialParameterBlock {
   public:
