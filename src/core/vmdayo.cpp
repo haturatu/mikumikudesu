@@ -302,8 +302,7 @@ MotionDocument readSubset(BinaryReader& reader) {
             motion.externalParents.push_back({frame, reader.value<std::int32_t>("external parent model"),
                                               reader.text("external parent bone"), reader.text("external child bone")});
         }
-        if (parents == 0 || !key.visible || !key.states.empty())
-            motion.ik.push_back(std::move(key));
+        motion.ik.push_back(std::move(key));
     }
     for (std::int32_t i = 0, count = reader.count("gravity count"); i < count; ++i) {
         motion.gravity.push_back({static_cast<std::uint32_t>(reader.value<std::int32_t>("gravity frame")),
@@ -391,10 +390,15 @@ void writeSubset(BinaryWriter& writer, const MotionDocument& motion) {
     for (const auto frame : extraFrames) {
         const auto ik = std::ranges::find(motion.ik, frame, &VmdIkKey::frame);
         writer.value(static_cast<std::int32_t>(frame));
-        writer.value(static_cast<std::uint8_t>(ik == motion.ik.end() || ik->visible));
-        writer.value(static_cast<std::int32_t>(ik == motion.ik.end() ? 0 : ik->states.size()));
-        if (ik != motion.ik.end())
-            for (const auto& state : ik->states) {
+        const VmdIkKey* visibility = nullptr;
+        for (const auto& candidate : motion.ik)
+            if (candidate.frame <= frame && (visibility == nullptr || candidate.frame >= visibility->frame))
+                visibility = &candidate;
+        writer.value(static_cast<std::uint8_t>(visibility == nullptr || visibility->visible));
+        const auto* stateKey = ik == motion.ik.end() ? visibility : &*ik;
+        writer.value(static_cast<std::int32_t>(stateKey == nullptr ? 0 : stateKey->states.size()));
+        if (stateKey != nullptr)
+            for (const auto& state : stateKey->states) {
                 writer.text(state.name);
                 writer.value(static_cast<std::uint8_t>(state.enabled));
             }

@@ -662,6 +662,7 @@ int Application::runVideoExport() {
     request.includeAudio = audioSource.has_value();
     request.audioBitrate = options.audioBitrate;
     request.overwrite = options.overwrite;
+    request.audioStartSeconds = static_cast<double>(firstFrame) / sourceFps;
 
     core::VideoExporter exporter(request);
     if (audioSource) {
@@ -669,13 +670,15 @@ int Application::runVideoExport() {
         const auto maxSamples =
             static_cast<std::uint64_t>(std::ceil(static_cast<double>(frameCount) / options.fps * 48'000.0)) * 2U;
         std::uint64_t writtenSamples = 0;
-        media.streamAudio([&](std::span<const float> samples, std::uint32_t sampleRate, std::uint32_t channels) {
-            if (writtenSamples >= maxSamples)
-                return;
-            const auto count = std::min<std::uint64_t>(samples.size(), maxSamples - writtenSamples);
-            exporter.writeAudio(samples.first(static_cast<std::size_t>(count)), sampleRate, channels);
-            writtenSamples += count;
-        });
+        media.streamAudio(
+            [&](std::span<const float> samples, std::uint32_t sampleRate, std::uint32_t channels) {
+                if (writtenSamples >= maxSamples)
+                    return;
+                const auto count = std::min<std::uint64_t>(samples.size(), maxSamples - writtenSamples);
+                exporter.writeAudio(samples.first(static_cast<std::size_t>(count)), sampleRate, channels);
+                writtenSamples += count;
+            },
+            request.audioStartSeconds);
     }
 
     const auto sourceFrameDuration = static_cast<float>(1.0 / sourceFps);
@@ -2149,6 +2152,7 @@ void Application::buildVideoExportUi() {
                         if (request.includeAudio)
                             audioSource = audioSource_;
                         videoSourceFps_ = sceneTimelineFps(scene_);
+                        request.audioStartSeconds = static_cast<double>(videoFromFrame_) / videoSourceFps_;
                         videoOutputFrameCount_ =
                             videoOutputFrameCount(videoFromFrame_, videoToFrame_, videoSourceFps_, request.fps);
                         videoExportJob_.start(std::move(request), std::move(audioSource), videoOutputFrameCount_);
