@@ -1028,9 +1028,13 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         materials.reserve(materialCount);
         draws.reserve(materialCount);
     }
-    std::size_t materialCursor = 0;
-    std::uint32_t indexCursor = 0;
-    std::vector<graphics::PreviewBoneTransform> bones;
+    struct EvaluatedModel {
+        const core::ModelInstance* instance{};
+        bool gpuSkinning{};
+        core::AnimatedModelFrame frame;
+    };
+    std::vector<EvaluatedModel> evaluated;
+    evaluated.reserve(scene_.models().size());
     for (const auto& instance : scene_.models()) {
         if (!instance.visible || instance.model == nullptr || instance.animator == nullptr)
             continue;
@@ -1042,20 +1046,32 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             instance.physics->setGravityNoise(gravity.noiseAmplitude, gravity.noiseFrequency);
             instance.physics->setFloorCollision(gravity.floorCollision);
         }
-        const bool gpuSkinning = instance.softBody == nullptr || !instance.softBody->available();
-        core::AnimatedModelFrame frame;
-        {
-            auto animation = frameProfiler_.measure(core::ProfileSection::animation);
-            frame = instance.animator->evaluate(animationFrame_, deltaSeconds, gpuSkinning);
+        evaluated.push_back({&instance, instance.softBody == nullptr || !instance.softBody->available(), {}});
+    }
+    {
+        auto animation = frameProfiler_.measure(core::ProfileSection::animation);
+        taskScheduler_.parallelFor(evaluated.size(), [&](std::size_t index) {
+            auto& current = evaluated[index];
+            const auto& instance = *current.instance;
+            current.frame = instance.animator->evaluate(animationFrame_, deltaSeconds, current.gpuSkinning);
             if (instance.softBody != nullptr && instance.softBody->available()) {
+                const auto gravity = scene_.evaluatePhysicsSettings(animationFrame_);
                 instance.softBody->step(deltaSeconds, {gravity.gravityDirection[0] * gravity.gravity,
                                                        gravity.gravityDirection[1] * gravity.gravity,
                                                        gravity.gravityDirection[2] * gravity.gravity});
-                instance.softBody->apply(frame.vertices);
+                instance.softBody->apply(current.frame.vertices);
             }
-            core::normalizeForPreview(frame.vertices, instance.normalization);
-            animation.finish();
-        }
+            core::normalizeForPreview(current.frame.vertices, instance.normalization);
+        });
+        animation.finish();
+    }
+    std::size_t materialCursor = 0;
+    std::uint32_t indexCursor = 0;
+    std::vector<graphics::PreviewBoneTransform> bones;
+    for (const auto& evaluatedModel : evaluated) {
+        const auto& instance = *evaluatedModel.instance;
+        const auto& frame = evaluatedModel.frame;
+        const bool gpuSkinning = evaluatedModel.gpuSkinning;
         if (!frame.vertices.empty() && (initialUpload || static_cast<int>(animationFrame_) % 30 == 0)) {
             const auto& vertex = frame.vertices.front().position;
             log::debug("Animation sample: model=", instance.displayName, ", frame=", animationFrame_, ", vertex0=(",

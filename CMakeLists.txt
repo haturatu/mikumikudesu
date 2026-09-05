@@ -123,6 +123,7 @@ add_library(
   src/core/profiling.cpp
   src/core/project.cpp
   src/core/scene.cpp
+  src/core/task_scheduler.cpp
   src/core/vmdayo.cpp
 )
 target_include_directories(dayo_core PUBLIC src)
