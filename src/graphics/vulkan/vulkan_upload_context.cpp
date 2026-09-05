@@ -62,9 +62,10 @@ VulkanUploadContext::VulkanUploadContext(VkDevice device, VkPhysicalDevice physi
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             .commandPool = commandPool_,
             .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1,
+            .commandBufferCount = static_cast<std::uint32_t>(commandBuffers_.size()),
         };
-        check(vkAllocateCommandBuffers(device_, &commandInfo, &commandBuffer_), "allocate persistent upload command");
+        check(vkAllocateCommandBuffers(device_, &commandInfo, commandBuffers_.data()),
+              "allocate persistent upload commands");
     } catch (...) {
         if (commandPool_ != VK_NULL_HANDLE)
             vkDestroyCommandPool(device_, commandPool_, nullptr);
@@ -93,13 +94,20 @@ void VulkanUploadContext::begin() {
     if (pendingSignalValue_ != 0)
         throw std::logic_error("Vulkan upload command is already recording");
     reclaim();
+    batchIndex_ = (batchIndex_ + 1U) % commandBuffers_.size();
+    if (submittedValues_[batchIndex_] != 0) {
+        std::uint64_t completedValue = 0;
+        check(vkGetSemaphoreCounterValue(device_, timeline_, &completedValue), "query upload batch timeline");
+        if (completedValue < submittedValues_[batchIndex_])
+            wait(submittedValues_[batchIndex_]);
+    }
     pendingSignalValue_ = ++*nextTimelineValue_;
-    check(vkResetCommandBuffer(commandBuffer_, 0), "reset persistent upload command");
+    check(vkResetCommandBuffer(commandBuffers_[batchIndex_], 0), "reset persistent upload command");
     const VkCommandBufferBeginInfo beginInfo{
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
-    check(vkBeginCommandBuffer(commandBuffer_, &beginInfo), "begin persistent upload command");
+    check(vkBeginCommandBuffer(commandBuffers_[batchIndex_], &beginInfo), "begin persistent upload command");
 }
 
 VulkanUploadContext::Slice VulkanUploadContext::allocate(VkDeviceSize size, VkDeviceSize alignment) {
@@ -128,12 +136,13 @@ std::uint64_t VulkanUploadContext::submit() {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .pNext = &timelineSubmit,
         .commandBufferCount = 1,
-        .pCommandBuffers = &commandBuffer_,
+        .pCommandBuffers = &commandBuffers_[batchIndex_],
         .signalSemaphoreCount = 1,
         .pSignalSemaphores = &timeline_,
     };
     const auto signalValue = pendingSignalValue_;
     check(vkQueueSubmit(queue_, 1, &submitInfo, VK_NULL_HANDLE), "submit persistent upload command");
+    submittedValues_[batchIndex_] = signalValue;
     pendingSignalValue_ = 0;
     return signalValue;
 }

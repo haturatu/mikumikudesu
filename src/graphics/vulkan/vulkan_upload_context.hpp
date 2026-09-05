@@ -4,6 +4,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
@@ -29,7 +30,7 @@ class VulkanUploadContext final {
     void begin();
     [[nodiscard]] Slice allocate(VkDeviceSize size, VkDeviceSize alignment = 16);
     [[nodiscard]] VkCommandBuffer commandBuffer() const noexcept {
-        return commandBuffer_;
+        return commandBuffers_[batchIndex_];
     }
     [[nodiscard]] std::uint64_t submit();
     void wait(std::uint64_t value);
@@ -44,7 +45,10 @@ class VulkanUploadContext final {
     VkDeviceMemory stagingMemory_{};
     void* mapped_{};
     VkCommandPool commandPool_{};
-    VkCommandBuffer commandBuffer_{};
+    static constexpr std::size_t batchCount = 2;
+    std::array<VkCommandBuffer, batchCount> commandBuffers_{};
+    std::array<std::uint64_t, batchCount> submittedValues_{};
+    std::size_t batchIndex_{batchCount - 1};
     core::UploadRing ring_;
     std::uint64_t pendingSignalValue_{};
 };
