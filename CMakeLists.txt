@@ -123,6 +123,7 @@ add_library(
   src/core/profiling.cpp
   src/core/project.cpp
   src/core/scene.cpp
+  src/core/upload_ring.cpp
   src/core/task_scheduler.cpp
   src/core/subayai_hair.cpp
   src/core/subayai_material.cpp
@@ -428,6 +429,8 @@ if(BUILD_TESTING)
   add_test(NAME upstream_fetch COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/fetch_mikumikudayo_tests.py")
   add_executable(dayo_core_tests tests/core_tests.cpp)
   target_link_libraries(dayo_core_tests PRIVATE dayo_core)
+  add_executable(dayo_upload_ring_tests tests/upload_ring_tests.cpp)
+  target_link_libraries(dayo_upload_ring_tests PRIVATE dayo_core)
   add_executable(dayo_preview_tests tests/preview_render_tests.cpp)
   target_include_directories(dayo_preview_tests PRIVATE src)
   target_link_libraries(dayo_preview_tests PRIVATE dayo_platform dayo_graphics)
@@ -473,6 +476,7 @@ if(BUILD_TESTING)
   endif()
 
   add_test(NAME core COMMAND dayo_core_tests)
+  add_test(NAME upload_ring COMMAND dayo_upload_ring_tests)
   add_test(NAME upstream_compat COMMAND dayo_upstream_compat_tests)
   set_tests_properties(upstream_compat PROPERTIES LABELS "upstream" TIMEOUT 60)
   add_test(NAME vulkan_probe COMMAND mikumikudesu --probe --hidden)
@@ -506,6 +510,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_graphics
     mikumikudesu
     dayo_core_tests
+    dayo_upload_ring_tests
     dayo_preview_tests
     dayo_upstream_compat_tests
   )
@@ -516,6 +521,9 @@ if(DAYO_ENABLE_SANITIZERS)
   target_link_options(mikumikudesu PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   if(TARGET dayo_core_tests)
     target_link_options(dayo_core_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+  if(TARGET dayo_upload_ring_tests)
+    target_link_options(dayo_upload_ring_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
   if(TARGET dayo_preview_tests)
     target_link_options(dayo_preview_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
