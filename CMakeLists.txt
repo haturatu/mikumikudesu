@@ -348,7 +348,7 @@ elseif(DAYO_FETCH_DEPENDENCIES)
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
   FetchContent_MakeAvailable(jsonnet_source)
-  if(TEST regression_test)
+  if(BUILD_TESTING)
     set_property(TEST regression_test DIRECTORY "${jsonnet_source_SOURCE_DIR}/test_suite" PROPERTY DISABLED TRUE)
   endif()
   set(DAYO_JSONNET_TARGET libjsonnet_static)
