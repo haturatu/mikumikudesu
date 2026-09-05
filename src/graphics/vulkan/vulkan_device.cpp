@@ -1483,6 +1483,7 @@ void VulkanDevice::destroyFrames() {
         return;
     destroyPreviewMaterialBuffers();
     destroyPreviewMorphs();
+    destroyPreviewIndirectBuffers();
     for (auto& frame : frames_) {
         if (frame.timestampQueryPool != VK_NULL_HANDLE)
             vkDestroyQueryPool(device_, frame.timestampQueryPool, nullptr);
@@ -1643,7 +1644,7 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
         }
         return previewTextures_.empty() ? VK_NULL_HANDLE : previewTextures_.front().descriptor;
     };
-    const auto draw = [&](const PreviewDraw& item, VkPipeline pipeline) {
+    const auto draw = [&](const PreviewDraw& item, std::size_t drawIndex, VkPipeline pipeline) {
         if (item.materialIndex >= previewGpuScene_.materials.size() || item.indexCount == 0 ||
             item.firstIndex >= previewIndexCount_)
             return;
@@ -1659,7 +1660,13 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
         vkCmdPushConstants(command, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(drawConstants), &drawConstants);
         const auto count = std::min(item.indexCount, previewIndexCount_ - item.firstIndex);
-        vkCmdDrawIndexed(command, count, drawConstants.instanceCount, item.firstIndex, 0, 0);
+        if (frame.previewIndirectBuffer != VK_NULL_HANDLE && drawIndex < previewGpuScene_.draws.size()) {
+            vkCmdDrawIndexedIndirect(command, frame.previewIndirectBuffer,
+                                     static_cast<VkDeviceSize>(drawIndex) * sizeof(VkDrawIndexedIndirectCommand), 1,
+                                     sizeof(VkDrawIndexedIndirectCommand));
+        } else {
+            vkCmdDrawIndexed(command, count, drawConstants.instanceCount, item.firstIndex, 0, 0);
+        }
     };
 
     if (!plan.transparent) {
@@ -1676,13 +1683,13 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
     }
 
     // Original Preview.fxdayo draws all PMX materials in file order with the MMD blend/depth state.
-    for (const auto& item : previewGpuScene_.draws)
-        draw(item, transparentPipeline_);
+    for (std::size_t index = 0; index < previewGpuScene_.draws.size(); ++index)
+        draw(previewGpuScene_.draws[index], index, transparentPipeline_);
 
     if (!plan.edge)
         return;
-    for (const auto& item : previewGpuScene_.draws)
-        draw(item, edgePipeline_);
+    for (std::size_t index = 0; index < previewGpuScene_.draws.size(); ++index)
+        draw(previewGpuScene_.draws[index], index, edgePipeline_);
 }
 
 void VulkanDevice::renderFrame() {
@@ -1698,6 +1705,7 @@ void VulkanDevice::renderFrame() {
     synchronizePreviewBones(frame);
     synchronizePreviewMorphs(frame);
     synchronizePreviewMaterials(frame);
+    synchronizePreviewIndirect(frame);
     const VkBuffer previewVertexBuffer =
         previewStaticVertexBuffer_ != VK_NULL_HANDLE ? previewStaticVertexBuffer_ : frame.previewVertexBuffer;
 
@@ -2074,6 +2082,7 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     synchronizePreviewBones(frame);
     synchronizePreviewMorphs(frame);
     synchronizePreviewMaterials(frame);
+    synchronizePreviewIndirect(frame);
     const VkBuffer previewVertexBuffer =
         previewStaticVertexBuffer_ != VK_NULL_HANDLE ? previewStaticVertexBuffer_ : frame.previewVertexBuffer;
     check(vkResetFences(device_, 1, &frame.inFlight), "reset offscreen fence");
@@ -2568,6 +2577,39 @@ void VulkanDevice::synchronizePreviewMaterials(Frame& frame) {
     std::memcpy(frame.mappedPreviewMaterials, latest->mappedPreviewMaterials,
                 static_cast<std::size_t>(previewMaterialSize_));
     frame.previewMaterialGeneration = previewMaterialGeneration_;
+}
+
+void VulkanDevice::destroyPreviewIndirectBuffers() {
+    for (auto& frame : frames_) {
+        if (frame.mappedPreviewIndirect != nullptr)
+            vkUnmapMemory(device_, frame.previewIndirectMemory);
+        if (frame.previewIndirectBuffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, frame.previewIndirectBuffer, nullptr);
+        if (frame.previewIndirectMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, frame.previewIndirectMemory, nullptr);
+        frame.previewIndirectBuffer = VK_NULL_HANDLE;
+        frame.previewIndirectMemory = VK_NULL_HANDLE;
+        frame.mappedPreviewIndirect = nullptr;
+        frame.previewIndirectGeneration = 0;
+    }
+    previewIndirectSize_ = 0;
+    previewIndirectCapacity_ = 0;
+    previewIndirectGeneration_ = 0;
+}
+
+void VulkanDevice::synchronizePreviewIndirect(Frame& frame) {
+    if (frame.previewIndirectGeneration == previewIndirectGeneration_ || previewIndirectSize_ == 0)
+        return;
+    const auto latest = std::find_if(frames_.begin(), frames_.end(), [this](const Frame& candidate) {
+        return candidate.previewIndirectGeneration == previewIndirectGeneration_;
+    });
+    if (latest == frames_.end() || latest->mappedPreviewIndirect == nullptr)
+        return;
+    check(vkWaitForFences(device_, 1, &latest->inFlight, VK_TRUE, UINT64_MAX),
+          "wait for latest preview indirect commands");
+    std::memcpy(frame.mappedPreviewIndirect, latest->mappedPreviewIndirect,
+                static_cast<std::size_t>(previewIndirectSize_));
+    frame.previewIndirectGeneration = previewIndirectGeneration_;
 }
 
 void VulkanDevice::destroyPreviewMaterialDescriptors() {
@@ -3098,6 +3140,46 @@ void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> mater
 
 void VulkanDevice::updatePreviewDraws(std::span<const PreviewDraw> draws) {
     previewGpuScene_.draws.assign(draws.begin(), draws.end());
+    previewIndirectCommands_.resize(draws.size());
+    for (std::size_t index = 0; index < draws.size(); ++index) {
+        const auto& draw = draws[index];
+        previewIndirectCommands_[index] = {
+            .indexCount = draw.firstIndex >= previewIndexCount_
+                              ? 0U
+                              : std::min(draw.indexCount, previewIndexCount_ - draw.firstIndex),
+            .instanceCount = std::max(draw.instanceCount, 1U),
+            .firstIndex = draw.firstIndex,
+            .vertexOffset = 0,
+            .firstInstance = 0,
+        };
+    }
+    if (previewIndirectCommands_.empty()) {
+        previewIndirectSize_ = 0;
+        return;
+    }
+    const auto byteSize =
+        static_cast<VkDeviceSize>(previewIndirectCommands_.size() * sizeof(VkDrawIndexedIndirectCommand));
+    if (byteSize > previewIndirectCapacity_ || frames_.front().previewIndirectBuffer == VK_NULL_HANDLE) {
+        waitIdle();
+        destroyPreviewIndirectBuffers();
+        previewIndirectSize_ = byteSize;
+        previewIndirectCapacity_ = growPreviewCapacity(byteSize);
+        ++previewIndirectGeneration_;
+        for (auto& frame : frames_) {
+            uploadPreviewBuffer(previewIndirectCommands_.data(), byteSize, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                                frame.previewIndirectBuffer, frame.previewIndirectMemory, previewIndirectCapacity_);
+            check(vkMapMemory(device_, frame.previewIndirectMemory, 0, byteSize, 0, &frame.mappedPreviewIndirect),
+                  "persistently map preview indirect commands");
+            frame.previewIndirectGeneration = previewIndirectGeneration_;
+        }
+        return;
+    }
+    previewIndirectSize_ = byteSize;
+    auto& frame = frames_[frameIndex_];
+    check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for preview indirect frame");
+    std::memcpy(frame.mappedPreviewIndirect, previewIndirectCommands_.data(),
+                static_cast<std::size_t>(previewIndirectSize_));
+    frame.previewIndirectGeneration = ++previewIndirectGeneration_;
 }
 
 void VulkanDevice::uploadPreviewTextures(std::span<const PreviewTexture> textures) {

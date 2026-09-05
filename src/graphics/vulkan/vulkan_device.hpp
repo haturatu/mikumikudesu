@@ -95,6 +95,10 @@ class VulkanDevice final : public Device {
         void* mappedPreviewMaterials{};
         VkDescriptorSet previewMaterialDescriptor{};
         std::uint64_t previewMaterialGeneration{};
+        VkBuffer previewIndirectBuffer{};
+        VkDeviceMemory previewIndirectMemory{};
+        void* mappedPreviewIndirect{};
+        std::uint64_t previewIndirectGeneration{};
     };
 
     struct DepthResource {
@@ -167,6 +171,8 @@ class VulkanDevice final : public Device {
     void synchronizePreviewMaterials(Frame& frame);
     void destroyPreviewMaterialDescriptors();
     void refreshPreviewMaterialDescriptors(bool waitForGpu = true);
+    void destroyPreviewIndirectBuffers();
+    void synchronizePreviewIndirect(Frame& frame);
     void destroyPreviewBindlessDescriptor();
     void refreshPreviewBindlessDescriptor();
     [[nodiscard]] PreviewRenderPlan buildPreviewRenderPlan(bool includeUi) const noexcept;
@@ -248,6 +254,9 @@ class VulkanDevice final : public Device {
     VkDeviceSize previewMaterialSize_{};
     VkDeviceSize previewMaterialCapacity_{};
     std::uint64_t previewMaterialGeneration_{};
+    VkDeviceSize previewIndirectSize_{};
+    VkDeviceSize previewIndirectCapacity_{};
+    std::uint64_t previewIndirectGeneration_{};
     VkBuffer previewIndexBuffer_{};
     VkDeviceMemory previewIndexMemory_{};
     std::uint32_t previewIndexCount_{};
@@ -255,6 +264,7 @@ class VulkanDevice final : public Device {
     std::vector<PreviewTextureResource> previewTextures_;
     std::vector<VkDescriptorSet> previewMaterialDescriptors_;
     std::vector<std::array<std::uint32_t, 3>> previewMaterialDescriptorKeys_;
+    std::vector<VkDrawIndexedIndirectCommand> previewIndirectCommands_;
     VkBuffer previewBackgroundVertexBuffer_{};
     VkDeviceMemory previewBackgroundVertexMemory_{};
     VkBuffer previewBackgroundIndexBuffer_{};
