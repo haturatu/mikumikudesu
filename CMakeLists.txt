@@ -98,6 +98,7 @@ add_library(
   src/core/audio_export.cpp
   src/core/video_export.cpp
   src/core/media.cpp
+  src/core/mapped_file.cpp
   src/core/model_probe.cpp
   src/core/motion.cpp
   src/core/editor.cpp
