@@ -2057,6 +2057,9 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     const VkExtent2D extent{target.width, target.height};
     auto& frame = frames_[frameIndex_];
     check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for offscreen frame slot");
+    const auto uploadWaitValue = uploadContext_->lastSubmittedValue();
+    if (uploadWaitValue != 0)
+        uploadContext_->wait(uploadWaitValue);
     if (offscreen_.colorImage != VK_NULL_HANDLE &&
         (offscreen_.extent.width != extent.width || offscreen_.extent.height != extent.height)) {
         // The offscreen image is shared by the bounded readback path. A size
@@ -2240,7 +2243,6 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
                            offscreen_.stagingBuffer, 1, &copy);
     offscreen_.colorInitialized = true;
     check(vkEndCommandBuffer(frame.commandBuffer), "end offscreen command buffer");
-    const auto uploadWaitValue = uploadContext_->lastSubmittedValue();
     const std::uint64_t signalValue = ++nextTimelineValue_;
     const VkPipelineStageFlags uploadWaitStage = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
     const VkTimelineSemaphoreSubmitInfo timelineSubmit{
