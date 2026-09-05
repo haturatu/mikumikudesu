@@ -101,6 +101,16 @@ PhysicsTransform transform(const btTransform& value) {
 #endif
 
 MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) {
+    const auto finiteValues = [](const auto& values) {
+        return std::ranges::all_of(values, [](const float value) { return std::isfinite(value); });
+    };
+    for (const auto& source : model.rigidBodies) {
+        if (!finiteValues(source.size) || !finiteValues(source.position) || !finiteValues(source.rotation) ||
+            !std::isfinite(source.mass) || !std::isfinite(source.linearDamping) ||
+            !std::isfinite(source.angularDamping) || !std::isfinite(source.restitution) ||
+            !std::isfinite(source.friction))
+            throw std::runtime_error("PMX rigid body contains a non-finite numeric value");
+    }
 #if DAYO_HAS_BULLET
     impl_->collisionConfiguration = std::make_unique<btDefaultCollisionConfiguration>();
     impl_->dispatcher = std::make_unique<btCollisionDispatcher>(impl_->collisionConfiguration.get());
