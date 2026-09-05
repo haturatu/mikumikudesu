@@ -37,7 +37,8 @@
         "CMAKE_BUILD_TYPE": "Release",
         "DAYO_BACKEND": "VULKAN",
         "DAYO_ENABLE_IMGUI": "OFF",
-        "DAYO_FETCH_DEPENDENCIES": "OFF"
+        "DAYO_FETCH_DEPENDENCIES": "OFF",
+        "DAYO_ENABLE_VMA": "OFF"
       }
     },
     {
