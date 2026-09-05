@@ -278,6 +278,18 @@ bool Scene::setCloneCount(ModelId id, std::uint32_t cloneCount) noexcept {
     return true;
 }
 
+std::size_t Scene::materialBase(ModelId id) const noexcept {
+    std::size_t base = 0;
+    for (const auto& instance : models_) {
+        if (instance.id == id)
+            break;
+        if (!instance.visible || instance.model == nullptr || instance.animator == nullptr)
+            continue;
+        base += instance.model->materials.size();
+    }
+    return base;
+}
+
 void Scene::setBackgroundScreenSource(ScreenTextureSource source) noexcept {
     if (background_.screenSource == source)
         return;

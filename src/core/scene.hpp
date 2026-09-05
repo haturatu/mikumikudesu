@@ -159,6 +159,7 @@ class Scene {
     void setPhysicsSettings(PhysicsSettings settings) noexcept;
     bool setModelVisible(ModelId id, bool visible) noexcept;
     bool setCloneCount(ModelId id, std::uint32_t cloneCount) noexcept;
+    [[nodiscard]] std::size_t materialBase(ModelId id) const noexcept;
     void setBackgroundScreenSource(ScreenTextureSource source) noexcept;
     void setBackgroundEnabled(bool enabled) noexcept;
     void setBackgroundCrop(ScreenCropMode crop) noexcept;

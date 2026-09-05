@@ -543,12 +543,16 @@ int main() {
         const auto initialTopologyGeneration = scene.topologyGeneration();
         const auto firstModel = scene.addModel(path);
         const auto secondModel = scene.addModel(path);
+        scene.model(firstModel)->model->materials.resize(2);
+        scene.model(secondModel)->model->materials.resize(2);
         ok &= check(scene.models().size() == 2 && scene.selectedModel() != nullptr, "multi-model scene instances");
         const auto modelTopologyGeneration = scene.topologyGeneration();
         ok &= check(modelTopologyGeneration > initialTopologyGeneration && scene.setModelVisible(firstModel, false) &&
-                        scene.setCloneCount(firstModel, 2) && scene.topologyGeneration() == modelTopologyGeneration + 2,
+                        scene.setCloneCount(firstModel, 3) && scene.topologyGeneration() == modelTopologyGeneration + 2,
                     "scene topology generation tracks visibility and clone changes");
         static_cast<void>(scene.setModelVisible(firstModel, true));
+        ok &= check(scene.materialBase(secondModel) == 2,
+                    "material inspector base ignores instanced clones from preceding models");
         dayo::core::VmdMotion shortMotion;
         shortMotion.morphs.push_back({"smile", 20, 1.0F});
         scene.attachMotion(std::move(shortMotion), firstModel);

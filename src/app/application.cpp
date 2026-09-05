@@ -1961,13 +1961,7 @@ void Application::buildEditorUi() {
         bool previewChanged = false;
         previewChanged |= ImGui::Checkbox("Optional PMX outline", &previewOutlineEnabled_);
         if (model != nullptr && !model->model->materials.empty()) {
-            std::int32_t materialBase = 0;
-            for (const auto& candidate : scene_.models()) {
-                if (candidate.id == model->id)
-                    break;
-                materialBase +=
-                    static_cast<std::int32_t>(candidate.model->materials.size() * std::max(candidate.cloneCount, 1U));
-            }
+            const auto materialBase = static_cast<std::int32_t>(scene_.materialBase(model->id));
             const auto localCount = static_cast<int>(model->model->materials.size());
             int localMaterial =
                 previewDebugMaterial_ >= materialBase && previewDebugMaterial_ < materialBase + localCount
