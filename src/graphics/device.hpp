@@ -148,8 +148,9 @@ struct PreviewMaterialGpu {
     float edgeSize{};
     std::uint32_t flags{};
     std::uint32_t reserved[2]{};
+    std::uint32_t textureSlots[4]{};
 };
-static_assert(sizeof(PreviewMaterialGpu) == 176);
+static_assert(sizeof(PreviewMaterialGpu) == 192);
 
 struct PreviewTexture {
     std::uint32_t width{};

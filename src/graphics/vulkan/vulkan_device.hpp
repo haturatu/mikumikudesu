@@ -148,6 +148,8 @@ class VulkanDevice final : public Device {
     void synchronizePreviewMaterials(Frame& frame);
     void destroyPreviewMaterialDescriptors();
     void refreshPreviewMaterialDescriptors();
+    void destroyPreviewBindlessDescriptor();
+    void refreshPreviewBindlessDescriptor();
     void recordPreviewModel(VkCommandBuffer command, const PreviewPushConstants& constants);
     void uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer,
                              VkDeviceMemory& memory);
@@ -186,9 +188,13 @@ class VulkanDevice final : public Device {
     VkDescriptorSetLayout previewDescriptorSetLayout_{};
     VkDescriptorSetLayout previewSkinningDescriptorSetLayout_{};
     VkDescriptorSetLayout previewMaterialDescriptorSetLayout_{};
+    VkDescriptorSetLayout previewBindlessDescriptorSetLayout_{};
     VkDescriptorPool previewDescriptorPool_{};
     VkSampler previewSampler_{};
     VkSampler previewClampSampler_{};
+    VkDescriptorSet previewBindlessDescriptor_{};
+    std::uint32_t previewBindlessTextureCapacity_{};
+    bool previewBindlessSupported_{};
 #if DAYO_HAS_IMGUI
     VkDescriptorPool imguiDescriptorPool_{};
     bool uiInitialized_{};
