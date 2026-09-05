@@ -380,24 +380,16 @@ if(DAYO_ENABLE_BOLT)
   add_custom_command(
     TARGET mikumikudesu
     POST_BUILD
-    COMMAND "${DAYO_BOLT_EXECUTABLE}" "$<TARGET_FILE:mikumikudesu>"
-            -o "$<TARGET_FILE_DIR:mikumikudesu>/mikumikudesu.bolt"
-            -data "${DAYO_BOLT_PROFILE}"
-            -reorder-blocks=ext-tsp
-            -reorder-functions=hfsort+
-            -split-functions
-            -split-all-cold
+    COMMAND
+      "${DAYO_BOLT_EXECUTABLE}" "$<TARGET_FILE:mikumikudesu>" -o "$<TARGET_FILE_DIR:mikumikudesu>/mikumikudesu.bolt"
+      -data "${DAYO_BOLT_PROFILE}" -reorder-blocks=ext-tsp -reorder-functions=hfsort+ -split-functions -split-all-cold
     VERBATIM
     COMMENT "Optimizing mikumikudesu with LLVM BOLT"
   )
 endif()
 
 if(DAYO_ENABLE_BOLT)
-  install(
-    PROGRAMS "$<TARGET_FILE_DIR:mikumikudesu>/mikumikudesu.bolt"
-    DESTINATION bin
-    RENAME mikumikudesu
-  )
+  install(PROGRAMS "$<TARGET_FILE_DIR:mikumikudesu>/mikumikudesu.bolt" DESTINATION bin RENAME mikumikudesu)
 else()
   install(TARGETS mikumikudesu RUNTIME DESTINATION bin)
 endif()
