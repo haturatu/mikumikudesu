@@ -1,5 +1,6 @@
 #include "core/mapped_file.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <limits>
 #include <stdexcept>
@@ -57,6 +58,13 @@ std::size_t MappedFileStream::Buffer::size() const noexcept {
     return mapped_ != nullptr ? mappedSize_ : fallback_.size();
 }
 
+std::size_t MappedFileStream::Buffer::remaining() const noexcept {
+    if (eback() == nullptr || gptr() == nullptr)
+        return size();
+    const auto position = static_cast<std::size_t>(gptr() - eback());
+    return std::min(position, size()) < size() ? size() - position : 0;
+}
+
 MappedFileStream::Buffer::pos_type MappedFileStream::Buffer::seekoff(off_type off, std::ios_base::seekdir way,
                                                                      std::ios_base::openmode which) {
     if (which != std::ios_base::in || size() > static_cast<std::size_t>(std::numeric_limits<off_type>::max()))
@@ -111,5 +119,9 @@ MappedFileStream::MappedFileStream(const std::filesystem::path& path) : std::ist
 }
 
 MappedFileStream::~MappedFileStream() = default;
+
+std::size_t MappedFileStream::remaining() const noexcept {
+    return buffer_.remaining();
+}
 
 } // namespace dayo::core

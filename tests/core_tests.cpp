@@ -74,6 +74,76 @@ int main() {
         ok &= check(input && value == 'f', "mapped stream supports end-relative seek");
         std::filesystem::remove(path);
     }
+    {
+        const auto vmdPath = std::filesystem::temp_directory_path() / "mikumikudesu-vmd-budget-test.vmd";
+        {
+            std::ofstream output(vmdPath, std::ios::binary | std::ios::trunc);
+            std::array<char, 30> header{};
+            constexpr std::string_view signature = "Vocaloid Motion Data 0002";
+            std::copy(signature.begin(), signature.end(), header.begin());
+            output.write(header.data(), static_cast<std::streamsize>(header.size()));
+            std::array<char, 20> modelName{};
+            output.write(modelName.data(), static_cast<std::streamsize>(modelName.size()));
+            append(output, std::uint32_t{70'000'000});
+        }
+        bool rejectedVmdCount = false;
+        try {
+            static_cast<void>(dayo::core::loadVmd(vmdPath));
+        } catch (const std::runtime_error&) {
+            rejectedVmdCount = true;
+        }
+        ok &= check(rejectedVmdCount, "VMD rejects a huge count before allocation");
+        std::filesystem::remove(vmdPath);
+
+        const auto pmxPath = std::filesystem::temp_directory_path() / "mikumikudesu-pmx-budget-test.pmx";
+        {
+            std::ofstream output(pmxPath, std::ios::binary | std::ios::trunc);
+            output.write("PMX ", 4);
+            append(output, 2.0F);
+            append(output, std::uint8_t{8});
+            const std::array<std::uint8_t, 8> settings{1, 0, 1, 1, 1, 1, 1, 1};
+            output.write(reinterpret_cast<const char*>(settings.data()), static_cast<std::streamsize>(settings.size()));
+            for (int i = 0; i < 4; ++i)
+                append(output, std::int32_t{0});
+            append(output, std::int32_t{100'000'000});
+        }
+        bool rejectedPmxCount = false;
+        try {
+            static_cast<void>(dayo::core::loadPmxModel(pmxPath));
+        } catch (const std::runtime_error&) {
+            rejectedPmxCount = true;
+        }
+        ok &= check(rejectedPmxCount, "PMX rejects a huge count before allocation");
+        std::filesystem::remove(pmxPath);
+
+        const auto ddsPath = std::filesystem::temp_directory_path() / "mikumikudesu-dds-budget-test.dds";
+        {
+            std::array<std::uint8_t, 128> header{};
+            const auto put32 = [&](std::size_t offset, std::uint32_t value) {
+                header[offset] = static_cast<std::uint8_t>(value);
+                header[offset + 1] = static_cast<std::uint8_t>(value >> 8U);
+                header[offset + 2] = static_cast<std::uint8_t>(value >> 16U);
+                header[offset + 3] = static_cast<std::uint8_t>(value >> 24U);
+            };
+            std::copy_n("DDS ", 4, header.begin());
+            put32(4, 124);
+            put32(12, 8192);
+            put32(16, 8192);
+            put32(76, 32);
+            put32(80, 0x40);
+            put32(88, 32);
+            std::ofstream output(ddsPath, std::ios::binary | std::ios::trunc);
+            output.write(reinterpret_cast<const char*>(header.data()), static_cast<std::streamsize>(header.size()));
+        }
+        bool rejectedDdsPayload = false;
+        try {
+            static_cast<void>(dayo::core::loadImageRgba8(ddsPath));
+        } catch (const std::runtime_error&) {
+            rejectedDdsPayload = true;
+        }
+        ok &= check(rejectedDdsPayload, "DDS validates payload size before allocation");
+        std::filesystem::remove(ddsPath);
+    }
     ok &= check(dayo::core::classifyAsset("Miku.PMX") == AssetKind::pmx, "PMX extension");
     ok &= check(dayo::core::classifyAsset("motion.vmd") == AssetKind::vmd, "VMD extension");
     ok &= check(dayo::core::classifyAsset("sound.M4A") == AssetKind::audio, "audio extension");
