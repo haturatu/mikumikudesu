@@ -18,17 +18,34 @@ import zipfile
 
 
 LOCK_KEYS = ("VERSION", "ARCHIVE", "URL", "SHA256")
+MANIFEST_FILE = Path(__file__).resolve().parents[1] / "deps/mikumikudayo-runtime.manifest"
+# Essential entry points within the packaged directories.
 REQUIRED_PATHS = (
-    "hlsl",
-    "renderer",
     "renderer/Preview.fxdayo",
     "renderer/Subayai.fxdayo",
     "renderer/BDPT.fxdayo",
     "licence/MikuMikuDayo.txt",
     "res/dayoicon.png",
     "particle/Smoke.dds",
-    "sample",
 )
+
+
+def runtime_paths() -> tuple[str, ...]:
+    paths = tuple(
+        line.strip() for line in MANIFEST_FILE.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    )
+    if not paths:
+        raise RuntimeError("runtime manifest is empty")
+    for path in paths:
+        if (
+            path.startswith("/")
+            or "\\" in path
+            or ":" in path
+            or any(part in {"", ".", ".."} for part in path.rstrip("/").split("/"))
+        ):
+            raise RuntimeError(f"unsafe runtime manifest path: {path}")
+    return paths
 
 
 def log(level: str, message: str) -> None:
@@ -157,7 +174,12 @@ def extract_archive(archive: Path, staging_dir: Path) -> Path:
 
 
 def validate_installation(install_dir: Path) -> None:
-    missing = [path for path in REQUIRED_PATHS if not (install_dir / path).exists()]
+    missing = [
+        path
+        for path in runtime_paths()
+        if not ((install_dir / path).is_dir() if path.endswith("/") else (install_dir / path).is_file())
+    ]
+    missing.extend(path for path in REQUIRED_PATHS if not (install_dir / path).is_file())
     if missing:
         raise RuntimeError(f"archive is missing required paths: {', '.join(missing)}")
 
@@ -171,10 +193,11 @@ def is_current_installation(install_dir: Path, lock: dict[str, str]) -> bool:
     if not install_dir.is_dir() or not marker.is_file():
         return False
     try:
-        return marker.read_text(encoding="utf-8") == marker_contents(lock) and all(
-            (install_dir / path).exists() for path in REQUIRED_PATHS
-        )
-    except OSError:
+        if marker.read_text(encoding="utf-8") != marker_contents(lock):
+            return False
+        validate_installation(install_dir)
+        return True
+    except (OSError, RuntimeError):
         return False
 
 

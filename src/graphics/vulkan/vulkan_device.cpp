@@ -604,10 +604,9 @@ void VulkanDevice::createPipeline() {
         VkVertexInputAttributeDescription{6, 0, VK_FORMAT_R32_UINT, offsetof(PreviewVertex, gpuSkinning)},
         VkVertexInputAttributeDescription{7, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(PreviewVertex, sdefC)},
         VkVertexInputAttributeDescription{8, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(PreviewVertex, sdefHalfDelta)},
-        VkVertexInputAttributeDescription{9, 0, VK_FORMAT_R32_SFLOAT, offsetof(PreviewVertex, cloneOffset)},
-        VkVertexInputAttributeDescription{10, 0, VK_FORMAT_R32_SFLOAT, offsetof(PreviewVertex, edgeScale)},
-        VkVertexInputAttributeDescription{11, 0, VK_FORMAT_R32_UINT, offsetof(PreviewVertex, morphStart)},
-        VkVertexInputAttributeDescription{12, 0, VK_FORMAT_R32_UINT, offsetof(PreviewVertex, morphCount)},
+        VkVertexInputAttributeDescription{9, 0, VK_FORMAT_R32_SFLOAT, offsetof(PreviewVertex, edgeScale)},
+        VkVertexInputAttributeDescription{10, 0, VK_FORMAT_R32_UINT, offsetof(PreviewVertex, morphStart)},
+        VkVertexInputAttributeDescription{11, 0, VK_FORMAT_R32_UINT, offsetof(PreviewVertex, morphCount)},
     };
     const VkPipelineVertexInputStateCreateInfo vertexInput{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
@@ -1493,13 +1492,16 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
         const auto descriptor = textureDescriptor(item.materialIndex);
         if (descriptor == VK_NULL_HANDLE)
             return;
+        auto drawConstants = constants;
+        drawConstants.materialIndex = item.materialIndex;
+        drawConstants.instanceCount = std::max(item.instanceCount, 1U);
         vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1, &descriptor, 0,
                                 nullptr);
         vkCmdPushConstants(command, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                           sizeof(constants), &constants);
+                           sizeof(drawConstants), &drawConstants);
         const auto count = std::min(item.indexCount, previewIndexCount_ - item.firstIndex);
-        vkCmdDrawIndexed(command, count, 1, item.firstIndex, 0, item.materialIndex);
+        vkCmdDrawIndexed(command, count, drawConstants.instanceCount, item.firstIndex, 0, 0);
     };
 
     if (previewMaterials_.empty() || previewDraws_.empty()) {

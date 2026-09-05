@@ -222,6 +222,47 @@ bool singleSidedMaterialsUseClockwiseFrontFaces(dayo::graphics::VulkanDevice& de
     return frontVisible && backDiscarded;
 }
 
+bool cloneDrawUsesInstanceCount(dayo::graphics::VulkanDevice& device) {
+    dayo::graphics::PreviewScene scene;
+    scene.cameraDistance = 5.0F;
+    scene.backgroundEnabled = false;
+    device.updatePreviewScene(scene);
+
+    std::array<PreviewVertex, 3> vertices{};
+    const std::array positions{
+        Float3{-0.35F, -0.35F, 0.0F},
+        Float3{0.35F, -0.35F, 0.0F},
+        Float3{0.0F, 0.35F, 0.0F},
+    };
+    for (std::size_t index = 0; index < vertices.size(); ++index) {
+        std::copy(positions[index].begin(), positions[index].end(), vertices[index].position);
+        vertices[index].normal[2] = 1.0F;
+    }
+    const std::array<std::uint32_t, 3> indices{0, 2, 1};
+    const std::array<std::uint8_t, 4> red{255, 0, 0, 255};
+    const std::array<PreviewTexture, 1> textures{{
+        {1, 1, std::span<const std::uint8_t>(red), false},
+    }};
+    std::array<PreviewMaterial, 1> materials{};
+    materials[0].textureSlot = 1;
+    std::array<PreviewDraw, 1> draws{{{0, 3, 0, 1}}};
+
+    device.uploadPreviewTextures(textures);
+    device.uploadPreviewMesh(vertices, indices);
+    device.updatePreviewMaterials(materials);
+    device.updatePreviewDraws(draws);
+    const auto singleImage = device.renderToImage({96, 64});
+    draws[0].instanceCount = 2;
+    device.updatePreviewDraws(draws);
+    const auto cloneImage = device.renderToImage({96, 64});
+    std::size_t differentPixels = 0;
+    for (std::size_t index = 0; index < singleImage.pixels.size(); ++index) {
+        if (singleImage.pixels[index] != cloneImage.pixels[index])
+            ++differentPixels;
+    }
+    return differentPixels > 64;
+}
+
 bool runCase(dayo::graphics::VulkanDevice& device, PreviewSkinningType type) {
     const auto bones = makeBones();
     const auto gpuVertices = makeVertices(type, false);
@@ -255,6 +296,10 @@ int main() {
         }
         if (!singleSidedMaterialsUseClockwiseFrontFaces(device)) {
             std::cerr << "FAIL: single-sided preview materials used the wrong front-face winding\n";
+            return 1;
+        }
+        if (!cloneDrawUsesInstanceCount(device)) {
+            std::cerr << "FAIL: preview clone draw did not use instancing\n";
             return 1;
         }
     } catch (const std::exception& exception) {

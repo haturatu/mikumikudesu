@@ -3,6 +3,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
@@ -14,6 +15,15 @@
 #include <thread>
 
 namespace dayo::core {
+
+namespace {
+
+OutputSettings normalizeSettings(OutputSettings settings) {
+    settings.maxPendingFrames = std::max(settings.maxPendingFrames, 1U);
+    return settings;
+}
+
+} // namespace
 
 std::filesystem::path outputPath(const OutputSettings& settings, std::uint32_t frame) {
     char name[256]{};
@@ -52,7 +62,8 @@ struct OutputWorker {
         std::uint32_t frame;
         ImageRgba8 image;
     };
-    explicit OutputWorker(OutputSettings value) : settings(std::move(value)), thread([this] { run(); }) {}
+    explicit OutputWorker(OutputSettings value)
+        : settings(normalizeSettings(std::move(value))), thread([this] { run(); }) {}
     ~OutputWorker() {
         close();
     }
@@ -67,6 +78,7 @@ struct OutputWorker {
                         return;
                     item = std::move(queue.front());
                     queue.pop();
+                    condition.notify_all();
                 }
                 writeFrame(outputPath(settings, item.frame), item.image, settings.format);
                 count.fetch_add(1, std::memory_order_relaxed);
@@ -83,12 +95,12 @@ struct OutputWorker {
         }
     }
     void push(Item item) {
-        {
-            std::lock_guard lock(mutex);
-            if (done)
-                throw std::runtime_error("output queue is closed");
-            queue.push(std::move(item));
-        }
+        std::unique_lock lock(mutex);
+        condition.wait(lock, [this] { return done || queue.size() < settings.maxPendingFrames; });
+        if (done)
+            throw std::runtime_error("output queue is closed");
+        queue.push(std::move(item));
+        lock.unlock();
         condition.notify_one();
     }
     void close() {
