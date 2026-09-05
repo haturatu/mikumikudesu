@@ -1091,32 +1091,42 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         }
         std::pmr::vector<std::array<std::uint32_t, 2>> sourceMorphRanges(scratch);
         if (rebuildTopology) {
-            std::pmr::vector<std::pmr::vector<graphics::PreviewMorphDelta>> perVertex(scratch);
-            perVertex.reserve(instance.model->vertices.size());
-            for (std::size_t vertexIndex = 0; vertexIndex < instance.model->vertices.size(); ++vertexIndex)
-                perVertex.emplace_back(std::pmr::polymorphic_allocator<graphics::PreviewMorphDelta>{scratch});
+            std::pmr::vector<std::uint32_t> morphCounts(scratch);
+            std::pmr::vector<std::uint32_t> morphCursors(scratch);
+            morphCounts.assign(instance.model->vertices.size(), 0U);
             for (std::size_t morphIndex = 0; morphIndex < instance.model->morphs.size(); ++morphIndex) {
                 const auto& morph = instance.model->morphs[morphIndex];
                 if (morph.type != 1)
                     continue;
                 for (const auto& offset : morph.offsets) {
-                    if (offset.index < 0 || static_cast<std::size_t>(offset.index) >= perVertex.size())
+                    if (offset.index < 0 || static_cast<std::size_t>(offset.index) >= morphCounts.size())
+                        continue;
+                    ++morphCounts[static_cast<std::size_t>(offset.index)];
+                }
+            }
+            sourceMorphRanges.resize(morphCounts.size());
+            morphCursors.resize(morphCounts.size());
+            const auto deltaBase = static_cast<std::uint32_t>(morphDeltas.size());
+            std::uint32_t deltaOffset = deltaBase;
+            for (std::size_t vertexIndex = 0; vertexIndex < morphCounts.size(); ++vertexIndex) {
+                sourceMorphRanges[vertexIndex] = {deltaOffset, morphCounts[vertexIndex]};
+                morphCursors[vertexIndex] = deltaOffset;
+                deltaOffset += morphCounts[vertexIndex];
+            }
+            morphDeltas.resize(deltaOffset);
+            for (std::size_t morphIndex = 0; morphIndex < instance.model->morphs.size(); ++morphIndex) {
+                const auto& morph = instance.model->morphs[morphIndex];
+                if (morph.type != 1)
+                    continue;
+                for (const auto& offset : morph.offsets) {
+                    if (offset.index < 0 || static_cast<std::size_t>(offset.index) >= morphCursors.size())
                         continue;
                     graphics::PreviewMorphDelta delta;
                     for (std::size_t axis = 0; axis < 3; ++axis)
                         delta.delta[axis] = offset.vector3[axis] * instance.normalization.scale;
                     delta.morphIndex = morphWeightBase + static_cast<std::uint32_t>(morphIndex);
-                    perVertex[static_cast<std::size_t>(offset.index)].push_back(delta);
+                    morphDeltas[morphCursors[static_cast<std::size_t>(offset.index)]++] = delta;
                 }
-            }
-            sourceMorphRanges.resize(perVertex.size());
-            for (std::size_t vertexIndex = 0; vertexIndex < perVertex.size(); ++vertexIndex) {
-                const auto start = static_cast<std::uint32_t>(morphDeltas.size());
-                morphDeltas.insert(morphDeltas.end(), perVertex[vertexIndex].begin(), perVertex[vertexIndex].end());
-                sourceMorphRanges[vertexIndex] = {
-                    start,
-                    static_cast<std::uint32_t>(perVertex[vertexIndex].size()),
-                };
             }
         }
         if (!frame.vertices.empty() && (initialUpload || static_cast<int>(animationFrame_) % 30 == 0)) {
