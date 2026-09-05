@@ -9,8 +9,7 @@ struct VertexInput
     [[vk::location(6)]] uint gpuSkinning : TEXCOORD3;
     [[vk::location(7)]] float3 sdefC : TEXCOORD4;
     [[vk::location(8)]] float3 sdefHalfDelta : TEXCOORD5;
-    [[vk::location(9)]] float cloneOffset : TEXCOORD6;
-    [[vk::location(10)]] float edgeScale : TEXCOORD7;
+    [[vk::location(9)]] float edgeScale : TEXCOORD6;
 };
 
 struct VertexOutput
