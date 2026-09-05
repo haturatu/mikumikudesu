@@ -3,6 +3,7 @@
 #include "core/audio_export.hpp"
 #include "core/editor.hpp"
 #include "core/image.hpp"
+#include "core/mapped_file.hpp"
 #include "core/media.hpp"
 #include "core/model_probe.hpp"
 #include "core/motion.hpp"
@@ -49,6 +50,25 @@ bool check(bool value, std::string_view message) {
 int main() {
     using dayo::core::AssetKind;
     bool ok = true;
+    {
+        const auto path = std::filesystem::temp_directory_path() / "mikumikudesu-mapped-stream-test.bin";
+        {
+            std::ofstream output(path, std::ios::binary | std::ios::trunc);
+            output << "abcdef";
+        }
+        dayo::core::MappedFileStream input(path);
+        std::array<char, 2> prefix{};
+        input.read(prefix.data(), static_cast<std::streamsize>(prefix.size()));
+        input.seekg(1, std::ios::cur);
+        const auto position = input.tellg();
+        char value{};
+        input.get(value);
+        ok &= check(input && position == 3 && value == 'd', "mapped stream supports relative seek");
+        input.seekg(-1, std::ios::end);
+        input.get(value);
+        ok &= check(input && value == 'f', "mapped stream supports end-relative seek");
+        std::filesystem::remove(path);
+    }
     ok &= check(dayo::core::classifyAsset("Miku.PMX") == AssetKind::pmx, "PMX extension");
     ok &= check(dayo::core::classifyAsset("motion.vmd") == AssetKind::vmd, "VMD extension");
     ok &= check(dayo::core::classifyAsset("sound.M4A") == AssetKind::audio, "audio extension");
@@ -427,17 +447,19 @@ int main() {
         dayo::core::OutputSettings settings;
         settings.directory = outputDirectory;
         settings.firstFrame = settings.lastFrame = 3;
+        settings.maxPendingFrames = 1;
         dayo::core::OutputQueue queue(settings);
-        dayo::core::ImageRgba8 image{1, 1, {255, 64, 32, 255}};
-        queue.push(3, std::move(image));
+        for (std::uint32_t frame = 3; frame < 19; ++frame)
+            queue.push(frame, dayo::core::ImageRgba8{1, 1, {255, 64, 32, 255}});
         static_cast<void>(queue.written());
         queue.close();
-        ok &= check(queue.written() == 1 && std::filesystem::exists(outputDirectory / "frame_000003.ppm"),
+        ok &= check(queue.written() == 16 && std::filesystem::exists(outputDirectory / "frame_000003.ppm") &&
+                        std::filesystem::exists(outputDirectory / "frame_000018.ppm"),
                     "asynchronous frame output");
         dayo::core::ImageRgba8 pngImage{1, 1, {255, 64, 32, 255}};
         dayo::core::writeFrame(outputDirectory / "frame.png", pngImage, dayo::core::OutputFormat::png);
         ok &= check(std::filesystem::file_size(outputDirectory / "frame.png") > 8, "PNG frame output");
-        ok &= check(queue.written() == 1, "thread-safe output counter");
+        ok &= check(queue.written() == 16, "thread-safe output counter");
         dayo::core::OutputSettings failingSettings;
         failingSettings.directory = outputDirectory;
         failingSettings.format = dayo::core::OutputFormat::exr;

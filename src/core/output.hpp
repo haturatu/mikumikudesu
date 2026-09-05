@@ -18,6 +18,7 @@ struct OutputSettings {
     std::uint32_t firstFrame{};
     std::uint32_t lastFrame{};
     std::uint32_t samples{1};
+    std::uint32_t maxPendingFrames{4};
     bool motionBlur{};
 };
 

@@ -1,0 +1,9 @@
+# Paths relative to the pinned release root. Trailing / installs a whole directory.
+# Keep complete directories, including textures, imports, and third-party notices.
+hlsl/
+renderer/
+postprocess/
+particle/
+sample/
+res/
+licence/
