@@ -696,6 +696,63 @@ int main() {
         ok &= check(offsetBoneError < 1e-3F && offsetTipMovement > 1e-4F,
                     "PMX mode 2 with body offset rebuilds the bone from the animated center and simulated rotation");
 
+        // Nested mode 2 bodies must resolve each animated center after their
+        // parent has received its physics rotation. A child center sampled
+        // before Bullet runs remains at its old absolute position instead of
+        // following the updated parent hierarchy.
+        dayo::core::PmxModel nestedMode2Model;
+        nestedMode2Model.vertices.resize(1);
+        nestedMode2Model.vertices[0].position = {0.0F, 2.0F, 0.0F};
+        nestedMode2Model.vertices[0].normal = {0.0F, 1.0F, 0.0F};
+        nestedMode2Model.vertices[0].bones[0] = 2;
+        nestedMode2Model.bones.resize(3);
+        nestedMode2Model.bones[0].name = "hip";
+        nestedMode2Model.bones[1].name = "parentSkirt";
+        nestedMode2Model.bones[1].position = {0.0F, 1.0F, 0.0F};
+        nestedMode2Model.bones[1].parent = 0;
+        nestedMode2Model.bones[2].name = "childSkirt";
+        nestedMode2Model.bones[2].position = {0.0F, 2.0F, 0.0F};
+        nestedMode2Model.bones[2].parent = 1;
+        dayo::core::PmxRigidBody hipBody;
+        hipBody.shape = 0;
+        hipBody.size = {0.2F, 0.2F, 0.2F};
+        hipBody.position = {0.0F, 0.0F, 0.0F};
+        hipBody.bone = 0;
+        hipBody.collisionMask = 0;
+        hipBody.mode = 0;
+        nestedMode2Model.rigidBodies.push_back(hipBody);
+        auto parentMode2Body = hipBody;
+        parentMode2Body.position = {0.0F, 1.0F, 0.0F};
+        parentMode2Body.bone = 1;
+        parentMode2Body.mass = 1.0F;
+        parentMode2Body.mode = 2;
+        nestedMode2Model.rigidBodies.push_back(parentMode2Body);
+        auto childMode2Body = parentMode2Body;
+        childMode2Body.position = {0.0F, 2.0F, 0.0F};
+        childMode2Body.bone = 2;
+        nestedMode2Model.rigidBodies.push_back(childMode2Body);
+        dayo::core::MmdPhysics nestedMode2Physics(nestedMode2Model);
+        nestedMode2Physics.setGravity({0.0F, 0.0F, 0.0F});
+        dayo::core::MmdAnimator nestedMode2Animator(nestedMode2Model);
+        nestedMode2Animator.setPhysics(&nestedMode2Physics);
+        static_cast<void>(nestedMode2Animator.evaluate(0.0F, 0.0F));
+        nestedMode2Physics.applyImpulse(1, {}, {0.0F, 0.0F, 8.0F}, false);
+        const auto nestedMode2Frame = nestedMode2Animator.evaluate(1.0F, 1.0F / 30.0F);
+        const auto parentMode2Pose = nestedMode2Physics.bodyTransform(1);
+        const auto expectedChildCenter = [&]() {
+            const auto parentRotatedChildOffset = quatRotate(parentMode2Pose.rotation, {0.0F, 1.0F, 0.0F});
+            return dayo::core::Float3{parentMode2Pose.position[0] + parentRotatedChildOffset[0],
+                                      parentMode2Pose.position[1] + parentRotatedChildOffset[1],
+                                      parentMode2Pose.position[2] + parentRotatedChildOffset[2]};
+        }();
+        const auto& nestedMode2Vertex = nestedMode2Frame.vertices[0].position;
+        const auto nestedMode2CenterError = std::sqrt(
+            (nestedMode2Vertex[0] - expectedChildCenter[0]) * (nestedMode2Vertex[0] - expectedChildCenter[0]) +
+            (nestedMode2Vertex[1] - expectedChildCenter[1]) * (nestedMode2Vertex[1] - expectedChildCenter[1]) +
+            (nestedMode2Vertex[2] - expectedChildCenter[2]) * (nestedMode2Vertex[2] - expectedChildCenter[2]));
+        ok &= check(nestedMode2CenterError < 1e-3F && std::abs(expectedChildCenter[0]) > 1e-3F,
+                    "nested mode 2 child follows the physics-updated parent hierarchy");
+
         dayo::core::PmxModel skirtChainModel;
         skirtChainModel.vertices.resize(2);
         skirtChainModel.vertices[0].position = {0.0F, 2.0F, 0.0F};
