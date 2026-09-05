@@ -35,7 +35,8 @@ class VulkanDevice final : public Device {
     void uploadPreviewMesh(std::span<const PreviewVertex> vertices, std::span<const std::uint32_t> indices) override;
     void updatePreviewVertices(std::span<const PreviewVertex> vertices) override;
     void updatePreviewBones(std::span<const PreviewBoneTransform> bones) override;
-    void updatePreviewMorphs(std::span<const PreviewMorphDelta> deltas, std::span<const float> weights) override;
+    void uploadPreviewMorphDeltas(std::span<const PreviewMorphDelta> deltas) override;
+    void updatePreviewMorphWeights(std::span<const float> weights) override;
     void updatePreviewMaterials(std::span<const PreviewMaterial> materials) override;
     void updatePreviewDraws(std::span<const PreviewDraw> draws) override;
     void uploadPreviewTextures(std::span<const PreviewTexture> textures) override;
@@ -75,6 +76,7 @@ class VulkanDevice final : public Device {
         VkDeviceMemory previewMorphWeightMemory{};
         void* mappedPreviewMorphWeights{};
         VkDescriptorSet previewMorphDescriptor{};
+        std::uint64_t previewMorphDeltaGeneration{};
         std::uint64_t previewMorphGeneration{};
         VkBuffer previewMaterialBuffer{};
         VkDeviceMemory previewMaterialMemory{};
@@ -153,6 +155,7 @@ class VulkanDevice final : public Device {
     void synchronizePreviewBones(Frame& frame);
     void destroyPreviewMorphs();
     void synchronizePreviewMorphs(Frame& frame);
+    void rebuildPreviewMorphBuffers();
     void destroyPreviewMaterialBuffers();
     void synchronizePreviewMaterials(Frame& frame);
     void destroyPreviewMaterialDescriptors();
@@ -212,6 +215,7 @@ class VulkanDevice final : public Device {
     std::uint64_t previewBoneGeneration_{};
     VkDeviceSize previewMorphDeltaSize_{};
     VkDeviceSize previewMorphWeightSize_{};
+    std::uint64_t previewMorphDeltaGeneration_{};
     std::uint64_t previewMorphGeneration_{};
     VkDeviceSize previewMaterialSize_{};
     std::uint64_t previewMaterialGeneration_{};

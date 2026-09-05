@@ -1007,8 +1007,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                                  animatedDraws_.size() != materialCount;
     std::vector<graphics::PreviewVertex> vertices;
     vertices.reserve(vertexCount);
-    std::vector<graphics::PreviewMorphDelta> morphDeltas =
-        rebuildTopology ? std::vector<graphics::PreviewMorphDelta>{} : animatedMorphDeltas_;
+    std::vector<graphics::PreviewMorphDelta> morphDeltas;
     std::vector<float> morphWeights;
     morphWeights.reserve(materialCount);
     std::vector<graphics::PreviewMaterial> materials =
@@ -1141,9 +1140,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                 vertex.gpuSkinning = 1;
             }
             vertex.edgeScale = source.edgeScale;
-            const auto morphRange = rebuildTopology
-                                        ? sourceMorphRanges[sourceIndex]
-                                        : animatedMorphRanges_[vertices.size()];
+            const auto morphRange =
+                rebuildTopology ? sourceMorphRanges[sourceIndex] : animatedMorphRanges_[vertices.size()];
             vertex.morphStart = morphRange[0];
             vertex.morphCount = gpuSkinning ? morphRange[1] : 0U;
             vertices.push_back(vertex);
@@ -1215,7 +1213,9 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     {
         auto upload = frameProfiler_.measure(core::ProfileSection::upload);
         device_->updatePreviewBones(bones);
-        device_->updatePreviewMorphs(morphDeltas, morphWeights);
+        if (initialUpload || rebuildTopology)
+            device_->uploadPreviewMorphDeltas(morphDeltas);
+        device_->updatePreviewMorphWeights(morphWeights);
         if (initialUpload || rebuildTopology)
             device_->uploadPreviewMesh(vertices, animatedIndices_);
         else {
@@ -1236,7 +1236,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     uploadBytes += byteCount(materials.size(), sizeof(graphics::PreviewMaterial));
     uploadBytes += byteCount(draws.size(), sizeof(graphics::PreviewDraw));
     uploadBytes += byteCount(vertices.size(), sizeof(graphics::PreviewVertex));
-    uploadBytes += byteCount(morphDeltas.size(), sizeof(graphics::PreviewMorphDelta));
+    if (initialUpload || rebuildTopology)
+        uploadBytes += byteCount(morphDeltas.size(), sizeof(graphics::PreviewMorphDelta));
     uploadBytes += byteCount(morphWeights.size(), sizeof(float));
     if (initialUpload || rebuildTopology)
         uploadBytes += byteCount(animatedIndices_.size(), sizeof(std::uint32_t));

@@ -268,7 +268,8 @@ class Device {
     virtual void uploadPreviewMesh(std::span<const PreviewVertex> vertices, std::span<const std::uint32_t> indices) = 0;
     virtual void updatePreviewVertices(std::span<const PreviewVertex> vertices) = 0;
     virtual void updatePreviewBones(std::span<const PreviewBoneTransform> bones) = 0;
-    virtual void updatePreviewMorphs(std::span<const PreviewMorphDelta> deltas, std::span<const float> weights) = 0;
+    virtual void uploadPreviewMorphDeltas(std::span<const PreviewMorphDelta> deltas) = 0;
+    virtual void updatePreviewMorphWeights(std::span<const float> weights) = 0;
     virtual void updatePreviewMaterials(std::span<const PreviewMaterial> materials) = 0;
     virtual void updatePreviewDraws(std::span<const PreviewDraw> draws) = 0;
     virtual void uploadPreviewTextures(std::span<const PreviewTexture> textures) = 0;
