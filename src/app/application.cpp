@@ -1002,6 +1002,8 @@ void Application::handleAsset(const std::filesystem::path& path) {
 void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     if (device_ == nullptr || scene_.models().empty())
         return;
+    frameScratch_.reset();
+    auto* scratch = frameScratch_.resource();
     std::size_t vertexCount = 0;
     std::size_t indexCount = 0;
     std::size_t materialCount = 0;
@@ -1019,14 +1021,17 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                                  animatedMaterialTemplates_.size() != materialCount ||
                                  animatedDraws_.size() != materialCount;
     const bool rebuildVertices = initialUpload || rebuildTopology || dynamicVertices;
-    std::vector<graphics::PreviewVertex> vertices;
+    std::pmr::vector<graphics::PreviewVertex> vertices(scratch);
     vertices.reserve(vertexCount);
-    std::vector<graphics::PreviewMorphDelta> morphDeltas;
-    std::vector<float> morphWeights;
+    std::pmr::vector<graphics::PreviewMorphDelta> morphDeltas(scratch);
+    std::pmr::vector<float> morphWeights(scratch);
     morphWeights.reserve(materialCount);
-    std::vector<graphics::PreviewMaterial> materials =
-        rebuildTopology ? std::vector<graphics::PreviewMaterial>{} : animatedMaterialTemplates_;
-    std::vector<graphics::PreviewDraw> draws = rebuildTopology ? std::vector<graphics::PreviewDraw>{} : animatedDraws_;
+    std::pmr::vector<graphics::PreviewMaterial> materials(scratch);
+    std::pmr::vector<graphics::PreviewDraw> draws(scratch);
+    if (!rebuildTopology) {
+        materials.assign(animatedMaterialTemplates_.begin(), animatedMaterialTemplates_.end());
+        draws.assign(animatedDraws_.begin(), animatedDraws_.end());
+    }
     if (rebuildTopology) {
         animatedIndices_.clear();
         animatedIndices_.reserve(indexCount);
@@ -1041,7 +1046,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         bool gpuSkinning{};
         core::AnimatedModelFrame frame;
     };
-    std::vector<EvaluatedModel> evaluated;
+    std::pmr::vector<EvaluatedModel> evaluated(scratch);
     evaluated.reserve(scene_.models().size());
     for (const auto& instance : scene_.models()) {
         if (!instance.visible || instance.model == nullptr || instance.animator == nullptr)
@@ -1075,7 +1080,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     }
     std::size_t materialCursor = 0;
     std::uint32_t indexCursor = 0;
-    std::vector<graphics::PreviewBoneTransform> bones;
+    std::pmr::vector<graphics::PreviewBoneTransform> bones(scratch);
     for (const auto& evaluatedModel : evaluated) {
         const auto& instance = *evaluatedModel.instance;
         const auto& frame = evaluatedModel.frame;
@@ -1084,9 +1089,12 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         for (std::size_t morphIndex = 0; morphIndex < instance.model->morphs.size(); ++morphIndex) {
             morphWeights.push_back(morphIndex < frame.morphWeights.size() ? frame.morphWeights[morphIndex] : 0.0F);
         }
-        std::vector<std::array<std::uint32_t, 2>> sourceMorphRanges;
+        std::pmr::vector<std::array<std::uint32_t, 2>> sourceMorphRanges(scratch);
         if (rebuildTopology) {
-            std::vector<std::vector<graphics::PreviewMorphDelta>> perVertex(instance.model->vertices.size());
+            std::pmr::vector<std::pmr::vector<graphics::PreviewMorphDelta>> perVertex(scratch);
+            perVertex.reserve(instance.model->vertices.size());
+            for (std::size_t vertexIndex = 0; vertexIndex < instance.model->vertices.size(); ++vertexIndex)
+                perVertex.emplace_back(std::pmr::polymorphic_allocator<graphics::PreviewMorphDelta>{scratch});
             for (std::size_t morphIndex = 0; morphIndex < instance.model->morphs.size(); ++morphIndex) {
                 const auto& morph = instance.model->morphs[morphIndex];
                 if (morph.type != 1)
