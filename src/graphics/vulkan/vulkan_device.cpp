@@ -1469,13 +1469,16 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
         const auto descriptor = textureDescriptor(item.materialIndex);
         if (descriptor == VK_NULL_HANDLE)
             return;
+        auto drawConstants = constants;
+        drawConstants.materialIndex = item.materialIndex;
+        drawConstants.instanceCount = std::max(item.instanceCount, 1U);
         vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1, &descriptor, 0,
                                 nullptr);
         vkCmdPushConstants(command, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                           sizeof(constants), &constants);
+                           sizeof(drawConstants), &drawConstants);
         const auto count = std::min(item.indexCount, previewIndexCount_ - item.firstIndex);
-        vkCmdDrawIndexed(command, count, 1, item.firstIndex, 0, item.materialIndex);
+        vkCmdDrawIndexed(command, count, drawConstants.instanceCount, item.firstIndex, 0, 0);
     };
 
     if (previewMaterials_.empty() || previewDraws_.empty()) {
