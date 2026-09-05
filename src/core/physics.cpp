@@ -495,28 +495,6 @@ void MmdPhysics::teleportBody(std::size_t body, const PhysicsTransform& value) {
 #endif
 }
 
-void MmdPhysics::shiftBodyPosition(std::size_t body, const Float3& delta) {
-#if DAYO_HAS_BULLET
-    if (body >= impl_->bodies.size())
-        throw std::out_of_range("PMX rigid body index");
-    if (!finite(delta))
-        return;
-    auto& rigidBody = impl_->bodies[body];
-    auto world = rigidBody->getWorldTransform();
-    world.setOrigin(world.getOrigin() + vector(delta));
-    rigidBody->setWorldTransform(world);
-    rigidBody->getMotionState()->setWorldTransform(world);
-    auto interpolation = rigidBody->getInterpolationWorldTransform();
-    interpolation.setOrigin(interpolation.getOrigin() + vector(delta));
-    rigidBody->setInterpolationWorldTransform(interpolation);
-    rigidBody->activate(true);
-    impl_->world->updateSingleAabb(rigidBody.get());
-#else
-    static_cast<void>(body);
-    static_cast<void>(delta);
-#endif
-}
-
 void MmdPhysics::applyImpulse(std::size_t body, const Float3& linear, const Float3& angular, bool local) {
 #if DAYO_HAS_BULLET
     if (body >= impl_->bodies.size())

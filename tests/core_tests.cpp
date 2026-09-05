@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <numbers>
 #include <string_view>
 
@@ -586,10 +587,10 @@ int main() {
         const auto alignedAfter = alignedAnimator.evaluate(1.0F, 1.0F / 30.0F);
         const auto alignedBodyAfter = alignedPhysics.bodyTransform(0);
         ok &=
-            check(std::abs(alignedBodyAfter.position[1] - alignedBodyBefore.position[1]) < 1e-4F &&
+            check(alignedBodyAfter.position[1] < alignedBodyBefore.position[1] - 1e-3F &&
                       std::abs(alignedAfter.vertices[0].position[1] - alignedBefore.vertices[0].position[1]) < 1e-4F &&
                       std::abs(alignedAfter.vertices[1].position[1] - alignedBefore.vertices[1].position[1]) > 1e-4F,
-                  "PMX mode 2 aligns body position, preserves bone translation, and imports rotation");
+                  "PMX mode 2 keeps the solver body position, preserves bone translation, and imports rotation");
 
         dayo::core::PmxModel skirtChainModel;
         skirtChainModel.vertices.resize(2);
@@ -612,7 +613,9 @@ int main() {
         skirtRoot.size = {0.2F, 0.2F, 0.2F};
         skirtRoot.position = {0.0F, 0.0F, 0.0F};
         skirtRoot.bone = 0;
-        skirtRoot.collisionMask = 0xFFFFU;
+        // PMX masks list groups that must NOT collide, so 0xFFFF would
+        // isolate every body in this chain. Use 0 to exercise collisions.
+        skirtRoot.collisionMask = 0;
         skirtChainModel.rigidBodies.push_back(skirtRoot);
         auto skirtMode2 = skirtRoot;
         skirtMode2.position = {0.0F, 2.0F, 0.0F};
@@ -657,16 +660,8 @@ int main() {
         for (std::uint32_t frame = 0; frame < 300; ++frame) {
             const auto animated =
                 skirtChainAnimator.evaluate(static_cast<float>(frame), frame == 0 ? 0.0F : 1.0F / 30.0F);
-            const auto angle = (frame % 2 == 0 ? 0.35F : -0.35F);
-            const auto expectedSkirt0 = dayo::core::Float3{
-                (frame % 2 == 0 ? 1.5F : -1.5F) - 2.0F * std::sin(angle),
-                (frame % 3 == 0 ? 0.75F : -0.75F) + 2.0F * std::cos(angle),
-                0.0F,
-            };
             const auto mode2Body = skirtChainPhysics.bodyTransform(1);
             const auto mode1Body = skirtChainPhysics.bodyTransform(2);
-            dayo::core::PhysicsTransform expectedMode2;
-            expectedMode2.position = expectedSkirt0;
             const auto finiteVector = [](const auto& value) {
                 return std::ranges::all_of(value, [](float component) { return std::isfinite(component); });
             };
@@ -676,16 +671,122 @@ int main() {
                 const auto z = left.position[2] - right.position[2];
                 return std::sqrt(x * x + y * y + z * z);
             };
-            skirtChainStable =
-                skirtChainStable && finiteVector(mode2Body.position) && finiteVector(mode1Body.position) &&
-                animated.vertices.size() == 2 && finiteVector(animated.vertices[0].position) &&
-                finiteVector(animated.vertices[1].position) && bodyDistance(mode2Body, expectedMode2) < 1e-3F &&
-                bodyDistance(mode2Body, mode1Body) < 2.5F;
+            // Mode 2 bodies keep the solver position (upstream parity), so
+            // exact bone alignment is not expected under violent shaking.
+            // The chain must stay finite and connected instead.
+            skirtChainStable = skirtChainStable && finiteVector(mode2Body.position) &&
+                               finiteVector(mode1Body.position) && animated.vertices.size() == 2 &&
+                               finiteVector(animated.vertices[0].position) &&
+                               finiteVector(animated.vertices[1].position) && bodyDistance(mode2Body, mode1Body) < 2.5F;
             if (!skirtChainStable)
                 break;
         }
         ok &= check(skirtChainStable,
-                    "mode 0 to mode 2 to mode 1 locked skirt chain stays finite and aligned during fast animation");
+                    "mode 0 to mode 2 to mode 1 locked skirt chain stays finite and connected during fast animation");
+
+        // Regression test for skirts passing through thighs. A kinematic
+        // thigh collider swings into a mode 2 / mode 1 skirt chain whose
+        // groups are allowed to collide. The solver must push the skirt
+        // aside; the thigh must not end up resting inside the skirt panel.
+        // The previous mode 2 post-step snap-back discarded the contact
+        // solution every frame, which this test catches.
+        dayo::core::PmxModel skirtCollisionModel;
+        skirtCollisionModel.bones.resize(4);
+        skirtCollisionModel.bones[0].name = "hip";
+        skirtCollisionModel.bones[0].position = {0.0F, 2.0F, 0.0F};
+        skirtCollisionModel.bones[1].name = "thigh";
+        skirtCollisionModel.bones[1].position = {0.3F, 1.2F, 0.0F};
+        skirtCollisionModel.bones[1].parent = 0;
+        skirtCollisionModel.bones[2].name = "skirt";
+        skirtCollisionModel.bones[2].position = {0.3F, 1.5F, 0.3F};
+        skirtCollisionModel.bones[2].parent = 0;
+        skirtCollisionModel.bones[3].name = "skirtTip";
+        skirtCollisionModel.bones[3].position = {0.3F, 1.0F, 0.35F};
+        skirtCollisionModel.bones[3].parent = 2;
+        const auto makeCollisionBody = [](std::uint8_t shape, dayo::core::Float3 size, dayo::core::Float3 position,
+                                          std::int32_t bone, std::uint8_t group, std::uint8_t mode, float mass) {
+            dayo::core::PmxRigidBody body;
+            body.shape = shape;
+            body.size = size;
+            body.position = position;
+            body.bone = bone;
+            body.group = group;
+            body.collisionMask = 0;
+            body.mode = mode;
+            body.mass = mass;
+            body.linearDamping = 0.2F;
+            body.angularDamping = 0.5F;
+            return body;
+        };
+        skirtCollisionModel.rigidBodies.push_back(
+            makeCollisionBody(1, {0.12F, 0.35F, 0.12F}, {0.3F, 1.2F, 0.0F}, 1, 1, 0, 0.0F));
+        skirtCollisionModel.rigidBodies.push_back(
+            makeCollisionBody(1, {0.1F, 0.1F, 0.1F}, {0.3F, 1.8F, 0.3F}, 0, 2, 0, 0.0F));
+        skirtCollisionModel.rigidBodies.push_back(
+            makeCollisionBody(1, {0.12F, 0.2F, 0.04F}, {0.3F, 1.5F, 0.3F}, 2, 3, 2, 0.3F));
+        skirtCollisionModel.rigidBodies.push_back(
+            makeCollisionBody(1, {0.1F, 0.15F, 0.04F}, {0.3F, 1.0F, 0.35F}, 3, 4, 1, 0.2F));
+        const auto addLooseJoint = [&skirtCollisionModel](std::int32_t bodyA, std::int32_t bodyB,
+                                                          dayo::core::Float3 position) {
+            dayo::core::PmxJoint joint;
+            joint.type = 0;
+            joint.bodyA = bodyA;
+            joint.bodyB = bodyB;
+            joint.position = position;
+            joint.rotation = {};
+            // Rotation is locked so the panel stays axis-aligned and the
+            // face-to-face gap below measures real penetration. Translation
+            // stays free so contact can push the skirt aside.
+            joint.translationMinimum = {-0.3F, -0.3F, -0.3F};
+            joint.translationMaximum = {0.3F, 0.3F, 0.3F};
+            joint.rotationMinimum = {};
+            joint.rotationMaximum = {};
+            joint.translationSpring = {};
+            joint.rotationSpring = {};
+            skirtCollisionModel.joints.push_back(joint);
+        };
+        addLooseJoint(1, 2, {0.3F, 1.65F, 0.3F});
+        addLooseJoint(2, 3, {0.3F, 1.25F, 0.32F});
+        dayo::core::VmdMotion skirtCollisionMotion;
+        skirtCollisionMotion.bones.reserve(300);
+        for (std::uint32_t frame = 0; frame < 300; ++frame) {
+            dayo::core::VmdBoneKey key;
+            key.name = "thigh";
+            key.frame = frame;
+            // Swing the thigh forward into the skirt panel and hold it there.
+            const float swing = frame < 30 ? static_cast<float>(frame) / 30.0F : 1.0F;
+            key.translation = {0.0F, 0.0F, 0.3F * swing};
+            skirtCollisionMotion.bones.push_back(key);
+        }
+        dayo::core::MmdPhysics skirtCollisionPhysics(skirtCollisionModel);
+        dayo::core::MmdAnimator skirtCollisionAnimator(skirtCollisionModel);
+        skirtCollisionAnimator.setMotion(&skirtCollisionMotion);
+        skirtCollisionAnimator.setPhysics(&skirtCollisionPhysics);
+        const auto vectorFinite = [](const auto& value) {
+            return std::ranges::all_of(value, [](float component) { return std::isfinite(component); });
+        };
+        const float initialSkirtZ = skirtCollisionPhysics.bodyTransform(2).position[2];
+        bool skirtCollisionFinite = true;
+        float minThighSkirtGap = std::numeric_limits<float>::max();
+        for (std::uint32_t frame = 0; frame < 300; ++frame) {
+            static_cast<void>(
+                skirtCollisionAnimator.evaluate(static_cast<float>(frame), frame == 0 ? 0.0F : 1.0F / 30.0F));
+            const auto thigh = skirtCollisionPhysics.bodyTransform(0);
+            const auto skirt = skirtCollisionPhysics.bodyTransform(2);
+            skirtCollisionFinite = skirtCollisionFinite && vectorFinite(thigh.position) && vectorFinite(skirt.position);
+            if (!skirtCollisionFinite)
+                break;
+            if (frame < 60)
+                continue;
+            // Boxes meet face to face along z with half depths 0.12 + 0.04.
+            // A negative gap is penetration of the thigh into the skirt panel.
+            const float gap = (skirt.position[2] - 0.04F) - (thigh.position[2] + 0.12F);
+            minThighSkirtGap = std::min(minThighSkirtGap, gap);
+        }
+        const auto finalSkirtZ = skirtCollisionPhysics.bodyTransform(2).position[2];
+        ok &= check(skirtCollisionFinite, "thigh versus skirt collision stays finite");
+        ok &= check(finalSkirtZ - initialSkirtZ > 0.05F, "thigh contact pushes the mode 2 skirt panel aside");
+        ok &= check(minThighSkirtGap > -0.05F, "mode 2 skirt never contains the thigh collider");
 
         dayo::core::PmxModel seekModel;
         seekModel.vertices.resize(1);

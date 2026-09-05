@@ -1013,10 +1013,12 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
             }
             calculateGlobalSubtree(model_, local, global, impl_->boneChildren, bone, impl_->subtreeState,
                                    impl_->subtreeScratch);
-            if (mode == 2) {
-                const auto correction = sub(global[bone].position, bonePosition);
-                physics_->shiftBodyPosition(bodyIndex, correction);
-            }
+            // Mode 2 intentionally leaves the Bullet body where the solver
+            // put it. This mirrors upstream DynamicAndBoneMergeMotionState:
+            // the bone keeps its animated translation and imports only the
+            // body's rotation. Forcing the body back onto the bone here
+            // (shiftBodyPosition) discards the contact/joint solution and
+            // lets cloth such as skirts rest inside colliders like thighs.
         }
         // Physics supplies the local pose for dynamic rigid bodies. Keep the
         // pre-physics pose for the first phase and feed sanitized dynamic
