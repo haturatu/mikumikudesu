@@ -62,6 +62,31 @@
         "DAYO_ENABLE_SANITIZERS": "ON",
         "DAYO_WARNINGS_AS_ERRORS": "ON"
       }
+    },
+    {
+      "name": "linux-clang-thinlto",
+      "displayName": "Linux Vulkan Clang ThinLTO",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-clang-thinlto",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "DAYO_BACKEND": "VULKAN",
+        "DAYO_ENABLE_VALIDATION": "OFF",
+        "DAYO_ENABLE_THIN_LTO": "ON"
+      }
+    },
+    {
+      "name": "linux-pgo-generate",
+      "displayName": "Linux Vulkan PGO profile generation",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-pgo-generate",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "DAYO_BACKEND": "VULKAN",
+        "DAYO_ENABLE_VALIDATION": "OFF",
+        "DAYO_ENABLE_PGO_GENERATE": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -69,7 +94,9 @@
     { "name": "linux-release", "configurePreset": "linux-release" },
     { "name": "linux-release-native", "configurePreset": "linux-release-native" },
     { "name": "linux-system-only", "configurePreset": "linux-system-only" },
-    { "name": "linux-sanitize", "configurePreset": "linux-sanitize" }
+    { "name": "linux-sanitize", "configurePreset": "linux-sanitize" },
+    { "name": "linux-clang-thinlto", "configurePreset": "linux-clang-thinlto" },
+    { "name": "linux-pgo-generate", "configurePreset": "linux-pgo-generate" }
   ],
   "testPresets": [
     {
