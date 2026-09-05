@@ -8,7 +8,7 @@ namespace dayo::core {
 UploadRing::UploadRing(std::size_t capacity, std::size_t defaultAlignment)
     : capacity_(capacity), defaultAlignment_(defaultAlignment) {
     if (capacity_ == 0 || defaultAlignment_ == 0 || (defaultAlignment_ & (defaultAlignment_ - 1U)) != 0)
-        throw std::invalid_argument("upload ring capacity and alignment must be valid powers of two");
+        throw std::invalid_argument("upload ring capacity must be non-zero and alignment must be a power of two");
 }
 
 std::size_t UploadRing::alignUp(std::size_t value, std::size_t alignment) const noexcept {
@@ -16,8 +16,7 @@ std::size_t UploadRing::alignUp(std::size_t value, std::size_t alignment) const 
     return (value + mask) & ~mask;
 }
 
-std::optional<UploadSlice> UploadRing::tryAllocate(std::size_t size, std::uint64_t retireValue,
-                                                    std::size_t alignment) {
+std::optional<UploadSlice> UploadRing::tryAllocate(std::size_t size, std::uint64_t retireValue, std::size_t alignment) {
     if (size == 0 || size > capacity_)
         return std::nullopt;
     alignment = alignment == 0 ? defaultAlignment_ : alignment;

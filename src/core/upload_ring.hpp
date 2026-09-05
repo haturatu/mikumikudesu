@@ -14,7 +14,8 @@ struct UploadSlice {
 
 // A small CPU-side allocator for persistently mapped upload buffers. Vulkan
 // users associate each allocation with a timeline value and call reclaim()
-// after that value has completed.
+// after that value has completed. Allocation retire values must be submitted
+// in non-decreasing order because reclamation is FIFO.
 class UploadRing {
   public:
     explicit UploadRing(std::size_t capacity, std::size_t defaultAlignment = 1);
