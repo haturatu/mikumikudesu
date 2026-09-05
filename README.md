@@ -260,9 +260,9 @@ Vega 8はRDNA2ではないため、RT実行試験はハードウェア上不可�
 
 ## LICENCE
 
-本プロジェクトのソースコードは、ルートの [MIT License](LICENSE) に従って提供します。
-
+本プロジェクトのソースコードは、 [MIT License](LICENSE) です。  
+  
 `MikuMikuDayo/` はGit管理せず、`deps/mikumikudayo.lock`で固定した
 [MikuMikuDayo 1.20のRelease ZIP](https://github.com/pennennennennennenem/MikuMikuDayo/releases/download/MikuMikuDayo120/MikuMikuDayo120.zip)
-をセットアップ時に取得します。MikuMikuDayo本体は upstream のMIT Licenseに従い、配布時は
-アーカイブ内のMikuMikuDayoおよびサードパーティのライセンス表示を保持してください。
+をセットアップ時に取得します。
+MikuMikuDayo本体は upstream のMIT Licenseに従い、配布時はアーカイブ内のMikuMikuDayoおよびサードパーティのライセンス表示を保持してください。
