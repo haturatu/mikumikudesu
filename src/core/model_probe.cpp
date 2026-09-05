@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -366,6 +367,13 @@ void readPhysics(std::istream& input, const Header& header, PmxModel& model) {
         body.restitution = read<float>(input, "rigid body restitution");
         body.friction = read<float>(input, "rigid body friction");
         body.mode = read<std::uint8_t>(input, "rigid body mode");
+        const auto finite = [](const auto& values) {
+            return std::ranges::all_of(values, [](const float value) { return std::isfinite(value); });
+        };
+        if (!finite(body.size) || !finite(body.position) || !finite(body.rotation) || !std::isfinite(body.mass) ||
+            !std::isfinite(body.linearDamping) || !std::isfinite(body.angularDamping) ||
+            !std::isfinite(body.restitution) || !std::isfinite(body.friction))
+            throw std::runtime_error("invalid PMX rigid body numeric value");
     }
     const auto jointCount = readCount(input, "joint count", 1'000'000);
     model.joints.resize(static_cast<std::size_t>(jointCount));
