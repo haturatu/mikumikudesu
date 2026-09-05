@@ -293,6 +293,7 @@ void SoftBodySimulation::step(float deltaSeconds, const Float3& gravity) {
     if (!available() || deltaSeconds <= 0.0F)
         return;
     const float dt = std::min(deltaSeconds, 0.05F);
+    const float damping = std::pow(0.995F, dt * 60.0F);
     for (const auto vertex : activeVertices_) {
         const auto index = static_cast<std::size_t>(vertex);
         if (pinned_[index] != 0) {
@@ -303,7 +304,7 @@ void SoftBodySimulation::step(float deltaSeconds, const Float3& gravity) {
         for (std::size_t axis = 0; axis < 3; ++axis) {
             const auto displacement = positions_[index][axis] - initial_[index][axis];
             velocities_[index][axis] += (gravity[axis] - displacement * 4.0F) * dt;
-            velocities_[index][axis] *= 0.995F;
+            velocities_[index][axis] *= damping;
             positions_[index][axis] += velocities_[index][axis] * dt;
         }
     }

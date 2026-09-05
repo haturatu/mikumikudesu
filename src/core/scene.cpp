@@ -168,7 +168,7 @@ PhysicsSettings Scene::evaluatePhysicsSettings(float frame) const noexcept {
         std::upper_bound(timeline_.gravity.begin(), timeline_.gravity.end(), frame,
                          [](float value, const auto& key) { return value < static_cast<float>(key.first); });
     if (found == timeline_.gravity.begin())
-        return found->second;
+        return physicsSettings_;
     return std::prev(found)->second;
 }
 
@@ -312,12 +312,31 @@ void Scene::attachMotion(VmdMotion motion, ModelId target) {
     attachMotion(std::move(document), target, std::move(modelName));
 }
 
+void Scene::syncGlobalMotionTracks() {
+    timeline_.camera = cameraMotion_->cameras;
+    timeline_.light = cameraMotion_->lights;
+    timeline_.shadow = cameraMotion_->shadows;
+    timeline_.ik = cameraMotion_->ik;
+    timeline_.externalParentKeys = cameraMotion_->externalParents;
+    std::vector<std::pair<std::uint32_t, PhysicsSettings>> gravity;
+    for (const auto& key : cameraMotion_->gravity) {
+        auto settings = physicsSettings_;
+        settings.gravity = key.strength;
+        settings.gravityDirection = key.direction;
+        settings.noiseAmplitude = key.noiseAmplitude;
+        settings.noiseFrequency = key.noiseFrequency;
+        gravity.emplace_back(key.frame, settings);
+    }
+    setGravityTrack(std::move(gravity));
+}
+
 void Scene::attachMotion(MotionDocument document, ModelId target, std::string modelName) {
     auto motion = std::make_unique<VmdMotion>(toVmdMotion(std::move(document), std::move(modelName)));
     // A camera/light-only VMD is global even when a model is selected. Model
     // motion remains the default for files containing bone or morph tracks.
-    const bool cameraOnly = motion->bones.empty() && motion->morphs.empty() &&
-                            (!motion->cameras.empty() || !motion->lights.empty() || !motion->shadows.empty());
+    const bool cameraOnly =
+        motion->bones.empty() && motion->morphs.empty() &&
+        (!motion->cameras.empty() || !motion->lights.empty() || !motion->shadows.empty() || !motion->gravity.empty());
     auto* destination = cameraOnly ? nullptr : model(targetModel(target));
     if (destination != nullptr) {
         destination->motion = std::move(motion);
@@ -326,10 +345,7 @@ void Scene::attachMotion(MotionDocument document, ModelId target, std::string mo
     } else {
         // Camera/light VMDs are still useful without a model.
         cameraMotion_ = std::move(motion);
-        timeline_.camera = cameraMotion_->cameras;
-        timeline_.light = cameraMotion_->lights;
-        timeline_.shadow = cameraMotion_->shadows;
-        timeline_.ik = cameraMotion_->ik;
+        syncGlobalMotionTracks();
         recalculateTimelineDuration();
     }
     markDirty(DirtyFlag::geometry | DirtyFlag::camera | DirtyFlag::lighting);
@@ -345,10 +361,7 @@ const VmdMotion* Scene::motion(ModelId target, bool global) const noexcept {
 bool Scene::replaceMotion(VmdMotion motionValue, ModelId target, bool global) {
     if (global) {
         cameraMotion_ = std::make_unique<VmdMotion>(std::move(motionValue));
-        timeline_.camera = cameraMotion_->cameras;
-        timeline_.light = cameraMotion_->lights;
-        timeline_.shadow = cameraMotion_->shadows;
-        timeline_.ik = cameraMotion_->ik;
+        syncGlobalMotionTracks();
     } else {
         auto* instance = model(targetModel(target));
         if (instance == nullptr)

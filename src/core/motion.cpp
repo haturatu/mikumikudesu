@@ -221,10 +221,15 @@ VmdMotion loadVmd(const std::filesystem::path& path) {
         key.frame = read<std::uint32_t>(input, "bone frame");
         key.translation = readFloatArray<3>(input, "bone translation");
         key.rotation = readFloatArray<4>(input, "bone rotation");
-        input.read(reinterpret_cast<char*>(key.interpolation.data()),
-                   static_cast<std::streamsize>(key.interpolation.size()));
+        std::array<std::uint8_t, 64> raw{};
+        input.read(reinterpret_cast<char*>(raw.data()), static_cast<std::streamsize>(raw.size()));
         if (!input)
             throw std::runtime_error("truncated VMD bone interpolation");
+        // The shifted copies preserve Z/R control points overwritten by physics flags.
+        for (std::size_t axis = 0; axis < 4; ++axis)
+            for (std::size_t point = 0; point < 4; ++point)
+                key.interpolation[axis + point * 4] = raw[axis * 16 + point * 4];
+        key.physics = !(raw[2] == 99 && raw[3] == 15);
         updateLastFrame(motion, key.frame);
     }
     motion.morphs.resize(readCount(input, "morph key count"));
@@ -308,7 +313,13 @@ void saveVmd(const std::filesystem::path& path, const VmdMotion& motion) {
             write(output, key.frame, "bone frame");
             write(output, key.translation, "bone translation");
             write(output, key.rotation, "bone rotation");
-            write(output, key.interpolation, "bone interpolation");
+            std::array<std::uint8_t, 64> raw{};
+            for (std::size_t copy = 0; copy < 4; ++copy)
+                for (std::size_t byte = 0; byte < 16 - copy; ++byte)
+                    raw[copy * 16 + byte] = key.interpolation[copy + byte];
+            raw[2] = key.physics ? 0 : 99;
+            raw[3] = key.physics ? 0 : 15;
+            write(output, raw, "bone interpolation");
         }
         write(output, static_cast<std::uint32_t>(motion.morphs.size()), "morph key count");
         for (const auto& key : motion.morphs) {
@@ -457,7 +468,7 @@ VmdCameraState evaluateCamera(const VmdMotion& motion, float frame) {
     if (static_cast<float>(next->frame) < frame)
         next = previous;
     const auto span = static_cast<float>(next->frame) - static_cast<float>(previous->frame);
-    const float t = span > 1.0F ? std::clamp((frame - static_cast<float>(previous->frame)) / span, 0.0F, 1.0F) : 0.0F;
+    const float t = span > 0.0F ? std::clamp((frame - static_cast<float>(previous->frame)) / span, 0.0F, 1.0F) : 0.0F;
     const auto previousIndex = static_cast<std::size_t>(previous - motion.cameras.data());
     const auto nextIndex = static_cast<std::size_t>(next - motion.cameras.data());
     const auto& before = motion.cameras[previousIndex == 0 ? previousIndex : previousIndex - 1];
