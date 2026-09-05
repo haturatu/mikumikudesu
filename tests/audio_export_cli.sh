@@ -18,5 +18,5 @@ ffprobe -v error -select_streams a:0 -show_entries stream=codec_name \
 "$binary" --audio-source "$test_directory/input.wav" --export-m4a "$test_directory/partial.m4a" \
   --audio-to 0.123
 ffprobe -v error -select_streams a:0 -show_entries stream=duration \
-  -of csv=p=0 "$test_directory/partial.m4a" | \
+  -of csv=p=0 "$test_directory/partial.m4a" |
   awk '{ delta = $1 - 0.123; if (delta < 0) delta = -delta; ok = delta < 0.001 } END { exit !ok }'

@@ -30,5 +30,5 @@ ffmpeg -v error -f lavfi -i 'aevalsrc=if(lt(t\,1)\,0\,0.5*sin(2*PI*440*t)):s=480
 MESA_VK_WSI_PRESENT_MODE=mailbox \
   "$binary" --export-video "$test_directory/offset.mp4" --audio-source "$test_directory/offset.wav" \
   --video-width 64 --video-height 48 --video-fps 60 --video-from-frame 30 --video-to-frame 32 --no-validation
-ffmpeg -hide_banner -i "$test_directory/offset.mp4" -vn -af volumedetect -f null - 2>&1 | \
+ffmpeg -hide_banner -i "$test_directory/offset.mp4" -vn -af volumedetect -f null - 2>&1 |
   awk '/max_volume:/ { ok = $(NF-1) != "-inf" && $(NF-1) > -20 } END { exit !ok }'

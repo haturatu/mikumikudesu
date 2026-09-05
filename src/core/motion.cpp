@@ -229,7 +229,7 @@ VmdMotion loadVmd(const std::filesystem::path& path) {
         for (std::size_t axis = 0; axis < 4; ++axis)
             for (std::size_t point = 0; point < 4; ++point)
                 key.interpolation[axis + point * 4] = raw[axis * 16 + point * 4];
-        key.physics = !(raw[2] == 99 && raw[3] == 15);
+        key.physics = raw[2] != 99 || raw[3] != 15;
         updateLastFrame(motion, key.frame);
     }
     motion.morphs.resize(readCount(input, "morph key count"));
