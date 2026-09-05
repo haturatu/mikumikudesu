@@ -30,6 +30,7 @@ Linux側を`SDL3 + Vulkan 1.3 + HLSL/SPIR-V`で構成しています。
 - PMX 2.1 soft-bodyの決定論的フォールバックシミュレーション
 - Undo/Redo CommandHistory、dirty flag/runtime mode、非同期連番フレーム出力（PPM/PNG）
 - MaterialParameterBlock、effect render-graph compile、失敗時に旧状態を保持するFX hot reload
+- Subayaiの`_template.txt`/材質注釈パーサと、髪材質のAnisotropy/IOR/AutoNormalデータ契約
 - screen.bmpのPreviousFrame/BackgroundVideo/BackgroundImage/White semanticsを持つrenderer契約
 - `.dayo` v2の相対パス保存と原子的置換、旧版assetとbinary keyframeの復元
 - Vulkan feature単位のPreview/Subayai/BDPT判定と、安全なPreviewフォールバック
@@ -41,6 +42,9 @@ Linux側を`SDL3 + Vulkan 1.3 + HLSL/SPIR-V`で構成しています。
 PreviewはLinux/AMDで実動します。SubayaiとBDPTについては、`.fxdayo`グラフと必要featureの
 検出までは移植済みですが、Vulkan acceleration structure/SBTと各passの実行器は未接続です。
 そのため`nativeSubayai`と`nativeBdpt`は意図的にfalseであり、対応していると偽装しません。
+
+Subayaiの材質注釈はコア層で読み込めます。標準の`hair.txt`からは異方性、IOR、AutoNormalを
+取得できますが、これらを実際のハイライトへ反映するnative Subayai passはまだ未接続です。
 
 Subayai/BDPTのVulkan pass executor（acceleration structure/SBTを含む）は、featureのないAMD
 Vega等でも起動できるよう未接続のままです。RT対応GPUではbackend契約とgraph compileまでを
