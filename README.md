@@ -64,6 +64,16 @@ axis別MMD/Catmull-Rom方式）を実装しています。単体ファイルの�
 AMDではMesa RADVを推奨します。BDPTを将来有効化する構成ではRAM 16GB、VRAM 8GB以上を
 推奨します。
 
+### Linux release tuning
+
+ローカルCPU向けのISA最適化は既定で無効です。対象マシン専用のreleaseを作る場合は、
+`cmake --preset linux-release-native` を使えます。LLVM BOLTは通常のPGO収集後に、例えば
+`-DDAYO_ENABLE_BOLT=ON -DDAYO_BOLT_PROFILE=/path/to/perf.fdata` を付けて有効化します。
+BOLTのプロファイルは、対象バイナリを `perf record` で実行し、`perf2bolt` で変換して作成します。
+例えば `perf2bolt ./build/linux-release-native/mikumikudesu -p perf.data -o perf.fdata`
+のように生成します。
+BOLTは実行ファイルを書き換えるため、配布用ビルドではなく対象環境専用の最終最適化として扱ってください。
+
 確認するRT feature:
 
 - `VK_KHR_acceleration_structure`
