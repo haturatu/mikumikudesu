@@ -467,10 +467,9 @@ include(cmake/InstallMikuMikuDayo.cmake)
 if(DAYO_ENABLE_PGO_GENERATE AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   add_custom_target(
     dayo_pgo_merge
-    COMMAND "${CMAKE_COMMAND}"
-            -DLLVM_PROFDATA="${DAYO_LLVM_PROFDATA_EXECUTABLE}"
-            -DPGO_PROFILE_DIR="${DAYO_PGO_PROFILE_DIR}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MergePgoProfiles.cmake"
+    COMMAND
+      "${CMAKE_COMMAND}" -DLLVM_PROFDATA="${DAYO_LLVM_PROFDATA_EXECUTABLE}" -DPGO_PROFILE_DIR="${DAYO_PGO_PROFILE_DIR}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MergePgoProfiles.cmake"
     DEPENDS mikumikudesu
     USES_TERMINAL
     COMMENT "Merging Clang PGO profiles"
