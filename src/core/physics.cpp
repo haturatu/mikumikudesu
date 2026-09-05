@@ -118,30 +118,36 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
     impl_->kinematicDirty.reserve(model.rigidBodies.size());
     impl_->modes.reserve(model.rigidBodies.size());
     for (const auto& source : model.rigidBodies) {
-        const Float3 safeSize{
-            std::max(std::abs(source.size[0]), 0.001F),
-            std::max(std::abs(source.size[1]), 0.001F),
-            std::max(std::abs(source.size[2]), 0.001F),
-        };
-        const bool degenerate = !std::ranges::all_of(
-            source.size, [](float component) { return std::isfinite(component) && std::abs(component) >= 0.001F; });
-        if (degenerate) {
-            impl_->shapes.push_back(std::make_unique<btEmptyShape>());
-        } else {
-            switch (source.shape) {
-            case 0:
-                impl_->shapes.push_back(std::make_unique<btSphereShape>(safeSize[0]));
-                break;
-            case 1:
-                impl_->shapes.push_back(std::make_unique<btBoxShape>(vector(safeSize)));
-                break;
-            case 2:
-                impl_->shapes.push_back(std::make_unique<btCapsuleShape>(safeSize[0], safeSize[1]));
-                break;
-            default:
-                throw std::runtime_error("unsupported PMX rigid body shape");
+        const auto validDimension = [](float value) { return std::isfinite(value) && std::abs(value) >= 0.001F; };
+        bool invalidShape = false;
+        switch (source.shape) {
+        case 0:
+            invalidShape = !validDimension(source.size[0]);
+            if (!invalidShape)
+                impl_->shapes.push_back(std::make_unique<btSphereShape>(std::abs(source.size[0])));
+            break;
+        case 1:
+            invalidShape =
+                !validDimension(source.size[0]) || !validDimension(source.size[1]) || !validDimension(source.size[2]);
+            if (!invalidShape) {
+                const Float3 boxSize{std::abs(source.size[0]), std::abs(source.size[1]), std::abs(source.size[2])};
+                impl_->shapes.push_back(std::make_unique<btBoxShape>(vector(boxSize)));
             }
+            break;
+        case 2:
+            invalidShape = !validDimension(source.size[0]) || !validDimension(source.size[1]);
+            if (!invalidShape)
+                impl_->shapes.push_back(
+                    std::make_unique<btCapsuleShape>(std::abs(source.size[0]), std::abs(source.size[1])));
+            break;
+        default:
+            throw std::runtime_error("unsupported PMX rigid body shape");
         }
+        if (invalidShape)
+            impl_->shapes.push_back(std::make_unique<btEmptyShape>());
+        // Upstream MikuMikuDayo sets an explicit 0.01 margin on every rigid
+        // shape instead of relying on the Bullet default.
+        impl_->shapes.back()->setMargin(0.01F);
         const bool invalidTransform = !finite(source.position) || !finite(source.rotation);
         const auto initial =
             invalidTransform ? btTransform::getIdentity() : transform(source.position, source.rotation);
@@ -151,12 +157,12 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
         impl_->kinematicDirty.push_back(0);
         impl_->motionStates.push_back(std::make_unique<btDefaultMotionState>(initial));
         // Some otherwise valid MMD models contain decorative rigid bodies with
-        // zero-sized collision geometry. Bullet's btEmptyShape cannot compute
+        // invalid collision geometry. Bullet's btEmptyShape cannot compute
         // dynamic inertia, so keep those bodies as static placeholders. This
         // preserves the PMX body index mapping while avoiding an assertion in
         // btEmptyShape::calculateLocalInertia().
         const bool invalidMass = !std::isfinite(source.mass) || source.mass <= 0.0F;
-        const btScalar candidateMass = (source.mode == 0 || degenerate || invalidMass) ? 0.0F : source.mass;
+        const btScalar candidateMass = (source.mode == 0 || invalidShape || invalidMass) ? 0.0F : source.mass;
         btVector3 inertia;
         inertia.setZero();
         if (candidateMass > 0.0F)
@@ -177,16 +183,21 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
         info.m_friction = source.friction;
         impl_->bodies.push_back(std::make_unique<btRigidBody>(info));
         impl_->modes.push_back(effectiveMode);
+        impl_->bodies.back()->setSleepingThresholds(0.01F, 0.1F * std::numbers::pi_v<float> / 180.0F);
+        impl_->bodies.back()->setActivationState(DISABLE_DEACTIVATION);
         if (effectiveMode == 0) {
             impl_->bodies.back()->setCollisionFlags(impl_->bodies.back()->getCollisionFlags() |
                                                     btCollisionObject::CF_KINEMATIC_OBJECT);
-            impl_->bodies.back()->setActivationState(DISABLE_DEACTIVATION);
         }
         const short group = static_cast<short>(1U << std::min<std::uint8_t>(source.group, 15));
-        // PMX stores groups that must not collide; Bullet stores groups that
-        // are allowed to collide.
-        const auto allowedMask = static_cast<std::uint16_t>(~source.collisionMask);
-        const short mask = static_cast<short>(allowedMask);
+        // Pass the PMX mask to Bullet unchanged, matching upstream
+        // MikuMikuDayo (groupMask = r.passGroup). Real models are authored
+        // for this convention: e.g. Tda-style legs use group 0 / mask
+        // 0xffff (collide with everything) while skirt panels use groups
+        // 14-15 / mask 0x3fff (collide with the body, not each other).
+        // Inverting the mask here used to leave legs colliding with nothing
+        // while enabling skirt self-collision instead.
+        const short mask = static_cast<short>(source.collisionMask);
         impl_->world->addRigidBody(impl_->bodies.back().get(), group, mask);
     }
     impl_->constraints.reserve(model.joints.size());
@@ -224,7 +235,10 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
             }
         }
         joint->setEquilibriumPoint();
-        impl_->world->addConstraint(joint.get(), true);
+        // Upstream adds the constraint without disabling collision between
+        // the linked bodies, so joint-connected pairs (e.g. hip to top
+        // skirt row) still collide subject to their masks.
+        impl_->world->addConstraint(joint.get());
         impl_->constraints.push_back(std::move(joint));
     }
 #else
@@ -492,28 +506,6 @@ void MmdPhysics::teleportBody(std::size_t body, const PhysicsTransform& value) {
 #else
     static_cast<void>(body);
     static_cast<void>(value);
-#endif
-}
-
-void MmdPhysics::shiftBodyPosition(std::size_t body, const Float3& delta) {
-#if DAYO_HAS_BULLET
-    if (body >= impl_->bodies.size())
-        throw std::out_of_range("PMX rigid body index");
-    if (!finite(delta))
-        return;
-    auto& rigidBody = impl_->bodies[body];
-    auto world = rigidBody->getWorldTransform();
-    world.setOrigin(world.getOrigin() + vector(delta));
-    rigidBody->setWorldTransform(world);
-    rigidBody->getMotionState()->setWorldTransform(world);
-    auto interpolation = rigidBody->getInterpolationWorldTransform();
-    interpolation.setOrigin(interpolation.getOrigin() + vector(delta));
-    rigidBody->setInterpolationWorldTransform(interpolation);
-    rigidBody->activate(true);
-    impl_->world->updateSingleAabb(rigidBody.get());
-#else
-    static_cast<void>(body);
-    static_cast<void>(delta);
 #endif
 }
 

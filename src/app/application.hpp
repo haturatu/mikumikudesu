@@ -4,6 +4,7 @@
 #include "app/video_export_job.hpp"
 #include "core/editor.hpp"
 #include "core/output.hpp"
+#include "core/profiling.hpp"
 #include "core/project.hpp"
 #include "core/scene.hpp"
 #include "core/video_export.hpp"
@@ -83,16 +84,21 @@ class Application {
     [[nodiscard]] const core::ModelInstance* selectedModel() const noexcept {
         return scene_.selectedModel();
     }
+    [[nodiscard]] const core::FrameProfiler& frameProfiler() const noexcept {
+        return frameProfiler_;
+    }
 
     Options options_;
     graphics::Device* device_{};
     core::Scene scene_;
+    core::FrameProfiler frameProfiler_;
     core::CommandHistory history_;
     core::AudioPlayer audioPlayer_;
     AudioExportJob audioExportJob_;
     VideoExportJob videoExportJob_;
     std::vector<core::ImageRgba8> textures_;
     std::vector<std::uint32_t> animatedIndices_;
+    std::uint64_t animatedVertexCount_{};
     std::vector<graphics::PreviewMaterial> animatedMaterialTemplates_;
     std::vector<graphics::PreviewDraw> animatedDraws_;
     std::uint64_t animatedTopologyGeneration_{};

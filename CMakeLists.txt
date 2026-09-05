@@ -106,6 +106,7 @@ add_library(
   src/core/editor.cpp
   src/core/output.cpp
   src/core/physics.cpp
+  src/core/profiling.cpp
   src/core/project.cpp
   src/core/scene.cpp
   src/core/vmdayo.cpp
