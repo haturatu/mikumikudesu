@@ -1,6 +1,7 @@
 #pragma once
 
 #include "graphics/device.hpp"
+#include "graphics/preview_gpu_scene.hpp"
 
 #include <vulkan/vulkan.h>
 
@@ -53,7 +54,7 @@ class VulkanDevice final : public Device {
     void uploadPreviewBackground(std::span<const PreviewTexture> textures) override;
     void clearPreviewResources() override;
     void updatePreviewScene(const PreviewScene& scene) override {
-        previewScene_ = scene;
+        previewGpuScene_.view = scene;
     }
     [[nodiscard]] BufferHandle createBuffer(const BufferDesc& desc) override;
     [[nodiscard]] TextureHandle createTexture(const TextureDesc& desc) override;
@@ -240,15 +241,10 @@ class VulkanDevice final : public Device {
     VkDeviceSize previewMaterialSize_{};
     VkDeviceSize previewMaterialCapacity_{};
     std::uint64_t previewMaterialGeneration_{};
-    std::vector<PreviewMaterialGpu> previewMaterialData_;
-    std::vector<PreviewMorphDelta> previewMorphDeltas_;
-    std::vector<float> previewMorphWeights_;
     VkBuffer previewIndexBuffer_{};
     VkDeviceMemory previewIndexMemory_{};
     std::uint32_t previewIndexCount_{};
     std::uint64_t previewVertexUpdateCount_{};
-    std::vector<PreviewMaterial> previewMaterials_;
-    std::vector<PreviewDraw> previewDraws_;
     std::vector<PreviewTextureResource> previewTextures_;
     std::vector<VkDescriptorSet> previewMaterialDescriptors_;
     std::vector<std::array<std::uint32_t, 3>> previewMaterialDescriptorKeys_;
@@ -261,7 +257,7 @@ class VulkanDevice final : public Device {
     VkExtent2D previewBackgroundExtent_{};
     VkDeviceSize previewBackgroundByteSize_{};
     bool previewBackgroundInitialized_{};
-    PreviewScene previewScene_;
+    PreviewGpuScene previewGpuScene_;
     OffscreenResource offscreen_;
 
     std::uint64_t nextResourceHandle_{1};

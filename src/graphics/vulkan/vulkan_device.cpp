@@ -1616,7 +1616,7 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
         return previewTextures_.empty() ? VK_NULL_HANDLE : previewTextures_.front().descriptor;
     };
     const auto draw = [&](const PreviewDraw& item, VkPipeline pipeline) {
-        if (item.materialIndex >= previewMaterials_.size() || item.indexCount == 0 ||
+        if (item.materialIndex >= previewGpuScene_.materials.size() || item.indexCount == 0 ||
             item.firstIndex >= previewIndexCount_)
             return;
         const auto descriptor = textureDescriptor(item.materialIndex);
@@ -1634,7 +1634,7 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
         vkCmdDrawIndexed(command, count, drawConstants.instanceCount, item.firstIndex, 0, 0);
     };
 
-    if (previewMaterials_.empty() || previewDraws_.empty()) {
+    if (previewGpuScene_.materials.empty() || previewGpuScene_.draws.empty()) {
         if (!previewTextures_.empty()) {
             const auto descriptor = previewTextures_.front().descriptor;
             vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
@@ -1648,12 +1648,12 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
     }
 
     // Original Preview.fxdayo draws all PMX materials in file order with the MMD blend/depth state.
-    for (const auto& item : previewDraws_)
+    for (const auto& item : previewGpuScene_.draws)
         draw(item, transparentPipeline_);
 
-    if (!previewScene_.outlineEnabled || edgePipeline_ == VK_NULL_HANDLE)
+    if (!previewGpuScene_.view.outlineEnabled || edgePipeline_ == VK_NULL_HANDLE)
         return;
-    for (const auto& item : previewDraws_)
+    for (const auto& item : previewGpuScene_.draws)
         draw(item, edgePipeline_);
 }
 
@@ -1729,7 +1729,8 @@ void VulkanDevice::renderFrame() {
     vkCmdPipelineBarrier2(frame.commandBuffer, &toColorDependency);
 
     VkClearValue clear{};
-    clear.color = !previewScene_.backgroundEnabled || previewScene_.screenSource == PreviewScene::ScreenSource::white
+    clear.color = !previewGpuScene_.view.backgroundEnabled ||
+                          previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::white
                       ? VkClearColorValue{{1.0F, 1.0F, 1.0F, 1.0F}}
                   : activeRenderer_ == RendererKind::preview ? VkClearColorValue{{0.025F, 0.035F, 0.055F, 1.0F}}
                                                              : VkClearColorValue{{0.055F, 0.025F, 0.045F, 1.0F}};
@@ -1737,8 +1738,8 @@ void VulkanDevice::renderFrame() {
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .imageView = swapchainViews_[imageIndex],
         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        .loadOp = previewScene_.backgroundEnabled &&
-                          previewScene_.screenSource == PreviewScene::ScreenSource::previousFrame &&
+        .loadOp = previewGpuScene_.view.backgroundEnabled &&
+                          previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::previousFrame &&
                           swapchainInitialized_[imageIndex]
                       ? VK_ATTACHMENT_LOAD_OP_LOAD
                       : VK_ATTACHMENT_LOAD_OP_CLEAR,
@@ -1790,23 +1791,23 @@ void VulkanDevice::renderFrame() {
     vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
     vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     PreviewPushConstants constants;
-    std::copy_n(previewScene_.cameraRotation, 3, constants.camera.begin());
-    constants.camera[3] = previewScene_.cameraDistance;
-    std::copy_n(previewScene_.target, 3, constants.target.begin());
-    constants.target[3] =
-        previewScene_.perspective ? previewScene_.verticalFovRadians : -previewScene_.verticalFovRadians;
-    std::copy_n(previewScene_.lightDirection, 3, constants.light.begin());
+    std::copy_n(previewGpuScene_.view.cameraRotation, 3, constants.camera.begin());
+    constants.camera[3] = previewGpuScene_.view.cameraDistance;
+    std::copy_n(previewGpuScene_.view.target, 3, constants.target.begin());
+    constants.target[3] = previewGpuScene_.view.perspective ? previewGpuScene_.view.verticalFovRadians
+                                                            : -previewGpuScene_.view.verticalFovRadians;
+    std::copy_n(previewGpuScene_.view.lightDirection, 3, constants.light.begin());
     constants.light[3] = swapchainExtent_.height == 0
                              ? 1.0F
                              : static_cast<float>(swapchainExtent_.width) / static_cast<float>(swapchainExtent_.height);
-    std::copy_n(previewScene_.lightColor, 3, constants.lightColor.begin());
-    constants.debug = {static_cast<float>(previewScene_.debugMaterial), static_cast<float>(previewScene_.debugFlags),
-                       0.0F, 0.0F};
+    std::copy_n(previewGpuScene_.view.lightColor, 3, constants.lightColor.begin());
+    constants.debug = {static_cast<float>(previewGpuScene_.view.debugMaterial),
+                       static_cast<float>(previewGpuScene_.view.debugFlags), 0.0F, 0.0F};
     constants.viewport = {static_cast<float>(swapchainExtent_.width), static_cast<float>(swapchainExtent_.height), 0.0F,
                           0.0F};
-    const bool hasBackground = previewScene_.backgroundEnabled &&
-                               (previewScene_.screenSource == PreviewScene::ScreenSource::backgroundImage ||
-                                previewScene_.screenSource == PreviewScene::ScreenSource::backgroundVideo) &&
+    const bool hasBackground = previewGpuScene_.view.backgroundEnabled &&
+                               (previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::backgroundImage ||
+                                previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::backgroundVideo) &&
                                previewBackgroundTexture_.descriptor != VK_NULL_HANDLE &&
                                previewBackgroundIndexCount_ != 0;
     if (hasBackground) {
@@ -2097,7 +2098,8 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     vkCmdPipelineBarrier2(frame.commandBuffer, &renderDependency);
 
     VkClearValue clear{};
-    clear.color = !previewScene_.backgroundEnabled || previewScene_.screenSource == PreviewScene::ScreenSource::white
+    clear.color = !previewGpuScene_.view.backgroundEnabled ||
+                          previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::white
                       ? VkClearColorValue{{1.0F, 1.0F, 1.0F, 1.0F}}
                       : VkClearColorValue{{0.025F, 0.035F, 0.055F, 1.0F}};
     const VkRenderingAttachmentInfo colorAttachment{
@@ -2152,20 +2154,20 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
     vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     PreviewPushConstants constants;
-    std::copy_n(previewScene_.cameraRotation, 3, constants.camera.begin());
-    constants.camera[3] = previewScene_.cameraDistance;
-    std::copy_n(previewScene_.target, 3, constants.target.begin());
-    constants.target[3] =
-        previewScene_.perspective ? previewScene_.verticalFovRadians : -previewScene_.verticalFovRadians;
-    std::copy_n(previewScene_.lightDirection, 3, constants.light.begin());
+    std::copy_n(previewGpuScene_.view.cameraRotation, 3, constants.camera.begin());
+    constants.camera[3] = previewGpuScene_.view.cameraDistance;
+    std::copy_n(previewGpuScene_.view.target, 3, constants.target.begin());
+    constants.target[3] = previewGpuScene_.view.perspective ? previewGpuScene_.view.verticalFovRadians
+                                                            : -previewGpuScene_.view.verticalFovRadians;
+    std::copy_n(previewGpuScene_.view.lightDirection, 3, constants.light.begin());
     constants.light[3] = static_cast<float>(extent.width) / static_cast<float>(extent.height);
-    std::copy_n(previewScene_.lightColor, 3, constants.lightColor.begin());
-    constants.debug = {static_cast<float>(previewScene_.debugMaterial), static_cast<float>(previewScene_.debugFlags),
-                       0.0F, 0.0F};
+    std::copy_n(previewGpuScene_.view.lightColor, 3, constants.lightColor.begin());
+    constants.debug = {static_cast<float>(previewGpuScene_.view.debugMaterial),
+                       static_cast<float>(previewGpuScene_.view.debugFlags), 0.0F, 0.0F};
     constants.viewport = {static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0F, 0.0F};
-    const bool hasBackground = previewScene_.backgroundEnabled &&
-                               (previewScene_.screenSource == PreviewScene::ScreenSource::backgroundImage ||
-                                previewScene_.screenSource == PreviewScene::ScreenSource::backgroundVideo) &&
+    const bool hasBackground = previewGpuScene_.view.backgroundEnabled &&
+                               (previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::backgroundImage ||
+                                previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::backgroundVideo) &&
                                previewBackgroundTexture_.descriptor != VK_NULL_HANDLE &&
                                previewBackgroundIndexCount_ != 0;
     if (hasBackground) {
@@ -2394,18 +2396,19 @@ void VulkanDevice::destroyPreviewMorphs() {
 void VulkanDevice::rebuildPreviewMorphBuffers() {
     waitIdle();
     destroyPreviewMorphs();
-    previewMorphDeltaSize_ = static_cast<VkDeviceSize>(previewMorphDeltas_.size() * sizeof(PreviewMorphDelta));
-    previewMorphWeightSize_ = static_cast<VkDeviceSize>(previewMorphWeights_.size() * sizeof(float));
+    previewMorphDeltaSize_ = static_cast<VkDeviceSize>(previewGpuScene_.morphDeltas.size() * sizeof(PreviewMorphDelta));
+    previewMorphWeightSize_ = static_cast<VkDeviceSize>(previewGpuScene_.morphWeights.size() * sizeof(float));
     previewMorphDeltaCapacity_ = growPreviewCapacity(previewMorphDeltaSize_);
     previewMorphWeightCapacity_ = growPreviewCapacity(previewMorphWeightSize_);
     ++previewMorphDeltaGeneration_;
     ++previewMorphGeneration_;
     for (auto& frame : frames_) {
-        uploadPreviewBuffer(previewMorphDeltas_.data(), previewMorphDeltaSize_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                            frame.previewMorphDeltaBuffer, frame.previewMorphDeltaMemory, previewMorphDeltaCapacity_);
-        uploadPreviewBuffer(previewMorphWeights_.data(), previewMorphWeightSize_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                            frame.previewMorphWeightBuffer, frame.previewMorphWeightMemory,
-                            previewMorphWeightCapacity_);
+        uploadPreviewBuffer(previewGpuScene_.morphDeltas.data(), previewMorphDeltaSize_,
+                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, frame.previewMorphDeltaBuffer,
+                            frame.previewMorphDeltaMemory, previewMorphDeltaCapacity_);
+        uploadPreviewBuffer(previewGpuScene_.morphWeights.data(), previewMorphWeightSize_,
+                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, frame.previewMorphWeightBuffer,
+                            frame.previewMorphWeightMemory, previewMorphWeightCapacity_);
         check(vkMapMemory(device_, frame.previewMorphDeltaMemory, 0, previewMorphDeltaSize_, 0,
                           &frame.mappedPreviewMorphDeltas),
               "persistently map preview morph deltas");
@@ -2452,11 +2455,11 @@ void VulkanDevice::uploadPreviewMorphDeltas(std::span<const PreviewMorphDelta> d
     const PreviewMorphDelta fallbackDelta{};
     if (deltas.empty())
         deltas = std::span<const PreviewMorphDelta>(&fallbackDelta, 1);
-    previewMorphDeltas_.assign(deltas.begin(), deltas.end());
+    previewGpuScene_.morphDeltas.assign(deltas.begin(), deltas.end());
     const auto deltaSize = static_cast<VkDeviceSize>(deltas.size_bytes());
     if (deltaSize > previewMorphDeltaCapacity_ || frames_.front().previewMorphDeltaBuffer == VK_NULL_HANDLE) {
-        if (previewMorphWeights_.empty())
-            previewMorphWeights_.push_back(0.0F);
+        if (previewGpuScene_.morphWeights.empty())
+            previewGpuScene_.morphWeights.push_back(0.0F);
         rebuildPreviewMorphBuffers();
         return;
     }
@@ -2473,11 +2476,11 @@ void VulkanDevice::updatePreviewMorphWeights(std::span<const float> weights) {
     const float fallbackWeight = 0.0F;
     if (weights.empty())
         weights = std::span<const float>(&fallbackWeight, 1);
-    previewMorphWeights_.assign(weights.begin(), weights.end());
+    previewGpuScene_.morphWeights.assign(weights.begin(), weights.end());
     const auto weightSize = static_cast<VkDeviceSize>(weights.size_bytes());
     if (weightSize > previewMorphWeightCapacity_ || frames_.front().previewMorphWeightBuffer == VK_NULL_HANDLE) {
-        if (previewMorphDeltas_.empty())
-            previewMorphDeltas_.push_back(PreviewMorphDelta{});
+        if (previewGpuScene_.morphDeltas.empty())
+            previewGpuScene_.morphDeltas.push_back(PreviewMorphDelta{});
         rebuildPreviewMorphBuffers();
         return;
     }
@@ -2555,18 +2558,19 @@ void VulkanDevice::destroyPreviewMaterialDescriptors() {
 
 void VulkanDevice::refreshPreviewMaterialDescriptors() {
     std::vector<std::array<std::uint32_t, 3>> keys;
-    keys.reserve(previewMaterials_.size());
-    for (const auto& material : previewMaterials_) {
+    keys.reserve(previewGpuScene_.materials.size());
+    for (const auto& material : previewGpuScene_.materials) {
         keys.push_back({material.textureSlot, material.toonTextureSlot, material.sphereTextureSlot});
     }
-    if (keys == previewMaterialDescriptorKeys_ && previewMaterialDescriptors_.size() == previewMaterials_.size())
+    if (keys == previewMaterialDescriptorKeys_ &&
+        previewMaterialDescriptors_.size() == previewGpuScene_.materials.size())
         return;
     waitIdle();
     destroyPreviewMaterialDescriptors();
-    if (previewMaterials_.empty() || previewTextures_.empty())
+    if (previewGpuScene_.materials.empty() || previewTextures_.empty())
         return;
 
-    previewMaterialDescriptors_.resize(previewMaterials_.size());
+    previewMaterialDescriptors_.resize(previewGpuScene_.materials.size());
     const auto layout = previewDescriptorSetLayout_;
     const VkDescriptorSetAllocateInfo setInfo{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -2574,8 +2578,8 @@ void VulkanDevice::refreshPreviewMaterialDescriptors() {
         .descriptorSetCount = 1,
         .pSetLayouts = &layout,
     };
-    for (std::size_t index = 0; index < previewMaterials_.size(); ++index) {
-        auto& material = previewMaterials_[index];
+    for (std::size_t index = 0; index < previewGpuScene_.materials.size(); ++index) {
+        auto& material = previewGpuScene_.materials[index];
         check(vkAllocateDescriptorSets(device_, &setInfo, &previewMaterialDescriptors_[index]),
               "allocate preview material descriptor");
         const auto textureView = [&](std::uint32_t slot) {
@@ -2966,12 +2970,12 @@ void VulkanDevice::updatePreviewBones(std::span<const PreviewBoneTransform> bone
 }
 
 void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> materials) {
-    previewMaterials_.assign(materials.begin(), materials.end());
+    previewGpuScene_.materials.assign(materials.begin(), materials.end());
     refreshPreviewMaterialDescriptors();
 
-    previewMaterialData_.clear();
-    previewMaterialData_.reserve(std::max<std::size_t>(previewMaterials_.size(), 1U));
-    for (const auto& material : previewMaterials_) {
+    previewGpuScene_.materialData.clear();
+    previewGpuScene_.materialData.reserve(std::max<std::size_t>(previewGpuScene_.materials.size(), 1U));
+    for (const auto& material : previewGpuScene_.materials) {
         PreviewMaterialGpu gpu;
         std::copy_n(material.diffuse, 4, gpu.diffuse);
         std::copy_n(material.ambient, 3, gpu.ambientShininess);
@@ -2990,17 +2994,17 @@ void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> mater
         gpu.textureSlots[0] = material.textureSlot;
         gpu.textureSlots[1] = material.toonTextureSlot;
         gpu.textureSlots[2] = material.sphereTextureSlot;
-        previewMaterialData_.push_back(gpu);
+        previewGpuScene_.materialData.push_back(gpu);
     }
-    if (previewMaterialData_.empty()) {
+    if (previewGpuScene_.materialData.empty()) {
         PreviewMaterialGpu fallback;
         fallback.diffuse[0] = fallback.diffuse[1] = fallback.diffuse[2] = fallback.diffuse[3] = 1.0F;
         fallback.ambientShininess[0] = fallback.ambientShininess[1] = fallback.ambientShininess[2] = 1.0F;
         fallback.textureMultiply[0] = fallback.textureMultiply[1] = fallback.textureMultiply[2] =
             fallback.textureMultiply[3] = 1.0F;
-        previewMaterialData_.push_back(fallback);
+        previewGpuScene_.materialData.push_back(fallback);
     }
-    const auto byteSize = static_cast<VkDeviceSize>(previewMaterialData_.size() * sizeof(PreviewMaterialGpu));
+    const auto byteSize = static_cast<VkDeviceSize>(previewGpuScene_.materialData.size() * sizeof(PreviewMaterialGpu));
     if (byteSize > previewMaterialCapacity_ || frames_.front().previewMaterialBuffer == VK_NULL_HANDLE) {
         waitIdle();
         destroyPreviewMaterialBuffers();
@@ -3008,7 +3012,7 @@ void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> mater
         previewMaterialCapacity_ = growPreviewCapacity(byteSize);
         ++previewMaterialGeneration_;
         for (auto& frame : frames_) {
-            uploadPreviewBuffer(previewMaterialData_.data(), byteSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            uploadPreviewBuffer(previewGpuScene_.materialData.data(), byteSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                 frame.previewMaterialBuffer, frame.previewMaterialMemory, previewMaterialCapacity_);
             check(vkMapMemory(device_, frame.previewMaterialMemory, 0, byteSize, 0, &frame.mappedPreviewMaterials),
                   "persistently map preview materials");
@@ -3040,13 +3044,14 @@ void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> mater
         previewMaterialSize_ = byteSize;
         auto& frame = frames_[frameIndex_];
         check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for preview material frame");
-        std::memcpy(frame.mappedPreviewMaterials, previewMaterialData_.data(), static_cast<std::size_t>(byteSize));
+        std::memcpy(frame.mappedPreviewMaterials, previewGpuScene_.materialData.data(),
+                    static_cast<std::size_t>(byteSize));
         frame.previewMaterialGeneration = ++previewMaterialGeneration_;
     }
 }
 
 void VulkanDevice::updatePreviewDraws(std::span<const PreviewDraw> draws) {
-    previewDraws_.assign(draws.begin(), draws.end());
+    previewGpuScene_.draws.assign(draws.begin(), draws.end());
 }
 
 void VulkanDevice::uploadPreviewTextures(std::span<const PreviewTexture> textures) {
@@ -3085,9 +3090,9 @@ void VulkanDevice::clearPreviewResources() {
     destroyPreviewBackground();
     uploadPreviewTextures(std::span<const PreviewTexture>{});
     updatePreviewMaterials(std::span<const PreviewMaterial>{});
-    previewDraws_.clear();
-    previewScene_ = {};
-    previewScene_.screenSource = PreviewScene::ScreenSource::white;
+    previewGpuScene_.draws.clear();
+    previewGpuScene_.view = {};
+    previewGpuScene_.view.screenSource = PreviewScene::ScreenSource::white;
     std::fill(swapchainInitialized_.begin(), swapchainInitialized_.end(), false);
     log::info("Cleared preview GPU resources");
 }
