@@ -1181,7 +1181,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                     std::copy(animated.toonMultiply.begin(), animated.toonMultiply.end(), material.toonMultiply);
                     std::copy(animated.toonAdd.begin(), animated.toonAdd.end(), material.toonAdd);
                     std::copy(animated.edgeColor.begin(), animated.edgeColor.end(), material.edgeColor);
-                    material.edgeSize = animated.edgeSize;
+                    // Edge extrusion is a distance in the same normalized space as the vertices.
+                    material.edgeSize = animated.edgeSize * instance.normalization.scale;
                 }
                 material.transparent = materialCanBeTransparent(material);
                 auto& draw = draws[drawCursor++];
