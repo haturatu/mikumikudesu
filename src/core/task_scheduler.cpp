@@ -22,15 +22,14 @@ struct TaskScheduler::Impl {
     }
 
     struct WorkerScope {
-        Impl*& slot;
         Impl* previous;
 
-        explicit WorkerScope(Impl* owner) : slot(currentWorker()), previous(slot) {
-            slot = owner;
+        explicit WorkerScope(Impl* owner) : previous(currentWorker()) {
+            currentWorker() = owner;
         }
 
         ~WorkerScope() {
-            slot = previous;
+            currentWorker() = previous;
         }
     };
 
