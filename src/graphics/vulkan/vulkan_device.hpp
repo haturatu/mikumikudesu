@@ -177,7 +177,7 @@ class VulkanDevice final : public Device {
     void refreshPreviewBindlessDescriptor();
     void recordPreviewModel(VkCommandBuffer command, const PreviewPushConstants& constants);
     void uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer,
-                             VkDeviceMemory& memory);
+                             VkDeviceMemory& memory, VkDeviceSize allocationSize = 0);
     [[nodiscard]] std::uint32_t findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags flags) const;
 
     platform::Window& window_;
@@ -236,14 +236,19 @@ class VulkanDevice final : public Device {
     VkBuffer previewStaticVertexBuffer_{};
     VkDeviceMemory previewStaticVertexMemory_{};
     VkDeviceSize previewVertexSize_{};
+    VkDeviceSize previewVertexCapacity_{};
     std::uint64_t previewVertexGeneration_{};
     VkDeviceSize previewBoneSize_{};
+    VkDeviceSize previewBoneCapacity_{};
     std::uint64_t previewBoneGeneration_{};
     VkDeviceSize previewMorphDeltaSize_{};
+    VkDeviceSize previewMorphDeltaCapacity_{};
     VkDeviceSize previewMorphWeightSize_{};
+    VkDeviceSize previewMorphWeightCapacity_{};
     std::uint64_t previewMorphDeltaGeneration_{};
     std::uint64_t previewMorphGeneration_{};
     VkDeviceSize previewMaterialSize_{};
+    VkDeviceSize previewMaterialCapacity_{};
     std::uint64_t previewMaterialGeneration_{};
     std::vector<PreviewMaterialGpu> previewMaterialData_;
     std::vector<PreviewMorphDelta> previewMorphDeltas_;

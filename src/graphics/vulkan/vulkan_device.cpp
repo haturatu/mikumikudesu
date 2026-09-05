@@ -37,6 +37,18 @@ void check(VkResult result, std::string_view operation) {
     }
 }
 
+VkDeviceSize growPreviewCapacity(VkDeviceSize required) {
+    if (required == 0)
+        return 0;
+    VkDeviceSize capacity = 1;
+    while (capacity < required) {
+        if (capacity > std::numeric_limits<VkDeviceSize>::max() / 2)
+            return required;
+        capacity *= 2;
+    }
+    return capacity;
+}
+
 VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
                                              VkDebugUtilsMessageTypeFlagsEXT,
                                              const VkDebugUtilsMessengerCallbackDataEXT* data, void*) {
@@ -2270,6 +2282,7 @@ void VulkanDevice::destroyPreviewMesh() {
         frame.previewVertexGeneration = 0;
     }
     previewVertexSize_ = 0;
+    previewVertexCapacity_ = 0;
     previewVertexGeneration_ = 0;
     previewIndexBuffer_ = VK_NULL_HANDLE;
     previewIndexMemory_ = VK_NULL_HANDLE;
@@ -2313,6 +2326,7 @@ void VulkanDevice::destroyPreviewBones() {
         frame.previewBoneGeneration = 0;
     }
     previewBoneSize_ = 0;
+    previewBoneCapacity_ = 0;
     previewBoneGeneration_ = 0;
 }
 
@@ -2358,7 +2372,9 @@ void VulkanDevice::destroyPreviewMorphs() {
         frame.previewMorphGeneration = 0;
     }
     previewMorphDeltaSize_ = 0;
+    previewMorphDeltaCapacity_ = 0;
     previewMorphWeightSize_ = 0;
+    previewMorphWeightCapacity_ = 0;
     previewMorphDeltaGeneration_ = 0;
     previewMorphGeneration_ = 0;
 }
@@ -2368,13 +2384,16 @@ void VulkanDevice::rebuildPreviewMorphBuffers() {
     destroyPreviewMorphs();
     previewMorphDeltaSize_ = static_cast<VkDeviceSize>(previewMorphDeltas_.size() * sizeof(PreviewMorphDelta));
     previewMorphWeightSize_ = static_cast<VkDeviceSize>(previewMorphWeights_.size() * sizeof(float));
+    previewMorphDeltaCapacity_ = growPreviewCapacity(previewMorphDeltaSize_);
+    previewMorphWeightCapacity_ = growPreviewCapacity(previewMorphWeightSize_);
     ++previewMorphDeltaGeneration_;
     ++previewMorphGeneration_;
     for (auto& frame : frames_) {
         uploadPreviewBuffer(previewMorphDeltas_.data(), previewMorphDeltaSize_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                            frame.previewMorphDeltaBuffer, frame.previewMorphDeltaMemory);
+                            frame.previewMorphDeltaBuffer, frame.previewMorphDeltaMemory, previewMorphDeltaCapacity_);
         uploadPreviewBuffer(previewMorphWeights_.data(), previewMorphWeightSize_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                            frame.previewMorphWeightBuffer, frame.previewMorphWeightMemory);
+                            frame.previewMorphWeightBuffer, frame.previewMorphWeightMemory,
+                            previewMorphWeightCapacity_);
         check(vkMapMemory(device_, frame.previewMorphDeltaMemory, 0, previewMorphDeltaSize_, 0,
                           &frame.mappedPreviewMorphDeltas),
               "persistently map preview morph deltas");
@@ -2390,8 +2409,8 @@ void VulkanDevice::rebuildPreviewMorphBuffers() {
         check(vkAllocateDescriptorSets(device_, &setInfo, &frame.previewMorphDescriptor),
               "allocate preview morph descriptor");
         const std::array<VkDescriptorBufferInfo, 2> buffers{{
-            {frame.previewMorphDeltaBuffer, 0, previewMorphDeltaSize_},
-            {frame.previewMorphWeightBuffer, 0, previewMorphWeightSize_},
+            {frame.previewMorphDeltaBuffer, 0, previewMorphDeltaCapacity_},
+            {frame.previewMorphWeightBuffer, 0, previewMorphWeightCapacity_},
         }};
         const std::array writes{
             VkWriteDescriptorSet{
@@ -2423,13 +2442,14 @@ void VulkanDevice::uploadPreviewMorphDeltas(std::span<const PreviewMorphDelta> d
         deltas = std::span<const PreviewMorphDelta>(&fallbackDelta, 1);
     previewMorphDeltas_.assign(deltas.begin(), deltas.end());
     const auto deltaSize = static_cast<VkDeviceSize>(deltas.size_bytes());
-    if (deltaSize != previewMorphDeltaSize_ || frames_.front().previewMorphDeltaBuffer == VK_NULL_HANDLE) {
+    if (deltaSize > previewMorphDeltaCapacity_ || frames_.front().previewMorphDeltaBuffer == VK_NULL_HANDLE) {
         if (previewMorphWeights_.empty())
             previewMorphWeights_.push_back(0.0F);
         rebuildPreviewMorphBuffers();
         return;
     }
     waitIdle();
+    previewMorphDeltaSize_ = deltaSize;
     ++previewMorphDeltaGeneration_;
     for (auto& frame : frames_) {
         std::memcpy(frame.mappedPreviewMorphDeltas, deltas.data(), deltas.size_bytes());
@@ -2443,12 +2463,13 @@ void VulkanDevice::updatePreviewMorphWeights(std::span<const float> weights) {
         weights = std::span<const float>(&fallbackWeight, 1);
     previewMorphWeights_.assign(weights.begin(), weights.end());
     const auto weightSize = static_cast<VkDeviceSize>(weights.size_bytes());
-    if (weightSize != previewMorphWeightSize_ || frames_.front().previewMorphWeightBuffer == VK_NULL_HANDLE) {
+    if (weightSize > previewMorphWeightCapacity_ || frames_.front().previewMorphWeightBuffer == VK_NULL_HANDLE) {
         if (previewMorphDeltas_.empty())
             previewMorphDeltas_.push_back(PreviewMorphDelta{});
         rebuildPreviewMorphBuffers();
         return;
     }
+    previewMorphWeightSize_ = weightSize;
     auto& frame = frames_[frameIndex_];
     check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for preview morph frame");
     std::memcpy(frame.mappedPreviewMorphWeights, weights.data(), weights.size_bytes());
@@ -2491,6 +2512,7 @@ void VulkanDevice::destroyPreviewMaterialBuffers() {
         frame.previewMaterialGeneration = 0;
     }
     previewMaterialSize_ = 0;
+    previewMaterialCapacity_ = 0;
     previewMaterialGeneration_ = 0;
 }
 
@@ -2710,10 +2732,15 @@ void VulkanDevice::destroyPreviewBackground() {
 }
 
 void VulkanDevice::uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer,
-                                       VkDeviceMemory& memory) {
+                                       VkDeviceMemory& memory, VkDeviceSize allocationSize) {
+    if (data == nullptr || size == 0)
+        throw std::invalid_argument("preview buffer is empty");
+    const auto storageSize = allocationSize == 0 ? size : allocationSize;
+    if (storageSize < size)
+        throw std::invalid_argument("preview buffer allocation is smaller than its data");
     const VkBufferCreateInfo bufferInfo{
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = size,
+        .size = storageSize,
         .usage = usage,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
@@ -2729,7 +2756,7 @@ void VulkanDevice::uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBu
     check(vkAllocateMemory(device_, &allocationInfo, nullptr, &memory), "allocate preview mesh memory");
     check(vkBindBufferMemory(device_, buffer, memory, 0), "bind preview mesh memory");
     void* mapped = nullptr;
-    check(vkMapMemory(device_, memory, 0, size, 0, &mapped), "map preview mesh memory");
+    check(vkMapMemory(device_, memory, 0, storageSize, 0, &mapped), "map preview mesh memory");
     std::memcpy(mapped, data, static_cast<std::size_t>(size));
     vkUnmapMemory(device_, memory);
 }
@@ -2867,6 +2894,7 @@ void VulkanDevice::uploadPreviewMesh(std::span<const PreviewVertex> vertices, st
         for (auto& frame : frames_)
             frame.previewVertexGeneration = previewVertexGeneration_;
         previewVertexSize_ = vertices.size_bytes();
+        previewVertexCapacity_ = vertices.size_bytes();
         uploadPreviewDeviceLocalBuffer(indices.data(), indices.size_bytes(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                                        previewIndexBuffer_, previewIndexMemory_);
         previewIndexCount_ = static_cast<std::uint32_t>(indices.size());
@@ -2907,14 +2935,16 @@ void VulkanDevice::uploadPreviewBackground(std::span<const PreviewTexture> textu
 }
 
 void VulkanDevice::updatePreviewVertices(std::span<const PreviewVertex> vertices) {
-    if (vertices.size_bytes() != previewVertexSize_)
-        throw std::invalid_argument("preview vertex update has a different size");
+    if (vertices.empty() || vertices.size_bytes() > previewVertexCapacity_)
+        throw std::invalid_argument("preview vertex update exceeds its capacity");
+    previewVertexSize_ = vertices.size_bytes();
 
     if (previewStaticVertexBuffer_ != VK_NULL_HANDLE) {
         waitIdle();
+        previewVertexCapacity_ = growPreviewCapacity(vertices.size_bytes());
         for (auto& frame : frames_) {
             uploadPreviewBuffer(vertices.data(), vertices.size_bytes(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                                frame.previewVertexBuffer, frame.previewVertexMemory);
+                                frame.previewVertexBuffer, frame.previewVertexMemory, previewVertexCapacity_);
             check(vkMapMemory(device_, frame.previewVertexMemory, 0, vertices.size_bytes(), 0,
                               &frame.mappedPreviewVertices),
                   "persistently map animated preview vertices");
@@ -2945,14 +2975,15 @@ void VulkanDevice::updatePreviewBones(std::span<const PreviewBoneTransform> bone
     if (bones.empty())
         bones = identity;
     const auto byteSize = static_cast<VkDeviceSize>(bones.size_bytes());
-    if (byteSize != previewBoneSize_) {
+    if (byteSize > previewBoneCapacity_ || frames_.front().previewBoneBuffer == VK_NULL_HANDLE) {
         waitIdle();
         destroyPreviewBones();
         previewBoneSize_ = byteSize;
+        previewBoneCapacity_ = growPreviewCapacity(byteSize);
         ++previewBoneGeneration_;
         for (auto& frame : frames_) {
             uploadPreviewBuffer(bones.data(), byteSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, frame.previewBoneBuffer,
-                                frame.previewBoneMemory);
+                                frame.previewBoneMemory, previewBoneCapacity_);
             check(vkMapMemory(device_, frame.previewBoneMemory, 0, byteSize, 0, &frame.mappedPreviewBones),
                   "persistently map preview bones");
             const VkDescriptorSetAllocateInfo setInfo{
@@ -2963,7 +2994,7 @@ void VulkanDevice::updatePreviewBones(std::span<const PreviewBoneTransform> bone
             };
             check(vkAllocateDescriptorSets(device_, &setInfo, &frame.previewBoneDescriptor),
                   "allocate preview bone descriptor");
-            const VkDescriptorBufferInfo bufferInfo{frame.previewBoneBuffer, 0, previewBoneSize_};
+            const VkDescriptorBufferInfo bufferInfo{frame.previewBoneBuffer, 0, previewBoneCapacity_};
             const VkWriteDescriptorSet write{
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                 .dstSet = frame.previewBoneDescriptor,
@@ -2977,6 +3008,7 @@ void VulkanDevice::updatePreviewBones(std::span<const PreviewBoneTransform> bone
         }
         return;
     }
+    previewBoneSize_ = byteSize;
     auto& frame = frames_[frameIndex_];
     check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for preview bone frame");
     std::memcpy(frame.mappedPreviewBones, bones.data(), bones.size_bytes());
@@ -3019,14 +3051,15 @@ void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> mater
         previewMaterialData_.push_back(fallback);
     }
     const auto byteSize = static_cast<VkDeviceSize>(previewMaterialData_.size() * sizeof(PreviewMaterialGpu));
-    if (byteSize != previewMaterialSize_) {
+    if (byteSize > previewMaterialCapacity_ || frames_.front().previewMaterialBuffer == VK_NULL_HANDLE) {
         waitIdle();
         destroyPreviewMaterialBuffers();
         previewMaterialSize_ = byteSize;
+        previewMaterialCapacity_ = growPreviewCapacity(byteSize);
         ++previewMaterialGeneration_;
         for (auto& frame : frames_) {
             uploadPreviewBuffer(previewMaterialData_.data(), byteSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                frame.previewMaterialBuffer, frame.previewMaterialMemory);
+                                frame.previewMaterialBuffer, frame.previewMaterialMemory, previewMaterialCapacity_);
             check(vkMapMemory(device_, frame.previewMaterialMemory, 0, byteSize, 0, &frame.mappedPreviewMaterials),
                   "persistently map preview materials");
             const VkDescriptorSetAllocateInfo setInfo{
@@ -3040,7 +3073,7 @@ void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> mater
             const VkDescriptorBufferInfo bufferInfo{
                 frame.previewMaterialBuffer,
                 0,
-                previewMaterialSize_,
+                previewMaterialCapacity_,
             };
             const VkWriteDescriptorSet write{
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -3054,6 +3087,7 @@ void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> mater
             frame.previewMaterialGeneration = previewMaterialGeneration_;
         }
     } else {
+        previewMaterialSize_ = byteSize;
         auto& frame = frames_[frameIndex_];
         check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for preview material frame");
         std::memcpy(frame.mappedPreviewMaterials, previewMaterialData_.data(), static_cast<std::size_t>(byteSize));
