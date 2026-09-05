@@ -85,23 +85,21 @@ int main() {
                  "1.0\r\n"
                  "model.pmd;\r\n"
                  "2;\r\n"
-                 "Bone0{\r\n"
-                 "センター;\r\n"
+                 "Bone0{センター\r\n"
                  "1.0, 2.0, 3.0;\r\n"
                  "0.0, 0.1, 0.2, 0.9;\r\n"
                  "}\r\n"
-                 "Bone1{\r\n"
-                 "右腕;\r\n"
+                 "Bone1{右腕\r\n"
                  "-1.0, -2.0, -3.0;\r\n"
                  "0.3, 0.4, 0.5, 0.6;\r\n"
                  "}\r\n");
         const auto pose = dayo::core::loadVpd(path);
-        ok &= check(pose.bones.size() == 2 && pose.bones[0].name == "センター" &&
-                        pose.bones[0].translation[2] == 3.0F && pose.bones[1].name == "右腕" &&
-                        pose.bones[1].rotation[3] == 0.6F,
-                    "standard CP932 VPD with CRLF and multiple bones");
+        ok &=
+            check(pose.bones.size() == 2 && pose.bones[0].name == "センター" && pose.bones[0].translation[2] == 3.0F &&
+                      pose.bones[1].name == "右腕" && pose.bones[1].rotation[3] == 0.6F,
+                  "standard CP932 VPD with CRLF and multiple bones");
 
-        writeVpd("Vocaloid Pose Data file\nBone0{\ncenter;\n0.0, 0.0, 0.0;\n0.0, 0.0, 0.0, 1.0;\n");
+        writeVpd("Vocaloid Pose Data file\nBone0{center\n0.0, 0.0, 0.0;\n0.0, 0.0, 0.0, 1.0;\n");
         bool rejectedMissingBrace = false;
         try {
             static_cast<void>(dayo::core::loadVpd(path));
@@ -110,7 +108,7 @@ int main() {
         }
         ok &= check(rejectedMissingBrace, "VPD rejects a missing closing brace");
 
-        writeVpd("Vocaloid Pose Data file\nBone0{\ncenter;\n0.0, 0.0;\n0.0, 0.0, 0.0, 1.0;\n}\n");
+        writeVpd("Vocaloid Pose Data file\nBone0{center\n0.0, 0.0;\n0.0, 0.0, 0.0, 1.0;\n}\n");
         bool rejectedShortVector = false;
         try {
             static_cast<void>(dayo::core::loadVpd(path));

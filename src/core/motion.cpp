@@ -410,19 +410,21 @@ VpdPose loadVpd(const std::filesystem::path& path) {
         const auto line = nextLine(text, cursor);
         if (line.empty())
             continue;
-        if (line.rfind("Bone", 0) != 0)
+        if (!line.starts_with("Bone"))
             continue;
         const auto open = line.find('{');
         if (open == std::string::npos)
             throw std::runtime_error("malformed VPD bone header");
         VpdBonePose bone;
-        const auto name = nextLine(text, cursor);
+        auto name = removeOptionalTerminator(line.substr(open + 1));
+        if (name.empty())
+            name = removeOptionalTerminator(nextLine(text, cursor));
         const auto translation = nextLine(text, cursor);
         const auto rotation = nextLine(text, cursor);
         const auto close = nextLine(text, cursor);
         if (name.empty() || translation.empty() || rotation.empty() || close != "}")
             throw std::runtime_error("malformed VPD bone block");
-        bone.name = removeOptionalTerminator(name);
+        bone.name = std::move(name);
         if (bone.name.empty())
             throw std::runtime_error("malformed VPD bone name");
         bone.translation = parseVector<3>(translation, "translation");
