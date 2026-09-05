@@ -1,6 +1,0 @@
-Category : glass
-Roughness : 0
-Iridescence : 0.5
-TextureLoops : 0.025
-_T IridescenceLUT : t/iri_shabon.dds
-_T IridescenceMap : t/shabonD.jpg

@@ -1,4 +1,0 @@
-Roughness:0.7,0.25
-IOR:1.5,0
-AutoNormal:1
-ShadowCaster : 0

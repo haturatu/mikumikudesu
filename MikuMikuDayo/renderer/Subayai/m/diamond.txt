@@ -1,3 +1,0 @@
-Category:glass
-Roughness:0
-IOR:2.38,13500

@@ -19,7 +19,7 @@ env:
 
 jobs:
   build:
-    name: ${{ matrix.compiler }} / ${{ matrix.preset }}
+    name: ${{ matrix.compiler }} / ${{ matrix.preset }} / ${{ matrix.test_scope }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -29,14 +29,22 @@ jobs:
             cc: gcc
             cxx: g++
             preset: linux-debug
+            test_scope: core
           - compiler: Clang
             cc: clang
             cxx: clang++
             preset: linux-debug
+            test_scope: core
           - compiler: GCC
             cc: gcc
             cxx: g++
             preset: linux-release
+            test_scope: core
+          - compiler: GCC
+            cc: gcc
+            cxx: g++
+            preset: linux-debug
+            test_scope: upstream
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
@@ -80,9 +88,20 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
-          key: ccache-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.preset }}-${{ github.ref_name }}
+          key: ccache-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.preset }}-${{ matrix.test_scope }}-${{ github.ref_name }}
           restore-keys: |
-            ccache-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.preset }}-
+            ccache-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.preset }}-${{ matrix.test_scope }}-
+
+      - name: Restore MikuMikuDayo archive
+        if: matrix.test_scope == 'upstream'
+        uses: actions/cache@v6
+        with:
+          path: .cache/mikumikudayo
+          key: mikumikudayo-${{ hashFiles('deps/mikumikudayo.lock') }}
+
+      - name: Prepare MikuMikuDayo
+        if: matrix.test_scope == 'upstream'
+        run: python3 scripts/fetch-mikumikudayo.py
 
       - name: Configure
         run: cmake --preset "${{ matrix.preset }}" -DDAYO_WARNINGS_AS_ERRORS=ON -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
@@ -91,9 +110,16 @@ jobs:
         run: cmake --build --preset "${{ matrix.preset }}" --parallel
 
       - name: Test
+        if: matrix.test_scope == 'core'
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
-        run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset "${{ matrix.preset }}" --output-on-failure
+        run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset "${{ matrix.preset }}" --output-on-failure -LE upstream
+
+      - name: Test upstream compatibility
+        if: matrix.test_scope == 'upstream'
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset "${{ matrix.preset }}" --output-on-failure -L upstream
 
       - name: Show compiler cache statistics
         if: always()
@@ -165,4 +191,4 @@ jobs:
       - name: Test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
-        run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset linux-system-only --output-on-failure
+        run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset linux-system-only --output-on-failure -LE upstream

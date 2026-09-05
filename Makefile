@@ -14,11 +14,14 @@ JOBS ?=
 ARGS ?=
 CMAKE_ARGS ?=
 PREFIX ?= $(CURDIR)/install
+MIKUMIKUDAYO_STAMP := MikuMikuDayo/.mikumikudayo-ready
+MIKUMIKUDAYO_LOCK := deps/mikumikudayo.lock
+MIKUMIKUDAYO_FETCH := scripts/fetch-mikumikudayo.py
 
 TIDY_JOBS ?= 2
 
 .PHONY: \
-	help all configure build \
+	help all setup configure build package \
 	debug release sanitize system \
 	test run probe amd-check ci \
 	format format-check shellcheck lint tidy \
@@ -29,6 +32,11 @@ TIDY_JOBS ?= 2
 # ---------------------------------------------------------------------
 
 all: build
+
+setup: $(MIKUMIKUDAYO_STAMP)
+
+$(MIKUMIKUDAYO_STAMP): $(MIKUMIKUDAYO_LOCK) $(MIKUMIKUDAYO_FETCH)
+	python3 $(MIKUMIKUDAYO_FETCH)
 
 configure:
 	cmake --preset "$(PRESET)" $(CMAKE_ARGS)
@@ -52,7 +60,7 @@ system:
 # Test / run
 # ---------------------------------------------------------------------
 
-test: build
+test: setup build
 	ctest --preset "$(PRESET)" --output-on-failure
 
 run: build
@@ -65,7 +73,7 @@ amd-check:
 	./scripts/check-linux-amd.sh
 
 # Roughly mirrors the normal GitHub Actions build/test path.
-ci:
+ci: setup
 	cmake --preset "$(PRESET)" \
 		-DDAYO_WARNINGS_AS_ERRORS=ON \
 		$(CMAKE_ARGS)
@@ -117,8 +125,13 @@ compdb: configure
 # Install / cleanup
 # ---------------------------------------------------------------------
 
-install: build
+install: setup build
 	cmake --install "$(BUILD_DIR)" --prefix "$(PREFIX)"
+
+package: setup
+	cmake --preset linux-release $(CMAKE_ARGS)
+	cmake --build --preset linux-release --parallel $(JOBS)
+	cmake --install build/linux-release --prefix "$(PREFIX)"
 
 clean:
 	@if [[ -d "$(BUILD_DIR)" ]]; then \
@@ -126,7 +139,7 @@ clean:
 	fi
 
 distclean:
-	rm -rf build
+	rm -rf build MikuMikuDayo
 
 presets:
 	cmake --list-presets=all
@@ -140,6 +153,7 @@ help:
 		'Usage: make [target] [VARIABLE=value]' \
 		'' \
 		'Build:' \
+		'  setup       Download the pinned MikuMikuDayo release asset' \
 		'  build       Configure and build PRESET (default: linux-debug)' \
 		'  debug       Build linux-debug' \
 		'  release     Build linux-release' \
@@ -161,8 +175,9 @@ help:
 		'' \
 		'Other:' \
 		'  install     Install into PREFIX (default: ./install)' \
+		'  package     Build and install the linux-release package' \
 		'  clean       Clean selected preset' \
-		'  distclean   Remove all build directories' \
+		'  distclean   Remove build directories and downloaded MikuMikuDayo' \
 		'  presets     Show CMake presets' \
 		'' \
 		'Examples:' \

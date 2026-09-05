@@ -12,6 +12,8 @@ if ! command -v vulkaninfo >/dev/null 2>&1; then
 fi
 vulkaninfo --summary
 
+printf '[INFO] Preparing pinned MikuMikuDayo test assets\n'
+python3 "$project_dir/scripts/fetch-mikumikudayo.py"
 printf '[INFO] Configuring linux-debug preset\n'
 cmake --preset linux-debug -S "$project_dir"
 printf '[INFO] Building mikumikudesu\n'

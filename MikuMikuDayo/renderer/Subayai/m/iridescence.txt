@@ -1,4 +1,0 @@
-Category : default
-Roughness : 0.2
-Iridescence : 1.0
-_T IridescenceLUT : t/iri_kujaku.dds
