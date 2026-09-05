@@ -1,6 +1,7 @@
 #include "core/video_export.hpp"
 
 #include "core/ffmpeg_utils.hpp"
+#include "core/log.hpp"
 
 #include <algorithm>
 #include <array>
@@ -18,6 +19,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/mathematics.h>
 #include <libswresample/swresample.h>
@@ -37,6 +39,18 @@ const AVCodec* findVideoEncoder(VideoCodec codec) {
         return avcodec_find_encoder(AV_CODEC_ID_HEVC);
     case VideoCodec::av1:
         return avcodec_find_encoder(AV_CODEC_ID_AV1);
+    }
+    return nullptr;
+}
+
+const char* hardwareVideoEncoderName(VideoCodec codec) {
+    switch (codec) {
+    case VideoCodec::h264:
+        return "h264_vaapi";
+    case VideoCodec::h265:
+        return "hevc_vaapi";
+    case VideoCodec::av1:
+        return "av1_vaapi";
     }
     return nullptr;
 }
@@ -90,7 +104,10 @@ struct VideoExporter::Impl {
     AVStream* audioStream{};
     SwsContext* scaler{};
     SwrContext* resampler{};
+    AVBufferRef* hardwareDeviceContext{};
+    AVBufferRef* hardwareFramesContext{};
     AVFrame* videoFrame{};
+    AVFrame* softwareVideoFrame{};
     AVPacket* packet{};
     AVPacket* pendingAudioPacket{};
     std::array<std::vector<float>, 2> pendingAudio_;
@@ -99,6 +116,7 @@ struct VideoExporter::Impl {
     std::uint64_t audioTargetSamples{};
     bool headerWritten{};
     bool finished{};
+    bool hardwareVideo{};
 
     void initialize() {
         if (request.width == 0 || request.height == 0) {
@@ -131,9 +149,18 @@ struct VideoExporter::Impl {
             std::filesystem::remove(partPath);
         }
 
-        const auto* encoder = findVideoEncoder(request.codec);
+        const AVCodec* encoder = findVideoEncoder(request.codec);
+        hardwareVideo = request.preferHardware;
+        if (hardwareVideo) {
+            encoder = avcodec_find_encoder_by_name(hardwareVideoEncoderName(request.codec));
+            if (encoder == nullptr || av_hwdevice_find_type_by_name("vaapi") == AV_HWDEVICE_TYPE_NONE)
+                throw std::runtime_error("requested VAAPI video encoder is unavailable");
+        }
         if (encoder == nullptr)
             throw std::runtime_error("requested video encoder is unavailable");
+        if (hardwareVideo)
+            ffmpeg::check(av_hwdevice_ctx_create(&hardwareDeviceContext, AV_HWDEVICE_TYPE_VAAPI, nullptr, nullptr, 0),
+                          "create VAAPI device");
         ffmpeg::check(avformat_alloc_output_context2(&format, nullptr, "mp4", request.destination.string().c_str()),
                       "create MP4 output");
         try {
@@ -147,7 +174,7 @@ struct VideoExporter::Impl {
             videoCodec->codec_type = AVMEDIA_TYPE_VIDEO;
             videoCodec->width = static_cast<int>(request.width);
             videoCodec->height = static_cast<int>(request.height);
-            videoCodec->pix_fmt = AV_PIX_FMT_YUV420P;
+            videoCodec->pix_fmt = hardwareVideo ? AV_PIX_FMT_VAAPI : AV_PIX_FMT_YUV420P;
             videoCodec->bit_rate = request.bitrate;
             const auto frameRate = av_d2q(request.fps, 100000);
             videoCodec->time_base = {frameRate.den > 0 ? frameRate.den : 1, frameRate.num > 0 ? frameRate.num : 30};
@@ -161,6 +188,21 @@ struct VideoExporter::Impl {
             if ((format->oformat->flags & AVFMT_GLOBALHEADER) != 0) {
                 videoCodec->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
             }
+            if (hardwareVideo) {
+                hardwareFramesContext = av_hwframe_ctx_alloc(hardwareDeviceContext);
+                if (hardwareFramesContext == nullptr)
+                    throw std::bad_alloc();
+                auto* frames = reinterpret_cast<AVHWFramesContext*>(hardwareFramesContext->data);
+                frames->format = AV_PIX_FMT_VAAPI;
+                frames->sw_format = AV_PIX_FMT_NV12;
+                frames->width = videoCodec->width;
+                frames->height = videoCodec->height;
+                frames->initial_pool_size = 8;
+                ffmpeg::check(av_hwframe_ctx_init(hardwareFramesContext), "initialize VAAPI frame pool");
+                videoCodec->hw_frames_ctx = av_buffer_ref(hardwareFramesContext);
+                if (videoCodec->hw_frames_ctx == nullptr)
+                    throw std::bad_alloc();
+            }
             ffmpeg::check(avcodec_open2(videoCodec, encoder, nullptr), "open video encoder");
             ffmpeg::check(avcodec_parameters_from_context(videoStream->codecpar, videoCodec),
                           "copy video encoder parameters");
@@ -168,9 +210,10 @@ struct VideoExporter::Impl {
 
             if (request.includeAudio)
                 initializeAudio();
+            const auto scalerFormat = hardwareVideo ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
             scaler = sws_getContext(static_cast<int>(request.width), static_cast<int>(request.height), AV_PIX_FMT_RGBA,
-                                    static_cast<int>(request.width), static_cast<int>(request.height),
-                                    AV_PIX_FMT_YUV420P, SWS_BILINEAR, nullptr, nullptr, nullptr);
+                                    static_cast<int>(request.width), static_cast<int>(request.height), scalerFormat,
+                                    SWS_BILINEAR, nullptr, nullptr, nullptr);
             if (scaler == nullptr)
                 throw std::runtime_error("create video color converter failed");
             videoFrame = av_frame_alloc();
@@ -178,10 +221,26 @@ struct VideoExporter::Impl {
             pendingAudioPacket = av_packet_alloc();
             if (videoFrame == nullptr || packet == nullptr || pendingAudioPacket == nullptr)
                 throw std::bad_alloc();
-            videoFrame->format = AV_PIX_FMT_YUV420P;
-            videoFrame->width = static_cast<int>(request.width);
-            videoFrame->height = static_cast<int>(request.height);
-            ffmpeg::check(av_frame_get_buffer(videoFrame, 32), "allocate video frame");
+            if (hardwareVideo) {
+                softwareVideoFrame = av_frame_alloc();
+                if (softwareVideoFrame == nullptr)
+                    throw std::bad_alloc();
+                softwareVideoFrame->format = AV_PIX_FMT_NV12;
+                softwareVideoFrame->width = static_cast<int>(request.width);
+                softwareVideoFrame->height = static_cast<int>(request.height);
+                ffmpeg::check(av_frame_get_buffer(softwareVideoFrame, 32), "allocate VAAPI upload frame");
+                videoFrame->format = AV_PIX_FMT_VAAPI;
+                videoFrame->width = static_cast<int>(request.width);
+                videoFrame->height = static_cast<int>(request.height);
+                videoFrame->hw_frames_ctx = av_buffer_ref(hardwareFramesContext);
+                if (videoFrame->hw_frames_ctx == nullptr)
+                    throw std::bad_alloc();
+            } else {
+                videoFrame->format = AV_PIX_FMT_YUV420P;
+                videoFrame->width = static_cast<int>(request.width);
+                videoFrame->height = static_cast<int>(request.height);
+                ffmpeg::check(av_frame_get_buffer(videoFrame, 32), "allocate video frame");
+            }
             ffmpeg::check(avio_open(&format->pb, partPath.string().c_str(), AVIO_FLAG_WRITE), "open MP4 output");
             ffmpeg::check(avformat_write_header(format, nullptr), "write MP4 header");
             headerWritten = true;
@@ -363,6 +422,7 @@ struct VideoExporter::Impl {
         if (format != nullptr && format->pb != nullptr)
             avio_closep(&format->pb);
         freeFrame(videoFrame);
+        freeFrame(softwareVideoFrame);
         freePacket(packet);
         freePacket(pendingAudioPacket);
         if (resampler != nullptr)
@@ -375,6 +435,10 @@ struct VideoExporter::Impl {
             avcodec_free_context(&audioCodec);
         if (videoCodec != nullptr)
             avcodec_free_context(&videoCodec);
+        if (hardwareFramesContext != nullptr)
+            av_buffer_unref(&hardwareFramesContext);
+        if (hardwareDeviceContext != nullptr)
+            av_buffer_unref(&hardwareDeviceContext);
         if (format != nullptr)
             avformat_free_context(format);
         format = nullptr;
@@ -395,6 +459,16 @@ bool canExportVideo(VideoCodec codec) noexcept {
 #endif
 }
 
+bool canExportVideoHardware(VideoCodec codec) noexcept {
+#if DAYO_HAS_MEDIA
+    const auto* encoder = avcodec_find_encoder_by_name(hardwareVideoEncoderName(codec));
+    return encoder != nullptr && av_hwdevice_find_type_by_name("vaapi") != AV_HWDEVICE_TYPE_NONE;
+#else
+    static_cast<void>(codec);
+    return false;
+#endif
+}
+
 VideoExporter::VideoExporter(const VideoExportRequest& request) : impl_(std::make_unique<Impl>(request)) {}
 VideoExporter::~VideoExporter() = default;
 VideoExporter::VideoExporter(VideoExporter&&) noexcept = default;
@@ -408,13 +482,32 @@ void VideoExporter::writeVideoFrame(const ImageRgba8& image) {
         image.pixels.size() != static_cast<std::size_t>(image.width) * image.height * 4U) {
         throw std::invalid_argument("video frame dimensions or pixels do not match export request");
     }
-    ffmpeg::check(av_frame_make_writable(impl_->videoFrame), "prepare video frame");
     const std::uint8_t* source[]{image.pixels.data()};
     const int stride[]{static_cast<int>(image.width * 4U)};
-    sws_scale(impl_->scaler, source, stride, 0, static_cast<int>(image.height), impl_->videoFrame->data,
-              impl_->videoFrame->linesize);
-    impl_->videoFrame->pts = static_cast<std::int64_t>(impl_->videoFrames++);
-    impl_->encodeVideoFrame(impl_->videoFrame);
+    if (impl_->hardwareVideo) {
+        ffmpeg::check(av_frame_make_writable(impl_->softwareVideoFrame), "prepare VAAPI upload frame");
+        sws_scale(impl_->scaler, source, stride, 0, static_cast<int>(image.height), impl_->softwareVideoFrame->data,
+                  impl_->softwareVideoFrame->linesize);
+        av_frame_unref(impl_->videoFrame);
+        impl_->videoFrame->format = AV_PIX_FMT_VAAPI;
+        impl_->videoFrame->width = static_cast<int>(image.width);
+        impl_->videoFrame->height = static_cast<int>(image.height);
+        impl_->videoFrame->hw_frames_ctx = av_buffer_ref(impl_->hardwareFramesContext);
+        if (impl_->videoFrame->hw_frames_ctx == nullptr)
+            throw std::bad_alloc();
+        ffmpeg::check(av_hwframe_get_buffer(impl_->hardwareFramesContext, impl_->videoFrame, 0),
+                      "allocate VAAPI video frame");
+        ffmpeg::check(av_hwframe_transfer_data(impl_->videoFrame, impl_->softwareVideoFrame, 0),
+                      "upload video frame to VAAPI");
+        impl_->videoFrame->pts = static_cast<std::int64_t>(impl_->videoFrames++);
+        impl_->encodeVideoFrame(impl_->videoFrame);
+    } else {
+        ffmpeg::check(av_frame_make_writable(impl_->videoFrame), "prepare video frame");
+        sws_scale(impl_->scaler, source, stride, 0, static_cast<int>(image.height), impl_->videoFrame->data,
+                  impl_->videoFrame->linesize);
+        impl_->videoFrame->pts = static_cast<std::int64_t>(impl_->videoFrames++);
+        impl_->encodeVideoFrame(impl_->videoFrame);
+    }
 #else
     static_cast<void>(image);
     throw std::runtime_error("FFmpeg support was not built");
