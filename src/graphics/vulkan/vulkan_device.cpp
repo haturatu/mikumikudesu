@@ -713,8 +713,11 @@ void VulkanDevice::createPipeline() {
         .size = sizeof(PreviewPushConstants),
     };
     const std::array descriptorLayouts{
-        previewDescriptorSetLayout_,         previewSkinningDescriptorSetLayout_, previewMaterialDescriptorSetLayout_,
-        previewBindlessDescriptorSetLayout_, previewMorphDescriptorSetLayout_,
+        previewDescriptorSetLayout_,
+        previewSkinningDescriptorSetLayout_,
+        previewMaterialDescriptorSetLayout_,
+        previewBindlessDescriptorSetLayout_,
+        previewMorphDescriptorSetLayout_,
     };
     const VkPipelineLayoutCreateInfo layoutInfo{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
