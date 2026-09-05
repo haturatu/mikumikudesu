@@ -14,9 +14,12 @@
 
 namespace dayo::core {
 
-MappedFileStream::Buffer::Buffer(const std::filesystem::path& path) {
+MappedFileStream::Buffer::Buffer(const std::filesystem::path& path)
 #if defined(__linux__)
-    fileDescriptor_ = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    : fileDescriptor_(::open(path.c_str(), O_RDONLY | O_CLOEXEC))
+#endif
+{
+#if defined(__linux__)
     if (fileDescriptor_ >= 0) {
         struct stat metadata {};
         if (::fstat(fileDescriptor_, &metadata) == 0 && metadata.st_size > 0) {
