@@ -825,6 +825,35 @@ int main() {
         ok &= check(physicalAfter.vertices[0].position[1] < physicalBefore.vertices[0].position[1],
                     "Bullet body drives PMX bone skinning");
 
+        // dayo resets rigid bodies after solving the current pose. The first
+        // evaluation must likewise place a dynamic body at an animated frame
+        // zero pose instead of leaving it at the PMX bind transform.
+        dayo::core::PmxModel firstFrameModel;
+        firstFrameModel.vertices.resize(1);
+        firstFrameModel.vertices[0].position = {0.0F, 0.0F, 0.0F};
+        firstFrameModel.vertices[0].normal = {0.0F, 1.0F, 0.0F};
+        firstFrameModel.vertices[0].bones[0] = 0;
+        dayo::core::PmxBone firstFrameBone;
+        firstFrameBone.name = "animated";
+        firstFrameModel.bones.push_back(firstFrameBone);
+        dayo::core::PmxRigidBody firstFrameBody;
+        firstFrameBody.shape = 0;
+        firstFrameBody.size = {0.5F, 0.5F, 0.5F};
+        firstFrameBody.bone = 0;
+        firstFrameBody.mass = 1.0F;
+        firstFrameBody.mode = 2;
+        firstFrameBody.collisionMask = 0;
+        firstFrameModel.rigidBodies.push_back(firstFrameBody);
+        dayo::core::VmdMotion firstFrameMotion;
+        firstFrameMotion.bones.push_back({.name = "animated", .frame = 0, .translation = {1.0F, 0.0F, 0.0F}});
+        dayo::core::MmdPhysics firstFramePhysics(firstFrameModel);
+        dayo::core::MmdAnimator firstFrameAnimator(firstFrameModel);
+        firstFrameAnimator.setMotion(&firstFrameMotion);
+        firstFrameAnimator.setPhysics(&firstFramePhysics);
+        static_cast<void>(firstFrameAnimator.evaluate(0.0F, 0.0F));
+        ok &= check(std::abs(firstFramePhysics.bodyTransform(0).position[0] - 1.0F) < 1e-4F,
+                    "first PMX physics evaluation synchronizes dynamic bodies with the animated pose");
+
         dayo::core::PmxModel alignedModel;
         alignedModel.vertices.resize(2);
         alignedModel.vertices[0].position = {0.0F, 2.0F, 0.0F};
