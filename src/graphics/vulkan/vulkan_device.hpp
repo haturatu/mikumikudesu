@@ -166,7 +166,7 @@ class VulkanDevice final : public Device {
     void destroyPreviewMaterialBuffers();
     void synchronizePreviewMaterials(Frame& frame);
     void destroyPreviewMaterialDescriptors();
-    void refreshPreviewMaterialDescriptors(bool waitForGpu = true);
+    void refreshPreviewMaterialDescriptors();
     void destroyPreviewBindlessDescriptor();
     void refreshPreviewBindlessDescriptor();
     [[nodiscard]] PreviewRenderPlan buildPreviewRenderPlan(bool includeUi) const noexcept;

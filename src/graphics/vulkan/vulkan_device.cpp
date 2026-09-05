@@ -1109,6 +1109,30 @@ VulkanDevice::PreviewTextureResource VulkanDevice::createPreviewTextureResource(
     if (width == 0 || height == 0 || rgba.size_bytes() != byteSize) {
         throw std::invalid_argument("invalid preview texture data");
     }
+    VkBuffer staging{};
+    VkDeviceMemory stagingMemory{};
+    const VkBufferCreateInfo bufferInfo{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = byteSize,
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    check(vkCreateBuffer(device_, &bufferInfo, nullptr, &staging), "create texture staging buffer");
+    VkMemoryRequirements stagingRequirements{};
+    vkGetBufferMemoryRequirements(device_, staging, &stagingRequirements);
+    const VkMemoryAllocateInfo stagingAllocation{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = stagingRequirements.size,
+        .memoryTypeIndex = findMemoryType(stagingRequirements.memoryTypeBits,
+                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+    };
+    check(vkAllocateMemory(device_, &stagingAllocation, nullptr, &stagingMemory), "allocate texture staging memory");
+    check(vkBindBufferMemory(device_, staging, stagingMemory, 0), "bind texture staging memory");
+    void* mapped = nullptr;
+    check(vkMapMemory(device_, stagingMemory, 0, byteSize, 0, &mapped), "map texture staging memory");
+    std::memcpy(mapped, rgba.data(), rgba.size_bytes());
+    vkUnmapMemory(device_, stagingMemory);
+
     PreviewTextureResource texture;
     const VkImageCreateInfo imageInfo{
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -1134,10 +1158,26 @@ VulkanDevice::PreviewTextureResource VulkanDevice::createPreviewTextureResource(
     check(vkAllocateMemory(device_, &imageAllocation, nullptr, &texture.memory), "allocate preview texture");
     check(vkBindImageMemory(device_, texture.image, texture.memory, 0), "bind preview texture");
 
-    uploadContext_->begin();
-    const auto slice = uploadContext_->allocate(byteSize, 4);
-    std::memcpy(slice.mapped, rgba.data(), rgba.size_bytes());
-    const auto command = uploadContext_->commandBuffer();
+    VkCommandPool uploadPool{};
+    const VkCommandPoolCreateInfo poolInfo{
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+        .queueFamilyIndex = queueFamily_,
+    };
+    check(vkCreateCommandPool(device_, &poolInfo, nullptr, &uploadPool), "create texture upload pool");
+    VkCommandBuffer command{};
+    const VkCommandBufferAllocateInfo commandInfo{
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = uploadPool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    check(vkAllocateCommandBuffers(device_, &commandInfo, &command), "allocate texture upload command");
+    const VkCommandBufferBeginInfo beginInfo{
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    check(vkBeginCommandBuffer(command, &beginInfo), "begin texture upload");
     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     const VkImageMemoryBarrier2 toTransfer{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -1161,7 +1201,7 @@ VulkanDevice::PreviewTextureResource VulkanDevice::createPreviewTextureResource(
         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
         .imageExtent = {width, height, 1},
     };
-    vkCmdCopyBufferToImage(command, slice.buffer, texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    vkCmdCopyBufferToImage(command, staging, texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
     const VkImageMemoryBarrier2 toShader{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -1181,7 +1221,32 @@ VulkanDevice::PreviewTextureResource VulkanDevice::createPreviewTextureResource(
         .pImageMemoryBarriers = &toShader,
     };
     vkCmdPipelineBarrier2(command, &shaderDependency);
-    uploadContext_->submit();
+    check(vkEndCommandBuffer(command), "end texture upload");
+    const std::uint64_t signalValue = ++nextTimelineValue_;
+    const VkTimelineSemaphoreSubmitInfo timelineSubmit{
+        .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+        .signalSemaphoreValueCount = 1,
+        .pSignalSemaphoreValues = &signalValue,
+    };
+    const VkSubmitInfo submitInfo{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext = &timelineSubmit,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &command,
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = &timelineSemaphore_,
+    };
+    check(vkQueueSubmit(queue_, 1, &submitInfo, VK_NULL_HANDLE), "submit texture upload");
+    const VkSemaphoreWaitInfo waitInfo{
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+        .semaphoreCount = 1,
+        .pSemaphores = &timelineSemaphore_,
+        .pValues = &signalValue,
+    };
+    check(vkWaitSemaphores(device_, &waitInfo, UINT64_MAX), "wait for texture upload");
+    vkDestroyCommandPool(device_, uploadPool, nullptr);
+    vkDestroyBuffer(device_, staging, nullptr);
+    vkFreeMemory(device_, stagingMemory, nullptr);
 
     const VkImageViewCreateInfo viewInfo{
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -2578,7 +2643,7 @@ void VulkanDevice::destroyPreviewMaterialDescriptors() {
     previewMaterialDescriptorKeys_.clear();
 }
 
-void VulkanDevice::refreshPreviewMaterialDescriptors(bool waitForGpu) {
+void VulkanDevice::refreshPreviewMaterialDescriptors() {
     std::vector<std::array<std::uint32_t, 3>> keys;
     keys.reserve(previewGpuScene_.materials.size());
     for (const auto& material : previewGpuScene_.materials) {
@@ -2587,8 +2652,7 @@ void VulkanDevice::refreshPreviewMaterialDescriptors(bool waitForGpu) {
     if (keys == previewMaterialDescriptorKeys_ &&
         previewMaterialDescriptors_.size() == previewGpuScene_.materials.size())
         return;
-    if (waitForGpu)
-        waitIdle();
+    waitIdle();
     destroyPreviewMaterialDescriptors();
     if (previewGpuScene_.materials.empty() || previewTextures_.empty())
         return;
@@ -3112,7 +3176,7 @@ void VulkanDevice::uploadPreviewTextures(std::span<const PreviewTexture> texture
             createPreviewTexture(texture.width, texture.height, texture.rgba);
         }
     }
-    refreshPreviewMaterialDescriptors(false);
+    refreshPreviewMaterialDescriptors();
     refreshPreviewBindlessDescriptor();
     log::info("Uploaded ", textures.size(), " PMX texture(s) plus fallback");
 }
