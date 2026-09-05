@@ -28,6 +28,9 @@ struct PreviewSceneConstants {
     float4 light;  // xyz direction, w framebuffer aspect
     uint materialIndex;
     uint instanceCount;
+    float4 lightColor;
+    float4 viewport; // xy framebuffer size
+    float4 debug; // x isolated material, y debug flags
 };
 [[vk::push_constant]] ConstantBuffer<PreviewSceneConstants> scene;
 
@@ -241,8 +244,6 @@ VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, ui
     SkinResult skin = skinVertex(input);
     const float cloneCenter = (float(scene.instanceCount) - 1.0) * 0.5;
     skin.position.x += (float(instanceIndex) - cloneCenter) * 2.2;
-    if (edgePass != 0)
-        skin.position += skin.normal * input.edgeScale * previewMaterials[materialIndex].edgeSize;
     float3 p = skin.position - scene.target.xyz;
     float3 n = normalize(skin.normal);
     const float3 s = sin(scene.camera.xyz);
@@ -264,6 +265,24 @@ VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, ui
     } else {
         const float extent = max(scene.camera.w, 0.1) * tan(max(-scene.target.w, 0.05) * 0.5);
         output.position = float4(p.x / (aspect * extent), -p.y / extent, p.z * 0.01, 1.0);
+    }
+    if (edgePass != 0)
+    {
+        const float4 baseClip = output.position;
+        const float edgeSize = max(previewMaterials[materialIndex].edgeSize * input.edgeScale, 0.0);
+        const float focal = scene.target.w >= 0.0
+                                ? 1.0 / tan(max(scene.target.w, 0.05) * 0.5)
+                                : 1.0;
+        const float pixelWidth = scene.target.w >= 0.0
+                                     ? edgeSize * focal * scene.viewport.y / max(2.0 * p.z, 0.05)
+                                     : edgeSize * scene.viewport.y * 0.5;
+        float2 screenNormal = float2(n.x, -n.y);
+        if (length(screenNormal) < 0.000001)
+            screenNormal = float2(0.0, 1.0);
+        else
+            screenNormal = normalize(screenNormal);
+        const float2 viewport = max(scene.viewport.xy, 1.0.xx);
+        output.position.xy += screenNormal * (2.0 * pixelWidth / viewport) * baseClip.w;
     }
     output.normal = normalize(n);
     output.viewPosition = p;
@@ -295,47 +314,61 @@ float4 samplePreviewTextureClamp(uint textureSlot, float2 uv) {
 
 float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0 {
     const PreviewMaterialData material = previewMaterials[input.materialIndex];
+    const uint debugFlags = uint(scene.debug.y);
+    const uint4 textureSlots = material.textureSlots;
+    const float4 legacySampled = applyTextureMorphRgb(baseTexture.Sample(repeatSampler, input.uv),
+                                                       material.textureMultiply, material.textureAdd, 1.0.xxx);
+    const float4 sampled = applyTextureMorphRgb(
+        samplePreviewTextureRepeat(textureSlots.x, input.uv),
+        material.textureMultiply, material.textureAdd, 1.0.xxx);
     if (input.color.x == 0.0 && input.color.y == 0.0 && input.color.z == 0.0)
-        return baseTexture.Sample(repeatSampler, input.uv);
+        return legacySampled;
+    if (scene.debug.x >= 0.0 && input.materialIndex != uint(scene.debug.x))
+        discard;
+    const float4 baseSampled = (debugFlags & 0x01U) != 0U ? 1.0.xxxx : sampled;
 
-    if (input.edgePass != 0) {
-        if (material.edgeColor.a <= 0.0)
-            discard;
+    if (input.edgePass != 0)
+    {
+        if ((material.flags & 0x20U) == 0U || material.edgeColor.a <= 0.0) discard;
         return material.edgeColor;
     }
-    if (!frontFace && (material.flags & 0x01U) == 0U)
+    if ((debugFlags & 0x20U) == 0U && !frontFace && (material.flags & 0x01U) == 0U)
         discard;
 
-    const uint4 textureSlots = material.textureSlots;
-    const float4 sampled = applyTextureMorphRgb(samplePreviewTextureRepeat(textureSlots.x, input.uv),
-                                                material.textureMultiply, material.textureAdd, 1.0.xxx);
+    if ((debugFlags & 0x08U) != 0U)
+        return float4(normalize(input.normal) * 0.5 + 0.5, 1.0);
+    if ((debugFlags & 0x10U) != 0U)
+        return float4(frac(input.uv), 0.0, 1.0);
 
     const float3 normal = normalize(input.normal);
     const float3 lightDirection = normalize(-scene.light.xyz);
     const float noLight = dot(normal, lightDirection);
     const float3 halfVector = normalize(lightDirection + normalize(-input.viewPosition));
     const float specularLight = pow(max(1e-6, dot(normal, halfVector)), material.ambientShininess.w);
-    float4 color = float4(saturate(material.ambientShininess.xyz + material.diffuse.rgb), material.diffuse.a) * sampled;
+    const float3 Le = scene.lightColor.rgb;
+    float4 color = float4(saturate(material.ambientShininess.xyz
+                                  + material.diffuse.rgb * Le), material.diffuse.a) * baseSampled;
 
     const uint toonMode = (material.flags >> 1U) & 0x03U;
-    if (toonMode == 0U) {
+    if ((debugFlags & 0x04U) == 0U && toonMode == 0U)
+    {
         color *= samplePreviewTextureClamp(textureSlots.y, float2(0.0, 0.5 - noLight * 0.5));
-    } else if (toonMode == 1U) {
-        color.rgb *= lerp(0.5, 1.0, smoothstep(-0.1, 0.1, noLight));
     }
+    else if ((debugFlags & 0x04U) == 0U && toonMode == 1U)
+        color *= samplePreviewTextureClamp(textureSlots.y, float2(0.0, 0.5 - noLight * 0.5));
 
     const uint sphereMode = (material.flags >> 3U) & 0x03U;
-    if (sphereMode == 1U || sphereMode == 2U) {
-        const float4 sphere =
-            applyTextureMorphRgb(samplePreviewTextureRepeat(textureSlots.z, input.sphereUv), material.sphereMultiply,
-                                 material.sphereAdd, sphereMode == 1U ? 1.0.xxx : 0.0.xxx);
+    if ((debugFlags & 0x02U) == 0U && (sphereMode == 1U || sphereMode == 2U))
+    {
+        const float4 sphere = applyTextureMorphRgb(
+            samplePreviewTextureRepeat(textureSlots.z, input.sphereUv),
+            material.sphereMultiply, material.sphereAdd,
+            sphereMode == 1U ? 1.0.xxx : 0.0.xxx);
         color.rgb = sphereMode == 1U ? color.rgb * sphere.rgb : color.rgb + sphere.rgb;
     }
 
-    color.rgb += material.specular.rgb * specularLight;
-    if (color.a == 0.0)
-        discard;
-    if (color.a >= 0.98)
-        color.a = 1.0;
+    color.rgb += material.specular.rgb * Le * specularLight;
+    if (color.a == 0.0) discard;
+    if (color.a >= 0.98) color.a = 1.0;
     return color;
 }

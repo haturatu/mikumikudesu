@@ -1305,6 +1305,9 @@ void Application::refreshPreviewScene() {
     scene.cameraRotation[0] = cameraPitch_;
     scene.cameraRotation[1] = cameraYaw_;
     scene.cameraDistance = cameraDistance_;
+    scene.debugMaterial = previewDebugMaterial_;
+    scene.debugFlags = previewDebugFlags_;
+    scene.outlineEnabled = previewOutlineEnabled_;
     if (!manualCamera_ && motion != nullptr && !motion->cameras.empty()) {
         const auto camera = core::evaluateCamera(*motion, animationFrame_);
         std::copy(camera.rotation.begin(), camera.rotation.end(), scene.cameraRotation);
@@ -1319,6 +1322,7 @@ void Application::refreshPreviewScene() {
     if (motion != nullptr && !motion->lights.empty()) {
         const auto light = core::evaluateLight(*motion, animationFrame_);
         std::copy(light.position.begin(), light.position.end(), scene.lightDirection);
+        std::copy(light.color.begin(), light.color.end(), scene.lightColor);
     }
     device_->updatePreviewScene(scene);
 }
@@ -1950,6 +1954,72 @@ void Application::buildEditorUi() {
             ImGui::TextWrapped("%s", sequenceOutputStatus_.c_str());
             ImGui::TreePop();
         }
+    }
+    ImGui::End();
+
+    if (ImGui::Begin("Preview Material Inspector")) {
+        bool previewChanged = false;
+        previewChanged |= ImGui::Checkbox("Optional PMX outline", &previewOutlineEnabled_);
+        if (model != nullptr && !model->model->materials.empty()) {
+            std::int32_t materialBase = 0;
+            for (const auto& candidate : scene_.models()) {
+                if (candidate.id == model->id)
+                    break;
+                materialBase +=
+                    static_cast<std::int32_t>(candidate.model->materials.size() * std::max(candidate.cloneCount, 1U));
+            }
+            const auto localCount = static_cast<int>(model->model->materials.size());
+            int localMaterial =
+                previewDebugMaterial_ >= materialBase && previewDebugMaterial_ < materialBase + localCount
+                    ? previewDebugMaterial_ - materialBase
+                    : 0;
+            const auto& selectedMaterial = model->model->materials[static_cast<std::size_t>(localMaterial)];
+            if (ImGui::BeginCombo("Material", selectedMaterial.name.c_str())) {
+                for (std::size_t index = 0; index < model->model->materials.size(); ++index) {
+                    if (ImGui::Selectable(model->model->materials[index].name.c_str(),
+                                          localMaterial == static_cast<int>(index))) {
+                        localMaterial = static_cast<int>(index);
+                        previewDebugMaterial_ = materialBase + localMaterial;
+                        previewChanged = true;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            if (ImGui::Button("Show all materials")) {
+                previewDebugMaterial_ = -1;
+                previewChanged = true;
+            }
+            const auto& material = model->model->materials[static_cast<std::size_t>(localMaterial)];
+            const auto textureName = [&](std::int32_t index) {
+                if (index < 0 || static_cast<std::size_t>(index) >= model->model->textures.size())
+                    return std::string("none");
+                return model->model->textures[static_cast<std::size_t>(index)].filename().string();
+            };
+            ImGui::Text("Base: %s", textureName(material.textureIndex).c_str());
+            ImGui::Text("Sphere: %s / mode %u", textureName(material.sphereTextureIndex).c_str(),
+                        static_cast<unsigned>(material.sphereMode));
+            if (material.toonMode == 0)
+                ImGui::Text("Toon: %s / individual", textureName(material.toonTextureIndex).c_str());
+            else
+                ImGui::Text("Toon: shared toon%02d.bmp", material.toonTextureIndex + 1);
+            ImGui::Text("Diffuse alpha: %.3f  edge size: %.5f", material.diffuse[3], material.edgeSize);
+            ImGui::Text("Double-sided: %s  indices: %u", (material.drawFlags & 0x01U) != 0 ? "yes" : "no",
+                        material.indexCount);
+            previewChanged |= ImGui::CheckboxFlags("Disable base texture", &previewDebugFlags_,
+                                                   graphics::previewDebugDisableBaseTexture);
+            previewChanged |=
+                ImGui::CheckboxFlags("Disable sphere", &previewDebugFlags_, graphics::previewDebugDisableSphere);
+            previewChanged |=
+                ImGui::CheckboxFlags("Disable toon", &previewDebugFlags_, graphics::previewDebugDisableToon);
+            previewChanged |= ImGui::CheckboxFlags("Show normals", &previewDebugFlags_, graphics::previewDebugNormals);
+            previewChanged |= ImGui::CheckboxFlags("Show UV", &previewDebugFlags_, graphics::previewDebugUv);
+            previewChanged |=
+                ImGui::CheckboxFlags("Disable sidedness", &previewDebugFlags_, graphics::previewDebugDisableSidedness);
+        } else {
+            ImGui::TextUnformatted("No PMX model selected");
+        }
+        if (previewChanged)
+            refreshPreviewScene();
     }
     ImGui::End();
 

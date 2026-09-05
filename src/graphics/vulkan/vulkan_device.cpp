@@ -739,7 +739,8 @@ void VulkanDevice::createPipeline() {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .polygonMode = VK_POLYGON_MODE_FILL,
         .cullMode = VK_CULL_MODE_FRONT_BIT,
-        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        // EdgeVS uses the same clip-space Y flip as the main Preview vertex shader.
+        .frontFace = VK_FRONT_FACE_CLOCKWISE,
         .lineWidth = 1.0F,
     };
     const std::array dynamicStates{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
@@ -1612,8 +1613,10 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
     for (const auto& item : previewDraws_)
         draw(item, transparentPipeline_);
 
-    // Preview.fxdayo has no outline pass. Keep PMX edge data available for a future renderer pass,
-    // but do not draw it in the original Preview-compatible path.
+    if (!previewScene_.outlineEnabled || edgePipeline_ == VK_NULL_HANDLE)
+        return;
+    for (const auto& item : previewDraws_)
+        draw(item, edgePipeline_);
 }
 
 void VulkanDevice::renderFrame() {
@@ -1753,6 +1756,11 @@ void VulkanDevice::renderFrame() {
     constants.light[3] = swapchainExtent_.height == 0
                              ? 1.0F
                              : static_cast<float>(swapchainExtent_.width) / static_cast<float>(swapchainExtent_.height);
+    std::copy_n(previewScene_.lightColor, 3, constants.lightColor.begin());
+    constants.debug = {static_cast<float>(previewScene_.debugMaterial), static_cast<float>(previewScene_.debugFlags),
+                       0.0F, 0.0F};
+    constants.viewport = {static_cast<float>(swapchainExtent_.width), static_cast<float>(swapchainExtent_.height), 0.0F,
+                          0.0F};
     const bool hasBackground = previewScene_.backgroundEnabled &&
                                (previewScene_.screenSource == PreviewScene::ScreenSource::backgroundImage ||
                                 previewScene_.screenSource == PreviewScene::ScreenSource::backgroundVideo) &&
@@ -2100,6 +2108,10 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
         previewScene_.perspective ? previewScene_.verticalFovRadians : -previewScene_.verticalFovRadians;
     std::copy_n(previewScene_.lightDirection, 3, constants.light.begin());
     constants.light[3] = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+    std::copy_n(previewScene_.lightColor, 3, constants.lightColor.begin());
+    constants.debug = {static_cast<float>(previewScene_.debugMaterial), static_cast<float>(previewScene_.debugFlags),
+                       0.0F, 0.0F};
+    constants.viewport = {static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0F, 0.0F};
     const bool hasBackground = previewScene_.backgroundEnabled &&
                                (previewScene_.screenSource == PreviewScene::ScreenSource::backgroundImage ||
                                 previewScene_.screenSource == PreviewScene::ScreenSource::backgroundVideo) &&

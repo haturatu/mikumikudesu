@@ -18,8 +18,10 @@ Linux側を`SDL3 + Vulkan 1.3 + HLSL/SPIR-V`で構成しています。
 - Bullet剛体/6DoF spring、collision group、固定step、物理ボーンへの往復反映
 - PNG/JPEG/BMP/TGA/HDRとDDS（RGBA/BGRA、BC1～BC5）の読込、Vulkan sRGB texture upload
 - PMX材質範囲、diffuse/ambient/specular/power、Toon/Sphere map、texture乗算/加算モーフ、VMDカメラ/照明
-- Original Preview parity: BDEF1/2/4、SDEF、QDEF/DQSのGPUスキニング、α=0 discard、α>=0.98のopaque化、
-  transparent materialのcamera距離sort、PMX edge描画
+- Original Preview parity: BDEF1/2/4、SDEF、QDEF/DQSのGPUスキニング、VMD LightColor、α=0 discard、
+  α>=0.98のopaque化、PMX材質順描画、共有Toon/Sphere map
+- Preview debug tools: PMX材質インスペクタ、材質単体表示、texture/sphere/toon無効化、UV/normal可視化、
+  オプションのscreen-space PMX outline
 - FFmpegによるWAV/MP3/M4A等の音声再生とMP4/AVI/MKV/MOV/WebM動画デコード
 - FFmpegを使ったストリーミングAAC/M4A音声書き出し（CLI / 非同期ImGui UI）
 - Vulkan Previewのオフスクリーンreadbackと、決定論的なタイムラインでのMP4動画書き出し（H.264/H.265/AV1 + AAC）

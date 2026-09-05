@@ -98,6 +98,15 @@ enum class PreviewSkinningType : std::uint32_t {
     qdef,
 };
 
+enum PreviewDebugFlags : std::uint32_t {
+    previewDebugDisableBaseTexture = 1U << 0U,
+    previewDebugDisableSphere = 1U << 1U,
+    previewDebugDisableToon = 1U << 2U,
+    previewDebugNormals = 1U << 3U,
+    previewDebugUv = 1U << 4U,
+    previewDebugDisableSidedness = 1U << 5U,
+};
+
 struct PreviewBoneTransform {
     float rotation[4]{0.0F, 0.0F, 0.0F, 1.0F};
     float translation[4]{};
@@ -165,6 +174,10 @@ struct PreviewScene {
     float target[3]{};
     float verticalFovRadians{0.785398163F};
     float lightDirection[3]{-0.5F, -1.0F, 0.5F};
+    float lightColor[3]{0.6F, 0.6F, 0.6F};
+    std::int32_t debugMaterial{-1};
+    std::uint32_t debugFlags{};
+    bool outlineEnabled{};
     bool perspective{true};
     enum class ScreenSource {
         previousFrame,
@@ -182,8 +195,11 @@ struct PreviewPushConstants {
     std::array<float, 4> light{};
     std::uint32_t materialIndex{};
     std::uint32_t instanceCount{1};
+    std::array<float, 4> lightColor{};
+    std::array<float, 4> viewport{};
+    std::array<float, 4> debug{};
 };
-static_assert(sizeof(PreviewPushConstants) == 56);
+static_assert(sizeof(PreviewPushConstants) == 104);
 
 struct RenderTargetDesc {
     std::uint32_t width{};
