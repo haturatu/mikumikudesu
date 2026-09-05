@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <ranges>
 #include <stdexcept>
 #include <string>
@@ -26,6 +28,22 @@ int main() {
     const auto sourceDirectory = std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo";
     bool ok = true;
 
+    // Do not silently run the compatibility suite against a stale 1.20 install.
+    {
+        std::ifstream lock(std::filesystem::path(DAYO_SOURCE_DIR) / "deps/mikumikudayo.lock");
+        std::ifstream marker(sourceDirectory / ".mikumikudayo-ready");
+        if (!check(lock.good() && marker.good(), "run scripts/fetch-mikumikudayo.py before upstream tests"))
+            return 1;
+        std::string expected;
+        for (std::string line; std::getline(lock, line);) {
+            if (!line.empty() && line.front() != '#')
+                expected += line + '\n';
+        }
+        const std::string actual((std::istreambuf_iterator<char>(marker)), std::istreambuf_iterator<char>());
+        if (!check(actual == expected, "upstream installation must match the pinned release lock"))
+            return 1;
+    }
+
     try {
         const auto previewEffect = dayo::core::loadEffectGraph(sourceDirectory / "renderer/Preview.fxdayo");
         ok &= check(previewEffect.passes.size() == 5 && !previewEffect.hlsl.empty(), "Preview fxdayo graph");
@@ -42,6 +60,21 @@ int main() {
         ok &= check(rayPass != subayaiEffect.passes.end() && !rayPass->hitGroups.empty() &&
                         rayPass->maxPayloadSize != 0 && rayPass->maxRecursionDepth != 0,
                     "Subayai ray-tracing pipeline metadata");
+        const auto cloneEffect = dayo::core::loadEffectGraph(sourceDirectory / "sample/clone_sample.fxdayo");
+        const auto cloneBuffer =
+            std::ranges::find_if(cloneEffect.buffers, [](const auto& buffer) { return buffer.name == "skinned"; });
+        ok &= check(cloneEffect.meshCloneCount == 4 && cloneBuffer != cloneEffect.buffers.end() &&
+                        cloneBuffer->size.base == "VERTEXCOUNT",
+                    "1.30 mesh cloning and buffer size metadata");
+        const auto fluidEffect = dayo::core::loadEffectGraph(sourceDirectory / "postprocess/Fog/fluid3D.fxdayo");
+        const auto fluidTexture =
+            std::ranges::find_if(fluidEffect.textures3D, [](const auto& texture) { return texture.name == "VMap"; });
+        const auto fluidBaseTexture =
+            std::ranges::find_if(fluidEffect.textures3D, [](const auto& texture) { return texture.name == "WMap"; });
+        ok &= check(fluidTexture != fluidEffect.textures3D.end() && fluidBaseTexture != fluidEffect.textures3D.end() &&
+                        fluidTexture->size.base == "WMap" && fluidBaseTexture->size.absolute &&
+                        fluidBaseTexture->size.depth > 0 && !fluidEffect.buffers.empty(),
+                    "1.30 3D texture size and buffer metadata");
         const auto bdptEffect = dayo::core::loadEffectGraph(sourceDirectory / "renderer/BDPT.fxdayo");
         ok &= check(!bdptEffect.passes.empty() && std::ranges::any_of(bdptEffect.passes,
                                                                       [](const auto& pass) {

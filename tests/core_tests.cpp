@@ -427,17 +427,19 @@ int main() {
         dayo::core::OutputSettings settings;
         settings.directory = outputDirectory;
         settings.firstFrame = settings.lastFrame = 3;
+        settings.maxPendingFrames = 1;
         dayo::core::OutputQueue queue(settings);
-        dayo::core::ImageRgba8 image{1, 1, {255, 64, 32, 255}};
-        queue.push(3, std::move(image));
+        for (std::uint32_t frame = 3; frame < 19; ++frame)
+            queue.push(frame, dayo::core::ImageRgba8{1, 1, {255, 64, 32, 255}});
         static_cast<void>(queue.written());
         queue.close();
-        ok &= check(queue.written() == 1 && std::filesystem::exists(outputDirectory / "frame_000003.ppm"),
+        ok &= check(queue.written() == 16 && std::filesystem::exists(outputDirectory / "frame_000003.ppm") &&
+                        std::filesystem::exists(outputDirectory / "frame_000018.ppm"),
                     "asynchronous frame output");
         dayo::core::ImageRgba8 pngImage{1, 1, {255, 64, 32, 255}};
         dayo::core::writeFrame(outputDirectory / "frame.png", pngImage, dayo::core::OutputFormat::png);
         ok &= check(std::filesystem::file_size(outputDirectory / "frame.png") > 8, "PNG frame output");
-        ok &= check(queue.written() == 1, "thread-safe output counter");
+        ok &= check(queue.written() == 16, "thread-safe output counter");
         dayo::core::OutputSettings failingSettings;
         failingSettings.directory = outputDirectory;
         failingSettings.format = dayo::core::OutputFormat::exr;
