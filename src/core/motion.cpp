@@ -1,5 +1,6 @@
 #include "core/motion.hpp"
 #include "core/mapped_file.hpp"
+#include "core/parse_budget.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -58,10 +59,13 @@ template <std::size_t N> std::string readName(std::istream& input, std::string_v
     return decodeCp932(std::string_view(value.data(), static_cast<std::size_t>(end - value.begin())));
 }
 
-std::uint32_t readCount(std::istream& input, std::string_view field, std::uint32_t maximum = 100'000'000U) {
+std::uint32_t readCount(MappedFileStream& input, ParseBudget& budget, std::string_view field,
+                        std::uint32_t maximum = 1'000'000U, std::uint64_t minimumRecordBytes = 1,
+                        std::uint64_t decodedBytesPerElement = 0) {
     const auto value = read<std::uint32_t>(input, field);
     if (value > maximum)
         throw std::runtime_error("invalid VMD " + std::string(field));
+    budget.checkCount(value, maximum, minimumRecordBytes, input.remaining(), decodedBytesPerElement, field);
     return value;
 }
 
@@ -207,6 +211,7 @@ std::string encodeCp932(std::string_view input) {
 
 VmdMotion loadVmd(const std::filesystem::path& path) {
     MappedFileStream input(path);
+    ParseBudget budget;
     std::array<char, 30> header{};
     input.read(header.data(), static_cast<std::streamsize>(header.size()));
     constexpr std::string_view signature = "Vocaloid Motion Data 0002";
@@ -215,7 +220,7 @@ VmdMotion loadVmd(const std::filesystem::path& path) {
     }
     VmdMotion motion;
     motion.modelName = readName<20>(input, "model name");
-    motion.bones.resize(readCount(input, "bone key count"));
+    motion.bones.resize(readCount(input, budget, "bone key count", 1'000'000U, 116, sizeof(VmdBoneKey)));
     for (auto& key : motion.bones) {
         key.name = readName<15>(input, "bone name");
         key.frame = read<std::uint32_t>(input, "bone frame");
@@ -232,7 +237,7 @@ VmdMotion loadVmd(const std::filesystem::path& path) {
         key.physics = raw[2] != 99 || raw[3] != 15;
         updateLastFrame(motion, key.frame);
     }
-    motion.morphs.resize(readCount(input, "morph key count"));
+    motion.morphs.resize(readCount(input, budget, "morph key count", 1'000'000U, 23, sizeof(VmdMorphKey)));
     for (auto& key : motion.morphs) {
         key.name = readName<15>(input, "morph name");
         key.frame = read<std::uint32_t>(input, "morph frame");
@@ -241,7 +246,7 @@ VmdMotion loadVmd(const std::filesystem::path& path) {
     }
     if (input.peek() == std::char_traits<char>::eof())
         return motion;
-    motion.cameras.resize(readCount(input, "camera key count"));
+    motion.cameras.resize(readCount(input, budget, "camera key count", 1'000'000U, 61, sizeof(VmdCameraKey)));
     for (auto& key : motion.cameras) {
         key.frame = read<std::uint32_t>(input, "camera frame");
         key.distance = read<float>(input, "camera distance");
@@ -257,7 +262,7 @@ VmdMotion loadVmd(const std::filesystem::path& path) {
     }
     if (input.peek() == std::char_traits<char>::eof())
         return motion;
-    motion.lights.resize(readCount(input, "light key count"));
+    motion.lights.resize(readCount(input, budget, "light key count", 1'000'000U, 28, sizeof(VmdLightKey)));
     for (auto& key : motion.lights) {
         key.frame = read<std::uint32_t>(input, "light frame");
         key.color = readFloatArray<3>(input, "light color");
@@ -266,7 +271,7 @@ VmdMotion loadVmd(const std::filesystem::path& path) {
     }
     if (input.peek() == std::char_traits<char>::eof())
         return motion;
-    motion.shadows.resize(readCount(input, "shadow key count"));
+    motion.shadows.resize(readCount(input, budget, "shadow key count", 1'000'000U, 9, sizeof(VmdShadowKey)));
     for (auto& key : motion.shadows) {
         key.frame = read<std::uint32_t>(input, "shadow frame");
         key.mode = read<std::uint8_t>(input, "shadow mode");
@@ -275,11 +280,11 @@ VmdMotion loadVmd(const std::filesystem::path& path) {
     }
     if (input.peek() == std::char_traits<char>::eof())
         return motion;
-    motion.ik.resize(readCount(input, "IK key count"));
+    motion.ik.resize(readCount(input, budget, "IK key count", 1'000'000U, 5, sizeof(VmdIkKey)));
     for (auto& key : motion.ik) {
         key.frame = read<std::uint32_t>(input, "IK frame");
         key.visible = read<std::uint8_t>(input, "model visibility") != 0;
-        key.states.resize(readCount(input, "IK state count", 1'000'000));
+        key.states.resize(readCount(input, budget, "IK state count", 1'000'000U, 21, sizeof(VmdIkState)));
         for (auto& state : key.states) {
             state.name = readName<20>(input, "IK bone name");
             state.enabled = read<std::uint8_t>(input, "IK state") != 0;

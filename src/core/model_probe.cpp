@@ -1,5 +1,6 @@
 #include "core/model_probe.hpp"
 #include "core/mapped_file.hpp"
+#include "core/parse_budget.hpp"
 
 #include <algorithm>
 #include <array>
@@ -32,10 +33,14 @@ template <std::size_t N> std::array<float, N> readFloatArray(std::istream& input
     return value;
 }
 
-std::int32_t readCount(std::istream& input, std::string_view field, std::int32_t maximum = maxElements) {
+std::int32_t readCount(MappedFileStream& input, ParseBudget& budget, std::string_view field,
+                       std::int32_t maximum = maxElements, std::uint64_t minimumRecordBytes = 1,
+                       std::uint64_t decodedBytesPerElement = 0) {
     const auto count = read<std::int32_t>(input, field);
     if (count < 0 || count > maximum)
         throw std::runtime_error("invalid PMX " + std::string(field));
+    budget.checkCount(static_cast<std::uint64_t>(count), static_cast<std::uint64_t>(maximum), minimumRecordBytes,
+                      input.remaining(), decodedBytesPerElement, field);
     return count;
 }
 
@@ -74,8 +79,9 @@ std::string utf16LeToUtf8(std::string_view bytes) {
     return output;
 }
 
-std::string readText(std::istream& input, std::uint8_t encoding) {
-    const auto size = readCount(input, "text length", 16 * 1024 * 1024);
+std::string readText(MappedFileStream& input, std::uint8_t encoding, ParseBudget& budget) {
+    const auto size = readCount(input, budget, "text length", 16 * 1024 * 1024, 1, 1);
+    budget.accountInputBytes(static_cast<std::uint64_t>(size), input.remaining(), "text");
     std::string bytes(static_cast<std::size_t>(size), '\0');
     input.read(bytes.data(), size);
     if (!input)
@@ -114,7 +120,7 @@ struct Header {
     std::array<std::uint8_t, 8> settings{};
 };
 
-Header readHeader(std::istream& input, const std::filesystem::path& path) {
+Header readHeader(MappedFileStream& input, ParseBudget& budget, const std::filesystem::path& path) {
     std::array<char, 4> magic{};
     input.read(magic.data(), static_cast<std::streamsize>(magic.size()));
     if (!input || std::string_view(magic.data(), magic.size()) != "PMX ") {
@@ -141,11 +147,11 @@ Header readHeader(std::istream& input, const std::filesystem::path& path) {
             throw std::runtime_error("invalid PMX index size");
         }
     }
-    result.metadata.modelName = readText(input, result.metadata.textEncoding);
-    result.metadata.englishName = readText(input, result.metadata.textEncoding);
-    result.metadata.comment = readText(input, result.metadata.textEncoding);
-    result.metadata.englishComment = readText(input, result.metadata.textEncoding);
-    result.metadata.vertexCount = readCount(input, "vertex count", 100'000'000);
+    result.metadata.modelName = readText(input, result.metadata.textEncoding, budget);
+    result.metadata.englishName = readText(input, result.metadata.textEncoding, budget);
+    result.metadata.comment = readText(input, result.metadata.textEncoding, budget);
+    result.metadata.englishComment = readText(input, result.metadata.textEncoding, budget);
+    result.metadata.vertexCount = readCount(input, budget, "vertex count", 10'000'000, 38, sizeof(PmxVertex));
     return result;
 }
 
@@ -195,11 +201,11 @@ void readVertices(std::istream& input, const Header& header, PmxModel& model) {
     }
 }
 
-void readMaterials(std::istream& input, const Header& header, PmxModel& model) {
-    const auto textureCount = readCount(input, "texture count", 1'000'000);
+void readMaterials(MappedFileStream& input, const Header& header, ParseBudget& budget, PmxModel& model) {
+    const auto textureCount = readCount(input, budget, "texture count", 1'000'000, 4, sizeof(std::filesystem::path));
     model.textures.reserve(static_cast<std::size_t>(textureCount));
     for (std::int32_t i = 0; i < textureCount; ++i) {
-        auto value = readText(input, header.metadata.textEncoding);
+        auto value = readText(input, header.metadata.textEncoding, budget);
         // PMX files authored on Windows commonly store texture paths with
         // backslashes. Normalize them before constructing a native path so
         // the same archive resolves correctly on Linux and other POSIX hosts.
@@ -207,12 +213,12 @@ void readMaterials(std::istream& input, const Header& header, PmxModel& model) {
         const auto* utf8 = reinterpret_cast<const char8_t*>(value.c_str());
         model.textures.push_back((model.sourcePath.parent_path() / std::filesystem::path(utf8)).lexically_normal());
     }
-    const auto count = readCount(input, "material count", 1'000'000);
+    const auto count = readCount(input, budget, "material count", 1'000'000, 85, sizeof(PmxMaterial));
     model.materials.resize(static_cast<std::size_t>(count));
     std::uint64_t coveredIndices = 0;
     for (auto& material : model.materials) {
-        material.name = readText(input, header.metadata.textEncoding);
-        material.englishName = readText(input, header.metadata.textEncoding);
+        material.name = readText(input, header.metadata.textEncoding, budget);
+        material.englishName = readText(input, header.metadata.textEncoding, budget);
         material.diffuse = readFloatArray<4>(input, "material diffuse");
         material.specular = readFloatArray<3>(input, "material specular");
         material.shininess = read<float>(input, "material shininess");
@@ -227,8 +233,9 @@ void readMaterials(std::istream& input, const Header& header, PmxModel& model) {
         material.toonTextureIndex = material.toonMode == 0
                                         ? readSignedIndex(input, header.settings[3], "toon texture index")
                                         : static_cast<std::int32_t>(read<std::uint8_t>(input, "shared toon index"));
-        material.memo = readText(input, header.metadata.textEncoding);
-        const auto indexCount = readCount(input, "material index count");
+        material.memo = readText(input, header.metadata.textEncoding, budget);
+        const auto indexCount = readCount(input, budget, "material index count", maxElements, header.settings[2],
+                                          sizeof(std::uint32_t));
         material.indexCount = static_cast<std::uint32_t>(indexCount);
         coveredIndices += material.indexCount;
     }
@@ -236,12 +243,12 @@ void readMaterials(std::istream& input, const Header& header, PmxModel& model) {
         throw std::runtime_error("PMX material ranges do not cover indices");
 }
 
-void readBones(std::istream& input, const Header& header, PmxModel& model) {
-    const auto count = readCount(input, "bone count", 10'000'000);
+void readBones(MappedFileStream& input, const Header& header, ParseBudget& budget, PmxModel& model) {
+    const auto count = readCount(input, budget, "bone count", 100'000, 40, sizeof(PmxBone));
     model.bones.resize(static_cast<std::size_t>(count));
     for (auto& bone : model.bones) {
-        bone.name = readText(input, header.metadata.textEncoding);
-        bone.englishName = readText(input, header.metadata.textEncoding);
+        bone.name = readText(input, header.metadata.textEncoding, budget);
+        bone.englishName = readText(input, header.metadata.textEncoding, budget);
         bone.position = readFloatArray<3>(input, "bone position");
         bone.parent = readSignedIndex(input, header.settings[5], "parent bone");
         bone.deformLayer = read<std::int32_t>(input, "bone layer");
@@ -266,7 +273,7 @@ void readBones(std::istream& input, const Header& header, PmxModel& model) {
             bone.ikTarget = readSignedIndex(input, header.settings[5], "IK target");
             bone.ikLoopCount = read<std::int32_t>(input, "IK loop count");
             bone.ikLimitAngle = read<float>(input, "IK angle");
-            const auto linkCount = readCount(input, "IK link count", 1'000'000);
+            const auto linkCount = readCount(input, budget, "IK link count", 1'000'000, 1, sizeof(PmxIkLink));
             bone.ikLinks.resize(static_cast<std::size_t>(linkCount));
             for (auto& link : bone.ikLinks) {
                 link.bone = readSignedIndex(input, header.settings[5], "IK link bone");
@@ -280,18 +287,19 @@ void readBones(std::istream& input, const Header& header, PmxModel& model) {
     }
 }
 
-void readMorphs(std::istream& input, const Header& header, PmxModel& model) {
-    const auto count = readCount(input, "morph count", 10'000'000);
+void readMorphs(MappedFileStream& input, const Header& header, ParseBudget& budget, PmxModel& model) {
+    const auto count = readCount(input, budget, "morph count", 1'000'000, 14, sizeof(PmxMorph));
     model.morphs.resize(static_cast<std::size_t>(count));
     for (auto& morph : model.morphs) {
-        morph.name = readText(input, header.metadata.textEncoding);
-        morph.englishName = readText(input, header.metadata.textEncoding);
+        morph.name = readText(input, header.metadata.textEncoding, budget);
+        morph.englishName = readText(input, header.metadata.textEncoding, budget);
         morph.panel = read<std::uint8_t>(input, "morph panel");
         morph.type = read<std::uint8_t>(input, "morph type");
         if (morph.type > 10 || (morph.type >= 9 && header.metadata.version < 2.1F)) {
             throw std::runtime_error("invalid PMX morph type");
         }
-        const auto offsetCount = readCount(input, "morph offset count", 100'000'000);
+        const auto offsetCount = readCount(input, budget, "morph offset count", 10'000'000, 1,
+                                           sizeof(PmxMorphOffset));
         morph.offsets.resize(static_cast<std::size_t>(offsetCount));
         for (auto& offset : morph.offsets) {
             if (morph.type == 0 || morph.type == 9) {
@@ -330,14 +338,14 @@ void readMorphs(std::istream& input, const Header& header, PmxModel& model) {
     }
 }
 
-void readDisplayFrames(std::istream& input, const Header& header, PmxModel& model) {
-    const auto count = readCount(input, "display frame count", 1'000'000);
+void readDisplayFrames(MappedFileStream& input, const Header& header, ParseBudget& budget, PmxModel& model) {
+    const auto count = readCount(input, budget, "display frame count", 1'000'000, 13, sizeof(PmxDisplayFrame));
     model.displayFrames.resize(static_cast<std::size_t>(count));
     for (auto& frame : model.displayFrames) {
-        frame.name = readText(input, header.metadata.textEncoding);
-        frame.englishName = readText(input, header.metadata.textEncoding);
+        frame.name = readText(input, header.metadata.textEncoding, budget);
+        frame.englishName = readText(input, header.metadata.textEncoding, budget);
         frame.special = read<std::uint8_t>(input, "display frame special") != 0;
-        const auto itemCount = readCount(input, "display item count", 10'000'000);
+        const auto itemCount = readCount(input, budget, "display item count", 10'000'000, 1, sizeof(PmxDisplayItem));
         frame.items.resize(static_cast<std::size_t>(itemCount));
         for (auto& item : frame.items) {
             item.bone = read<std::uint8_t>(input, "display item type") == 0;
@@ -347,12 +355,12 @@ void readDisplayFrames(std::istream& input, const Header& header, PmxModel& mode
     }
 }
 
-void readPhysics(std::istream& input, const Header& header, PmxModel& model) {
-    const auto bodyCount = readCount(input, "rigid body count", 1'000'000);
+void readPhysics(MappedFileStream& input, const Header& header, ParseBudget& budget, PmxModel& model) {
+    const auto bodyCount = readCount(input, budget, "rigid body count", 1'000'000, 70, sizeof(PmxRigidBody));
     model.rigidBodies.resize(static_cast<std::size_t>(bodyCount));
     for (auto& body : model.rigidBodies) {
-        body.name = readText(input, header.metadata.textEncoding);
-        body.englishName = readText(input, header.metadata.textEncoding);
+        body.name = readText(input, header.metadata.textEncoding, budget);
+        body.englishName = readText(input, header.metadata.textEncoding, budget);
         body.bone = readSignedIndex(input, header.settings[5], "rigid body bone");
         body.group = read<std::uint8_t>(input, "rigid body group");
         body.collisionMask = read<std::uint16_t>(input, "rigid body mask");
@@ -367,11 +375,11 @@ void readPhysics(std::istream& input, const Header& header, PmxModel& model) {
         body.friction = read<float>(input, "rigid body friction");
         body.mode = read<std::uint8_t>(input, "rigid body mode");
     }
-    const auto jointCount = readCount(input, "joint count", 1'000'000);
+    const auto jointCount = readCount(input, budget, "joint count", 1'000'000, 107, sizeof(PmxJoint));
     model.joints.resize(static_cast<std::size_t>(jointCount));
     for (auto& joint : model.joints) {
-        joint.name = readText(input, header.metadata.textEncoding);
-        joint.englishName = readText(input, header.metadata.textEncoding);
+        joint.name = readText(input, header.metadata.textEncoding, budget);
+        joint.englishName = readText(input, header.metadata.textEncoding, budget);
         joint.type = read<std::uint8_t>(input, "joint type");
         joint.bodyA = readSignedIndex(input, header.settings[7], "joint body A");
         joint.bodyB = readSignedIndex(input, header.settings[7], "joint body B");
@@ -386,14 +394,14 @@ void readPhysics(std::istream& input, const Header& header, PmxModel& model) {
     }
 }
 
-void readSoftBodies(std::istream& input, const Header& header, PmxModel& model) {
+void readSoftBodies(MappedFileStream& input, const Header& header, ParseBudget& budget, PmxModel& model) {
     if (header.metadata.version < 2.1F || input.peek() == std::char_traits<char>::eof())
         return;
-    const auto count = readCount(input, "soft body count", 1'000'000);
+    const auto count = readCount(input, budget, "soft body count", 1'000'000, 138, sizeof(PmxSoftBody));
     model.softBodies.resize(static_cast<std::size_t>(count));
     for (auto& body : model.softBodies) {
-        body.name = readText(input, header.metadata.textEncoding);
-        body.englishName = readText(input, header.metadata.textEncoding);
+        body.name = readText(input, header.metadata.textEncoding, budget);
+        body.englishName = readText(input, header.metadata.textEncoding, budget);
         body.shape = read<std::uint8_t>(input, "soft body shape");
         body.material = readSignedIndex(input, header.settings[4], "soft body material");
         body.group = read<std::uint8_t>(input, "soft body group");
@@ -409,14 +417,16 @@ void readSoftBodies(std::istream& input, const Header& header, PmxModel& model) 
         for (auto& value : body.iteration)
             value = read<std::int32_t>(input, "soft body iteration");
         body.materialConfig = readFloatArray<3>(input, "soft body material config");
-        const auto anchorCount = readCount(input, "soft body anchor count", 10'000'000);
+        const auto anchorCount = readCount(input, budget, "soft body anchor count", 10'000'000, 1,
+                                           sizeof(PmxSoftBodyAnchor));
         body.anchors.resize(static_cast<std::size_t>(anchorCount));
         for (auto& anchor : body.anchors) {
             anchor.rigidBody = readSignedIndex(input, header.settings[7], "soft body anchor rigid body");
             anchor.vertex = static_cast<std::int32_t>(readVertexIndex(input, header.settings[2]));
             anchor.nearMode = read<std::uint8_t>(input, "soft body anchor near mode") != 0;
         }
-        const auto pinCount = readCount(input, "soft body pin count", 100'000'000);
+        const auto pinCount = readCount(input, budget, "soft body pin count", 10'000'000, header.settings[2],
+                                        sizeof(std::int32_t));
         body.pinnedVertices.resize(static_cast<std::size_t>(pinCount));
         for (auto& vertex : body.pinnedVertices)
             vertex = static_cast<std::int32_t>(readVertexIndex(input, header.settings[2]));
@@ -427,17 +437,20 @@ void readSoftBodies(std::istream& input, const Header& header, PmxModel& model) 
 
 PmxMetadata probePmx(const std::filesystem::path& path) {
     MappedFileStream input(path);
-    return readHeader(input, path).metadata;
+    ParseBudget budget;
+    return readHeader(input, budget, path).metadata;
 }
 
 PmxModel loadPmxModel(const std::filesystem::path& path) {
     MappedFileStream input(path);
-    const auto header = readHeader(input, path);
+    ParseBudget budget;
+    const auto header = readHeader(input, budget, path);
     PmxModel model;
     model.metadata = header.metadata;
     model.sourcePath = path;
     readVertices(input, header, model);
-    const auto indexCount = readCount(input, "index count");
+    const auto indexCount = readCount(input, budget, "index count", maxElements, header.settings[2],
+                                      sizeof(std::uint32_t));
     if (indexCount % 3 != 0)
         throw std::runtime_error("PMX index count is not divisible by three");
     model.indices.resize(static_cast<std::size_t>(indexCount));
@@ -446,12 +459,12 @@ PmxModel loadPmxModel(const std::filesystem::path& path) {
         if (index >= model.vertices.size())
             throw std::runtime_error("PMX vertex index out of range");
     }
-    readMaterials(input, header, model);
-    readBones(input, header, model);
-    readMorphs(input, header, model);
-    readDisplayFrames(input, header, model);
-    readPhysics(input, header, model);
-    readSoftBodies(input, header, model);
+    readMaterials(input, header, budget, model);
+    readBones(input, header, budget, model);
+    readMorphs(input, header, budget, model);
+    readDisplayFrames(input, header, budget, model);
+    readPhysics(input, header, budget, model);
+    readSoftBodies(input, header, budget, model);
     return model;
 }
 
