@@ -446,6 +446,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_graphics
     mikumikudesu
     dayo_core_tests
+    dayo_upload_ring_tests
     dayo_preview_tests
     dayo_upstream_compat_tests
   )
@@ -456,6 +457,9 @@ if(DAYO_ENABLE_SANITIZERS)
   target_link_options(mikumikudesu PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   if(TARGET dayo_core_tests)
     target_link_options(dayo_core_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+  if(TARGET dayo_upload_ring_tests)
+    target_link_options(dayo_upload_ring_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
   if(TARGET dayo_preview_tests)
     target_link_options(dayo_preview_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
