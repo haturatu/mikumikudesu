@@ -326,6 +326,7 @@ void VulkanDevice::queryCapabilities() {
     capabilities_.apiVersion = physicalProperties_.apiVersion;
     capabilities_.discreteGpu = physicalProperties_.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
     capabilities_.swapchain = hasName(extensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    capabilities_.timelineSemaphore = vulkan12.timelineSemaphore == VK_TRUE;
     capabilities_.bufferDeviceAddress = vulkan12.bufferDeviceAddress == VK_TRUE;
     capabilities_.descriptorIndexing =
         vulkan12.runtimeDescriptorArray == VK_TRUE && vulkan12.descriptorBindingPartiallyBound == VK_TRUE;
@@ -339,6 +340,8 @@ void VulkanDevice::queryCapabilities() {
 
     if (!capabilities_.swapchain)
         throw std::runtime_error("selected GPU lacks VK_KHR_swapchain");
+    if (!capabilities_.timelineSemaphore)
+        throw std::runtime_error("selected GPU lacks timelineSemaphore");
 }
 
 void VulkanDevice::createLogicalDevice() {
@@ -398,6 +401,7 @@ void VulkanDevice::createLogicalDevice() {
         .descriptorIndexing = capabilities_.descriptorIndexing,
         .descriptorBindingPartiallyBound = capabilities_.descriptorIndexing,
         .runtimeDescriptorArray = capabilities_.descriptorIndexing,
+        .timelineSemaphore = capabilities_.timelineSemaphore,
         .bufferDeviceAddress = capabilities_.bufferDeviceAddress,
     };
     const VkPhysicalDeviceFeatures2 features{

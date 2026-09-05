@@ -32,6 +32,7 @@ struct DeviceCapabilities {
     std::uint32_t apiVersion{};
     bool discreteGpu{};
     bool swapchain{};
+    bool timelineSemaphore{};
     bool bufferDeviceAddress{};
     bool descriptorIndexing{};
     bool accelerationStructure{};

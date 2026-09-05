@@ -58,6 +58,7 @@ std::string DeviceCapabilities::json() const {
            << "  \"vulkan_api\": \"" << VK_VERSION_MAJOR(apiVersion) << '.' << VK_VERSION_MINOR(apiVersion) << '.'
            << VK_VERSION_PATCH(apiVersion) << "\",\n"
            << std::boolalpha << "  \"preview\": " << supportsPreview() << ",\n"
+           << "  \"timeline_semaphore\": " << timelineSemaphore << ",\n"
            << "  \"subayai\": " << supportsSubayai() << ",\n"
            << "  \"bdpt\": " << supportsBdpt() << ",\n"
            << "  \"subayai_hardware\": " << hardwareSupportsSubayai() << ",\n"
