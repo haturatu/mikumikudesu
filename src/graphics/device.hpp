@@ -87,7 +87,6 @@ struct PreviewVertex {
     float sdefHalfDelta[3]{};
     std::uint32_t skinningType{};
     std::uint32_t gpuSkinning{};
-    float cloneOffset{};
     float edgeScale{1.0F};
 };
 

@@ -221,6 +221,49 @@ bool bindlessTextureSlotsSelectTable(dayo::graphics::VulkanDevice& device) {
     return sawRed && sawBlue;
 }
 
+bool multiMaterialDrawUsesPushConstantIndex(dayo::graphics::VulkanDevice& device) {
+    dayo::graphics::PreviewScene scene;
+    scene.cameraDistance = 3.0F;
+    scene.backgroundEnabled = false;
+    device.updatePreviewScene(scene);
+
+    std::array<PreviewVertex, 6> vertices{};
+    const std::array positions{
+        Float3{-0.9F, -0.7F, 0.0F}, Float3{-0.05F, -0.7F, 0.0F}, Float3{-0.475F, 0.7F, 0.0F},
+        Float3{0.05F, -0.7F, 0.0F}, Float3{0.9F, -0.7F, 0.0F},   Float3{0.475F, 0.7F, 0.0F},
+    };
+    for (std::size_t index = 0; index < vertices.size(); ++index) {
+        std::copy(positions[index].begin(), positions[index].end(), vertices[index].position);
+        vertices[index].normal[2] = 1.0F;
+    }
+    const std::array<std::uint32_t, 6> indices{0, 2, 1, 3, 5, 4};
+    const std::array<std::uint8_t, 4> red{255, 0, 0, 255};
+    const std::array<std::uint8_t, 4> blue{0, 0, 255, 255};
+    const std::array<PreviewTexture, 2> textures{{
+        {1, 1, std::span<const std::uint8_t>(red), false},
+        {1, 1, std::span<const std::uint8_t>(blue), false},
+    }};
+    std::array<PreviewMaterial, 2> materials{};
+    materials[0].textureSlot = 1;
+    materials[1].textureSlot = 2;
+    const std::array<dayo::graphics::PreviewDraw, 2> draws{{{0, 3, 0}, {3, 3, 1}}};
+
+    device.uploadPreviewTextures(textures);
+    device.uploadPreviewMesh(vertices, indices);
+    device.updatePreviewMaterials(materials);
+    device.updatePreviewDraws(draws);
+    const auto image = device.renderToImage({96, 64});
+    bool sawRed = false;
+    bool sawBlue = false;
+    for (std::size_t index = 0; index + 3 < image.pixels.size(); index += 4) {
+        sawRed =
+            sawRed || (image.pixels[index] > 200U && image.pixels[index + 1U] < 80U && image.pixels[index + 2U] < 80U);
+        sawBlue =
+            sawBlue || (image.pixels[index] < 80U && image.pixels[index + 1U] < 80U && image.pixels[index + 2U] > 200U);
+    }
+    return sawRed && sawBlue;
+}
+
 bool singleSidedMaterialsUseClockwiseFrontFaces(dayo::graphics::VulkanDevice& device) {
     std::array<PreviewVertex, 3> vertices{};
     const std::array positions{
@@ -354,6 +397,37 @@ bool runCase(dayo::graphics::VulkanDevice& device, PreviewSkinningType type) {
     return imagesMatch(gpuImage, referenceImage);
 }
 
+bool orthographicZoom(dayo::graphics::VulkanDevice& device) {
+    dayo::graphics::PreviewScene scene;
+    scene.backgroundEnabled = false;
+    scene.cameraDistance = 3.0F;
+    scene.perspective = false;
+    device.updatePreviewScene(scene);
+    const auto nearImage = device.renderToImage({64, 64});
+    scene.cameraDistance = 6.0F;
+    device.updatePreviewScene(scene);
+    const auto farImage = device.renderToImage({64, 64});
+    scene.verticalFovRadians = 0.4F;
+    device.updatePreviewScene(scene);
+    const auto narrowImage = device.renderToImage({64, 64});
+    return !imagesMatch(nearImage, farImage) && !imagesMatch(farImage, narrowImage);
+}
+
+bool sphereAlphaDoesNotHideMaterial(dayo::graphics::VulkanDevice& device) {
+    std::array<PreviewMaterial, 1> materials{};
+    materials[0].sphereTextureSlot = 1;
+    materials[0].sphereMode = 1;
+    device.updatePreviewMaterials(materials);
+    std::array<std::uint8_t, 4> pixel{255, 0, 0, 255};
+    const std::array<PreviewTexture, 1> textures{{{1, 1, pixel, false}}};
+    device.uploadPreviewTextures(textures);
+    const auto opaque = device.renderToImage({64, 64});
+    pixel[3] = 0;
+    device.uploadPreviewTextures(textures);
+    const auto transparent = device.renderToImage({64, 64});
+    return imagesMatch(opaque, transparent);
+}
+
 } // namespace
 
 int main() {
@@ -380,6 +454,10 @@ int main() {
             std::cerr << "FAIL: bindless preview texture slots did not select the correct textures\n";
             return 1;
         }
+        if (!multiMaterialDrawUsesPushConstantIndex(device)) {
+            std::cerr << "FAIL: preview material index was not preserved across draw calls\n";
+            return 1;
+        }
         if (!singleSidedMaterialsUseClockwiseFrontFaces(device)) {
             std::cerr << "FAIL: single-sided preview materials used the wrong front-face winding\n";
             return 1;
@@ -390,6 +468,13 @@ int main() {
         }
         if (!staticPreviewFallsBackToDynamicVertices(device)) {
             std::cerr << "FAIL: device-local preview vertices did not switch to dynamic storage\n";
+            return 1;
+        }
+        const std::array<std::uint32_t, 3> front{0, 2, 1};
+        const auto vertices = makeVertices(PreviewSkinningType::sdef, true);
+        device.uploadPreviewMesh(vertices, front);
+        if (!orthographicZoom(device) || !sphereAlphaDoesNotHideMaterial(device)) {
+            std::cerr << "FAIL: orthographic zoom or sphere alpha regression\n";
             return 1;
         }
     } catch (const std::exception& exception) {

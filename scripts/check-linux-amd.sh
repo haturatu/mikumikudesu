@@ -19,7 +19,7 @@ cmake --preset linux-debug -S "$project_dir"
 printf '[INFO] Building mikumikudesu\n'
 cmake --build --preset linux-debug
 printf '[INFO] Running CTest suite\n'
-ctest --preset linux-debug --output-on-failure
+ctest --preset linux-debug --output-on-failure --parallel "$(nproc)"
 printf '[INFO] Probing renderer features\n'
 "$project_dir/build/linux-debug/mikumikudesu" --probe --hidden --renderer bdpt
 printf '[INFO] Rendering bundled PMX smoke test\n'

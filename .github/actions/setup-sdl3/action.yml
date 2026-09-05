@@ -1,0 +1,52 @@
+name: Set up SDL3
+description: Restore or build the pinned SDL3 installation used by CI
+inputs:
+  version:
+    description: SDL3 version used in the cache key
+    required: false
+    default: 3.2.8
+  ref:
+    description: SDL3 git ref to build
+    required: false
+    default: release-3.2.8
+  prefix:
+    description: Relative installation prefix inside the workspace
+    required: false
+    default: .ci-deps/sdl3
+runs:
+  using: composite
+  steps:
+    - name: Restore SDL3 installation
+      id: sdl3-cache
+      uses: actions/cache@v6
+      with:
+        path: ${{ inputs.prefix }}
+        key: sdl3-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}-v1
+
+    - name: Build SDL3
+      if: steps.sdl3-cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        SDL3_PREFIX: ${{ github.workspace }}/${{ inputs.prefix }}
+        SDL3_REF: ${{ inputs.ref }}
+      run: |
+        git clone \
+          --depth 1 \
+          --branch "$SDL3_REF" \
+          https://github.com/libsdl-org/SDL.git \
+          "$RUNNER_TEMP/SDL3"
+
+        cmake \
+          -S "$RUNNER_TEMP/SDL3" \
+          -B "$RUNNER_TEMP/SDL3-build" \
+          -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DSDL_SHARED=ON \
+          -DSDL_STATIC=OFF \
+          -DSDL_TEST_LIBRARY=OFF \
+          -DSDL_TESTS=OFF \
+          -DSDL_EXAMPLES=OFF \
+          -DSDL_INSTALL=ON
+
+        cmake --build "$RUNNER_TEMP/SDL3-build" --parallel "$(nproc)"
+        cmake --install "$RUNNER_TEMP/SDL3-build" --prefix "$SDL3_PREFIX"

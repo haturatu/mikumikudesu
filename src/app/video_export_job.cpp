@@ -49,7 +49,8 @@ void VideoExportJob::start(core::VideoExportRequest request, std::optional<std::
                             const auto count = std::min<std::uint64_t>(samples.size(), maxSamples - writtenSamples);
                             exporter.writeAudio(samples.first(static_cast<std::size_t>(count)), sampleRate, channels);
                             writtenSamples += count;
-                        });
+                        },
+                        request.audioStartSeconds);
                 }
                 while (true) {
                     core::ImageRgba8 frame;
@@ -86,7 +87,7 @@ void VideoExportJob::start(core::VideoExportRequest request, std::optional<std::
 
 void VideoExportJob::submitFrame(core::ImageRgba8 frame) {
     std::unique_lock lock(queueMutex_);
-    queueChanged_.wait(lock, [this] { return frames_.empty() || !running_.load(); });
+    queueChanged_.wait(lock, [this] { return frames_.size() < kFrameQueueCapacity || !running_.load(); });
     if (!running_)
         throw std::runtime_error("video export is not running");
     frames_.push_back(std::move(frame));

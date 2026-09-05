@@ -23,6 +23,7 @@ option(DAYO_ENABLE_MEDIA "Detect FFmpeg media support" ON)
 option(DAYO_ENABLE_PHYSICS "Build Bullet PMX physics" ON)
 option(DAYO_ENABLE_VALIDATION "Enable Vulkan validation when available" ON)
 option(DAYO_FETCH_DEPENDENCIES "Fetch small missing source dependencies" ON)
+option(DAYO_ENABLE_VMA "Use AMD/Vulkan Memory Allocator for generic resources" ON)
 option(DAYO_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(DAYO_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(DAYO_ENABLE_NATIVE_TUNING "Enable -march=native/-mtune=native for local Linux builds" OFF)
@@ -122,6 +123,10 @@ add_library(
   src/core/profiling.cpp
   src/core/project.cpp
   src/core/scene.cpp
+  src/core/upload_ring.cpp
+  src/core/task_scheduler.cpp
+  src/core/subayai_hair.cpp
+  src/core/subayai_material.cpp
   src/core/vmdayo.cpp
 )
 target_include_directories(dayo_core PUBLIC src)
@@ -159,10 +164,34 @@ add_library(dayo_platform src/platform/sdl_platform.cpp)
 target_include_directories(dayo_platform PUBLIC src)
 target_link_libraries(dayo_platform PUBLIC SDL3::SDL3)
 
+if(DAYO_ENABLE_VMA)
+  find_path(DAYO_VMA_INCLUDE_DIR vk_mem_alloc.h PATH_SUFFIXES include)
+  if(NOT DAYO_VMA_INCLUDE_DIR)
+    if(NOT DAYO_FETCH_DEPENDENCIES)
+      message(FATAL_ERROR "Vulkan Memory Allocator was not found; install VMA or enable DAYO_FETCH_DEPENDENCIES")
+    endif()
+    FetchContent_Declare(
+      vulkan_memory_allocator
+      URL https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.3.0.tar.gz
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(vulkan_memory_allocator)
+    set(DAYO_VMA_INCLUDE_DIR "${vulkan_memory_allocator_SOURCE_DIR}/include")
+  endif()
+endif()
+
 add_library(dayo_graphics src/graphics/device.cpp src/graphics/vulkan/vulkan_device.cpp)
 target_include_directories(dayo_graphics PUBLIC src)
 target_link_libraries(dayo_graphics PUBLIC Vulkan::Vulkan SDL3::SDL3)
 target_compile_definitions(dayo_graphics PRIVATE DAYO_ENABLE_VALIDATION=$<BOOL:${DAYO_ENABLE_VALIDATION}>)
+if(DAYO_ENABLE_VMA)
+  target_sources(dayo_graphics PRIVATE src/graphics/vulkan/vma_impl.cpp)
+  target_include_directories(dayo_graphics SYSTEM PRIVATE "${DAYO_VMA_INCLUDE_DIR}")
+  target_compile_definitions(dayo_graphics PUBLIC DAYO_ENABLE_VMA=1)
+  set_source_files_properties(src/graphics/vulkan/vma_impl.cpp PROPERTIES COMPILE_OPTIONS "-w")
+else()
+  target_compile_definitions(dayo_graphics PUBLIC DAYO_ENABLE_VMA=0)
+endif()
 
 include(cmake/CompileHlsl.cmake)
 dayo_compile_hlsl(DAYO_PREVIEW_VERTEX_SPV SOURCE shaders/preview.hlsl ENTRY VS PROFILE vs_6_6 STAGE vert)
@@ -400,6 +429,8 @@ if(BUILD_TESTING)
   add_test(NAME upstream_fetch COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/fetch_mikumikudayo_tests.py")
   add_executable(dayo_core_tests tests/core_tests.cpp)
   target_link_libraries(dayo_core_tests PRIVATE dayo_core)
+  add_executable(dayo_upload_ring_tests tests/upload_ring_tests.cpp)
+  target_link_libraries(dayo_upload_ring_tests PRIVATE dayo_core)
   add_executable(dayo_preview_tests tests/preview_render_tests.cpp)
   target_include_directories(dayo_preview_tests PRIVATE src)
   target_link_libraries(dayo_preview_tests PRIVATE dayo_platform dayo_graphics)
@@ -445,6 +476,7 @@ if(BUILD_TESTING)
   endif()
 
   add_test(NAME core COMMAND dayo_core_tests)
+  add_test(NAME upload_ring COMMAND dayo_upload_ring_tests)
   add_test(NAME upstream_compat COMMAND dayo_upstream_compat_tests)
   set_tests_properties(upstream_compat PROPERTIES LABELS "upstream" TIMEOUT 60)
   add_test(NAME vulkan_probe COMMAND mikumikudesu --probe --hidden)
@@ -478,6 +510,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_graphics
     mikumikudesu
     dayo_core_tests
+    dayo_upload_ring_tests
     dayo_preview_tests
     dayo_upstream_compat_tests
   )
@@ -488,6 +521,9 @@ if(DAYO_ENABLE_SANITIZERS)
   target_link_options(mikumikudesu PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   if(TARGET dayo_core_tests)
     target_link_options(dayo_core_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+  if(TARGET dayo_upload_ring_tests)
+    target_link_options(dayo_upload_ring_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
   if(TARGET dayo_preview_tests)
     target_link_options(dayo_preview_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})

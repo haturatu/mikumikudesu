@@ -12,12 +12,16 @@
 #include "core/profiling.hpp"
 #include "core/project.hpp"
 #include "core/scene.hpp"
+#include "core/subayai_hair.hpp"
+#include "core/subayai_material.hpp"
+#include "core/task_scheduler.hpp"
 #include "core/video_export.hpp"
 #include "core/vmdayo.hpp"
 #include "graphics/timestamp.hpp"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -26,6 +30,7 @@
 #include <iostream>
 #include <limits>
 #include <numbers>
+#include <stdexcept>
 #include <string_view>
 
 namespace {
@@ -118,6 +123,51 @@ int main() {
         cameraMotion.interpolation = dayo::core::InterpolationMode::catmullRom;
         const auto catmull = dayo::core::evaluateCamera(cameraMotion, 5.0F);
         ok &= check(std::isfinite(catmull.distance), "Catmull-Rom camera evaluation");
+        cameraMotion.interpolation = dayo::core::InterpolationMode::bezier;
+        cameraMotion.cameras[1].frame = 1;
+        ok &= check(std::abs(dayo::core::evaluateCamera(cameraMotion, 0.5F).distance + 6.0F) < 0.001F,
+                    "adjacent camera keys interpolate subframes");
+    }
+    {
+        const auto path = std::filesystem::temp_directory_path() / "mikumikudesu-bezier-test.vmd";
+        {
+            std::ofstream output(path, std::ios::binary);
+            std::array<char, 30> header{};
+            std::string_view signature = "Vocaloid Motion Data 0002";
+            std::copy(signature.begin(), signature.end(), header.begin());
+            output.write(header.data(), header.size());
+            const std::array<char, 20> modelName{};
+            output.write(modelName.data(), modelName.size());
+            append(output, std::uint32_t{2});
+            for (int physics = 0; physics < 2; ++physics) {
+                const std::array<char, 15> name{'b'};
+                output.write(name.data(), name.size());
+                append(output, std::uint32_t{0});
+                for (int i = 0; i < 7; ++i)
+                    append(output, i == 6 ? 1.0F : 0.0F);
+                std::array<std::uint8_t, 64> raw{};
+                for (std::size_t axis = 0; axis < 4; ++axis)
+                    for (std::size_t point = 0; point < 4; ++point)
+                        raw[axis * 16 + point * 4] = static_cast<std::uint8_t>(20 + axis + point * 25);
+                raw[2] = physics == 0 ? 99 : 0;
+                raw[3] = physics == 0 ? 15 : 0;
+                output.write(reinterpret_cast<const char*>(raw.data()), raw.size());
+            }
+            append(output, std::uint32_t{0});
+        }
+        const auto motion = dayo::core::loadVmd(path);
+        ok &= check(!motion.bones[0].physics && motion.bones[1].physics, "VMD physics flag import");
+        for (const auto& key : motion.bones)
+            for (std::size_t axis = 0; axis < 4; ++axis)
+                for (std::size_t point = 0; point < 4; ++point)
+                    ok &= check(key.interpolation[axis + point * 4] == 20 + axis + point * 25,
+                                "VMD shifted Bezier copies normalize into canonical channels");
+        dayo::core::saveVmd(path, motion);
+        const auto roundTrip = dayo::core::loadVmd(path);
+        ok &= check(roundTrip.bones[0].interpolation == motion.bones[0].interpolation && !roundTrip.bones[0].physics &&
+                        roundTrip.bones[1].physics,
+                    "VMD export reconstructs shifted copies and physics flags");
+        std::filesystem::remove(path);
     }
     try {
         const auto projectPath = std::filesystem::temp_directory_path() / "mikumikudesu-project-test.dayo";
@@ -242,8 +292,9 @@ int main() {
                     "VMdayo v3 camera tracking round trip");
         ok &= check(loaded.motion.lights.size() == 1 && loaded.motion.shadows.size() == 1,
                     "VMdayo v3 light and shadow tracks round trip");
-        ok &= check(loaded.motion.ik.size() == 1 && loaded.motion.ik[0].states.size() == 1 &&
-                        !loaded.motion.ik[0].states[0].enabled,
+        ok &= check(loaded.motion.ik.size() == 2 && loaded.motion.ik[0].states.size() == 1 &&
+                        !loaded.motion.ik[0].states[0].enabled && loaded.motion.ik[1].states.size() == 1 &&
+                        !loaded.motion.ik[1].states[0].enabled,
                     "VMdayo v3 IK track round trip");
         ok &= check(loaded.motion.externalParents.size() == 1 && loaded.motion.gravity.size() == 1,
                     "VMdayo v3 extension tracks round trip");
@@ -252,6 +303,16 @@ int main() {
         dayo::core::Scene vmdayoScene;
         vmdayoScene.attachMotion(loaded.motion, 0, loaded.modelName);
         ok &= check(vmdayoScene.timeline().duration == 17.0F, "VMdayo attachment updates timeline duration");
+        ok &= check(vmdayoScene.evaluatePhysicsSettings(16).gravity == 98.0F &&
+                        std::abs(vmdayoScene.evaluatePhysicsSettings(17).gravity - 9.8F) < 0.001F &&
+                        vmdayoScene.timeline().externalParentKeys.size() == 1,
+                    "global motion preserves gravity and unresolved external parent keys");
+        document.motion.ik = {{0, false, {}}, {16, true, {}}};
+        document.motion.externalParents.push_back({8, 1, "parent", "child"});
+        dayo::core::saveVmdayo(vmdayoPath, document);
+        const auto visibility = dayo::core::loadVmdayo(vmdayoPath).motion.ik;
+        ok &= check(visibility.size() == 3 && !visibility[0].visible && !visibility[1].visible && visibility[2].visible,
+                    "external parent records retain hidden state and explicit visibility restoration");
         document.opaque = {0x00, 0xFF, 0x56, 0x4D, 0x44};
         dayo::core::saveVmdayo(vmdayoPath, document);
         const auto opaque = dayo::core::loadVmdayo(vmdayoPath);
@@ -322,6 +383,96 @@ int main() {
         profiler.addUploadBytes(1);
         ok &= check(profiler.totals().frames == 0 && profiler.totals().uploadBytes == 0,
                     "profiler reset ignores inactive samples");
+    }
+    {
+        dayo::core::TaskScheduler scheduler(2);
+        std::atomic<std::uint64_t> sum{};
+        scheduler.parallelFor(100, [&](std::size_t index) { sum.fetch_add(static_cast<std::uint64_t>(index + 1)); });
+        ok &= check(scheduler.workerCount() == 2 && sum.load() == 5050, "task scheduler parallel batch");
+        bool propagated = false;
+        try {
+            scheduler.parallelFor(2, [](std::size_t index) {
+                if (index == 1)
+                    throw std::runtime_error("task failure");
+            });
+        } catch (const std::runtime_error&) {
+            propagated = true;
+        }
+        ok &= check(propagated, "task scheduler propagates worker exceptions");
+        std::atomic<std::uint64_t> nested{};
+        scheduler.parallelFor(
+            2, [&](std::size_t) { scheduler.parallelFor(4, [&](std::size_t) { nested.fetch_add(1); }); });
+        ok &= check(nested.load() == 8, "task scheduler runs nested batches inline");
+    }
+    {
+        const auto schemaPath = std::filesystem::temp_directory_path() / "mikumikudesu-subayai-template.txt";
+        const auto hairPath = std::filesystem::temp_directory_path() / "mikumikudesu-subayai-hair.txt";
+        const auto metalPath = std::filesystem::temp_directory_path() / "mikumikudesu-subayai-metal.txt";
+        {
+            std::ofstream output(schemaPath);
+            output << "i.1 : Category\n"
+                      "_E Category : default=0, glass=1, metal=2\n"
+                      "f.1 : Roughness\n"
+                      "f.1 : Anisotropy\n"
+                      "f.2 : IOR\n"
+                      "f.1 : AutoNormal\n"
+                      "Roughness : 0.5\n";
+        }
+        {
+            std::ofstream output(hairPath);
+            output << "Anisotropy : 0.75\nIOR : 1.5,0\nAutoNormal : 1\n";
+        }
+        {
+            std::ofstream output(metalPath);
+            output << "Category : metal\n";
+        }
+        const auto schema = dayo::core::loadSubayaiMaterialSchema(schemaPath);
+        const auto hair = dayo::core::loadSubayaiMaterialPreset(hairPath, schema);
+        const auto anisotropy = hair.parameters.find("Anisotropy");
+        const auto ior = hair.parameters.find("IOR");
+        const auto category = dayo::core::loadSubayaiMaterialPreset(metalPath, schema);
+        const auto categoryValue = category.parameters.find("Category");
+        const auto roughness = hair.parameters.find("Roughness");
+        const auto hairMaterial = dayo::core::makeSubayaiHairMaterial(hair.parameters);
+        ok &=
+            check(anisotropy != nullptr && std::get<float>(*anisotropy) == 0.75F, "Subayai hair anisotropy annotation");
+        ok &= check(ior != nullptr && std::get<std::array<float, 2>>(*ior)[0] == 1.5F, "Subayai IOR annotation");
+        ok &= check(categoryValue != nullptr && std::get<std::int32_t>(*categoryValue) == 2, "Subayai enum annotation");
+        ok &= check(roughness != nullptr && std::get<float>(*roughness) == 0.5F, "Subayai schema default values");
+        ok &= check(hairMaterial.anisotropy == 0.75F && hairMaterial.ior[0] == 1.5F && hairMaterial.autoNormal == 1.0F,
+                    "Subayai hair material parameters");
+        const auto expressionPath = std::filesystem::temp_directory_path() / "mikumikudesu-subayai-expression.txt";
+        {
+            std::ofstream output(expressionPath);
+            output << "Roughness : 5*(sin(Time*2*pi)+1)\n";
+        }
+        const auto expressionPreset = dayo::core::loadSubayaiMaterialPreset(expressionPath, schema);
+        const auto expression = expressionPreset.parameters.find("Roughness");
+        ok &= check(expression != nullptr && std::holds_alternative<std::string>(*expression),
+                    "Subayai scalar animated expression");
+
+        const auto expectInvalidPreset = [&](std::string_view contents, std::string_view message) {
+            std::ofstream output(expressionPath, std::ios::trunc);
+            output << contents;
+            output.close();
+            bool threw = false;
+            try {
+                static_cast<void>(dayo::core::loadSubayaiMaterialPreset(expressionPath, schema));
+            } catch (const std::runtime_error&) {
+                threw = true;
+            }
+            ok &= check(threw, message);
+        };
+        expectInvalidPreset("IOR : 1.5\n", "Subayai rejects a short vector");
+        expectInvalidPreset("IOR : 1.5,0,123\n", "Subayai rejects a long vector");
+        expectInvalidPreset("IOR : 1.5,oops\n", "Subayai rejects invalid vector expressions");
+        expectInvalidPreset("Roughness : foo\n", "Subayai rejects arbitrary scalar text");
+        expectInvalidPreset("Roughness : 0.5wat\n", "Subayai rejects adjacent scalar text");
+        std::error_code cleanupError;
+        std::filesystem::remove(expressionPath, cleanupError);
+        std::filesystem::remove(schemaPath, cleanupError);
+        std::filesystem::remove(hairPath, cleanupError);
+        std::filesystem::remove(metalPath, cleanupError);
     }
 
     const auto path = std::filesystem::temp_directory_path() / "mikumikudesu-core-test.pmx";
@@ -506,6 +657,15 @@ int main() {
         dayo::core::MediaFile media(mediaPath);
         ok &= check(media.info().hasAudio && !media.info().hasVideo, "FFmpeg media probing");
         const auto audio = media.decodeAudio();
+        std::vector<float> trimmedAudio;
+        media.streamAudio(
+            [&](std::span<const float> samples, std::uint32_t, std::uint32_t) {
+                trimmedAudio.insert(trimmedAudio.end(), samples.begin(), samples.end());
+            },
+            0.05);
+        ok &= check(trimmedAudio.size() + 4800 == audio.samples.size() &&
+                        std::equal(trimmedAudio.begin(), trimmedAudio.end(), audio.samples.begin() + 4800),
+                    "audio offset trims exact resampled stereo sample frames");
         ok &= check(audio.channels == 2 && audio.sampleRate == 48'000 && !audio.samples.empty(),
                     "FFmpeg audio decode and resample");
         dayo::core::AudioExportRequest exportRequest;
@@ -518,6 +678,8 @@ int main() {
         ok &= check(dayo::core::canExportM4a() && exportResult.encodedSamples > 0 && exportRatio >= 0.99 &&
                         std::filesystem::exists(exportPath),
                     "streaming AAC M4A export");
+        ok &= check(exportResult.encodedSamples == 4800 && std::abs(exportResult.durationSeconds - 0.1) < 1e-8,
+                    "partial AAC frame reports only valid samples");
         dayo::core::MediaFile exportedMedia(exportPath);
         ok &= check(exportedMedia.info().hasAudio && !exportedMedia.info().hasVideo &&
                         exportedMedia.info().durationSeconds > 0.05 && exportedMedia.info().durationSeconds < 0.2,
@@ -715,6 +877,63 @@ int main() {
                       (offsetTipAfter[2] - offsetTipBefore[2]) * (offsetTipAfter[2] - offsetTipBefore[2]));
         ok &= check(offsetBoneError < 1e-3F && offsetTipMovement > 1e-4F,
                     "PMX mode 2 with body offset rebuilds the bone from the animated center and simulated rotation");
+
+        // Nested mode 2 bodies must resolve each animated center after their
+        // parent has received its physics rotation. A child center sampled
+        // before Bullet runs remains at its old absolute position instead of
+        // following the updated parent hierarchy.
+        dayo::core::PmxModel nestedMode2Model;
+        nestedMode2Model.vertices.resize(1);
+        nestedMode2Model.vertices[0].position = {0.0F, 2.0F, 0.0F};
+        nestedMode2Model.vertices[0].normal = {0.0F, 1.0F, 0.0F};
+        nestedMode2Model.vertices[0].bones[0] = 2;
+        nestedMode2Model.bones.resize(3);
+        nestedMode2Model.bones[0].name = "hip";
+        nestedMode2Model.bones[1].name = "parentSkirt";
+        nestedMode2Model.bones[1].position = {0.0F, 1.0F, 0.0F};
+        nestedMode2Model.bones[1].parent = 0;
+        nestedMode2Model.bones[2].name = "childSkirt";
+        nestedMode2Model.bones[2].position = {0.0F, 2.0F, 0.0F};
+        nestedMode2Model.bones[2].parent = 1;
+        dayo::core::PmxRigidBody hipBody;
+        hipBody.shape = 0;
+        hipBody.size = {0.2F, 0.2F, 0.2F};
+        hipBody.position = {0.0F, 0.0F, 0.0F};
+        hipBody.bone = 0;
+        hipBody.collisionMask = 0;
+        hipBody.mode = 0;
+        nestedMode2Model.rigidBodies.push_back(hipBody);
+        auto parentMode2Body = hipBody;
+        parentMode2Body.position = {0.0F, 1.0F, 0.0F};
+        parentMode2Body.bone = 1;
+        parentMode2Body.mass = 1.0F;
+        parentMode2Body.mode = 2;
+        nestedMode2Model.rigidBodies.push_back(parentMode2Body);
+        auto childMode2Body = parentMode2Body;
+        childMode2Body.position = {0.0F, 2.0F, 0.0F};
+        childMode2Body.bone = 2;
+        nestedMode2Model.rigidBodies.push_back(childMode2Body);
+        dayo::core::MmdPhysics nestedMode2Physics(nestedMode2Model);
+        nestedMode2Physics.setGravity({0.0F, 0.0F, 0.0F});
+        dayo::core::MmdAnimator nestedMode2Animator(nestedMode2Model);
+        nestedMode2Animator.setPhysics(&nestedMode2Physics);
+        static_cast<void>(nestedMode2Animator.evaluate(0.0F, 0.0F));
+        nestedMode2Physics.applyImpulse(1, {}, {0.0F, 0.0F, 8.0F}, false);
+        const auto nestedMode2Frame = nestedMode2Animator.evaluate(1.0F, 1.0F / 30.0F);
+        const auto parentMode2Pose = nestedMode2Physics.bodyTransform(1);
+        const auto expectedChildCenter = [&]() {
+            const auto parentRotatedChildOffset = quatRotate(parentMode2Pose.rotation, {0.0F, 1.0F, 0.0F});
+            return dayo::core::Float3{parentMode2Pose.position[0] + parentRotatedChildOffset[0],
+                                      parentMode2Pose.position[1] + parentRotatedChildOffset[1],
+                                      parentMode2Pose.position[2] + parentRotatedChildOffset[2]};
+        }();
+        const auto& nestedMode2Vertex = nestedMode2Frame.vertices[0].position;
+        const auto nestedMode2CenterError = std::sqrt(
+            (nestedMode2Vertex[0] - expectedChildCenter[0]) * (nestedMode2Vertex[0] - expectedChildCenter[0]) +
+            (nestedMode2Vertex[1] - expectedChildCenter[1]) * (nestedMode2Vertex[1] - expectedChildCenter[1]) +
+            (nestedMode2Vertex[2] - expectedChildCenter[2]) * (nestedMode2Vertex[2] - expectedChildCenter[2]));
+        ok &= check(nestedMode2CenterError < 1e-3F && std::abs(expectedChildCenter[0]) > 1e-3F,
+                    "nested mode 2 child follows the physics-updated parent hierarchy");
 
         dayo::core::PmxModel skirtChainModel;
         skirtChainModel.vertices.resize(2);
@@ -1436,6 +1655,23 @@ int main() {
         const auto ikEnabled = ikAnimator.evaluate(0.0F);
         ok &= check(std::abs(ikDisabled.vertices[0].position[1]) < 1e-4F && ikEnabled.vertices[0].position[1] > 1.0F,
                     "VMD IK state toggles PMX IK evaluation");
+        auto oppositeModel = ikModel;
+        oppositeModel.bones[3].position = {-1.0F, 0.0F, 0.0F};
+        dayo::core::MmdAnimator oppositeAnimator(oppositeModel);
+        const auto opposite = oppositeAnimator.evaluate(0.0F);
+        ok &= check(opposite.vertices[0].position[0] < -1.49F, "IK escapes an exactly anti-parallel effector and goal");
+        auto alignedModel = ikModel;
+        alignedModel.vertices[0].position = {1.0F, 0.0F, 0.0F};
+        alignedModel.bones[1].position = {0.0F, 1.0F, 0.0F};
+        alignedModel.bones[3].position = {2.0F, 0.0F, 0.0F};
+        alignedModel.bones[3].parent = -1;
+        alignedModel.bones[3].ikLoopCount = 64;
+        alignedModel.bones[3].ikLinks = {{0, false, {}, {}}, {1, false, {}, {}}};
+        dayo::core::MmdAnimator alignedAnimator(alignedModel);
+        const auto aligned = alignedAnimator.evaluate(0.0F);
+        ok &= check(std::abs(aligned.vertices[0].position[0] - 2.0F) < 0.01F &&
+                        std::abs(aligned.vertices[0].position[1]) < 0.01F,
+                    "one aligned IK link does not terminate subsequent convergence sweeps");
 
         dayo::core::VmdMotion unsortedIkMotion = ikMotion;
         unsortedIkMotion.ik = {
@@ -1484,6 +1720,16 @@ int main() {
                 skinned[0].position[1] < 20.0F && std::abs(skinned[1].position[0] - 40.0F) < 1e-4F &&
                 std::abs(skinned[1].position[1] - 50.0F) < 1e-4F && std::abs(skinned[1].position[2] - 60.0F) < 1e-4F,
             "soft-body fallback applies displacement only to its material vertices");
+        const auto simulateSoftBody = [&](int fps) {
+            dayo::core::SoftBodySimulation simulation(noSoftBodyModel);
+            for (int i = 0; i < fps * 5; ++i)
+                simulation.step(1.0F / static_cast<float>(fps), {0.0F, -9.8F, 0.0F});
+            auto vertices = noSoftBodyModel.vertices;
+            simulation.apply(vertices);
+            return vertices[0].position[1];
+        };
+        ok &= check(std::abs(simulateSoftBody(30) - simulateSoftBody(120)) < 0.02F,
+                    "soft-body damping agrees across 30 and 120 Hz within integration error");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: PMX transform evaluation: " << exception.what() << '\n';
         ok = false;

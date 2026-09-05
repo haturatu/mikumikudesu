@@ -16,6 +16,7 @@ struct VmdBoneKey {
     std::uint32_t frame{};
     Float3 translation{};
     Float4 rotation{0.0F, 0.0F, 0.0F, 1.0F};
+    // Canonical control points occupy [axis + point * 4]; remaining bytes are reserved.
     std::array<std::uint8_t, 64> interpolation{};
     bool physics{true};
     std::array<std::uint8_t, 4> methods{};

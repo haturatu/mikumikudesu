@@ -109,6 +109,8 @@ struct Timeline {
     std::vector<VmdShadowKey> shadow;
     std::vector<VmdIkKey> ik;
     std::vector<ExternalParentLink> externalParents;
+    // Preserve imported model references and frame keys until they can be resolved.
+    std::vector<VmdayoExternalParentKey> externalParentKeys;
     std::vector<std::pair<std::uint32_t, PhysicsSettings>> gravity;
 };
 
@@ -230,6 +232,7 @@ class Scene {
     Timeline timeline_;
     PhysicsSettings physicsSettings_;
     std::vector<ExternalParentLink> externalParents_;
+    void syncGlobalMotionTracks();
     std::optional<MediaFile> media_;
     std::optional<EffectGraph> effect_;
     DirtyFlag dirty_{DirtyFlag::camera | DirtyFlag::geometry | DirtyFlag::material | DirtyFlag::lighting |
