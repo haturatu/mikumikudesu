@@ -9,6 +9,8 @@ VK_DEFINE_HANDLE(VmaAllocator)
 VK_DEFINE_HANDLE(VmaAllocation)
 #endif
 
+#include "graphics/vulkan/vulkan_resources.hpp"
+
 #include <array>
 #include <unordered_map>
 
@@ -88,22 +90,6 @@ class VulkanDevice final : public Device {
         void* mappedPreviewMaterials{};
         VkDescriptorSet previewMaterialDescriptor{};
         std::uint64_t previewMaterialGeneration{};
-    };
-
-    struct BufferResource {
-        VkBuffer buffer{};
-        VkDeviceMemory memory{};
-#if DAYO_ENABLE_VMA
-        VmaAllocation allocation{};
-#endif
-    };
-
-    struct TextureResource {
-        VkImage image{};
-        VkDeviceMemory memory{};
-#if DAYO_ENABLE_VMA
-        VmaAllocation allocation{};
-#endif
     };
 
     struct DepthResource {
@@ -275,8 +261,8 @@ class VulkanDevice final : public Device {
     OffscreenResource offscreen_;
 
     std::uint64_t nextResourceHandle_{1};
-    std::unordered_map<BufferHandle, BufferResource> buffers_;
-    std::unordered_map<TextureHandle, TextureResource> textures_;
+    std::unordered_map<BufferHandle, VulkanBuffer> buffers_;
+    std::unordered_map<TextureHandle, VulkanImage> textures_;
 };
 
 } // namespace dayo::graphics

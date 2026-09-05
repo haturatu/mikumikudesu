@@ -3155,7 +3155,8 @@ std::uint32_t VulkanDevice::findMemoryType(std::uint32_t bits, VkMemoryPropertyF
 BufferHandle VulkanDevice::createBuffer(const BufferDesc& desc) {
     if (desc.size == 0)
         throw std::invalid_argument("buffer size must be non-zero");
-    BufferResource resource;
+    VulkanBuffer resource;
+    resource.size = desc.size;
     const VkBufferCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = desc.size,
@@ -3209,7 +3210,7 @@ BufferHandle VulkanDevice::createBuffer(const BufferDesc& desc) {
 TextureHandle VulkanDevice::createTexture(const TextureDesc& desc) {
     if (desc.width == 0 || desc.height == 0)
         throw std::invalid_argument("texture size must be non-zero");
-    TextureResource resource;
+    VulkanImage resource;
     VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (desc.storage)
         usage |= VK_IMAGE_USAGE_STORAGE_BIT;
