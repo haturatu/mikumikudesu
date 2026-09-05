@@ -22,6 +22,7 @@ struct VideoExportRequest {
     std::uint32_t audioBitrate{192'000};
     bool preferHardware{};
     bool overwrite{};
+    double audioStartSeconds{};
 };
 
 struct VideoExportProgress {

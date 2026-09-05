@@ -49,7 +49,8 @@ void VideoExportJob::start(core::VideoExportRequest request, std::optional<std::
                             const auto count = std::min<std::uint64_t>(samples.size(), maxSamples - writtenSamples);
                             exporter.writeAudio(samples.first(static_cast<std::size_t>(count)), sampleRate, channels);
                             writtenSamples += count;
-                        });
+                        },
+                        request.audioStartSeconds);
                 }
                 while (true) {
                     core::ImageRgba8 frame;

@@ -40,7 +40,7 @@ class MediaFile {
 
     [[nodiscard]] const MediaInfo& info() const noexcept;
     [[nodiscard]] AudioBuffer decodeAudio();
-    void streamAudio(const AudioSampleCallback& callback);
+    void streamAudio(const AudioSampleCallback& callback, double startSeconds = 0.0);
     [[nodiscard]] ImageRgba8 decodeVideoFrame(double seconds);
 
   private:
