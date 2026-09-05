@@ -12,9 +12,12 @@ VK_DEFINE_HANDLE(VmaAllocation)
 #include "graphics/vulkan/vulkan_resources.hpp"
 
 #include <array>
+#include <memory>
 #include <unordered_map>
 
 namespace dayo::graphics {
+
+class VulkanUploadContext;
 
 class VulkanDevice final : public Device {
   public:
@@ -187,6 +190,7 @@ class VulkanDevice final : public Device {
     VkQueue queue_{};
     VkSemaphore timelineSemaphore_{};
     std::uint64_t nextTimelineValue_{};
+    std::unique_ptr<VulkanUploadContext> uploadContext_;
 
     VkSwapchainKHR swapchain_{};
     VkFormat swapchainFormat_{VK_FORMAT_UNDEFINED};

@@ -1,4 +1,5 @@
 #include "graphics/vulkan/vulkan_device.hpp"
+#include "graphics/vulkan/vulkan_upload_context.hpp"
 
 #include "core/log.hpp"
 #include "graphics/timestamp.hpp"
@@ -127,6 +128,8 @@ VulkanDevice::VulkanDevice(platform::Window& window, bool validation) : window_(
     selectPhysicalDevice();
     queryCapabilities();
     createLogicalDevice();
+    uploadContext_ = std::make_unique<VulkanUploadContext>(device_, physicalDevice_, queue_, queueFamily_,
+                                                           timelineSemaphore_, nextTimelineValue_);
     createSwapchain();
     createPreviewDescriptors();
     createPipeline();
@@ -151,6 +154,7 @@ VulkanDevice::VulkanDevice(platform::Window& window, bool validation) : window_(
 VulkanDevice::~VulkanDevice() {
     if (device_ != VK_NULL_HANDLE)
         vkDeviceWaitIdle(device_);
+    uploadContext_.reset();
     destroyUi();
     destroyOffscreenResource();
     destroyPreviewMesh();
@@ -2766,9 +2770,6 @@ void VulkanDevice::uploadPreviewDeviceLocalBuffer(const void* data, VkDeviceSize
     if (data == nullptr || size == 0)
         throw std::invalid_argument("preview device-local buffer is empty");
 
-    VkBuffer staging{};
-    VkDeviceMemory stagingMemory{};
-    VkCommandPool uploadPool{};
     try {
         const VkBufferCreateInfo bufferInfo{
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -2787,51 +2788,11 @@ void VulkanDevice::uploadPreviewDeviceLocalBuffer(const void* data, VkDeviceSize
         check(vkAllocateMemory(device_, &allocationInfo, nullptr, &memory), "allocate device-local preview buffer");
         check(vkBindBufferMemory(device_, buffer, memory, 0), "bind device-local preview buffer");
 
-        const VkBufferCreateInfo stagingInfo{
-            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            .size = size,
-            .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        };
-        check(vkCreateBuffer(device_, &stagingInfo, nullptr, &staging), "create preview mesh staging buffer");
-        VkMemoryRequirements stagingRequirements{};
-        vkGetBufferMemoryRequirements(device_, staging, &stagingRequirements);
-        const VkMemoryAllocateInfo stagingAllocation{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .allocationSize = stagingRequirements.size,
-            .memoryTypeIndex =
-                findMemoryType(stagingRequirements.memoryTypeBits,
-                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-        };
-        check(vkAllocateMemory(device_, &stagingAllocation, nullptr, &stagingMemory),
-              "allocate preview mesh staging memory");
-        check(vkBindBufferMemory(device_, staging, stagingMemory, 0), "bind preview mesh staging memory");
-        void* mapped = nullptr;
-        check(vkMapMemory(device_, stagingMemory, 0, size, 0, &mapped), "map preview mesh staging memory");
-        std::memcpy(mapped, data, static_cast<std::size_t>(size));
-        vkUnmapMemory(device_, stagingMemory);
-
-        const VkCommandPoolCreateInfo poolInfo{
-            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-            .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
-            .queueFamilyIndex = queueFamily_,
-        };
-        check(vkCreateCommandPool(device_, &poolInfo, nullptr, &uploadPool), "create preview mesh upload pool");
-        VkCommandBuffer command{};
-        const VkCommandBufferAllocateInfo commandInfo{
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .commandPool = uploadPool,
-            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1,
-        };
-        check(vkAllocateCommandBuffers(device_, &commandInfo, &command), "allocate preview mesh upload command");
-        const VkCommandBufferBeginInfo beginInfo{
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-        };
-        check(vkBeginCommandBuffer(command, &beginInfo), "begin preview mesh upload");
-        const VkBufferCopy copy{.size = size};
-        vkCmdCopyBuffer(command, staging, buffer, 1, &copy);
+        uploadContext_->begin();
+        const auto slice = uploadContext_->allocate(size);
+        std::memcpy(slice.mapped, data, static_cast<std::size_t>(size));
+        const VkBufferCopy copy{.srcOffset = slice.offset, .size = size};
+        vkCmdCopyBuffer(uploadContext_->commandBuffer(), slice.buffer, buffer, 1, &copy);
         const VkBufferMemoryBarrier2 visible{
             .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
             .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -2849,28 +2810,10 @@ void VulkanDevice::uploadPreviewDeviceLocalBuffer(const void* data, VkDeviceSize
             .bufferMemoryBarrierCount = 1,
             .pBufferMemoryBarriers = &visible,
         };
-        vkCmdPipelineBarrier2(command, &visibleDependency);
-        check(vkEndCommandBuffer(command), "end preview mesh upload");
-        const VkSubmitInfo submitInfo{
-            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .commandBufferCount = 1,
-            .pCommandBuffers = &command,
-        };
-        check(vkQueueSubmit(queue_, 1, &submitInfo, VK_NULL_HANDLE), "submit preview mesh upload");
-        check(vkQueueWaitIdle(queue_), "wait for preview mesh upload");
-        vkDestroyCommandPool(device_, uploadPool, nullptr);
-        uploadPool = VK_NULL_HANDLE;
-        vkDestroyBuffer(device_, staging, nullptr);
-        staging = VK_NULL_HANDLE;
-        vkFreeMemory(device_, stagingMemory, nullptr);
-        stagingMemory = VK_NULL_HANDLE;
+        vkCmdPipelineBarrier2(uploadContext_->commandBuffer(), &visibleDependency);
+        const auto signalValue = uploadContext_->submit();
+        uploadContext_->wait(signalValue);
     } catch (...) {
-        if (uploadPool != VK_NULL_HANDLE)
-            vkDestroyCommandPool(device_, uploadPool, nullptr);
-        if (staging != VK_NULL_HANDLE)
-            vkDestroyBuffer(device_, staging, nullptr);
-        if (stagingMemory != VK_NULL_HANDLE)
-            vkFreeMemory(device_, stagingMemory, nullptr);
         if (buffer != VK_NULL_HANDLE)
             vkDestroyBuffer(device_, buffer, nullptr);
         if (memory != VK_NULL_HANDLE)
