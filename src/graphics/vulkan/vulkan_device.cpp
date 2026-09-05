@@ -1158,6 +1158,7 @@ VulkanDevice::PreviewTextureResource VulkanDevice::createPreviewTextureResource(
     };
     vkCmdPipelineBarrier2(command, &transferDependency);
     const VkBufferImageCopy copy{
+        .bufferOffset = slice.offset,
         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
         .imageExtent = {width, height, 1},
     };
