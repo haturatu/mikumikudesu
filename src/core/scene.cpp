@@ -1,8 +1,12 @@
 #include "core/scene.hpp"
+#include "core/log.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <functional>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -274,6 +278,18 @@ bool Scene::setCloneCount(ModelId id, std::uint32_t cloneCount) noexcept {
     return true;
 }
 
+std::size_t Scene::materialBase(ModelId id) const noexcept {
+    std::size_t base = 0;
+    for (const auto& instance : models_) {
+        if (instance.id == id)
+            break;
+        if (!instance.visible || instance.model == nullptr || instance.animator == nullptr)
+            continue;
+        base += instance.model->materials.size();
+    }
+    return base;
+}
+
 void Scene::setBackgroundScreenSource(ScreenTextureSource source) noexcept {
     if (background_.screenSource == source)
         return;
@@ -461,26 +477,49 @@ void Scene::setRuntimeMode(RuntimeMode mode) noexcept {
 
 void Scene::refreshModelResources(ModelInstance& instance) {
     instance.textures.clear();
-    instance.textures.resize(instance.model->textures.size());
-    for (std::size_t index = 0; index < instance.model->textures.size(); ++index) {
+    const auto regularTextureCount = instance.model->textures.size();
+    instance.textures.resize(regularTextureCount + 10U);
+    const auto lower = [](std::string value) {
+        std::ranges::transform(value, value.begin(),
+                               [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+        return value;
+    };
+    const auto resolveTexture = [&](std::filesystem::path texturePath) {
+        if (std::filesystem::exists(texturePath))
+            return texturePath;
+        const auto filename = lower(texturePath.filename().string());
         try {
-            auto texturePath = instance.model->textures[index];
-            if (!std::filesystem::exists(texturePath)) {
-                for (const auto& entry :
-                     std::filesystem::recursive_directory_iterator(instance.sourcePath.parent_path())) {
-                    if (!entry.is_regular_file() || entry.path().extension() != texturePath.extension())
-                        continue;
-                    if (entry.path().filename() == texturePath.filename()) {
-                        texturePath = entry.path();
-                        break;
-                    }
-                }
+            for (const auto& entry : std::filesystem::recursive_directory_iterator(
+                     instance.sourcePath.parent_path(), std::filesystem::directory_options::skip_permission_denied)) {
+                if (entry.is_regular_file() && lower(entry.path().filename().string()) == filename)
+                    return entry.path();
             }
-            if (std::filesystem::exists(texturePath))
-                instance.textures[index] = loadImageRgba8(texturePath);
         } catch (const std::exception&) {
-            // Missing optional sphere/toon maps use the renderer's fallback texture.
         }
+        return std::filesystem::path{};
+    };
+    const auto loadTexture = [&](const std::filesystem::path& requested) {
+        const auto resolved = resolveTexture(requested);
+        if (resolved.empty())
+            return ImageRgba8{};
+        try {
+            return loadImageRgba8(resolved);
+        } catch (const std::exception& exception) {
+            log::warn("Failed to load PMX texture: ", resolved.string(), ": ", exception.what());
+            return ImageRgba8{};
+        }
+    };
+    for (std::size_t index = 0; index < regularTextureCount; ++index) {
+        instance.textures[index] = loadTexture(instance.model->textures[index]);
+    }
+    for (std::size_t index = 0; index < 10U; ++index) {
+        std::ostringstream name;
+        name << "toon" << std::setfill('0') << std::setw(2) << index + 1U << ".bmp";
+        const auto root = instance.sourcePath.parent_path();
+        auto path = root / "toon" / name.str();
+        if (!std::filesystem::exists(path))
+            path = root / name.str();
+        instance.textures[regularTextureCount + index] = loadTexture(path);
     }
 }
 

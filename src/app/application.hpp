@@ -127,6 +127,9 @@ class Application {
     float cameraPitch_{};
     float cameraDistance_{3.0F};
     bool manualCamera_{};
+    std::int32_t previewDebugMaterial_{-1};
+    std::uint32_t previewDebugFlags_{};
+    bool previewOutlineEnabled_{};
     std::filesystem::path audioSource_;
     std::array<char, 1024> audioDestination_{};
 #if DAYO_HAS_IMGUI

@@ -147,6 +147,175 @@ dayo::core::ImageRgba8 renderCase(dayo::graphics::VulkanDevice& device, std::spa
     return device.renderToImage({64, 64});
 }
 
+std::array<PreviewVertex, 3> makeFlatTriangle() {
+    std::array<PreviewVertex, 3> vertices{};
+    const std::array positions{
+        Float3{-0.8F, -0.8F, 0.0F},
+        Float3{0.8F, -0.8F, 0.0F},
+        Float3{0.0F, 0.8F, 0.0F},
+    };
+    for (std::size_t index = 0; index < vertices.size(); ++index) {
+        std::copy(positions[index].begin(), positions[index].end(), vertices[index].position);
+        vertices[index].normal[2] = 1.0F;
+    }
+    return vertices;
+}
+
+dayo::core::ImageRgba8 renderMaterial(dayo::graphics::VulkanDevice& device, std::span<const PreviewTexture> textures,
+                                      PreviewMaterial material) {
+    const auto vertices = makeFlatTriangle();
+    const std::array<std::uint32_t, 3> indices{0, 2, 1};
+    const std::array materials{material};
+    const std::array<PreviewDraw, 1> draws{{{0, 3, 0}}};
+    device.uploadPreviewTextures(textures);
+    device.uploadPreviewMesh(vertices, indices);
+    device.updatePreviewMaterials(materials);
+    device.updatePreviewDraws(draws);
+    return device.renderToImage({64, 64});
+}
+
+std::array<std::uint8_t, 4> centerPixel(const dayo::core::ImageRgba8& image) {
+    const auto offset =
+        (static_cast<std::size_t>(image.height) / 2U * image.width + static_cast<std::size_t>(image.width) / 2U) * 4U;
+    if (image.pixels.size() < offset + 4U)
+        return {};
+    return {image.pixels[offset], image.pixels[offset + 1U], image.pixels[offset + 2U], image.pixels[offset + 3U]};
+}
+
+void resetPreviewScene(dayo::graphics::VulkanDevice& device) {
+    dayo::graphics::PreviewScene scene;
+    scene.cameraDistance = 3.0F;
+    scene.backgroundEnabled = false;
+    device.updatePreviewScene(scene);
+}
+
+bool missingSphereDoesNotAddWhite(dayo::graphics::VulkanDevice& device) {
+    const std::array<std::uint8_t, 4> base{64, 32, 16, 255};
+    const std::array<PreviewTexture, 1> textures{{
+        {1, 1, std::span<const std::uint8_t>(base), false},
+    }};
+    PreviewMaterial material;
+    material.textureSlot = 1;
+    material.sphereMode = 0;
+    material.sphereTextureSlot = 0;
+    const auto image = renderMaterial(device, textures, material);
+    const auto pixel = centerPixel(image);
+    return pixel[0] < 200U && pixel[0] > pixel[1] && pixel[1] > pixel[2];
+}
+
+bool additiveSphereUsesTexture(dayo::graphics::VulkanDevice& device) {
+    const std::array<std::uint8_t, 4> base{64, 64, 64, 255};
+    const std::array<std::uint8_t, 4> redSphere{64, 0, 0, 255};
+    const std::array<std::uint8_t, 4> blackSphere{0, 0, 0, 255};
+    const std::array<PreviewTexture, 2> redTextures{{
+        {1, 1, std::span<const std::uint8_t>(base), false},
+        {1, 1, std::span<const std::uint8_t>(redSphere), false},
+    }};
+    const std::array<PreviewTexture, 2> blackTextures{{
+        {1, 1, std::span<const std::uint8_t>(base), false},
+        {1, 1, std::span<const std::uint8_t>(blackSphere), false},
+    }};
+    PreviewMaterial material;
+    material.textureSlot = 1;
+    material.sphereTextureSlot = 2;
+    material.sphereMode = 2;
+    const auto withTexture = centerPixel(renderMaterial(device, redTextures, material));
+    const auto withBlackTexture = centerPixel(renderMaterial(device, blackTextures, material));
+    return withTexture[0] > withBlackTexture[0] + 10U;
+}
+
+bool multiplySphereUsesTexture(dayo::graphics::VulkanDevice& device) {
+    const std::array<std::uint8_t, 4> base{128, 128, 128, 255};
+    const std::array<std::uint8_t, 4> whiteSphere{255, 255, 255, 255};
+    const std::array<std::uint8_t, 4> blackSphere{0, 0, 0, 255};
+    const std::array<PreviewTexture, 2> whiteTextures{{
+        {1, 1, std::span<const std::uint8_t>(base), false},
+        {1, 1, std::span<const std::uint8_t>(whiteSphere), false},
+    }};
+    const std::array<PreviewTexture, 2> blackTextures{{
+        {1, 1, std::span<const std::uint8_t>(base), false},
+        {1, 1, std::span<const std::uint8_t>(blackSphere), false},
+    }};
+    PreviewMaterial material;
+    material.textureSlot = 1;
+    material.sphereTextureSlot = 2;
+    material.sphereMode = 1;
+    const auto white = centerPixel(renderMaterial(device, whiteTextures, material));
+    const auto black = centerPixel(renderMaterial(device, blackTextures, material));
+    return static_cast<unsigned>(black[0]) + black[1] + black[2] + 30U <
+           static_cast<unsigned>(white[0]) + white[1] + white[2];
+}
+
+bool sharedToonUsesTexture(dayo::graphics::VulkanDevice& device) {
+    const std::array<std::uint8_t, 4> base{128, 128, 128, 255};
+    const std::array<std::uint8_t, 4> whiteToon{255, 255, 255, 255};
+    const std::array<std::uint8_t, 4> blackToon{0, 0, 0, 255};
+    const std::array<PreviewTexture, 2> whiteTextures{{
+        {1, 1, std::span<const std::uint8_t>(base), false},
+        {1, 1, std::span<const std::uint8_t>(whiteToon), false},
+    }};
+    const std::array<PreviewTexture, 2> blackTextures{{
+        {1, 1, std::span<const std::uint8_t>(base), false},
+        {1, 1, std::span<const std::uint8_t>(blackToon), false},
+    }};
+    PreviewMaterial material;
+    material.textureSlot = 1;
+    material.toonTextureSlot = 2;
+    material.toonMode = 1;
+    const auto white = centerPixel(renderMaterial(device, whiteTextures, material));
+    const auto black = centerPixel(renderMaterial(device, blackTextures, material));
+    return static_cast<unsigned>(black[0]) + black[1] + black[2] + 30U <
+           static_cast<unsigned>(white[0]) + white[1] + white[2];
+}
+
+bool alphaZeroIsDiscarded(dayo::graphics::VulkanDevice& device) {
+    const std::array<std::uint8_t, 4> transparent{255, 0, 0, 0};
+    const std::array<PreviewTexture, 1> textures{{
+        {1, 1, std::span<const std::uint8_t>(transparent), true},
+    }};
+    PreviewMaterial material;
+    material.textureSlot = 1;
+    const auto pixel = centerPixel(renderMaterial(device, textures, material));
+    return pixel[0] > 240U && pixel[1] > 240U && pixel[2] > 240U;
+}
+
+bool alpha098BecomesOpaque(dayo::graphics::VulkanDevice& device) {
+    const std::array<std::uint8_t, 4> almostOpaque{255, 0, 0, 250};
+    const std::array<std::uint8_t, 4> opaque{255, 0, 0, 255};
+    const std::array<PreviewTexture, 1> almostOpaqueTextures{{
+        {1, 1, std::span<const std::uint8_t>(almostOpaque), true},
+    }};
+    const std::array<PreviewTexture, 1> opaqueTextures{{
+        {1, 1, std::span<const std::uint8_t>(opaque), false},
+    }};
+    PreviewMaterial material;
+    material.textureSlot = 1;
+    return imagesMatch(renderMaterial(device, almostOpaqueTextures, material),
+                       renderMaterial(device, opaqueTextures, material));
+}
+
+bool lightColorAffectsDiffuse(dayo::graphics::VulkanDevice& device) {
+    dayo::graphics::PreviewScene scene;
+    scene.cameraDistance = 3.0F;
+    scene.backgroundEnabled = false;
+    scene.lightColor[0] = 0.0F;
+    scene.lightColor[1] = 1.0F;
+    scene.lightColor[2] = 0.0F;
+    device.updatePreviewScene(scene);
+    const std::array<std::uint8_t, 4> white{255, 255, 255, 255};
+    const std::array<PreviewTexture, 1> textures{{
+        {1, 1, std::span<const std::uint8_t>(white), false},
+    }};
+    PreviewMaterial material;
+    material.textureSlot = 1;
+    material.ambient[0] = material.ambient[1] = material.ambient[2] = 0.0F;
+    material.specular[0] = material.specular[1] = material.specular[2] = 0.0F;
+    material.toonMode = 2;
+    const auto pixel = centerPixel(renderMaterial(device, textures, material));
+    resetPreviewScene(device);
+    return pixel[1] > 200U && pixel[0] < 30U && pixel[2] < 30U;
+}
+
 bool coplanarMaterialsUseStrictDepth(dayo::graphics::VulkanDevice& device) {
     std::array<PreviewVertex, 6> vertices{};
     const std::array positions{
@@ -300,7 +469,13 @@ bool singleSidedMaterialsUseClockwiseFrontFaces(dayo::graphics::VulkanDevice& de
     const auto backImage = device.renderToImage({64, 64});
     const bool backDiscarded = backImage.pixels.size() >= center + 4U && backImage.pixels[center] > 200U &&
                                backImage.pixels[center + 1U] > 200U && backImage.pixels[center + 2U] > 200U;
-    return frontVisible && backDiscarded;
+    materials[0].doubleSided = true;
+    device.updatePreviewMaterials(materials);
+    const auto doubleSidedImage = device.renderToImage({64, 64});
+    const auto doubleSidedPixel = centerPixel(doubleSidedImage);
+    const bool backVisibleWhenDoubleSided =
+        doubleSidedPixel[0] > 200U && doubleSidedPixel[1] < 80U && doubleSidedPixel[2] < 80U;
+    return frontVisible && backDiscarded && backVisibleWhenDoubleSided;
 }
 
 bool cloneDrawUsesInstanceCount(dayo::graphics::VulkanDevice& device) {
@@ -475,6 +650,35 @@ int main() {
         device.uploadPreviewMesh(vertices, front);
         if (!orthographicZoom(device) || !sphereAlphaDoesNotHideMaterial(device)) {
             std::cerr << "FAIL: orthographic zoom or sphere alpha regression\n";
+            return 1;
+        }
+        resetPreviewScene(device);
+        if (!missingSphereDoesNotAddWhite(device)) {
+            std::cerr << "FAIL: disabled sphere map changed the base material color\n";
+            return 1;
+        }
+        if (!additiveSphereUsesTexture(device)) {
+            std::cerr << "FAIL: additive sphere map did not affect the material\n";
+            return 1;
+        }
+        if (!multiplySphereUsesTexture(device)) {
+            std::cerr << "FAIL: multiply sphere map did not affect the material\n";
+            return 1;
+        }
+        if (!sharedToonUsesTexture(device)) {
+            std::cerr << "FAIL: shared toon texture did not affect the material\n";
+            return 1;
+        }
+        if (!alphaZeroIsDiscarded(device)) {
+            std::cerr << "FAIL: alpha-zero texture fragment was not discarded\n";
+            return 1;
+        }
+        if (!alpha098BecomesOpaque(device)) {
+            std::cerr << "FAIL: alpha threshold did not make the fragment opaque\n";
+            return 1;
+        }
+        if (!lightColorAffectsDiffuse(device)) {
+            std::cerr << "FAIL: VMD light color did not affect diffuse shading\n";
             return 1;
         }
     } catch (const std::exception& exception) {
