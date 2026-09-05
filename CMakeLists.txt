@@ -124,6 +124,7 @@ add_library(
   src/core/project.cpp
   src/core/scene.cpp
   src/core/task_scheduler.cpp
+  src/core/subayai_hair.cpp
   src/core/subayai_material.cpp
   src/core/vmdayo.cpp
 )
