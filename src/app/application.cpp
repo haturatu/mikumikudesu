@@ -992,6 +992,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     std::size_t vertexCount = 0;
     std::size_t indexCount = 0;
     std::size_t materialCount = 0;
+    bool dynamicVertices = false;
     for (const auto& instance : scene_.models()) {
         if (!instance.visible || instance.model == nullptr || instance.animator == nullptr)
             continue;
@@ -999,11 +1000,16 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         vertexCount += instance.model->vertices.size() * clones;
         indexCount += instance.model->indices.size() * clones;
         materialCount += instance.model->materials.size() * clones;
+        dynamicVertices = dynamicVertices || (instance.softBody != nullptr && instance.softBody->available());
+        dynamicVertices = dynamicVertices || std::ranges::any_of(instance.model->morphs, [](const auto& morph) {
+                              return morph.type == 1 || morph.type == 9;
+                          });
     }
     const bool rebuildTopology = initialUpload || animatedTopologyGeneration_ != scene_.topologyGeneration() ||
                                  animatedIndices_.size() != indexCount ||
                                  animatedMaterialTemplates_.size() != materialCount ||
                                  animatedDraws_.size() != materialCount;
+    const bool rebuildVertices = initialUpload || rebuildTopology || dynamicVertices;
     std::vector<graphics::PreviewVertex> vertices;
     vertices.reserve(vertexCount);
     std::vector<graphics::PreviewMaterial> materials =
@@ -1074,38 +1080,41 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         }();
         const auto cloneCount = std::max(instance.cloneCount, 1U);
         for (std::uint32_t clone = 0; clone < cloneCount; ++clone) {
-            auto conversion = frameProfiler_.measure(core::ProfileSection::vertexConvert);
             const auto baseVertex = static_cast<std::uint32_t>(vertices.size());
             const auto firstCloneIndex = indexCursor;
             const float cloneOffset = (static_cast<float>(clone) - static_cast<float>(cloneCount - 1U) * 0.5F) * 2.2F;
-            for (const auto& source : frame.vertices) {
-                graphics::PreviewVertex vertex;
-                std::memcpy(vertex.position, source.position.data(), sizeof(vertex.position));
-                std::memcpy(vertex.normal, source.normal.data(), sizeof(vertex.normal));
-                std::memcpy(vertex.uv, source.uv.data(), sizeof(vertex.uv));
-                const bool supported = gpuSkinning;
-                if (supported) {
-                    for (std::size_t influence = 0; influence < 4; ++influence) {
-                        vertex.bones[influence] =
-                            source.bones[influence] < 0 ||
-                                    static_cast<std::size_t>(source.bones[influence]) >= frame.bones.size()
-                                ? -1
-                                : boneBase + source.bones[influence];
-                        vertex.weights[influence] = source.weights[influence];
+            if (rebuildVertices) {
+                auto conversion = frameProfiler_.measure(core::ProfileSection::vertexConvert);
+                for (const auto& source : frame.vertices) {
+                    graphics::PreviewVertex vertex;
+                    std::memcpy(vertex.position, source.position.data(), sizeof(vertex.position));
+                    std::memcpy(vertex.normal, source.normal.data(), sizeof(vertex.normal));
+                    std::memcpy(vertex.uv, source.uv.data(), sizeof(vertex.uv));
+                    const bool supported = gpuSkinning;
+                    if (supported) {
+                        for (std::size_t influence = 0; influence < 4; ++influence) {
+                            vertex.bones[influence] =
+                                source.bones[influence] < 0 ||
+                                        static_cast<std::size_t>(source.bones[influence]) >= frame.bones.size()
+                                    ? -1
+                                    : boneBase + source.bones[influence];
+                            vertex.weights[influence] = source.weights[influence];
+                        }
+                        const auto normalizedC = normalizePreviewPoint(source.sdefC, instance.normalization);
+                        const auto normalizedR0 = normalizePreviewPoint(source.sdefR0, instance.normalization);
+                        const auto normalizedR1 = normalizePreviewPoint(source.sdefR1, instance.normalization);
+                        std::copy(normalizedC.begin(), normalizedC.end(), vertex.sdefC);
+                        for (std::size_t axis = 0; axis < 3; ++axis) {
+                            vertex.sdefHalfDelta[axis] = (normalizedR0[axis] - normalizedR1[axis]) * 0.5F;
+                        }
+                        vertex.skinningType = static_cast<std::uint32_t>(source.weightType);
+                        vertex.gpuSkinning = 1;
                     }
-                    const auto normalizedC = normalizePreviewPoint(source.sdefC, instance.normalization);
-                    const auto normalizedR0 = normalizePreviewPoint(source.sdefR0, instance.normalization);
-                    const auto normalizedR1 = normalizePreviewPoint(source.sdefR1, instance.normalization);
-                    std::copy(normalizedC.begin(), normalizedC.end(), vertex.sdefC);
-                    for (std::size_t axis = 0; axis < 3; ++axis) {
-                        vertex.sdefHalfDelta[axis] = (normalizedR0[axis] - normalizedR1[axis]) * 0.5F;
-                    }
-                    vertex.skinningType = static_cast<std::uint32_t>(source.weightType);
-                    vertex.gpuSkinning = 1;
+                    vertex.edgeScale = source.edgeScale;
+                    vertex.cloneOffset = cloneOffset;
+                    vertices.push_back(vertex);
                 }
-                vertex.edgeScale = source.edgeScale;
-                vertex.cloneOffset = cloneOffset;
-                vertices.push_back(vertex);
+                conversion.finish();
             }
             if (rebuildTopology) {
                 for (const auto index : instance.model->indices)
@@ -1162,10 +1171,9 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                 draw.materialIndex = static_cast<std::uint32_t>(materialCursor - 1U);
                 firstIndex += instance.model->materials[materialIndex].indexCount;
             }
-            conversion.finish();
         }
     }
-    if (vertices.empty() || animatedIndices_.empty())
+    if ((rebuildVertices && vertices.empty()) || animatedIndices_.empty())
         return;
     if (rebuildTopology) {
         animatedMaterialTemplates_ = materials;
@@ -1177,7 +1185,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         device_->updatePreviewBones(bones);
         if (initialUpload || rebuildTopology)
             device_->uploadPreviewMesh(vertices, animatedIndices_);
-        else {
+        else if (dynamicVertices) {
             try {
                 device_->updatePreviewVertices(vertices);
             } catch (const std::exception&) {
@@ -1194,11 +1202,13 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     std::uint64_t uploadBytes = byteCount(bones.size(), sizeof(graphics::PreviewBoneTransform));
     uploadBytes += byteCount(materials.size(), sizeof(graphics::PreviewMaterial));
     uploadBytes += byteCount(draws.size(), sizeof(graphics::PreviewDraw));
-    uploadBytes += byteCount(vertices.size(), sizeof(graphics::PreviewVertex));
+    if (rebuildVertices)
+        uploadBytes += byteCount(vertices.size(), sizeof(graphics::PreviewVertex));
     if (initialUpload || rebuildTopology)
         uploadBytes += byteCount(animatedIndices_.size(), sizeof(std::uint32_t));
     frameProfiler_.addUploadBytes(uploadBytes);
-    animatedVertexCount_ = static_cast<std::uint64_t>(vertices.size());
+    if (rebuildVertices)
+        animatedVertexCount_ = static_cast<std::uint64_t>(vertices.size());
     uploadedAnimationFrame_ = static_cast<int>(animationFrame_);
     scene_.clearDirty(core::DirtyFlag::geometry | core::DirtyFlag::material);
 }
