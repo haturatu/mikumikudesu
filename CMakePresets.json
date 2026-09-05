@@ -29,6 +29,18 @@
       }
     },
     {
+      "name": "linux-release-native",
+      "displayName": "Linux Vulkan Release with native CPU tuning",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-release-native",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "DAYO_BACKEND": "VULKAN",
+        "DAYO_ENABLE_VALIDATION": "OFF",
+        "DAYO_ENABLE_NATIVE_TUNING": "ON"
+      }
+    },
+    {
       "name": "linux-system-only",
       "displayName": "Linux Vulkan without fetched UI",
       "generator": "Ninja",
@@ -54,6 +66,7 @@
   "buildPresets": [
     { "name": "linux-debug", "configurePreset": "linux-debug" },
     { "name": "linux-release", "configurePreset": "linux-release" },
+    { "name": "linux-release-native", "configurePreset": "linux-release-native" },
     { "name": "linux-system-only", "configurePreset": "linux-system-only" },
     { "name": "linux-sanitize", "configurePreset": "linux-sanitize" }
   ],
@@ -66,6 +79,11 @@
     {
       "name": "linux-release",
       "configurePreset": "linux-release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux-release-native",
+      "configurePreset": "linux-release-native",
       "output": { "outputOnFailure": true }
     },
     {

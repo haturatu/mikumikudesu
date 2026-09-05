@@ -25,12 +25,24 @@ option(DAYO_ENABLE_VALIDATION "Enable Vulkan validation when available" ON)
 option(DAYO_FETCH_DEPENDENCIES "Fetch small missing source dependencies" ON)
 option(DAYO_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(DAYO_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(DAYO_ENABLE_NATIVE_TUNING "Enable -march=native/-mtune=native for local Linux builds" OFF)
+option(DAYO_ENABLE_BOLT "Run LLVM BOLT on the Linux executable after linking" OFF)
+set(DAYO_BOLT_PROFILE "" CACHE FILEPATH "perf2bolt/fdata profile used by LLVM BOLT")
+set(DAYO_BOLT_EXECUTABLE "" CACHE FILEPATH "LLVM BOLT executable (auto-detected when empty)")
 
 if(NOT DAYO_BACKEND STREQUAL "VULKAN")
   message(
     FATAL_ERROR
     "The native target currently supports DAYO_BACKEND=VULKAN. The original D3D12 source remains under MikuMikuDayo/src."
   )
+endif()
+
+if(DAYO_ENABLE_NATIVE_TUNING AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  message(FATAL_ERROR "DAYO_ENABLE_NATIVE_TUNING is only supported on Linux")
+endif()
+
+if(DAYO_ENABLE_BOLT AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  message(FATAL_ERROR "DAYO_ENABLE_BOLT is only supported on Linux")
 endif()
 
 find_package(Vulkan 1.3 QUIET)
@@ -350,8 +362,34 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(${target} PRIVATE -Wno-error=deprecated-literal-operator)
       endif()
     endif()
+    if(DAYO_ENABLE_NATIVE_TUNING)
+      target_compile_options(${target} PRIVATE -march=native -mtune=native)
+    endif()
   endforeach()
   target_compile_options(dayo_graphics PRIVATE -Wno-missing-field-initializers)
+endif()
+
+if(DAYO_ENABLE_BOLT)
+  if(NOT DAYO_BOLT_PROFILE)
+    message(FATAL_ERROR "DAYO_ENABLE_BOLT requires DAYO_BOLT_PROFILE=/path/to/profile.fdata")
+  endif()
+  if(NOT DAYO_BOLT_EXECUTABLE)
+    find_program(DAYO_BOLT_EXECUTABLE NAMES llvm-bolt bolt REQUIRED)
+  endif()
+  add_custom_command(
+    TARGET mikumikudesu
+    POST_BUILD
+    COMMAND "${DAYO_BOLT_EXECUTABLE}" "$<TARGET_FILE:mikumikudesu>"
+            -o "$<TARGET_FILE:mikumikudesu>.bolt"
+            -data "${DAYO_BOLT_PROFILE}"
+            -reorder-blocks=ext-tsp
+            -reorder-functions=hfsort+
+            -split-functions
+            -split-all-cold
+    COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:mikumikudesu>.bolt" "$<TARGET_FILE:mikumikudesu>"
+    VERBATIM
+    COMMENT "Optimizing mikumikudesu with LLVM BOLT"
+  )
 endif()
 
 install(TARGETS mikumikudesu RUNTIME DESTINATION bin)
