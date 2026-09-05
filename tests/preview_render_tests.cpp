@@ -137,7 +137,7 @@ dayo::core::ImageRgba8 renderCase(dayo::graphics::VulkanDevice& device, std::spa
                                   std::span<const PreviewBoneTransform> bones) {
     const std::array<std::uint32_t, 3> indices{0, 1, 2};
     const std::array<PreviewMaterial, 1> materials{};
-    const std::array<dayo::graphics::PreviewDraw, 1> draws{{{0, 3, 0, {0.0F, 0.0F, 0.0F}}}};
+    const std::array<dayo::graphics::PreviewDraw, 1> draws{{{0, 3, 0}}};
     device.uploadPreviewMesh(vertices, indices);
     device.updatePreviewBones(bones);
     device.updatePreviewMaterials(materials);

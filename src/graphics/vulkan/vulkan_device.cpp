@@ -13,7 +13,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -101,20 +100,6 @@ VkBufferUsageFlags toVkUsage(BufferDesc::Usage usage) {
         return VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     }
     return 0;
-}
-
-float previewDrawDepth(const PreviewDraw& draw, const PreviewPushConstants& constants) {
-    float x = draw.boundsCenter[0] - constants.target[0];
-    float y = draw.boundsCenter[1] - constants.target[1];
-    float z = draw.boundsCenter[2] - constants.target[2];
-    const float sx = std::sin(constants.camera[0]);
-    const float cx = std::cos(constants.camera[0]);
-    const float sy = std::sin(constants.camera[1]);
-    const float cy = std::cos(constants.camera[1]);
-    z = sx * y + cx * z;
-    z = -sy * x + cy * z;
-    z += std::max(constants.camera[3], 0.1F);
-    return z;
 }
 
 } // namespace
@@ -1477,22 +1462,9 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
         return;
     }
 
-    std::vector<const PreviewDraw*> opaque;
-    std::vector<const PreviewDraw*> transparent;
-    opaque.reserve(previewDraws_.size());
-    transparent.reserve(previewDraws_.size());
-    for (const auto& item : previewDraws_) {
-        if (item.materialIndex >= previewMaterials_.size())
-            continue;
-        (previewMaterials_[item.materialIndex].transparent ? transparent : opaque).push_back(&item);
-    }
-    for (const auto* item : opaque)
-        draw(*item, pipeline_);
-    std::stable_sort(transparent.begin(), transparent.end(), [&](const auto* left, const auto* right) {
-        return previewDrawDepth(*left, constants) > previewDrawDepth(*right, constants);
-    });
-    for (const auto* item : transparent)
-        draw(*item, transparentPipeline_);
+    // Original Preview.fxdayo draws all PMX materials in file order with the MMD blend/depth state.
+    for (const auto& item : previewDraws_)
+        draw(item, transparentPipeline_);
 
     // Preview.fxdayo has no outline pass. Keep PMX edge data available for a future renderer pass,
     // but do not draw it in the original Preview-compatible path.

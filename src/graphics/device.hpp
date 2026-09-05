@@ -118,10 +118,6 @@ struct PreviewMaterial {
     float edgeSize{};
     bool doubleSided{};
     bool edgeEnabled{};
-    bool transparent{};
-    bool textureHasTransparency{};
-    bool toonTextureHasTransparency{};
-    bool sphereTextureHasTransparency{};
     std::uint32_t textureSlot{};
     std::uint32_t toonTextureSlot{};
     std::uint32_t sphereTextureSlot{};
@@ -133,7 +129,6 @@ struct PreviewDraw {
     std::uint32_t firstIndex{};
     std::uint32_t indexCount{};
     std::uint32_t materialIndex{};
-    float boundsCenter[3]{};
 };
 
 // This is the renderer-facing storage-buffer layout. Keep it explicitly
