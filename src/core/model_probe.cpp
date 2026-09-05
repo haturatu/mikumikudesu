@@ -234,8 +234,8 @@ void readMaterials(MappedFileStream& input, const Header& header, ParseBudget& b
                                         ? readSignedIndex(input, header.settings[3], "toon texture index")
                                         : static_cast<std::int32_t>(read<std::uint8_t>(input, "shared toon index"));
         material.memo = readText(input, header.metadata.textEncoding, budget);
-        const auto indexCount = readCount(input, budget, "material index count", maxElements, header.settings[2],
-                                          sizeof(std::uint32_t));
+        const auto indexCount =
+            readCount(input, budget, "material index count", maxElements, header.settings[2], sizeof(std::uint32_t));
         material.indexCount = static_cast<std::uint32_t>(indexCount);
         coveredIndices += material.indexCount;
     }
@@ -298,8 +298,7 @@ void readMorphs(MappedFileStream& input, const Header& header, ParseBudget& budg
         if (morph.type > 10 || (morph.type >= 9 && header.metadata.version < 2.1F)) {
             throw std::runtime_error("invalid PMX morph type");
         }
-        const auto offsetCount = readCount(input, budget, "morph offset count", 10'000'000, 1,
-                                           sizeof(PmxMorphOffset));
+        const auto offsetCount = readCount(input, budget, "morph offset count", 10'000'000, 1, sizeof(PmxMorphOffset));
         morph.offsets.resize(static_cast<std::size_t>(offsetCount));
         for (auto& offset : morph.offsets) {
             if (morph.type == 0 || morph.type == 9) {
@@ -417,16 +416,16 @@ void readSoftBodies(MappedFileStream& input, const Header& header, ParseBudget& 
         for (auto& value : body.iteration)
             value = read<std::int32_t>(input, "soft body iteration");
         body.materialConfig = readFloatArray<3>(input, "soft body material config");
-        const auto anchorCount = readCount(input, budget, "soft body anchor count", 10'000'000, 1,
-                                           sizeof(PmxSoftBodyAnchor));
+        const auto anchorCount =
+            readCount(input, budget, "soft body anchor count", 10'000'000, 1, sizeof(PmxSoftBodyAnchor));
         body.anchors.resize(static_cast<std::size_t>(anchorCount));
         for (auto& anchor : body.anchors) {
             anchor.rigidBody = readSignedIndex(input, header.settings[7], "soft body anchor rigid body");
             anchor.vertex = static_cast<std::int32_t>(readVertexIndex(input, header.settings[2]));
             anchor.nearMode = read<std::uint8_t>(input, "soft body anchor near mode") != 0;
         }
-        const auto pinCount = readCount(input, budget, "soft body pin count", 10'000'000, header.settings[2],
-                                        sizeof(std::int32_t));
+        const auto pinCount =
+            readCount(input, budget, "soft body pin count", 10'000'000, header.settings[2], sizeof(std::int32_t));
         body.pinnedVertices.resize(static_cast<std::size_t>(pinCount));
         for (auto& vertex : body.pinnedVertices)
             vertex = static_cast<std::int32_t>(readVertexIndex(input, header.settings[2]));
@@ -449,8 +448,8 @@ PmxModel loadPmxModel(const std::filesystem::path& path) {
     model.metadata = header.metadata;
     model.sourcePath = path;
     readVertices(input, header, model);
-    const auto indexCount = readCount(input, budget, "index count", maxElements, header.settings[2],
-                                      sizeof(std::uint32_t));
+    const auto indexCount =
+        readCount(input, budget, "index count", maxElements, header.settings[2], sizeof(std::uint32_t));
     if (indexCount % 3 != 0)
         throw std::runtime_error("PMX index count is not divisible by three");
     model.indices.resize(static_cast<std::size_t>(indexCount));

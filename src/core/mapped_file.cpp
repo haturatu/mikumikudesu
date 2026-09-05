@@ -22,7 +22,7 @@ MappedFileStream::Buffer::Buffer(const std::filesystem::path& path)
 {
 #if defined(__linux__)
     if (fileDescriptor_ >= 0) {
-        struct stat metadata {};
+        struct stat metadata{};
         if (::fstat(fileDescriptor_, &metadata) == 0 && metadata.st_size > 0) {
             mappedSize_ = static_cast<std::size_t>(metadata.st_size);
             void* address = ::mmap(nullptr, mappedSize_, PROT_READ, MAP_PRIVATE, fileDescriptor_, 0);

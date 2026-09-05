@@ -20,8 +20,7 @@ class ParseBudget final {
         : maxDecodedBytes_(maxDecodedBytes), maxTotalElements_(maxTotalElements) {}
 
     void checkCount(std::uint64_t count, std::uint64_t maxElementsPerSection, std::uint64_t minimumRecordBytes,
-                    std::uint64_t remainingInputBytes, std::uint64_t decodedBytesPerElement,
-                    std::string_view field) {
+                    std::uint64_t remainingInputBytes, std::uint64_t decodedBytesPerElement, std::string_view field) {
         remainingInputBytes_ = remainingInputBytes;
         if (count > maxElementsPerSection)
             throw std::runtime_error("invalid element count for " + std::string(field));
@@ -46,9 +45,15 @@ class ParseBudget final {
             throw std::runtime_error("input is too short for " + std::string(field));
     }
 
-    [[nodiscard]] std::uint64_t remainingInputBytes() const noexcept { return remainingInputBytes_; }
-    [[nodiscard]] std::uint64_t decodedBytes() const noexcept { return decodedBytes_; }
-    [[nodiscard]] std::uint64_t totalElements() const noexcept { return totalElements_; }
+    [[nodiscard]] std::uint64_t remainingInputBytes() const noexcept {
+        return remainingInputBytes_;
+    }
+    [[nodiscard]] std::uint64_t decodedBytes() const noexcept {
+        return decodedBytes_;
+    }
+    [[nodiscard]] std::uint64_t totalElements() const noexcept {
+        return totalElements_;
+    }
 
   private:
     static std::uint64_t checkedMultiply(std::uint64_t left, std::uint64_t right, std::string_view field) {

@@ -215,8 +215,7 @@ ImageRgba8 decodeDds(const std::filesystem::path& path) {
         compressed = true;
     }
     const auto bits = u32(header.data() + 88);
-    if (!compressed && (flags & 0x40U) == 0 && code != fourCc('R', 'G', 'B', 'A') &&
-        code != fourCc('B', 'G', 'R', 'A'))
+    if (!compressed && (flags & 0x40U) == 0 && code != fourCc('R', 'G', 'B', 'A') && code != fourCc('B', 'G', 'R', 'A'))
         throw std::runtime_error("unsupported DDS FourCC");
     if (!compressed && bits != 32 && code != fourCc('R', 'G', 'B', 'A') && code != fourCc('B', 'G', 'R', 'A'))
         throw std::runtime_error("unsupported DDS pixel depth");
