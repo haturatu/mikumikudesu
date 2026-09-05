@@ -2297,6 +2297,7 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     check(vkEndCommandBuffer(frame.commandBuffer), "end offscreen command buffer");
     const auto uploadWaitValue = uploadContext_->lastSubmittedValue();
     const std::uint64_t signalValue = ++nextTimelineValue_;
+    const VkPipelineStageFlags uploadWaitStage = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
     const VkTimelineSemaphoreSubmitInfo timelineSubmit{
         .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
         .waitSemaphoreValueCount = uploadWaitValue == 0 ? 0U : 1U,
@@ -2309,6 +2310,7 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
         .pNext = &timelineSubmit,
         .waitSemaphoreCount = uploadWaitValue == 0 ? 0U : 1U,
         .pWaitSemaphores = &timelineSemaphore_,
+        .pWaitDstStageMask = &uploadWaitStage,
         .commandBufferCount = 1,
         .pCommandBuffers = &frame.commandBuffer,
         .signalSemaphoreCount = 1,
