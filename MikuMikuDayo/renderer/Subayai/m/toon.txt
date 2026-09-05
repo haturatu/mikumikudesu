@@ -1,6 +1,0 @@
-Roughness : 0.5
-IOR : 1.33,0
-Ramp : 1
-
-_T RampLUT : t/toonRamp.dds
-_T RampZH : t/toonZH.dds

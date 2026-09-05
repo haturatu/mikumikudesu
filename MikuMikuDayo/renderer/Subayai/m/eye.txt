@@ -1,4 +1,0 @@
-Roughness:1
-IOR:1,0
-ShadowVisibility : 0.3,0.3,0.3
-AOVisibility : 0.3,0.3,0.3

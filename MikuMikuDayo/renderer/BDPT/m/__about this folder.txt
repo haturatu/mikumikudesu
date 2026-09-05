@@ -1,2 +1,0 @@
-BDPT用のマテリアルを収めたフォルダです
-Subayai用のマテリアルはrenderer/subayai/m/フォルダに有ります

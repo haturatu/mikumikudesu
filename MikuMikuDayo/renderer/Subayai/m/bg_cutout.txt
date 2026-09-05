@@ -1,2 +1,0 @@
-Roughness : 1
-Cutout : 0.5

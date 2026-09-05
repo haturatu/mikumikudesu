@@ -1,4 +1,0 @@
-Category:0
-Anisotropy:0.9
-IOR:1.5,0
-AutoNormal:1

@@ -1,0 +1,5 @@
+# Pinned MikuMikuDayo release asset used by tests and packaging.
+VERSION=MikuMikuDayo120
+ARCHIVE=MikuMikuDayo120.zip
+URL=https://github.com/pennennennennennenem/MikuMikuDayo/releases/download/MikuMikuDayo120/MikuMikuDayo120.zip
+SHA256=833eeab0545a5e06d601e8b2c581a23f5de53d9292650a4464d67b2ea07a7cc8
