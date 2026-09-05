@@ -83,6 +83,7 @@
       "binaryDir": "${sourceDir}/build/linux-pgo-generate",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "clang++",
         "DAYO_BACKEND": "VULKAN",
         "DAYO_ENABLE_VALIDATION": "OFF",
         "DAYO_ENABLE_PGO_GENERATE": "ON"
@@ -95,6 +96,7 @@
       "binaryDir": "${sourceDir}/build/linux-pgo-use",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "clang++",
         "DAYO_BACKEND": "VULKAN",
         "DAYO_ENABLE_VALIDATION": "OFF",
         "DAYO_ENABLE_PGO_USE": "ON",

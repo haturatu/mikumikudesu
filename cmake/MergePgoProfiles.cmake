@@ -8,7 +8,7 @@ if(NOT DEFINED PGO_OUTPUT)
   set(PGO_OUTPUT "${PGO_PROFILE_DIR}/default.profdata")
 endif()
 
-file(GLOB profile_files CONFIGURE_DEPENDS "${PGO_PROFILE_DIR}/*.profraw")
+file(GLOB profile_files "${PGO_PROFILE_DIR}/*.profraw")
 if(NOT profile_files)
   message(FATAL_ERROR "No Clang .profraw files found in ${PGO_PROFILE_DIR}")
 endif()
