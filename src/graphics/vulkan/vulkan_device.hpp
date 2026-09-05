@@ -165,6 +165,7 @@ class VulkanDevice final : public Device {
     VkPhysicalDeviceProperties physicalProperties_{};
     VkDevice device_{};
     std::uint32_t queueFamily_{};
+    std::uint32_t timestampValidBits_{};
     VkQueue queue_{};
 
     VkSwapchainKHR swapchain_{};

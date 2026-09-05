@@ -243,8 +243,9 @@ class Device {
     virtual void resize() = 0;
     virtual void beginUiFrame() = 0;
     virtual void renderFrame() = 0;
-    // Returns the most recently completed preview GPU interval. Backends that
-    // do not expose timestamp queries report zero.
+    // Returns the most recently completed preview GPU interval. The sample may
+    // belong to an earlier submitted frame because GPU work is asynchronous.
+    // Backends that do not expose timestamp queries report zero.
     [[nodiscard]] virtual std::uint64_t previewGpuNanoseconds() const noexcept {
         return 0;
     }

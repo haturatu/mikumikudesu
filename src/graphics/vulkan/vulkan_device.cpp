@@ -1,6 +1,7 @@
 #include "graphics/vulkan/vulkan_device.hpp"
 
 #include "core/log.hpp"
+#include "graphics/timestamp.hpp"
 #include "platform/window.hpp"
 
 #include <SDL3/SDL.h>
@@ -266,6 +267,7 @@ void VulkanDevice::selectPhysicalDevice() {
                 physicalDevice_ = candidate;
                 physicalProperties_ = properties;
                 queueFamily_ = i;
+                timestampValidBits_ = families[i].timestampValidBits;
             }
         }
     }
@@ -1307,7 +1309,7 @@ void VulkanDevice::createFrames() {
             .flags = VK_FENCE_CREATE_SIGNALED_BIT,
         };
         check(vkCreateFence(device_, &fenceInfo, nullptr, &frame.inFlight), "create frame fence");
-        if (physicalProperties_.limits.timestampPeriod > 0.0F) {
+        if (timestampValidBits_ != 0 && physicalProperties_.limits.timestampPeriod > 0.0F) {
             const VkQueryPoolCreateInfo queryInfo{
                 .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
                 .queryType = VK_QUERY_TYPE_TIMESTAMP,
@@ -1339,14 +1341,16 @@ void VulkanDevice::destroyFrames() {
 }
 
 void VulkanDevice::resolveTimestampQuery(Frame& frame) noexcept {
-    if (frame.timestampQueryPool == VK_NULL_HANDLE || physicalProperties_.limits.timestampPeriod <= 0.0F)
+    previewGpuNanoseconds_ = 0;
+    if (frame.timestampQueryPool == VK_NULL_HANDLE || timestampValidBits_ == 0 ||
+        physicalProperties_.limits.timestampPeriod <= 0.0F)
         return;
     std::array<std::uint64_t, 2> timestamps{};
     const auto result = vkGetQueryPoolResults(device_, frame.timestampQueryPool, 0, 2, sizeof(timestamps),
                                               timestamps.data(), sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT);
-    if (result != VK_SUCCESS || timestamps[1] < timestamps[0])
+    if (result != VK_SUCCESS)
         return;
-    const auto ticks = timestamps[1] - timestamps[0];
+    const auto ticks = timestampDelta(timestamps[0], timestamps[1], timestampValidBits_);
     previewGpuNanoseconds_ = static_cast<std::uint64_t>(
         static_cast<double>(ticks) * static_cast<double>(physicalProperties_.limits.timestampPeriod));
 }
