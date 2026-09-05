@@ -1,7 +1,7 @@
 # mikumikudesu
 
-MikuMikuDayo 1.20をLinuxへ移植したネイティブ実行系です。元のWindows/D3D12ソースと
-アセットを保持しつつ、Linux側を`SDL3 + Vulkan 1.3 + HLSL/SPIR-V`で構成しています。
+MikuMikuDayo 1.20を初回セットアップ時に取得して使用するLinux向けネイティブ実行系です。
+Linux側を`SDL3 + Vulkan 1.3 + HLSL/SPIR-V`で構成しています。
 
 ## 実装済み
 
