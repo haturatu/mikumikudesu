@@ -462,7 +462,6 @@ int main() {
             std::cerr << "FAIL: single-sided preview materials used the wrong front-face winding\n";
             return 1;
         }
-<<<<<<< HEAD
         if (!cloneDrawUsesInstanceCount(device)) {
             std::cerr << "FAIL: preview clone draw did not use instancing\n";
             return 1;
