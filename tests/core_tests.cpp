@@ -74,6 +74,50 @@ int main() {
         ok &= check(input && value == 'f', "mapped stream supports end-relative seek");
         std::filesystem::remove(path);
     }
+    {
+        const auto path = std::filesystem::temp_directory_path() / "mikumikudesu-vpd-test.vpd";
+        const auto writeVpd = [&](std::string_view source) {
+            std::ofstream output(path, std::ios::binary | std::ios::trunc);
+            const auto encoded = dayo::core::encodeCp932(source);
+            output.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
+        };
+        writeVpd("Vocaloid Pose Data file\r\n"
+                 "1.0\r\n"
+                 "model.pmd;\r\n"
+                 "2;\r\n"
+                 "Bone0{センター\r\n"
+                 "1.0, 2.0, 3.0;\r\n"
+                 "0.0, 0.1, 0.2, 0.9;\r\n"
+                 "}\r\n"
+                 "Bone1{右腕\r\n"
+                 "-1.0, -2.0, -3.0;\r\n"
+                 "0.3, 0.4, 0.5, 0.6;\r\n"
+                 "}\r\n");
+        const auto pose = dayo::core::loadVpd(path);
+        ok &=
+            check(pose.bones.size() == 2 && pose.bones[0].name == "センター" && pose.bones[0].translation[2] == 3.0F &&
+                      pose.bones[1].name == "右腕" && pose.bones[1].rotation[3] == 0.6F,
+                  "standard CP932 VPD with CRLF and multiple bones");
+
+        writeVpd("Vocaloid Pose Data file\nBone0{center\n0.0, 0.0, 0.0;\n0.0, 0.0, 0.0, 1.0;\n");
+        bool rejectedMissingBrace = false;
+        try {
+            static_cast<void>(dayo::core::loadVpd(path));
+        } catch (const std::runtime_error&) {
+            rejectedMissingBrace = true;
+        }
+        ok &= check(rejectedMissingBrace, "VPD rejects a missing closing brace");
+
+        writeVpd("Vocaloid Pose Data file\nBone0{center\n0.0, 0.0;\n0.0, 0.0, 0.0, 1.0;\n}\n");
+        bool rejectedShortVector = false;
+        try {
+            static_cast<void>(dayo::core::loadVpd(path));
+        } catch (const std::runtime_error&) {
+            rejectedShortVector = true;
+        }
+        ok &= check(rejectedShortVector, "VPD rejects a short vector");
+        std::filesystem::remove(path);
+    }
     ok &= check(dayo::core::classifyAsset("Miku.PMX") == AssetKind::pmx, "PMX extension");
     ok &= check(dayo::core::classifyAsset("motion.vmd") == AssetKind::vmd, "VMD extension");
     ok &= check(dayo::core::classifyAsset("sound.M4A") == AssetKind::audio, "audio extension");
