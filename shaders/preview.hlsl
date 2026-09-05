@@ -9,6 +9,8 @@ struct VertexInput {
     [[vk::location(7)]] float3 sdefC : TEXCOORD4;
     [[vk::location(8)]] float3 sdefHalfDelta : TEXCOORD5;
     [[vk::location(9)]] float edgeScale : TEXCOORD6;
+    [[vk::location(10)]] uint morphStart : TEXCOORD7;
+    [[vk::location(11)]] uint morphCount : TEXCOORD8;
 };
 
 struct VertexOutput {
@@ -55,9 +57,16 @@ struct PreviewMaterialData {
 };
 [[vk::binding(0, 2)]] StructuredBuffer<PreviewMaterialData> previewMaterials;
 
+struct PreviewMorphDelta
+{
+    float3 delta;
+    uint morphIndex;
+};
 [[vk::binding(2, 3)]] Texture2D<float4> previewTextureTable[];
 [[vk::binding(0, 3)]] SamplerState previewRepeatSampler;
 [[vk::binding(1, 3)]] SamplerState previewClampSampler;
+[[vk::binding(0, 4)]] StructuredBuffer<PreviewMorphDelta> previewMorphDeltas;
+[[vk::binding(1, 4)]] StructuredBuffer<float> previewMorphWeights;
 
 [[vk::binding(0, 0)]] Texture2D<float4> baseTexture;
 [[vk::binding(1, 0)]] Texture2D<float4> toonTexture;
@@ -224,7 +233,20 @@ SkinResult skinVertex(VertexInput input) {
     }
 }
 
-VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, uint instanceIndex) {
+float3 applyVertexMorphs(VertexInput input)
+{
+    float3 position = input.position;
+    [loop]
+    for (uint offset = 0; offset < input.morphCount; ++offset)
+    {
+        const PreviewMorphDelta delta = previewMorphDeltas[input.morphStart + offset];
+        position += delta.delta * previewMorphWeights[delta.morphIndex];
+    }
+    return position;
+}
+
+VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, uint instanceIndex)
+{
     VertexOutput output;
     output.uv = input.uv;
     output.materialIndex = materialIndex;
@@ -238,6 +260,7 @@ VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, ui
         return output;
     }
 
+    input.position = applyVertexMorphs(input);
     SkinResult skin = skinVertex(input);
     const float cloneCenter = (float(scene.instanceCount) - 1.0) * 0.5;
     skin.position.x += (float(instanceIndex) - cloneCenter) * 2.2;

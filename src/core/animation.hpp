@@ -18,6 +18,9 @@ struct AnimatedModelFrame {
         Float3 translation{};
     };
     std::vector<PmxVertex> vertices;
+    // Effective vertex-morph weights are populated for GPU skinning. The
+    // renderer combines these weights with its immutable sparse morph table.
+    std::vector<float> morphWeights;
     std::vector<BoneTransform> bones;
     struct Material {
         Float4 diffuse{};

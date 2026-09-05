@@ -88,7 +88,15 @@ struct PreviewVertex {
     std::uint32_t skinningType{};
     std::uint32_t gpuSkinning{};
     float edgeScale{1.0F};
+    std::uint32_t morphStart{};
+    std::uint32_t morphCount{};
 };
+
+struct PreviewMorphDelta {
+    float delta[3]{};
+    std::uint32_t morphIndex{};
+};
+static_assert(sizeof(PreviewMorphDelta) == 16);
 
 enum class PreviewSkinningType : std::uint32_t {
     bdef1,
@@ -262,6 +270,8 @@ class Device {
     virtual void uploadPreviewMesh(std::span<const PreviewVertex> vertices, std::span<const std::uint32_t> indices) = 0;
     virtual void updatePreviewVertices(std::span<const PreviewVertex> vertices) = 0;
     virtual void updatePreviewBones(std::span<const PreviewBoneTransform> bones) = 0;
+    virtual void uploadPreviewMorphDeltas(std::span<const PreviewMorphDelta> deltas) = 0;
+    virtual void updatePreviewMorphWeights(std::span<const float> weights) = 0;
     virtual void updatePreviewMaterials(std::span<const PreviewMaterial> materials) = 0;
     virtual void updatePreviewDraws(std::span<const PreviewDraw> draws) = 0;
     virtual void uploadPreviewTextures(std::span<const PreviewTexture> textures) = 0;
