@@ -359,6 +359,7 @@ void Application::resetProjectRuntimeState() {
     audioToSeconds_ = 0.0F;
     textures_.clear();
     animatedIndices_.clear();
+    animatedVertexCount_ = 0;
     animatedMaterialTemplates_.clear();
     animatedTopologyGeneration_ = 0;
     mediaSeconds_ = 0.0;
@@ -374,6 +375,7 @@ void Application::resetProjectRuntimeState() {
     normalization_ = {};
     projectAssets_.clear();
     history_.clear();
+    frameProfiler_.reset();
 }
 
 int Application::run() {
@@ -442,6 +444,7 @@ int Application::run() {
         const auto tick = std::chrono::steady_clock::now();
         const float deltaSeconds = std::chrono::duration<float>(tick - previousTick).count();
         previousTick = tick;
+        frameProfiler_.beginFrame();
         if (videoExportUiActive_) {
             if (videoExportJob_.running() && !videoExportFramesFinished_) {
                 const auto& exportOptions = *options_.videoExport;
@@ -540,7 +543,14 @@ int Application::run() {
         }
         device->beginUiFrame();
         buildUi();
-        device->renderFrame();
+        frameProfiler_.addDrawStats(animatedVertexCount_, static_cast<std::uint64_t>(animatedDraws_.size()));
+        {
+            auto render = frameProfiler_.measure(core::ProfileSection::render);
+            device->renderFrame();
+            frameProfiler_.setGpuNanoseconds(device->previewGpuNanoseconds());
+            render.finish();
+        }
+        frameProfiler_.endFrame();
         if (scene_.runtimeMode() == core::RuntimeMode::accumulate)
             scene_.advanceAccumulation();
         else if (scene_.runtimeMode() == core::RuntimeMode::realtime)
@@ -551,6 +561,7 @@ int Application::run() {
     }
     device->waitIdle();
     audioPlayer_.stop();
+    log::info(frameProfiler_.report());
     log::info("Rendered ", frameCount, " frame(s); clean shutdown");
     return 0;
 }
@@ -1019,19 +1030,24 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             instance.physics->setFloorCollision(gravity.floorCollision);
         }
         const bool gpuSkinning = instance.softBody == nullptr || !instance.softBody->available();
-        auto frame = instance.animator->evaluate(animationFrame_, deltaSeconds, gpuSkinning);
+        core::AnimatedModelFrame frame;
+        {
+            auto animation = frameProfiler_.measure(core::ProfileSection::animation);
+            frame = instance.animator->evaluate(animationFrame_, deltaSeconds, gpuSkinning);
+            if (instance.softBody != nullptr && instance.softBody->available()) {
+                instance.softBody->step(deltaSeconds, {gravity.gravityDirection[0] * gravity.gravity,
+                                                       gravity.gravityDirection[1] * gravity.gravity,
+                                                       gravity.gravityDirection[2] * gravity.gravity});
+                instance.softBody->apply(frame.vertices);
+            }
+            core::normalizeForPreview(frame.vertices, instance.normalization);
+            animation.finish();
+        }
         if (!frame.vertices.empty() && (initialUpload || static_cast<int>(animationFrame_) % 30 == 0)) {
             const auto& vertex = frame.vertices.front().position;
             log::debug("Animation sample: model=", instance.displayName, ", frame=", animationFrame_, ", vertex0=(",
                        vertex[0], ",", vertex[1], ",", vertex[2], ")");
         }
-        if (instance.softBody != nullptr && instance.softBody->available()) {
-            instance.softBody->step(deltaSeconds, {gravity.gravityDirection[0] * gravity.gravity,
-                                                   gravity.gravityDirection[1] * gravity.gravity,
-                                                   gravity.gravityDirection[2] * gravity.gravity});
-            instance.softBody->apply(frame.vertices);
-        }
-        core::normalizeForPreview(frame.vertices, instance.normalization);
         const auto boneBase = static_cast<std::int32_t>(bones.size());
         if (gpuSkinning) {
             bones.reserve(bones.size() + frame.bones.size());
@@ -1058,6 +1074,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         }();
         const auto cloneCount = std::max(instance.cloneCount, 1U);
         for (std::uint32_t clone = 0; clone < cloneCount; ++clone) {
+            auto conversion = frameProfiler_.measure(core::ProfileSection::vertexConvert);
             const auto baseVertex = static_cast<std::uint32_t>(vertices.size());
             const auto firstCloneIndex = indexCursor;
             const float cloneOffset = (static_cast<float>(clone) - static_cast<float>(cloneCount - 1U) * 0.5F) * 2.2F;
@@ -1145,6 +1162,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                 draw.materialIndex = static_cast<std::uint32_t>(materialCursor - 1U);
                 firstIndex += instance.model->materials[materialIndex].indexCount;
             }
+            conversion.finish();
         }
     }
     if (vertices.empty() || animatedIndices_.empty())
@@ -1154,18 +1172,33 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         animatedDraws_ = draws;
         animatedTopologyGeneration_ = scene_.topologyGeneration();
     }
-    device_->updatePreviewBones(bones);
-    if (initialUpload || rebuildTopology)
-        device_->uploadPreviewMesh(vertices, animatedIndices_);
-    else {
-        try {
-            device_->updatePreviewVertices(vertices);
-        } catch (const std::exception&) {
+    {
+        auto upload = frameProfiler_.measure(core::ProfileSection::upload);
+        device_->updatePreviewBones(bones);
+        if (initialUpload || rebuildTopology)
             device_->uploadPreviewMesh(vertices, animatedIndices_);
+        else {
+            try {
+                device_->updatePreviewVertices(vertices);
+            } catch (const std::exception&) {
+                device_->uploadPreviewMesh(vertices, animatedIndices_);
+            }
         }
+        device_->updatePreviewMaterials(materials);
+        device_->updatePreviewDraws(draws);
+        upload.finish();
     }
-    device_->updatePreviewMaterials(materials);
-    device_->updatePreviewDraws(draws);
+    const auto byteCount = [](std::size_t count, std::size_t elementSize) {
+        return static_cast<std::uint64_t>(count) * static_cast<std::uint64_t>(elementSize);
+    };
+    std::uint64_t uploadBytes = byteCount(bones.size(), sizeof(graphics::PreviewBoneTransform));
+    uploadBytes += byteCount(materials.size(), sizeof(graphics::PreviewMaterial));
+    uploadBytes += byteCount(draws.size(), sizeof(graphics::PreviewDraw));
+    uploadBytes += byteCount(vertices.size(), sizeof(graphics::PreviewVertex));
+    if (initialUpload || rebuildTopology)
+        uploadBytes += byteCount(animatedIndices_.size(), sizeof(std::uint32_t));
+    frameProfiler_.addUploadBytes(uploadBytes);
+    animatedVertexCount_ = static_cast<std::uint64_t>(vertices.size());
     uploadedAnimationFrame_ = static_cast<int>(animationFrame_);
     scene_.clearDirty(core::DirtyFlag::geometry | core::DirtyFlag::material);
 }
@@ -1367,6 +1400,20 @@ void Application::buildUi() {
         }
         ImGui::Separator();
         ImGui::TextUnformatted("Subayai and BDPT are enabled only when Vulkan RT features are present.");
+    }
+    ImGui::End();
+
+    if (ImGui::Begin("Performance")) {
+        const auto& totals = frameProfiler_.totals();
+        ImGui::TextUnformatted(frameProfiler_.report().c_str());
+        ImGui::Text("Upload: %.2f MiB/frame", totals.frames == 0 ? 0.0
+                                                                 : static_cast<double>(totals.uploadBytes) /
+                                                                       static_cast<double>(totals.frames) / 1048576.0);
+        ImGui::Text("Geometry: %llu vertices / %llu draws per frame",
+                    static_cast<unsigned long long>(totals.frames == 0 ? 0 : totals.vertices / totals.frames),
+                    static_cast<unsigned long long>(totals.frames == 0 ? 0 : totals.draws / totals.frames));
+        if (ImGui::Button("Reset profiler"))
+            frameProfiler_.reset();
     }
     ImGui::End();
 

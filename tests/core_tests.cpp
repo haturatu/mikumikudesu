@@ -8,10 +8,12 @@
 #include "core/motion.hpp"
 #include "core/output.hpp"
 #include "core/physics.hpp"
+#include "core/profiling.hpp"
 #include "core/project.hpp"
 #include "core/scene.hpp"
 #include "core/video_export.hpp"
 #include "core/vmdayo.hpp"
+#include "graphics/timestamp.hpp"
 
 #include <algorithm>
 #include <array>
@@ -269,6 +271,37 @@ int main() {
         parameters.set("roughness", 0.5F);
         ok &=
             check(parameters.find("roughness") != nullptr && parameters.erase("roughness"), "material parameter block");
+    }
+    {
+        ok &= check(dayo::graphics::timestampDelta(100, 300, 64) == 200, "64-bit timestamp delta");
+        ok &= check(dayo::graphics::timestampDelta(100, 300, 36) == 200, "narrow timestamp delta");
+        const auto timestampMask = (std::uint64_t{1} << 36) - 1U;
+        ok &= check(dayo::graphics::timestampDelta(timestampMask - 0xFFU, 0x100U, 36) == 0x200U,
+                    "timestamp delta across wrap");
+        ok &= check(dayo::graphics::timestampDelta(100, 300, 0) == 0, "unsupported timestamp delta");
+    }
+    {
+        dayo::core::FrameProfiler profiler;
+        ok &= check(profiler.report() == "profile: no frames recorded", "profiler empty report");
+        profiler.beginFrame();
+        {
+            auto section = profiler.measure(dayo::core::ProfileSection::animation);
+            section.finish();
+        }
+        profiler.addUploadBytes(4096);
+        profiler.addDrawStats(12, 2);
+        profiler.setGpuNanoseconds(500'000);
+        profiler.endFrame();
+        profiler.endFrame();
+        const auto& totals = profiler.totals();
+        ok &= check(totals.frames == 1 && totals.uploadBytes == 4096 && totals.vertices == 12 && totals.draws == 2 &&
+                        totals.gpuNanoseconds == 500'000,
+                    "profiler aggregates one frame");
+        ok &= check(profiler.report().find("animation=") != std::string::npos, "profiler report sections");
+        profiler.reset();
+        profiler.addUploadBytes(1);
+        ok &= check(profiler.totals().frames == 0 && profiler.totals().uploadBytes == 0,
+                    "profiler reset ignores inactive samples");
     }
 
     const auto path = std::filesystem::temp_directory_path() / "mikumikudesu-core-test.pmx";
