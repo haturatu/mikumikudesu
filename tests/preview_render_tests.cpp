@@ -263,6 +263,50 @@ bool cloneDrawUsesInstanceCount(dayo::graphics::VulkanDevice& device) {
     return differentPixels > 64;
 }
 
+bool staticPreviewFallsBackToDynamicVertices(dayo::graphics::VulkanDevice& device) {
+    dayo::graphics::PreviewScene scene;
+    scene.cameraDistance = 3.0F;
+    scene.backgroundEnabled = false;
+    device.updatePreviewScene(scene);
+
+    std::array<PreviewVertex, 3> vertices{};
+    const std::array positions{
+        Float3{-0.45F, -0.35F, 0.0F},
+        Float3{0.45F, -0.35F, 0.0F},
+        Float3{0.0F, 0.45F, 0.0F},
+    };
+    for (std::size_t index = 0; index < vertices.size(); ++index) {
+        std::copy(positions[index].begin(), positions[index].end(), vertices[index].position);
+        vertices[index].normal[2] = 1.0F;
+    }
+    const std::array<std::uint32_t, 3> indices{0, 2, 1};
+    const std::array<std::uint8_t, 4> red{255, 0, 0, 255};
+    const std::array<PreviewTexture, 1> textures{{
+        {1, 1, std::span<const std::uint8_t>(red), false},
+    }};
+    std::array<PreviewMaterial, 1> materials{};
+    materials[0].textureSlot = 1;
+    const std::array<PreviewDraw, 1> draws{{{0, 3, 0}}};
+
+    device.uploadPreviewTextures(textures);
+    device.uploadPreviewMesh(vertices, indices);
+    device.updatePreviewMaterials(materials);
+    device.updatePreviewDraws(draws);
+    const auto initialImage = device.renderToImage({64, 64});
+
+    for (auto& vertex : vertices)
+        vertex.position[0] += 5.0F;
+    device.updatePreviewVertices(vertices);
+    const auto movedImage = device.renderToImage({64, 64});
+    const auto center =
+        (static_cast<std::size_t>(initialImage.height) / 2U * initialImage.width + initialImage.width / 2U) * 4U;
+    const bool initialVisible = initialImage.pixels.size() >= center + 4U && initialImage.pixels[center] > 200U &&
+                                initialImage.pixels[center + 1U] < 80U && initialImage.pixels[center + 2U] < 80U;
+    const bool movedAway = movedImage.pixels.size() >= center + 4U && movedImage.pixels[center] > 200U &&
+                           movedImage.pixels[center + 1U] > 200U && movedImage.pixels[center + 2U] > 200U;
+    return initialVisible && movedAway;
+}
+
 bool runCase(dayo::graphics::VulkanDevice& device, PreviewSkinningType type) {
     const auto bones = makeBones();
     const auto gpuVertices = makeVertices(type, false);
@@ -300,6 +344,10 @@ int main() {
         }
         if (!cloneDrawUsesInstanceCount(device)) {
             std::cerr << "FAIL: preview clone draw did not use instancing\n";
+            return 1;
+        }
+        if (!staticPreviewFallsBackToDynamicVertices(device)) {
+            std::cerr << "FAIL: device-local preview vertices did not switch to dynamic storage\n";
             return 1;
         }
     } catch (const std::exception& exception) {
