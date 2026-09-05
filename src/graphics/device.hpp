@@ -82,8 +82,20 @@ struct PreviewVertex {
     float uv[2]{};
     std::int32_t bones[4]{-1, -1, -1, -1};
     float weights[4]{1.0F, 0.0F, 0.0F, 0.0F};
+    float sdefC[3]{};
+    float sdefHalfDelta[3]{};
+    std::uint32_t skinningType{};
     std::uint32_t gpuSkinning{};
     float cloneOffset{};
+    float edgeScale{1.0F};
+};
+
+enum class PreviewSkinningType : std::uint32_t {
+    bdef1,
+    bdef2,
+    bdef4,
+    sdef,
+    qdef,
 };
 
 struct PreviewBoneTransform {
@@ -92,22 +104,57 @@ struct PreviewBoneTransform {
 };
 
 struct PreviewMaterial {
-    std::uint32_t firstIndex{};
-    std::uint32_t indexCount{};
     float diffuse[4]{1.0F, 1.0F, 1.0F, 1.0F};
     float ambient[3]{0.2F, 0.2F, 0.2F};
     float shininess{};
     float specular[3]{};
     float textureMultiply[4]{1.0F, 1.0F, 1.0F, 1.0F};
     float textureAdd[4]{};
+    float sphereMultiply[4]{1.0F, 1.0F, 1.0F, 1.0F};
+    float sphereAdd[4]{};
+    float toonMultiply[4]{1.0F, 1.0F, 1.0F, 1.0F};
+    float toonAdd[4]{};
+    float edgeColor[4]{};
+    float edgeSize{};
     bool doubleSided{};
+    bool edgeEnabled{};
     std::uint32_t textureSlot{};
+    std::uint32_t toonTextureSlot{};
+    std::uint32_t sphereTextureSlot{};
+    std::uint32_t toonMode{};
+    std::uint32_t sphereMode{};
 };
+
+struct PreviewDraw {
+    std::uint32_t firstIndex{};
+    std::uint32_t indexCount{};
+    std::uint32_t materialIndex{};
+};
+
+// This is the renderer-facing storage-buffer layout. Keep it explicitly
+// vector-aligned so it matches the StructuredBuffer declaration in preview.hlsl.
+struct PreviewMaterialGpu {
+    float diffuse[4]{};
+    float ambientShininess[4]{};
+    float specular[4]{};
+    float textureMultiply[4]{};
+    float textureAdd[4]{};
+    float sphereMultiply[4]{};
+    float sphereAdd[4]{};
+    float toonMultiply[4]{};
+    float toonAdd[4]{};
+    float edgeColor[4]{};
+    float edgeSize{};
+    std::uint32_t flags{};
+    std::uint32_t reserved[2]{};
+};
+static_assert(sizeof(PreviewMaterialGpu) == 176);
 
 struct PreviewTexture {
     std::uint32_t width{};
     std::uint32_t height{};
     std::span<const std::uint8_t> rgba;
+    bool hasTransparency{};
 };
 
 struct PreviewScene {
@@ -126,6 +173,13 @@ struct PreviewScene {
     enum class ScreenCrop { none, crop4x3 } screenCrop{ScreenCrop::none};
     bool backgroundEnabled{true};
 };
+
+struct PreviewPushConstants {
+    std::array<float, 4> camera{};
+    std::array<float, 4> target{};
+    std::array<float, 4> light{};
+};
+static_assert(sizeof(PreviewPushConstants) == 48);
 
 struct RenderTargetDesc {
     std::uint32_t width{};
@@ -199,6 +253,7 @@ class Device {
     virtual void updatePreviewVertices(std::span<const PreviewVertex> vertices) = 0;
     virtual void updatePreviewBones(std::span<const PreviewBoneTransform> bones) = 0;
     virtual void updatePreviewMaterials(std::span<const PreviewMaterial> materials) = 0;
+    virtual void updatePreviewDraws(std::span<const PreviewDraw> draws) = 0;
     virtual void uploadPreviewTextures(std::span<const PreviewTexture> textures) = 0;
     virtual void uploadPreviewBackground(std::span<const PreviewTexture> textures) = 0;
     // Returns the preview renderer to its empty/fallback state. Project

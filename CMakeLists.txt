@@ -149,12 +149,20 @@ target_compile_definitions(dayo_graphics PRIVATE DAYO_ENABLE_VALIDATION=$<BOOL:$
 
 include(cmake/CompileHlsl.cmake)
 dayo_compile_hlsl(DAYO_PREVIEW_VERTEX_SPV SOURCE shaders/preview.hlsl ENTRY VS PROFILE vs_6_6 STAGE vert)
+dayo_compile_hlsl(DAYO_PREVIEW_EDGE_VERTEX_SPV SOURCE shaders/preview.hlsl ENTRY EdgeVS PROFILE vs_6_6 STAGE vert)
 dayo_compile_hlsl(DAYO_PREVIEW_FRAGMENT_SPV SOURCE shaders/preview.hlsl ENTRY PS PROFILE ps_6_6 STAGE frag)
-add_custom_target(dayo_shaders ALL DEPENDS ${DAYO_PREVIEW_VERTEX_SPV} ${DAYO_PREVIEW_FRAGMENT_SPV})
+add_custom_target(
+  dayo_shaders
+  ALL
+  DEPENDS ${DAYO_PREVIEW_VERTEX_SPV} ${DAYO_PREVIEW_EDGE_VERTEX_SPV} ${DAYO_PREVIEW_FRAGMENT_SPV}
+)
 add_dependencies(dayo_graphics dayo_shaders)
 target_compile_definitions(
   dayo_graphics
-  PRIVATE DAYO_PREVIEW_VERTEX_SPV="${DAYO_PREVIEW_VERTEX_SPV}" DAYO_PREVIEW_FRAGMENT_SPV="${DAYO_PREVIEW_FRAGMENT_SPV}"
+  PRIVATE
+    DAYO_PREVIEW_VERTEX_SPV="${DAYO_PREVIEW_VERTEX_SPV}"
+    DAYO_PREVIEW_EDGE_VERTEX_SPV="${DAYO_PREVIEW_EDGE_VERTEX_SPV}"
+    DAYO_PREVIEW_FRAGMENT_SPV="${DAYO_PREVIEW_FRAGMENT_SPV}"
 )
 
 if(DAYO_ENABLE_IMGUI)
@@ -355,6 +363,21 @@ install(FILES MikuMikuDayo/licence/MikuMikuDayo.txt DESTINATION share/mikumikude
 if(BUILD_TESTING)
   add_executable(dayo_core_tests tests/core_tests.cpp)
   target_link_libraries(dayo_core_tests PRIVATE dayo_core)
+  add_executable(dayo_preview_tests tests/preview_render_tests.cpp)
+  target_include_directories(dayo_preview_tests PRIVATE src)
+  target_link_libraries(dayo_preview_tests PRIVATE dayo_platform dayo_graphics)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      dayo_preview_tests
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_preview_tests PRIVATE -Werror)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(dayo_preview_tests PRIVATE -Wno-error=deprecated-literal-operator)
+      endif()
+    endif()
+  endif()
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(
       dayo_core_tests
@@ -388,7 +411,9 @@ if(BUILD_TESTING)
   add_test(NAME upstream_compat COMMAND dayo_upstream_compat_tests)
   set_tests_properties(upstream_compat PROPERTIES LABELS "upstream" TIMEOUT 60)
   add_test(NAME vulkan_probe COMMAND mikumikudesu --probe --hidden)
-  set_tests_properties(vulkan_probe PROPERTIES TIMEOUT 20)
+  add_test(NAME preview_render COMMAND dayo_preview_tests)
+  set_tests_properties(vulkan_probe PROPERTIES TIMEOUT 60)
+  set_tests_properties(preview_render PROPERTIES TIMEOUT 20)
   if(DAYO_HAS_MEDIA)
     add_test(
       NAME audio_export_cli
@@ -416,6 +441,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_graphics
     mikumikudesu
     dayo_core_tests
+    dayo_preview_tests
     dayo_upstream_compat_tests
   )
     if(TARGET ${target})
@@ -425,6 +451,9 @@ if(DAYO_ENABLE_SANITIZERS)
   target_link_options(mikumikudesu PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   if(TARGET dayo_core_tests)
     target_link_options(dayo_core_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+  if(TARGET dayo_preview_tests)
+    target_link_options(dayo_preview_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
   if(TARGET dayo_upstream_compat_tests)
     target_link_options(dayo_upstream_compat_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})

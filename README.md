@@ -6,14 +6,16 @@ Linux側を`SDL3 + Vulkan 1.3 + HLSL/SPIR-V`で構成しています。
 ## 実装済み
 
 - SDL3ウィンドウ、HiDPI/resize、ファイルD&D、右ドラッグカメラ、ホイールズーム
-- Vulkan 1.3 swapchain、dynamic rendering、同期、深度、αブレンド、材質別両面描画
+- Vulkan 1.3 swapchain、dynamic rendering、同期、深度、opaque/transparent pass、材質別両面描画
 - Dear ImGuiのSDL3/Vulkan backend
 - PMX 2.0/2.1の全セクション（頂点、材質、ボーン/IK、全モーフ、表示枠、剛体、
   ジョイント、soft-bodyデータ）の検証付き読み込み
 - BDEF1/2/4、SDEF、QDEF、VMDベジェ補間、VPD、ボーン継承、CCD IK、全PMXモーフ
 - Bullet剛体/6DoF spring、collision group、固定step、物理ボーンへの往復反映
 - PNG/JPEG/BMP/TGA/HDRとDDS（RGBA/BGRA、BC1～BC5）の読込、Vulkan sRGB texture upload
-- PMX材質範囲、diffuse/ambient/specular/power、texture乗算/加算モーフ、VMDカメラ/照明
+- PMX材質範囲、diffuse/ambient/specular/power、Toon/Sphere map、texture乗算/加算モーフ、VMDカメラ/照明
+- Original Preview parity: BDEF1/2/4、SDEF、QDEF/DQSのGPUスキニング、α=0 discard、α>=0.98のopaque化、
+  transparent materialのcamera距離sort、PMX edge描画
 - FFmpegによるWAV/MP3/M4A等の音声再生とMP4/AVI/MKV/MOV/WebM動画デコード
 - FFmpegを使ったストリーミングAAC/M4A音声書き出し（CLI / 非同期ImGui UI）
 - Vulkan Previewのオフスクリーンreadbackと、決定論的なタイムラインでのMP4動画書き出し（H.264/H.265/AV1 + AAC）
@@ -220,7 +222,7 @@ FFmpeg動画/音声（CLIがある場合）を実際に実行します。
 
 ## シェーダーと依存
 
-`cmake/CompileHlsl.cmake`はDXCがあればVulkan 1.3向けSPIR-Vを生成し、単純なPreviewのみ
+`cmake/CompileHlsl.cmake`はDXCがあればVulkan 1.3向けSPIR-Vを生成し、Preview shaderは
 glslc HLSL frontendへfallbackします。既存のbindless/ray query/ray tracing shaderを移す場合は
 DXCが必須です。`SV_Barycentrics`はSPIR-V fragment barycentricへ写像する設計です。
 
@@ -260,8 +262,8 @@ Vega 8はRDNA2ではないため、RT実行試験はハードウェア上不可�
 
 ## LICENCE
 
-本プロジェクトのソースコードは、 [MIT License](LICENSE) です。  
-  
+本プロジェクトのソースコードは、 [MIT License](LICENSE) です。
+
 `MikuMikuDayo/` はGit管理せず、`deps/mikumikudayo.lock`で固定した
 [MikuMikuDayo 1.20のRelease ZIP](https://github.com/pennennennennennenem/MikuMikuDayo/releases/download/MikuMikuDayo120/MikuMikuDayo120.zip)
 をセットアップ時に取得します。

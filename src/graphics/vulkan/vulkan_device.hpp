@@ -33,6 +33,7 @@ class VulkanDevice final : public Device {
     void updatePreviewVertices(std::span<const PreviewVertex> vertices) override;
     void updatePreviewBones(std::span<const PreviewBoneTransform> bones) override;
     void updatePreviewMaterials(std::span<const PreviewMaterial> materials) override;
+    void updatePreviewDraws(std::span<const PreviewDraw> draws) override;
     void uploadPreviewTextures(std::span<const PreviewTexture> textures) override;
     void uploadPreviewBackground(std::span<const PreviewTexture> textures) override;
     void clearPreviewResources() override;
@@ -62,6 +63,11 @@ class VulkanDevice final : public Device {
         void* mappedPreviewBones{};
         VkDescriptorSet previewBoneDescriptor{};
         std::uint64_t previewBoneGeneration{};
+        VkBuffer previewMaterialBuffer{};
+        VkDeviceMemory previewMaterialMemory{};
+        void* mappedPreviewMaterials{};
+        VkDescriptorSet previewMaterialDescriptor{};
+        std::uint64_t previewMaterialGeneration{};
     };
 
     struct BufferResource {
@@ -131,6 +137,11 @@ class VulkanDevice final : public Device {
     void synchronizePreviewVertices(Frame& frame);
     void destroyPreviewBones();
     void synchronizePreviewBones(Frame& frame);
+    void destroyPreviewMaterialBuffers();
+    void synchronizePreviewMaterials(Frame& frame);
+    void destroyPreviewMaterialDescriptors();
+    void refreshPreviewMaterialDescriptors();
+    void recordPreviewModel(VkCommandBuffer command, const PreviewPushConstants& constants);
     void uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer,
                              VkDeviceMemory& memory);
     [[nodiscard]] std::uint32_t findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags flags) const;
@@ -161,11 +172,15 @@ class VulkanDevice final : public Device {
 
     VkPipelineLayout pipelineLayout_{};
     VkPipeline pipeline_{};
+    VkPipeline transparentPipeline_{};
+    VkPipeline edgePipeline_{};
     VkPipeline backgroundPipeline_{};
     VkDescriptorSetLayout previewDescriptorSetLayout_{};
     VkDescriptorSetLayout previewSkinningDescriptorSetLayout_{};
+    VkDescriptorSetLayout previewMaterialDescriptorSetLayout_{};
     VkDescriptorPool previewDescriptorPool_{};
     VkSampler previewSampler_{};
+    VkSampler previewClampSampler_{};
 #if DAYO_HAS_IMGUI
     VkDescriptorPool imguiDescriptorPool_{};
     bool uiInitialized_{};
@@ -176,12 +191,18 @@ class VulkanDevice final : public Device {
     std::uint64_t previewVertexGeneration_{};
     VkDeviceSize previewBoneSize_{};
     std::uint64_t previewBoneGeneration_{};
+    VkDeviceSize previewMaterialSize_{};
+    std::uint64_t previewMaterialGeneration_{};
+    std::vector<PreviewMaterialGpu> previewMaterialData_;
     VkBuffer previewIndexBuffer_{};
     VkDeviceMemory previewIndexMemory_{};
     std::uint32_t previewIndexCount_{};
     std::uint64_t previewVertexUpdateCount_{};
     std::vector<PreviewMaterial> previewMaterials_;
+    std::vector<PreviewDraw> previewDraws_;
     std::vector<PreviewTextureResource> previewTextures_;
+    std::vector<VkDescriptorSet> previewMaterialDescriptors_;
+    std::vector<std::array<std::uint32_t, 3>> previewMaterialDescriptorKeys_;
     VkBuffer previewBackgroundVertexBuffer_{};
     VkDeviceMemory previewBackgroundVertexMemory_{};
     VkBuffer previewBackgroundIndexBuffer_{};

@@ -106,6 +106,31 @@ core::Float3 rotateQuaternion(const core::Float4& quaternion, const core::Float3
     };
 }
 
+bool hasTransparentPixels(const core::ImageRgba8& image) {
+    if (image.pixels.size() < 4)
+        return false;
+    for (std::size_t index = 3; index < image.pixels.size(); index += 4) {
+        if (image.pixels[index] < 250U)
+            return true;
+    }
+    return false;
+}
+
+bool hasLoadedTexture(const std::vector<core::ImageRgba8>& textures, std::int32_t index) {
+    if (index < 0 || static_cast<std::size_t>(index) >= textures.size())
+        return false;
+    const auto& texture = textures[static_cast<std::size_t>(index)];
+    return texture.width != 0 && texture.height != 0 && !texture.pixels.empty();
+}
+
+core::Float3 normalizePreviewPoint(const core::Float3& point, const core::PreviewNormalization& normalization) {
+    return {
+        (point[0] - normalization.center[0]) * normalization.scale,
+        (point[1] - normalization.center[1]) * normalization.scale,
+        (point[2] - normalization.center[2]) * normalization.scale,
+    };
+}
+
 std::uint64_t videoOutputFrameCount(std::uint64_t firstFrame, std::uint64_t lastFrame, double sourceFps,
                                     double outputFps) {
     const auto intervals = static_cast<double>(lastFrame - firstFrame) * outputFps / sourceFps;
@@ -764,6 +789,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 device_->uploadPreviewMesh(vertices, indices);
                 refreshPreviewBackground();
                 device_->updatePreviewMaterials(std::span<const graphics::PreviewMaterial>{});
+                device_->updatePreviewDraws(std::span<const graphics::PreviewDraw>{});
                 graphics::PreviewScene preview;
                 preview.cameraDistance = 2.42F;
                 preview.screenSource = graphics::PreviewScene::ScreenSource::backgroundImage;
@@ -965,15 +991,18 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     }
     const bool rebuildTopology = initialUpload || animatedTopologyGeneration_ != scene_.topologyGeneration() ||
                                  animatedIndices_.size() != indexCount ||
-                                 animatedMaterialTemplates_.size() != materialCount;
+                                 animatedMaterialTemplates_.size() != materialCount ||
+                                 animatedDraws_.size() != materialCount;
     std::vector<graphics::PreviewVertex> vertices;
     vertices.reserve(vertexCount);
     std::vector<graphics::PreviewMaterial> materials =
         rebuildTopology ? std::vector<graphics::PreviewMaterial>{} : animatedMaterialTemplates_;
+    std::vector<graphics::PreviewDraw> draws = rebuildTopology ? std::vector<graphics::PreviewDraw>{} : animatedDraws_;
     if (rebuildTopology) {
         animatedIndices_.clear();
         animatedIndices_.reserve(indexCount);
         materials.reserve(materialCount);
+        draws.reserve(materialCount);
     }
     std::size_t materialCursor = 0;
     std::uint32_t indexCursor = 0;
@@ -1037,8 +1066,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                 std::memcpy(vertex.position, source.position.data(), sizeof(vertex.position));
                 std::memcpy(vertex.normal, source.normal.data(), sizeof(vertex.normal));
                 std::memcpy(vertex.uv, source.uv.data(), sizeof(vertex.uv));
-                const bool supported = gpuSkinning && source.weightType != core::PmxWeightType::sdef &&
-                                       source.weightType != core::PmxWeightType::qdef;
+                const bool supported = gpuSkinning;
                 if (supported) {
                     for (std::size_t influence = 0; influence < 4; ++influence) {
                         vertex.bones[influence] =
@@ -1048,8 +1076,17 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                                 : boneBase + source.bones[influence];
                         vertex.weights[influence] = source.weights[influence];
                     }
+                    const auto normalizedC = normalizePreviewPoint(source.sdefC, instance.normalization);
+                    const auto normalizedR0 = normalizePreviewPoint(source.sdefR0, instance.normalization);
+                    const auto normalizedR1 = normalizePreviewPoint(source.sdefR1, instance.normalization);
+                    std::copy(normalizedC.begin(), normalizedC.end(), vertex.sdefC);
+                    for (std::size_t axis = 0; axis < 3; ++axis) {
+                        vertex.sdefHalfDelta[axis] = (normalizedR0[axis] - normalizedR1[axis]) * 0.5F;
+                    }
+                    vertex.skinningType = static_cast<std::uint32_t>(source.weightType);
                     vertex.gpuSkinning = 1;
                 }
+                vertex.edgeScale = source.edgeScale;
                 vertex.cloneOffset = cloneOffset;
                 vertices.push_back(vertex);
             }
@@ -1060,17 +1097,29 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             indexCursor += static_cast<std::uint32_t>(instance.model->indices.size());
             std::uint32_t firstIndex = firstCloneIndex;
             for (std::size_t materialIndex = 0; materialIndex < instance.model->materials.size(); ++materialIndex) {
+                const auto& sourceMaterial = instance.model->materials[materialIndex];
                 if (rebuildTopology) {
                     graphics::PreviewMaterial material;
-                    material.firstIndex = firstIndex;
-                    material.indexCount = instance.model->materials[materialIndex].indexCount;
-                    material.doubleSided = (instance.model->materials[materialIndex].drawFlags & 0x01U) != 0;
+                    material.doubleSided = (sourceMaterial.drawFlags & 0x01U) != 0;
+                    material.edgeEnabled = (sourceMaterial.drawFlags & 0x10U) != 0;
                     material.textureSlot =
-                        instance.model->materials[materialIndex].textureIndex >= 0
-                            ? textureBase +
-                                  static_cast<std::uint32_t>(instance.model->materials[materialIndex].textureIndex) + 1U
+                        sourceMaterial.textureIndex >= 0
+                            ? textureBase + static_cast<std::uint32_t>(sourceMaterial.textureIndex) + 1U
                             : 0U;
+                    const bool hasSphereTexture =
+                        hasLoadedTexture(instance.textures, sourceMaterial.sphereTextureIndex);
+                    material.sphereTextureSlot =
+                        hasSphereTexture
+                            ? textureBase + static_cast<std::uint32_t>(sourceMaterial.sphereTextureIndex) + 1U
+                            : 0U;
+                    material.toonTextureSlot =
+                        sourceMaterial.toonMode == 0 && sourceMaterial.toonTextureIndex >= 0
+                            ? textureBase + static_cast<std::uint32_t>(sourceMaterial.toonTextureIndex) + 1U
+                            : 0U;
+                    material.sphereMode = hasSphereTexture ? sourceMaterial.sphereMode : 0U;
+                    material.toonMode = sourceMaterial.toonMode;
                     materials.push_back(material);
+                    draws.push_back({});
                 }
                 auto& material = materials[materialCursor++];
                 if (materialIndex < frame.materials.size()) {
@@ -1082,8 +1131,19 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                     std::copy(animated.textureMultiply.begin(), animated.textureMultiply.end(),
                               material.textureMultiply);
                     std::copy(animated.textureAdd.begin(), animated.textureAdd.end(), material.textureAdd);
+                    std::copy(animated.sphereMultiply.begin(), animated.sphereMultiply.end(), material.sphereMultiply);
+                    std::copy(animated.sphereAdd.begin(), animated.sphereAdd.end(), material.sphereAdd);
+                    std::copy(animated.toonMultiply.begin(), animated.toonMultiply.end(), material.toonMultiply);
+                    std::copy(animated.toonAdd.begin(), animated.toonAdd.end(), material.toonAdd);
+                    std::copy(animated.edgeColor.begin(), animated.edgeColor.end(), material.edgeColor);
+                    // Edge extrusion is a distance in the same normalized space as the vertices.
+                    material.edgeSize = animated.edgeSize * instance.normalization.scale;
                 }
-                firstIndex += material.indexCount;
+                auto& draw = draws[materialCursor - 1U];
+                draw.firstIndex = firstIndex;
+                draw.indexCount = sourceMaterial.indexCount;
+                draw.materialIndex = static_cast<std::uint32_t>(materialCursor - 1U);
+                firstIndex += instance.model->materials[materialIndex].indexCount;
             }
         }
     }
@@ -1091,6 +1151,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         return;
     if (rebuildTopology) {
         animatedMaterialTemplates_ = materials;
+        animatedDraws_ = draws;
         animatedTopologyGeneration_ = scene_.topologyGeneration();
     }
     device_->updatePreviewBones(bones);
@@ -1104,6 +1165,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         }
     }
     device_->updatePreviewMaterials(materials);
+    device_->updatePreviewDraws(draws);
     uploadedAnimationFrame_ = static_cast<int>(animationFrame_);
     scene_.clearDirty(core::DirtyFlag::geometry | core::DirtyFlag::material);
 }
@@ -1118,7 +1180,7 @@ void Application::refreshPreviewTextures() {
     std::vector<graphics::PreviewTexture> previewTextures;
     previewTextures.reserve(textures_.size());
     for (const auto& texture : textures_) {
-        previewTextures.push_back({texture.width, texture.height, texture.pixels});
+        previewTextures.push_back({texture.width, texture.height, texture.pixels, hasTransparentPixels(texture)});
     }
     device_->uploadPreviewTextures(previewTextures);
 }
@@ -1147,8 +1209,10 @@ void Application::refreshVideoFrame() {
     scene_.setBackgroundScreenSource(core::ScreenTextureSource::backgroundVideo);
     const std::array textures{graphics::PreviewTexture{image.width, image.height, image.pixels}};
     device_->uploadPreviewBackground(textures);
-    if (scene_.models().empty())
+    if (scene_.models().empty()) {
         device_->updatePreviewMaterials({});
+        device_->updatePreviewDraws({});
+    }
     uploadedVideoFrame_ = frameIndex;
 }
 
