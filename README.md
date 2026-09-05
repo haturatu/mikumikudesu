@@ -72,7 +72,8 @@ AMDではMesa RADVを推奨します。BDPTを将来有効化する構成ではR
 BOLTのプロファイルは、対象バイナリを `perf record` で実行し、`perf2bolt` で変換して作成します。
 例えば `perf2bolt ./build/linux-release-native/mikumikudesu -p perf.data -o perf.fdata`
 のように生成します。
-BOLTは実行ファイルを書き換えるため、配布用ビルドではなく対象環境専用の最終最適化として扱ってください。
+BOLT版は通常の実行ファイルとは別に `mikumikudesu.bolt` として生成され、BOLT有効時のinstallだけが
+それを `mikumikudesu` として配置します。BOLTは対象環境専用の最終最適化として扱ってください。
 
 確認するRT feature:
 
