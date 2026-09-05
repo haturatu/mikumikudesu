@@ -80,7 +80,7 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           LIBGL_ALWAYS_SOFTWARE: '1'
-        run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset linux-sanitize --output-on-failure
+        run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset linux-sanitize --output-on-failure -LE upstream
 
       - name: Show compiler cache statistics
         if: always()

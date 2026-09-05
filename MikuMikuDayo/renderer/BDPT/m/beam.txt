@@ -1,3 +1,0 @@
-Light:2500000
-LightHotspot:1
-LightFalloff:1

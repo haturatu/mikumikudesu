@@ -1,3 +1,0 @@
-Category : metal
-Roughness : 0.1
-Anisotropy : 0.9

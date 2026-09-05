@@ -358,11 +358,11 @@ install(
   PATTERN "*.hlsli"
   PATTERN "*.fxdayo"
 )
+install(FILES MikuMikuDayo/licence/MikuMikuDayo.txt DESTINATION share/mikumikudesu/licence)
 
 if(BUILD_TESTING)
   add_executable(dayo_core_tests tests/core_tests.cpp)
   target_link_libraries(dayo_core_tests PRIVATE dayo_core)
-  target_compile_definitions(dayo_core_tests PRIVATE DAYO_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   add_executable(dayo_preview_tests tests/preview_render_tests.cpp)
   target_include_directories(dayo_preview_tests PRIVATE src)
   target_link_libraries(dayo_preview_tests PRIVATE dayo_platform dayo_graphics)
@@ -390,7 +390,26 @@ if(BUILD_TESTING)
       endif()
     endif()
   endif()
+
+  add_executable(dayo_upstream_compat_tests tests/upstream_compat_tests.cpp)
+  target_link_libraries(dayo_upstream_compat_tests PRIVATE dayo_core)
+  target_compile_definitions(dayo_upstream_compat_tests PRIVATE DAYO_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      dayo_upstream_compat_tests
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_upstream_compat_tests PRIVATE -Werror)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(dayo_upstream_compat_tests PRIVATE -Wno-error=deprecated-literal-operator)
+      endif()
+    endif()
+  endif()
+
   add_test(NAME core COMMAND dayo_core_tests)
+  add_test(NAME upstream_compat COMMAND dayo_upstream_compat_tests)
+  set_tests_properties(upstream_compat PROPERTIES LABELS "upstream" TIMEOUT 60)
   add_test(NAME vulkan_probe COMMAND mikumikudesu --probe --hidden)
   add_test(NAME preview_render COMMAND dayo_preview_tests)
   set_tests_properties(vulkan_probe PROPERTIES TIMEOUT 60)
@@ -423,6 +442,7 @@ if(DAYO_ENABLE_SANITIZERS)
     mikumikudesu
     dayo_core_tests
     dayo_preview_tests
+    dayo_upstream_compat_tests
   )
     if(TARGET ${target})
       target_compile_options(${target} PRIVATE ${DAYO_SANITIZER_COMPILE_OPTIONS})
@@ -434,6 +454,9 @@ if(DAYO_ENABLE_SANITIZERS)
   endif()
   if(TARGET dayo_preview_tests)
     target_link_options(dayo_preview_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+  if(TARGET dayo_upstream_compat_tests)
+    target_link_options(dayo_upstream_compat_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
 endif()
 

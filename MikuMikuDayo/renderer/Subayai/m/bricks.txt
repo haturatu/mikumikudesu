@@ -1,9 +1,0 @@
-Roughness:1
-TextureLoops:2
-AlbedoScale:1
-NormalScale:1
-
-_TRoughnessMap : ../../BDPT/m/t/bricks/Bricks001_2K_Roughness.jpg
-_TAlbedoMap : ../../BDPT/m/t/bricks/Bricks001_2K_Color.jpg
-_TNormalMap : ../../BDPT/m/t/bricks/Bricks001_2K_Normal.jpg
-_TAOMap : ../../BDPT/m/t/bricks/Bricks001_2K_Displacement.jpg

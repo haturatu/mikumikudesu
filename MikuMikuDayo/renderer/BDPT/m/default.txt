@@ -1,4 +1,0 @@
-LightHotspot:90
-LightFalloff:90
-Roughness : 0.5
-IOR : 1.5,0

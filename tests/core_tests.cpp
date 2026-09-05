@@ -2,7 +2,6 @@
 #include "core/asset.hpp"
 #include "core/audio_export.hpp"
 #include "core/editor.hpp"
-#include "core/effect.hpp"
 #include "core/image.hpp"
 #include "core/media.hpp"
 #include "core/model_probe.hpp"
@@ -387,40 +386,6 @@ int main() {
                     "new project motion is not shadowed by previous camera motion");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: PMX probe: " << exception.what() << '\n';
-        ok = false;
-    }
-    try {
-        const auto previewEffect = dayo::core::loadEffectGraph(std::filesystem::path(DAYO_SOURCE_DIR) /
-                                                               "MikuMikuDayo/renderer/Preview.fxdayo");
-        ok &= check(previewEffect.passes.size() == 5 && !previewEffect.hlsl.empty(), "Preview fxdayo graph");
-        const auto subayaiEffect = dayo::core::loadEffectGraph(std::filesystem::path(DAYO_SOURCE_DIR) /
-                                                               "MikuMikuDayo/renderer/Subayai.fxdayo");
-        ok &= check(subayaiEffect.passes.size() >= 20 &&
-                        std::ranges::any_of(
-                            subayaiEffect.passes,
-                            [](const auto& pass) { return pass.type == dayo::core::EffectPassType::raytracing; }) &&
-                        subayaiEffect.hlsl.find("resources.hlsli") != std::string::npos &&
-                        !subayaiEffect.controllers.empty(),
-                    "Subayai Jsonnet expansion");
-        const auto rayPass = std::ranges::find_if(
-            subayaiEffect.passes, [](const auto& pass) { return pass.type == dayo::core::EffectPassType::raytracing; });
-        ok &= check(rayPass != subayaiEffect.passes.end() && !rayPass->hitGroups.empty() &&
-                        rayPass->maxPayloadSize != 0 && rayPass->maxRecursionDepth != 0,
-                    "Subayai ray-tracing pipeline metadata");
-        const auto bdptEffect =
-            dayo::core::loadEffectGraph(std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo/renderer/BDPT.fxdayo");
-        ok &= check(!bdptEffect.passes.empty() && std::ranges::any_of(bdptEffect.passes,
-                                                                      [](const auto& pass) {
-                                                                          return pass.type ==
-                                                                                 dayo::core::EffectPassType::raytracing;
-                                                                      }),
-                    "BDPT fxdayo graph");
-        const auto compiled = dayo::core::compileEffectGraph(previewEffect);
-        ok &= check(compiled.passes.size() == previewEffect.passes.size(), "effect render graph compilation");
-        const auto stats = dayo::core::EffectExecutor{}.execute(compiled, {});
-        ok &= check(stats.rasterPasses > 0, "effect pass execution contract");
-    } catch (const std::exception& exception) {
-        std::cerr << "FAIL: effect graph: " << exception.what() << '\n';
         ok = false;
     }
     try {
@@ -1197,76 +1162,6 @@ int main() {
             "soft-body fallback applies displacement only to its material vertices");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: PMX transform evaluation: " << exception.what() << '\n';
-        ok = false;
-    }
-    try {
-        const auto icon =
-            dayo::core::loadImageRgba8(std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo/res/dayoicon.png");
-        ok &= check(icon.width > 0 && icon.height > 0 && icon.pixels.size() == icon.width * icon.height * 4U,
-                    "RGBA image decode");
-        const auto dds =
-            dayo::core::loadImageRgba8(std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo/particle/Smoke.dds");
-        ok &= check(dds.width > 0 && dds.height > 0 && dds.pixels.size() == dds.width * dds.height * 4U,
-                    "DDS image decode");
-    } catch (const std::exception& exception) {
-        std::cerr << "FAIL: image load: " << exception.what() << '\n';
-        ok = false;
-    }
-    try {
-        std::filesystem::path sampleVmd;
-        for (const auto& entry : std::filesystem::recursive_directory_iterator(std::filesystem::path(DAYO_SOURCE_DIR) /
-                                                                               "MikuMikuDayo/sample")) {
-            if (entry.path().extension() == ".vmd") {
-                sampleVmd = entry.path();
-                break;
-            }
-        }
-        const auto motion = dayo::core::loadVmd(sampleVmd);
-        ok &= check(!motion.modelName.empty(), "VMD CP932 model name");
-        ok &= check(!motion.bones.empty(), "VMD bone keys");
-        const auto exportedVmd = std::filesystem::temp_directory_path() / "mikumikudesu-vmd-export-test.vmd";
-        dayo::core::saveVmd(exportedVmd, motion);
-        const auto exported = dayo::core::loadVmd(exportedVmd);
-        ok &= check(exported.modelName == motion.modelName && exported.bones.size() == motion.bones.size() &&
-                        exported.morphs.size() == motion.morphs.size() &&
-                        exported.cameras.size() == motion.cameras.size() &&
-                        exported.lights.size() == motion.lights.size() &&
-                        exported.shadows.size() == motion.shadows.size() && exported.ik.size() == motion.ik.size(),
-                    "VMD export round trip");
-        std::error_code exportError;
-        std::filesystem::remove(exportedVmd, exportError);
-        bool evaluatedFixture = false;
-        for (const auto& entry :
-             std::filesystem::directory_iterator(std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo/sample")) {
-            if (entry.path().extension() != ".pmx")
-                continue;
-            try {
-                auto candidate = dayo::core::loadPmxModel(entry.path());
-                if (candidate.metadata.modelName != motion.modelName || candidate.vertices.empty())
-                    continue;
-                dayo::core::MmdAnimator animator(candidate);
-                animator.setMotion(&motion);
-                const auto compatibility = animator.motionCompatibility();
-                ok &= check(compatibility.matchedBoneTrackCount > 0, "sample VMD/PMX has compatible bone tracks");
-                const auto first = animator.evaluate(0.0F);
-                const auto animated = animator.evaluate(10.0F);
-                bool changed = false;
-                for (std::size_t i = 0; i < first.vertices.size(); ++i) {
-                    if (first.vertices[i].position != animated.vertices[i].position) {
-                        changed = true;
-                        break;
-                    }
-                }
-                ok &= check(changed, "VMD CPU skinning changes vertices");
-                evaluatedFixture = true;
-                break;
-            } catch (const std::exception&) {
-                // Some tiny effect descriptors use the PMX extension without model sections.
-            }
-        }
-        ok &= check(evaluatedFixture, "sample VMD has a matching PMX fixture");
-    } catch (const std::exception& exception) {
-        std::cerr << "FAIL: VMD load: " << exception.what() << '\n';
         ok = false;
     }
     std::error_code error;

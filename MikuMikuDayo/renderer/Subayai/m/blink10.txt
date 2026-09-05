@@ -1,2 +1,0 @@
-Category : blackbody
-Light : 5*(sin(Time*2*pi)+1)

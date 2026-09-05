@@ -7,7 +7,8 @@
 CMakeUserPresets.json
 compile_commands.json
 
-# Downloaded/source archives and Windows distribution binaries
+# Downloaded dependencies, source archives, and Windows distribution binaries
+/MikuMikuDayo/
 /*.zip
 *.exe
 *.dll
@@ -21,10 +22,6 @@ assets/models/*/model/
 
 # Runtime output
 *.log
-MikuMikuDayo/shadercache/*
-!MikuMikuDayo/shadercache/_.txt
-MikuMikuDayo/screenshots/*
-!MikuMikuDayo/screenshots/_.txt
 
 # IDE and OS metadata
 .cache/

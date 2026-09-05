@@ -1,7 +1,7 @@
 # mikumikudesu
 
-MikuMikuDayo 1.20をLinuxへ移植したネイティブ実行系です。元のWindows/D3D12ソースと
-アセットを保持しつつ、Linux側を`SDL3 + Vulkan 1.3 + HLSL/SPIR-V`で構成しています。
+MikuMikuDayo 1.20を初回セットアップ時に取得して使用するLinux向けネイティブ実行系です。
+Linux側を`SDL3 + Vulkan 1.3 + HLSL/SPIR-V`で構成しています。
 
 ## 実装済み
 
@@ -82,9 +82,37 @@ CMakeが取得します。取得を禁止する場合は必要なdevelopment pac
 
 ## ビルドと実行
 
+MakefileからCMake Presetsを利用する簡易コマンドも用意しています。
+
+```bash
+# Debug（configure + build）
+make
+
+# Pinned MikuMikuDayo assetを取得してテスト
+make setup
+make test
+
+# Test / run
+make run
+make run ARGS="--asset model.pmx --asset motion.vmd"
+
+# Release / package / sanitizers / system packages only
+make release
+make package
+make sanitize
+make system
+```
+
+`make`/`make build`はMikuMikuDayoを取得しません。`make setup`、`make test`、`make install`、
+`make package`でだけ、`deps/mikumikudayo.lock`に固定したGitHub Release ZIPを取得または
+`.cache/mikumikudayo/`から再利用します。ZIPはSHA-256を検証してから展開します。
+
+全ターゲットと変数は`make help`で確認できます。CMakeを直接実行する正式な手順も引き続き利用できます。
+
 ```bash
 cmake --preset linux-debug
 cmake --build --preset linux-debug
+python3 scripts/fetch-mikumikudayo.py
 ctest --preset linux-debug --output-on-failure
 
 ./build/linux-debug/mikumikudesu
@@ -213,9 +241,9 @@ src/
     ├── device.hpp           API非依存device/resource契約
     └── vulkan/              Vulkan swapchain/pipeline/resource実装
 
-MikuMikuDayo/src/            元のWin32/D3D12実装（比較用）
-MikuMikuDayo/hlsl/           既存HLSL
-MikuMikuDayo/renderer/       Preview/Subayai/BDPT effectと素材
+deps/mikumikudayo.lock       取得するMikuMikuDayo Release ZIPの固定情報
+MikuMikuDayo/                 初回セットアップ時に展開されるローカル依存（Git管理外）
+scripts/fetch-mikumikudayo.py 依存ZIPの取得、検証、展開
 ```
 
 ## このAMD環境での確認結果
@@ -231,3 +259,12 @@ MikuMikuDayo/renderer/       Preview/Subayai/BDPT effectと素材
 - Subayai/BDPT要求時は不足featureを列挙しPreviewへfallback
 
 Vega 8はRDNA2ではないため、RT実行試験はハードウェア上不可能です。
+
+## LICENCE
+
+本プロジェクトのソースコードは、 [MIT License](LICENSE) です。
+
+`MikuMikuDayo/` はGit管理せず、`deps/mikumikudayo.lock`で固定した
+[MikuMikuDayo 1.20のRelease ZIP](https://github.com/pennennennennennenem/MikuMikuDayo/releases/download/MikuMikuDayo120/MikuMikuDayo120.zip)
+をセットアップ時に取得します。
+MikuMikuDayo本体は upstream のMIT Licenseに従い、配布時はアーカイブ内のMikuMikuDayoおよびサードパーティのライセンス表示を保持してください。

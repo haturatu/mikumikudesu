@@ -1,9 +1,0 @@
-Category:1
-Cat:0.01,0,0,0
-Roughness:0
-IOR:1.33,0
-TextureLoops:1
-NormalScale:0.05
-
-_TNormalMap:t/water/Water_001_NORM.jpg
-

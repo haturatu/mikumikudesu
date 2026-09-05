@@ -1,5 +1,0 @@
-#SF15フリントガラス
-
-Category:glass
-Roughness:0
-IOR:1.66,12000

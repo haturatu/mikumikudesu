@@ -8,6 +8,7 @@ if ! command -v wine >/dev/null 2>&1; then
   printf '[ERROR] wine is not installed\n' >&2
   exit 1
 fi
+python3 "$project_dir/scripts/fetch-mikumikudayo.py"
 if [[ ! -f "$executable" ]]; then
   printf '[ERROR] Windows distribution executable is missing: %s\n' "$executable" >&2
   exit 1
