@@ -1,5 +1,6 @@
 #include "core/effect.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <iterator>
 #include <sstream>
@@ -76,6 +77,46 @@ std::vector<EffectAttachment> attachments(const nlohmann::json& parent, std::str
     }
     return result;
 }
+
+EffectSize effectSize(const nlohmann::json& value) {
+    EffectSize result;
+    if (!value.is_object())
+        return result;
+    result.base = value.value("base", "");
+    result.absolute = value.value("absolute", false);
+    result.width = value.value("width", 0U);
+    result.height = value.value("height", 0U);
+    result.depth = value.value("depth", 0U);
+    result.dimension = value.value("dimension", 1U);
+    if (const auto ratio = value.find("ratio"); ratio != value.end() && ratio->is_object()) {
+        result.widthRatio = ratio->value("x", 1.0F);
+        result.heightRatio = ratio->value("y", 1.0F);
+    }
+    return result;
+}
+
+std::vector<EffectTexture> textures(const nlohmann::json& parent, std::string_view name) {
+    std::vector<EffectTexture> result;
+    const auto values = parent.find(name);
+    if (values == parent.end() || !values->is_array())
+        return result;
+    for (const auto& value : *values) {
+        if (!value.is_object())
+            continue;
+        EffectTexture texture;
+        texture.name = value.value("name", "");
+        texture.format = value.value("format", "");
+        texture.view = value.value("view", "");
+        texture.conditions = strings(value, "conditions");
+        if (const auto size = value.find("size"); size != value.end()) {
+            const auto parsed = effectSize(*size);
+            texture.widthRatio = parsed.widthRatio;
+            texture.heightRatio = parsed.heightRatio;
+        }
+        result.push_back(std::move(texture));
+    }
+    return result;
+}
 #endif
 
 } // namespace
@@ -117,22 +158,26 @@ EffectGraph loadEffectGraph(const std::filesystem::path& path) {
         throw std::runtime_error("effect has no fx object");
     const auto& fx = *found;
     graph.category = fx.value("category", "");
-    if (const auto values = fx.find("textures"); values != fx.end() && values->is_array()) {
+    graph.textures = textures(fx, "textures");
+    graph.textures3D = textures(fx, "textures3D");
+    if (const auto values = fx.find("buffers"); values != fx.end() && values->is_array()) {
         for (const auto& value : *values) {
-            EffectTexture texture;
-            texture.name = value.value("name", "");
-            texture.format = value.value("format", "");
-            texture.view = value.value("view", "");
-            texture.conditions = strings(value, "conditions");
-            if (const auto size = value.find("size"); size != value.end() && size->is_object()) {
-                if (const auto ratio = size->find("ratio"); ratio != size->end() && ratio->is_object()) {
-                    texture.widthRatio = ratio->value("x", 1.0F);
-                    texture.heightRatio = ratio->value("y", 1.0F);
-                }
-            }
-            graph.textures.push_back(std::move(texture));
+            if (!value.is_object())
+                continue;
+            EffectBuffer buffer;
+            buffer.name = value.value("name", "");
+            buffer.type = value.value("type", "");
+            buffer.format = value.value("format", "");
+            buffer.view = value.value("view", "");
+            buffer.elementSize = value.value("elemSize", value.value("elementSize", 0U));
+            buffer.conditions = strings(value, "conditions");
+            if (const auto size = value.find("size"); size != value.end())
+                buffer.size = effectSize(*size);
+            graph.buffers.push_back(std::move(buffer));
         }
     }
+    if (const auto cloning = fx.find("meshCloning"); cloning != fx.end() && cloning->is_object())
+        graph.meshCloneCount = std::max(1U, cloning->value("count", 1U));
     if (const auto values = fx.find("samplers"); values != fx.end() && values->is_array()) {
         for (const auto& value : *values)
             graph.samplers.push_back({value.value("name", ""), value.value("filter", ""),
@@ -171,6 +216,9 @@ EffectGraph loadEffectGraph(const std::filesystem::path& path) {
                     pass.depth = {depth->value("name", ""), depth->value("clear", false)};
             }
             if (const auto size = value.find("outputSize"); size != value.end() && size->is_object()) {
+                pass.outputSize = effectSize(*size);
+                pass.outputWidthRatio = pass.outputSize.widthRatio;
+                pass.outputHeightRatio = pass.outputSize.heightRatio;
                 if (const auto ratio = size->find("ratio"); ratio != size->end() && ratio->is_object()) {
                     pass.outputWidthRatio = ratio->value("x", 1.0F);
                     pass.outputHeightRatio = ratio->value("y", 1.0F);
