@@ -3,8 +3,14 @@ name: Sanitizers
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - docs/**
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - docs/**
   workflow_dispatch:
 
 permissions:
@@ -16,6 +22,7 @@ concurrency:
 
 env:
   DEBIAN_FRONTEND: noninteractive
+  SDL3_PREFIX: ${{ github.workspace }}/.ci-deps/sdl3
 
 jobs:
   asan-ubsan:
@@ -25,10 +32,18 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v7
 
+      - name: Restore APT package cache
+        uses: ./.github/actions/cache-apt
+        with:
+          scope: sanitizer
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
+          sudo apt-get \
+            -o Dir::Cache::archives="$RUNNER_TEMP/mikumikudesu-apt/" \
+            -o APT::Keep-Downloaded-Packages=true \
+            install --no-install-recommends -y \
             ccache \
             ffmpeg \
             glslc \
@@ -56,19 +71,22 @@ jobs:
             vulkan-validationlayers \
             xvfb
 
+      - name: Restore or build SDL3
+        uses: ./.github/actions/setup-sdl3
+
       - name: Restore compiler cache
         uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
-          key: ccache-${{ runner.os }}-clang-linux-sanitize-${{ github.ref_name }}
+          key: ccache-v2-${{ runner.os }}-clang-linux-sanitize-${{ github.sha }}
           restore-keys: |
-            ccache-${{ runner.os }}-clang-linux-sanitize-
+            ccache-v2-${{ runner.os }}-clang-linux-sanitize-
 
       - name: Configure
         env:
           CC: clang
           CXX: clang++
-        run: cmake --preset linux-sanitize -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        run: cmake --preset linux-sanitize -DCMAKE_PREFIX_PATH="$SDL3_PREFIX" -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
         run: cmake --build --preset linux-sanitize --parallel
@@ -80,7 +98,8 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           LIBGL_ALWAYS_SOFTWARE: '1'
-        run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset linux-sanitize --output-on-failure -LE upstream
+          LD_LIBRARY_PATH: ${{ github.workspace }}/.ci-deps/sdl3/lib
+        run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset linux-sanitize --output-on-failure --parallel 2 -LE upstream
 
       - name: Show compiler cache statistics
         if: always()

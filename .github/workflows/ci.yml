@@ -3,8 +3,14 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - docs/**
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - docs/**
   workflow_dispatch:
 
 permissions:
@@ -16,10 +22,11 @@ concurrency:
 
 env:
   DEBIAN_FRONTEND: noninteractive
+  SDL3_PREFIX: ${{ github.workspace }}/.ci-deps/sdl3
 
 jobs:
   build:
-    name: ${{ matrix.compiler }} / ${{ matrix.preset }} / ${{ matrix.test_scope }}
+    name: ${{ matrix.compiler }} / ${{ matrix.preset }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -29,22 +36,17 @@ jobs:
             cc: gcc
             cxx: g++
             preset: linux-debug
-            test_scope: core
+            upstream: true
           - compiler: Clang
             cc: clang
             cxx: clang++
             preset: linux-debug
-            test_scope: core
+            upstream: false
           - compiler: GCC
             cc: gcc
             cxx: g++
             preset: linux-release
-            test_scope: core
-          - compiler: GCC
-            cc: gcc
-            cxx: g++
-            preset: linux-debug
-            test_scope: upstream
+            upstream: false
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
@@ -52,10 +54,18 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v7
 
+      - name: Restore APT package cache
+        uses: ./.github/actions/cache-apt
+        with:
+          scope: build
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
+          sudo apt-get \
+            -o Dir::Cache::archives="$RUNNER_TEMP/mikumikudesu-apt/" \
+            -o APT::Keep-Downloaded-Packages=true \
+            install --no-install-recommends -y \
             ccache \
             ffmpeg \
             glslc \
@@ -84,42 +94,46 @@ jobs:
             vulkan-validationlayers \
             xvfb
 
+      - name: Restore or build SDL3
+        uses: ./.github/actions/setup-sdl3
+
       - name: Restore compiler cache
         uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
-          key: ccache-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.preset }}-${{ matrix.test_scope }}-${{ github.ref_name }}
+          key: ccache-v2-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.preset }}-${{ github.sha }}
           restore-keys: |
-            ccache-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.preset }}-${{ matrix.test_scope }}-
+            ccache-v2-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.preset }}-
 
       - name: Restore MikuMikuDayo archive
-        if: matrix.test_scope == 'upstream'
+        if: matrix.upstream
         uses: actions/cache@v6
         with:
           path: .cache/mikumikudayo
           key: mikumikudayo-${{ hashFiles('deps/mikumikudayo.lock') }}
 
       - name: Prepare MikuMikuDayo
-        if: matrix.test_scope == 'upstream'
+        if: matrix.upstream
         run: python3 scripts/fetch-mikumikudayo.py
 
       - name: Configure
-        run: cmake --preset "${{ matrix.preset }}" -DDAYO_WARNINGS_AS_ERRORS=ON -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        run: cmake --preset "${{ matrix.preset }}" -DCMAKE_PREFIX_PATH="$SDL3_PREFIX" -DDAYO_WARNINGS_AS_ERRORS=ON -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
         run: cmake --build --preset "${{ matrix.preset }}" --parallel
 
       - name: Test
-        if: matrix.test_scope == 'core'
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
-        run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset "${{ matrix.preset }}" --output-on-failure -LE upstream
+          LD_LIBRARY_PATH: ${{ github.workspace }}/.ci-deps/sdl3/lib
+        run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset "${{ matrix.preset }}" --output-on-failure --parallel "$(nproc)" -LE upstream
 
       - name: Test upstream compatibility
-        if: matrix.test_scope == 'upstream'
+        if: matrix.upstream
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
-        run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset "${{ matrix.preset }}" --output-on-failure -L upstream
+          LD_LIBRARY_PATH: ${{ github.workspace }}/.ci-deps/sdl3/lib
+        run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset "${{ matrix.preset }}" --output-on-failure --parallel "$(nproc)" -L upstream
 
       - name: Show compiler cache statistics
         if: always()
@@ -132,10 +146,18 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v7
 
+      - name: Restore APT package cache
+        uses: ./.github/actions/cache-apt
+        with:
+          scope: system-only
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
+          sudo apt-get \
+            -o Dir::Cache::archives="$RUNNER_TEMP/mikumikudesu-apt/" \
+            -o APT::Keep-Downloaded-Packages=true \
+            install --no-install-recommends -y \
             ffmpeg \
             glslc \
             libavcodec-dev \
@@ -164,26 +186,14 @@ jobs:
             vulkan-validationlayers \
             xvfb
 
-      - name: Install system SDL3
-        run: |
-          git clone --depth 1 --branch release-3.2.8 \
-            https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/SDL3"
-          cmake -S "$RUNNER_TEMP/SDL3" -B "$RUNNER_TEMP/SDL3-build" -G Ninja \
-            -DSDL_SHARED=ON \
-            -DSDL_STATIC=OFF \
-            -DSDL_TEST_LIBRARY=OFF \
-            -DSDL_TESTS=OFF \
-            -DSDL_EXAMPLES=OFF \
-            -DSDL_INSTALL=ON
-          cmake --build "$RUNNER_TEMP/SDL3-build" --parallel
-          sudo cmake --install "$RUNNER_TEMP/SDL3-build" --prefix /usr/local
-          sudo ldconfig
+      - name: Restore or build SDL3
+        uses: ./.github/actions/setup-sdl3
 
       - name: Configure without FetchContent dependencies
         env:
           CC: gcc
           CXX: g++
-        run: cmake --preset linux-system-only -DDAYO_WARNINGS_AS_ERRORS=ON
+        run: cmake --preset linux-system-only -DCMAKE_PREFIX_PATH="$SDL3_PREFIX" -DDAYO_WARNINGS_AS_ERRORS=ON
 
       - name: Build
         run: cmake --build --preset linux-system-only --parallel
@@ -191,4 +201,5 @@ jobs:
       - name: Test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
-        run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset linux-system-only --output-on-failure -LE upstream
+          LD_LIBRARY_PATH: ${{ github.workspace }}/.ci-deps/sdl3/lib
+        run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset linux-system-only --output-on-failure --parallel "$(nproc)" -LE upstream

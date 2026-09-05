@@ -1,0 +1,21 @@
+name: Cache APT packages
+description: Cache downloaded APT archives without caching the runner's system directories
+inputs:
+  scope:
+    description: Job dependency set used to avoid partial cache races between jobs
+    required: false
+    default: dependencies
+runs:
+  using: composite
+  steps:
+    - name: Prepare APT archive directory
+      shell: bash
+      run: mkdir -p "$RUNNER_TEMP/mikumikudesu-apt"
+
+    - name: Restore APT package cache
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/mikumikudesu-apt
+        key: apt-${{ runner.os }}-${{ runner.arch }}-${{ inputs.scope }}-${{ hashFiles('.github/apt-packages.txt') }}
+        restore-keys: |
+          apt-${{ runner.os }}-${{ runner.arch }}-${{ inputs.scope }}-
