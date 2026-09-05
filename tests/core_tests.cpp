@@ -321,6 +321,10 @@ int main() {
             propagated = true;
         }
         ok &= check(propagated, "task scheduler propagates worker exceptions");
+        std::atomic<std::uint64_t> nested{};
+        scheduler.parallelFor(
+            2, [&](std::size_t) { scheduler.parallelFor(4, [&](std::size_t) { nested.fetch_add(1); }); });
+        ok &= check(nested.load() == 8, "task scheduler runs nested batches inline");
     }
 
     const auto path = std::filesystem::temp_directory_path() / "mikumikudesu-core-test.pmx";
