@@ -126,7 +126,7 @@ VulkanUploadContext::Slice VulkanUploadContext::allocate(VkDeviceSize size, VkDe
 std::uint64_t VulkanUploadContext::submit() {
     if (pendingSignalValue_ == 0)
         throw std::logic_error("Vulkan upload command is not recording");
-    check(vkEndCommandBuffer(commandBuffer_), "end persistent upload command");
+    check(vkEndCommandBuffer(commandBuffers_[batchIndex_]), "end persistent upload command");
     const VkTimelineSemaphoreSubmitInfo timelineSubmit{
         .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
         .signalSemaphoreValueCount = 1,
