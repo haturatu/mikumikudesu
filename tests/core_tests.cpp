@@ -592,6 +592,73 @@ int main() {
                       std::abs(alignedAfter.vertices[1].position[1] - alignedBefore.vertices[1].position[1]) > 1e-4F,
                   "PMX mode 2 keeps the solver body position, preserves bone translation, and imports rotation");
 
+        // Upstream parity for offset mode 2 bodies: the bone must be rebuilt
+        // from the animated rigid-body center plus the simulated rotation,
+        // not by keeping the animated translation. A vertex at the bone
+        // origin exposes the rebuilt bone position exactly.
+        dayo::core::PmxModel offsetMode2Model;
+        offsetMode2Model.vertices.resize(2);
+        offsetMode2Model.vertices[0].position = {0.0F, 2.0F, 0.0F};
+        offsetMode2Model.vertices[0].normal = {0.0F, 1.0F, 0.0F};
+        offsetMode2Model.vertices[0].bones[0] = 0;
+        offsetMode2Model.vertices[1] = offsetMode2Model.vertices[0];
+        offsetMode2Model.vertices[1].position = {1.0F, 2.0F, 0.0F};
+        dayo::core::PmxBone offsetMode2Bone;
+        offsetMode2Bone.name = "offset";
+        offsetMode2Bone.position = {0.0F, 2.0F, 0.0F};
+        offsetMode2Model.bones.push_back(offsetMode2Bone);
+        dayo::core::PmxRigidBody offsetMode2Body;
+        offsetMode2Body.shape = 0;
+        offsetMode2Body.size = {0.5F, 0.5F, 0.5F};
+        offsetMode2Body.position = {0.0F, 2.5F, 0.0F};
+        offsetMode2Body.bone = 0;
+        offsetMode2Body.mass = 1.0F;
+        offsetMode2Body.mode = 2;
+        offsetMode2Body.collisionMask = 0;
+        offsetMode2Model.rigidBodies.push_back(offsetMode2Body);
+        dayo::core::MmdPhysics offsetMode2Physics(offsetMode2Model);
+        dayo::core::MmdAnimator offsetMode2Animator(offsetMode2Model);
+        offsetMode2Animator.setPhysics(&offsetMode2Physics);
+        const auto offsetMode2Before = offsetMode2Animator.evaluate(0.0F, 0.0F);
+        offsetMode2Physics.applyImpulse(0, {}, {0.0F, 0.0F, 10.0F}, false);
+        const auto offsetMode2Frame = offsetMode2Animator.evaluate(1.0F, 1.0F / 30.0F);
+        const auto offsetBodyPose = offsetMode2Physics.bodyTransform(0);
+        const auto quatMultiply = [](const dayo::core::Float4& left, const dayo::core::Float4& right) {
+            return dayo::core::Float4{
+                left[3] * right[0] + left[0] * right[3] + left[1] * right[2] - left[2] * right[1],
+                left[3] * right[1] - left[0] * right[2] + left[1] * right[3] + left[2] * right[0],
+                left[3] * right[2] + left[0] * right[1] - left[1] * right[0] + left[2] * right[3],
+                left[3] * right[3] - left[0] * right[0] - left[1] * right[1] - left[2] * right[2],
+            };
+        };
+        const auto quatConjugate = [](const dayo::core::Float4& value) {
+            return dayo::core::Float4{-value[0], -value[1], -value[2], value[3]};
+        };
+        const auto quatRotate = [&](const dayo::core::Float4& rotation, const dayo::core::Float3& value) {
+            const dayo::core::Float4 rotated =
+                quatMultiply(rotation, quatMultiply({value[0], value[1], value[2], 0.0F}, quatConjugate(rotation)));
+            return dayo::core::Float3{rotated[0], rotated[1], rotated[2]};
+        };
+        // Without animation the rigid center stays at its bind position.
+        const dayo::core::Float3 offsetCenter{0.0F, 2.5F, 0.0F};
+        const dayo::core::Float3 bindOffset{0.0F, 0.5F, 0.0F};
+        const auto rotatedOffset = quatRotate(offsetBodyPose.rotation, bindOffset);
+        const dayo::core::Float3 expectedOffsetBone{
+            offsetCenter[0] - rotatedOffset[0], offsetCenter[1] - rotatedOffset[1], offsetCenter[2] - rotatedOffset[2]};
+        const auto& offsetBoneVertex = offsetMode2Frame.vertices[0].position;
+        const auto offsetBoneError =
+            std::sqrt((offsetBoneVertex[0] - expectedOffsetBone[0]) * (offsetBoneVertex[0] - expectedOffsetBone[0]) +
+                      (offsetBoneVertex[1] - expectedOffsetBone[1]) * (offsetBoneVertex[1] - expectedOffsetBone[1]) +
+                      (offsetBoneVertex[2] - expectedOffsetBone[2]) * (offsetBoneVertex[2] - expectedOffsetBone[2]));
+        const auto& offsetTipBefore = offsetMode2Before.vertices[1].position;
+        const auto& offsetTipAfter = offsetMode2Frame.vertices[1].position;
+        const auto offsetTipMovement =
+            std::sqrt((offsetTipAfter[0] - offsetTipBefore[0]) * (offsetTipAfter[0] - offsetTipBefore[0]) +
+                      (offsetTipAfter[1] - offsetTipBefore[1]) * (offsetTipAfter[1] - offsetTipBefore[1]) +
+                      (offsetTipAfter[2] - offsetTipBefore[2]) * (offsetTipAfter[2] - offsetTipBefore[2]));
+        ok &= check(offsetBoneError < 1e-3F && offsetTipMovement > 1e-4F,
+                    "PMX mode 2 with body offset rebuilds the bone from the animated center and simulated rotation");
+
         dayo::core::PmxModel skirtChainModel;
         skirtChainModel.vertices.resize(2);
         skirtChainModel.vertices[0].position = {0.0F, 2.0F, 0.0F};
@@ -691,6 +758,13 @@ int main() {
         // The previous mode 2 post-step snap-back discarded the contact
         // solution every frame, which this test catches.
         dayo::core::PmxModel skirtCollisionModel;
+        skirtCollisionModel.vertices.resize(2);
+        skirtCollisionModel.vertices[0].position = {0.3F, 1.45F, 0.3F};
+        skirtCollisionModel.vertices[0].normal = {0.0F, 0.0F, 1.0F};
+        skirtCollisionModel.vertices[0].bones[0] = 2;
+        skirtCollisionModel.vertices[1].position = {0.3F, 0.9F, 0.35F};
+        skirtCollisionModel.vertices[1].normal = {0.0F, 0.0F, 1.0F};
+        skirtCollisionModel.vertices[1].bones[0] = 3;
         skirtCollisionModel.bones.resize(4);
         skirtCollisionModel.bones[0].name = "hip";
         skirtCollisionModel.bones[0].position = {0.0F, 2.0F, 0.0F};
@@ -698,7 +772,9 @@ int main() {
         skirtCollisionModel.bones[1].position = {0.3F, 1.2F, 0.0F};
         skirtCollisionModel.bones[1].parent = 0;
         skirtCollisionModel.bones[2].name = "skirt";
-        skirtCollisionModel.bones[2].position = {0.3F, 1.5F, 0.3F};
+        // Deliberately offset from the panel body below so the bone
+        // rebuild covers the nonzero-offset path as well.
+        skirtCollisionModel.bones[2].position = {0.3F, 1.6F, 0.3F};
         skirtCollisionModel.bones[2].parent = 0;
         skirtCollisionModel.bones[3].name = "skirtTip";
         skirtCollisionModel.bones[3].position = {0.3F, 1.0F, 0.35F};
@@ -766,14 +842,18 @@ int main() {
             return std::ranges::all_of(value, [](float component) { return std::isfinite(component); });
         };
         const float initialSkirtZ = skirtCollisionPhysics.bodyTransform(2).position[2];
+        const auto initialSkirtVertices = skirtCollisionAnimator.evaluate(0.0F, 0.0F).vertices;
         bool skirtCollisionFinite = true;
         float minThighSkirtGap = std::numeric_limits<float>::max();
         for (std::uint32_t frame = 0; frame < 300; ++frame) {
-            static_cast<void>(
-                skirtCollisionAnimator.evaluate(static_cast<float>(frame), frame == 0 ? 0.0F : 1.0F / 30.0F));
+            const auto animated =
+                skirtCollisionAnimator.evaluate(static_cast<float>(frame), frame == 0 ? 0.0F : 1.0F / 30.0F);
             const auto thigh = skirtCollisionPhysics.bodyTransform(0);
             const auto skirt = skirtCollisionPhysics.bodyTransform(2);
-            skirtCollisionFinite = skirtCollisionFinite && vectorFinite(thigh.position) && vectorFinite(skirt.position);
+            skirtCollisionFinite = skirtCollisionFinite && vectorFinite(thigh.position) &&
+                                   vectorFinite(skirt.position) && animated.vertices.size() == 2 &&
+                                   vectorFinite(animated.vertices[0].position) &&
+                                   vectorFinite(animated.vertices[1].position);
             if (!skirtCollisionFinite)
                 break;
             if (frame < 60)
@@ -784,10 +864,13 @@ int main() {
             minThighSkirtGap = std::min(minThighSkirtGap, gap);
         }
         const auto finalSkirtZ = skirtCollisionPhysics.bodyTransform(2).position[2];
+        const auto finalSkirtVertices = skirtCollisionAnimator.evaluate(299.0F, 0.0F).vertices;
         ok &= check(skirtCollisionFinite, "thigh versus skirt collision stays finite");
         ok &= check(finalSkirtZ - initialSkirtZ > 0.05F, "thigh contact pushes the mode 2 skirt panel aside");
         ok &= check(minThighSkirtGap > -0.05F, "mode 2 skirt never contains the thigh collider");
-
+        ok &= check(finalSkirtVertices.size() == 2 && initialSkirtVertices.size() == 2 &&
+                        finalSkirtVertices[1].position[2] - initialSkirtVertices[1].position[2] > 0.05F,
+                    "skinned mode 1 skirt tip follows the pushed chain");
         dayo::core::PmxModel seekModel;
         seekModel.vertices.resize(1);
         seekModel.vertices[0].position = {0.0F, 2.0F, 0.0F};
