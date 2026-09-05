@@ -42,7 +42,7 @@ class UploadRing {
         std::uint64_t retireValue{};
     };
 
-    [[nodiscard]] std::size_t alignUp(std::size_t value, std::size_t alignment) const noexcept;
+    [[nodiscard]] std::optional<std::size_t> alignUp(std::size_t value, std::size_t alignment) const noexcept;
 
     std::size_t capacity_{};
     std::size_t defaultAlignment_{};

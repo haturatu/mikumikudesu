@@ -77,6 +77,13 @@ int main() {
     if (lifecycle.used() != 0)
         return 18;
 
+    UploadRing ordered(32);
+    if (!ordered.tryAllocate(8, 100) || ordered.tryAllocate(8, 20) || ordered.used() != 8)
+        return 19;
+    ordered.reclaim(100);
+    if (!ordered.tryAllocate(8, 20))
+        return 20;
+
     std::cout << "upload ring tests passed\n";
     return 0;
 }

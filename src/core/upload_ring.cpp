@@ -11,8 +11,10 @@ UploadRing::UploadRing(std::size_t capacity, std::size_t defaultAlignment)
         throw std::invalid_argument("upload ring capacity must be non-zero and alignment must be a power of two");
 }
 
-std::size_t UploadRing::alignUp(std::size_t value, std::size_t alignment) const noexcept {
+std::optional<std::size_t> UploadRing::alignUp(std::size_t value, std::size_t alignment) const noexcept {
     const auto mask = alignment - 1U;
+    if (value > std::numeric_limits<std::size_t>::max() - mask)
+        return std::nullopt;
     return (value + mask) & ~mask;
 }
 
@@ -22,26 +24,32 @@ std::optional<UploadSlice> UploadRing::tryAllocate(std::size_t size, std::uint64
     alignment = alignment == 0 ? defaultAlignment_ : alignment;
     if (alignment == 0 || (alignment & (alignment - 1U)) != 0)
         return std::nullopt;
-    if (size > std::numeric_limits<std::size_t>::max() - alignment)
+    if (!allocations_.empty() && retireValue < allocations_.back().retireValue)
         return std::nullopt;
 
     if (used_ == 0) {
         head_ = tail_ = 0;
     }
-    std::size_t offset = alignUp(head_, alignment);
+    const auto alignedOffset = alignUp(head_, alignment);
+    if (!alignedOffset)
+        return std::nullopt;
+    std::size_t offset = *alignedOffset;
     std::size_t begin = head_;
+    const bool exceedsCapacity = offset > capacity_ || size > capacity_ - offset;
     if (head_ >= tail_) {
-        if (offset + size > capacity_) {
+        if (exceedsCapacity) {
             offset = 0;
             begin = head_;
             if (size > tail_)
                 return std::nullopt;
         }
-    } else if (offset + size > tail_) {
+    } else if (exceedsCapacity || offset > tail_ || size > tail_ - offset) {
         return std::nullopt;
     }
 
     const auto padding = offset >= begin ? offset - begin : capacity_ - begin + offset;
+    if (padding > capacity_ || size > capacity_ - padding)
+        return std::nullopt;
     const auto occupied = padding + size;
     if (occupied > capacity_ - used_)
         return std::nullopt;
