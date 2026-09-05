@@ -326,8 +326,10 @@ void VulkanDevice::queryCapabilities() {
     capabilities_.swapchain = hasName(extensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
     capabilities_.bufferDeviceAddress = vulkan12.bufferDeviceAddress == VK_TRUE;
     capabilities_.descriptorIndexing =
-        vulkan12.runtimeDescriptorArray == VK_TRUE && vulkan12.descriptorBindingPartiallyBound == VK_TRUE &&
-        vulkan12.descriptorBindingVariableDescriptorCount == VK_TRUE;
+        vulkan12.runtimeDescriptorArray == VK_TRUE && vulkan12.descriptorBindingPartiallyBound == VK_TRUE;
+    previewBindlessSupported_ = vulkan12.runtimeDescriptorArray == VK_TRUE &&
+                                vulkan12.descriptorBindingVariableDescriptorCount == VK_TRUE &&
+                                features.features.shaderSampledImageArrayDynamicIndexing == VK_TRUE;
     capabilities_.accelerationStructure = acceleration.accelerationStructure == VK_TRUE &&
                                           hasName(extensions, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
     capabilities_.rayTracingPipeline =
@@ -394,15 +396,18 @@ void VulkanDevice::createLogicalDevice() {
     VkPhysicalDeviceVulkan12Features vulkan12{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
         .pNext = &vulkan13,
-        .descriptorIndexing = capabilities_.descriptorIndexing,
+        .descriptorIndexing = capabilities_.descriptorIndexing || previewBindlessSupported_,
         .descriptorBindingPartiallyBound = capabilities_.descriptorIndexing,
-        .descriptorBindingVariableDescriptorCount = capabilities_.descriptorIndexing,
-        .runtimeDescriptorArray = capabilities_.descriptorIndexing,
+        .descriptorBindingVariableDescriptorCount = previewBindlessSupported_,
+        .runtimeDescriptorArray = capabilities_.descriptorIndexing || previewBindlessSupported_,
         .bufferDeviceAddress = capabilities_.bufferDeviceAddress,
     };
+    VkPhysicalDeviceFeatures coreFeatures{};
+    coreFeatures.shaderSampledImageArrayDynamicIndexing = previewBindlessSupported_;
     const VkPhysicalDeviceFeatures2 features{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
         .pNext = &vulkan12,
+        .features = coreFeatures,
     };
     const VkDeviceCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -783,6 +788,17 @@ void VulkanDevice::destroyPipeline() {
 }
 
 void VulkanDevice::createPreviewDescriptors() {
+    if (!previewBindlessSupported_)
+        throw std::runtime_error("preview bindless texture table requires sampled image array indexing");
+    constexpr std::uint32_t fixedSampledImageCount = 3;
+    const auto maxDescriptorSetSampledImages = physicalProperties_.limits.maxDescriptorSetSampledImages;
+    const auto maxPerStageDescriptorSampledImages = physicalProperties_.limits.maxPerStageDescriptorSampledImages;
+    if (maxDescriptorSetSampledImages <= fixedSampledImageCount ||
+        maxPerStageDescriptorSampledImages <= fixedSampledImageCount)
+        throw std::runtime_error("Vulkan device exposes no sampled image descriptors for preview textures");
+    previewBindlessTextureCapacity_ = std::min(maxDescriptorSetSampledImages - fixedSampledImageCount,
+                                               maxPerStageDescriptorSampledImages - fixedSampledImageCount);
+
     const std::array textureBindings{
         VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -817,25 +833,32 @@ void VulkanDevice::createPreviewDescriptors() {
     };
     check(vkCreateDescriptorSetLayout(device_, &materialLayoutInfo, nullptr, &previewMaterialDescriptorSetLayout_),
           "create preview material descriptor layout");
-    if (!capabilities_.descriptorIndexing)
-        throw std::runtime_error("preview bindless texture table requires descriptor indexing");
-    previewBindlessTextureCapacity_ = 4096U;
-    if (physicalProperties_.limits.maxDescriptorSetSampledImages < previewBindlessTextureCapacity_)
-        throw std::runtime_error("Vulkan device exposes too few sampled image descriptors for preview table");
     const std::array<VkDescriptorSetLayoutBinding, 3> bindlessBindings{{
         {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, previewBindlessTextureCapacity_, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
     }};
+    const std::array<VkDescriptorBindingFlags, 3> bindlessBindingFlags{
+        0,
+        0,
+        VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT,
+    };
+    const VkDescriptorSetLayoutBindingFlagsCreateInfo bindlessBindingFlagsInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+        .bindingCount = static_cast<std::uint32_t>(bindlessBindingFlags.size()),
+        .pBindingFlags = bindlessBindingFlags.data(),
+    };
     const VkDescriptorSetLayoutCreateInfo bindlessLayoutInfo{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .pNext = &bindlessBindingFlagsInfo,
         .bindingCount = static_cast<std::uint32_t>(bindlessBindings.size()),
         .pBindings = bindlessBindings.data(),
     };
     check(vkCreateDescriptorSetLayout(device_, &bindlessLayoutInfo, nullptr, &previewBindlessDescriptorSetLayout_),
           "create preview bindless descriptor layout");
+    const auto sampledImagePoolSize = std::max(32768U, previewBindlessTextureCapacity_);
     const std::array poolSizes{
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 32768},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sampledImagePoolSize},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 16384},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64},
     };
@@ -2307,11 +2330,16 @@ void VulkanDevice::refreshPreviewBindlessDescriptor() {
         return;
     if (previewTextures_.size() > previewBindlessTextureCapacity_)
         throw std::runtime_error("preview texture table exceeds Vulkan descriptor capacity");
-    waitIdle();
     destroyPreviewBindlessDescriptor();
-    const auto count = previewBindlessTextureCapacity_;
+    const auto count = static_cast<std::uint32_t>(previewTextures_.size());
+    const VkDescriptorSetVariableDescriptorCountAllocateInfo variableCountInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
+        .descriptorSetCount = 1,
+        .pDescriptorCounts = &count,
+    };
     const VkDescriptorSetAllocateInfo setInfo{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .pNext = &variableCountInfo,
         .descriptorPool = previewDescriptorPool_,
         .descriptorSetCount = 1,
         .pSetLayouts = &previewBindlessDescriptorSetLayout_,
@@ -2319,9 +2347,9 @@ void VulkanDevice::refreshPreviewBindlessDescriptor() {
     check(vkAllocateDescriptorSets(device_, &setInfo, &previewBindlessDescriptor_),
           "allocate preview bindless descriptor");
     std::vector<VkDescriptorImageInfo> images;
-    images.reserve(previewTextures_.size());
+    images.reserve(count);
     for (std::uint32_t index = 0; index < count; ++index) {
-        const auto& texture = previewTextures_[std::min<std::size_t>(index, previewTextures_.size() - 1U)];
+        const auto& texture = previewTextures_[index];
         images.push_back({.imageView = texture.view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
     }
     const VkDescriptorImageInfo repeatSampler{.sampler = previewSampler_};
@@ -2618,6 +2646,8 @@ void VulkanDevice::updatePreviewDraws(std::span<const PreviewDraw> draws) {
 }
 
 void VulkanDevice::uploadPreviewTextures(std::span<const PreviewTexture> textures) {
+    if (textures.size() >= static_cast<std::size_t>(previewBindlessTextureCapacity_))
+        throw std::runtime_error("preview texture table exceeds Vulkan descriptor capacity");
     waitIdle();
     destroyPreviewTextures();
     const std::array<std::uint8_t, 4> white{255, 255, 255, 255};

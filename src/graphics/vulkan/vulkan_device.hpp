@@ -192,6 +192,7 @@ class VulkanDevice final : public Device {
     VkSampler previewClampSampler_{};
     VkDescriptorSet previewBindlessDescriptor_{};
     std::uint32_t previewBindlessTextureCapacity_{};
+    bool previewBindlessSupported_{};
 #if DAYO_HAS_IMGUI
     VkDescriptorPool imguiDescriptorPool_{};
     bool uiInitialized_{};

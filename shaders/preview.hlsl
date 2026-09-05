@@ -59,7 +59,7 @@ struct PreviewMaterialData
 };
 [[vk::binding(0, 2)]] StructuredBuffer<PreviewMaterialData> previewMaterials;
 
-[[vk::binding(2, 3)]] Texture2D<float4> previewTextureTable[4096];
+[[vk::binding(2, 3)]] Texture2D<float4> previewTextureTable[];
 [[vk::binding(0, 3)]] SamplerState previewRepeatSampler;
 [[vk::binding(1, 3)]] SamplerState previewClampSampler;
 
@@ -323,6 +323,16 @@ float4 applyTextureMorphRgb(float4 sample, float4 multiply, float4 add, float3 n
     return sample;
 }
 
+float4 samplePreviewTextureRepeat(uint textureSlot, float2 uv)
+{
+    return previewTextureTable[textureSlot].Sample(previewRepeatSampler, uv);
+}
+
+float4 samplePreviewTextureClamp(uint textureSlot, float2 uv)
+{
+    return previewTextureTable[textureSlot].Sample(previewClampSampler, uv);
+}
+
 float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0
 {
     const PreviewMaterialData material = previewMaterials[input.materialIndex];
@@ -339,7 +349,7 @@ float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0
 
     const uint4 textureSlots = material.textureSlots;
     const float4 sampled = applyTextureMorphRgb(
-        previewTextureTable[textureSlots.x].Sample(previewRepeatSampler, input.uv),
+        samplePreviewTextureRepeat(textureSlots.x, input.uv),
         material.textureMultiply, material.textureAdd, 1.0.xxx);
 
     const float3 normal = normalize(input.normal);
@@ -353,8 +363,7 @@ float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0
     const uint toonMode = (material.flags >> 1U) & 0x03U;
     if (toonMode == 0U)
     {
-        color *= previewTextureTable[textureSlots.y].Sample(previewClampSampler,
-                                                            float2(0.0, 0.5 - noLight * 0.5));
+        color *= samplePreviewTextureClamp(textureSlots.y, float2(0.0, 0.5 - noLight * 0.5));
     }
     else if (toonMode == 1U)
     {
@@ -365,7 +374,7 @@ float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0
     if (sphereMode == 1U || sphereMode == 2U)
     {
         const float4 sphere = applyTextureMorphRgb(
-            previewTextureTable[textureSlots.z].Sample(previewRepeatSampler, input.sphereUv),
+            samplePreviewTextureRepeat(textureSlots.z, input.sphereUv),
             material.sphereMultiply, material.sphereAdd,
             sphereMode == 1U ? 1.0.xxx : 0.0.xxx);
         color.rgb = sphereMode == 1U ? color.rgb * sphere.rgb : color.rgb + sphere.rgb;
