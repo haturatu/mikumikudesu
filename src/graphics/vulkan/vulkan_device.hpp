@@ -27,6 +27,9 @@ class VulkanDevice final : public Device {
     void resize() override;
     void beginUiFrame() override;
     void renderFrame() override;
+    [[nodiscard]] std::uint64_t previewGpuNanoseconds() const noexcept override {
+        return previewGpuNanoseconds_;
+    }
     [[nodiscard]] core::ImageRgba8 renderToImage(const RenderTargetDesc& target) override;
     void waitIdle() override;
     void uploadPreviewMesh(std::span<const PreviewVertex> vertices, std::span<const std::uint32_t> indices) override;
@@ -50,6 +53,7 @@ class VulkanDevice final : public Device {
         VkSemaphore imageAvailable{};
         VkSemaphore renderFinished{};
         VkFence inFlight{};
+        VkQueryPool timestampQueryPool{};
         VkBuffer backgroundStagingBuffer{};
         VkDeviceMemory backgroundStagingMemory{};
         void* mappedBackgroundStaging{};
@@ -130,6 +134,7 @@ class VulkanDevice final : public Device {
     void recordPreviewBackgroundUpload(VkCommandBuffer command, Frame& frame);
     void createFrames();
     void destroyFrames();
+    void resolveTimestampQuery(Frame& frame) noexcept;
     void createUi();
     void destroyUi();
     void recreateSwapchain();
@@ -187,6 +192,7 @@ class VulkanDevice final : public Device {
 #endif
     std::array<Frame, 2> frames_{};
     std::size_t frameIndex_{};
+    std::uint64_t previewGpuNanoseconds_{};
     VkDeviceSize previewVertexSize_{};
     std::uint64_t previewVertexGeneration_{};
     VkDeviceSize previewBoneSize_{};

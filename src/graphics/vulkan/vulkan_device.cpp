@@ -1307,6 +1307,15 @@ void VulkanDevice::createFrames() {
             .flags = VK_FENCE_CREATE_SIGNALED_BIT,
         };
         check(vkCreateFence(device_, &fenceInfo, nullptr, &frame.inFlight), "create frame fence");
+        if (physicalProperties_.limits.timestampPeriod > 0.0F) {
+            const VkQueryPoolCreateInfo queryInfo{
+                .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                .queryType = VK_QUERY_TYPE_TIMESTAMP,
+                .queryCount = 2,
+            };
+            check(vkCreateQueryPool(device_, &queryInfo, nullptr, &frame.timestampQueryPool),
+                  "create preview timestamp query pool");
+        }
     }
 }
 
@@ -1315,6 +1324,8 @@ void VulkanDevice::destroyFrames() {
         return;
     destroyPreviewMaterialBuffers();
     for (auto& frame : frames_) {
+        if (frame.timestampQueryPool != VK_NULL_HANDLE)
+            vkDestroyQueryPool(device_, frame.timestampQueryPool, nullptr);
         if (frame.inFlight != VK_NULL_HANDLE)
             vkDestroyFence(device_, frame.inFlight, nullptr);
         if (frame.renderFinished != VK_NULL_HANDLE)
@@ -1325,6 +1336,19 @@ void VulkanDevice::destroyFrames() {
             vkDestroyCommandPool(device_, frame.commandPool, nullptr);
         frame = {};
     }
+}
+
+void VulkanDevice::resolveTimestampQuery(Frame& frame) noexcept {
+    if (frame.timestampQueryPool == VK_NULL_HANDLE || physicalProperties_.limits.timestampPeriod <= 0.0F)
+        return;
+    std::array<std::uint64_t, 2> timestamps{};
+    const auto result = vkGetQueryPoolResults(device_, frame.timestampQueryPool, 0, 2, sizeof(timestamps),
+                                              timestamps.data(), sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT);
+    if (result != VK_SUCCESS || timestamps[1] < timestamps[0])
+        return;
+    const auto ticks = timestamps[1] - timestamps[0];
+    previewGpuNanoseconds_ = static_cast<std::uint64_t>(
+        static_cast<double>(ticks) * static_cast<double>(physicalProperties_.limits.timestampPeriod));
 }
 
 void VulkanDevice::createUi() {
@@ -1479,6 +1503,7 @@ void VulkanDevice::renderFrame() {
 #endif
     auto& frame = frames_[frameIndex_];
     check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for frame");
+    resolveTimestampQuery(frame);
     synchronizePreviewVertices(frame);
     synchronizePreviewBones(frame);
     synchronizePreviewMaterials(frame);
@@ -1496,6 +1521,10 @@ void VulkanDevice::renderFrame() {
     check(vkResetCommandPool(device_, frame.commandPool, 0), "reset command pool");
     const VkCommandBufferBeginInfo beginInfo{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     check(vkBeginCommandBuffer(frame.commandBuffer, &beginInfo), "begin command buffer");
+    if (frame.timestampQueryPool != VK_NULL_HANDLE) {
+        vkCmdResetQueryPool(frame.commandBuffer, frame.timestampQueryPool, 0, 2);
+        vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, frame.timestampQueryPool, 0);
+    }
     recordPreviewBackgroundUpload(frame.commandBuffer, frame);
 
     const VkImageMemoryBarrier2 toColor{
@@ -1625,6 +1654,8 @@ void VulkanDevice::renderFrame() {
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.commandBuffer);
 #endif
     vkCmdEndRendering(frame.commandBuffer);
+    if (frame.timestampQueryPool != VK_NULL_HANDLE)
+        vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timestampQueryPool, 1);
 
     const VkImageMemoryBarrier2 toPresent{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -1809,6 +1840,7 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     const VkExtent2D extent{target.width, target.height};
     createOffscreenResource(extent);
     auto& frame = frames_[frameIndex_];
+    resolveTimestampQuery(frame);
     synchronizePreviewVertices(frame);
     synchronizePreviewBones(frame);
     synchronizePreviewMaterials(frame);
@@ -1819,6 +1851,10 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
     check(vkBeginCommandBuffer(frame.commandBuffer, &beginInfo), "begin offscreen command buffer");
+    if (frame.timestampQueryPool != VK_NULL_HANDLE) {
+        vkCmdResetQueryPool(frame.commandBuffer, frame.timestampQueryPool, 0, 2);
+        vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, frame.timestampQueryPool, 0);
+    }
     recordPreviewBackgroundUpload(frame.commandBuffer, frame);
 
     const VkImageMemoryBarrier2 toColor{
@@ -1937,6 +1973,8 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     }
     recordPreviewModel(frame.commandBuffer, constants);
     vkCmdEndRendering(frame.commandBuffer);
+    if (frame.timestampQueryPool != VK_NULL_HANDLE)
+        vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timestampQueryPool, 1);
 
     const VkImageMemoryBarrier2 toTransfer{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -1991,8 +2029,13 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
 }
 
 void VulkanDevice::waitIdle() {
-    if (device_ != VK_NULL_HANDLE)
+    if (device_ != VK_NULL_HANDLE) {
         check(vkDeviceWaitIdle(device_), "wait for Vulkan device");
+        if (!frames_.empty()) {
+            const auto previousFrame = (frameIndex_ + frames_.size() - 1U) % frames_.size();
+            resolveTimestampQuery(frames_[previousFrame]);
+        }
+    }
 }
 
 void VulkanDevice::destroyPreviewMesh() {

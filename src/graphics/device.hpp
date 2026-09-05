@@ -243,6 +243,11 @@ class Device {
     virtual void resize() = 0;
     virtual void beginUiFrame() = 0;
     virtual void renderFrame() = 0;
+    // Returns the most recently completed preview GPU interval. Backends that
+    // do not expose timestamp queries report zero.
+    [[nodiscard]] virtual std::uint64_t previewGpuNanoseconds() const noexcept {
+        return 0;
+    }
     // Renders the current preview scene without ImGui and returns a CPU image.
     // Backends that do not provide an offscreen target report this explicitly.
     [[nodiscard]] virtual core::ImageRgba8 renderToImage(const RenderTargetDesc&) {
