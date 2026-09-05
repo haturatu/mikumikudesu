@@ -1010,9 +1010,6 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         indexCount += instance.model->indices.size();
         materialCount += instance.model->materials.size();
         dynamicVertices = dynamicVertices || (instance.softBody != nullptr && instance.softBody->available());
-        dynamicVertices = dynamicVertices || std::ranges::any_of(instance.model->morphs, [](const auto& morph) {
-                              return morph.type == 1 || morph.type == 9;
-                          });
     }
     const bool rebuildTopology = initialUpload || animatedTopologyGeneration_ != scene_.topologyGeneration() ||
                                  animatedIndices_.size() != indexCount ||
