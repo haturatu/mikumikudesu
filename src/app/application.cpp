@@ -511,7 +511,7 @@ int Application::run() {
             animationFrame_ = scene_.timeline().frame;
             const int integerFrame = static_cast<int>(animationFrame_);
             if (integerFrame != uploadedAnimationFrame_ && !scene_.models().empty()) {
-                refreshAnimatedMesh(false, deltaSeconds);
+                refreshAnimatedMesh(false, deltaSeconds * playbackSpeed_);
             }
             refreshPreviewScene();
         }
@@ -1963,6 +1963,7 @@ void Application::buildEditorUi() {
                         throw std::invalid_argument("last frame precedes first frame");
                     sequenceOutput_.directory = outputDirectory.data();
                     core::OutputQueue output(sequenceOutput_);
+                    float previousSampleFrame = static_cast<float>(sequenceOutput_.firstFrame);
                     for (std::uint32_t frame = sequenceOutput_.firstFrame; frame <= sequenceOutput_.lastFrame;
                          ++frame) {
                         core::ImageRgba8 image;
@@ -1972,9 +1973,12 @@ void Application::buildEditorUi() {
                                 sequenceOutput_.motionBlur
                                     ? static_cast<float>(sample) / static_cast<float>(sequenceOutput_.samples)
                                     : 0.0F;
-                            scene_.setFrame(static_cast<float>(frame) + offset);
+                            const float sampleFrame = static_cast<float>(frame) + offset;
+                            const float physicsDelta = std::max(sampleFrame - previousSampleFrame, 0.0F) / 30.0F;
+                            scene_.setFrame(sampleFrame);
                             animationFrame_ = scene_.timeline().frame;
-                            refreshAnimatedMesh(false);
+                            refreshAnimatedMesh(false, physicsDelta);
+                            previousSampleFrame = sampleFrame;
                             refreshPreviewScene();
                             auto rendered = device_->renderToImage({videoWidth_, videoHeight_});
                             if (sum.empty()) {

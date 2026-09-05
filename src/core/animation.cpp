@@ -955,6 +955,9 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
                                     (deltaSeconds <= 0.0F || std::abs(frameDelta - expectedFrameDelta) > 2.0F))));
         if (discontinuousSeek)
             physics_->reset();
+        float physicsDelta = std::max(deltaSeconds, 0.0F);
+        if (!discontinuousSeek && previousFrame_ >= 0.0F && frameDelta > 1e-6F)
+            physicsDelta = frameDelta / 30.0F;
         std::vector<bool> physicsBones(model_.bones.size());
         for (std::size_t bodyIndex = 0; bodyIndex < model_.rigidBodies.size(); ++bodyIndex) {
             const auto& body = model_.rigidBodies[bodyIndex];
@@ -975,7 +978,7 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
                 physics_->setKinematicTransform(bodyIndex, value);
             }
         }
-        const float impulseScale = std::max(deltaSeconds, 0.0F) * 60.0F;
+        const float impulseScale = physicsDelta * 60.0F;
         for (std::size_t body = 0; body < model_.rigidBodies.size(); ++body) {
             if (impulseReset[body]) {
                 physics_->clearMotion(body);
@@ -990,7 +993,7 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
                                        mul(impulseAngularLocal[body], impulseScale), true);
             }
         }
-        physics_->step(deltaSeconds);
+        physics_->step(physicsDelta);
         for (std::size_t bodyIndex = 0; bodyIndex < model_.rigidBodies.size(); ++bodyIndex) {
             const auto& body = model_.rigidBodies[bodyIndex];
             const auto mode = physics_->bodyMode(bodyIndex);
