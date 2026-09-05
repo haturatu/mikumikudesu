@@ -1181,7 +1181,7 @@ VulkanDevice::PreviewTextureResource VulkanDevice::createPreviewTextureResource(
         .pImageMemoryBarriers = &toShader,
     };
     vkCmdPipelineBarrier2(command, &shaderDependency);
-    uploadContext_->submit();
+    static_cast<void>(uploadContext_->submit());
 
     const VkImageViewCreateInfo viewInfo{
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
