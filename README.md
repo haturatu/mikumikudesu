@@ -152,6 +152,33 @@ ctest --preset linux-debug --output-on-failure
 ./build/linux-debug/mikumikudesu --asset model.pmx --asset motion.vmd
 ```
 
+### Linux native optimization profiles
+
+Release builds can opt into Clang ThinLTO without changing the default presets:
+
+```bash
+cmake --preset linux-clang-thinlto
+cmake --build --preset linux-clang-thinlto
+```
+
+For representative profile-guided optimization, first build and run the
+profile-generation preset through a realistic workload. Clang writes
+per-process `.profraw` files into the configured profile directory; merge them
+before configuring the use build:
+
+```bash
+cmake --preset linux-pgo-generate
+cmake --build --preset linux-pgo-generate
+./build/linux-pgo-generate/mikumikudesu --asset model.pmx
+cmake --build build/linux-pgo-generate --target dayo_pgo_merge
+cmake --preset linux-pgo-use
+cmake --build --preset linux-pgo-use
+```
+
+The Clang path uses `llvm-profdata merge` and `-fprofile-instr-use`; GCC keeps
+its `-fprofile-use`/`-fprofile-correction` flow. PGO is intentionally opt-in
+because profile data is workload-specific and must not be committed.
+
 ### ミク・テトのサンプルモデル
 
 動作確認用として、配布元のアーカイブをローカルの`assets/models/`へ取得できます。
