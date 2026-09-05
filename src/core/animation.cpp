@@ -939,14 +939,11 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
     if (physics_ != nullptr && physics_->available()) {
         const float frameDelta = frame - previousFrame_;
         const float expectedFrameDelta = std::max(deltaSeconds, 0.0F) * 30.0F;
-        // A zero-delta call can still advance a sequence one VMD frame; only
-        // a larger jump is treated as a discontinuous seek.
-        const bool zeroDeltaSeek = deltaSeconds <= 0.0F && frameDelta > 2.0F;
-        const bool frameProgressionMismatch =
-            deltaSeconds > 0.0F && std::abs(frameDelta) > 1e-6F && std::abs(frameDelta - expectedFrameDelta) > 2.0F;
         const bool discontinuousSeek =
             (previousFrame_ < 0.0F && std::abs(frame) > 1e-6F) ||
-            (previousFrame_ >= 0.0F && (frameDelta < 0.0F || zeroDeltaSeek || frameProgressionMismatch));
+            (previousFrame_ >= 0.0F &&
+             (frameDelta < 0.0F || (std::abs(frameDelta) > 1e-6F &&
+                                    (deltaSeconds <= 0.0F || std::abs(frameDelta - expectedFrameDelta) > 2.0F))));
         if (discontinuousSeek)
             physics_->reset();
         float physicsDelta = std::max(deltaSeconds, 0.0F);

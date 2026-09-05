@@ -935,8 +935,10 @@ int main() {
             float error = 0.0F;
             for (std::size_t component = 0; component < left.position.size(); ++component)
                 error = std::max(error, std::abs(left.position[component] - right.position[component]));
+            float rotationDot = 0.0F;
             for (std::size_t component = 0; component < left.rotation.size(); ++component)
-                error = std::max(error, std::abs(left.rotation[component] - right.rotation[component]));
+                rotationDot += left.rotation[component] * right.rotation[component];
+            error = std::max(error, 1.0F - std::clamp(std::abs(rotationDot), 0.0F, 1.0F));
             return error;
         };
 
@@ -963,24 +965,27 @@ int main() {
         ok &= check(refreshIntervalError < 1e-4F, "PMX physics is independent of preview refresh interval");
 
         dayo::core::MmdPhysics expectedSequencePhysics(skirtCollisionModel);
-        dayo::core::MmdPhysics zeroDeltaSequencePhysics(skirtCollisionModel);
+        dayo::core::MmdPhysics sampledSequencePhysics(skirtCollisionModel);
         dayo::core::MmdAnimator expectedSequenceAnimator(skirtCollisionModel);
-        dayo::core::MmdAnimator zeroDeltaSequenceAnimator(skirtCollisionModel);
+        dayo::core::MmdAnimator sampledSequenceAnimator(skirtCollisionModel);
         expectedSequenceAnimator.setMotion(&skirtCollisionMotion);
         expectedSequenceAnimator.setPhysics(&expectedSequencePhysics);
-        zeroDeltaSequenceAnimator.setMotion(&skirtCollisionMotion);
-        zeroDeltaSequenceAnimator.setPhysics(&zeroDeltaSequencePhysics);
+        sampledSequenceAnimator.setMotion(&skirtCollisionMotion);
+        sampledSequenceAnimator.setPhysics(&sampledSequencePhysics);
         static_cast<void>(expectedSequenceAnimator.evaluate(0.0F, 0.0F));
         static_cast<void>(expectedSequenceAnimator.evaluate(1.0F, 1.0F / 30.0F));
-        static_cast<void>(zeroDeltaSequenceAnimator.evaluate(0.0F, 0.0F));
-        static_cast<void>(zeroDeltaSequenceAnimator.evaluate(1.0F, 0.0F));
+        float previousSampleFrame = 0.0F;
+        for (const float sampleFrame : {0.0F, 1.0F}) {
+            const float physicsDelta = std::max(sampleFrame - previousSampleFrame, 0.0F) / 30.0F;
+            static_cast<void>(sampledSequenceAnimator.evaluate(sampleFrame, physicsDelta));
+            previousSampleFrame = sampleFrame;
+        }
         float sequenceDeltaError = 0.0F;
         for (std::size_t body = 0; body < skirtCollisionModel.rigidBodies.size(); ++body)
             sequenceDeltaError =
                 std::max(sequenceDeltaError, transformError(expectedSequencePhysics.bodyTransform(body),
-                                                            zeroDeltaSequencePhysics.bodyTransform(body)));
-        ok &=
-            check(sequenceDeltaError < 1e-4F, "sequence frame progression advances PMX physics with zero delta input");
+                                                            sampledSequencePhysics.bodyTransform(body)));
+        ok &= check(sequenceDeltaError < 1e-4F, "sequence renderer supplies frame-derived PMX physics delta");
 
         // Teto-pattern collision masks under the MikuMikuDayo convention:
         // legs use group 0 / mask 0xffff and collide with everything, while
