@@ -143,6 +143,7 @@ std::uint64_t VulkanUploadContext::submit() {
     const auto signalValue = pendingSignalValue_;
     check(vkQueueSubmit(queue_, 1, &submitInfo, VK_NULL_HANDLE), "submit persistent upload command");
     submittedValues_[batchIndex_] = signalValue;
+    lastSubmittedValue_ = signalValue;
     pendingSignalValue_ = 0;
     return signalValue;
 }

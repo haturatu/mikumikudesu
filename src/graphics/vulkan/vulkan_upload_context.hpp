@@ -32,6 +32,9 @@ class VulkanUploadContext final {
     [[nodiscard]] VkCommandBuffer commandBuffer() const noexcept {
         return commandBuffers_[batchIndex_];
     }
+    [[nodiscard]] std::uint64_t lastSubmittedValue() const noexcept {
+        return lastSubmittedValue_;
+    }
     [[nodiscard]] std::uint64_t submit();
     void wait(std::uint64_t value);
     void reclaim();
@@ -49,6 +52,7 @@ class VulkanUploadContext final {
     std::array<VkCommandBuffer, batchCount> commandBuffers_{};
     std::array<std::uint64_t, batchCount> submittedValues_{};
     std::size_t batchIndex_{batchCount - 1};
+    std::uint64_t lastSubmittedValue_{};
     core::UploadRing ring_;
     std::uint64_t pendingSignalValue_{};
 };
