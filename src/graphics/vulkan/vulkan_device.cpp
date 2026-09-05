@@ -157,6 +157,8 @@ VulkanDevice::~VulkanDevice() {
     destroyPipeline();
     destroyPreviewDescriptors();
     destroySwapchain();
+    if (timelineSemaphore_ != VK_NULL_HANDLE)
+        vkDestroySemaphore(device_, timelineSemaphore_, nullptr);
     if (device_ != VK_NULL_HANDLE)
         vkDestroyDevice(device_, nullptr);
     if (surface_ != VK_NULL_HANDLE)
@@ -412,6 +414,16 @@ void VulkanDevice::createLogicalDevice() {
     };
     check(vkCreateDevice(physicalDevice_, &createInfo, nullptr, &device_), "create logical device");
     vkGetDeviceQueue(device_, queueFamily_, 0, &queue_);
+    const VkSemaphoreTypeCreateInfo timelineType{
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+        .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+        .initialValue = 0,
+    };
+    const VkSemaphoreCreateInfo timelineInfo{
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+        .pNext = &timelineType,
+    };
+    check(vkCreateSemaphore(device_, &timelineInfo, nullptr, &timelineSemaphore_), "create Vulkan timeline semaphore");
 }
 
 void VulkanDevice::createSwapchain() {
@@ -1016,13 +1028,28 @@ VulkanDevice::PreviewTextureResource VulkanDevice::createPreviewTextureResource(
     };
     vkCmdPipelineBarrier2(command, &shaderDependency);
     check(vkEndCommandBuffer(command), "end texture upload");
+    const std::uint64_t signalValue = ++nextTimelineValue_;
+    const VkTimelineSemaphoreSubmitInfo timelineSubmit{
+        .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+        .signalSemaphoreValueCount = 1,
+        .pSignalSemaphoreValues = &signalValue,
+    };
     const VkSubmitInfo submitInfo{
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext = &timelineSubmit,
         .commandBufferCount = 1,
         .pCommandBuffers = &command,
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = &timelineSemaphore_,
     };
     check(vkQueueSubmit(queue_, 1, &submitInfo, VK_NULL_HANDLE), "submit texture upload");
-    check(vkQueueWaitIdle(queue_), "wait for texture upload");
+    const VkSemaphoreWaitInfo waitInfo{
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+        .semaphoreCount = 1,
+        .pSemaphores = &timelineSemaphore_,
+        .pValues = &signalValue,
+    };
+    check(vkWaitSemaphores(device_, &waitInfo, UINT64_MAX), "wait for texture upload");
     vkDestroyCommandPool(device_, uploadPool, nullptr);
     vkDestroyBuffer(device_, staging, nullptr);
     vkFreeMemory(device_, stagingMemory, nullptr);
@@ -1683,15 +1710,27 @@ void VulkanDevice::renderFrame() {
     check(vkEndCommandBuffer(frame.commandBuffer), "end command buffer");
 
     const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    const std::uint64_t signalValue = ++nextTimelineValue_;
+    const std::array<std::uint64_t, 1> waitValues{0};
+    const std::array<std::uint64_t, 2> signalValues{0, signalValue};
+    const std::array<VkSemaphore, 2> signalSemaphores{frame.renderFinished, timelineSemaphore_};
+    const VkTimelineSemaphoreSubmitInfo timelineSubmit{
+        .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+        .waitSemaphoreValueCount = static_cast<std::uint32_t>(waitValues.size()),
+        .pWaitSemaphoreValues = waitValues.data(),
+        .signalSemaphoreValueCount = static_cast<std::uint32_t>(signalValues.size()),
+        .pSignalSemaphoreValues = signalValues.data(),
+    };
     const VkSubmitInfo submitInfo{
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext = &timelineSubmit,
         .waitSemaphoreCount = 1,
         .pWaitSemaphores = &frame.imageAvailable,
         .pWaitDstStageMask = &waitStage,
         .commandBufferCount = 1,
         .pCommandBuffers = &frame.commandBuffer,
-        .signalSemaphoreCount = 1,
-        .pSignalSemaphores = &frame.renderFinished,
+        .signalSemaphoreCount = static_cast<std::uint32_t>(signalSemaphores.size()),
+        .pSignalSemaphores = signalSemaphores.data(),
     };
     check(vkQueueSubmit(queue_, 1, &submitInfo, frame.inFlight), "submit frame");
     const VkPresentInfoKHR presentInfo{
@@ -2007,10 +2046,19 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
                            offscreen_.stagingBuffer, 1, &copy);
     offscreen_.colorInitialized = true;
     check(vkEndCommandBuffer(frame.commandBuffer), "end offscreen command buffer");
+    const std::uint64_t signalValue = ++nextTimelineValue_;
+    const VkTimelineSemaphoreSubmitInfo timelineSubmit{
+        .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+        .signalSemaphoreValueCount = 1,
+        .pSignalSemaphoreValues = &signalValue,
+    };
     const VkSubmitInfo submitInfo{
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext = &timelineSubmit,
         .commandBufferCount = 1,
         .pCommandBuffers = &frame.commandBuffer,
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = &timelineSemaphore_,
     };
     check(vkQueueSubmit(queue_, 1, &submitInfo, frame.inFlight), "submit offscreen frame");
     check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for offscreen frame");
