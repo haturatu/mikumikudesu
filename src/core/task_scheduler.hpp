@@ -19,6 +19,7 @@ class TaskScheduler {
     TaskScheduler& operator=(const TaskScheduler&) = delete;
 
     void parallelFor(std::size_t count, const std::function<void(std::size_t)>& function);
+    void parallelFor(std::size_t count, std::size_t grainSize, const std::function<void(std::size_t)>& function);
     [[nodiscard]] std::size_t workerCount() const noexcept;
 
   private:

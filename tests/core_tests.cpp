@@ -433,6 +433,10 @@ int main() {
         std::atomic<std::uint64_t> sum{};
         scheduler.parallelFor(100, [&](std::size_t index) { sum.fetch_add(static_cast<std::uint64_t>(index + 1)); });
         ok &= check(scheduler.workerCount() == 2 && sum.load() == 5050, "task scheduler parallel batch");
+        std::atomic<std::uint64_t> chunkedSum{};
+        scheduler.parallelFor(101, 17,
+                              [&](std::size_t index) { chunkedSum.fetch_add(static_cast<std::uint64_t>(index + 1)); });
+        ok &= check(chunkedSum.load() == 5151, "task scheduler chunked batch");
         bool propagated = false;
         try {
             scheduler.parallelFor(2, [](std::size_t index) {

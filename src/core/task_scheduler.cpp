@@ -1,5 +1,6 @@
 #include "core/task_scheduler.hpp"
 
+#include <algorithm>
 #include <condition_variable>
 #include <deque>
 #include <exception>
@@ -81,27 +82,40 @@ TaskScheduler::TaskScheduler(TaskScheduler&&) noexcept = default;
 TaskScheduler& TaskScheduler::operator=(TaskScheduler&&) noexcept = default;
 
 void TaskScheduler::parallelFor(std::size_t count, const std::function<void(std::size_t)>& function) {
+    const auto workers = workerCount();
+    const auto grainSize = workers == 0 ? count : std::max<std::size_t>(1U, count / (workers * 4U));
+    parallelFor(count, grainSize, function);
+}
+
+void TaskScheduler::parallelFor(std::size_t count, std::size_t grainSize,
+                                const std::function<void(std::size_t)>& function) {
     if (count == 0)
         return;
+    grainSize = std::max<std::size_t>(1U, grainSize);
     if (impl_->workers.empty() || count == 1 || Impl::currentWorker() == impl_.get()) {
         for (std::size_t index = 0; index < count; ++index)
             function(index);
         return;
     }
 
-    std::latch complete(static_cast<std::ptrdiff_t>(count));
+    const auto taskCount = (count - 1U) / grainSize + 1U;
+    std::latch complete(static_cast<std::ptrdiff_t>(taskCount));
     std::mutex exceptionMutex;
     std::exception_ptr firstException;
-    for (std::size_t index = 0; index < count; ++index) {
+    for (std::size_t taskIndex = 0; taskIndex < taskCount; ++taskIndex) {
+        const auto begin = taskIndex * grainSize;
+        const auto end = begin + std::min(grainSize, count - begin);
         {
             std::lock_guard lock(impl_->mutex);
-            impl_->tasks.push_back({[&, index] {
-                try {
-                    function(index);
-                } catch (...) {
-                    std::lock_guard exceptionLock(exceptionMutex);
-                    if (firstException == nullptr)
-                        firstException = std::current_exception();
+            impl_->tasks.push_back({[&, begin, end] {
+                for (auto index = begin; index < end; ++index) {
+                    try {
+                        function(index);
+                    } catch (...) {
+                        std::lock_guard exceptionLock(exceptionMutex);
+                        if (firstException == nullptr)
+                            firstException = std::current_exception();
+                    }
                 }
                 complete.count_down();
             }});
