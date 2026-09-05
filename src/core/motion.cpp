@@ -1,4 +1,5 @@
 #include "core/motion.hpp"
+#include "core/mapped_file.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -205,9 +206,7 @@ std::string encodeCp932(std::string_view input) {
 }
 
 VmdMotion loadVmd(const std::filesystem::path& path) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input)
-        throw std::runtime_error("cannot open VMD file: " + path.string());
+    MappedFileStream input(path);
     std::array<char, 30> header{};
     input.read(header.data(), static_cast<std::streamsize>(header.size()));
     constexpr std::string_view signature = "Vocaloid Motion Data 0002";

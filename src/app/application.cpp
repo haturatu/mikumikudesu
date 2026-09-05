@@ -248,6 +248,10 @@ Options parseOptions(int argc, char** argv) {
             if (!options.videoExport)
                 options.videoExport.emplace();
             options.videoExport->bitrate = kbps * 1000U;
+        } else if (argument == "--video-hardware") {
+            if (!options.videoExport)
+                options.videoExport.emplace();
+            options.videoExport->preferHardware = true;
         } else if (argument == "--video-from-frame") {
             if (++i >= argc)
                 throw std::invalid_argument("--video-from-frame requires a value");
@@ -321,7 +325,7 @@ Options parseOptions(int argc, char** argv) {
                       "[--audio-bitrate KBPS] [--audio-from SEC] [--audio-to SEC] "
                       "[--export-video PATH] [--video-width PX] [--video-height PX] "
                       "[--video-fps FPS] [--video-codec h264|h265|av1] "
-                      "[--video-bitrate KBPS] [--audio-bitrate KBPS] "
+                      "[--video-bitrate KBPS] [--video-hardware] [--audio-bitrate KBPS] "
                       "[--video-from-frame N] [--video-to-frame N] [--no-audio] "
                       "[--overwrite] [--no-validation]");
             options.probeOnly = true;
@@ -593,7 +597,10 @@ int Application::runVideoExport() {
     const auto& options = *options_.videoExport;
     if (options.destination.empty())
         throw std::invalid_argument("--export-video requires a destination path");
-    if (!core::canExportVideo(options.codec)) {
+    if (options.preferHardware) {
+        if (!core::canExportVideoHardware(options.codec))
+            throw std::runtime_error("requested VAAPI video encoder is unavailable");
+    } else if (!core::canExportVideo(options.codec)) {
         throw std::runtime_error("requested video encoder is unavailable");
     }
     if (device_ == nullptr)
@@ -653,6 +660,7 @@ int Application::runVideoExport() {
     request.fps = options.fps;
     request.codec = options.codec;
     request.bitrate = options.bitrate;
+    request.preferHardware = options.preferHardware;
     request.includeAudio = audioSource.has_value();
     request.audioBitrate = options.audioBitrate;
     request.overwrite = options.overwrite;
@@ -994,17 +1002,23 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     std::size_t vertexCount = 0;
     std::size_t indexCount = 0;
     std::size_t materialCount = 0;
+    bool dynamicVertices = false;
     for (const auto& instance : scene_.models()) {
         if (!instance.visible || instance.model == nullptr || instance.animator == nullptr)
             continue;
         vertexCount += instance.model->vertices.size();
         indexCount += instance.model->indices.size();
         materialCount += instance.model->materials.size();
+        dynamicVertices = dynamicVertices || (instance.softBody != nullptr && instance.softBody->available());
+        dynamicVertices = dynamicVertices || std::ranges::any_of(instance.model->morphs, [](const auto& morph) {
+                              return morph.type == 1 || morph.type == 9;
+                          });
     }
     const bool rebuildTopology = initialUpload || animatedTopologyGeneration_ != scene_.topologyGeneration() ||
                                  animatedIndices_.size() != indexCount ||
                                  animatedMaterialTemplates_.size() != materialCount ||
                                  animatedDraws_.size() != materialCount;
+    const bool rebuildVertices = initialUpload || rebuildTopology || dynamicVertices;
     std::vector<graphics::PreviewVertex> vertices;
     vertices.reserve(vertexCount);
     std::vector<graphics::PreviewMorphDelta> morphDeltas;
@@ -1111,42 +1125,45 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             return static_cast<std::uint32_t>(value);
         }();
         const auto cloneCount = std::max(instance.cloneCount, 1U);
-        auto conversion = frameProfiler_.measure(core::ProfileSection::vertexConvert);
         const auto baseVertex = static_cast<std::uint32_t>(vertices.size());
         const auto firstModelIndex = indexCursor;
-        for (std::size_t sourceIndex = 0; sourceIndex < frame.vertices.size(); ++sourceIndex) {
-            const auto& source = frame.vertices[sourceIndex];
-            graphics::PreviewVertex vertex;
-            std::memcpy(vertex.position, source.position.data(), sizeof(vertex.position));
-            std::memcpy(vertex.normal, source.normal.data(), sizeof(vertex.normal));
-            std::memcpy(vertex.uv, source.uv.data(), sizeof(vertex.uv));
-            const bool supported = gpuSkinning;
-            if (supported) {
-                for (std::size_t influence = 0; influence < 4; ++influence) {
-                    vertex.bones[influence] =
-                        source.bones[influence] < 0 ||
-                                static_cast<std::size_t>(source.bones[influence]) >= frame.bones.size()
-                            ? -1
-                            : boneBase + source.bones[influence];
-                    vertex.weights[influence] = source.weights[influence];
+        if (rebuildVertices) {
+            auto conversion = frameProfiler_.measure(core::ProfileSection::vertexConvert);
+            for (std::size_t sourceIndex = 0; sourceIndex < frame.vertices.size(); ++sourceIndex) {
+                const auto& source = frame.vertices[sourceIndex];
+                graphics::PreviewVertex vertex;
+                std::memcpy(vertex.position, source.position.data(), sizeof(vertex.position));
+                std::memcpy(vertex.normal, source.normal.data(), sizeof(vertex.normal));
+                std::memcpy(vertex.uv, source.uv.data(), sizeof(vertex.uv));
+                const bool supported = gpuSkinning;
+                if (supported) {
+                    for (std::size_t influence = 0; influence < 4; ++influence) {
+                        vertex.bones[influence] =
+                            source.bones[influence] < 0 ||
+                                    static_cast<std::size_t>(source.bones[influence]) >= frame.bones.size()
+                                ? -1
+                                : boneBase + source.bones[influence];
+                        vertex.weights[influence] = source.weights[influence];
+                    }
+                    const auto normalizedC = normalizePreviewPoint(source.sdefC, instance.normalization);
+                    const auto normalizedR0 = normalizePreviewPoint(source.sdefR0, instance.normalization);
+                    const auto normalizedR1 = normalizePreviewPoint(source.sdefR1, instance.normalization);
+                    std::copy(normalizedC.begin(), normalizedC.end(), vertex.sdefC);
+                    for (std::size_t axis = 0; axis < 3; ++axis)
+                        vertex.sdefHalfDelta[axis] = (normalizedR0[axis] - normalizedR1[axis]) * 0.5F;
+                    vertex.skinningType = static_cast<std::uint32_t>(source.weightType);
+                    vertex.gpuSkinning = 1;
                 }
-                const auto normalizedC = normalizePreviewPoint(source.sdefC, instance.normalization);
-                const auto normalizedR0 = normalizePreviewPoint(source.sdefR0, instance.normalization);
-                const auto normalizedR1 = normalizePreviewPoint(source.sdefR1, instance.normalization);
-                std::copy(normalizedC.begin(), normalizedC.end(), vertex.sdefC);
-                for (std::size_t axis = 0; axis < 3; ++axis)
-                    vertex.sdefHalfDelta[axis] = (normalizedR0[axis] - normalizedR1[axis]) * 0.5F;
-                vertex.skinningType = static_cast<std::uint32_t>(source.weightType);
-                vertex.gpuSkinning = 1;
+                vertex.edgeScale = source.edgeScale;
+                const auto morphRange =
+                    rebuildTopology ? sourceMorphRanges[sourceIndex] : animatedMorphRanges_[baseVertex + sourceIndex];
+                vertex.morphStart = morphRange[0];
+                vertex.morphCount = gpuSkinning ? morphRange[1] : 0U;
+                vertices.push_back(vertex);
+                if (rebuildTopology)
+                    animatedMorphRanges_.push_back(morphRange);
             }
-            vertex.edgeScale = source.edgeScale;
-            const auto morphRange =
-                rebuildTopology ? sourceMorphRanges[sourceIndex] : animatedMorphRanges_[vertices.size()];
-            vertex.morphStart = morphRange[0];
-            vertex.morphCount = gpuSkinning ? morphRange[1] : 0U;
-            vertices.push_back(vertex);
-            if (rebuildTopology)
-                animatedMorphRanges_.push_back(morphRange);
+            conversion.finish();
         }
         if (rebuildTopology) {
             for (const auto index : instance.model->indices)
@@ -1200,9 +1217,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             draw.instanceCount = cloneCount;
             firstIndex += instance.model->materials[materialIndex].indexCount;
         }
-        conversion.finish();
     }
-    if (vertices.empty() || animatedIndices_.empty())
+    if ((rebuildVertices && vertices.empty()) || animatedIndices_.empty())
         return;
     if (rebuildTopology) {
         animatedMaterialTemplates_ = materials;
@@ -1218,7 +1234,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         device_->updatePreviewMorphWeights(morphWeights);
         if (initialUpload || rebuildTopology)
             device_->uploadPreviewMesh(vertices, animatedIndices_);
-        else {
+        else if (dynamicVertices) {
             try {
                 device_->updatePreviewVertices(vertices);
             } catch (const std::exception&) {
@@ -1235,14 +1251,16 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     std::uint64_t uploadBytes = byteCount(bones.size(), sizeof(graphics::PreviewBoneTransform));
     uploadBytes += byteCount(materials.size(), sizeof(graphics::PreviewMaterial));
     uploadBytes += byteCount(draws.size(), sizeof(graphics::PreviewDraw));
-    uploadBytes += byteCount(vertices.size(), sizeof(graphics::PreviewVertex));
+    if (rebuildVertices)
+        uploadBytes += byteCount(vertices.size(), sizeof(graphics::PreviewVertex));
     if (initialUpload || rebuildTopology)
         uploadBytes += byteCount(morphDeltas.size(), sizeof(graphics::PreviewMorphDelta));
     uploadBytes += byteCount(morphWeights.size(), sizeof(float));
     if (initialUpload || rebuildTopology)
         uploadBytes += byteCount(animatedIndices_.size(), sizeof(std::uint32_t));
     frameProfiler_.addUploadBytes(uploadBytes);
-    animatedVertexCount_ = static_cast<std::uint64_t>(vertices.size());
+    if (rebuildVertices)
+        animatedVertexCount_ = static_cast<std::uint64_t>(vertices.size());
     uploadedAnimationFrame_ = static_cast<int>(animationFrame_);
     scene_.clearDirty(core::DirtyFlag::geometry | core::DirtyFlag::material);
 }

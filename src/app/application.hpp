@@ -38,6 +38,7 @@ struct VideoExportOptions {
     core::VideoCodec codec{core::VideoCodec::h264};
     std::uint32_t bitrate{8'000'000};
     std::uint32_t audioBitrate{192'000};
+    bool preferHardware{};
     std::optional<std::uint64_t> fromFrame;
     std::optional<std::uint64_t> toFrame;
     bool includeAudio{true};

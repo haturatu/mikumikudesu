@@ -146,6 +146,8 @@ class VulkanDevice final : public Device {
     void createFrames();
     void destroyFrames();
     void resolveTimestampQuery(Frame& frame) noexcept;
+    void uploadPreviewDeviceLocalBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer,
+                                        VkDeviceMemory& memory);
     void createUi();
     void destroyUi();
     void recreateSwapchain();
@@ -160,6 +162,8 @@ class VulkanDevice final : public Device {
     void synchronizePreviewMaterials(Frame& frame);
     void destroyPreviewMaterialDescriptors();
     void refreshPreviewMaterialDescriptors();
+    void destroyPreviewBindlessDescriptor();
+    void refreshPreviewBindlessDescriptor();
     void recordPreviewModel(VkCommandBuffer command, const PreviewPushConstants& constants);
     void uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer,
                              VkDeviceMemory& memory);
@@ -199,9 +203,13 @@ class VulkanDevice final : public Device {
     VkDescriptorSetLayout previewSkinningDescriptorSetLayout_{};
     VkDescriptorSetLayout previewMorphDescriptorSetLayout_{};
     VkDescriptorSetLayout previewMaterialDescriptorSetLayout_{};
+    VkDescriptorSetLayout previewBindlessDescriptorSetLayout_{};
     VkDescriptorPool previewDescriptorPool_{};
     VkSampler previewSampler_{};
     VkSampler previewClampSampler_{};
+    VkDescriptorSet previewBindlessDescriptor_{};
+    std::uint32_t previewBindlessTextureCapacity_{};
+    bool previewBindlessSupported_{};
 #if DAYO_HAS_IMGUI
     VkDescriptorPool imguiDescriptorPool_{};
     bool uiInitialized_{};
@@ -209,6 +217,8 @@ class VulkanDevice final : public Device {
     std::array<Frame, 2> frames_{};
     std::size_t frameIndex_{};
     std::uint64_t previewGpuNanoseconds_{};
+    VkBuffer previewStaticVertexBuffer_{};
+    VkDeviceMemory previewStaticVertexMemory_{};
     VkDeviceSize previewVertexSize_{};
     std::uint64_t previewVertexGeneration_{};
     VkDeviceSize previewBoneSize_{};

@@ -330,6 +330,9 @@ void VulkanDevice::queryCapabilities() {
     capabilities_.bufferDeviceAddress = vulkan12.bufferDeviceAddress == VK_TRUE;
     capabilities_.descriptorIndexing =
         vulkan12.runtimeDescriptorArray == VK_TRUE && vulkan12.descriptorBindingPartiallyBound == VK_TRUE;
+    previewBindlessSupported_ = vulkan12.runtimeDescriptorArray == VK_TRUE &&
+                                vulkan12.descriptorBindingVariableDescriptorCount == VK_TRUE &&
+                                features.features.shaderSampledImageArrayDynamicIndexing == VK_TRUE;
     capabilities_.accelerationStructure = acceleration.accelerationStructure == VK_TRUE &&
                                           hasName(extensions, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
     capabilities_.rayTracingPipeline =
@@ -396,14 +399,18 @@ void VulkanDevice::createLogicalDevice() {
     VkPhysicalDeviceVulkan12Features vulkan12{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
         .pNext = &vulkan13,
-        .descriptorIndexing = capabilities_.descriptorIndexing,
+        .descriptorIndexing = capabilities_.descriptorIndexing || previewBindlessSupported_,
         .descriptorBindingPartiallyBound = capabilities_.descriptorIndexing,
-        .runtimeDescriptorArray = capabilities_.descriptorIndexing,
+        .descriptorBindingVariableDescriptorCount = previewBindlessSupported_,
+        .runtimeDescriptorArray = capabilities_.descriptorIndexing || previewBindlessSupported_,
         .bufferDeviceAddress = capabilities_.bufferDeviceAddress,
     };
+    VkPhysicalDeviceFeatures coreFeatures{};
+    coreFeatures.shaderSampledImageArrayDynamicIndexing = previewBindlessSupported_;
     const VkPhysicalDeviceFeatures2 features{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
         .pNext = &vulkan12,
+        .features = coreFeatures,
     };
     const VkDeviceCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -709,6 +716,7 @@ void VulkanDevice::createPipeline() {
         previewDescriptorSetLayout_,
         previewSkinningDescriptorSetLayout_,
         previewMaterialDescriptorSetLayout_,
+        previewBindlessDescriptorSetLayout_,
         previewMorphDescriptorSetLayout_,
     };
     const VkPipelineLayoutCreateInfo layoutInfo{
@@ -785,6 +793,17 @@ void VulkanDevice::destroyPipeline() {
 }
 
 void VulkanDevice::createPreviewDescriptors() {
+    if (!previewBindlessSupported_)
+        throw std::runtime_error("preview bindless texture table requires sampled image array indexing");
+    constexpr std::uint32_t fixedSampledImageCount = 3;
+    const auto maxDescriptorSetSampledImages = physicalProperties_.limits.maxDescriptorSetSampledImages;
+    const auto maxPerStageDescriptorSampledImages = physicalProperties_.limits.maxPerStageDescriptorSampledImages;
+    if (maxDescriptorSetSampledImages <= fixedSampledImageCount ||
+        maxPerStageDescriptorSampledImages <= fixedSampledImageCount)
+        throw std::runtime_error("Vulkan device exposes no sampled image descriptors for preview textures");
+    previewBindlessTextureCapacity_ = std::min(maxDescriptorSetSampledImages - fixedSampledImageCount,
+                                               maxPerStageDescriptorSampledImages - fixedSampledImageCount);
+
     const std::array textureBindings{
         VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -830,8 +849,33 @@ void VulkanDevice::createPreviewDescriptors() {
     };
     check(vkCreateDescriptorSetLayout(device_, &morphLayoutInfo, nullptr, &previewMorphDescriptorSetLayout_),
           "create preview morph descriptor layout");
+    const std::array<VkDescriptorSetLayoutBinding, 3> bindlessBindings{{
+        {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, previewBindlessTextureCapacity_, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+    }};
+    const std::array<VkDescriptorBindingFlags, 3> bindlessBindingFlags{
+        0,
+        0,
+        VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT,
+    };
+    const VkDescriptorSetLayoutBindingFlagsCreateInfo bindlessBindingFlagsInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+        .bindingCount = static_cast<std::uint32_t>(bindlessBindingFlags.size()),
+        .pBindingFlags = bindlessBindingFlags.data(),
+    };
+    const VkDescriptorSetLayoutCreateInfo bindlessLayoutInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .pNext = &bindlessBindingFlagsInfo,
+        .bindingCount = static_cast<std::uint32_t>(bindlessBindings.size()),
+        .pBindings = bindlessBindings.data(),
+    };
+    check(vkCreateDescriptorSetLayout(device_, &bindlessLayoutInfo, nullptr, &previewBindlessDescriptorSetLayout_),
+          "create preview bindless descriptor layout");
+    constexpr std::uint32_t legacySampledImagePoolSize = 32768U;
+    const auto sampledImagePoolSize = legacySampledImagePoolSize + previewBindlessTextureCapacity_;
     const std::array poolSizes{
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 32768},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sampledImagePoolSize},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 16384},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 128},
     };
@@ -864,6 +908,7 @@ void VulkanDevice::createPreviewDescriptors() {
 
 void VulkanDevice::destroyPreviewDescriptors() {
     destroyPreviewMaterialDescriptors();
+    destroyPreviewBindlessDescriptor();
     if (previewClampSampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device_, previewClampSampler_, nullptr);
     if (previewSampler_ != VK_NULL_HANDLE)
@@ -882,6 +927,9 @@ void VulkanDevice::destroyPreviewDescriptors() {
     if (previewMorphDescriptorSetLayout_ != VK_NULL_HANDLE) {
         vkDestroyDescriptorSetLayout(device_, previewMorphDescriptorSetLayout_, nullptr);
     }
+    if (previewBindlessDescriptorSetLayout_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(device_, previewBindlessDescriptorSetLayout_, nullptr);
+    }
     previewClampSampler_ = VK_NULL_HANDLE;
     previewSampler_ = VK_NULL_HANDLE;
     previewDescriptorPool_ = VK_NULL_HANDLE;
@@ -889,10 +937,13 @@ void VulkanDevice::destroyPreviewDescriptors() {
     previewSkinningDescriptorSetLayout_ = VK_NULL_HANDLE;
     previewMaterialDescriptorSetLayout_ = VK_NULL_HANDLE;
     previewMorphDescriptorSetLayout_ = VK_NULL_HANDLE;
+    previewBindlessDescriptorSetLayout_ = VK_NULL_HANDLE;
+    previewBindlessTextureCapacity_ = 0;
 }
 
 void VulkanDevice::destroyPreviewTextures() {
     destroyPreviewMaterialDescriptors();
+    destroyPreviewBindlessDescriptor();
     for (auto& texture : previewTextures_)
         destroyPreviewTextureResource(texture);
     previewTextures_.clear();
@@ -1476,8 +1527,11 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
         return;
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 2, 1,
                             &frame.previewMaterialDescriptor, 0, nullptr);
-    if (frame.previewMorphDescriptor != VK_NULL_HANDLE)
+    if (previewBindlessDescriptor_ != VK_NULL_HANDLE)
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 3, 1,
+                                &previewBindlessDescriptor_, 0, nullptr);
+    if (frame.previewMorphDescriptor != VK_NULL_HANDLE)
+        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 4, 1,
                                 &frame.previewMorphDescriptor, 0, nullptr);
 
     const auto textureDescriptor = [&](std::uint32_t materialIndex) {
@@ -1539,6 +1593,8 @@ void VulkanDevice::renderFrame() {
     synchronizePreviewBones(frame);
     synchronizePreviewMorphs(frame);
     synchronizePreviewMaterials(frame);
+    const VkBuffer previewVertexBuffer =
+        previewStaticVertexBuffer_ != VK_NULL_HANDLE ? previewStaticVertexBuffer_ : frame.previewVertexBuffer;
 
     std::uint32_t imageIndex = 0;
     const auto acquire =
@@ -1645,12 +1701,16 @@ void VulkanDevice::renderFrame() {
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 2, 1,
                                 &frame.previewMaterialDescriptor, 0, nullptr);
     }
-    if (frame.previewMorphDescriptor != VK_NULL_HANDLE) {
+    if (previewBindlessDescriptor_ != VK_NULL_HANDLE) {
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 3, 1,
+                                &previewBindlessDescriptor_, 0, nullptr);
+    }
+    if (frame.previewMorphDescriptor != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 4, 1,
                                 &frame.previewMorphDescriptor, 0, nullptr);
     }
     const VkDeviceSize vertexOffset = 0;
-    vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &frame.previewVertexBuffer, &vertexOffset);
+    vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
     vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     PreviewPushConstants constants;
     std::copy_n(previewScene_.cameraRotation, 3, constants.camera.begin());
@@ -1678,11 +1738,11 @@ void VulkanDevice::renderFrame() {
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
         vkCmdDrawIndexed(frame.commandBuffer, previewBackgroundIndexCount_, 1, 0, 0, 0);
         vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &frame.previewVertexBuffer, &vertexOffset);
+        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
         vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     }
     if (!hasBackground) {
-        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &frame.previewVertexBuffer, &vertexOffset);
+        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
         vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     }
     recordPreviewModel(frame.commandBuffer, constants);
@@ -1872,15 +1932,24 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     }
     if (target.width == 0 || target.height == 0)
         throw std::invalid_argument("video dimensions must be non-zero");
-    waitIdle();
     const VkExtent2D extent{target.width, target.height};
-    createOffscreenResource(extent);
     auto& frame = frames_[frameIndex_];
+    check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for offscreen frame slot");
+    if (offscreen_.colorImage != VK_NULL_HANDLE &&
+        (offscreen_.extent.width != extent.width || offscreen_.extent.height != extent.height)) {
+        // The offscreen image is shared by the bounded readback path. A size
+        // change destroys it, so wait for every prior submission before
+        // replacing the resource.
+        waitIdle();
+    }
+    createOffscreenResource(extent);
     resolveTimestampQuery(frame);
     synchronizePreviewVertices(frame);
     synchronizePreviewBones(frame);
     synchronizePreviewMorphs(frame);
     synchronizePreviewMaterials(frame);
+    const VkBuffer previewVertexBuffer =
+        previewStaticVertexBuffer_ != VK_NULL_HANDLE ? previewStaticVertexBuffer_ : frame.previewVertexBuffer;
     check(vkResetFences(device_, 1, &frame.inFlight), "reset offscreen fence");
     check(vkResetCommandPool(device_, frame.commandPool, 0), "reset offscreen command pool");
     const VkCommandBufferBeginInfo beginInfo{
@@ -1974,12 +2043,16 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 2, 1,
                                 &frame.previewMaterialDescriptor, 0, nullptr);
     }
-    if (frame.previewMorphDescriptor != VK_NULL_HANDLE) {
+    if (previewBindlessDescriptor_ != VK_NULL_HANDLE) {
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 3, 1,
+                                &previewBindlessDescriptor_, 0, nullptr);
+    }
+    if (frame.previewMorphDescriptor != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 4, 1,
                                 &frame.previewMorphDescriptor, 0, nullptr);
     }
     const VkDeviceSize vertexOffset = 0;
-    vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &frame.previewVertexBuffer, &vertexOffset);
+    vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
     vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     PreviewPushConstants constants;
     std::copy_n(previewScene_.cameraRotation, 3, constants.camera.begin());
@@ -2005,11 +2078,11 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
         vkCmdDrawIndexed(frame.commandBuffer, previewBackgroundIndexCount_, 1, 0, 0, 0);
         vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &frame.previewVertexBuffer, &vertexOffset);
+        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
         vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     }
     if (!hasBackground) {
-        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &frame.previewVertexBuffer, &vertexOffset);
+        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
         vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     }
     recordPreviewModel(frame.commandBuffer, constants);
@@ -2080,6 +2153,12 @@ void VulkanDevice::waitIdle() {
 }
 
 void VulkanDevice::destroyPreviewMesh() {
+    if (previewStaticVertexBuffer_ != VK_NULL_HANDLE)
+        vkDestroyBuffer(device_, previewStaticVertexBuffer_, nullptr);
+    if (previewStaticVertexMemory_ != VK_NULL_HANDLE)
+        vkFreeMemory(device_, previewStaticVertexMemory_, nullptr);
+    previewStaticVertexBuffer_ = VK_NULL_HANDLE;
+    previewStaticVertexMemory_ = VK_NULL_HANDLE;
     if (previewIndexBuffer_ != VK_NULL_HANDLE)
         vkDestroyBuffer(device_, previewIndexBuffer_, nullptr);
     if (previewIndexMemory_ != VK_NULL_HANDLE)
@@ -2108,7 +2187,8 @@ void VulkanDevice::destroyPreviewMesh() {
 }
 
 void VulkanDevice::synchronizePreviewVertices(Frame& frame) {
-    if (frame.previewVertexGeneration == previewVertexGeneration_ || previewVertexSize_ == 0)
+    if (previewStaticVertexBuffer_ != VK_NULL_HANDLE || frame.previewVertexGeneration == previewVertexGeneration_ ||
+        previewVertexSize_ == 0)
         return;
     const auto latest = std::find_if(frames_.begin(), frames_.end(), [this](const Frame& candidate) {
         return candidate.previewVertexGeneration == previewVertexGeneration_;
@@ -2433,6 +2513,72 @@ void VulkanDevice::refreshPreviewMaterialDescriptors() {
     previewMaterialDescriptorKeys_ = std::move(keys);
 }
 
+void VulkanDevice::destroyPreviewBindlessDescriptor() {
+    if (previewBindlessDescriptor_ != VK_NULL_HANDLE && previewDescriptorPool_ != VK_NULL_HANDLE) {
+        check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &previewBindlessDescriptor_),
+              "free preview bindless descriptor");
+    }
+    previewBindlessDescriptor_ = VK_NULL_HANDLE;
+}
+
+void VulkanDevice::refreshPreviewBindlessDescriptor() {
+    if (previewBindlessDescriptorSetLayout_ == VK_NULL_HANDLE || previewTextures_.empty())
+        return;
+    if (previewTextures_.size() > previewBindlessTextureCapacity_)
+        throw std::runtime_error("preview texture table exceeds Vulkan descriptor capacity");
+    destroyPreviewBindlessDescriptor();
+    const auto count = static_cast<std::uint32_t>(previewTextures_.size());
+    const VkDescriptorSetVariableDescriptorCountAllocateInfo variableCountInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
+        .descriptorSetCount = 1,
+        .pDescriptorCounts = &count,
+    };
+    const VkDescriptorSetAllocateInfo setInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .pNext = &variableCountInfo,
+        .descriptorPool = previewDescriptorPool_,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &previewBindlessDescriptorSetLayout_,
+    };
+    check(vkAllocateDescriptorSets(device_, &setInfo, &previewBindlessDescriptor_),
+          "allocate preview bindless descriptor");
+    std::vector<VkDescriptorImageInfo> images;
+    images.reserve(count);
+    for (std::uint32_t index = 0; index < count; ++index) {
+        const auto& texture = previewTextures_[index];
+        images.push_back({.imageView = texture.view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+    }
+    const VkDescriptorImageInfo repeatSampler{.sampler = previewSampler_};
+    const VkDescriptorImageInfo clampSampler{.sampler = previewClampSampler_};
+    const std::array writes{
+        VkWriteDescriptorSet{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = previewBindlessDescriptor_,
+            .dstBinding = 2,
+            .descriptorCount = count,
+            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            .pImageInfo = images.data(),
+        },
+        VkWriteDescriptorSet{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = previewBindlessDescriptor_,
+            .dstBinding = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+            .pImageInfo = &repeatSampler,
+        },
+        VkWriteDescriptorSet{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = previewBindlessDescriptor_,
+            .dstBinding = 1,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+            .pImageInfo = &clampSampler,
+        },
+    };
+    vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+}
+
 void VulkanDevice::destroyPreviewBackground() {
     for (auto& frame : frames_) {
         if (frame.mappedBackgroundStaging != nullptr) {
@@ -2497,6 +2643,126 @@ void VulkanDevice::uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBu
     vkUnmapMemory(device_, memory);
 }
 
+void VulkanDevice::uploadPreviewDeviceLocalBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage,
+                                                  VkBuffer& buffer, VkDeviceMemory& memory) {
+    if (data == nullptr || size == 0)
+        throw std::invalid_argument("preview device-local buffer is empty");
+
+    VkBuffer staging{};
+    VkDeviceMemory stagingMemory{};
+    VkCommandPool uploadPool{};
+    try {
+        const VkBufferCreateInfo bufferInfo{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = size,
+            .usage = usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        };
+        check(vkCreateBuffer(device_, &bufferInfo, nullptr, &buffer), "create device-local preview buffer");
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(device_, buffer, &requirements);
+        const VkMemoryAllocateInfo allocationInfo{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = requirements.size,
+            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+        };
+        check(vkAllocateMemory(device_, &allocationInfo, nullptr, &memory), "allocate device-local preview buffer");
+        check(vkBindBufferMemory(device_, buffer, memory, 0), "bind device-local preview buffer");
+
+        const VkBufferCreateInfo stagingInfo{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = size,
+            .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        };
+        check(vkCreateBuffer(device_, &stagingInfo, nullptr, &staging), "create preview mesh staging buffer");
+        VkMemoryRequirements stagingRequirements{};
+        vkGetBufferMemoryRequirements(device_, staging, &stagingRequirements);
+        const VkMemoryAllocateInfo stagingAllocation{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = stagingRequirements.size,
+            .memoryTypeIndex =
+                findMemoryType(stagingRequirements.memoryTypeBits,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+        };
+        check(vkAllocateMemory(device_, &stagingAllocation, nullptr, &stagingMemory),
+              "allocate preview mesh staging memory");
+        check(vkBindBufferMemory(device_, staging, stagingMemory, 0), "bind preview mesh staging memory");
+        void* mapped = nullptr;
+        check(vkMapMemory(device_, stagingMemory, 0, size, 0, &mapped), "map preview mesh staging memory");
+        std::memcpy(mapped, data, static_cast<std::size_t>(size));
+        vkUnmapMemory(device_, stagingMemory);
+
+        const VkCommandPoolCreateInfo poolInfo{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+            .queueFamilyIndex = queueFamily_,
+        };
+        check(vkCreateCommandPool(device_, &poolInfo, nullptr, &uploadPool), "create preview mesh upload pool");
+        VkCommandBuffer command{};
+        const VkCommandBufferAllocateInfo commandInfo{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = uploadPool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+        };
+        check(vkAllocateCommandBuffers(device_, &commandInfo, &command), "allocate preview mesh upload command");
+        const VkCommandBufferBeginInfo beginInfo{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        };
+        check(vkBeginCommandBuffer(command, &beginInfo), "begin preview mesh upload");
+        const VkBufferCopy copy{.size = size};
+        vkCmdCopyBuffer(command, staging, buffer, 1, &copy);
+        const VkBufferMemoryBarrier2 visible{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT,
+            .dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = buffer,
+            .offset = 0,
+            .size = size,
+        };
+        const VkDependencyInfo visibleDependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .bufferMemoryBarrierCount = 1,
+            .pBufferMemoryBarriers = &visible,
+        };
+        vkCmdPipelineBarrier2(command, &visibleDependency);
+        check(vkEndCommandBuffer(command), "end preview mesh upload");
+        const VkSubmitInfo submitInfo{
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &command,
+        };
+        check(vkQueueSubmit(queue_, 1, &submitInfo, VK_NULL_HANDLE), "submit preview mesh upload");
+        check(vkQueueWaitIdle(queue_), "wait for preview mesh upload");
+        vkDestroyCommandPool(device_, uploadPool, nullptr);
+        uploadPool = VK_NULL_HANDLE;
+        vkDestroyBuffer(device_, staging, nullptr);
+        staging = VK_NULL_HANDLE;
+        vkFreeMemory(device_, stagingMemory, nullptr);
+        stagingMemory = VK_NULL_HANDLE;
+    } catch (...) {
+        if (uploadPool != VK_NULL_HANDLE)
+            vkDestroyCommandPool(device_, uploadPool, nullptr);
+        if (staging != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, staging, nullptr);
+        if (stagingMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, stagingMemory, nullptr);
+        if (buffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, buffer, nullptr);
+        if (memory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, memory, nullptr);
+        buffer = VK_NULL_HANDLE;
+        memory = VK_NULL_HANDLE;
+        throw;
+    }
+}
+
 void VulkanDevice::uploadPreviewMesh(std::span<const PreviewVertex> vertices, std::span<const std::uint32_t> indices) {
     if (vertices.empty() || indices.empty())
         throw std::invalid_argument("preview mesh is empty");
@@ -2504,19 +2770,14 @@ void VulkanDevice::uploadPreviewMesh(std::span<const PreviewVertex> vertices, st
     destroyPreviewMesh();
 
     try {
-        for (auto& frame : frames_) {
-            uploadPreviewBuffer(vertices.data(), vertices.size_bytes(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                                frame.previewVertexBuffer, frame.previewVertexMemory);
-            check(vkMapMemory(device_, frame.previewVertexMemory, 0, vertices.size_bytes(), 0,
-                              &frame.mappedPreviewVertices),
-                  "persistently map preview vertices");
-        }
+        uploadPreviewDeviceLocalBuffer(vertices.data(), vertices.size_bytes(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                       previewStaticVertexBuffer_, previewStaticVertexMemory_);
         ++previewVertexGeneration_;
         for (auto& frame : frames_)
             frame.previewVertexGeneration = previewVertexGeneration_;
         previewVertexSize_ = vertices.size_bytes();
-        uploadPreviewBuffer(indices.data(), indices.size_bytes(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, previewIndexBuffer_,
-                            previewIndexMemory_);
+        uploadPreviewDeviceLocalBuffer(indices.data(), indices.size_bytes(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                                       previewIndexBuffer_, previewIndexMemory_);
         previewIndexCount_ = static_cast<std::uint32_t>(indices.size());
     } catch (...) {
         destroyPreviewMesh();
@@ -2555,10 +2816,28 @@ void VulkanDevice::uploadPreviewBackground(std::span<const PreviewTexture> textu
 }
 
 void VulkanDevice::updatePreviewVertices(std::span<const PreviewVertex> vertices) {
-    auto& frame = frames_[frameIndex_];
-    if (vertices.size_bytes() != previewVertexSize_ || frame.mappedPreviewVertices == nullptr) {
+    if (vertices.size_bytes() != previewVertexSize_)
         throw std::invalid_argument("preview vertex update has a different size");
+
+    if (previewStaticVertexBuffer_ != VK_NULL_HANDLE) {
+        waitIdle();
+        for (auto& frame : frames_) {
+            uploadPreviewBuffer(vertices.data(), vertices.size_bytes(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                frame.previewVertexBuffer, frame.previewVertexMemory);
+            check(vkMapMemory(device_, frame.previewVertexMemory, 0, vertices.size_bytes(), 0,
+                              &frame.mappedPreviewVertices),
+                  "persistently map animated preview vertices");
+            frame.previewVertexGeneration = previewVertexGeneration_;
+        }
+        vkDestroyBuffer(device_, previewStaticVertexBuffer_, nullptr);
+        vkFreeMemory(device_, previewStaticVertexMemory_, nullptr);
+        previewStaticVertexBuffer_ = VK_NULL_HANDLE;
+        previewStaticVertexMemory_ = VK_NULL_HANDLE;
     }
+
+    auto& frame = frames_[frameIndex_];
+    if (frame.mappedPreviewVertices == nullptr)
+        throw std::logic_error("preview vertex storage is unavailable");
     check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for animated vertex frame");
     std::memcpy(frame.mappedPreviewVertices, vertices.data(), vertices.size_bytes());
     frame.previewVertexGeneration = ++previewVertexGeneration_;
@@ -2635,6 +2914,9 @@ void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> mater
         gpu.edgeSize = material.edgeSize;
         gpu.flags = (material.doubleSided ? 0x01U : 0U) | ((material.toonMode & 0x03U) << 1U) |
                     ((material.sphereMode & 0x03U) << 3U) | (material.edgeEnabled ? 0x20U : 0U);
+        gpu.textureSlots[0] = material.textureSlot;
+        gpu.textureSlots[1] = material.toonTextureSlot;
+        gpu.textureSlots[2] = material.sphereTextureSlot;
         previewMaterialData_.push_back(gpu);
     }
     if (previewMaterialData_.empty()) {
@@ -2693,6 +2975,8 @@ void VulkanDevice::updatePreviewDraws(std::span<const PreviewDraw> draws) {
 }
 
 void VulkanDevice::uploadPreviewTextures(std::span<const PreviewTexture> textures) {
+    if (textures.size() >= static_cast<std::size_t>(previewBindlessTextureCapacity_))
+        throw std::runtime_error("preview texture table exceeds Vulkan descriptor capacity");
     waitIdle();
     destroyPreviewTextures();
     const std::array<std::uint8_t, 4> white{255, 255, 255, 255};
@@ -2706,6 +2990,7 @@ void VulkanDevice::uploadPreviewTextures(std::span<const PreviewTexture> texture
         }
     }
     refreshPreviewMaterialDescriptors();
+    refreshPreviewBindlessDescriptor();
     log::info("Uploaded ", textures.size(), " PMX texture(s) plus fallback");
 }
 

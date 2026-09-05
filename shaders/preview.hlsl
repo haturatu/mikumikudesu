@@ -58,6 +58,7 @@ struct PreviewMaterialData
     float edgeSize;
     uint flags;
     uint2 reserved;
+    uint4 textureSlots;
 };
 [[vk::binding(0, 2)]] StructuredBuffer<PreviewMaterialData> previewMaterials;
 
@@ -66,8 +67,11 @@ struct PreviewMorphDelta
     float3 delta;
     uint morphIndex;
 };
-[[vk::binding(0, 3)]] StructuredBuffer<PreviewMorphDelta> previewMorphDeltas;
-[[vk::binding(1, 3)]] StructuredBuffer<float> previewMorphWeights;
+[[vk::binding(2, 3)]] Texture2D<float4> previewTextureTable[];
+[[vk::binding(0, 3)]] SamplerState previewRepeatSampler;
+[[vk::binding(1, 3)]] SamplerState previewClampSampler;
+[[vk::binding(0, 4)]] StructuredBuffer<PreviewMorphDelta> previewMorphDeltas;
+[[vk::binding(1, 4)]] StructuredBuffer<float> previewMorphWeights;
 
 [[vk::binding(0, 0)]] Texture2D<float4> baseTexture;
 [[vk::binding(1, 0)]] Texture2D<float4> toonTexture;
@@ -343,13 +347,21 @@ float4 applyTextureMorphRgb(float4 sample, float4 multiply, float4 add, float3 n
     return sample;
 }
 
+float4 samplePreviewTextureRepeat(uint textureSlot, float2 uv)
+{
+    return previewTextureTable[textureSlot].Sample(previewRepeatSampler, uv);
+}
+
+float4 samplePreviewTextureClamp(uint textureSlot, float2 uv)
+{
+    return previewTextureTable[textureSlot].Sample(previewClampSampler, uv);
+}
+
 float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0
 {
     const PreviewMaterialData material = previewMaterials[input.materialIndex];
-    const float4 sampled = applyTextureMorphRgb(baseTexture.Sample(repeatSampler, input.uv),
-                                                 material.textureMultiply, material.textureAdd, 1.0.xxx);
     if (input.color.x == 0.0 && input.color.y == 0.0 && input.color.z == 0.0)
-        return sampled;
+        return baseTexture.Sample(repeatSampler, input.uv);
 
     if (input.edgePass != 0)
     {
@@ -358,6 +370,11 @@ float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0
     }
     if (!frontFace && (material.flags & 0x01U) == 0U)
         discard;
+
+    const uint4 textureSlots = material.textureSlots;
+    const float4 sampled = applyTextureMorphRgb(
+        samplePreviewTextureRepeat(textureSlots.x, input.uv),
+        material.textureMultiply, material.textureAdd, 1.0.xxx);
 
     const float3 normal = normalize(input.normal);
     const float3 lightDirection = normalize(-scene.light.xyz);
@@ -370,7 +387,7 @@ float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0
     const uint toonMode = (material.flags >> 1U) & 0x03U;
     if (toonMode == 0U)
     {
-        color *= toonTexture.Sample(clampSampler, float2(0.0, 0.5 - noLight * 0.5));
+        color *= samplePreviewTextureClamp(textureSlots.y, float2(0.0, 0.5 - noLight * 0.5));
     }
     else if (toonMode == 1U)
     {
@@ -381,7 +398,8 @@ float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0
     if (sphereMode == 1U || sphereMode == 2U)
     {
         const float4 sphere = applyTextureMorphRgb(
-            sphereTexture.Sample(repeatSampler, input.sphereUv), material.sphereMultiply, material.sphereAdd,
+            samplePreviewTextureRepeat(textureSlots.z, input.sphereUv),
+            material.sphereMultiply, material.sphereAdd,
             sphereMode == 1U ? 1.0.xxx : 0.0.xxx);
         color.rgb = sphereMode == 1U ? color.rgb * sphere.rgb : color.rgb + sphere.rgb;
         color.a *= sphere.a;
