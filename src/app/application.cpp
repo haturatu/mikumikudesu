@@ -359,6 +359,8 @@ void Application::resetProjectRuntimeState() {
     audioToSeconds_ = 0.0F;
     textures_.clear();
     animatedIndices_.clear();
+    animatedMorphDeltas_.clear();
+    animatedMorphRanges_.clear();
     animatedVertexCount_ = 0;
     animatedMaterialTemplates_.clear();
     animatedTopologyGeneration_ = 0;
@@ -1006,12 +1008,19 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                                  animatedDraws_.size() != materialCount;
     std::vector<graphics::PreviewVertex> vertices;
     vertices.reserve(vertexCount);
+    std::vector<graphics::PreviewMorphDelta> morphDeltas =
+        rebuildTopology ? std::vector<graphics::PreviewMorphDelta>{} : animatedMorphDeltas_;
+    std::vector<float> morphWeights;
+    morphWeights.reserve(materialCount);
     std::vector<graphics::PreviewMaterial> materials =
         rebuildTopology ? std::vector<graphics::PreviewMaterial>{} : animatedMaterialTemplates_;
     std::vector<graphics::PreviewDraw> draws = rebuildTopology ? std::vector<graphics::PreviewDraw>{} : animatedDraws_;
     if (rebuildTopology) {
         animatedIndices_.clear();
         animatedIndices_.reserve(indexCount);
+        animatedMorphDeltas_.clear();
+        animatedMorphRanges_.clear();
+        animatedMorphRanges_.reserve(vertexCount);
         materials.reserve(materialCount);
         draws.reserve(materialCount);
     }
@@ -1042,6 +1051,37 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             }
             core::normalizeForPreview(frame.vertices, instance.normalization);
             animation.finish();
+        }
+        const auto morphWeightBase = static_cast<std::uint32_t>(morphWeights.size());
+        for (std::size_t morphIndex = 0; morphIndex < instance.model->morphs.size(); ++morphIndex) {
+            morphWeights.push_back(morphIndex < frame.morphWeights.size() ? frame.morphWeights[morphIndex] : 0.0F);
+        }
+        std::vector<std::array<std::uint32_t, 2>> sourceMorphRanges;
+        if (rebuildTopology) {
+            std::vector<std::vector<graphics::PreviewMorphDelta>> perVertex(instance.model->vertices.size());
+            for (std::size_t morphIndex = 0; morphIndex < instance.model->morphs.size(); ++morphIndex) {
+                const auto& morph = instance.model->morphs[morphIndex];
+                if (morph.type != 1)
+                    continue;
+                for (const auto& offset : morph.offsets) {
+                    if (offset.index < 0 || static_cast<std::size_t>(offset.index) >= perVertex.size())
+                        continue;
+                    graphics::PreviewMorphDelta delta;
+                    for (std::size_t axis = 0; axis < 3; ++axis)
+                        delta.delta[axis] = offset.vector3[axis] * instance.normalization.scale;
+                    delta.morphIndex = morphWeightBase + static_cast<std::uint32_t>(morphIndex);
+                    perVertex[static_cast<std::size_t>(offset.index)].push_back(delta);
+                }
+            }
+            sourceMorphRanges.resize(perVertex.size());
+            for (std::size_t vertexIndex = 0; vertexIndex < perVertex.size(); ++vertexIndex) {
+                const auto start = static_cast<std::uint32_t>(morphDeltas.size());
+                morphDeltas.insert(morphDeltas.end(), perVertex[vertexIndex].begin(), perVertex[vertexIndex].end());
+                sourceMorphRanges[vertexIndex] = {
+                    start,
+                    static_cast<std::uint32_t>(perVertex[vertexIndex].size()),
+                };
+            }
         }
         if (!frame.vertices.empty() && (initialUpload || static_cast<int>(animationFrame_) % 30 == 0)) {
             const auto& vertex = frame.vertices.front().position;
@@ -1078,7 +1118,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             const auto baseVertex = static_cast<std::uint32_t>(vertices.size());
             const auto firstCloneIndex = indexCursor;
             const float cloneOffset = (static_cast<float>(clone) - static_cast<float>(cloneCount - 1U) * 0.5F) * 2.2F;
-            for (const auto& source : frame.vertices) {
+            for (std::size_t sourceIndex = 0; sourceIndex < frame.vertices.size(); ++sourceIndex) {
+                const auto& source = frame.vertices[sourceIndex];
                 graphics::PreviewVertex vertex;
                 std::memcpy(vertex.position, source.position.data(), sizeof(vertex.position));
                 std::memcpy(vertex.normal, source.normal.data(), sizeof(vertex.normal));
@@ -1104,8 +1145,15 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                     vertex.gpuSkinning = 1;
                 }
                 vertex.edgeScale = source.edgeScale;
+                const auto morphRange = rebuildTopology
+                                            ? sourceMorphRanges[sourceIndex]
+                                            : animatedMorphRanges_[vertices.size()];
+                vertex.morphStart = morphRange[0];
+                vertex.morphCount = gpuSkinning ? morphRange[1] : 0U;
                 vertex.cloneOffset = cloneOffset;
                 vertices.push_back(vertex);
+                if (rebuildTopology)
+                    animatedMorphRanges_.push_back(morphRange);
             }
             if (rebuildTopology) {
                 for (const auto index : instance.model->indices)
@@ -1170,11 +1218,13 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     if (rebuildTopology) {
         animatedMaterialTemplates_ = materials;
         animatedDraws_ = draws;
+        animatedMorphDeltas_ = morphDeltas;
         animatedTopologyGeneration_ = scene_.topologyGeneration();
     }
     {
         auto upload = frameProfiler_.measure(core::ProfileSection::upload);
         device_->updatePreviewBones(bones);
+        device_->updatePreviewMorphs(morphDeltas, morphWeights);
         if (initialUpload || rebuildTopology)
             device_->uploadPreviewMesh(vertices, animatedIndices_);
         else {

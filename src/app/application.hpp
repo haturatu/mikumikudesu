@@ -98,6 +98,8 @@ class Application {
     VideoExportJob videoExportJob_;
     std::vector<core::ImageRgba8> textures_;
     std::vector<std::uint32_t> animatedIndices_;
+    std::vector<graphics::PreviewMorphDelta> animatedMorphDeltas_;
+    std::vector<std::array<std::uint32_t, 2>> animatedMorphRanges_;
     std::uint64_t animatedVertexCount_{};
     std::vector<graphics::PreviewMaterial> animatedMaterialTemplates_;
     std::vector<graphics::PreviewDraw> animatedDraws_;
