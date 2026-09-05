@@ -229,12 +229,8 @@ bool multiMaterialDrawUsesPushConstantIndex(dayo::graphics::VulkanDevice& device
 
     std::array<PreviewVertex, 6> vertices{};
     const std::array positions{
-        Float3{-0.9F, -0.7F, 0.0F},
-        Float3{-0.05F, -0.7F, 0.0F},
-        Float3{-0.475F, 0.7F, 0.0F},
-        Float3{0.05F, -0.7F, 0.0F},
-        Float3{0.9F, -0.7F, 0.0F},
-        Float3{0.475F, 0.7F, 0.0F},
+        Float3{-0.9F, -0.7F, 0.0F}, Float3{-0.05F, -0.7F, 0.0F}, Float3{-0.475F, 0.7F, 0.0F},
+        Float3{0.05F, -0.7F, 0.0F}, Float3{0.9F, -0.7F, 0.0F},   Float3{0.475F, 0.7F, 0.0F},
     };
     for (std::size_t index = 0; index < vertices.size(); ++index) {
         std::copy(positions[index].begin(), positions[index].end(), vertices[index].position);
