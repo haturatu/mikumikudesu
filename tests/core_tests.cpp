@@ -11,12 +11,14 @@
 #include "core/profiling.hpp"
 #include "core/project.hpp"
 #include "core/scene.hpp"
+#include "core/task_scheduler.hpp"
 #include "core/video_export.hpp"
 #include "core/vmdayo.hpp"
 #include "graphics/timestamp.hpp"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -25,6 +27,7 @@
 #include <iostream>
 #include <limits>
 #include <numbers>
+#include <stdexcept>
 #include <string_view>
 
 namespace {
@@ -302,6 +305,22 @@ int main() {
         profiler.addUploadBytes(1);
         ok &= check(profiler.totals().frames == 0 && profiler.totals().uploadBytes == 0,
                     "profiler reset ignores inactive samples");
+    }
+    {
+        dayo::core::TaskScheduler scheduler(2);
+        std::atomic<std::uint64_t> sum{};
+        scheduler.parallelFor(100, [&](std::size_t index) { sum.fetch_add(static_cast<std::uint64_t>(index + 1)); });
+        ok &= check(scheduler.workerCount() == 2 && sum.load() == 5050, "task scheduler parallel batch");
+        bool propagated = false;
+        try {
+            scheduler.parallelFor(2, [](std::size_t index) {
+                if (index == 1)
+                    throw std::runtime_error("task failure");
+            });
+        } catch (const std::runtime_error&) {
+            propagated = true;
+        }
+        ok &= check(propagated, "task scheduler propagates worker exceptions");
     }
 
     const auto path = std::filesystem::temp_directory_path() / "mikumikudesu-core-test.pmx";
