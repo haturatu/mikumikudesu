@@ -20,6 +20,7 @@ struct VideoExportRequest {
     std::uint32_t bitrate{8'000'000};
     bool includeAudio{true};
     std::uint32_t audioBitrate{192'000};
+    bool preferHardware{};
     bool overwrite{};
 };
 
@@ -39,6 +40,7 @@ struct VideoExportResult {
 };
 
 [[nodiscard]] bool canExportVideo(VideoCodec codec = VideoCodec::h264) noexcept;
+[[nodiscard]] bool canExportVideoHardware(VideoCodec codec = VideoCodec::h264) noexcept;
 
 class VideoExporter {
   public:

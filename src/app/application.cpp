@@ -248,6 +248,10 @@ Options parseOptions(int argc, char** argv) {
             if (!options.videoExport)
                 options.videoExport.emplace();
             options.videoExport->bitrate = kbps * 1000U;
+        } else if (argument == "--video-hardware") {
+            if (!options.videoExport)
+                options.videoExport.emplace();
+            options.videoExport->preferHardware = true;
         } else if (argument == "--video-from-frame") {
             if (++i >= argc)
                 throw std::invalid_argument("--video-from-frame requires a value");
@@ -321,7 +325,7 @@ Options parseOptions(int argc, char** argv) {
                       "[--audio-bitrate KBPS] [--audio-from SEC] [--audio-to SEC] "
                       "[--export-video PATH] [--video-width PX] [--video-height PX] "
                       "[--video-fps FPS] [--video-codec h264|h265|av1] "
-                      "[--video-bitrate KBPS] [--audio-bitrate KBPS] "
+                      "[--video-bitrate KBPS] [--video-hardware] [--audio-bitrate KBPS] "
                       "[--video-from-frame N] [--video-to-frame N] [--no-audio] "
                       "[--overwrite] [--no-validation]");
             options.probeOnly = true;
@@ -591,7 +595,10 @@ int Application::runVideoExport() {
     const auto& options = *options_.videoExport;
     if (options.destination.empty())
         throw std::invalid_argument("--export-video requires a destination path");
-    if (!core::canExportVideo(options.codec)) {
+    if (options.preferHardware) {
+        if (!core::canExportVideoHardware(options.codec))
+            throw std::runtime_error("requested VAAPI video encoder is unavailable");
+    } else if (!core::canExportVideo(options.codec)) {
         throw std::runtime_error("requested video encoder is unavailable");
     }
     if (device_ == nullptr)
@@ -651,6 +658,7 @@ int Application::runVideoExport() {
     request.fps = options.fps;
     request.codec = options.codec;
     request.bitrate = options.bitrate;
+    request.preferHardware = options.preferHardware;
     request.includeAudio = audioSource.has_value();
     request.audioBitrate = options.audioBitrate;
     request.overwrite = options.overwrite;
