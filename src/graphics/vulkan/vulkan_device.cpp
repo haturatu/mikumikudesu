@@ -1494,16 +1494,8 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
     for (const auto* item : transparent)
         draw(*item, transparentPipeline_);
 
-    if (edgePipeline_ == VK_NULL_HANDLE)
-        return;
-    for (const auto& item : previewDraws_) {
-        if (item.materialIndex >= previewMaterials_.size())
-            continue;
-        const auto& material = previewMaterials_[item.materialIndex];
-        if (!material.edgeEnabled || material.edgeSize <= 0.0F || material.edgeColor[3] <= 0.0F)
-            continue;
-        draw(item, edgePipeline_);
-    }
+    // Preview.fxdayo has no outline pass. Keep PMX edge data available for a future renderer pass,
+    // but do not draw it in the original Preview-compatible path.
 }
 
 void VulkanDevice::renderFrame() {
