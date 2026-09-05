@@ -64,16 +64,27 @@ struct TaskScheduler::Impl {
         std::function<void()> function;
     };
 
-    static Impl*& currentWorker() noexcept {
-        static thread_local Impl* owner = nullptr;
-        return owner;
+    struct Worker {
+        std::deque<Task> tasks;
+        std::mutex mutex;
+    };
+
+    struct WorkerContext {
+        Impl* owner{};
+        std::size_t index{};
+    };
+
+    static WorkerContext*& currentWorker() noexcept {
+        static thread_local WorkerContext* context = nullptr;
+        return context;
     }
 
     struct WorkerScope {
-        Impl* previous;
+        WorkerContext context;
+        WorkerContext* previous;
 
-        explicit WorkerScope(Impl* owner) : previous(currentWorker()) {
-            currentWorker() = owner;
+        WorkerScope(Impl* owner, std::size_t index) : context{owner, index}, previous(currentWorker()) {
+            currentWorker() = &context;
         }
 
         ~WorkerScope() {
@@ -86,7 +97,9 @@ struct TaskScheduler::Impl {
         const auto desired = requestedWorkers == 0 ? (hardware > 1 ? hardware - 1U : 1U) : requestedWorkers;
         workers.reserve(desired);
         for (std::size_t index = 0; index < desired; ++index)
-            workers.emplace_back([this] { run(); });
+            workers.push_back(std::make_unique<Worker>());
+        for (std::size_t index = 0; index < desired; ++index)
+            threads.emplace_back([this, index] { run(index); });
     }
 
     ~Impl() {
@@ -95,36 +108,83 @@ struct TaskScheduler::Impl {
             stopping = true;
         }
         condition.notify_all();
-        for (auto& worker : workers)
+        for (auto& worker : threads)
             if (worker.joinable())
                 worker.join();
     }
 
-    void run() {
+    bool anyLocalTasks() {
+        for (const auto& worker : workers) {
+            std::lock_guard lock(worker->mutex);
+            if (!worker->tasks.empty())
+                return true;
+        }
+        return false;
+    }
+
+    bool tryTake(std::size_t index, Task& result) {
+        {
+            auto& local = *workers[index];
+            std::lock_guard lock(local.mutex);
+            if (!local.tasks.empty()) {
+                result = std::move(local.tasks.back());
+                local.tasks.pop_back();
+                return true;
+            }
+        }
+        {
+            std::lock_guard lock(mutex);
+            if (!tasks.empty()) {
+                result = std::move(tasks.front());
+                tasks.pop_front();
+                return true;
+            }
+        }
+        for (std::size_t offset = 1; offset < workers.size(); ++offset) {
+            auto& victim = *workers[(index + offset) % workers.size()];
+            std::lock_guard lock(victim.mutex);
+            if (!victim.tasks.empty()) {
+                result = std::move(victim.tasks.front());
+                victim.tasks.pop_front();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void run(std::size_t index) {
         while (true) {
             Task task;
-            {
-                std::unique_lock lock(mutex);
-                condition.wait(lock, [this] { return stopping || !tasks.empty(); });
-                if (stopping && tasks.empty())
-                    return;
-                task = std::move(tasks.front());
-                tasks.pop_front();
+            if (tryTake(index, task)) {
+                WorkerScope workerScope(this, index);
+                task.function();
+                continue;
             }
-            WorkerScope workerScope(this);
-            task.function();
+
+            std::unique_lock lock(mutex);
+            condition.wait(lock, [this] { return stopping || !tasks.empty() || anyLocalTasks(); });
+            if (stopping && tasks.empty() && !anyLocalTasks())
+                return;
         }
     }
 
     void enqueue(std::function<void()> function) {
-        {
+        const auto worker = currentWorker();
+        if (worker != nullptr && worker->owner == this) {
+            auto& local = *workers[worker->index];
+            {
+                std::lock_guard lock(local.mutex);
+                local.tasks.push_back({std::move(function)});
+            }
+        } else {
             std::lock_guard lock(mutex);
             tasks.push_back({std::move(function)});
         }
         condition.notify_one();
     }
 
-    std::vector<std::thread> workers;
+    std::vector<std::unique_ptr<Worker>> workers;
+    std::vector<std::thread> threads;
     std::deque<Task> tasks;
     std::mutex mutex;
     std::condition_variable condition;
@@ -147,7 +207,8 @@ void TaskScheduler::parallelFor(std::size_t count, std::size_t grainSize,
     if (count == 0)
         return;
     grainSize = std::max<std::size_t>(1U, grainSize);
-    if (impl_->workers.empty() || count == 1 || Impl::currentWorker() == impl_.get()) {
+    const auto worker = Impl::currentWorker();
+    if (impl_->workers.empty() || count == 1 || (worker != nullptr && worker->owner == impl_.get())) {
         for (std::size_t index = 0; index < count; ++index)
             function(index);
         return;
@@ -160,22 +221,18 @@ void TaskScheduler::parallelFor(std::size_t count, std::size_t grainSize,
     for (std::size_t taskIndex = 0; taskIndex < taskCount; ++taskIndex) {
         const auto begin = taskIndex * grainSize;
         const auto end = begin + std::min(grainSize, count - begin);
-        {
-            std::lock_guard lock(impl_->mutex);
-            impl_->tasks.push_back({[&, begin, end] {
-                for (auto index = begin; index < end; ++index) {
-                    try {
-                        function(index);
-                    } catch (...) {
-                        std::lock_guard exceptionLock(exceptionMutex);
-                        if (firstException == nullptr)
-                            firstException = std::current_exception();
-                    }
+        impl_->enqueue([&, begin, end] {
+            for (auto index = begin; index < end; ++index) {
+                try {
+                    function(index);
+                } catch (...) {
+                    std::lock_guard exceptionLock(exceptionMutex);
+                    if (firstException == nullptr)
+                        firstException = std::current_exception();
                 }
-                complete.count_down();
-            }});
-        }
-        impl_->condition.notify_one();
+            }
+            complete.count_down();
+        });
     }
     complete.wait();
     if (firstException != nullptr)
