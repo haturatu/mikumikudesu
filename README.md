@@ -80,6 +80,25 @@ CMakeが取得します。取得を禁止する場合は必要なdevelopment pac
 
 ## ビルドと実行
 
+MakefileからCMake Presetsを利用する簡易コマンドも用意しています。
+
+```bash
+# Debug（configure + build）
+make
+
+# Test / run
+make test
+make run
+make run ARGS="--asset model.pmx --asset motion.vmd"
+
+# Release / sanitizers / system packages only
+make release
+make sanitize
+make system
+```
+
+全ターゲットと変数は`make help`で確認できます。CMakeを直接実行する正式な手順も引き続き利用できます。
+
 ```bash
 cmake --preset linux-debug
 cmake --build --preset linux-debug
