@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(mikumikudesu VERSION 1.20.0 LANGUAGES CXX)
+project(mikumikudesu VERSION 0.1.0 LANGUAGES CXX)
+
+# Native application version is independent of the upstream compatibility baseline.
+set(DAYO_UPSTREAM_VERSION "1.30")
 
 include(CTest)
 include(FetchContent)
@@ -350,17 +353,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 
 install(TARGETS mikumikudesu RUNTIME DESTINATION bin)
-install(
-  DIRECTORY MikuMikuDayo/hlsl MikuMikuDayo/renderer
-  DESTINATION share/mikumikudesu
-  FILES_MATCHING
-  PATTERN "*.hlsl"
-  PATTERN "*.hlsli"
-  PATTERN "*.fxdayo"
-)
-install(FILES MikuMikuDayo/licence/MikuMikuDayo.txt DESTINATION share/mikumikudesu/licence)
+include(cmake/InstallMikuMikuDayo.cmake)
 
 if(BUILD_TESTING)
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_test(NAME upstream_fetch COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/fetch_mikumikudayo_tests.py")
   add_executable(dayo_core_tests tests/core_tests.cpp)
   target_link_libraries(dayo_core_tests PRIVATE dayo_core)
   add_executable(dayo_preview_tests tests/preview_render_tests.cpp)
@@ -460,6 +457,7 @@ if(DAYO_ENABLE_SANITIZERS)
   endif()
 endif()
 
+message(STATUS "MikuMikuDayo upstream baseline: ${DAYO_UPSTREAM_VERSION}")
 message(STATUS "mikumikudesu backend: ${DAYO_BACKEND}")
 message(STATUS "Dear ImGui: ${DAYO_ENABLE_IMGUI}")
 message(STATUS "OIDN detected: ${DAYO_HAS_OIDN} (CPU always preferred; HIP is runtime-optional)")
