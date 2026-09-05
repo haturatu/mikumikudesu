@@ -948,8 +948,11 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
     if (physics_ != nullptr && physics_->available()) {
         const float frameDelta = frame - previousFrame_;
         const float expectedFrameDelta = std::max(deltaSeconds, 0.0F) * 30.0F;
+        // Motion attachment can change the animated pose while Bullet still
+        // holds the PMX bind pose, so the first evaluation must synchronize
+        // every body before physics is allowed to advance.
         const bool discontinuousSeek =
-            (previousFrame_ < 0.0F && std::abs(frame) > 1e-6F) ||
+            (previousFrame_ < 0.0F) ||
             (previousFrame_ >= 0.0F &&
              (frameDelta < 0.0F || (std::abs(frameDelta) > 1e-6F &&
                                     (deltaSeconds <= 0.0F || std::abs(frameDelta - expectedFrameDelta) > 2.0F))));
