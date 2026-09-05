@@ -129,6 +129,9 @@ class VulkanDevice final : public Device {
     void queryCapabilities();
     void createSwapchain();
     void destroySwapchain();
+    void createPipelineCache();
+    void savePipelineCache() const noexcept;
+    void destroyPipelineCache();
     void createPipeline();
     void destroyPipeline();
     void createPreviewDescriptors();
@@ -202,6 +205,7 @@ class VulkanDevice final : public Device {
     std::vector<DepthResource> swapchainDepth_;
 
     VkPipelineLayout pipelineLayout_{};
+    VkPipelineCache pipelineCache_{};
     VkPipeline pipeline_{};
     VkPipeline transparentPipeline_{};
     VkPipeline edgePipeline_{};

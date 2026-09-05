@@ -149,6 +149,7 @@ VulkanDevice::VulkanDevice(platform::Window& window, bool validation) : window_(
     selectPhysicalDevice();
     queryCapabilities();
     createLogicalDevice();
+    createPipelineCache();
     uploadContext_ = std::make_unique<VulkanUploadContext>(device_, physicalDevice_, queue_, queueFamily_,
                                                            timelineSemaphore_, nextTimelineValue_);
     createSwapchain();
@@ -211,6 +212,8 @@ VulkanDevice::~VulkanDevice() {
     }
     destroyFrames();
     destroyPipeline();
+    savePipelineCache();
+    destroyPipelineCache();
     destroyPreviewDescriptors();
     destroySwapchain();
     if (timelineSemaphore_ != VK_NULL_HANDLE)
@@ -630,6 +633,57 @@ void VulkanDevice::destroySwapchain() {
     swapchain_ = VK_NULL_HANDLE;
 }
 
+void VulkanDevice::createPipelineCache() {
+    constexpr std::size_t maxCacheBytes = 64U * 1024U * 1024U;
+    std::vector<std::byte> initialData;
+    std::ifstream input("pipeline.cache", std::ios::binary | std::ios::ate);
+    if (input) {
+        const auto end = input.tellg();
+        if (end > 0 && static_cast<std::uintmax_t>(end) <= maxCacheBytes) {
+            initialData.resize(static_cast<std::size_t>(end));
+            input.seekg(0);
+            input.read(reinterpret_cast<char*>(initialData.data()), static_cast<std::streamsize>(initialData.size()));
+            if (!input)
+                initialData.clear();
+        }
+    }
+
+    VkPipelineCacheCreateInfo createInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+        .initialDataSize = initialData.size(),
+        .pInitialData = initialData.data(),
+    };
+    auto result = vkCreatePipelineCache(device_, &createInfo, nullptr, &pipelineCache_);
+    if (result == VK_ERROR_INVALID_PIPELINE_CACHE_DATA && !initialData.empty()) {
+        log::warn("Ignoring incompatible Vulkan pipeline cache");
+        createInfo.initialDataSize = 0;
+        createInfo.pInitialData = nullptr;
+        result = vkCreatePipelineCache(device_, &createInfo, nullptr, &pipelineCache_);
+    }
+    check(result, "create Vulkan pipeline cache");
+}
+
+void VulkanDevice::savePipelineCache() const noexcept {
+    if (pipelineCache_ == VK_NULL_HANDLE)
+        return;
+    std::size_t size = 0;
+    if (vkGetPipelineCacheData(device_, pipelineCache_, &size, nullptr) != VK_SUCCESS || size == 0)
+        return;
+    std::vector<std::byte> data(size);
+    if (vkGetPipelineCacheData(device_, pipelineCache_, &size, data.data()) != VK_SUCCESS)
+        return;
+    std::ofstream output("pipeline.cache", std::ios::binary | std::ios::trunc);
+    if (!output)
+        return;
+    output.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(size));
+}
+
+void VulkanDevice::destroyPipelineCache() {
+    if (pipelineCache_ != VK_NULL_HANDLE)
+        vkDestroyPipelineCache(device_, pipelineCache_, nullptr);
+    pipelineCache_ = VK_NULL_HANDLE;
+}
+
 void VulkanDevice::createPipeline() {
     const auto vertexCode = readBinary(DAYO_PREVIEW_VERTEX_SPV);
     const auto edgeVertexCode = readBinary(DAYO_PREVIEW_EDGE_VERTEX_SPV);
@@ -829,23 +883,23 @@ void VulkanDevice::createPipeline() {
         .pDynamicState = &dynamic,
         .layout = pipelineLayout_,
     };
-    const auto result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline_);
+    const auto result = vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &pipeline_);
     auto transparentPipelineInfo = pipelineInfo;
     transparentPipelineInfo.pDepthStencilState = &transparentDepthStencil;
     transparentPipelineInfo.pColorBlendState = &transparentBlend;
     const auto transparentResult =
-        vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &transparentPipelineInfo, nullptr, &transparentPipeline_);
+        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &transparentPipelineInfo, nullptr, &transparentPipeline_);
     auto backgroundPipelineInfo = pipelineInfo;
     backgroundPipelineInfo.pDepthStencilState = &backgroundDepthStencil;
     const auto backgroundResult =
-        vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &backgroundPipelineInfo, nullptr, &backgroundPipeline_);
+        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &backgroundPipelineInfo, nullptr, &backgroundPipeline_);
     auto edgePipelineInfo = pipelineInfo;
     edgePipelineInfo.pStages = edgeStages.data();
     edgePipelineInfo.pDepthStencilState = &edgeDepthStencil;
     edgePipelineInfo.pRasterizationState = &edgeRasterizer;
     edgePipelineInfo.pColorBlendState = &transparentBlend;
     const auto edgeResult =
-        vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &edgePipelineInfo, nullptr, &edgePipeline_);
+        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &edgePipelineInfo, nullptr, &edgePipeline_);
     vkDestroyShaderModule(device_, fragment, nullptr);
     vkDestroyShaderModule(device_, edgeVertex, nullptr);
     vkDestroyShaderModule(device_, vertex, nullptr);
