@@ -1255,9 +1255,9 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     if ((rebuildVertices && vertices.empty()) || animatedIndices_.empty())
         return;
     if (rebuildTopology) {
-        animatedMaterialTemplates_ = materials;
-        animatedDraws_ = draws;
-        animatedMorphDeltas_ = morphDeltas;
+        animatedMaterialTemplates_.assign(materials.begin(), materials.end());
+        animatedDraws_.assign(draws.begin(), draws.end());
+        animatedMorphDeltas_.assign(morphDeltas.begin(), morphDeltas.end());
         animatedTopologyGeneration_ = scene_.topologyGeneration();
     }
     {
