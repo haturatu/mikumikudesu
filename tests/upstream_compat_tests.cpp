@@ -69,8 +69,12 @@ int main() {
         const auto fluidEffect = dayo::core::loadEffectGraph(sourceDirectory / "postprocess/Fog/fluid3D.fxdayo");
         const auto fluidTexture =
             std::ranges::find_if(fluidEffect.textures3D, [](const auto& texture) { return texture.name == "VMap"; });
-        ok &= check(fluidTexture != fluidEffect.textures3D.end() && fluidEffect.buffers.empty() == false,
-                    "1.30 3D texture and buffer metadata");
+        const auto fluidBaseTexture =
+            std::ranges::find_if(fluidEffect.textures3D, [](const auto& texture) { return texture.name == "WMap"; });
+        ok &= check(fluidTexture != fluidEffect.textures3D.end() && fluidBaseTexture != fluidEffect.textures3D.end() &&
+                        fluidTexture->size.base == "WMap" && fluidBaseTexture->size.absolute &&
+                        fluidBaseTexture->size.depth > 0 && !fluidEffect.buffers.empty(),
+                    "1.30 3D texture size and buffer metadata");
         const auto bdptEffect = dayo::core::loadEffectGraph(sourceDirectory / "renderer/BDPT.fxdayo");
         ok &= check(!bdptEffect.passes.empty() && std::ranges::any_of(bdptEffect.passes,
                                                                       [](const auto& pass) {

@@ -11,13 +11,13 @@ foreach(path IN LISTS DAYO_RUNTIME_PATHS)
     message(FATAL_ERROR "Unsafe runtime manifest path: ${path}")
   endif()
   if(path MATCHES "/$")
-    install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/MikuMikuDayo/${path}"
-      DESTINATION "share/mikumikudesu/${path}")
+    install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/MikuMikuDayo/${path}" DESTINATION "share/mikumikudesu/${path}")
   else()
     get_filename_component(parent "${path}" DIRECTORY)
-    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/MikuMikuDayo/${path}"
-      DESTINATION "share/mikumikudesu/${parent}")
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/MikuMikuDayo/${path}" DESTINATION "share/mikumikudesu/${parent}")
   endif()
 endforeach()
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/deps/mikumikudayo.lock" "${DAYO_RUNTIME_MANIFEST}"
-  DESTINATION share/mikumikudesu)
+install(
+  FILES "${CMAKE_CURRENT_SOURCE_DIR}/deps/mikumikudayo.lock" "${DAYO_RUNTIME_MANIFEST}"
+  DESTINATION share/mikumikudesu
+)

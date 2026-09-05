@@ -3,7 +3,7 @@
 ## この更新の範囲
 
 公式[1.30 Release](https://github.com/pennennennennennenem/MikuMikuDayo/releases/tag/MikuMikuDayo130)を
-テスト・配布の基準にする第1段階です。Release APIのasset digestと取得したZIPのSHA256を照合します。
+テスト・配布の基準にする第1段階です。Release APIで確認したasset digestをlockに固定し、取得したZIPのSHA256をlockと照合します。
 `deps/mikumikudayo.lock`が取得元の正本で、アプリ自身のバージョンとは独立しています。
 
 `deps/mikumikudayo-runtime.manifest`はrelease rootからの相対パスを1行ずつ記述します。
@@ -23,7 +23,7 @@ installも同じ一覧を使い、拡張子による除外を行わず、第三�
 `nativeSubayai`/`nativeBdpt`はfalseのままです。Previewのclone複製は、上流FXが参照する
 `Dayo::CloneCount[modelIndex]`との接続完了を意味しません。1.30の追加エフェクトを同梱しても、
 その実行をサポートしたことにはなりません。OIDNは任意検出で、2.5.0への固定は行いません。
-非同期画像出力は既存実装を使用し、bounded queueとファイル名末尾からの連番開始は別の残件です。
+非同期画像出力はbounded queueまで本PRで対応済みです。ファイル名末尾からの連番開始は別の残件です。
 
 ## Windows fixtureの受け入れ条件
 

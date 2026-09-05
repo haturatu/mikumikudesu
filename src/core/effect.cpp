@@ -109,9 +109,9 @@ std::vector<EffectTexture> textures(const nlohmann::json& parent, std::string_vi
         texture.view = value.value("view", "");
         texture.conditions = strings(value, "conditions");
         if (const auto size = value.find("size"); size != value.end()) {
-            const auto parsed = effectSize(*size);
-            texture.widthRatio = parsed.widthRatio;
-            texture.heightRatio = parsed.heightRatio;
+            texture.size = effectSize(*size);
+            texture.widthRatio = texture.size.widthRatio;
+            texture.heightRatio = texture.size.heightRatio;
         }
         result.push_back(std::move(texture));
     }

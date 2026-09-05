@@ -31,6 +31,7 @@ struct EffectTexture {
     std::string name;
     std::string format;
     std::string view;
+    EffectSize size;
     float widthRatio{1.0F};
     float heightRatio{1.0F};
     std::vector<std::string> conditions;
