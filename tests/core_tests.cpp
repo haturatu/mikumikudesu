@@ -13,6 +13,7 @@
 #include "core/scene.hpp"
 #include "core/video_export.hpp"
 #include "core/vmdayo.hpp"
+#include "graphics/timestamp.hpp"
 
 #include <algorithm>
 #include <array>
@@ -270,6 +271,14 @@ int main() {
         parameters.set("roughness", 0.5F);
         ok &=
             check(parameters.find("roughness") != nullptr && parameters.erase("roughness"), "material parameter block");
+    }
+    {
+        ok &= check(dayo::graphics::timestampDelta(100, 300, 64) == 200, "64-bit timestamp delta");
+        ok &= check(dayo::graphics::timestampDelta(100, 300, 36) == 200, "narrow timestamp delta");
+        const auto timestampMask = (std::uint64_t{1} << 36) - 1U;
+        ok &= check(dayo::graphics::timestampDelta(timestampMask - 0xFFU, 0x100U, 36) == 0x200U,
+                    "timestamp delta across wrap");
+        ok &= check(dayo::graphics::timestampDelta(100, 300, 0) == 0, "unsupported timestamp delta");
     }
     {
         dayo::core::FrameProfiler profiler;
