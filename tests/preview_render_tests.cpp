@@ -16,6 +16,7 @@ namespace {
 using dayo::core::Float3;
 using dayo::core::Float4;
 using dayo::graphics::PreviewBoneTransform;
+using dayo::graphics::PreviewDraw;
 using dayo::graphics::PreviewMaterial;
 using dayo::graphics::PreviewSkinningType;
 using dayo::graphics::PreviewTexture;
@@ -136,7 +137,7 @@ bool imagesMatch(const dayo::core::ImageRgba8& left, const dayo::core::ImageRgba
 
 dayo::core::ImageRgba8 renderCase(dayo::graphics::VulkanDevice& device, std::span<const PreviewVertex> vertices,
                                   std::span<const PreviewBoneTransform> bones) {
-    const std::array<std::uint32_t, 3> indices{0, 1, 2};
+    const std::array<std::uint32_t, 3> indices{0, 2, 1};
     const std::array<PreviewMaterial, 1> materials{};
     const std::array<dayo::graphics::PreviewDraw, 1> draws{{{0, 3, 0}}};
     device.uploadPreviewMesh(vertices, indices);
@@ -159,7 +160,7 @@ bool coplanarMaterialsUseStrictDepth(dayo::graphics::VulkanDevice& device) {
         std::copy(position.begin(), position.end(), vertex.position);
         vertex.normal[2] = 1.0F;
     }
-    const std::array<std::uint32_t, 6> indices{0, 1, 2, 3, 4, 5};
+    const std::array<std::uint32_t, 6> indices{0, 2, 1, 3, 5, 4};
     const std::array<std::uint8_t, 4> red{255, 0, 0, 255};
     const std::array<std::uint8_t, 4> blue{0, 0, 255, 255};
     const std::array<PreviewTexture, 2> textures{{
@@ -180,6 +181,45 @@ bool coplanarMaterialsUseStrictDepth(dayo::graphics::VulkanDevice& device) {
         (static_cast<std::size_t>(image.height) / 2U * image.width + static_cast<std::size_t>(image.width) / 2U) * 4U;
     return image.pixels.size() >= center + 4U && image.pixels[center] > 200U && image.pixels[center + 1U] < 80U &&
            image.pixels[center + 2U] < 80U;
+}
+
+bool singleSidedMaterialsUseClockwiseFrontFaces(dayo::graphics::VulkanDevice& device) {
+    std::array<PreviewVertex, 3> vertices{};
+    const std::array positions{
+        Float3{-0.8F, -0.8F, 0.0F},
+        Float3{0.8F, -0.8F, 0.0F},
+        Float3{0.0F, 0.8F, 0.0F},
+    };
+    for (std::size_t index = 0; index < vertices.size(); ++index) {
+        std::copy(positions[index].begin(), positions[index].end(), vertices[index].position);
+        vertices[index].normal[2] = 1.0F;
+    }
+    const std::array<std::uint8_t, 4> red{255, 0, 0, 255};
+    const std::array<PreviewTexture, 1> textures{{
+        {1, 1, std::span<const std::uint8_t>(red), false},
+    }};
+    std::array<PreviewMaterial, 1> materials{};
+    materials[0].textureSlot = 1;
+    const std::array<PreviewDraw, 1> draws{{{0, 3, 0}}};
+    device.uploadPreviewTextures(textures);
+    device.updatePreviewMaterials(materials);
+    device.updatePreviewDraws(draws);
+
+    const std::array<std::uint32_t, 3> frontIndices{0, 2, 1};
+    device.uploadPreviewMesh(vertices, frontIndices);
+    const auto frontImage = device.renderToImage({64, 64});
+    const auto center = (static_cast<std::size_t>(frontImage.height) / 2U * frontImage.width +
+                         static_cast<std::size_t>(frontImage.width) / 2U) *
+                        4U;
+    const bool frontVisible = frontImage.pixels.size() >= center + 4U && frontImage.pixels[center] > 200U &&
+                              frontImage.pixels[center + 1U] < 80U && frontImage.pixels[center + 2U] < 80U;
+
+    const std::array<std::uint32_t, 3> backIndices{0, 1, 2};
+    device.uploadPreviewMesh(vertices, backIndices);
+    const auto backImage = device.renderToImage({64, 64});
+    const bool backDiscarded = backImage.pixels.size() >= center + 4U && backImage.pixels[center] > 200U &&
+                               backImage.pixels[center + 1U] > 200U && backImage.pixels[center + 2U] > 200U;
+    return frontVisible && backDiscarded;
 }
 
 bool runCase(dayo::graphics::VulkanDevice& device, PreviewSkinningType type) {
@@ -211,6 +251,10 @@ int main() {
         }
         if (!coplanarMaterialsUseStrictDepth(device)) {
             std::cerr << "FAIL: coplanar preview materials did not preserve the first material\n";
+            return 1;
+        }
+        if (!singleSidedMaterialsUseClockwiseFrontFaces(device)) {
+            std::cerr << "FAIL: single-sided preview materials used the wrong front-face winding\n";
             return 1;
         }
     } catch (const std::exception& exception) {

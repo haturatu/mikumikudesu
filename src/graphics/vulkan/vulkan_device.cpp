@@ -623,7 +623,8 @@ void VulkanDevice::createPipeline() {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .polygonMode = VK_POLYGON_MODE_FILL,
         .cullMode = VK_CULL_MODE_NONE,
-        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        // preview.hlsl flips clip-space Y, which reverses the projected winding.
+        .frontFace = VK_FRONT_FACE_CLOCKWISE,
         .lineWidth = 1.0F,
     };
     const VkPipelineMultisampleStateCreateInfo multisample{
