@@ -16,6 +16,24 @@ struct TaskScheduler::Impl {
         std::function<void()> function;
     };
 
+    static Impl*& currentWorker() noexcept {
+        static thread_local Impl* owner = nullptr;
+        return owner;
+    }
+
+    struct WorkerScope {
+        Impl*& slot;
+        Impl* previous;
+
+        explicit WorkerScope(Impl* owner) : slot(currentWorker()), previous(slot) {
+            slot = owner;
+        }
+
+        ~WorkerScope() {
+            slot = previous;
+        }
+    };
+
     explicit Impl(std::size_t requestedWorkers) {
         const auto hardware = static_cast<std::size_t>(std::thread::hardware_concurrency());
         const auto desired = requestedWorkers == 0 ? (hardware > 1 ? hardware - 1U : 1U) : requestedWorkers;
@@ -46,6 +64,7 @@ struct TaskScheduler::Impl {
                 task = std::move(tasks.front());
                 tasks.pop_front();
             }
+            WorkerScope workerScope(this);
             task.function();
         }
     }
@@ -65,7 +84,7 @@ TaskScheduler& TaskScheduler::operator=(TaskScheduler&&) noexcept = default;
 void TaskScheduler::parallelFor(std::size_t count, const std::function<void(std::size_t)>& function) {
     if (count == 0)
         return;
-    if (impl_->workers.empty() || count == 1) {
+    if (impl_->workers.empty() || count == 1 || Impl::currentWorker() == impl_.get()) {
         for (std::size_t index = 0; index < count; ++index)
             function(index);
         return;
