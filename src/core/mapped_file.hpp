@@ -14,6 +14,8 @@ class MappedFileStream final : public std::istream {
     MappedFileStream(const MappedFileStream&) = delete;
     MappedFileStream& operator=(const MappedFileStream&) = delete;
 
+    [[nodiscard]] std::size_t remaining() const noexcept;
+
   private:
     class Buffer final : public std::streambuf {
       public:
@@ -21,6 +23,8 @@ class MappedFileStream final : public std::istream {
         ~Buffer() override;
         Buffer(const Buffer&) = delete;
         Buffer& operator=(const Buffer&) = delete;
+
+        [[nodiscard]] std::size_t remaining() const noexcept;
 
       private:
         [[nodiscard]] std::size_t size() const noexcept;
