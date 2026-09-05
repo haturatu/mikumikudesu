@@ -11,6 +11,8 @@ struct VertexInput
     [[vk::location(8)]] float3 sdefHalfDelta : TEXCOORD5;
     [[vk::location(9)]] float cloneOffset : TEXCOORD6;
     [[vk::location(10)]] float edgeScale : TEXCOORD7;
+    [[vk::location(11)]] uint morphStart : TEXCOORD8;
+    [[vk::location(12)]] uint morphCount : TEXCOORD9;
 };
 
 struct VertexOutput
@@ -57,6 +59,14 @@ struct PreviewMaterialData
     uint2 reserved;
 };
 [[vk::binding(0, 2)]] StructuredBuffer<PreviewMaterialData> previewMaterials;
+
+struct PreviewMorphDelta
+{
+    float3 delta;
+    uint morphIndex;
+};
+[[vk::binding(0, 3)]] StructuredBuffer<PreviewMorphDelta> previewMorphDeltas;
+[[vk::binding(1, 3)]] StructuredBuffer<float> previewMorphWeights;
 
 [[vk::binding(0, 0)]] Texture2D<float4> baseTexture;
 [[vk::binding(1, 0)]] Texture2D<float4> toonTexture;
@@ -250,6 +260,18 @@ SkinResult skinVertex(VertexInput input)
     }
 }
 
+float3 applyVertexMorphs(VertexInput input)
+{
+    float3 position = input.position;
+    [loop]
+    for (uint offset = 0; offset < input.morphCount; ++offset)
+    {
+        const PreviewMorphDelta delta = previewMorphDeltas[input.morphStart + offset];
+        position += delta.delta * previewMorphWeights[delta.morphIndex];
+    }
+    return position;
+}
+
 VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass)
 {
     VertexOutput output;
@@ -266,6 +288,7 @@ VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass)
         return output;
     }
 
+    input.position = applyVertexMorphs(input);
     SkinResult skin = skinVertex(input);
     skin.position.x += input.cloneOffset;
     if (edgePass != 0)

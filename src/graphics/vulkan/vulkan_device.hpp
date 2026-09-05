@@ -35,6 +35,7 @@ class VulkanDevice final : public Device {
     void uploadPreviewMesh(std::span<const PreviewVertex> vertices, std::span<const std::uint32_t> indices) override;
     void updatePreviewVertices(std::span<const PreviewVertex> vertices) override;
     void updatePreviewBones(std::span<const PreviewBoneTransform> bones) override;
+    void updatePreviewMorphs(std::span<const PreviewMorphDelta> deltas, std::span<const float> weights) override;
     void updatePreviewMaterials(std::span<const PreviewMaterial> materials) override;
     void updatePreviewDraws(std::span<const PreviewDraw> draws) override;
     void uploadPreviewTextures(std::span<const PreviewTexture> textures) override;
@@ -67,6 +68,14 @@ class VulkanDevice final : public Device {
         void* mappedPreviewBones{};
         VkDescriptorSet previewBoneDescriptor{};
         std::uint64_t previewBoneGeneration{};
+        VkBuffer previewMorphDeltaBuffer{};
+        VkDeviceMemory previewMorphDeltaMemory{};
+        void* mappedPreviewMorphDeltas{};
+        VkBuffer previewMorphWeightBuffer{};
+        VkDeviceMemory previewMorphWeightMemory{};
+        void* mappedPreviewMorphWeights{};
+        VkDescriptorSet previewMorphDescriptor{};
+        std::uint64_t previewMorphGeneration{};
         VkBuffer previewMaterialBuffer{};
         VkDeviceMemory previewMaterialMemory{};
         void* mappedPreviewMaterials{};
@@ -142,6 +151,8 @@ class VulkanDevice final : public Device {
     void synchronizePreviewVertices(Frame& frame);
     void destroyPreviewBones();
     void synchronizePreviewBones(Frame& frame);
+    void destroyPreviewMorphs();
+    void synchronizePreviewMorphs(Frame& frame);
     void destroyPreviewMaterialBuffers();
     void synchronizePreviewMaterials(Frame& frame);
     void destroyPreviewMaterialDescriptors();
@@ -183,6 +194,7 @@ class VulkanDevice final : public Device {
     VkPipeline backgroundPipeline_{};
     VkDescriptorSetLayout previewDescriptorSetLayout_{};
     VkDescriptorSetLayout previewSkinningDescriptorSetLayout_{};
+    VkDescriptorSetLayout previewMorphDescriptorSetLayout_{};
     VkDescriptorSetLayout previewMaterialDescriptorSetLayout_{};
     VkDescriptorPool previewDescriptorPool_{};
     VkSampler previewSampler_{};
@@ -198,9 +210,14 @@ class VulkanDevice final : public Device {
     std::uint64_t previewVertexGeneration_{};
     VkDeviceSize previewBoneSize_{};
     std::uint64_t previewBoneGeneration_{};
+    VkDeviceSize previewMorphDeltaSize_{};
+    VkDeviceSize previewMorphWeightSize_{};
+    std::uint64_t previewMorphGeneration_{};
     VkDeviceSize previewMaterialSize_{};
     std::uint64_t previewMaterialGeneration_{};
     std::vector<PreviewMaterialGpu> previewMaterialData_;
+    std::vector<PreviewMorphDelta> previewMorphDeltas_;
+    std::vector<float> previewMorphWeights_;
     VkBuffer previewIndexBuffer_{};
     VkDeviceMemory previewIndexMemory_{};
     std::uint32_t previewIndexCount_{};
