@@ -3,6 +3,9 @@ name: AMD Linux smoke test
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - docs/**
   workflow_dispatch:
 
 permissions:

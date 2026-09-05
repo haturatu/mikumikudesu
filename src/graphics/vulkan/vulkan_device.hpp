@@ -4,6 +4,11 @@
 
 #include <vulkan/vulkan.h>
 
+#if DAYO_ENABLE_VMA
+VK_DEFINE_HANDLE(VmaAllocator)
+VK_DEFINE_HANDLE(VmaAllocation)
+#endif
+
 #include <array>
 #include <unordered_map>
 
@@ -77,11 +82,17 @@ class VulkanDevice final : public Device {
     struct BufferResource {
         VkBuffer buffer{};
         VkDeviceMemory memory{};
+#if DAYO_ENABLE_VMA
+        VmaAllocation allocation{};
+#endif
     };
 
     struct TextureResource {
         VkImage image{};
         VkDeviceMemory memory{};
+#if DAYO_ENABLE_VMA
+        VmaAllocation allocation{};
+#endif
     };
 
     struct DepthResource {
@@ -135,6 +146,8 @@ class VulkanDevice final : public Device {
     void createFrames();
     void destroyFrames();
     void resolveTimestampQuery(Frame& frame) noexcept;
+    void uploadPreviewDeviceLocalBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer,
+                                        VkDeviceMemory& memory);
     void createUi();
     void destroyUi();
     void recreateSwapchain();
@@ -146,6 +159,8 @@ class VulkanDevice final : public Device {
     void synchronizePreviewMaterials(Frame& frame);
     void destroyPreviewMaterialDescriptors();
     void refreshPreviewMaterialDescriptors();
+    void destroyPreviewBindlessDescriptor();
+    void refreshPreviewBindlessDescriptor();
     void recordPreviewModel(VkCommandBuffer command, const PreviewPushConstants& constants);
     void uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer,
                              VkDeviceMemory& memory);
@@ -164,6 +179,9 @@ class VulkanDevice final : public Device {
     VkPhysicalDevice physicalDevice_{};
     VkPhysicalDeviceProperties physicalProperties_{};
     VkDevice device_{};
+#if DAYO_ENABLE_VMA
+    VmaAllocator allocator_{};
+#endif
     std::uint32_t queueFamily_{};
     std::uint32_t timestampValidBits_{};
     VkQueue queue_{};
@@ -184,9 +202,13 @@ class VulkanDevice final : public Device {
     VkDescriptorSetLayout previewDescriptorSetLayout_{};
     VkDescriptorSetLayout previewSkinningDescriptorSetLayout_{};
     VkDescriptorSetLayout previewMaterialDescriptorSetLayout_{};
+    VkDescriptorSetLayout previewBindlessDescriptorSetLayout_{};
     VkDescriptorPool previewDescriptorPool_{};
     VkSampler previewSampler_{};
     VkSampler previewClampSampler_{};
+    VkDescriptorSet previewBindlessDescriptor_{};
+    std::uint32_t previewBindlessTextureCapacity_{};
+    bool previewBindlessSupported_{};
 #if DAYO_HAS_IMGUI
     VkDescriptorPool imguiDescriptorPool_{};
     bool uiInitialized_{};
@@ -194,6 +216,8 @@ class VulkanDevice final : public Device {
     std::array<Frame, 2> frames_{};
     std::size_t frameIndex_{};
     std::uint64_t previewGpuNanoseconds_{};
+    VkBuffer previewStaticVertexBuffer_{};
+    VkDeviceMemory previewStaticVertexMemory_{};
     VkDeviceSize previewVertexSize_{};
     std::uint64_t previewVertexGeneration_{};
     VkDeviceSize previewBoneSize_{};

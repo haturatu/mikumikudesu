@@ -248,6 +248,10 @@ Options parseOptions(int argc, char** argv) {
             if (!options.videoExport)
                 options.videoExport.emplace();
             options.videoExport->bitrate = kbps * 1000U;
+        } else if (argument == "--video-hardware") {
+            if (!options.videoExport)
+                options.videoExport.emplace();
+            options.videoExport->preferHardware = true;
         } else if (argument == "--video-from-frame") {
             if (++i >= argc)
                 throw std::invalid_argument("--video-from-frame requires a value");
@@ -321,7 +325,7 @@ Options parseOptions(int argc, char** argv) {
                       "[--audio-bitrate KBPS] [--audio-from SEC] [--audio-to SEC] "
                       "[--export-video PATH] [--video-width PX] [--video-height PX] "
                       "[--video-fps FPS] [--video-codec h264|h265|av1] "
-                      "[--video-bitrate KBPS] [--audio-bitrate KBPS] "
+                      "[--video-bitrate KBPS] [--video-hardware] [--audio-bitrate KBPS] "
                       "[--video-from-frame N] [--video-to-frame N] [--no-audio] "
                       "[--overwrite] [--no-validation]");
             options.probeOnly = true;
@@ -591,7 +595,10 @@ int Application::runVideoExport() {
     const auto& options = *options_.videoExport;
     if (options.destination.empty())
         throw std::invalid_argument("--export-video requires a destination path");
-    if (!core::canExportVideo(options.codec)) {
+    if (options.preferHardware) {
+        if (!core::canExportVideoHardware(options.codec))
+            throw std::runtime_error("requested VAAPI video encoder is unavailable");
+    } else if (!core::canExportVideo(options.codec)) {
         throw std::runtime_error("requested video encoder is unavailable");
     }
     if (device_ == nullptr)
@@ -651,6 +658,7 @@ int Application::runVideoExport() {
     request.fps = options.fps;
     request.codec = options.codec;
     request.bitrate = options.bitrate;
+    request.preferHardware = options.preferHardware;
     request.includeAudio = audioSource.has_value();
     request.audioBitrate = options.audioBitrate;
     request.overwrite = options.overwrite;
@@ -992,18 +1000,23 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     std::size_t vertexCount = 0;
     std::size_t indexCount = 0;
     std::size_t materialCount = 0;
+    bool dynamicVertices = false;
     for (const auto& instance : scene_.models()) {
         if (!instance.visible || instance.model == nullptr || instance.animator == nullptr)
             continue;
-        const auto clones = std::max(instance.cloneCount, 1U);
-        vertexCount += instance.model->vertices.size() * clones;
-        indexCount += instance.model->indices.size() * clones;
-        materialCount += instance.model->materials.size() * clones;
+        vertexCount += instance.model->vertices.size();
+        indexCount += instance.model->indices.size();
+        materialCount += instance.model->materials.size();
+        dynamicVertices = dynamicVertices || (instance.softBody != nullptr && instance.softBody->available());
+        dynamicVertices = dynamicVertices || std::ranges::any_of(instance.model->morphs, [](const auto& morph) {
+                              return morph.type == 1 || morph.type == 9;
+                          });
     }
     const bool rebuildTopology = initialUpload || animatedTopologyGeneration_ != scene_.topologyGeneration() ||
                                  animatedIndices_.size() != indexCount ||
                                  animatedMaterialTemplates_.size() != materialCount ||
                                  animatedDraws_.size() != materialCount;
+    const bool rebuildVertices = initialUpload || rebuildTopology || dynamicVertices;
     std::vector<graphics::PreviewVertex> vertices;
     vertices.reserve(vertexCount);
     std::vector<graphics::PreviewMaterial> materials =
@@ -1015,9 +1028,13 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         materials.reserve(materialCount);
         draws.reserve(materialCount);
     }
-    std::size_t materialCursor = 0;
-    std::uint32_t indexCursor = 0;
-    std::vector<graphics::PreviewBoneTransform> bones;
+    struct EvaluatedModel {
+        const core::ModelInstance* instance{};
+        bool gpuSkinning{};
+        core::AnimatedModelFrame frame;
+    };
+    std::vector<EvaluatedModel> evaluated;
+    evaluated.reserve(scene_.models().size());
     for (const auto& instance : scene_.models()) {
         if (!instance.visible || instance.model == nullptr || instance.animator == nullptr)
             continue;
@@ -1029,20 +1046,32 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             instance.physics->setGravityNoise(gravity.noiseAmplitude, gravity.noiseFrequency);
             instance.physics->setFloorCollision(gravity.floorCollision);
         }
-        const bool gpuSkinning = instance.softBody == nullptr || !instance.softBody->available();
-        core::AnimatedModelFrame frame;
-        {
-            auto animation = frameProfiler_.measure(core::ProfileSection::animation);
-            frame = instance.animator->evaluate(animationFrame_, deltaSeconds, gpuSkinning);
+        evaluated.push_back({&instance, instance.softBody == nullptr || !instance.softBody->available(), {}});
+    }
+    {
+        auto animation = frameProfiler_.measure(core::ProfileSection::animation);
+        taskScheduler_.parallelFor(evaluated.size(), [&](std::size_t index) {
+            auto& current = evaluated[index];
+            const auto& instance = *current.instance;
+            current.frame = instance.animator->evaluate(animationFrame_, deltaSeconds, current.gpuSkinning);
             if (instance.softBody != nullptr && instance.softBody->available()) {
+                const auto gravity = scene_.evaluatePhysicsSettings(animationFrame_);
                 instance.softBody->step(deltaSeconds, {gravity.gravityDirection[0] * gravity.gravity,
                                                        gravity.gravityDirection[1] * gravity.gravity,
                                                        gravity.gravityDirection[2] * gravity.gravity});
-                instance.softBody->apply(frame.vertices);
+                instance.softBody->apply(current.frame.vertices);
             }
-            core::normalizeForPreview(frame.vertices, instance.normalization);
-            animation.finish();
-        }
+            core::normalizeForPreview(current.frame.vertices, instance.normalization);
+        });
+        animation.finish();
+    }
+    std::size_t materialCursor = 0;
+    std::uint32_t indexCursor = 0;
+    std::vector<graphics::PreviewBoneTransform> bones;
+    for (const auto& evaluatedModel : evaluated) {
+        const auto& instance = *evaluatedModel.instance;
+        const auto& frame = evaluatedModel.frame;
+        const bool gpuSkinning = evaluatedModel.gpuSkinning;
         if (!frame.vertices.empty() && (initialUpload || static_cast<int>(animationFrame_) % 30 == 0)) {
             const auto& vertex = frame.vertices.front().position;
             log::debug("Animation sample: model=", instance.displayName, ", frame=", animationFrame_, ", vertex0=(",
@@ -1073,11 +1102,10 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             return static_cast<std::uint32_t>(value);
         }();
         const auto cloneCount = std::max(instance.cloneCount, 1U);
-        for (std::uint32_t clone = 0; clone < cloneCount; ++clone) {
+        const auto baseVertex = static_cast<std::uint32_t>(vertices.size());
+        const auto firstModelIndex = indexCursor;
+        if (rebuildVertices) {
             auto conversion = frameProfiler_.measure(core::ProfileSection::vertexConvert);
-            const auto baseVertex = static_cast<std::uint32_t>(vertices.size());
-            const auto firstCloneIndex = indexCursor;
-            const float cloneOffset = (static_cast<float>(clone) - static_cast<float>(cloneCount - 1U) * 0.5F) * 2.2F;
             for (const auto& source : frame.vertices) {
                 graphics::PreviewVertex vertex;
                 std::memcpy(vertex.position, source.position.data(), sizeof(vertex.position));
@@ -1097,75 +1125,70 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                     const auto normalizedR0 = normalizePreviewPoint(source.sdefR0, instance.normalization);
                     const auto normalizedR1 = normalizePreviewPoint(source.sdefR1, instance.normalization);
                     std::copy(normalizedC.begin(), normalizedC.end(), vertex.sdefC);
-                    for (std::size_t axis = 0; axis < 3; ++axis) {
+                    for (std::size_t axis = 0; axis < 3; ++axis)
                         vertex.sdefHalfDelta[axis] = (normalizedR0[axis] - normalizedR1[axis]) * 0.5F;
-                    }
                     vertex.skinningType = static_cast<std::uint32_t>(source.weightType);
                     vertex.gpuSkinning = 1;
                 }
                 vertex.edgeScale = source.edgeScale;
-                vertex.cloneOffset = cloneOffset;
                 vertices.push_back(vertex);
-            }
-            if (rebuildTopology) {
-                for (const auto index : instance.model->indices)
-                    animatedIndices_.push_back(baseVertex + index);
-            }
-            indexCursor += static_cast<std::uint32_t>(instance.model->indices.size());
-            std::uint32_t firstIndex = firstCloneIndex;
-            for (std::size_t materialIndex = 0; materialIndex < instance.model->materials.size(); ++materialIndex) {
-                const auto& sourceMaterial = instance.model->materials[materialIndex];
-                if (rebuildTopology) {
-                    graphics::PreviewMaterial material;
-                    material.doubleSided = (sourceMaterial.drawFlags & 0x01U) != 0;
-                    material.edgeEnabled = (sourceMaterial.drawFlags & 0x10U) != 0;
-                    material.textureSlot =
-                        sourceMaterial.textureIndex >= 0
-                            ? textureBase + static_cast<std::uint32_t>(sourceMaterial.textureIndex) + 1U
-                            : 0U;
-                    const bool hasSphereTexture =
-                        hasLoadedTexture(instance.textures, sourceMaterial.sphereTextureIndex);
-                    material.sphereTextureSlot =
-                        hasSphereTexture
-                            ? textureBase + static_cast<std::uint32_t>(sourceMaterial.sphereTextureIndex) + 1U
-                            : 0U;
-                    material.toonTextureSlot =
-                        sourceMaterial.toonMode == 0 && sourceMaterial.toonTextureIndex >= 0
-                            ? textureBase + static_cast<std::uint32_t>(sourceMaterial.toonTextureIndex) + 1U
-                            : 0U;
-                    material.sphereMode = hasSphereTexture ? sourceMaterial.sphereMode : 0U;
-                    material.toonMode = sourceMaterial.toonMode;
-                    materials.push_back(material);
-                    draws.push_back({});
-                }
-                auto& material = materials[materialCursor++];
-                if (materialIndex < frame.materials.size()) {
-                    const auto& animated = frame.materials[materialIndex];
-                    std::copy(animated.diffuse.begin(), animated.diffuse.end(), material.diffuse);
-                    std::copy(animated.ambient.begin(), animated.ambient.end(), material.ambient);
-                    std::copy(animated.specular.begin(), animated.specular.end(), material.specular);
-                    material.shininess = animated.shininess;
-                    std::copy(animated.textureMultiply.begin(), animated.textureMultiply.end(),
-                              material.textureMultiply);
-                    std::copy(animated.textureAdd.begin(), animated.textureAdd.end(), material.textureAdd);
-                    std::copy(animated.sphereMultiply.begin(), animated.sphereMultiply.end(), material.sphereMultiply);
-                    std::copy(animated.sphereAdd.begin(), animated.sphereAdd.end(), material.sphereAdd);
-                    std::copy(animated.toonMultiply.begin(), animated.toonMultiply.end(), material.toonMultiply);
-                    std::copy(animated.toonAdd.begin(), animated.toonAdd.end(), material.toonAdd);
-                    std::copy(animated.edgeColor.begin(), animated.edgeColor.end(), material.edgeColor);
-                    // Edge extrusion is a distance in the same normalized space as the vertices.
-                    material.edgeSize = animated.edgeSize * instance.normalization.scale;
-                }
-                auto& draw = draws[materialCursor - 1U];
-                draw.firstIndex = firstIndex;
-                draw.indexCount = sourceMaterial.indexCount;
-                draw.materialIndex = static_cast<std::uint32_t>(materialCursor - 1U);
-                firstIndex += instance.model->materials[materialIndex].indexCount;
             }
             conversion.finish();
         }
+        if (rebuildTopology) {
+            for (const auto index : instance.model->indices)
+                animatedIndices_.push_back(baseVertex + index);
+        }
+        indexCursor += static_cast<std::uint32_t>(instance.model->indices.size());
+        std::uint32_t firstIndex = firstModelIndex;
+        for (std::size_t materialIndex = 0; materialIndex < instance.model->materials.size(); ++materialIndex) {
+            const auto& sourceMaterial = instance.model->materials[materialIndex];
+            if (rebuildTopology) {
+                graphics::PreviewMaterial material;
+                material.doubleSided = (sourceMaterial.drawFlags & 0x01U) != 0;
+                material.edgeEnabled = (sourceMaterial.drawFlags & 0x10U) != 0;
+                material.textureSlot = sourceMaterial.textureIndex >= 0
+                                           ? textureBase + static_cast<std::uint32_t>(sourceMaterial.textureIndex) + 1U
+                                           : 0U;
+                const bool hasSphereTexture = hasLoadedTexture(instance.textures, sourceMaterial.sphereTextureIndex);
+                material.sphereTextureSlot =
+                    hasSphereTexture ? textureBase + static_cast<std::uint32_t>(sourceMaterial.sphereTextureIndex) + 1U
+                                     : 0U;
+                material.toonTextureSlot =
+                    sourceMaterial.toonMode == 0 && sourceMaterial.toonTextureIndex >= 0
+                        ? textureBase + static_cast<std::uint32_t>(sourceMaterial.toonTextureIndex) + 1U
+                        : 0U;
+                material.sphereMode = hasSphereTexture ? sourceMaterial.sphereMode : 0U;
+                material.toonMode = sourceMaterial.toonMode;
+                materials.push_back(material);
+                draws.push_back({});
+            }
+            auto& material = materials[materialCursor++];
+            if (materialIndex < frame.materials.size()) {
+                const auto& animated = frame.materials[materialIndex];
+                std::copy(animated.diffuse.begin(), animated.diffuse.end(), material.diffuse);
+                std::copy(animated.ambient.begin(), animated.ambient.end(), material.ambient);
+                std::copy(animated.specular.begin(), animated.specular.end(), material.specular);
+                material.shininess = animated.shininess;
+                std::copy(animated.textureMultiply.begin(), animated.textureMultiply.end(), material.textureMultiply);
+                std::copy(animated.textureAdd.begin(), animated.textureAdd.end(), material.textureAdd);
+                std::copy(animated.sphereMultiply.begin(), animated.sphereMultiply.end(), material.sphereMultiply);
+                std::copy(animated.sphereAdd.begin(), animated.sphereAdd.end(), material.sphereAdd);
+                std::copy(animated.toonMultiply.begin(), animated.toonMultiply.end(), material.toonMultiply);
+                std::copy(animated.toonAdd.begin(), animated.toonAdd.end(), material.toonAdd);
+                std::copy(animated.edgeColor.begin(), animated.edgeColor.end(), material.edgeColor);
+                // Edge extrusion is a distance in the same normalized space as the vertices.
+                material.edgeSize = animated.edgeSize * instance.normalization.scale;
+            }
+            auto& draw = draws[materialCursor - 1U];
+            draw.firstIndex = firstIndex;
+            draw.indexCount = sourceMaterial.indexCount;
+            draw.materialIndex = static_cast<std::uint32_t>(materialCursor - 1U);
+            draw.instanceCount = cloneCount;
+            firstIndex += instance.model->materials[materialIndex].indexCount;
+        }
     }
-    if (vertices.empty() || animatedIndices_.empty())
+    if ((rebuildVertices && vertices.empty()) || animatedIndices_.empty())
         return;
     if (rebuildTopology) {
         animatedMaterialTemplates_ = materials;
@@ -1177,7 +1200,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         device_->updatePreviewBones(bones);
         if (initialUpload || rebuildTopology)
             device_->uploadPreviewMesh(vertices, animatedIndices_);
-        else {
+        else if (dynamicVertices) {
             try {
                 device_->updatePreviewVertices(vertices);
             } catch (const std::exception&) {
@@ -1194,11 +1217,13 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     std::uint64_t uploadBytes = byteCount(bones.size(), sizeof(graphics::PreviewBoneTransform));
     uploadBytes += byteCount(materials.size(), sizeof(graphics::PreviewMaterial));
     uploadBytes += byteCount(draws.size(), sizeof(graphics::PreviewDraw));
-    uploadBytes += byteCount(vertices.size(), sizeof(graphics::PreviewVertex));
+    if (rebuildVertices)
+        uploadBytes += byteCount(vertices.size(), sizeof(graphics::PreviewVertex));
     if (initialUpload || rebuildTopology)
         uploadBytes += byteCount(animatedIndices_.size(), sizeof(std::uint32_t));
     frameProfiler_.addUploadBytes(uploadBytes);
-    animatedVertexCount_ = static_cast<std::uint64_t>(vertices.size());
+    if (rebuildVertices)
+        animatedVertexCount_ = static_cast<std::uint64_t>(vertices.size());
     uploadedAnimationFrame_ = static_cast<int>(animationFrame_);
     scene_.clearDirty(core::DirtyFlag::geometry | core::DirtyFlag::material);
 }

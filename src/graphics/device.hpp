@@ -86,7 +86,6 @@ struct PreviewVertex {
     float sdefHalfDelta[3]{};
     std::uint32_t skinningType{};
     std::uint32_t gpuSkinning{};
-    float cloneOffset{};
     float edgeScale{1.0F};
 };
 
@@ -129,6 +128,7 @@ struct PreviewDraw {
     std::uint32_t firstIndex{};
     std::uint32_t indexCount{};
     std::uint32_t materialIndex{};
+    std::uint32_t instanceCount{1};
 };
 
 // This is the renderer-facing storage-buffer layout. Keep it explicitly
@@ -147,8 +147,9 @@ struct PreviewMaterialGpu {
     float edgeSize{};
     std::uint32_t flags{};
     std::uint32_t reserved[2]{};
+    std::uint32_t textureSlots[4]{};
 };
-static_assert(sizeof(PreviewMaterialGpu) == 176);
+static_assert(sizeof(PreviewMaterialGpu) == 192);
 
 struct PreviewTexture {
     std::uint32_t width{};
@@ -178,8 +179,10 @@ struct PreviewPushConstants {
     std::array<float, 4> camera{};
     std::array<float, 4> target{};
     std::array<float, 4> light{};
+    std::uint32_t materialIndex{};
+    std::uint32_t instanceCount{1};
 };
-static_assert(sizeof(PreviewPushConstants) == 48);
+static_assert(sizeof(PreviewPushConstants) == 56);
 
 struct RenderTargetDesc {
     std::uint32_t width{};

@@ -7,6 +7,7 @@
 #include "core/profiling.hpp"
 #include "core/project.hpp"
 #include "core/scene.hpp"
+#include "core/task_scheduler.hpp"
 #include "core/video_export.hpp"
 #include "graphics/device.hpp"
 
@@ -38,6 +39,7 @@ struct VideoExportOptions {
     core::VideoCodec codec{core::VideoCodec::h264};
     std::uint32_t bitrate{8'000'000};
     std::uint32_t audioBitrate{192'000};
+    bool preferHardware{};
     std::optional<std::uint64_t> fromFrame;
     std::optional<std::uint64_t> toFrame;
     bool includeAudio{true};
@@ -91,6 +93,7 @@ class Application {
     Options options_;
     graphics::Device* device_{};
     core::Scene scene_;
+    core::TaskScheduler taskScheduler_;
     core::FrameProfiler frameProfiler_;
     core::CommandHistory history_;
     core::AudioPlayer audioPlayer_;

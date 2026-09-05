@@ -1,4 +1,5 @@
 #include "core/model_probe.hpp"
+#include "core/mapped_file.hpp"
 
 #include <algorithm>
 #include <array>
@@ -425,16 +426,12 @@ void readSoftBodies(std::istream& input, const Header& header, PmxModel& model) 
 } // namespace
 
 PmxMetadata probePmx(const std::filesystem::path& path) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input)
-        throw std::runtime_error("cannot open PMX file: " + path.string());
+    MappedFileStream input(path);
     return readHeader(input, path).metadata;
 }
 
 PmxModel loadPmxModel(const std::filesystem::path& path) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input)
-        throw std::runtime_error("cannot open PMX file: " + path.string());
+    MappedFileStream input(path);
     const auto header = readHeader(input, path);
     PmxModel model;
     model.metadata = header.metadata;

@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(mikumikudesu VERSION 1.20.0 LANGUAGES CXX)
+project(mikumikudesu VERSION 0.1.0 LANGUAGES CXX)
+
+# Native application version is independent of the upstream compatibility baseline.
+set(DAYO_UPSTREAM_VERSION "1.30")
 
 include(CTest)
 include(FetchContent)
@@ -20,14 +23,27 @@ option(DAYO_ENABLE_MEDIA "Detect FFmpeg media support" ON)
 option(DAYO_ENABLE_PHYSICS "Build Bullet PMX physics" ON)
 option(DAYO_ENABLE_VALIDATION "Enable Vulkan validation when available" ON)
 option(DAYO_FETCH_DEPENDENCIES "Fetch small missing source dependencies" ON)
+option(DAYO_ENABLE_VMA "Use AMD/Vulkan Memory Allocator for generic resources" ON)
 option(DAYO_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(DAYO_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(DAYO_ENABLE_NATIVE_TUNING "Enable -march=native/-mtune=native for local Linux builds" OFF)
+option(DAYO_ENABLE_BOLT "Run LLVM BOLT on the Linux executable after linking" OFF)
+set(DAYO_BOLT_PROFILE "" CACHE FILEPATH "perf2bolt/fdata profile used by LLVM BOLT")
+set(DAYO_BOLT_EXECUTABLE "" CACHE FILEPATH "LLVM BOLT executable (auto-detected when empty)")
 
 if(NOT DAYO_BACKEND STREQUAL "VULKAN")
   message(
     FATAL_ERROR
     "The native target currently supports DAYO_BACKEND=VULKAN. The original D3D12 source remains under MikuMikuDayo/src."
   )
+endif()
+
+if(DAYO_ENABLE_NATIVE_TUNING AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  message(FATAL_ERROR "DAYO_ENABLE_NATIVE_TUNING is only supported on Linux")
+endif()
+
+if(DAYO_ENABLE_BOLT AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  message(FATAL_ERROR "DAYO_ENABLE_BOLT is only supported on Linux")
 endif()
 
 find_package(Vulkan 1.3 QUIET)
@@ -98,6 +114,7 @@ add_library(
   src/core/audio_export.cpp
   src/core/video_export.cpp
   src/core/media.cpp
+  src/core/mapped_file.cpp
   src/core/model_probe.cpp
   src/core/motion.cpp
   src/core/editor.cpp
@@ -107,6 +124,9 @@ add_library(
   src/core/project.cpp
   src/core/scene.cpp
   src/core/upload_ring.cpp
+  src/core/task_scheduler.cpp
+  src/core/subayai_hair.cpp
+  src/core/subayai_material.cpp
   src/core/vmdayo.cpp
 )
 target_include_directories(dayo_core PUBLIC src)
@@ -144,10 +164,34 @@ add_library(dayo_platform src/platform/sdl_platform.cpp)
 target_include_directories(dayo_platform PUBLIC src)
 target_link_libraries(dayo_platform PUBLIC SDL3::SDL3)
 
+if(DAYO_ENABLE_VMA)
+  find_path(DAYO_VMA_INCLUDE_DIR vk_mem_alloc.h PATH_SUFFIXES include)
+  if(NOT DAYO_VMA_INCLUDE_DIR)
+    if(NOT DAYO_FETCH_DEPENDENCIES)
+      message(FATAL_ERROR "Vulkan Memory Allocator was not found; install VMA or enable DAYO_FETCH_DEPENDENCIES")
+    endif()
+    FetchContent_Declare(
+      vulkan_memory_allocator
+      URL https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.3.0.tar.gz
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(vulkan_memory_allocator)
+    set(DAYO_VMA_INCLUDE_DIR "${vulkan_memory_allocator_SOURCE_DIR}/include")
+  endif()
+endif()
+
 add_library(dayo_graphics src/graphics/device.cpp src/graphics/vulkan/vulkan_device.cpp)
 target_include_directories(dayo_graphics PUBLIC src)
 target_link_libraries(dayo_graphics PUBLIC Vulkan::Vulkan SDL3::SDL3)
 target_compile_definitions(dayo_graphics PRIVATE DAYO_ENABLE_VALIDATION=$<BOOL:${DAYO_ENABLE_VALIDATION}>)
+if(DAYO_ENABLE_VMA)
+  target_sources(dayo_graphics PRIVATE src/graphics/vulkan/vma_impl.cpp)
+  target_include_directories(dayo_graphics SYSTEM PRIVATE "${DAYO_VMA_INCLUDE_DIR}")
+  target_compile_definitions(dayo_graphics PUBLIC DAYO_ENABLE_VMA=1)
+  set_source_files_properties(src/graphics/vulkan/vma_impl.cpp PROPERTIES COMPILE_OPTIONS "-w")
+else()
+  target_compile_definitions(dayo_graphics PUBLIC DAYO_ENABLE_VMA=0)
+endif()
 
 include(cmake/CompileHlsl.cmake)
 dayo_compile_hlsl(DAYO_PREVIEW_VERTEX_SPV SOURCE shaders/preview.hlsl ENTRY VS PROFILE vs_6_6 STAGE vert)
@@ -347,22 +391,42 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(${target} PRIVATE -Wno-error=deprecated-literal-operator)
       endif()
     endif()
+    if(DAYO_ENABLE_NATIVE_TUNING)
+      target_compile_options(${target} PRIVATE -march=native -mtune=native)
+    endif()
   endforeach()
   target_compile_options(dayo_graphics PRIVATE -Wno-missing-field-initializers)
 endif()
 
-install(TARGETS mikumikudesu RUNTIME DESTINATION bin)
-install(
-  DIRECTORY MikuMikuDayo/hlsl MikuMikuDayo/renderer
-  DESTINATION share/mikumikudesu
-  FILES_MATCHING
-  PATTERN "*.hlsl"
-  PATTERN "*.hlsli"
-  PATTERN "*.fxdayo"
-)
-install(FILES MikuMikuDayo/licence/MikuMikuDayo.txt DESTINATION share/mikumikudesu/licence)
+if(DAYO_ENABLE_BOLT)
+  if(NOT DAYO_BOLT_PROFILE)
+    message(FATAL_ERROR "DAYO_ENABLE_BOLT requires DAYO_BOLT_PROFILE=/path/to/profile.fdata")
+  endif()
+  if(NOT DAYO_BOLT_EXECUTABLE)
+    find_program(DAYO_BOLT_EXECUTABLE NAMES llvm-bolt bolt REQUIRED)
+  endif()
+  target_link_options(mikumikudesu PRIVATE LINKER:--emit-relocs)
+  add_custom_command(
+    TARGET mikumikudesu
+    POST_BUILD
+    COMMAND
+      "${DAYO_BOLT_EXECUTABLE}" "$<TARGET_FILE:mikumikudesu>" -o "$<TARGET_FILE_DIR:mikumikudesu>/mikumikudesu.bolt"
+      -data "${DAYO_BOLT_PROFILE}" -reorder-blocks=ext-tsp -reorder-functions=hfsort+ -split-functions -split-all-cold
+    VERBATIM
+    COMMENT "Optimizing mikumikudesu with LLVM BOLT"
+  )
+endif()
+
+if(DAYO_ENABLE_BOLT)
+  install(PROGRAMS "$<TARGET_FILE_DIR:mikumikudesu>/mikumikudesu.bolt" DESTINATION bin RENAME mikumikudesu)
+else()
+  install(TARGETS mikumikudesu RUNTIME DESTINATION bin)
+endif()
+include(cmake/InstallMikuMikuDayo.cmake)
 
 if(BUILD_TESTING)
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_test(NAME upstream_fetch COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/fetch_mikumikudayo_tests.py")
   add_executable(dayo_core_tests tests/core_tests.cpp)
   target_link_libraries(dayo_core_tests PRIVATE dayo_core)
   add_executable(dayo_upload_ring_tests tests/upload_ring_tests.cpp)
@@ -469,6 +533,7 @@ if(DAYO_ENABLE_SANITIZERS)
   endif()
 endif()
 
+message(STATUS "MikuMikuDayo upstream baseline: ${DAYO_UPSTREAM_VERSION}")
 message(STATUS "mikumikudesu backend: ${DAYO_BACKEND}")
 message(STATUS "Dear ImGui: ${DAYO_ENABLE_IMGUI}")
 message(STATUS "OIDN detected: ${DAYO_HAS_OIDN} (CPU always preferred; HIP is runtime-optional)")
