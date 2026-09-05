@@ -18,6 +18,7 @@ using dayo::core::Float4;
 using dayo::graphics::PreviewBoneTransform;
 using dayo::graphics::PreviewMaterial;
 using dayo::graphics::PreviewSkinningType;
+using dayo::graphics::PreviewTexture;
 using dayo::graphics::PreviewVertex;
 
 Float3 add(const Float3& left, const Float3& right) {
@@ -145,6 +146,42 @@ dayo::core::ImageRgba8 renderCase(dayo::graphics::VulkanDevice& device, std::spa
     return device.renderToImage({64, 64});
 }
 
+bool coplanarMaterialsUseStrictDepth(dayo::graphics::VulkanDevice& device) {
+    std::array<PreviewVertex, 6> vertices{};
+    const std::array positions{
+        Float3{-0.8F, -0.8F, 0.0F},
+        Float3{0.8F, -0.8F, 0.0F},
+        Float3{0.0F, 0.8F, 0.0F},
+    };
+    for (std::size_t index = 0; index < vertices.size(); ++index) {
+        auto& vertex = vertices[index];
+        const auto& position = positions[index % positions.size()];
+        std::copy(position.begin(), position.end(), vertex.position);
+        vertex.normal[2] = 1.0F;
+    }
+    const std::array<std::uint32_t, 6> indices{0, 1, 2, 3, 4, 5};
+    const std::array<std::uint8_t, 4> red{255, 0, 0, 255};
+    const std::array<std::uint8_t, 4> blue{0, 0, 255, 255};
+    const std::array<PreviewTexture, 2> textures{{
+        {1, 1, std::span<const std::uint8_t>(red), false},
+        {1, 1, std::span<const std::uint8_t>(blue), false},
+    }};
+    std::array<PreviewMaterial, 2> materials{};
+    materials[0].textureSlot = 1;
+    materials[1].textureSlot = 2;
+    const std::array<dayo::graphics::PreviewDraw, 2> draws{{{0, 3, 0}, {3, 3, 1}}};
+
+    device.uploadPreviewTextures(textures);
+    device.uploadPreviewMesh(vertices, indices);
+    device.updatePreviewMaterials(materials);
+    device.updatePreviewDraws(draws);
+    const auto image = device.renderToImage({64, 64});
+    const auto center =
+        (static_cast<std::size_t>(image.height) / 2U * image.width + static_cast<std::size_t>(image.width) / 2U) * 4U;
+    return image.pixels.size() >= center + 4U && image.pixels[center] > 200U && image.pixels[center + 1U] < 80U &&
+           image.pixels[center + 2U] < 80U;
+}
+
 bool runCase(dayo::graphics::VulkanDevice& device, PreviewSkinningType type) {
     const auto bones = makeBones();
     const auto gpuVertices = makeVertices(type, false);
@@ -170,6 +207,10 @@ int main() {
         }
         if (!runCase(device, PreviewSkinningType::qdef)) {
             std::cerr << "FAIL: GPU QDEF output differs from reference rendering\n";
+            return 1;
+        }
+        if (!coplanarMaterialsUseStrictDepth(device)) {
+            std::cerr << "FAIL: coplanar preview materials did not preserve the first material\n";
             return 1;
         }
     } catch (const std::exception& exception) {
