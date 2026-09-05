@@ -16,5 +16,11 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v7
 
+      - name: Restore MikuMikuDayo archive
+        uses: actions/cache@v6
+        with:
+          path: .cache/mikumikudayo
+          key: mikumikudayo-${{ hashFiles('deps/mikumikudayo.lock') }}
+
       - name: Run AMD smoke test
         run: ./scripts/check-linux-amd.sh
