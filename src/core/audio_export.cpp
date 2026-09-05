@@ -240,7 +240,7 @@ AudioExportResult exportM4aWithFfmpeg(const AudioExportRequest& request, const A
             }
         };
 
-        auto encodeSamples = [&](int sampleCount, bool pad) {
+        auto encodeSamples = [&](int sampleCount) {
             if (sampleCount <= 0)
                 return;
             auto* frame = av_frame_alloc();
@@ -249,22 +249,18 @@ AudioExportResult exportM4aWithFfmpeg(const AudioExportRequest& request, const A
             try {
                 frame->format = context.encoder->sample_fmt;
                 frame->sample_rate = context.encoder->sample_rate;
-                frame->nb_samples = frameSize;
+                frame->nb_samples = sampleCount;
                 ffmpeg::check(av_channel_layout_copy(&frame->ch_layout, &context.encoder->ch_layout),
                               "copy AAC frame channel layout");
                 ffmpeg::check(av_frame_get_buffer(frame, 0), "allocate AAC frame");
                 ffmpeg::check(
                     av_audio_fifo_read(context.fifo, reinterpret_cast<void**>(frame->extended_data), sampleCount),
                     "read audio export samples");
-                if (pad && sampleCount < frameSize) {
-                    av_samples_set_silence(frame->extended_data, sampleCount, frameSize - sampleCount,
-                                           static_cast<int>(request.channels), context.encoder->sample_fmt);
-                }
                 frame->pts = static_cast<std::int64_t>(encodedSamples);
                 checkCancelled(stopToken);
                 ffmpeg::check(avcodec_send_frame(context.encoder, frame), "submit AAC frame");
                 receivePackets();
-                encodedSamples += static_cast<std::uint64_t>(frameSize);
+                encodedSamples += static_cast<std::uint64_t>(sampleCount);
                 av_frame_free(&frame);
             } catch (...) {
                 av_frame_free(&frame);
@@ -275,7 +271,7 @@ AudioExportResult exportM4aWithFfmpeg(const AudioExportRequest& request, const A
         auto encodeAvailable = [&](bool partial) {
             while (av_audio_fifo_size(context.fifo) >= frameSize || (partial && av_audio_fifo_size(context.fifo) > 0)) {
                 const int available = av_audio_fifo_size(context.fifo);
-                encodeSamples(std::min(available, frameSize), partial && available < frameSize);
+                encodeSamples(std::min(available, frameSize));
             }
         };
 

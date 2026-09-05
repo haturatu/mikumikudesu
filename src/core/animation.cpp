@@ -529,7 +529,6 @@ void solveIk(const PmxModel& model, const BoneOrder& order, std::vector<BoneRunt
             continue;
         const int loops = std::clamp(ik.ikLoopCount, 0, 255);
         for (int loop = 0; loop < loops; ++loop) {
-            bool reached = false;
             for (const auto& link : ik.ikLinks) {
                 if (link.bone < 0 || static_cast<std::size_t>(link.bone) >= poses.size())
                     continue;
@@ -541,12 +540,15 @@ void solveIk(const PmxModel& model, const BoneOrder& order, std::vector<BoneRunt
                 const float cosine = std::clamp(dot(toEffector, toGoal), -1.0F, 1.0F);
                 float angle = std::acos(cosine);
                 if (angle < 1e-5F) {
-                    reached = true;
                     continue;
                 }
                 if (ik.ikLimitAngle > 0.0F)
                     angle = std::min(angle, ik.ikLimitAngle);
-                const auto axis = normalized(cross(toEffector, toGoal));
+                auto axis = normalized(cross(toEffector, toGoal));
+                if (length(axis) < 1e-6F && cosine < 0.0F) {
+                    const Float3 basis = std::abs(toEffector[0]) < 0.9F ? Float3{1, 0, 0} : Float3{0, 1, 0};
+                    axis = normalized(cross(toEffector, basis));
+                }
                 if (length(axis) < 1e-6F)
                     continue;
                 const auto worldDelta = axisAngle(axis, angle);
@@ -568,8 +570,8 @@ void solveIk(const PmxModel& model, const BoneOrder& order, std::vector<BoneRunt
                 // retaining the direct cross-phase link update above.
                 rebuildBonePoses(model, order, poses, localScratch, globalScratch, globalState);
             }
-            if (reached || length(sub(poses[static_cast<std::size_t>(ik.ikTarget)].global.position,
-                                      poses[ikIndex].global.position)) < 1e-4F)
+            if (length(sub(poses[static_cast<std::size_t>(ik.ikTarget)].global.position,
+                           poses[ikIndex].global.position)) < 1e-4F)
                 break;
         }
     }

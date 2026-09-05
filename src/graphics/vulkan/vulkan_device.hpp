@@ -199,6 +199,8 @@ class VulkanDevice final : public Device {
     std::uint32_t queueFamily_{};
     std::uint32_t timestampValidBits_{};
     VkQueue queue_{};
+    VkSemaphore timelineSemaphore_{};
+    std::uint64_t nextTimelineValue_{};
 
     VkSwapchainKHR swapchain_{};
     VkFormat swapchainFormat_{VK_FORMAT_UNDEFINED};

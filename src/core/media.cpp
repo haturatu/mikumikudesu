@@ -5,6 +5,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -117,12 +118,22 @@ AudioBuffer MediaFile::decodeAudio() {
 #endif
 }
 
-void MediaFile::streamAudio(const AudioSampleCallback& callback) {
+void MediaFile::streamAudio(const AudioSampleCallback& callback, double startSeconds) {
 #if DAYO_HAS_MEDIA
     if (impl_->audioCodec == nullptr)
         throw std::runtime_error("media has no audio stream");
     if (!callback)
         throw std::invalid_argument("audio sample callback is empty");
+    if (!std::isfinite(startSeconds) || startSeconds < 0.0)
+        throw std::invalid_argument("audio start time must be finite and nonnegative");
+    auto skipFrames = static_cast<std::uint64_t>(std::round(startSeconds * 48'000.0));
+    const auto emit = [&](std::span<const float> samples) {
+        const auto skip = std::min<std::uint64_t>(skipFrames, samples.size() / 2);
+        skipFrames -= skip;
+        samples = samples.subspan(static_cast<std::size_t>(skip) * 2);
+        if (!samples.empty())
+            callback(samples, 48'000, 2);
+    };
     ffmpeg::check(av_seek_frame(impl_->format, impl_->audioStream, 0, AVSEEK_FLAG_BACKWARD), "seek audio");
     avformat_flush(impl_->format);
     avcodec_flush_buffers(impl_->audioCodec);
@@ -159,7 +170,7 @@ void MediaFile::streamAudio(const AudioSampleCallback& callback) {
                 ffmpeg::check(converted, "resample audio");
                 samples.resize(static_cast<std::size_t>(converted) * 2U);
                 if (!samples.empty())
-                    callback({samples.data(), samples.size()}, 48'000, 2);
+                    emit(samples);
                 av_frame_unref(frame);
             }
         };
@@ -184,7 +195,7 @@ void MediaFile::streamAudio(const AudioSampleCallback& callback) {
             if (converted == 0)
                 break;
             samples.resize(static_cast<std::size_t>(converted) * 2U);
-            callback({samples.data(), samples.size()}, 48'000, 2);
+            emit(samples);
         }
     } catch (...) {
         av_frame_free(&frame);
@@ -197,6 +208,7 @@ void MediaFile::streamAudio(const AudioSampleCallback& callback) {
     av_packet_free(&packet);
 #else
     static_cast<void>(callback);
+    static_cast<void>(startSeconds);
     throw std::runtime_error("FFmpeg support was not built");
 #endif
 }
