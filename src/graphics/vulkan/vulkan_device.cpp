@@ -609,8 +609,7 @@ void VulkanDevice::createPipeline() {
         VkVertexInputAttributeDescription{6, 0, VK_FORMAT_R32_UINT, offsetof(PreviewVertex, gpuSkinning)},
         VkVertexInputAttributeDescription{7, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(PreviewVertex, sdefC)},
         VkVertexInputAttributeDescription{8, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(PreviewVertex, sdefHalfDelta)},
-        VkVertexInputAttributeDescription{9, 0, VK_FORMAT_R32_SFLOAT, offsetof(PreviewVertex, cloneOffset)},
-        VkVertexInputAttributeDescription{10, 0, VK_FORMAT_R32_SFLOAT, offsetof(PreviewVertex, edgeScale)},
+        VkVertexInputAttributeDescription{9, 0, VK_FORMAT_R32_SFLOAT, offsetof(PreviewVertex, edgeScale)},
     };
     const VkPipelineVertexInputStateCreateInfo vertexInput{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
