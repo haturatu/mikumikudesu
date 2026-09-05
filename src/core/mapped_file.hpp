@@ -23,6 +23,9 @@ class MappedFileStream final : public std::istream {
         Buffer& operator=(const Buffer&) = delete;
 
       private:
+        [[nodiscard]] std::size_t size() const noexcept;
+        pos_type seekoff(off_type off, std::ios_base::seekdir way, std::ios_base::openmode which) override;
+        pos_type seekpos(pos_type position, std::ios_base::openmode which) override;
         void close() noexcept;
 
         const char* mapped_{nullptr};
