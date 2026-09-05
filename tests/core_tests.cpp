@@ -815,10 +815,10 @@ int main() {
                       std::abs(alignedAfter.vertices[1].position[1] - alignedBefore.vertices[1].position[1]) > 1e-4F,
                   "PMX mode 2 keeps the solver body position, preserves bone translation, and imports rotation");
 
-        // Upstream parity for offset mode 2 bodies: the bone must be rebuilt
-        // from the animated rigid-body center plus the simulated rotation,
-        // not by keeping the animated translation. A vertex at the bone
-        // origin exposes the rebuilt bone position exactly.
+        // DynamicAndBoneMerge keeps the animated global bone translation even
+        // when the rigid body has a nonzero bind offset. A vertex at the bone
+        // origin exposes that translation exactly while the second vertex
+        // confirms that the simulated rotation is still imported.
         dayo::core::PmxModel offsetMode2Model;
         offsetMode2Model.vertices.resize(2);
         offsetMode2Model.vertices[0].position = {0.0F, 2.0F, 0.0F};
@@ -845,7 +845,6 @@ int main() {
         const auto offsetMode2Before = offsetMode2Animator.evaluate(0.0F, 0.0F);
         offsetMode2Physics.applyImpulse(0, {}, {0.0F, 0.0F, 10.0F}, false);
         const auto offsetMode2Frame = offsetMode2Animator.evaluate(1.0F, 1.0F / 30.0F);
-        const auto offsetBodyPose = offsetMode2Physics.bodyTransform(0);
         const auto quatMultiply = [](const dayo::core::Float4& left, const dayo::core::Float4& right) {
             return dayo::core::Float4{
                 left[3] * right[0] + left[0] * right[3] + left[1] * right[2] - left[2] * right[1],
@@ -862,12 +861,9 @@ int main() {
                 quatMultiply(rotation, quatMultiply({value[0], value[1], value[2], 0.0F}, quatConjugate(rotation)));
             return dayo::core::Float3{rotated[0], rotated[1], rotated[2]};
         };
-        // Without animation the rigid center stays at its bind position.
-        const dayo::core::Float3 offsetCenter{0.0F, 2.5F, 0.0F};
-        const dayo::core::Float3 bindOffset{0.0F, 0.5F, 0.0F};
-        const auto rotatedOffset = quatRotate(offsetBodyPose.rotation, bindOffset);
-        const dayo::core::Float3 expectedOffsetBone{
-            offsetCenter[0] - rotatedOffset[0], offsetCenter[1] - rotatedOffset[1], offsetCenter[2] - rotatedOffset[2]};
+        // Without animation the animated bone position stays at its bind
+        // position, independent of the rigid body's rotated offset.
+        const dayo::core::Float3 expectedOffsetBone{0.0F, 2.0F, 0.0F};
         const auto& offsetBoneVertex = offsetMode2Frame.vertices[0].position;
         const auto offsetBoneError =
             std::sqrt((offsetBoneVertex[0] - expectedOffsetBone[0]) * (offsetBoneVertex[0] - expectedOffsetBone[0]) +
@@ -880,12 +876,10 @@ int main() {
                       (offsetTipAfter[1] - offsetTipBefore[1]) * (offsetTipAfter[1] - offsetTipBefore[1]) +
                       (offsetTipAfter[2] - offsetTipBefore[2]) * (offsetTipAfter[2] - offsetTipBefore[2]));
         ok &= check(offsetBoneError < 1e-3F && offsetTipMovement > 1e-4F,
-                    "PMX mode 2 with body offset rebuilds the bone from the animated center and simulated rotation");
+                    "PMX mode 2 with body offset preserves animated translation and imports rotation");
 
-        // Nested mode 2 bodies must resolve each animated center after their
-        // parent has received its physics rotation. A child center sampled
-        // before Bullet runs remains at its old absolute position instead of
-        // following the updated parent hierarchy.
+        // Nested mode 2 bodies must preserve each bone's animated global
+        // translation even after a parent receives a physics rotation.
         dayo::core::PmxModel nestedMode2Model;
         nestedMode2Model.vertices.resize(1);
         nestedMode2Model.vertices[0].position = {0.0F, 2.0F, 0.0F};
@@ -925,19 +919,15 @@ int main() {
         nestedMode2Physics.applyImpulse(1, {}, {0.0F, 0.0F, 8.0F}, false);
         const auto nestedMode2Frame = nestedMode2Animator.evaluate(1.0F, 1.0F / 30.0F);
         const auto parentMode2Pose = nestedMode2Physics.bodyTransform(1);
-        const auto expectedChildCenter = [&]() {
-            const auto parentRotatedChildOffset = quatRotate(parentMode2Pose.rotation, {0.0F, 1.0F, 0.0F});
-            return dayo::core::Float3{parentMode2Pose.position[0] + parentRotatedChildOffset[0],
-                                      parentMode2Pose.position[1] + parentRotatedChildOffset[1],
-                                      parentMode2Pose.position[2] + parentRotatedChildOffset[2]};
-        }();
+        const auto parentRotatedChildOffset = quatRotate(parentMode2Pose.rotation, {0.0F, 1.0F, 0.0F});
+        const dayo::core::Float3 expectedChildCenter{0.0F, 2.0F, 0.0F};
         const auto& nestedMode2Vertex = nestedMode2Frame.vertices[0].position;
         const auto nestedMode2CenterError = std::sqrt(
             (nestedMode2Vertex[0] - expectedChildCenter[0]) * (nestedMode2Vertex[0] - expectedChildCenter[0]) +
             (nestedMode2Vertex[1] - expectedChildCenter[1]) * (nestedMode2Vertex[1] - expectedChildCenter[1]) +
             (nestedMode2Vertex[2] - expectedChildCenter[2]) * (nestedMode2Vertex[2] - expectedChildCenter[2]));
-        ok &= check(nestedMode2CenterError < 1e-3F && std::abs(expectedChildCenter[0]) > 1e-3F,
-                    "nested mode 2 child follows the physics-updated parent hierarchy");
+        ok &= check(nestedMode2CenterError < 1e-3F && std::abs(parentRotatedChildOffset[0]) > 1e-3F,
+                    "nested mode 2 child preserves animated global translation");
 
         dayo::core::PmxModel skirtChainModel;
         skirtChainModel.vertices.resize(2);
