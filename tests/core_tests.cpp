@@ -1312,6 +1312,17 @@ int main() {
         ok &= check(invalidInertiaPhysics.bodyMode(0) == 0 && invalidInertiaPhysics.bodyMode(1) == 0,
                     "invalid inertia body exposes its sanitized kinematic mode");
 
+        auto nonFinitePhysicsModel = invalidInertiaModel;
+        nonFinitePhysicsModel.rigidBodies[0].linearDamping = std::numeric_limits<float>::quiet_NaN();
+        bool rejectedNonFinitePhysics = false;
+        try {
+            dayo::core::MmdPhysics rejectedPhysics(nonFinitePhysicsModel);
+            static_cast<void>(rejectedPhysics);
+        } catch (const std::runtime_error&) {
+            rejectedNonFinitePhysics = true;
+        }
+        ok &= check(rejectedNonFinitePhysics, "PMX physics rejects non-finite damping before Bullet");
+
         // PMX leaves unused dimensions at zero for spheres (Y/Z) and
         // capsules (Z). Those values are valid and must not erase the body
         // or downgrade its dynamic mode. A box still requires all dimensions.
