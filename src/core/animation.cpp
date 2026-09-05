@@ -825,6 +825,8 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
     }
 
     std::vector<float> morphWeights(model_.morphs.size());
+    if (gpuSkinning)
+        result.morphWeights.assign(model_.morphs.size(), 0.0F);
     std::vector<Float3> impulseLinear(model_.rigidBodies.size());
     std::vector<Float3> impulseAngular(model_.rigidBodies.size());
     std::vector<Float3> impulseLinearLocal(model_.rigidBodies.size());
@@ -846,8 +848,13 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
                 applyMorph(static_cast<std::size_t>(offset.index), weight * offset.scalar);
             else if (morph.type == 1 && offset.index >= 0 &&
                      static_cast<std::size_t>(offset.index) < result.vertices.size()) {
-                result.vertices[static_cast<std::size_t>(offset.index)].position =
-                    add(result.vertices[static_cast<std::size_t>(offset.index)].position, mul(offset.vector3, weight));
+                if (gpuSkinning) {
+                    result.morphWeights[index] += weight;
+                } else {
+                    result.vertices[static_cast<std::size_t>(offset.index)].position =
+                        add(result.vertices[static_cast<std::size_t>(offset.index)].position,
+                            mul(offset.vector3, weight));
+                }
             } else if (morph.type == 2 && offset.index >= 0 && static_cast<std::size_t>(offset.index) < local.size()) {
                 const auto bone = static_cast<std::size_t>(offset.index);
                 local[bone].translation = add(local[bone].translation, mul(offset.vector3, weight));
