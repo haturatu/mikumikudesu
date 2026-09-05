@@ -363,6 +363,8 @@ void Application::resetProjectRuntimeState() {
     audioToSeconds_ = 0.0F;
     textures_.clear();
     animatedIndices_.clear();
+    animatedMorphDeltas_.clear();
+    animatedMorphRanges_.clear();
     animatedVertexCount_ = 0;
     animatedMaterialTemplates_.clear();
     animatedTopologyGeneration_ = 0;
@@ -1011,9 +1013,6 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         indexCount += instance.model->indices.size();
         materialCount += instance.model->materials.size();
         dynamicVertices = dynamicVertices || (instance.softBody != nullptr && instance.softBody->available());
-        dynamicVertices = dynamicVertices || std::ranges::any_of(instance.model->morphs, [](const auto& morph) {
-                              return morph.type == 1 || morph.type == 9;
-                          });
     }
     const bool rebuildTopology = initialUpload || animatedTopologyGeneration_ != scene_.topologyGeneration() ||
                                  animatedIndices_.size() != indexCount ||
@@ -1022,12 +1021,18 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     const bool rebuildVertices = initialUpload || rebuildTopology || dynamicVertices;
     std::vector<graphics::PreviewVertex> vertices;
     vertices.reserve(vertexCount);
+    std::vector<graphics::PreviewMorphDelta> morphDeltas;
+    std::vector<float> morphWeights;
+    morphWeights.reserve(materialCount);
     std::vector<graphics::PreviewMaterial> materials =
         rebuildTopology ? std::vector<graphics::PreviewMaterial>{} : animatedMaterialTemplates_;
     std::vector<graphics::PreviewDraw> draws = rebuildTopology ? std::vector<graphics::PreviewDraw>{} : animatedDraws_;
     if (rebuildTopology) {
         animatedIndices_.clear();
         animatedIndices_.reserve(indexCount);
+        animatedMorphDeltas_.clear();
+        animatedMorphRanges_.clear();
+        animatedMorphRanges_.reserve(vertexCount);
         materials.reserve(materialCount);
         draws.reserve(materialCount);
     }
@@ -1075,6 +1080,37 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         const auto& instance = *evaluatedModel.instance;
         const auto& frame = evaluatedModel.frame;
         const bool gpuSkinning = evaluatedModel.gpuSkinning;
+        const auto morphWeightBase = static_cast<std::uint32_t>(morphWeights.size());
+        for (std::size_t morphIndex = 0; morphIndex < instance.model->morphs.size(); ++morphIndex) {
+            morphWeights.push_back(morphIndex < frame.morphWeights.size() ? frame.morphWeights[morphIndex] : 0.0F);
+        }
+        std::vector<std::array<std::uint32_t, 2>> sourceMorphRanges;
+        if (rebuildTopology) {
+            std::vector<std::vector<graphics::PreviewMorphDelta>> perVertex(instance.model->vertices.size());
+            for (std::size_t morphIndex = 0; morphIndex < instance.model->morphs.size(); ++morphIndex) {
+                const auto& morph = instance.model->morphs[morphIndex];
+                if (morph.type != 1)
+                    continue;
+                for (const auto& offset : morph.offsets) {
+                    if (offset.index < 0 || static_cast<std::size_t>(offset.index) >= perVertex.size())
+                        continue;
+                    graphics::PreviewMorphDelta delta;
+                    for (std::size_t axis = 0; axis < 3; ++axis)
+                        delta.delta[axis] = offset.vector3[axis] * instance.normalization.scale;
+                    delta.morphIndex = morphWeightBase + static_cast<std::uint32_t>(morphIndex);
+                    perVertex[static_cast<std::size_t>(offset.index)].push_back(delta);
+                }
+            }
+            sourceMorphRanges.resize(perVertex.size());
+            for (std::size_t vertexIndex = 0; vertexIndex < perVertex.size(); ++vertexIndex) {
+                const auto start = static_cast<std::uint32_t>(morphDeltas.size());
+                morphDeltas.insert(morphDeltas.end(), perVertex[vertexIndex].begin(), perVertex[vertexIndex].end());
+                sourceMorphRanges[vertexIndex] = {
+                    start,
+                    static_cast<std::uint32_t>(perVertex[vertexIndex].size()),
+                };
+            }
+        }
         if (!frame.vertices.empty() && (initialUpload || static_cast<int>(animationFrame_) % 30 == 0)) {
             const auto& vertex = frame.vertices.front().position;
             log::debug("Animation sample: model=", instance.displayName, ", frame=", animationFrame_, ", vertex0=(",
@@ -1109,7 +1145,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         const auto firstModelIndex = indexCursor;
         if (rebuildVertices) {
             auto conversion = frameProfiler_.measure(core::ProfileSection::vertexConvert);
-            for (const auto& source : frame.vertices) {
+            for (std::size_t sourceIndex = 0; sourceIndex < frame.vertices.size(); ++sourceIndex) {
+                const auto& source = frame.vertices[sourceIndex];
                 graphics::PreviewVertex vertex;
                 std::memcpy(vertex.position, source.position.data(), sizeof(vertex.position));
                 std::memcpy(vertex.normal, source.normal.data(), sizeof(vertex.normal));
@@ -1134,7 +1171,13 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                     vertex.gpuSkinning = 1;
                 }
                 vertex.edgeScale = source.edgeScale;
+                const auto morphRange =
+                    rebuildTopology ? sourceMorphRanges[sourceIndex] : animatedMorphRanges_[baseVertex + sourceIndex];
+                vertex.morphStart = morphRange[0];
+                vertex.morphCount = gpuSkinning ? morphRange[1] : 0U;
                 vertices.push_back(vertex);
+                if (rebuildTopology)
+                    animatedMorphRanges_.push_back(morphRange);
             }
             conversion.finish();
         }
@@ -1196,11 +1239,15 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     if (rebuildTopology) {
         animatedMaterialTemplates_ = materials;
         animatedDraws_ = draws;
+        animatedMorphDeltas_ = morphDeltas;
         animatedTopologyGeneration_ = scene_.topologyGeneration();
     }
     {
         auto upload = frameProfiler_.measure(core::ProfileSection::upload);
         device_->updatePreviewBones(bones);
+        if (initialUpload || rebuildTopology)
+            device_->uploadPreviewMorphDeltas(morphDeltas);
+        device_->updatePreviewMorphWeights(morphWeights);
         if (initialUpload || rebuildTopology)
             device_->uploadPreviewMesh(vertices, animatedIndices_);
         else if (dynamicVertices) {
@@ -1222,6 +1269,9 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     uploadBytes += byteCount(draws.size(), sizeof(graphics::PreviewDraw));
     if (rebuildVertices)
         uploadBytes += byteCount(vertices.size(), sizeof(graphics::PreviewVertex));
+    if (initialUpload || rebuildTopology)
+        uploadBytes += byteCount(morphDeltas.size(), sizeof(graphics::PreviewMorphDelta));
+    uploadBytes += byteCount(morphWeights.size(), sizeof(float));
     if (initialUpload || rebuildTopology)
         uploadBytes += byteCount(animatedIndices_.size(), sizeof(std::uint32_t));
     frameProfiler_.addUploadBytes(uploadBytes);

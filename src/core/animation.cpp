@@ -827,6 +827,8 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
     }
 
     std::vector<float> morphWeights(model_.morphs.size());
+    if (gpuSkinning)
+        result.morphWeights.assign(model_.morphs.size(), 0.0F);
     std::vector<Float3> impulseLinear(model_.rigidBodies.size());
     std::vector<Float3> impulseAngular(model_.rigidBodies.size());
     std::vector<Float3> impulseLinearLocal(model_.rigidBodies.size());
@@ -843,6 +845,11 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
             return;
         morphStack[index] = 1;
         const auto& morph = model_.morphs[index];
+        if (gpuSkinning && morph.type == 1) {
+            result.morphWeights[index] += weight;
+            morphStack[index] = 0;
+            return;
+        }
         for (const auto& offset : morph.offsets) {
             if (morph.type == 0 || morph.type == 9)
                 applyMorph(static_cast<std::size_t>(offset.index), weight * offset.scalar);

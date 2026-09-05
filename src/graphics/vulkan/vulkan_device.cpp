@@ -129,6 +129,8 @@ VulkanDevice::VulkanDevice(platform::Window& window, bool validation) : window_(
     uploadPreviewMesh(fallbackVertices, fallbackIndices);
     const std::array<PreviewBoneTransform, 1> identityBones{};
     updatePreviewBones(identityBones);
+    uploadPreviewMorphDeltas(std::span<const PreviewMorphDelta>{});
+    updatePreviewMorphWeights(std::span<const float>{});
     uploadPreviewTextures(std::span<const PreviewTexture>{});
     updatePreviewMaterials(std::span<const PreviewMaterial>{});
     log::info("Vulkan device ready: ", capabilities_.gpuName, " (", capabilities_.driverName, ")");
@@ -141,6 +143,7 @@ VulkanDevice::~VulkanDevice() {
     destroyOffscreenResource();
     destroyPreviewMesh();
     destroyPreviewBones();
+    destroyPreviewMorphs();
     destroyPreviewBackground();
     destroyPreviewTextures();
     for (const auto& [handle, resource] : textures_) {
@@ -656,6 +659,8 @@ void VulkanDevice::createPipeline() {
         VkVertexInputAttributeDescription{7, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(PreviewVertex, sdefC)},
         VkVertexInputAttributeDescription{8, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(PreviewVertex, sdefHalfDelta)},
         VkVertexInputAttributeDescription{9, 0, VK_FORMAT_R32_SFLOAT, offsetof(PreviewVertex, edgeScale)},
+        VkVertexInputAttributeDescription{10, 0, VK_FORMAT_R32_UINT, offsetof(PreviewVertex, morphStart)},
+        VkVertexInputAttributeDescription{11, 0, VK_FORMAT_R32_UINT, offsetof(PreviewVertex, morphCount)},
     };
     const VkPipelineVertexInputStateCreateInfo vertexInput{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
@@ -755,10 +760,8 @@ void VulkanDevice::createPipeline() {
         .size = sizeof(PreviewPushConstants),
     };
     const std::array descriptorLayouts{
-        previewDescriptorSetLayout_,
-        previewSkinningDescriptorSetLayout_,
-        previewMaterialDescriptorSetLayout_,
-        previewBindlessDescriptorSetLayout_,
+        previewDescriptorSetLayout_,         previewSkinningDescriptorSetLayout_, previewMaterialDescriptorSetLayout_,
+        previewBindlessDescriptorSetLayout_, previewMorphDescriptorSetLayout_,
     };
     const VkPipelineLayoutCreateInfo layoutInfo{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -879,6 +882,17 @@ void VulkanDevice::createPreviewDescriptors() {
     };
     check(vkCreateDescriptorSetLayout(device_, &materialLayoutInfo, nullptr, &previewMaterialDescriptorSetLayout_),
           "create preview material descriptor layout");
+    const std::array morphBindings{
+        VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+        VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+    };
+    const VkDescriptorSetLayoutCreateInfo morphLayoutInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = static_cast<std::uint32_t>(morphBindings.size()),
+        .pBindings = morphBindings.data(),
+    };
+    check(vkCreateDescriptorSetLayout(device_, &morphLayoutInfo, nullptr, &previewMorphDescriptorSetLayout_),
+          "create preview morph descriptor layout");
     const std::array<VkDescriptorSetLayoutBinding, 3> bindlessBindings{{
         {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -907,7 +921,7 @@ void VulkanDevice::createPreviewDescriptors() {
     const std::array poolSizes{
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sampledImagePoolSize},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 16384},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 128},
     };
     const VkDescriptorPoolCreateInfo poolInfo{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -954,6 +968,9 @@ void VulkanDevice::destroyPreviewDescriptors() {
     if (previewMaterialDescriptorSetLayout_ != VK_NULL_HANDLE) {
         vkDestroyDescriptorSetLayout(device_, previewMaterialDescriptorSetLayout_, nullptr);
     }
+    if (previewMorphDescriptorSetLayout_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(device_, previewMorphDescriptorSetLayout_, nullptr);
+    }
     if (previewBindlessDescriptorSetLayout_ != VK_NULL_HANDLE) {
         vkDestroyDescriptorSetLayout(device_, previewBindlessDescriptorSetLayout_, nullptr);
     }
@@ -963,6 +980,7 @@ void VulkanDevice::destroyPreviewDescriptors() {
     previewDescriptorSetLayout_ = VK_NULL_HANDLE;
     previewSkinningDescriptorSetLayout_ = VK_NULL_HANDLE;
     previewMaterialDescriptorSetLayout_ = VK_NULL_HANDLE;
+    previewMorphDescriptorSetLayout_ = VK_NULL_HANDLE;
     previewBindlessDescriptorSetLayout_ = VK_NULL_HANDLE;
     previewBindlessTextureCapacity_ = 0;
 }
@@ -1437,6 +1455,7 @@ void VulkanDevice::destroyFrames() {
     if (device_ == VK_NULL_HANDLE)
         return;
     destroyPreviewMaterialBuffers();
+    destroyPreviewMorphs();
     for (auto& frame : frames_) {
         if (frame.timestampQueryPool != VK_NULL_HANDLE)
             vkDestroyQueryPool(device_, frame.timestampQueryPool, nullptr);
@@ -1570,6 +1589,9 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
     if (previewBindlessDescriptor_ != VK_NULL_HANDLE)
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 3, 1,
                                 &previewBindlessDescriptor_, 0, nullptr);
+    if (frame.previewMorphDescriptor != VK_NULL_HANDLE)
+        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 4, 1,
+                                &frame.previewMorphDescriptor, 0, nullptr);
 
     const auto textureDescriptor = [&](std::uint32_t materialIndex) {
         if (materialIndex < previewMaterialDescriptors_.size()) {
@@ -1630,6 +1652,7 @@ void VulkanDevice::renderFrame() {
     resolveTimestampQuery(frame);
     synchronizePreviewVertices(frame);
     synchronizePreviewBones(frame);
+    synchronizePreviewMorphs(frame);
     synchronizePreviewMaterials(frame);
     const VkBuffer previewVertexBuffer =
         previewStaticVertexBuffer_ != VK_NULL_HANDLE ? previewStaticVertexBuffer_ : frame.previewVertexBuffer;
@@ -1742,6 +1765,10 @@ void VulkanDevice::renderFrame() {
     if (previewBindlessDescriptor_ != VK_NULL_HANDLE) {
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 3, 1,
                                 &previewBindlessDescriptor_, 0, nullptr);
+    }
+    if (frame.previewMorphDescriptor != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 4, 1,
+                                &frame.previewMorphDescriptor, 0, nullptr);
     }
     const VkDeviceSize vertexOffset = 0;
     vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
@@ -1997,6 +2024,7 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     resolveTimestampQuery(frame);
     synchronizePreviewVertices(frame);
     synchronizePreviewBones(frame);
+    synchronizePreviewMorphs(frame);
     synchronizePreviewMaterials(frame);
     const VkBuffer previewVertexBuffer =
         previewStaticVertexBuffer_ != VK_NULL_HANDLE ? previewStaticVertexBuffer_ : frame.previewVertexBuffer;
@@ -2096,6 +2124,10 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     if (previewBindlessDescriptor_ != VK_NULL_HANDLE) {
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 3, 1,
                                 &previewBindlessDescriptor_, 0, nullptr);
+    }
+    if (frame.previewMorphDescriptor != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 4, 1,
+                                &frame.previewMorphDescriptor, 0, nullptr);
     }
     const VkDeviceSize vertexOffset = 0;
     vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
@@ -2295,6 +2327,146 @@ void VulkanDevice::synchronizePreviewBones(Frame& frame) {
     check(vkWaitForFences(device_, 1, &latest->inFlight, VK_TRUE, UINT64_MAX), "wait for latest preview bones");
     std::memcpy(frame.mappedPreviewBones, latest->mappedPreviewBones, static_cast<std::size_t>(previewBoneSize_));
     frame.previewBoneGeneration = previewBoneGeneration_;
+}
+
+void VulkanDevice::destroyPreviewMorphs() {
+    for (auto& frame : frames_) {
+        if (frame.previewMorphDescriptor != VK_NULL_HANDLE && previewDescriptorPool_ != VK_NULL_HANDLE) {
+            check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &frame.previewMorphDescriptor),
+                  "free preview morph descriptor");
+        }
+        if (frame.mappedPreviewMorphDeltas != nullptr)
+            vkUnmapMemory(device_, frame.previewMorphDeltaMemory);
+        if (frame.mappedPreviewMorphWeights != nullptr)
+            vkUnmapMemory(device_, frame.previewMorphWeightMemory);
+        if (frame.previewMorphDeltaBuffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, frame.previewMorphDeltaBuffer, nullptr);
+        if (frame.previewMorphDeltaMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, frame.previewMorphDeltaMemory, nullptr);
+        if (frame.previewMorphWeightBuffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, frame.previewMorphWeightBuffer, nullptr);
+        if (frame.previewMorphWeightMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, frame.previewMorphWeightMemory, nullptr);
+        frame.previewMorphDeltaBuffer = VK_NULL_HANDLE;
+        frame.previewMorphDeltaMemory = VK_NULL_HANDLE;
+        frame.mappedPreviewMorphDeltas = nullptr;
+        frame.previewMorphWeightBuffer = VK_NULL_HANDLE;
+        frame.previewMorphWeightMemory = VK_NULL_HANDLE;
+        frame.mappedPreviewMorphWeights = nullptr;
+        frame.previewMorphDescriptor = VK_NULL_HANDLE;
+        frame.previewMorphDeltaGeneration = 0;
+        frame.previewMorphGeneration = 0;
+    }
+    previewMorphDeltaSize_ = 0;
+    previewMorphWeightSize_ = 0;
+    previewMorphDeltaGeneration_ = 0;
+    previewMorphGeneration_ = 0;
+}
+
+void VulkanDevice::rebuildPreviewMorphBuffers() {
+    waitIdle();
+    destroyPreviewMorphs();
+    previewMorphDeltaSize_ = static_cast<VkDeviceSize>(previewMorphDeltas_.size() * sizeof(PreviewMorphDelta));
+    previewMorphWeightSize_ = static_cast<VkDeviceSize>(previewMorphWeights_.size() * sizeof(float));
+    ++previewMorphDeltaGeneration_;
+    ++previewMorphGeneration_;
+    for (auto& frame : frames_) {
+        uploadPreviewBuffer(previewMorphDeltas_.data(), previewMorphDeltaSize_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                            frame.previewMorphDeltaBuffer, frame.previewMorphDeltaMemory);
+        uploadPreviewBuffer(previewMorphWeights_.data(), previewMorphWeightSize_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                            frame.previewMorphWeightBuffer, frame.previewMorphWeightMemory);
+        check(vkMapMemory(device_, frame.previewMorphDeltaMemory, 0, previewMorphDeltaSize_, 0,
+                          &frame.mappedPreviewMorphDeltas),
+              "persistently map preview morph deltas");
+        check(vkMapMemory(device_, frame.previewMorphWeightMemory, 0, previewMorphWeightSize_, 0,
+                          &frame.mappedPreviewMorphWeights),
+              "persistently map preview morph weights");
+        const VkDescriptorSetAllocateInfo setInfo{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = previewDescriptorPool_,
+            .descriptorSetCount = 1,
+            .pSetLayouts = &previewMorphDescriptorSetLayout_,
+        };
+        check(vkAllocateDescriptorSets(device_, &setInfo, &frame.previewMorphDescriptor),
+              "allocate preview morph descriptor");
+        const std::array<VkDescriptorBufferInfo, 2> buffers{{
+            {frame.previewMorphDeltaBuffer, 0, previewMorphDeltaSize_},
+            {frame.previewMorphWeightBuffer, 0, previewMorphWeightSize_},
+        }};
+        const std::array writes{
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = frame.previewMorphDescriptor,
+                .dstBinding = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .pBufferInfo = buffers.data(),
+            },
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = frame.previewMorphDescriptor,
+                .dstBinding = 1,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .pBufferInfo = buffers.data() + 1,
+            },
+        };
+        vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        frame.previewMorphDeltaGeneration = previewMorphDeltaGeneration_;
+        frame.previewMorphGeneration = previewMorphGeneration_;
+    }
+}
+
+void VulkanDevice::uploadPreviewMorphDeltas(std::span<const PreviewMorphDelta> deltas) {
+    const PreviewMorphDelta fallbackDelta{};
+    if (deltas.empty())
+        deltas = std::span<const PreviewMorphDelta>(&fallbackDelta, 1);
+    previewMorphDeltas_.assign(deltas.begin(), deltas.end());
+    const auto deltaSize = static_cast<VkDeviceSize>(deltas.size_bytes());
+    if (deltaSize != previewMorphDeltaSize_ || frames_.front().previewMorphDeltaBuffer == VK_NULL_HANDLE) {
+        if (previewMorphWeights_.empty())
+            previewMorphWeights_.push_back(0.0F);
+        rebuildPreviewMorphBuffers();
+        return;
+    }
+    waitIdle();
+    ++previewMorphDeltaGeneration_;
+    for (auto& frame : frames_) {
+        std::memcpy(frame.mappedPreviewMorphDeltas, deltas.data(), deltas.size_bytes());
+        frame.previewMorphDeltaGeneration = previewMorphDeltaGeneration_;
+    }
+}
+
+void VulkanDevice::updatePreviewMorphWeights(std::span<const float> weights) {
+    const float fallbackWeight = 0.0F;
+    if (weights.empty())
+        weights = std::span<const float>(&fallbackWeight, 1);
+    previewMorphWeights_.assign(weights.begin(), weights.end());
+    const auto weightSize = static_cast<VkDeviceSize>(weights.size_bytes());
+    if (weightSize != previewMorphWeightSize_ || frames_.front().previewMorphWeightBuffer == VK_NULL_HANDLE) {
+        if (previewMorphDeltas_.empty())
+            previewMorphDeltas_.push_back(PreviewMorphDelta{});
+        rebuildPreviewMorphBuffers();
+        return;
+    }
+    auto& frame = frames_[frameIndex_];
+    check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for preview morph frame");
+    std::memcpy(frame.mappedPreviewMorphWeights, weights.data(), weights.size_bytes());
+    frame.previewMorphGeneration = ++previewMorphGeneration_;
+}
+
+void VulkanDevice::synchronizePreviewMorphs(Frame& frame) {
+    if (frame.previewMorphGeneration == previewMorphGeneration_ || previewMorphWeightSize_ == 0)
+        return;
+    const auto latest = std::find_if(frames_.begin(), frames_.end(), [this](const Frame& candidate) {
+        return candidate.previewMorphGeneration == previewMorphGeneration_;
+    });
+    if (latest == frames_.end() || latest->mappedPreviewMorphWeights == nullptr)
+        return;
+    check(vkWaitForFences(device_, 1, &latest->inFlight, VK_TRUE, UINT64_MAX), "wait for latest preview morphs");
+    std::memcpy(frame.mappedPreviewMorphWeights, latest->mappedPreviewMorphWeights,
+                static_cast<std::size_t>(previewMorphWeightSize_));
+    frame.previewMorphGeneration = previewMorphGeneration_;
 }
 
 void VulkanDevice::destroyPreviewMaterialBuffers() {
@@ -2924,6 +3096,8 @@ void VulkanDevice::clearPreviewResources() {
     uploadPreviewMesh(fallbackVertices, fallbackIndices);
     const std::array<PreviewBoneTransform, 1> identityBones{};
     updatePreviewBones(identityBones);
+    uploadPreviewMorphDeltas(std::span<const PreviewMorphDelta>{});
+    updatePreviewMorphWeights(std::span<const float>{});
     destroyPreviewBackground();
     uploadPreviewTextures(std::span<const PreviewTexture>{});
     updatePreviewMaterials(std::span<const PreviewMaterial>{});
