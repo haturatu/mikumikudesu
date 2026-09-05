@@ -4,6 +4,10 @@
 #include "graphics/timestamp.hpp"
 #include "platform/window.hpp"
 
+#if DAYO_ENABLE_VMA
+#include <vk_mem_alloc.h>
+#endif
+
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #if DAYO_HAS_IMGUI
@@ -169,10 +173,10 @@ VulkanDevice::~VulkanDevice() {
     destroyPipeline();
     destroyPreviewDescriptors();
     destroySwapchain();
- #if DAYO_ENABLE_VMA
+#if DAYO_ENABLE_VMA
     if (allocator_ != VK_NULL_HANDLE)
         vmaDestroyAllocator(allocator_);
- #endif
+#endif
     if (device_ != VK_NULL_HANDLE)
         vkDestroyDevice(device_, nullptr);
     if (surface_ != VK_NULL_HANDLE)

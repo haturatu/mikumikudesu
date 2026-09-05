@@ -5,7 +5,8 @@
 #include <vulkan/vulkan.h>
 
 #if DAYO_ENABLE_VMA
-#include <vk_mem_alloc.h>
+VK_DEFINE_HANDLE(VmaAllocator)
+VK_DEFINE_HANDLE(VmaAllocation)
 #endif
 
 #include <array>
