@@ -4,6 +4,10 @@
 
 #include <vulkan/vulkan.h>
 
+#if DAYO_ENABLE_VMA
+#include <vk_mem_alloc.h>
+#endif
+
 #include <array>
 #include <unordered_map>
 
@@ -77,11 +81,17 @@ class VulkanDevice final : public Device {
     struct BufferResource {
         VkBuffer buffer{};
         VkDeviceMemory memory{};
+#if DAYO_ENABLE_VMA
+        VmaAllocation allocation{};
+#endif
     };
 
     struct TextureResource {
         VkImage image{};
         VkDeviceMemory memory{};
+#if DAYO_ENABLE_VMA
+        VmaAllocation allocation{};
+#endif
     };
 
     struct DepthResource {
@@ -164,6 +174,9 @@ class VulkanDevice final : public Device {
     VkPhysicalDevice physicalDevice_{};
     VkPhysicalDeviceProperties physicalProperties_{};
     VkDevice device_{};
+#if DAYO_ENABLE_VMA
+    VmaAllocator allocator_{};
+#endif
     std::uint32_t queueFamily_{};
     std::uint32_t timestampValidBits_{};
     VkQueue queue_{};
