@@ -954,10 +954,6 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
         if (discontinuousSeek)
             physics_->reset();
         std::vector<bool> physicsBones(model_.bones.size());
-        // Animated rigid-body centers sampled before Bullet runs. Mode 2
-        // needs them afterwards to rebuild the bone from the animated
-        // center plus the simulated rotation (upstream parity).
-        std::vector<Float3> mode2Centers(model_.rigidBodies.size());
         for (std::size_t bodyIndex = 0; bodyIndex < model_.rigidBodies.size(); ++bodyIndex) {
             const auto& body = model_.rigidBodies[bodyIndex];
             if (body.bone < 0 || static_cast<std::size_t>(body.bone) >= global.size())
@@ -976,8 +972,6 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
             } else if (physics_->bodyMode(bodyIndex) == 0) {
                 physics_->setKinematicTransform(bodyIndex, value);
             }
-            if (physics_->bodyMode(bodyIndex) == 2)
-                mode2Centers[bodyIndex] = value.position;
         }
         const float impulseScale = std::max(deltaSeconds, 0.0F) * 60.0F;
         for (std::size_t body = 0; body < model_.rigidBodies.size(); ++body) {
@@ -1012,7 +1006,10 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
             // rigid-body center plus the simulated rotation. Only when the
             // bind offset is zero does this reduce to keeping the animated
             // bone translation.
-            const auto& rigidCenter = mode == 2 ? mode2Centers[bodyIndex] : bodyPose.position;
+            // global[bone] may already contain the updated physics transform
+            // of a mode 2 ancestor processed earlier in this loop.
+            const auto animatedRigidCenter = add(global[bone].position, rotate(global[bone].rotation, offset));
+            const auto rigidCenter = mode == 2 ? animatedRigidCenter : bodyPose.position;
             const auto targetBonePosition = sub(rigidCenter, rotate(boneRotation, offset));
             const auto parent = model_.bones[bone].parent;
             if (parent >= 0 && static_cast<std::size_t>(parent) < global.size()) {

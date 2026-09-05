@@ -30,6 +30,7 @@ Linux側を`SDL3 + Vulkan 1.3 + HLSL/SPIR-V`で構成しています。
 - PMX 2.1 soft-bodyの決定論的フォールバックシミュレーション
 - Undo/Redo CommandHistory、dirty flag/runtime mode、非同期連番フレーム出力（PPM/PNG）
 - MaterialParameterBlock、effect render-graph compile、失敗時に旧状態を保持するFX hot reload
+- Subayaiの`_template.txt`/材質注釈パーサと、髪材質のAnisotropy/IOR/AutoNormalデータ契約
 - screen.bmpのPreviousFrame/BackgroundVideo/BackgroundImage/White semanticsを持つrenderer契約
 - `.dayo` v2の相対パス保存と原子的置換、旧版assetとbinary keyframeの復元
 - Vulkan feature単位のPreview/Subayai/BDPT判定と、安全なPreviewフォールバック
@@ -41,6 +42,9 @@ Linux側を`SDL3 + Vulkan 1.3 + HLSL/SPIR-V`で構成しています。
 PreviewはLinux/AMDで実動します。SubayaiとBDPTについては、`.fxdayo`グラフと必要featureの
 検出までは移植済みですが、Vulkan acceleration structure/SBTと各passの実行器は未接続です。
 そのため`nativeSubayai`と`nativeBdpt`は意図的にfalseであり、対応していると偽装しません。
+
+Subayaiの材質注釈はコア層で読み込めます。標準の`hair.txt`からは異方性、IOR、AutoNormalを
+取得できますが、これらを実際のハイライトへ反映するnative Subayai passはまだ未接続です。
 
 Subayai/BDPTのVulkan pass executor（acceleration structure/SBTを含む）は、featureのないAMD
 Vega等でも起動できるよう未接続のままです。RT対応GPUではbackend契約とgraph compileまでを
@@ -63,6 +67,31 @@ axis別MMD/Catmull-Rom方式）を実装しています。単体ファイルの�
 
 AMDではMesa RADVを推奨します。BDPTを将来有効化する構成ではRAM 16GB、VRAM 8GB以上を
 推奨します。
+
+### Linux release tuning
+
+ローカルCPU向けのISA最適化は既定で無効です。対象マシン専用のreleaseを作る場合は、
+`cmake --preset linux-release-native` を使えます。LLVM BOLTは通常のPGO収集後に、例えば
+`-DDAYO_ENABLE_BOLT=ON -DDAYO_BOLT_PROFILE=/path/to/perf.fdata` を付けて有効化します。
+BOLTのプロファイルは、対象バイナリを `perf record` で実行し、`perf2bolt` で変換して作成します。
+例えば `perf2bolt ./build/linux-release-native/mikumikudesu -p perf.data -o perf.fdata`
+のように生成します。
+BOLT版は通常の実行ファイルとは別に `mikumikudesu.bolt` として生成され、BOLT有効時のinstallだけが
+それを `mikumikudesu` として配置します。BOLTは対象環境専用の最終最適化として扱ってください。
+プロファイル取得時とBOLT適用時は同じ `build/linux-release-native/mikumikudesu` を対象にし、
+`--emit-relocs` を含む同じlink条件を使ってください。初回はBOLTを無効にしてrelocationを出力し、
+プロファイルを取得してから、同じbuild treeでBOLTを有効にして再ビルドします。
+
+```sh
+cmake --preset linux-release-native \
+  -DDAYO_ENABLE_BOLT=OFF -DCMAKE_EXE_LINKER_FLAGS=-Wl,--emit-relocs
+cmake --build --preset linux-release-native
+perf record --output=perf.data -- ./build/linux-release-native/mikumikudesu
+perf2bolt ./build/linux-release-native/mikumikudesu -p perf.data -o perf.fdata
+cmake --preset linux-release-native \
+  -DDAYO_ENABLE_BOLT=ON -DDAYO_BOLT_PROFILE="$PWD/perf.fdata"
+cmake --build --preset linux-release-native
+```
 
 確認するRT feature:
 

@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
 #include <deque>
 #include <filesystem>
 #include <mutex>
@@ -16,6 +17,8 @@ namespace dayo::app {
 
 class VideoExportJob {
   public:
+    static constexpr std::size_t kFrameQueueCapacity = 3;
+
     VideoExportJob() = default;
     ~VideoExportJob();
     VideoExportJob(const VideoExportJob&) = delete;

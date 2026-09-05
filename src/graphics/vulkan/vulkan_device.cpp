@@ -4,6 +4,10 @@
 #include "graphics/timestamp.hpp"
 #include "platform/window.hpp"
 
+#if DAYO_ENABLE_VMA
+#include <vk_mem_alloc.h>
+#endif
+
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #if DAYO_HAS_IMGUI
@@ -144,6 +148,12 @@ VulkanDevice::~VulkanDevice() {
     destroyPreviewTextures();
     for (const auto& [handle, resource] : textures_) {
         static_cast<void>(handle);
+#if DAYO_ENABLE_VMA
+        if (allocator_ != VK_NULL_HANDLE && resource.allocation != VK_NULL_HANDLE) {
+            vmaDestroyImage(allocator_, resource.image, resource.allocation);
+            continue;
+        }
+#endif
         if (resource.image != VK_NULL_HANDLE)
             vkDestroyImage(device_, resource.image, nullptr);
         if (resource.memory != VK_NULL_HANDLE)
@@ -151,6 +161,12 @@ VulkanDevice::~VulkanDevice() {
     }
     for (const auto& [handle, resource] : buffers_) {
         static_cast<void>(handle);
+#if DAYO_ENABLE_VMA
+        if (allocator_ != VK_NULL_HANDLE && resource.allocation != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(allocator_, resource.buffer, resource.allocation);
+            continue;
+        }
+#endif
         if (resource.buffer != VK_NULL_HANDLE)
             vkDestroyBuffer(device_, resource.buffer, nullptr);
         if (resource.memory != VK_NULL_HANDLE)
@@ -160,6 +176,10 @@ VulkanDevice::~VulkanDevice() {
     destroyPipeline();
     destroyPreviewDescriptors();
     destroySwapchain();
+#if DAYO_ENABLE_VMA
+    if (allocator_ != VK_NULL_HANDLE)
+        vmaDestroyAllocator(allocator_);
+#endif
     if (device_ != VK_NULL_HANDLE)
         vkDestroyDevice(device_, nullptr);
     if (surface_ != VK_NULL_HANDLE)
@@ -422,6 +442,16 @@ void VulkanDevice::createLogicalDevice() {
     };
     check(vkCreateDevice(physicalDevice_, &createInfo, nullptr, &device_), "create logical device");
     vkGetDeviceQueue(device_, queueFamily_, 0, &queue_);
+#if DAYO_ENABLE_VMA
+    VmaAllocatorCreateInfo allocatorInfo{};
+    allocatorInfo.instance = instance_;
+    allocatorInfo.physicalDevice = physicalDevice_;
+    allocatorInfo.device = device_;
+    allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_3;
+    if (capabilities_.bufferDeviceAddress)
+        allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    check(vmaCreateAllocator(&allocatorInfo, &allocator_), "create Vulkan memory allocator");
+#endif
 }
 
 void VulkanDevice::createSwapchain() {
@@ -3034,6 +3064,17 @@ BufferHandle VulkanDevice::createBuffer(const BufferDesc& desc) {
         .usage = toVkUsage(desc.usage),
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
+#if DAYO_ENABLE_VMA
+    VmaAllocationCreateInfo allocationInfo{};
+    allocationInfo.usage = VMA_MEMORY_USAGE_AUTO;
+    allocationInfo.requiredFlags = desc.cpuVisible
+                                       ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+                                       : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    if (desc.cpuVisible)
+        allocationInfo.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+    check(vmaCreateBuffer(allocator_, &createInfo, &allocationInfo, &resource.buffer, &resource.allocation, nullptr),
+          "create VMA buffer");
+#else
     check(vkCreateBuffer(device_, &createInfo, nullptr, &resource.buffer), "create buffer");
     VkMemoryRequirements requirements{};
     vkGetBufferMemoryRequirements(device_, resource.buffer, &requirements);
@@ -3061,6 +3102,7 @@ BufferHandle VulkanDevice::createBuffer(const BufferDesc& desc) {
         vkDestroyBuffer(device_, resource.buffer, nullptr);
         throw;
     }
+#endif
     const auto handle = nextResourceHandle_++;
     buffers_.emplace(handle, resource);
     return handle;
@@ -3090,6 +3132,12 @@ TextureHandle VulkanDevice::createTexture(const TextureDesc& desc) {
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
+#if DAYO_ENABLE_VMA
+    VmaAllocationCreateInfo allocationInfo{};
+    allocationInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    check(vmaCreateImage(allocator_, &createInfo, &allocationInfo, &resource.image, &resource.allocation, nullptr),
+          "create VMA texture");
+#else
     check(vkCreateImage(device_, &createInfo, nullptr, &resource.image), "create texture");
     VkMemoryRequirements requirements{};
     vkGetImageMemoryRequirements(device_, resource.image, &requirements);
@@ -3107,6 +3155,7 @@ TextureHandle VulkanDevice::createTexture(const TextureDesc& desc) {
         vkDestroyImage(device_, resource.image, nullptr);
         throw;
     }
+#endif
     const auto handle = nextResourceHandle_++;
     textures_.emplace(handle, resource);
     return handle;

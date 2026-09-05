@@ -3,8 +3,14 @@ name: Lint
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - docs/**
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - docs/**
   workflow_dispatch:
 
 permissions:
@@ -16,6 +22,7 @@ concurrency:
 
 env:
   DEBIAN_FRONTEND: noninteractive
+  SDL3_PREFIX: ${{ github.workspace }}/.ci-deps/sdl3
 
 jobs:
   format:
@@ -25,10 +32,18 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v7
 
+      - name: Restore APT package cache
+        uses: ./.github/actions/cache-apt
+        with:
+          scope: format
+
       - name: Install lint dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y clang-format shellcheck shfmt
+          sudo apt-get \
+            -o Dir::Cache::archives="$RUNNER_TEMP/mikumikudesu-apt/" \
+            -o APT::Keep-Downloaded-Packages=true \
+            install --no-install-recommends -y clang-format shellcheck shfmt
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -61,10 +76,18 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v7
 
+      - name: Restore APT package cache
+        uses: ./.github/actions/cache-apt
+        with:
+          scope: clang-tidy
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
+          sudo apt-get \
+            -o Dir::Cache::archives="$RUNNER_TEMP/mikumikudesu-apt/" \
+            -o APT::Keep-Downloaded-Packages=true \
+            install --no-install-recommends -y \
             ccache \
             glslc \
             libavcodec-dev \
@@ -89,16 +112,19 @@ jobs:
             ninja-build \
             xvfb
 
+      - name: Restore or build SDL3
+        uses: ./.github/actions/setup-sdl3
+
       - name: Configure with compile commands
         env:
           CC: clang
           CXX: clang++
-        run: cmake --preset linux-debug -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        run: cmake --preset linux-debug -DCMAKE_PREFIX_PATH="$SDL3_PREFIX" -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Run clang-tidy
         run: |
           mapfile -t sources < <(find src tests -type f -name '*.cpp' -print)
-          run-clang-tidy -p build/linux-debug -j 2 \
+          run-clang-tidy -p build/linux-debug -j "$(nproc)" \
             -header-filter '(^|/)(src|tests)/' \
             -warnings-as-errors '*' \
             "${sources[@]}"
