@@ -30,6 +30,8 @@ struct PreviewSceneConstants
     float4 camera; // xyz Euler rotation, w distance
     float4 target; // xyz target, w signed field of view (negative means orthographic)
     float4 light;  // xyz direction, w framebuffer aspect
+    uint materialIndex;
+    uint instanceCount;
 };
 [[vk::push_constant]] ConstantBuffer<PreviewSceneConstants> scene;
 
@@ -250,7 +252,7 @@ SkinResult skinVertex(VertexInput input)
     }
 }
 
-VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass)
+VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, uint instanceIndex)
 {
     VertexOutput output;
     output.uv = input.uv;
@@ -267,7 +269,8 @@ VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass)
     }
 
     SkinResult skin = skinVertex(input);
-    skin.position.x += input.cloneOffset;
+    const float cloneCenter = (float(scene.instanceCount) - 1.0) * 0.5;
+    skin.position.x += (float(instanceIndex) - cloneCenter) * 2.2;
     if (edgePass != 0)
         skin.position += skin.normal * input.edgeScale * previewMaterials[materialIndex].edgeSize;
     float3 p = skin.position - scene.target.xyz;
@@ -302,14 +305,14 @@ VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass)
     return output;
 }
 
-VertexOutput VS(VertexInput input, uint materialIndex : SV_InstanceID)
+VertexOutput VS(VertexInput input, uint instanceIndex : SV_InstanceID)
 {
-    return makeVertex(input, materialIndex, 0);
+    return makeVertex(input, scene.materialIndex, 0, instanceIndex);
 }
 
-VertexOutput EdgeVS(VertexInput input, uint materialIndex : SV_InstanceID)
+VertexOutput EdgeVS(VertexInput input, uint instanceIndex : SV_InstanceID)
 {
-    return makeVertex(input, materialIndex, 1);
+    return makeVertex(input, scene.materialIndex, 1, instanceIndex);
 }
 
 float4 applyTextureMorphRgb(float4 sample, float4 multiply, float4 add, float3 neutral)

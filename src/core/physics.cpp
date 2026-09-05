@@ -118,30 +118,33 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
     impl_->kinematicDirty.reserve(model.rigidBodies.size());
     impl_->modes.reserve(model.rigidBodies.size());
     for (const auto& source : model.rigidBodies) {
-        const Float3 safeSize{
-            std::max(std::abs(source.size[0]), 0.001F),
-            std::max(std::abs(source.size[1]), 0.001F),
-            std::max(std::abs(source.size[2]), 0.001F),
-        };
-        const bool degenerate = !std::ranges::all_of(
-            source.size, [](float component) { return std::isfinite(component) && std::abs(component) >= 0.001F; });
-        if (degenerate) {
-            impl_->shapes.push_back(std::make_unique<btEmptyShape>());
-        } else {
-            switch (source.shape) {
-            case 0:
-                impl_->shapes.push_back(std::make_unique<btSphereShape>(safeSize[0]));
-                break;
-            case 1:
-                impl_->shapes.push_back(std::make_unique<btBoxShape>(vector(safeSize)));
-                break;
-            case 2:
-                impl_->shapes.push_back(std::make_unique<btCapsuleShape>(safeSize[0], safeSize[1]));
-                break;
-            default:
-                throw std::runtime_error("unsupported PMX rigid body shape");
+        const auto validDimension = [](float value) { return std::isfinite(value) && std::abs(value) >= 0.001F; };
+        bool invalidShape = false;
+        switch (source.shape) {
+        case 0:
+            invalidShape = !validDimension(source.size[0]);
+            if (!invalidShape)
+                impl_->shapes.push_back(std::make_unique<btSphereShape>(std::abs(source.size[0])));
+            break;
+        case 1:
+            invalidShape =
+                !validDimension(source.size[0]) || !validDimension(source.size[1]) || !validDimension(source.size[2]);
+            if (!invalidShape) {
+                const Float3 boxSize{std::abs(source.size[0]), std::abs(source.size[1]), std::abs(source.size[2])};
+                impl_->shapes.push_back(std::make_unique<btBoxShape>(vector(boxSize)));
             }
+            break;
+        case 2:
+            invalidShape = !validDimension(source.size[0]) || !validDimension(source.size[1]);
+            if (!invalidShape)
+                impl_->shapes.push_back(
+                    std::make_unique<btCapsuleShape>(std::abs(source.size[0]), std::abs(source.size[1])));
+            break;
+        default:
+            throw std::runtime_error("unsupported PMX rigid body shape");
         }
+        if (invalidShape)
+            impl_->shapes.push_back(std::make_unique<btEmptyShape>());
         // Upstream MikuMikuDayo sets an explicit 0.01 margin on every rigid
         // shape instead of relying on the Bullet default.
         impl_->shapes.back()->setMargin(0.01F);
@@ -154,12 +157,12 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
         impl_->kinematicDirty.push_back(0);
         impl_->motionStates.push_back(std::make_unique<btDefaultMotionState>(initial));
         // Some otherwise valid MMD models contain decorative rigid bodies with
-        // zero-sized collision geometry. Bullet's btEmptyShape cannot compute
+        // invalid collision geometry. Bullet's btEmptyShape cannot compute
         // dynamic inertia, so keep those bodies as static placeholders. This
         // preserves the PMX body index mapping while avoiding an assertion in
         // btEmptyShape::calculateLocalInertia().
         const bool invalidMass = !std::isfinite(source.mass) || source.mass <= 0.0F;
-        const btScalar candidateMass = (source.mode == 0 || degenerate || invalidMass) ? 0.0F : source.mass;
+        const btScalar candidateMass = (source.mode == 0 || invalidShape || invalidMass) ? 0.0F : source.mass;
         btVector3 inertia;
         inertia.setZero();
         if (candidateMass > 0.0F)
@@ -180,10 +183,11 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
         info.m_friction = source.friction;
         impl_->bodies.push_back(std::make_unique<btRigidBody>(info));
         impl_->modes.push_back(effectiveMode);
+        impl_->bodies.back()->setSleepingThresholds(0.01F, 0.1F * std::numbers::pi_v<float> / 180.0F);
+        impl_->bodies.back()->setActivationState(DISABLE_DEACTIVATION);
         if (effectiveMode == 0) {
             impl_->bodies.back()->setCollisionFlags(impl_->bodies.back()->getCollisionFlags() |
                                                     btCollisionObject::CF_KINEMATIC_OBJECT);
-            impl_->bodies.back()->setActivationState(DISABLE_DEACTIVATION);
         }
         const short group = static_cast<short>(1U << std::min<std::uint8_t>(source.group, 15));
         // Pass the PMX mask to Bullet unchanged, matching upstream

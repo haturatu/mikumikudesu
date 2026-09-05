@@ -996,10 +996,9 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     for (const auto& instance : scene_.models()) {
         if (!instance.visible || instance.model == nullptr || instance.animator == nullptr)
             continue;
-        const auto clones = std::max(instance.cloneCount, 1U);
-        vertexCount += instance.model->vertices.size() * clones;
-        indexCount += instance.model->indices.size() * clones;
-        materialCount += instance.model->materials.size() * clones;
+        vertexCount += instance.model->vertices.size();
+        indexCount += instance.model->indices.size();
+        materialCount += instance.model->materials.size();
         dynamicVertices = dynamicVertices || (instance.softBody != nullptr && instance.softBody->available());
         dynamicVertices = dynamicVertices || std::ranges::any_of(instance.model->morphs, [](const auto& morph) {
                               return morph.type == 1 || morph.type == 9;
@@ -1079,98 +1078,90 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             return static_cast<std::uint32_t>(value);
         }();
         const auto cloneCount = std::max(instance.cloneCount, 1U);
-        for (std::uint32_t clone = 0; clone < cloneCount; ++clone) {
-            const auto baseVertex = static_cast<std::uint32_t>(vertices.size());
-            const auto firstCloneIndex = indexCursor;
-            const float cloneOffset = (static_cast<float>(clone) - static_cast<float>(cloneCount - 1U) * 0.5F) * 2.2F;
-            if (rebuildVertices) {
-                auto conversion = frameProfiler_.measure(core::ProfileSection::vertexConvert);
-                for (const auto& source : frame.vertices) {
-                    graphics::PreviewVertex vertex;
-                    std::memcpy(vertex.position, source.position.data(), sizeof(vertex.position));
-                    std::memcpy(vertex.normal, source.normal.data(), sizeof(vertex.normal));
-                    std::memcpy(vertex.uv, source.uv.data(), sizeof(vertex.uv));
-                    const bool supported = gpuSkinning;
-                    if (supported) {
-                        for (std::size_t influence = 0; influence < 4; ++influence) {
-                            vertex.bones[influence] =
-                                source.bones[influence] < 0 ||
-                                        static_cast<std::size_t>(source.bones[influence]) >= frame.bones.size()
-                                    ? -1
-                                    : boneBase + source.bones[influence];
-                            vertex.weights[influence] = source.weights[influence];
-                        }
-                        const auto normalizedC = normalizePreviewPoint(source.sdefC, instance.normalization);
-                        const auto normalizedR0 = normalizePreviewPoint(source.sdefR0, instance.normalization);
-                        const auto normalizedR1 = normalizePreviewPoint(source.sdefR1, instance.normalization);
-                        std::copy(normalizedC.begin(), normalizedC.end(), vertex.sdefC);
-                        for (std::size_t axis = 0; axis < 3; ++axis) {
-                            vertex.sdefHalfDelta[axis] = (normalizedR0[axis] - normalizedR1[axis]) * 0.5F;
-                        }
-                        vertex.skinningType = static_cast<std::uint32_t>(source.weightType);
-                        vertex.gpuSkinning = 1;
+        const auto baseVertex = static_cast<std::uint32_t>(vertices.size());
+        const auto firstModelIndex = indexCursor;
+        if (rebuildVertices) {
+            auto conversion = frameProfiler_.measure(core::ProfileSection::vertexConvert);
+            for (const auto& source : frame.vertices) {
+                graphics::PreviewVertex vertex;
+                std::memcpy(vertex.position, source.position.data(), sizeof(vertex.position));
+                std::memcpy(vertex.normal, source.normal.data(), sizeof(vertex.normal));
+                std::memcpy(vertex.uv, source.uv.data(), sizeof(vertex.uv));
+                const bool supported = gpuSkinning;
+                if (supported) {
+                    for (std::size_t influence = 0; influence < 4; ++influence) {
+                        vertex.bones[influence] =
+                            source.bones[influence] < 0 ||
+                                    static_cast<std::size_t>(source.bones[influence]) >= frame.bones.size()
+                                ? -1
+                                : boneBase + source.bones[influence];
+                        vertex.weights[influence] = source.weights[influence];
                     }
-                    vertex.edgeScale = source.edgeScale;
-                    vertex.cloneOffset = cloneOffset;
-                    vertices.push_back(vertex);
+                    const auto normalizedC = normalizePreviewPoint(source.sdefC, instance.normalization);
+                    const auto normalizedR0 = normalizePreviewPoint(source.sdefR0, instance.normalization);
+                    const auto normalizedR1 = normalizePreviewPoint(source.sdefR1, instance.normalization);
+                    std::copy(normalizedC.begin(), normalizedC.end(), vertex.sdefC);
+                    for (std::size_t axis = 0; axis < 3; ++axis)
+                        vertex.sdefHalfDelta[axis] = (normalizedR0[axis] - normalizedR1[axis]) * 0.5F;
+                    vertex.skinningType = static_cast<std::uint32_t>(source.weightType);
+                    vertex.gpuSkinning = 1;
                 }
-                conversion.finish();
+                vertex.edgeScale = source.edgeScale;
+                vertices.push_back(vertex);
             }
+            conversion.finish();
+        }
+        if (rebuildTopology) {
+            for (const auto index : instance.model->indices)
+                animatedIndices_.push_back(baseVertex + index);
+        }
+        indexCursor += static_cast<std::uint32_t>(instance.model->indices.size());
+        std::uint32_t firstIndex = firstModelIndex;
+        for (std::size_t materialIndex = 0; materialIndex < instance.model->materials.size(); ++materialIndex) {
+            const auto& sourceMaterial = instance.model->materials[materialIndex];
             if (rebuildTopology) {
-                for (const auto index : instance.model->indices)
-                    animatedIndices_.push_back(baseVertex + index);
+                graphics::PreviewMaterial material;
+                material.doubleSided = (sourceMaterial.drawFlags & 0x01U) != 0;
+                material.edgeEnabled = (sourceMaterial.drawFlags & 0x10U) != 0;
+                material.textureSlot = sourceMaterial.textureIndex >= 0
+                                           ? textureBase + static_cast<std::uint32_t>(sourceMaterial.textureIndex) + 1U
+                                           : 0U;
+                const bool hasSphereTexture = hasLoadedTexture(instance.textures, sourceMaterial.sphereTextureIndex);
+                material.sphereTextureSlot =
+                    hasSphereTexture ? textureBase + static_cast<std::uint32_t>(sourceMaterial.sphereTextureIndex) + 1U
+                                     : 0U;
+                material.toonTextureSlot =
+                    sourceMaterial.toonMode == 0 && sourceMaterial.toonTextureIndex >= 0
+                        ? textureBase + static_cast<std::uint32_t>(sourceMaterial.toonTextureIndex) + 1U
+                        : 0U;
+                material.sphereMode = hasSphereTexture ? sourceMaterial.sphereMode : 0U;
+                material.toonMode = sourceMaterial.toonMode;
+                materials.push_back(material);
+                draws.push_back({});
             }
-            indexCursor += static_cast<std::uint32_t>(instance.model->indices.size());
-            std::uint32_t firstIndex = firstCloneIndex;
-            for (std::size_t materialIndex = 0; materialIndex < instance.model->materials.size(); ++materialIndex) {
-                const auto& sourceMaterial = instance.model->materials[materialIndex];
-                if (rebuildTopology) {
-                    graphics::PreviewMaterial material;
-                    material.doubleSided = (sourceMaterial.drawFlags & 0x01U) != 0;
-                    material.edgeEnabled = (sourceMaterial.drawFlags & 0x10U) != 0;
-                    material.textureSlot =
-                        sourceMaterial.textureIndex >= 0
-                            ? textureBase + static_cast<std::uint32_t>(sourceMaterial.textureIndex) + 1U
-                            : 0U;
-                    const bool hasSphereTexture =
-                        hasLoadedTexture(instance.textures, sourceMaterial.sphereTextureIndex);
-                    material.sphereTextureSlot =
-                        hasSphereTexture
-                            ? textureBase + static_cast<std::uint32_t>(sourceMaterial.sphereTextureIndex) + 1U
-                            : 0U;
-                    material.toonTextureSlot =
-                        sourceMaterial.toonMode == 0 && sourceMaterial.toonTextureIndex >= 0
-                            ? textureBase + static_cast<std::uint32_t>(sourceMaterial.toonTextureIndex) + 1U
-                            : 0U;
-                    material.sphereMode = hasSphereTexture ? sourceMaterial.sphereMode : 0U;
-                    material.toonMode = sourceMaterial.toonMode;
-                    materials.push_back(material);
-                    draws.push_back({});
-                }
-                auto& material = materials[materialCursor++];
-                if (materialIndex < frame.materials.size()) {
-                    const auto& animated = frame.materials[materialIndex];
-                    std::copy(animated.diffuse.begin(), animated.diffuse.end(), material.diffuse);
-                    std::copy(animated.ambient.begin(), animated.ambient.end(), material.ambient);
-                    std::copy(animated.specular.begin(), animated.specular.end(), material.specular);
-                    material.shininess = animated.shininess;
-                    std::copy(animated.textureMultiply.begin(), animated.textureMultiply.end(),
-                              material.textureMultiply);
-                    std::copy(animated.textureAdd.begin(), animated.textureAdd.end(), material.textureAdd);
-                    std::copy(animated.sphereMultiply.begin(), animated.sphereMultiply.end(), material.sphereMultiply);
-                    std::copy(animated.sphereAdd.begin(), animated.sphereAdd.end(), material.sphereAdd);
-                    std::copy(animated.toonMultiply.begin(), animated.toonMultiply.end(), material.toonMultiply);
-                    std::copy(animated.toonAdd.begin(), animated.toonAdd.end(), material.toonAdd);
-                    std::copy(animated.edgeColor.begin(), animated.edgeColor.end(), material.edgeColor);
-                    // Edge extrusion is a distance in the same normalized space as the vertices.
-                    material.edgeSize = animated.edgeSize * instance.normalization.scale;
-                }
-                auto& draw = draws[materialCursor - 1U];
-                draw.firstIndex = firstIndex;
-                draw.indexCount = sourceMaterial.indexCount;
-                draw.materialIndex = static_cast<std::uint32_t>(materialCursor - 1U);
-                firstIndex += instance.model->materials[materialIndex].indexCount;
+            auto& material = materials[materialCursor++];
+            if (materialIndex < frame.materials.size()) {
+                const auto& animated = frame.materials[materialIndex];
+                std::copy(animated.diffuse.begin(), animated.diffuse.end(), material.diffuse);
+                std::copy(animated.ambient.begin(), animated.ambient.end(), material.ambient);
+                std::copy(animated.specular.begin(), animated.specular.end(), material.specular);
+                material.shininess = animated.shininess;
+                std::copy(animated.textureMultiply.begin(), animated.textureMultiply.end(), material.textureMultiply);
+                std::copy(animated.textureAdd.begin(), animated.textureAdd.end(), material.textureAdd);
+                std::copy(animated.sphereMultiply.begin(), animated.sphereMultiply.end(), material.sphereMultiply);
+                std::copy(animated.sphereAdd.begin(), animated.sphereAdd.end(), material.sphereAdd);
+                std::copy(animated.toonMultiply.begin(), animated.toonMultiply.end(), material.toonMultiply);
+                std::copy(animated.toonAdd.begin(), animated.toonAdd.end(), material.toonAdd);
+                std::copy(animated.edgeColor.begin(), animated.edgeColor.end(), material.edgeColor);
+                // Edge extrusion is a distance in the same normalized space as the vertices.
+                material.edgeSize = animated.edgeSize * instance.normalization.scale;
             }
+            auto& draw = draws[materialCursor - 1U];
+            draw.firstIndex = firstIndex;
+            draw.indexCount = sourceMaterial.indexCount;
+            draw.materialIndex = static_cast<std::uint32_t>(materialCursor - 1U);
+            draw.instanceCount = cloneCount;
+            firstIndex += instance.model->materials[materialIndex].indexCount;
         }
     }
     if ((rebuildVertices && vertices.empty()) || animatedIndices_.empty())

@@ -16,12 +16,34 @@ namespace dayo::core {
 
 enum class EffectPassType { rasterizer, postprocess, compute, raytracing, unknown };
 
+struct EffectSize {
+    std::string base;
+    bool absolute{};
+    std::uint32_t width{};
+    std::uint32_t height{};
+    std::uint32_t depth{};
+    std::uint32_t dimension{1};
+    float widthRatio{1.0F};
+    float heightRatio{1.0F};
+};
+
 struct EffectTexture {
     std::string name;
     std::string format;
     std::string view;
+    EffectSize size;
     float widthRatio{1.0F};
     float heightRatio{1.0F};
+    std::vector<std::string> conditions;
+};
+
+struct EffectBuffer {
+    std::string name;
+    std::string type;
+    std::string format;
+    std::string view;
+    std::uint32_t elementSize{};
+    EffectSize size;
     std::vector<std::string> conditions;
 };
 
@@ -58,6 +80,7 @@ struct EffectPass {
     std::vector<EffectAttachment> renderTargets;
     std::vector<EffectAttachment> unorderedAccess;
     EffectAttachment depth;
+    EffectSize outputSize;
     float outputWidthRatio{1.0F};
     float outputHeightRatio{1.0F};
     std::uint32_t maxPayloadSize{};
@@ -76,9 +99,12 @@ struct EffectGraph {
     std::filesystem::path sourcePath;
     std::string category;
     std::vector<EffectTexture> textures;
+    std::vector<EffectTexture> textures3D;
+    std::vector<EffectBuffer> buffers;
     std::vector<EffectSampler> samplers;
     std::vector<EffectController> controllers;
     std::vector<EffectPass> passes;
+    std::uint32_t meshCloneCount{1};
     std::string generatedCode;
     std::string hlsl;
 };

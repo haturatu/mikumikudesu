@@ -427,17 +427,19 @@ int main() {
         dayo::core::OutputSettings settings;
         settings.directory = outputDirectory;
         settings.firstFrame = settings.lastFrame = 3;
+        settings.maxPendingFrames = 1;
         dayo::core::OutputQueue queue(settings);
-        dayo::core::ImageRgba8 image{1, 1, {255, 64, 32, 255}};
-        queue.push(3, std::move(image));
+        for (std::uint32_t frame = 3; frame < 19; ++frame)
+            queue.push(frame, dayo::core::ImageRgba8{1, 1, {255, 64, 32, 255}});
         static_cast<void>(queue.written());
         queue.close();
-        ok &= check(queue.written() == 1 && std::filesystem::exists(outputDirectory / "frame_000003.ppm"),
+        ok &= check(queue.written() == 16 && std::filesystem::exists(outputDirectory / "frame_000003.ppm") &&
+                        std::filesystem::exists(outputDirectory / "frame_000018.ppm"),
                     "asynchronous frame output");
         dayo::core::ImageRgba8 pngImage{1, 1, {255, 64, 32, 255}};
         dayo::core::writeFrame(outputDirectory / "frame.png", pngImage, dayo::core::OutputFormat::png);
         ok &= check(std::filesystem::file_size(outputDirectory / "frame.png") > 8, "PNG frame output");
-        ok &= check(queue.written() == 1, "thread-safe output counter");
+        ok &= check(queue.written() == 16, "thread-safe output counter");
         dayo::core::OutputSettings failingSettings;
         failingSettings.directory = outputDirectory;
         failingSettings.format = dayo::core::OutputFormat::exr;
@@ -1066,6 +1068,46 @@ int main() {
                     "invalid inertia body uses zero effective mass and skips its constraint");
         ok &= check(invalidInertiaPhysics.bodyMode(0) == 0 && invalidInertiaPhysics.bodyMode(1) == 0,
                     "invalid inertia body exposes its sanitized kinematic mode");
+
+        // PMX leaves unused dimensions at zero for spheres (Y/Z) and
+        // capsules (Z). Those values are valid and must not erase the body
+        // or downgrade its dynamic mode. A box still requires all dimensions.
+        dayo::core::PmxModel shapeAwareModel;
+        dayo::core::PmxRigidBody capsuleStatic;
+        capsuleStatic.shape = 2;
+        capsuleStatic.size = {0.5F, 1.0F, 0.0F};
+        capsuleStatic.mode = 0;
+        capsuleStatic.collisionMask = 0x82E0U;
+        shapeAwareModel.rigidBodies.push_back(capsuleStatic);
+        auto capsuleDynamic = capsuleStatic;
+        capsuleDynamic.mode = 1;
+        capsuleDynamic.mass = 1.0F;
+        shapeAwareModel.rigidBodies.push_back(capsuleDynamic);
+        auto capsuleAnimated = capsuleDynamic;
+        capsuleAnimated.mode = 2;
+        shapeAwareModel.rigidBodies.push_back(capsuleAnimated);
+        dayo::core::PmxRigidBody sphereDynamic;
+        sphereDynamic.shape = 0;
+        sphereDynamic.size = {0.5F, 0.0F, 0.0F};
+        sphereDynamic.mode = 1;
+        sphereDynamic.mass = 1.0F;
+        sphereDynamic.collisionMask = 0x82E0U;
+        shapeAwareModel.rigidBodies.push_back(sphereDynamic);
+        dayo::core::PmxRigidBody invalidBox = sphereDynamic;
+        invalidBox.shape = 1;
+        invalidBox.size = {0.5F, 0.5F, 0.0F};
+        shapeAwareModel.rigidBodies.push_back(invalidBox);
+        dayo::core::PmxJoint shapeAwareJoint;
+        shapeAwareJoint.bodyA = 1;
+        shapeAwareJoint.bodyB = 2;
+        shapeAwareModel.joints.push_back(shapeAwareJoint);
+        dayo::core::MmdPhysics shapeAwarePhysics(shapeAwareModel);
+        ok &= check(shapeAwarePhysics.bodyCount() == 5 && shapeAwarePhysics.bodyMode(0) == 0 &&
+                        shapeAwarePhysics.bodyMode(1) == 1 && shapeAwarePhysics.bodyMode(2) == 2 &&
+                        shapeAwarePhysics.bodyMode(3) == 1 && shapeAwarePhysics.bodyMode(4) == 0,
+                    "PMX sphere and capsule zero unused dimensions preserve body modes");
+        ok &= check(shapeAwarePhysics.jointCount() == 1,
+                    "PMX joint remains when capsule bodies use zero unused dimensions");
         invalidInertiaModel.bones.resize(1);
         invalidInertiaModel.bones[0].position = {0.0F, 2.0F, 0.0F};
         invalidInertiaModel.vertices.resize(1);

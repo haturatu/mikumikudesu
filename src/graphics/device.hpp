@@ -129,6 +129,7 @@ struct PreviewDraw {
     std::uint32_t firstIndex{};
     std::uint32_t indexCount{};
     std::uint32_t materialIndex{};
+    std::uint32_t instanceCount{1};
 };
 
 // This is the renderer-facing storage-buffer layout. Keep it explicitly
@@ -178,8 +179,10 @@ struct PreviewPushConstants {
     std::array<float, 4> camera{};
     std::array<float, 4> target{};
     std::array<float, 4> light{};
+    std::uint32_t materialIndex{};
+    std::uint32_t instanceCount{1};
 };
-static_assert(sizeof(PreviewPushConstants) == 48);
+static_assert(sizeof(PreviewPushConstants) == 56);
 
 struct RenderTargetDesc {
     std::uint32_t width{};
