@@ -74,6 +74,50 @@ void freePacket(AVPacket*& packet) noexcept {
     av_packet_free(&packet);
 }
 
+bool probeVaapiEncoder(VideoCodec codec) noexcept {
+    const auto* encoder = avcodec_find_encoder_by_name(hardwareVideoEncoderName(codec));
+    if (encoder == nullptr)
+        return false;
+
+    AVBufferRef* device = nullptr;
+    if (av_hwdevice_ctx_create(&device, AV_HWDEVICE_TYPE_VAAPI, nullptr, nullptr, 0) < 0)
+        return false;
+
+    AVBufferRef* frames = av_hwframe_ctx_alloc(device);
+    AVCodecContext* context = avcodec_alloc_context3(encoder);
+    if (frames == nullptr || context == nullptr) {
+        avcodec_free_context(&context);
+        av_buffer_unref(&frames);
+        av_buffer_unref(&device);
+        return false;
+    }
+
+    auto* frameContext = reinterpret_cast<AVHWFramesContext*>(frames->data);
+    frameContext->format = AV_PIX_FMT_VAAPI;
+    frameContext->sw_format = AV_PIX_FMT_NV12;
+    frameContext->width = 1920;
+    frameContext->height = 1080;
+    frameContext->initial_pool_size = 2;
+
+    const bool framesReady = av_hwframe_ctx_init(frames) >= 0;
+    if (framesReady)
+        context->hw_frames_ctx = av_buffer_ref(frames);
+    context->codec_id = videoCodecId(codec);
+    context->codec_type = AVMEDIA_TYPE_VIDEO;
+    context->width = 1920;
+    context->height = 1080;
+    context->pix_fmt = AV_PIX_FMT_VAAPI;
+    context->time_base = {1, 30};
+    context->framerate = {30, 1};
+    const bool contextReady = framesReady && context->hw_frames_ctx != nullptr;
+    const int result = contextReady ? avcodec_open2(context, encoder, nullptr) : AVERROR_UNKNOWN;
+
+    avcodec_free_context(&context);
+    av_buffer_unref(&frames);
+    av_buffer_unref(&device);
+    return result >= 0;
+}
+
 #endif
 
 } // namespace
@@ -153,17 +197,19 @@ struct VideoExporter::Impl {
         hardwareVideo = request.preferHardware;
         if (hardwareVideo) {
             encoder = avcodec_find_encoder_by_name(hardwareVideoEncoderName(request.codec));
-            if (encoder == nullptr || av_hwdevice_find_type_by_name("vaapi") == AV_HWDEVICE_TYPE_NONE)
+            if (encoder == nullptr || !probeVaapiEncoder(request.codec))
                 throw std::runtime_error("requested VAAPI video encoder is unavailable");
         }
         if (encoder == nullptr)
             throw std::runtime_error("requested video encoder is unavailable");
-        if (hardwareVideo)
-            ffmpeg::check(av_hwdevice_ctx_create(&hardwareDeviceContext, AV_HWDEVICE_TYPE_VAAPI, nullptr, nullptr, 0),
-                          "create VAAPI device");
-        ffmpeg::check(avformat_alloc_output_context2(&format, nullptr, "mp4", request.destination.string().c_str()),
-                      "create MP4 output");
         try {
+            if (hardwareVideo) {
+                ffmpeg::check(
+                    av_hwdevice_ctx_create(&hardwareDeviceContext, AV_HWDEVICE_TYPE_VAAPI, nullptr, nullptr, 0),
+                    "create VAAPI device");
+            }
+            ffmpeg::check(avformat_alloc_output_context2(&format, nullptr, "mp4", request.destination.string().c_str()),
+                          "create MP4 output");
             videoStream = avformat_new_stream(format, encoder);
             if (videoStream == nullptr)
                 throw std::bad_alloc();
@@ -461,8 +507,7 @@ bool canExportVideo(VideoCodec codec) noexcept {
 
 bool canExportVideoHardware(VideoCodec codec) noexcept {
 #if DAYO_HAS_MEDIA
-    const auto* encoder = avcodec_find_encoder_by_name(hardwareVideoEncoderName(codec));
-    return encoder != nullptr && av_hwdevice_find_type_by_name("vaapi") != AV_HWDEVICE_TYPE_NONE;
+    return probeVaapiEncoder(codec);
 #else
     static_cast<void>(codec);
     return false;

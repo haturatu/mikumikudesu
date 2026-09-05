@@ -595,7 +595,10 @@ int Application::runVideoExport() {
     const auto& options = *options_.videoExport;
     if (options.destination.empty())
         throw std::invalid_argument("--export-video requires a destination path");
-    if (!core::canExportVideo(options.codec)) {
+    if (options.preferHardware) {
+        if (!core::canExportVideoHardware(options.codec))
+            throw std::runtime_error("requested VAAPI video encoder is unavailable");
+    } else if (!core::canExportVideo(options.codec)) {
         throw std::runtime_error("requested video encoder is unavailable");
     }
     if (device_ == nullptr)
