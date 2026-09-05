@@ -121,6 +121,51 @@ int main() {
         cameraMotion.interpolation = dayo::core::InterpolationMode::catmullRom;
         const auto catmull = dayo::core::evaluateCamera(cameraMotion, 5.0F);
         ok &= check(std::isfinite(catmull.distance), "Catmull-Rom camera evaluation");
+        cameraMotion.interpolation = dayo::core::InterpolationMode::bezier;
+        cameraMotion.cameras[1].frame = 1;
+        ok &= check(std::abs(dayo::core::evaluateCamera(cameraMotion, 0.5F).distance + 6.0F) < 0.001F,
+                    "adjacent camera keys interpolate subframes");
+    }
+    {
+        const auto path = std::filesystem::temp_directory_path() / "mikumikudesu-bezier-test.vmd";
+        {
+            std::ofstream output(path, std::ios::binary);
+            std::array<char, 30> header{};
+            std::string_view signature = "Vocaloid Motion Data 0002";
+            std::copy(signature.begin(), signature.end(), header.begin());
+            output.write(header.data(), header.size());
+            const std::array<char, 20> modelName{};
+            output.write(modelName.data(), modelName.size());
+            append(output, std::uint32_t{2});
+            for (int physics = 0; physics < 2; ++physics) {
+                const std::array<char, 15> name{'b'};
+                output.write(name.data(), name.size());
+                append(output, std::uint32_t{0});
+                for (int i = 0; i < 7; ++i)
+                    append(output, i == 6 ? 1.0F : 0.0F);
+                std::array<std::uint8_t, 64> raw{};
+                for (std::size_t axis = 0; axis < 4; ++axis)
+                    for (std::size_t point = 0; point < 4; ++point)
+                        raw[axis * 16 + point * 4] = static_cast<std::uint8_t>(20 + axis + point * 25);
+                raw[2] = physics == 0 ? 99 : 0;
+                raw[3] = physics == 0 ? 15 : 0;
+                output.write(reinterpret_cast<const char*>(raw.data()), raw.size());
+            }
+            append(output, std::uint32_t{0});
+        }
+        const auto motion = dayo::core::loadVmd(path);
+        ok &= check(!motion.bones[0].physics && motion.bones[1].physics, "VMD physics flag import");
+        for (const auto& key : motion.bones)
+            for (std::size_t axis = 0; axis < 4; ++axis)
+                for (std::size_t point = 0; point < 4; ++point)
+                    ok &= check(key.interpolation[axis + point * 4] == 20 + axis + point * 25,
+                                "VMD shifted Bezier copies normalize into canonical channels");
+        dayo::core::saveVmd(path, motion);
+        const auto roundTrip = dayo::core::loadVmd(path);
+        ok &= check(roundTrip.bones[0].interpolation == motion.bones[0].interpolation && !roundTrip.bones[0].physics &&
+                        roundTrip.bones[1].physics,
+                    "VMD export reconstructs shifted copies and physics flags");
+        std::filesystem::remove(path);
     }
     try {
         const auto projectPath = std::filesystem::temp_directory_path() / "mikumikudesu-project-test.dayo";
@@ -245,8 +290,9 @@ int main() {
                     "VMdayo v3 camera tracking round trip");
         ok &= check(loaded.motion.lights.size() == 1 && loaded.motion.shadows.size() == 1,
                     "VMdayo v3 light and shadow tracks round trip");
-        ok &= check(loaded.motion.ik.size() == 1 && loaded.motion.ik[0].states.size() == 1 &&
-                        !loaded.motion.ik[0].states[0].enabled,
+        ok &= check(loaded.motion.ik.size() == 2 && loaded.motion.ik[0].states.size() == 1 &&
+                        !loaded.motion.ik[0].states[0].enabled && loaded.motion.ik[1].states.size() == 1 &&
+                        !loaded.motion.ik[1].states[0].enabled,
                     "VMdayo v3 IK track round trip");
         ok &= check(loaded.motion.externalParents.size() == 1 && loaded.motion.gravity.size() == 1,
                     "VMdayo v3 extension tracks round trip");
@@ -255,6 +301,16 @@ int main() {
         dayo::core::Scene vmdayoScene;
         vmdayoScene.attachMotion(loaded.motion, 0, loaded.modelName);
         ok &= check(vmdayoScene.timeline().duration == 17.0F, "VMdayo attachment updates timeline duration");
+        ok &= check(vmdayoScene.evaluatePhysicsSettings(16).gravity == 98.0F &&
+                        std::abs(vmdayoScene.evaluatePhysicsSettings(17).gravity - 9.8F) < 0.001F &&
+                        vmdayoScene.timeline().externalParentKeys.size() == 1,
+                    "global motion preserves gravity and unresolved external parent keys");
+        document.motion.ik = {{0, false, {}}, {16, true, {}}};
+        document.motion.externalParents.push_back({8, 1, "parent", "child"});
+        dayo::core::saveVmdayo(vmdayoPath, document);
+        const auto visibility = dayo::core::loadVmdayo(vmdayoPath).motion.ik;
+        ok &= check(visibility.size() == 3 && !visibility[0].visible && !visibility[1].visible && visibility[2].visible,
+                    "external parent records retain hidden state and explicit visibility restoration");
         document.opaque = {0x00, 0xFF, 0x56, 0x4D, 0x44};
         dayo::core::saveVmdayo(vmdayoPath, document);
         const auto opaque = dayo::core::loadVmdayo(vmdayoPath);
@@ -529,6 +585,15 @@ int main() {
         dayo::core::MediaFile media(mediaPath);
         ok &= check(media.info().hasAudio && !media.info().hasVideo, "FFmpeg media probing");
         const auto audio = media.decodeAudio();
+        std::vector<float> trimmedAudio;
+        media.streamAudio(
+            [&](std::span<const float> samples, std::uint32_t, std::uint32_t) {
+                trimmedAudio.insert(trimmedAudio.end(), samples.begin(), samples.end());
+            },
+            0.05);
+        ok &= check(trimmedAudio.size() + 4800 == audio.samples.size() &&
+                        std::equal(trimmedAudio.begin(), trimmedAudio.end(), audio.samples.begin() + 4800),
+                    "audio offset trims exact resampled stereo sample frames");
         ok &= check(audio.channels == 2 && audio.sampleRate == 48'000 && !audio.samples.empty(),
                     "FFmpeg audio decode and resample");
         dayo::core::AudioExportRequest exportRequest;
@@ -541,6 +606,8 @@ int main() {
         ok &= check(dayo::core::canExportM4a() && exportResult.encodedSamples > 0 && exportRatio >= 0.99 &&
                         std::filesystem::exists(exportPath),
                     "streaming AAC M4A export");
+        ok &= check(exportResult.encodedSamples == 4800 && std::abs(exportResult.durationSeconds - 0.1) < 1e-8,
+                    "partial AAC frame reports only valid samples");
         dayo::core::MediaFile exportedMedia(exportPath);
         ok &= check(exportedMedia.info().hasAudio && !exportedMedia.info().hasVideo &&
                         exportedMedia.info().durationSeconds > 0.05 && exportedMedia.info().durationSeconds < 0.2,
@@ -1516,6 +1583,23 @@ int main() {
         const auto ikEnabled = ikAnimator.evaluate(0.0F);
         ok &= check(std::abs(ikDisabled.vertices[0].position[1]) < 1e-4F && ikEnabled.vertices[0].position[1] > 1.0F,
                     "VMD IK state toggles PMX IK evaluation");
+        auto oppositeModel = ikModel;
+        oppositeModel.bones[3].position = {-1.0F, 0.0F, 0.0F};
+        dayo::core::MmdAnimator oppositeAnimator(oppositeModel);
+        const auto opposite = oppositeAnimator.evaluate(0.0F);
+        ok &= check(opposite.vertices[0].position[0] < -1.49F, "IK escapes an exactly anti-parallel effector and goal");
+        auto alignedModel = ikModel;
+        alignedModel.vertices[0].position = {1.0F, 0.0F, 0.0F};
+        alignedModel.bones[1].position = {0.0F, 1.0F, 0.0F};
+        alignedModel.bones[3].position = {2.0F, 0.0F, 0.0F};
+        alignedModel.bones[3].parent = -1;
+        alignedModel.bones[3].ikLoopCount = 64;
+        alignedModel.bones[3].ikLinks = {{0, false, {}, {}}, {1, false, {}, {}}};
+        dayo::core::MmdAnimator alignedAnimator(alignedModel);
+        const auto aligned = alignedAnimator.evaluate(0.0F);
+        ok &= check(std::abs(aligned.vertices[0].position[0] - 2.0F) < 0.01F &&
+                        std::abs(aligned.vertices[0].position[1]) < 0.01F,
+                    "one aligned IK link does not terminate subsequent convergence sweeps");
 
         dayo::core::VmdMotion unsortedIkMotion = ikMotion;
         unsortedIkMotion.ik = {
@@ -1564,6 +1648,16 @@ int main() {
                 skinned[0].position[1] < 20.0F && std::abs(skinned[1].position[0] - 40.0F) < 1e-4F &&
                 std::abs(skinned[1].position[1] - 50.0F) < 1e-4F && std::abs(skinned[1].position[2] - 60.0F) < 1e-4F,
             "soft-body fallback applies displacement only to its material vertices");
+        const auto simulateSoftBody = [&](int fps) {
+            dayo::core::SoftBodySimulation simulation(noSoftBodyModel);
+            for (int i = 0; i < fps * 5; ++i)
+                simulation.step(1.0F / static_cast<float>(fps), {0.0F, -9.8F, 0.0F});
+            auto vertices = noSoftBodyModel.vertices;
+            simulation.apply(vertices);
+            return vertices[0].position[1];
+        };
+        ok &= check(std::abs(simulateSoftBody(30) - simulateSoftBody(120)) < 0.02F,
+                    "soft-body damping agrees across 30 and 120 Hz within integration error");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: PMX transform evaluation: " << exception.what() << '\n';
         ok = false;
