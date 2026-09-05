@@ -2819,7 +2819,7 @@ void VulkanDevice::uploadPreviewDeviceLocalBuffer(const void* data, VkDeviceSize
             .pBufferMemoryBarriers = &visible,
         };
         vkCmdPipelineBarrier2(uploadContext_->commandBuffer(), &visibleDependency);
-        uploadContext_->submit();
+        static_cast<void>(uploadContext_->submit());
     } catch (...) {
         if (buffer != VK_NULL_HANDLE)
             vkDestroyBuffer(device_, buffer, nullptr);
