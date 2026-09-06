@@ -62,8 +62,9 @@ jobs:
 
       - name: Check CMake formatting
         run: |
-          "$RUNNER_TEMP/gersemi/bin/gersemi" --check --warnings-as-errors \
-            --definitions cmake/CompileHlsl.cmake -- .
+          git ls-files -z -- ':(exclude)external/**' 'CMakeLists.txt' '**/CMakeLists.txt' '*.cmake' '*.cmake.in' \
+            | xargs -0 "$RUNNER_TEMP/gersemi/bin/gersemi" --check --warnings-as-errors \
+            --definitions cmake/CompileHlsl.cmake --
 
       - name: Check shell formatting
         run: find scripts tests -type f -name '*.sh' -print0 | xargs -0 shfmt -ln bash -d -i 2 -ci
