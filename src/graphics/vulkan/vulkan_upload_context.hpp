@@ -28,6 +28,7 @@ class VulkanUploadContext final {
     VulkanUploadContext& operator=(const VulkanUploadContext&) = delete;
 
     void begin();
+    void abort() noexcept;
     [[nodiscard]] Slice allocate(VkDeviceSize size, VkDeviceSize alignment = 16);
     [[nodiscard]] VkCommandBuffer commandBuffer() const noexcept {
         return commandBuffers_[batchIndex_];

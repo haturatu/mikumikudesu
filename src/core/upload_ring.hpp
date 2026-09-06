@@ -22,6 +22,7 @@ class UploadRing {
 
     [[nodiscard]] std::optional<UploadSlice> tryAllocate(std::size_t size, std::uint64_t retireValue,
                                                          std::size_t alignment = 0);
+    void rollback(std::uint64_t retireValue) noexcept;
     void reclaim(std::uint64_t completedValue);
     void reset() noexcept;
 
