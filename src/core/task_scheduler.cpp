@@ -310,7 +310,8 @@ TaskHandle TaskScheduler::scheduleAfter(std::initializer_list<TaskHandle> depend
 }
 
 void TaskScheduler::wait(const TaskHandle& handle) const {
-    if (Impl::currentWorker() == impl_.get())
+    const auto worker = Impl::currentWorker();
+    if (worker != nullptr && worker->owner == impl_.get())
         throw std::logic_error("worker tasks must use scheduleAfter instead of blocking wait");
     waitTask(handle.state_);
 }

@@ -494,6 +494,21 @@ int main() {
         localChildren.wait();
         scheduler.wait(parent);
         ok &= check(localChildCount.load() == 32, "task scheduler steals worker-local tasks");
+
+        dayo::core::TaskScheduler nestedScheduler(1);
+        std::atomic<int> dependentOrder{};
+        dayo::core::TaskHandle nestedDependent;
+        const auto schedulerParent = nestedScheduler.schedule([&] {
+            const auto dependency = nestedScheduler.schedule([&] { dependentOrder.store(1); });
+            nestedDependent = nestedScheduler.scheduleAfter(dependency, [&] {
+                if (dependentOrder.load() != 1)
+                    throw std::runtime_error("dependency order");
+                dependentOrder.store(2);
+            });
+        });
+        nestedScheduler.wait(schedulerParent);
+        nestedScheduler.wait(nestedDependent);
+        ok &= check(dependentOrder.load() == 2, "task scheduler releases dependent work without blocking workers");
     }
     {
         using dayo::graphics::RenderGraphLite;
