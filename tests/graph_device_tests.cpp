@@ -317,6 +317,13 @@ int main() {
         ok &= check(!pool.isAlive(staleCopy), "old generation stays stale after recycle");
         ok &= check(second.index == first.index && second.generation != first.generation,
                     "recycle reuses index with a new generation");
+        dayo::graphics::handles::TexturePool clearedPool;
+        const auto beforeClear = clearedPool.create();
+        clearedPool.clear();
+        const auto afterClear = clearedPool.create();
+        ok &= check(!clearedPool.isAlive(beforeClear), "clear invalidates a retained handle");
+        ok &= check(afterClear.index == beforeClear.index && afterClear.generation != beforeClear.generation,
+                    "clear preserves generation lineage on reuse");
         // RAII guard releases the slot exactly once.
         {
             dayo::graphics::handles::TexturePool scopedPool;

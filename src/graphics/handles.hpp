@@ -81,6 +81,24 @@ struct DescriptorSetHandle {
     }
 };
 
+struct DescriptorSetLayoutHandle {
+    std::uint32_t index{kInvalidHandleIndex};
+    std::uint32_t generation{};
+
+    [[nodiscard]] constexpr bool valid() const noexcept {
+        return index != kInvalidHandleIndex;
+    }
+    [[nodiscard]] constexpr bool operator==(const DescriptorSetLayoutHandle& other) const noexcept {
+        return index == other.index && generation == other.generation;
+    }
+    [[nodiscard]] constexpr bool operator!=(const DescriptorSetLayoutHandle& other) const noexcept {
+        return !(*this == other);
+    }
+    [[nodiscard]] constexpr explicit operator bool() const noexcept {
+        return valid();
+    }
+};
+
 struct PipelineHandle {
     std::uint32_t index{kInvalidHandleIndex};
     std::uint32_t generation{};
@@ -92,6 +110,24 @@ struct PipelineHandle {
         return index == other.index && generation == other.generation;
     }
     [[nodiscard]] constexpr bool operator!=(const PipelineHandle& other) const noexcept {
+        return !(*this == other);
+    }
+    [[nodiscard]] constexpr explicit operator bool() const noexcept {
+        return valid();
+    }
+};
+
+struct PipelineLayoutHandle {
+    std::uint32_t index{kInvalidHandleIndex};
+    std::uint32_t generation{};
+
+    [[nodiscard]] constexpr bool valid() const noexcept {
+        return index != kInvalidHandleIndex;
+    }
+    [[nodiscard]] constexpr bool operator==(const PipelineLayoutHandle& other) const noexcept {
+        return index == other.index && generation == other.generation;
+    }
+    [[nodiscard]] constexpr bool operator!=(const PipelineLayoutHandle& other) const noexcept {
         return !(*this == other);
     }
     [[nodiscard]] constexpr explicit operator bool() const noexcept {
@@ -171,8 +207,16 @@ template <typename Handle> class GenerationRegistry {
     }
 
     void clear() noexcept {
-        slots_.clear();
         free_.clear();
+        free_.reserve(slots_.size());
+        for (std::uint32_t index = 0; index < slots_.size(); ++index) {
+            auto& slot = slots_[index];
+            slot.alive = false;
+            ++slot.generation;
+            if (slot.generation == 0)
+                slot.generation = 1;
+            free_.push_back(index);
+        }
     }
 
   private:
@@ -188,7 +232,9 @@ using BufferPool = GenerationRegistry<BufferHandle>;
 using TexturePool = GenerationRegistry<TextureHandle>;
 using SamplerPool = GenerationRegistry<SamplerHandle>;
 using DescriptorSetPool = GenerationRegistry<DescriptorSetHandle>;
+using DescriptorSetLayoutPool = GenerationRegistry<DescriptorSetLayoutHandle>;
 using PipelinePool = GenerationRegistry<PipelineHandle>;
+using PipelineLayoutPool = GenerationRegistry<PipelineLayoutHandle>;
 using ShaderBindingTablePool = GenerationRegistry<ShaderBindingTableHandle>;
 
 // RAII guard that returns the handle to the pool on destruction. Move-only so
@@ -197,8 +243,7 @@ using ShaderBindingTablePool = GenerationRegistry<ShaderBindingTableHandle>;
 template <typename Handle> class ScopedHandle {
   public:
     ScopedHandle() noexcept = default;
-    ScopedHandle(GenerationRegistry<Handle>* pool, Handle handle) noexcept : pool_(pool), handle_(handle) {
-    }
+    ScopedHandle(GenerationRegistry<Handle>* pool, Handle handle) noexcept : pool_(pool), handle_(handle) {}
     ~ScopedHandle() {
         reset();
     }
@@ -268,8 +313,18 @@ template <> struct hash<dayo::graphics::handles::DescriptorSetHandle> {
         return (static_cast<std::size_t>(handle.index) << 32U) | handle.generation;
     }
 };
+template <> struct hash<dayo::graphics::handles::DescriptorSetLayoutHandle> {
+    std::size_t operator()(dayo::graphics::handles::DescriptorSetLayoutHandle handle) const noexcept {
+        return (static_cast<std::size_t>(handle.index) << 32U) | handle.generation;
+    }
+};
 template <> struct hash<dayo::graphics::handles::PipelineHandle> {
     std::size_t operator()(dayo::graphics::handles::PipelineHandle handle) const noexcept {
+        return (static_cast<std::size_t>(handle.index) << 32U) | handle.generation;
+    }
+};
+template <> struct hash<dayo::graphics::handles::PipelineLayoutHandle> {
+    std::size_t operator()(dayo::graphics::handles::PipelineLayoutHandle handle) const noexcept {
         return (static_cast<std::size_t>(handle.index) << 32U) | handle.generation;
     }
 };
