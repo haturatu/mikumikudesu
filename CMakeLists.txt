@@ -556,8 +556,7 @@ if(BUILD_TESTING)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(
       dayo_fx_linker_tests
-      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
-              -Wno-missing-field-initializers
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wno-missing-field-initializers
     )
     if(DAYO_WARNINGS_AS_ERRORS)
       target_compile_options(dayo_fx_linker_tests PRIVATE -Werror)

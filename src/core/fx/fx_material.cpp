@@ -151,6 +151,24 @@ std::string MaterialGpuLayout::slotForCanonical(std::string_view canonical) cons
     return slot == canonicalToSlot.end() ? std::string{} : slot->second;
 }
 
+const std::string* MaterialBindingPlan::slotFor(std::string_view localId) const noexcept {
+    try {
+        const auto findSlot = [&](std::string_view id) -> const std::string* {
+            const auto local = layout.localToCanonical.find(std::string(id));
+            if (local == layout.localToCanonical.end())
+                return nullptr;
+            const auto slot = layout.canonicalToSlot.find(local->second);
+            return slot == layout.canonicalToSlot.end() ? nullptr : &slot->second;
+        };
+        if (const auto* slot = findSlot(localId); slot != nullptr)
+            return slot;
+        const std::string trimmed = trimCopy(localId);
+        return findSlot(trimmed);
+    } catch (...) {
+        return nullptr;
+    }
+}
+
 bool MaterialGpuLayout::hasLocal(std::string_view localId) const noexcept {
     try {
         return localToCanonical.contains(std::string(localId)) || localToCanonical.contains(trimCopy(localId));
