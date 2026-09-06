@@ -109,7 +109,9 @@ enum class PreviewSkinningType : std::uint32_t {
     qdef,
 };
 
-enum PreviewDebugFlags : std::uint32_t {
+// Bitmask values are part of the legacy Preview ABI and remain implicitly
+// combinable by callers.
+enum PreviewDebugFlags : std::uint32_t { // NOLINT(cppcoreguidelines-use-enum-class)
     previewDebugDisableBaseTexture = 1U << 0U,
     previewDebugDisableSphere = 1U << 1U,
     previewDebugDisableToon = 1U << 2U,

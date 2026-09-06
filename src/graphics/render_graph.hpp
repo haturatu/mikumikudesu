@@ -167,17 +167,33 @@ struct TypedPassPlan {
     std::vector<TypedBarrier> barriers;
 };
 
+// Two pass ranges overlap unless one ends strictly before the other starts.
+// Unused resources (invalidPass on both ends) overlap nothing and may share.
+[[nodiscard]] inline bool lifetimesOverlap(const TypedLifetime& left, const TypedLifetime& right) noexcept {
+    constexpr std::uint32_t invalid = UINT32_MAX;
+    const bool leftUnused = left.firstPass == invalid && left.lastPass == invalid;
+    const bool rightUnused = right.firstPass == invalid && right.lastPass == invalid;
+    if (leftUnused || rightUnused)
+        return false;
+    return left.firstPass <= right.lastPass && right.firstPass <= left.lastPass;
+}
+
 class RenderGraph {
   public:
     static constexpr TypedPass invalidPass = UINT32_MAX;
 
     [[nodiscard]] TypedResource createResource(std::string name) {
-        resources_.push_back(Resource{std::move(name), std::nullopt});
+        resources_.push_back(Resource{std::move(name), std::nullopt, std::nullopt});
         return static_cast<TypedResource>(resources_.size() - 1U);
     }
 
     [[nodiscard]] TypedResource createResource(std::string name, const TextureResourceDesc& desc) {
-        resources_.push_back(Resource{std::move(name), desc});
+        resources_.push_back(Resource{std::move(name), desc, std::nullopt});
+        return static_cast<TypedResource>(resources_.size() - 1U);
+    }
+
+    [[nodiscard]] TypedResource createBufferResource(std::string name, const BufferResourceDesc& desc) {
+        resources_.push_back(Resource{std::move(name), std::nullopt, desc});
         return static_cast<TypedResource>(resources_.size() - 1U);
     }
 
@@ -205,18 +221,87 @@ class RenderGraph {
         return desc.has_value() ? &desc.value() : nullptr;
     }
 
-    // Alias query backed by ResourceLifetime: transient resources may share
-    // physical memory, persistent history (PreviousFrame/BDPT accumulation,
-    // particles/history) may not. Resources without a descriptor are treated
-    // as transient scratch.
-    [[nodiscard]] bool canAlias(TypedResource left, TypedResource right) const noexcept {
+    [[nodiscard]] const BufferResourceDesc* resourceBufferDesc(TypedResource resource) const noexcept {
+        if (resource >= resources_.size())
+            return nullptr;
+        const auto& desc = resources_[resource].bufferDesc;
+        return desc.has_value() ? &desc.value() : nullptr;
+    }
+
+    // Lifetime-only alias query: transient resources may share an allocation
+    // candidate, while persistent history (PreviousFrame/BDPT accumulation,
+    // particles/history) may not. Descriptorless resources cannot be paired
+    // with a typed descriptor without backend requirements.
+    [[nodiscard]] bool mayAliasByLifetime(TypedResource left, TypedResource right) const noexcept {
         if (left >= resources_.size() || right >= resources_.size())
             return false;
-        const auto& leftDesc = resources_[left].desc;
-        const auto& rightDesc = resources_[right].desc;
-        if (!leftDesc.has_value() || !rightDesc.has_value())
-            return true;
-        return graphics::canAlias(leftDesc.value(), rightDesc.value());
+        const auto& leftRes = resources_[left];
+        const auto& rightRes = resources_[right];
+        if (leftRes.desc.has_value() && rightRes.desc.has_value())
+            return graphics::mayAliasByLifetime(leftRes.desc.value(), rightRes.desc.value());
+        if (leftRes.bufferDesc.has_value() && rightRes.bufferDesc.has_value())
+            return graphics::mayAliasByLifetime(leftRes.bufferDesc.value(), rightRes.bufferDesc.value());
+        // Texture/buffer pairs cannot share an alias group without backend
+        // memory-requirement validation, even when both are transient.
+        return false;
+    }
+
+    // Compatibility name for CPU callers. Physical Vulkan aliasing must use
+    // backend memory requirements in addition to this lifetime result.
+    [[nodiscard]] bool canAlias(TypedResource left, TypedResource right) const noexcept {
+        return mayAliasByLifetime(left, right);
+    }
+
+    // Overlap-aware alias query: even two transient resources may only alias
+    // when their pass lifetimes are disjoint (e.g. A: pass 0-2, B: pass 3-5).
+    // Overlapping lifetimes or any persistent endpoint forbids aliasing.
+    [[nodiscard]] bool canAliasWithLifetimes(TypedResource left, TypedResource right) const {
+        if (!mayAliasByLifetime(left, right))
+            return false;
+        const auto lives = lifetimes();
+        if (left >= lives.size() || right >= lives.size())
+            return false;
+        const auto isUnused = [](const TypedLifetime& lifetime) {
+            return lifetime.firstPass == invalidPass && lifetime.lastPass == invalidPass;
+        };
+        if (isUnused(lives[left]) || isUnused(lives[right]))
+            return false;
+        return !lifetimesOverlap(lives[left], lives[right]);
+    }
+
+    // Greedy alias-group assignment for VMA: resources sharing a group id may
+    // be suballocated from one physical allocation. Overlapping or persistent
+    // resources always land in distinct groups.
+    [[nodiscard]] std::vector<std::uint32_t> computeAliasGroups() const {
+        const auto lives = lifetimes();
+        constexpr auto noAliasGroup = std::numeric_limits<std::uint32_t>::max();
+        std::vector<std::uint32_t> groups(resources_.size(), noAliasGroup);
+        std::uint32_t nextGroup = 0;
+        for (std::size_t i = 0; i < resources_.size(); ++i) {
+            if (lives[i].firstPass == invalidPass && lives[i].lastPass == invalidPass)
+                continue;
+            std::uint32_t assigned = nextGroup;
+            for (std::uint32_t candidate = 0; candidate < nextGroup; ++candidate) {
+                bool fits = true;
+                for (std::size_t j = 0; j < i; ++j) {
+                    if (groups[j] != candidate)
+                        continue;
+                    if (!mayAliasByLifetime(static_cast<TypedResource>(i), static_cast<TypedResource>(j)) ||
+                        lifetimesOverlap(lives[i], lives[j])) {
+                        fits = false;
+                        break;
+                    }
+                }
+                if (fits) {
+                    assigned = candidate;
+                    break;
+                }
+            }
+            groups[i] = assigned;
+            if (assigned == nextGroup)
+                ++nextGroup;
+        }
+        return groups;
     }
 
     [[nodiscard]] std::vector<TypedPassPlan> compile() const {
@@ -277,9 +362,19 @@ class RenderGraph {
     }
 
   private:
+    [[nodiscard]] ResourceLifetime lifetimeOf(TypedResource resource) const noexcept {
+        const auto& res = resources_[resource];
+        if (res.desc.has_value())
+            return res.desc->lifetime;
+        if (res.bufferDesc.has_value())
+            return res.bufferDesc->lifetime;
+        return ResourceLifetime::transient;
+    }
+
     struct Resource {
         std::string name;
         std::optional<TextureResourceDesc> desc;
+        std::optional<BufferResourceDesc> bufferDesc;
     };
     struct Pass {
         std::string name;

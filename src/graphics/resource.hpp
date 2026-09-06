@@ -4,6 +4,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -88,23 +90,20 @@ struct BufferResourceDesc {
 };
 
 [[nodiscard]] constexpr bool isWriteUsage(ResourceUsage usage) noexcept {
-    constexpr std::uint32_t kWriteMask = toBits(ResourceUsage::storageWrite) |
-                                         toBits(ResourceUsage::storageReadWrite) |
-                                         toBits(ResourceUsage::colorAttachment) |
-                                         toBits(ResourceUsage::depthWrite) | toBits(ResourceUsage::transferDst) |
-                                         toBits(ResourceUsage::asBuildWrite) | toBits(ResourceUsage::externalWrite) |
-                                         toBits(ResourceUsage::present);
+    constexpr std::uint32_t kWriteMask = toBits(ResourceUsage::storageWrite) | toBits(ResourceUsage::storageReadWrite) |
+                                         toBits(ResourceUsage::colorAttachment) | toBits(ResourceUsage::depthWrite) |
+                                         toBits(ResourceUsage::transferDst) | toBits(ResourceUsage::asBuildWrite) |
+                                         toBits(ResourceUsage::externalWrite) | toBits(ResourceUsage::present);
     return (toBits(usage) & kWriteMask) != 0;
 }
 
 [[nodiscard]] constexpr bool isReadUsage(ResourceUsage usage) noexcept {
-    constexpr std::uint32_t kReadMask = toBits(ResourceUsage::sampledRead) | toBits(ResourceUsage::storageRead) |
-                                        toBits(ResourceUsage::storageReadWrite) |
-                                        toBits(ResourceUsage::uniformRead) | toBits(ResourceUsage::vertexRead) |
-                                        toBits(ResourceUsage::indexRead) | toBits(ResourceUsage::indirectRead) |
-                                        toBits(ResourceUsage::depthRead) | toBits(ResourceUsage::transferSrc) |
-                                        toBits(ResourceUsage::asBuildRead) | toBits(ResourceUsage::rayTracingRead) |
-                                        toBits(ResourceUsage::hostRead) | toBits(ResourceUsage::externalRead);
+    constexpr std::uint32_t kReadMask =
+        toBits(ResourceUsage::sampledRead) | toBits(ResourceUsage::storageRead) |
+        toBits(ResourceUsage::storageReadWrite) | toBits(ResourceUsage::uniformRead) |
+        toBits(ResourceUsage::vertexRead) | toBits(ResourceUsage::indexRead) | toBits(ResourceUsage::indirectRead) |
+        toBits(ResourceUsage::depthRead) | toBits(ResourceUsage::transferSrc) | toBits(ResourceUsage::asBuildRead) |
+        toBits(ResourceUsage::rayTracingRead) | toBits(ResourceUsage::hostRead) | toBits(ResourceUsage::externalRead);
     return (toBits(usage) & kReadMask) != 0;
 }
 
@@ -174,17 +173,47 @@ struct BufferResourceDesc {
     return lifetime == ResourceLifetime::transient;
 }
 
-// Only transient resources may alias each other. Persistent resources back
-// history that must survive across frames (PreviousFrame, BDPT accumulation,
-// particles, temporal history) and therefore can never share physical memory.
-[[nodiscard]] constexpr bool canAlias(const TextureResourceDesc& left,
-                                      const TextureResourceDesc& right) noexcept {
+// CPU-side lifetime gate only. Persistent resources back history that must
+// survive across frames (PreviousFrame, BDPT accumulation, particles,
+// temporal history) and therefore can never be candidates for aliasing.
+[[nodiscard]] constexpr bool mayAliasByLifetime(const TextureResourceDesc& left,
+                                                const TextureResourceDesc& right) noexcept {
     return isAliasingAllowed(left.lifetime) && isAliasingAllowed(right.lifetime);
 }
 
-[[nodiscard]] constexpr bool canAlias(const BufferResourceDesc& left,
-                                      const BufferResourceDesc& right) noexcept {
+[[nodiscard]] constexpr bool mayAliasByLifetime(const BufferResourceDesc& left,
+                                                const BufferResourceDesc& right) noexcept {
     return isAliasingAllowed(left.lifetime) && isAliasingAllowed(right.lifetime);
+}
+
+// Source-compatible aliases for older callers. These are not Vulkan physical
+// alias decisions; the backend must add memory requirements before binding two
+// resources to one allocation.
+[[nodiscard]] constexpr bool canAlias(const TextureResourceDesc& left, const TextureResourceDesc& right) noexcept {
+    return mayAliasByLifetime(left, right);
+}
+
+[[nodiscard]] constexpr bool canAlias(const BufferResourceDesc& left, const BufferResourceDesc& right) noexcept {
+    return mayAliasByLifetime(left, right);
+}
+
+struct PhysicalResourceRequirements {
+    std::size_t size{};
+    std::size_t alignment{1};
+    std::uint32_t memoryTypeBits{std::numeric_limits<std::uint32_t>::max()};
+    bool requiresDedicatedAllocation{};
+    bool bufferImageGranularityCompatible{true};
+};
+
+// Final physical-alias gate for a backend allocation planner. The CPU graph
+// intentionally cannot answer this without Vulkan memory requirements.
+[[nodiscard]] constexpr bool canPhysicallyAlias(ResourceLifetime leftLifetime, ResourceLifetime rightLifetime,
+                                                const PhysicalResourceRequirements& left,
+                                                const PhysicalResourceRequirements& right) noexcept {
+    return isAliasingAllowed(leftLifetime) && isAliasingAllowed(rightLifetime) && left.size != 0 && right.size != 0 &&
+           left.alignment != 0 && right.alignment != 0 && (left.memoryTypeBits & right.memoryTypeBits) != 0U &&
+           !left.requiresDedicatedAllocation && !right.requiresDedicatedAllocation &&
+           left.bufferImageGranularityCompatible && right.bufferImageGranularityCompatible;
 }
 
 [[nodiscard]] constexpr bool mustPreserveForHistory(ResourceLifetime lifetime) noexcept {
@@ -196,12 +225,135 @@ struct BufferResourceDesc {
         return false;
     if (desc.mipLevels == 0 || desc.arrayLayers == 0)
         return false;
+    if (desc.dimension == TextureDimension::d1 && (desc.extent.height != 1 || desc.extent.depth != 1))
+        return false;
+    if (desc.dimension == TextureDimension::d2 && desc.extent.depth != 1)
+        return false;
     if (desc.dimension == TextureDimension::d3 && desc.arrayLayers != 1)
+        return false;
+    // arrayLayers is the number of cubes, not the number of faces. Vulkan
+    // receives arrayLayers * 6 layers for this dimension.
+    if (desc.dimension == TextureDimension::cube &&
+        (desc.extent.width != desc.extent.height || desc.extent.depth != 1 ||
+         static_cast<std::uint64_t>(desc.arrayLayers) > std::numeric_limits<std::uint32_t>::max() / 6U))
         return false;
     if (toBits(desc.usage) == 0)
         return false;
     return true;
 }
+
+// ---- VMA-friendly allocation hooks ----
+// CPU-side size estimates the Vulkan backend feeds into VMA pool selection.
+// They stay conservative (mip tail rounded up per level) so aliasing decisions
+// made from them never under-allocate physical memory.
+[[nodiscard]] constexpr std::size_t pixelFormatByteSize(PixelFormat format) noexcept {
+    switch (format) {
+    case PixelFormat::rgba8Unorm:
+    case PixelFormat::rgba8Srgb:
+        return 4;
+    case PixelFormat::rgba16Float:
+        return 8;
+    case PixelFormat::rgba32Float:
+        return 16;
+    case PixelFormat::depth32Float:
+        return 4;
+    }
+    return 4;
+}
+
+[[nodiscard]] inline std::size_t checkedResourceMul(std::size_t left, std::size_t right) {
+    if (right != 0 && left > std::numeric_limits<std::size_t>::max() / right)
+        throw std::overflow_error("texture allocation size overflow");
+    return left * right;
+}
+
+[[nodiscard]] inline std::size_t checkedResourceAdd(std::size_t left, std::size_t right) {
+    if (left > std::numeric_limits<std::size_t>::max() - right)
+        throw std::overflow_error("texture allocation size overflow");
+    return left + right;
+}
+
+[[nodiscard]] inline std::size_t estimateTextureBytes(const TextureResourceDesc& desc) {
+    if (desc.extent.width == 0 || desc.extent.height == 0 || desc.extent.depth == 0 || desc.mipLevels == 0 ||
+        desc.arrayLayers == 0)
+        throw std::invalid_argument("cannot estimate an empty texture allocation");
+    const std::size_t pixel = pixelFormatByteSize(desc.format);
+    std::size_t bytes = 0;
+    std::uint32_t width = desc.extent.width;
+    std::uint32_t height = desc.extent.height;
+    std::uint32_t depth = desc.extent.depth;
+    for (std::uint32_t mip = 0; mip < desc.mipLevels; ++mip) {
+        auto level = checkedResourceMul(static_cast<std::size_t>(width), static_cast<std::size_t>(height));
+        level = checkedResourceMul(level, static_cast<std::size_t>(depth));
+        level = checkedResourceMul(level, pixel);
+        bytes = checkedResourceAdd(bytes, level);
+        width = width > 1 ? width / 2 : 1;
+        height = height > 1 ? height / 2 : 1;
+        depth = depth > 1 ? depth / 2 : 1;
+    }
+    const auto faces = desc.dimension == TextureDimension::cube ? 6U : 1U;
+    const auto layers = checkedResourceMul(static_cast<std::size_t>(desc.arrayLayers), faces);
+    return checkedResourceMul(bytes, layers);
+}
+
+[[nodiscard]] constexpr std::size_t estimateBufferBytes(const BufferResourceDesc& desc) noexcept {
+    return desc.size;
+}
+
+[[nodiscard]] constexpr bool isDepthFormat(PixelFormat format) noexcept {
+    return format == PixelFormat::depth32Float;
+}
+
+// Frame-indexed retirement queue. Destroyed resources stay alive for
+// `keepFrames` frames (default 2, matching double/triple-buffered Vulkan
+// flight) so in-flight command buffers never observe freed memory.
+// `sweep(completedFrame)` returns handles that are now safe to destroy.
+template <typename Handle> class RetirementQueue {
+  public:
+    explicit RetirementQueue(std::uint64_t keepFrames = 2) noexcept : keepFrames_(keepFrames) {}
+
+    void retire(Handle handle, std::uint64_t currentFrame) {
+        if (handle.valid())
+            pending_.push_back(Entry{handle, currentFrame});
+    }
+
+    [[nodiscard]] std::vector<Handle> sweep(std::uint64_t completedFrame) {
+        std::vector<Handle> ready;
+        std::vector<Entry> remaining;
+        remaining.reserve(pending_.size());
+        for (const auto& entry : pending_) {
+            if (entry.retireFrame + keepFrames_ <= completedFrame)
+                ready.push_back(entry.handle);
+            else
+                remaining.push_back(entry);
+        }
+        pending_ = std::move(remaining);
+        return ready;
+    }
+
+    [[nodiscard]] std::size_t pendingCount() const noexcept {
+        return pending_.size();
+    }
+
+    [[nodiscard]] std::uint64_t keepFrames() const noexcept {
+        return keepFrames_;
+    }
+
+    void clear() noexcept {
+        pending_.clear();
+    }
+
+  private:
+    struct Entry {
+        Handle handle{};
+        std::uint64_t retireFrame{};
+    };
+    std::vector<Entry> pending_;
+    std::uint64_t keepFrames_;
+};
+
+using TextureRetirementQueue = RetirementQueue<handles::TextureHandle>;
+using BufferRetirementQueue = RetirementQueue<handles::BufferHandle>;
 
 // CPU-side registry for typed resource descriptors. GPU allocation itself
 // stays in Device; this registry owns lifetimes, aliasing decisions, and
@@ -254,22 +406,20 @@ class ResourceRegistry {
 
     // Alias query by handle: false when either handle is stale/dead or either
     // endpoint is persistent history.
-    [[nodiscard]] bool canAliasTextures(handles::TextureHandle left,
-                                        handles::TextureHandle right) const noexcept {
+    [[nodiscard]] bool canAliasTextures(handles::TextureHandle left, handles::TextureHandle right) const noexcept {
         const auto* leftDesc = findTexture(left);
         const auto* rightDesc = findTexture(right);
         if (leftDesc == nullptr || rightDesc == nullptr)
             return false;
-        return canAlias(*leftDesc, *rightDesc);
+        return mayAliasByLifetime(*leftDesc, *rightDesc);
     }
 
-    [[nodiscard]] bool canAliasBuffers(handles::BufferHandle left,
-                                       handles::BufferHandle right) const noexcept {
+    [[nodiscard]] bool canAliasBuffers(handles::BufferHandle left, handles::BufferHandle right) const noexcept {
         const auto* leftDesc = findBuffer(left);
         const auto* rightDesc = findBuffer(right);
         if (leftDesc == nullptr || rightDesc == nullptr)
             return false;
-        return canAlias(*leftDesc, *rightDesc);
+        return mayAliasByLifetime(*leftDesc, *rightDesc);
     }
 
     [[nodiscard]] std::size_t aliveTextureCount() const noexcept {
