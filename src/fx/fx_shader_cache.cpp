@@ -26,7 +26,7 @@ std::optional<FxShaderCache::Handle> FxShaderCache::findExact(const FxShaderKey&
 std::optional<FxShaderCache::Handle> FxShaderCache::find(const FxShaderKey& key) const {
     std::scoped_lock lock(mutex_);
     for (const auto& [stored, handle] : entries_) {
-        if (stored.rfind(key.combined(), 0) == 0)
+        if (stored.starts_with(key.combined()))
             return handle;
     }
     return std::nullopt;

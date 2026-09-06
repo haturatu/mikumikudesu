@@ -144,9 +144,10 @@ bool FxCompiler::buildPipelines(const FxProgram& program, std::string* error) co
 }
 
 FxInstance::FxInstance(FxProgram initial, FxCompilerOptions options)
-    : active_(std::make_shared<const FxProgram>(std::move(initial))), compiler_(options) {
-    nextGeneration_ = active_->generation == std::numeric_limits<std::uint64_t>::max() ? active_->generation
-                                                                                       : active_->generation + 1U;
+    : active_(std::make_shared<const FxProgram>(std::move(initial))),
+      nextGeneration_(active_->generation == std::numeric_limits<std::uint64_t>::max() ? active_->generation
+                                                                                       : active_->generation + 1U),
+      compiler_(options) {
     if (active_->sourceVersion != 0) {
         newestSourceVersion_ = active_->sourceVersion;
         hasSourceVersion_ = true;
