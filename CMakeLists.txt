@@ -140,6 +140,7 @@ endif()
 
 set(LIBMMD_ENABLE_PHYSICS ON CACHE BOOL "Build the libmmd physics API required by the runtime" FORCE)
 set(LIBMMD_ENABLE_BULLET ${DAYO_ENABLE_PHYSICS} CACHE BOOL "Use Bullet acceleration in libmmd" FORCE)
+set(LIBMMD_BUILD_TESTS OFF CACHE BOOL "Build libmmd standalone tests" FORCE)
 add_subdirectory(external/libmmd EXCLUDE_FROM_ALL)
 
 add_library(
