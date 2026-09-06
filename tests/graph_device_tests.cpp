@@ -379,6 +379,22 @@ int main() {
         }
         ok &= check(pipelineThrew, "mock typed pipeline reports unimplemented");
 
+        bool layoutPipelineThrew = false;
+        try {
+            static_cast<void>(device.createGraphicsPipelineEx(dayo::graphics::GraphicsPipelineDescEx{}));
+        } catch (const std::logic_error&) {
+            layoutPipelineThrew = true;
+        }
+        ok &= check(layoutPipelineThrew, "layout-aware graphics pipeline reports unimplemented");
+
+        bool layoutComputeThrew = false;
+        try {
+            static_cast<void>(device.createComputePipelineEx(dayo::graphics::ComputePipelineDescEx{}));
+        } catch (const std::logic_error&) {
+            layoutComputeThrew = true;
+        }
+        ok &= check(layoutComputeThrew, "layout-aware compute pipeline reports unimplemented");
+
         bool sbtThrew = false;
         try {
             static_cast<void>(device.createShaderBindingTable(dayo::graphics::ShaderBindingTableDesc{}));
@@ -619,6 +635,15 @@ int main() {
             pipelineLayoutThrew = true;
         }
         ok &= check(pipelineLayoutThrew, "mock pipeline layout reports unimplemented");
+
+        bool descriptorAllocationThrew = false;
+        try {
+            static_cast<void>(device.allocateDescriptorSetEx(dayo::graphics::handles::DescriptorSetLayoutHandle{},
+                                                             std::span<const dayo::graphics::DescriptorBindingEx>{}));
+        } catch (const std::logic_error&) {
+            descriptorAllocationThrew = true;
+        }
+        ok &= check(descriptorAllocationThrew, "layout-aware descriptor allocation reports unimplemented");
         bool clearBufferThrew = false;
         try {
             device.clearBufferEx(dayo::graphics::handles::BufferHandle{}, 0);

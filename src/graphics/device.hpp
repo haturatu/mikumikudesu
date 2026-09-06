@@ -236,6 +236,14 @@ struct PipelineDesc {
     std::vector<ShaderHandle> shaders;
     bool compute{};
 };
+struct GraphicsPipelineDescEx {
+    handles::PipelineLayoutHandle layout{};
+    std::vector<ShaderHandle> shaders;
+};
+struct ComputePipelineDescEx {
+    handles::PipelineLayoutHandle layout{};
+    std::vector<ShaderHandle> shaders;
+};
 struct RayTracingPipelineDesc {
     std::vector<ShaderHandle> rayGeneration;
     std::vector<ShaderHandle> miss;
@@ -255,6 +263,7 @@ enum class DescriptorKind : std::uint8_t {
     storageImage,
     uniformBuffer,
     storageBuffer,
+    accelerationStructure,
 };
 
 enum class ShaderStageMask : std::uint32_t {
@@ -305,6 +314,7 @@ struct DescriptorBindingEx {
     handles::BufferHandle buffer{};
     handles::TextureHandle texture{};
     handles::SamplerHandle sampler{};
+    handles::AccelerationStructureHandle accelerationStructure{};
 };
 
 struct ExternalTextureImportDesc {
@@ -335,11 +345,17 @@ class CommandList {
     virtual void clearTexture(TextureHandle) {}
     virtual void generateMipmaps(TextureHandle) {}
     virtual void buildAccelerationStructure(AccelerationStructureHandle) {}
-    // Typed (generation-checked) recording. Defaults are no-ops so Preview
-    // command lists keep working without modification.
-    virtual void copyTextureEx(handles::TextureHandle, handles::TextureHandle) {}
-    virtual void clearTextureEx(handles::TextureHandle) {}
-    virtual void generateMipmapsEx(handles::TextureHandle) {}
+    // Typed (generation-checked) recording. Preview command lists that do not
+    // implement the typed path fail explicitly instead of dropping commands.
+    virtual void copyTextureEx(handles::TextureHandle, handles::TextureHandle) {
+        throw std::logic_error("Typed command-list texture copy is not implemented by this backend");
+    }
+    virtual void clearTextureEx(handles::TextureHandle) {
+        throw std::logic_error("Typed command-list texture clear is not implemented by this backend");
+    }
+    virtual void generateMipmapsEx(handles::TextureHandle) {
+        throw std::logic_error("Typed command-list mipmap generation is not implemented by this backend");
+    }
 };
 
 class Device {
@@ -441,6 +457,10 @@ class Device {
     [[nodiscard]] virtual handles::DescriptorSetHandle allocateDescriptorSetEx(std::span<const DescriptorBindingEx>) {
         throw std::logic_error("Typed descriptor sets are not implemented by this backend");
     }
+    [[nodiscard]] virtual handles::DescriptorSetHandle allocateDescriptorSetEx(handles::DescriptorSetLayoutHandle,
+                                                                               std::span<const DescriptorBindingEx>) {
+        throw std::logic_error("Typed descriptor sets are not implemented by this backend");
+    }
     virtual void updateDescriptorSetEx(handles::DescriptorSetHandle, std::span<const DescriptorBindingEx>) {
         throw std::logic_error("Typed descriptor update is not implemented by this backend");
     }
@@ -464,7 +484,13 @@ class Device {
     [[nodiscard]] virtual handles::PipelineHandle createGraphicsPipelineEx(const PipelineDesc&) {
         throw std::logic_error("Typed graphics pipelines are not implemented by this backend");
     }
+    [[nodiscard]] virtual handles::PipelineHandle createGraphicsPipelineEx(const GraphicsPipelineDescEx&) {
+        throw std::logic_error("Typed graphics pipelines are not implemented by this backend");
+    }
     [[nodiscard]] virtual handles::PipelineHandle createComputePipelineEx(const PipelineDesc&) {
+        throw std::logic_error("Typed compute pipelines are not implemented by this backend");
+    }
+    [[nodiscard]] virtual handles::PipelineHandle createComputePipelineEx(const ComputePipelineDescEx&) {
         throw std::logic_error("Typed compute pipelines are not implemented by this backend");
     }
     [[nodiscard]] virtual handles::PipelineHandle createRayTracingPipelineEx(const RayTracingPipelineDesc&) {
