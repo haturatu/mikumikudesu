@@ -3168,7 +3168,8 @@ void VulkanDevice::updatePreviewDraws(std::span<const PreviewDraw> draws) {
         for (auto& frame : frames_) {
             uploadPreviewBuffer(previewIndirectCommands_.data(), byteSize, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
                                 frame.previewIndirectBuffer, frame.previewIndirectMemory, previewIndirectCapacity_);
-            check(vkMapMemory(device_, frame.previewIndirectMemory, 0, byteSize, 0, &frame.mappedPreviewIndirect),
+            check(vkMapMemory(device_, frame.previewIndirectMemory, 0, previewIndirectCapacity_, 0,
+                              &frame.mappedPreviewIndirect),
                   "persistently map preview indirect commands");
             frame.previewIndirectGeneration = previewIndirectGeneration_;
         }
