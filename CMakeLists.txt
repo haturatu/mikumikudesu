@@ -437,7 +437,14 @@ if(DAYO_HAS_MEDIA)
 endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-  foreach(target dayo_core dayo_fx dayo_platform dayo_graphics mikumikudesu)
+  foreach(
+    target
+    dayo_core
+    dayo_fx
+    dayo_platform
+    dayo_graphics
+    mikumikudesu
+  )
     target_compile_options(
       ${target}
       PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
