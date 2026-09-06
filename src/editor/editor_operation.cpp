@@ -31,9 +31,9 @@ std::size_t EditorOperationQueue::flush(core::Scene& scene, core::CommandHistory
             auto& value = std::get<ReplaceMotionOperation>(operation);
             const auto* before = scene.motion(value.target, value.global);
             core::VmdMotion snapshot = before != nullptr ? *before : core::VmdMotion{};
-            history.execute(scene, std::make_unique<core::EditMotionCommand>(value.target, value.global,
-                                                                             std::move(snapshot),
-                                                                             std::move(value.motion), value.label));
+            history.execute(scene,
+                            std::make_unique<core::EditMotionCommand>(value.target, value.global, std::move(snapshot),
+                                                                      std::move(value.motion), value.label));
             ++applied;
         } else {
             auto& value = std::get<MoveKeysOperation>(operation);
@@ -74,6 +74,8 @@ std::size_t EditorOperationQueue::flush(core::Scene& scene, core::CommandHistory
             core::MotionEditor::move(document, refs, value.frameDelta);
             if (externalStableIdTable_ != nullptr)
                 externalStableIdTable_->notifyMoved(document, ids, value.frameDelta);
+            else
+                stableIdTable_.notifyMoved(document, ids, value.frameDelta);
             auto after = core::toVmdMotion(std::move(document), before->modelName);
             history.execute(scene, std::make_unique<core::EditMotionCommand>(value.target, value.global, *before,
                                                                              std::move(after), "Move keys"));
@@ -118,8 +120,8 @@ void UndoTransaction::commit() {
     // Restore the pre-drag state, then push one coalesced command so
     // undo returns exactly to `before`.
     static_cast<void>(scene_->replaceMotion(*before_, target_, global_));
-    history_->execute(scene_, std::make_unique<core::EditMotionCommand>(target_, global_, std::move(*before_),
-                                                                        std::move(*current_), label_));
+    history_->execute(*scene_, std::make_unique<core::EditMotionCommand>(target_, global_, std::move(*before_),
+                                                                         std::move(*current_), label_));
     before_.reset();
     current_.reset();
 }

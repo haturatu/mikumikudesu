@@ -106,11 +106,10 @@ int main() {
     // Sequence path spec: parse + format round trip.
     {
         const auto parsed = dayo::core::parseSequencePath("frame_000003.ppm");
-        ok &= check(parsed.has_value() && parsed->prefix == "frame_" && parsed->digits == 6 &&
-                        parsed->start == 3 && parsed->extension == ".ppm",
+        ok &= check(parsed.has_value() && parsed->prefix == "frame_" && parsed->digits == 6 && parsed->start == 3 &&
+                        parsed->extension == ".ppm",
                     "sequence path parses prefix/digits/extension");
-        ok &= check(!dayo::core::parseSequencePath("frame.ppm").has_value(),
-                    "sequence path rejects digit-less names");
+        ok &= check(!dayo::core::parseSequencePath("frame.ppm").has_value(), "sequence path rejects digit-less names");
         if (parsed.has_value()) {
             const auto formatted = dayo::core::formatSequencePath("out", *parsed, 18);
             ok &= check(formatted == std::filesystem::path("out/frame_000018.ppm"), "sequence path formats frames");
@@ -140,6 +139,18 @@ int main() {
                     "MoveKeysOperation changes motion through history");
         ok &= check(history.undo(scene) && scene.motion(0, true)->bones.front().frame == 5,
                     "MoveKeysOperation undo restores motion");
+
+        const dayo::editor::StableIdTable copiedTable = table;
+        dayo::editor::EditorOperationQueue copiedQueue;
+        copiedQueue.setStableIdTable(copiedTable);
+        dayo::editor::MoveKeysOperation copiedMove;
+        copiedMove.target = 0;
+        copiedMove.global = true;
+        copiedMove.keys = {id};
+        copiedMove.frameDelta = 1;
+        copiedQueue.push(copiedMove);
+        ok &= check(copiedQueue.flush(scene, history) == 1 && scene.motion(0, true)->bones.front().frame == 6,
+                    "const stable id table supports move operations through its internal copy");
     }
 
     // HDR: half round trip + RGBA16F skeleton.
@@ -215,6 +226,9 @@ int main() {
         stepper.seekTo(0.0F);
         const auto steps = stepper.stepFixed(1.0F / 30.0F);
         ok &= check(steps == 4 && stepper.accumulatedSteps() == 4, "physics fixed-step accumulates 120Hz substeps");
+        dayo::core::PhysicsStepper capped({}, 1.0e-6F);
+        const auto cappedSteps = capped.stepFixed(0.25F);
+        ok &= check(cappedSteps > 0 && cappedSteps <= 4096, "physics fixed-step caps hostile substep counts");
         stepper.prewarm(8);
         ok &= check(stepper.accumulatedSteps() == 12, "physics prewarm advances without moving frame clock");
         dayo::core::PhysicsCompatibilityProfile compat;

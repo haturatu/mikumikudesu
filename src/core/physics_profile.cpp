@@ -2,11 +2,19 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace dayo::core {
+namespace {
+
+constexpr float kMinimumFixedStep = 1.0e-6F;
+constexpr std::size_t kMaxSubstepsPerCall = 4096;
+
+} // namespace
 
 PhysicsStepper::PhysicsStepper(PhysicsCompatibilityProfile profile, float fixedStep)
-    : profile_(profile), fixedStep_(fixedStep > 0.0F && std::isfinite(fixedStep) ? fixedStep : 1.0F / 120.0F) {}
+    : profile_(profile),
+      fixedStep_(fixedStep >= kMinimumFixedStep && std::isfinite(fixedStep) ? fixedStep : 1.0F / 120.0F) {}
 
 void PhysicsStepper::prewarm(std::size_t steps) noexcept {
     accumulatedSteps_ += steps;
@@ -23,14 +31,15 @@ std::size_t PhysicsStepper::stepFixed(float deltaSeconds) {
     if (!std::isfinite(deltaSeconds) || deltaSeconds <= 0.0F)
         return 0;
     const float clamped = std::min(deltaSeconds, 0.25F);
-    remainder_ += clamped;
-    std::size_t steps = 0;
-    while (remainder_ >= fixedStep_) {
-        remainder_ -= fixedStep_;
-        frame_ += fixedStep_ * 30.0F;
-        ++accumulatedSteps_;
-        ++steps;
-    }
+    const double total = static_cast<double>(remainder_) + static_cast<double>(clamped);
+    const double requested = std::floor(total / static_cast<double>(fixedStep_));
+    const auto steps = std::min<std::size_t>(requested >= static_cast<double>(std::numeric_limits<std::size_t>::max())
+                                                 ? std::numeric_limits<std::size_t>::max()
+                                                 : static_cast<std::size_t>(requested),
+                                             kMaxSubstepsPerCall);
+    remainder_ = static_cast<float>(total - static_cast<double>(steps) * static_cast<double>(fixedStep_));
+    frame_ += static_cast<float>(static_cast<double>(steps) * static_cast<double>(fixedStep_) * 30.0);
+    accumulatedSteps_ += steps;
     return steps;
 }
 
