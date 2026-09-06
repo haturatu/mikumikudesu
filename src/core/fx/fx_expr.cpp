@@ -420,25 +420,35 @@ bool resolveBuiltin(std::string_view name, const FxEvalContext& context, FxScala
 FxScalar evalNode(const FxExpr& expr, const FxEvalContext& context, FxCompatibilityProfile profile, bool allowPowQuirk);
 
 FxScalar evalBinary(FxExpr::BinaryOp op, const FxScalar& lhs, const FxScalar& rhs) {
-    const auto comparison = [op](double left, double right) -> std::optional<bool> {
+    const auto comparison = [op](const FxScalar& leftValue, const FxScalar& rightValue) -> std::optional<bool> {
+        const bool useDouble = std::holds_alternative<double>(leftValue) || std::holds_alternative<double>(rightValue);
+        const auto asInt = [](const FxScalar& value) -> std::int64_t {
+            if (const auto* b = std::get_if<bool>(&value))
+                return *b ? 1 : 0;
+            return std::get<std::int64_t>(value);
+        };
+        const double leftDouble = toDoubleImpl(leftValue);
+        const double rightDouble = toDoubleImpl(rightValue);
+        const std::int64_t leftInt = asInt(leftValue);
+        const std::int64_t rightInt = asInt(rightValue);
         switch (op) {
         case FxExpr::BinaryOp::less:
-            return left < right;
+            return useDouble ? leftDouble < rightDouble : leftInt < rightInt;
         case FxExpr::BinaryOp::lessEqual:
-            return left <= right;
+            return useDouble ? leftDouble <= rightDouble : leftInt <= rightInt;
         case FxExpr::BinaryOp::greater:
-            return left > right;
+            return useDouble ? leftDouble > rightDouble : leftInt > rightInt;
         case FxExpr::BinaryOp::greaterEqual:
-            return left >= right;
+            return useDouble ? leftDouble >= rightDouble : leftInt >= rightInt;
         case FxExpr::BinaryOp::equal:
-            return left == right;
+            return useDouble ? leftDouble == rightDouble : leftInt == rightInt;
         case FxExpr::BinaryOp::notEqual:
-            return left != right;
+            return useDouble ? leftDouble != rightDouble : leftInt != rightInt;
         default:
             return std::nullopt;
         }
     };
-    if (const auto result = comparison(toDoubleImpl(lhs), toDoubleImpl(rhs)); result.has_value())
+    if (const auto result = comparison(lhs, rhs); result.has_value())
         return FxScalar{*result};
     if (op == FxExpr::BinaryOp::logicalAnd || op == FxExpr::BinaryOp::logicalOr)
         return FxScalar{op == FxExpr::BinaryOp::logicalAnd ? (toBoolImpl(lhs) && toBoolImpl(rhs))

@@ -77,6 +77,12 @@ int main() {
     ok &= check(fxToBool(evaluateFxExpr(parseFxExpr("1.0 == true"), ctx)), "explicit scalar coercion comparison");
     ok &= check(!fxToBool(evaluateFxExpr(parseFxExpr("false && MISSING"), ctx)), "logical and short circuits");
     ok &= check(fxToBool(evaluateFxExpr(parseFxExpr("true || MISSING"), ctx)), "logical or short circuits");
+    ok &= check(!fxToBool(evaluateFxExpr(parseFxExpr("9007199254740992 == 9007199254740993"), ctx)),
+                "large integer equality stays exact");
+    ok &= check(fxToBool(evaluateFxExpr(parseFxExpr("9007199254740992 != 9007199254740993"), ctx)),
+                "large integer inequality stays exact");
+    ok &= check(fxToBool(evaluateFxExpr(parseFxExpr("9223372036854775806 < 9223372036854775807"), ctx)),
+                "near-limit integer comparison stays exact");
     {
         std::string deepUnary(65, '!');
         deepUnary += '1';

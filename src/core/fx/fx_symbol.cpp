@@ -56,19 +56,29 @@ FxScalar evalWithResolver(const FxExpr& expr, const FxSymbolResolver& resolver, 
 FxScalar evalBinaryScalar(FxExpr::BinaryOp op, const FxScalar& lhs, const FxScalar& rhs) {
     // Reuse the same semantics as fx_expr evaluation for consistency.
     // Integer path uses checked arithmetic to surface overflow early.
+    const bool useDouble = std::holds_alternative<double>(lhs) || std::holds_alternative<double>(rhs);
+    const auto asInt = [](const FxScalar& value) -> std::int64_t {
+        if (const auto* b = std::get_if<bool>(&value))
+            return *b ? 1 : 0;
+        return std::get<std::int64_t>(value);
+    };
+    const double leftDouble = fxToDouble(lhs);
+    const double rightDouble = fxToDouble(rhs);
+    const std::int64_t leftInt = asInt(lhs);
+    const std::int64_t rightInt = asInt(rhs);
     switch (op) {
     case FxExpr::BinaryOp::less:
-        return FxScalar{fxToDouble(lhs) < fxToDouble(rhs)};
+        return FxScalar{useDouble ? leftDouble < rightDouble : leftInt < rightInt};
     case FxExpr::BinaryOp::lessEqual:
-        return FxScalar{fxToDouble(lhs) <= fxToDouble(rhs)};
+        return FxScalar{useDouble ? leftDouble <= rightDouble : leftInt <= rightInt};
     case FxExpr::BinaryOp::greater:
-        return FxScalar{fxToDouble(lhs) > fxToDouble(rhs)};
+        return FxScalar{useDouble ? leftDouble > rightDouble : leftInt > rightInt};
     case FxExpr::BinaryOp::greaterEqual:
-        return FxScalar{fxToDouble(lhs) >= fxToDouble(rhs)};
+        return FxScalar{useDouble ? leftDouble >= rightDouble : leftInt >= rightInt};
     case FxExpr::BinaryOp::equal:
-        return FxScalar{fxToDouble(lhs) == fxToDouble(rhs)};
+        return FxScalar{useDouble ? leftDouble == rightDouble : leftInt == rightInt};
     case FxExpr::BinaryOp::notEqual:
-        return FxScalar{fxToDouble(lhs) != fxToDouble(rhs)};
+        return FxScalar{useDouble ? leftDouble != rightDouble : leftInt != rightInt};
     case FxExpr::BinaryOp::logicalAnd:
         return FxScalar{fxToBool(lhs) && fxToBool(rhs)};
     case FxExpr::BinaryOp::logicalOr:
