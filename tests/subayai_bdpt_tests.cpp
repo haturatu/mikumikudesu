@@ -201,6 +201,15 @@ int main() {
                     "SBT shares stride across groups");
         const auto aligned = builder.build(0x2000, 20, 32);
         ok &= check(aligned.raygenStride == 32 && aligned.totalSize == 6 * 32, "SBT aligns handles");
+        const ShaderBindingTableBuilder::Properties properties{20, 32, 64, 64};
+        const auto vulkanValid = builder.build(0x2001, properties);
+        ok &= check(vulkanValid.raygenAddress % 64 == 0 && vulkanValid.missAddress % 64 == 0 &&
+                        vulkanValid.hitAddress % 64 == 0,
+                    "SBT aligns every region base to shaderGroupBaseAlignment");
+        ok &= check(vulkanValid.raygenStride == 32 && vulkanValid.totalSize >= 6 * 32,
+                    "SBT properties enforce aligned stride and padded allocation");
+        ok &= check(builder.build(0x2000, ShaderBindingTableBuilder::Properties{65, 32, 64, 64}).totalSize == 0,
+                    "SBT rejects maxShaderGroupStride overflow");
     }
     // DenoiserRuntime fallback: staging/readback -> CPU -> upload copy without CUDA.
     {
@@ -215,7 +224,10 @@ int main() {
             .width = 2, .height = 1, .beauty = beauty, .albedo = albedo, .normal = normal, .output = output};
         ok &= check(runtime.execute(args), "denoiser staging fallback executes");
         ok &= check(runtime.usedFallback(), "denoiser staging path marks fallback");
-        ok &= check(output == beauty, "denoiser fallback preserves beauty");
+        if (runtime.available())
+            ok &= check(runtime.denoised(), "available staging path runs CPU OIDN");
+        else
+            ok &= check(!runtime.denoised() && output == beauty, "unavailable denoiser is explicit passthrough");
         std::array<float, 6> badOutput{};
         const dayo::core::DenoiserExecuteArgs bad{
             .width = 4, .height = 4, .beauty = beauty, .albedo = albedo, .normal = normal, .output = badOutput};
@@ -232,7 +244,8 @@ int main() {
                                                         .normal = {},
                                                         .output = forcedOutput};
         ok &= check(forced.execute(forcedArgs), "denoiser forced CPU fallback executes");
-        ok &= check(forced.usedFallback() && forcedOutput == beauty, "denoiser CPU fallback copies beauty");
+        ok &= check(forced.usedFallback() && (!forced.available() ? forcedOutput == beauty : forced.denoised()),
+                    "denoiser forced path distinguishes CPU denoise from passthrough");
     }
     // Feature gate: native flags stay false, Preview fallback remains available.
     {

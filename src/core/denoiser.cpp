@@ -2,6 +2,7 @@
 #include "core/log.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <utility>
 
 #if DAYO_HAS_OIDN
@@ -50,10 +51,14 @@ DenoiserRuntime::~DenoiserRuntime() {
 DenoiserRuntime::DenoiserRuntime(DenoiserRuntime&& other) noexcept
     : width_(other.width_), height_(other.height_), initialized_(other.initialized_), available_(other.available_),
       shareable_(other.shareable_), forceFallback_(other.forceFallback_), lastPath_(other.lastPath_),
-      executeCount_(other.executeCount_), status_(std::move(other.status_)), staging_(std::move(other.staging_)) {
+      executeCount_(other.executeCount_), status_(std::move(other.status_)), staging_(std::move(other.staging_)),
+      stagingAlbedo_(std::move(other.stagingAlbedo_)), stagingNormal_(std::move(other.stagingNormal_)),
+      stagingOutput_(std::move(other.stagingOutput_)) {
 #if DAYO_HAS_OIDN
     device_ = std::exchange(other.device_, nullptr);
     filter_ = std::exchange(other.filter_, nullptr);
+    cpuDevice_ = std::exchange(other.cpuDevice_, nullptr);
+    cpuFilter_ = std::exchange(other.cpuFilter_, nullptr);
 #endif
     other.width_ = 0;
     other.height_ = 0;
@@ -76,9 +81,14 @@ DenoiserRuntime& DenoiserRuntime::operator=(DenoiserRuntime&& other) noexcept {
     executeCount_ = other.executeCount_;
     status_ = std::move(other.status_);
     staging_ = std::move(other.staging_);
+    stagingAlbedo_ = std::move(other.stagingAlbedo_);
+    stagingNormal_ = std::move(other.stagingNormal_);
+    stagingOutput_ = std::move(other.stagingOutput_);
 #if DAYO_HAS_OIDN
     device_ = std::exchange(other.device_, nullptr);
     filter_ = std::exchange(other.filter_, nullptr);
+    cpuDevice_ = std::exchange(other.cpuDevice_, nullptr);
+    cpuFilter_ = std::exchange(other.cpuFilter_, nullptr);
 #endif
     other.width_ = 0;
     other.height_ = 0;
@@ -93,14 +103,68 @@ void DenoiserRuntime::release() noexcept {
         oidnReleaseFilter(static_cast<OIDNFilter>(filter_));
         filter_ = nullptr;
     }
+    if (cpuFilter_ != nullptr) {
+        oidnReleaseFilter(static_cast<OIDNFilter>(cpuFilter_));
+        cpuFilter_ = nullptr;
+    }
     if (device_ != nullptr) {
         oidnReleaseDevice(static_cast<OIDNDevice>(device_));
         device_ = nullptr;
+    }
+    if (cpuDevice_ != nullptr) {
+        oidnReleaseDevice(static_cast<OIDNDevice>(cpuDevice_));
+        cpuDevice_ = nullptr;
     }
 #endif
     initialized_ = false;
     available_ = false;
 }
+
+#if DAYO_HAS_OIDN
+bool DenoiserRuntime::ensureCpuFilter() {
+    if (cpuFilter_ != nullptr)
+        return true;
+    auto* device = oidnNewDevice(OIDN_DEVICE_TYPE_CPU);
+    if (device == nullptr)
+        return false;
+    oidnCommitDevice(device);
+    const char* message = nullptr;
+    if (oidnGetDeviceError(device, &message) != OIDN_ERROR_NONE) {
+        oidnReleaseDevice(device);
+        return false;
+    }
+    auto* filter = oidnNewFilter(device, "RT");
+    if (filter == nullptr) {
+        oidnReleaseDevice(device);
+        return false;
+    }
+    cpuDevice_ = device;
+    cpuFilter_ = filter;
+    return true;
+}
+
+bool DenoiserRuntime::executeOidn(void* deviceValue, void* filterValue, std::span<const float> beauty,
+                                  std::span<const float> albedo, std::span<const float> normal,
+                                  std::span<float> output) {
+    auto* device = static_cast<OIDNDevice>(deviceValue);
+    auto* filter = static_cast<OIDNFilter>(filterValue);
+    oidnSetSharedFilterImage(filter, "color", const_cast<float*>(beauty.data()), OIDN_FORMAT_FLOAT3, width_, height_, 0,
+                             0, 0);
+    if (!albedo.empty())
+        oidnSetSharedFilterImage(filter, "albedo", const_cast<float*>(albedo.data()), OIDN_FORMAT_FLOAT3, width_,
+                                 height_, 0, 0, 0);
+    if (!normal.empty())
+        oidnSetSharedFilterImage(filter, "normal", const_cast<float*>(normal.data()), OIDN_FORMAT_FLOAT3, width_,
+                                 height_, 0, 0, 0);
+    oidnSetSharedFilterImage(filter, "output", output.data(), OIDN_FORMAT_FLOAT3, width_, height_, 0, 0, 0);
+    oidnCommitFilter(filter);
+    const char* message = nullptr;
+    if (oidnGetDeviceError(device, &message) != OIDN_ERROR_NONE)
+        return false;
+    oidnExecuteFilter(filter);
+    return oidnGetDeviceError(device, &message) == OIDN_ERROR_NONE;
+}
+#endif
 
 bool DenoiserRuntime::ensure(std::uint32_t width, std::uint32_t height) {
     if (width == 0 || height == 0) {
@@ -162,12 +226,21 @@ bool DenoiserRuntime::ensure(std::uint32_t width, std::uint32_t height) {
 }
 
 bool DenoiserRuntime::execute(const DenoiserExecuteArgs& args) {
-    const std::size_t pixels = static_cast<std::size_t>(args.width) * static_cast<std::size_t>(args.height);
-    const std::size_t samples = pixels * 3U;
     if (args.width == 0 || args.height == 0) {
         log::error("Denoiser execute rejected empty extent");
         return false;
     }
+    if (static_cast<std::size_t>(args.width) >
+        std::numeric_limits<std::size_t>::max() / static_cast<std::size_t>(args.height)) {
+        log::error("Denoiser execute pixel count overflow");
+        return false;
+    }
+    const std::size_t pixels = static_cast<std::size_t>(args.width) * static_cast<std::size_t>(args.height);
+    if (pixels > std::numeric_limits<std::size_t>::max() / 3U) {
+        log::error("Denoiser execute sample count overflow");
+        return false;
+    }
+    const std::size_t samples = pixels * 3U;
     if (!initialized_ || args.width != width_ || args.height != height_) {
         log::error("Denoiser execute extent ", args.width, "x", args.height, " mismatches filter ", width_, "x",
                    height_);
@@ -185,52 +258,39 @@ bool DenoiserRuntime::execute(const DenoiserExecuteArgs& args) {
         log::error("Denoiser execute normal size mismatch");
         return false;
     }
-    const bool fallback = !available_ || forceFallback_;
-    if (fallback) {
+    if (!available_) {
         std::copy(args.beauty.begin(), args.beauty.end(), args.output.begin());
-        lastPath_ = DenoiserPath::cpu;
+        lastPath_ = DenoiserPath::passthrough;
         ++executeCount_;
-        log::debug("Denoiser CPU fallback copied beauty");
-        return true;
-    }
-    if (!shareable_) {
-        staging_.assign(args.beauty.begin(), args.beauty.end());
-        std::copy(staging_.begin(), staging_.end(), args.output.begin());
-        lastPath_ = DenoiserPath::staging;
-        ++executeCount_;
-        log::debug("Denoiser staging/readback fallback copied beauty");
+        log::warn("Denoiser unavailable; passed beauty through without denoising");
         return true;
     }
 #if DAYO_HAS_OIDN
-    if (filter_ != nullptr) {
-        auto* filter = static_cast<OIDNFilter>(filter_);
-        oidnSetSharedFilterImage(filter, "color", const_cast<float*>(args.beauty.data()), OIDN_FORMAT_FLOAT3,
-                                 args.width, args.height, 0, 0, 0);
-        if (!args.albedo.empty()) {
-            oidnSetSharedFilterImage(filter, "albedo", const_cast<float*>(args.albedo.data()), OIDN_FORMAT_FLOAT3,
-                                     args.width, args.height, 0, 0, 0);
-        }
-        if (!args.normal.empty()) {
-            oidnSetSharedFilterImage(filter, "normal", const_cast<float*>(args.normal.data()), OIDN_FORMAT_FLOAT3,
-                                     args.width, args.height, 0, 0, 0);
-        }
-        oidnSetSharedFilterImage(filter, "output", args.output.data(), OIDN_FORMAT_FLOAT3, args.width, args.height, 0,
-                                 0, 0);
-        oidnCommitFilter(filter);
-        const char* message = nullptr;
-        if (oidnGetDeviceError(static_cast<OIDNDevice>(device_), &message) != OIDN_ERROR_NONE) {
+    if (!shareable_ || forceFallback_) {
+        staging_.assign(args.beauty.begin(), args.beauty.end());
+        stagingAlbedo_.assign(args.albedo.begin(), args.albedo.end());
+        stagingNormal_.assign(args.normal.begin(), args.normal.end());
+        stagingOutput_.resize(samples);
+        if (!ensureCpuFilter() ||
+            !executeOidn(cpuDevice_, cpuFilter_, staging_, stagingAlbedo_, stagingNormal_, stagingOutput_)) {
             std::copy(args.beauty.begin(), args.beauty.end(), args.output.begin());
-            lastPath_ = DenoiserPath::staging;
+            lastPath_ = DenoiserPath::passthrough;
             ++executeCount_;
-            log::warn("Denoiser commit failed; staging fallback copied beauty");
+            log::warn("Denoiser CPU staging execution failed; passed beauty through");
             return true;
         }
-        oidnExecuteFilter(filter);
-        if (oidnGetDeviceError(static_cast<OIDNDevice>(device_), &message) != OIDN_ERROR_NONE) {
+        std::copy(stagingOutput_.begin(), stagingOutput_.end(), args.output.begin());
+        lastPath_ = forceFallback_ ? DenoiserPath::cpu : DenoiserPath::staging;
+        ++executeCount_;
+        log::debug("Denoiser staging/readback -> CPU -> upload finished");
+        return true;
+    }
+    if (filter_ != nullptr) {
+        if (!executeOidn(device_, filter_, args.beauty, args.albedo, args.normal, args.output)) {
             std::copy(args.beauty.begin(), args.beauty.end(), args.output.begin());
-            lastPath_ = DenoiserPath::staging;
+            lastPath_ = DenoiserPath::passthrough;
             ++executeCount_;
-            log::warn("Denoiser execute failed; staging fallback copied beauty");
+            log::warn("Denoiser shared execution failed; passed beauty through");
             return true;
         }
         lastPath_ = DenoiserPath::zeroCopy;
@@ -240,9 +300,9 @@ bool DenoiserRuntime::execute(const DenoiserExecuteArgs& args) {
     }
 #endif
     std::copy(args.beauty.begin(), args.beauty.end(), args.output.begin());
-    lastPath_ = DenoiserPath::zeroCopy;
+    lastPath_ = DenoiserPath::passthrough;
     ++executeCount_;
-    log::debug("Denoiser shared execute copied beauty");
+    log::warn("Denoiser has no executable filter; passed beauty through");
     return true;
 }
 

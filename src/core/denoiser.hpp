@@ -21,12 +21,12 @@ struct DenoiserStatus {
 [[nodiscard]] DenoiserStatus selectDenoiser();
 
 // Additive host runtime for OIDN. Keeps a persistent device+filter and runs
-// beauty/albedo/normal -> output. Zero-copy is used only when the shared
-// path is available; otherwise staging/readback -> CPU -> upload fallback
-// copies through host memory. No CUDA premise: HIP is runtime-optional and
-// CPU is always preferred. Pass input/output compatibility is checked only at
-// execution time.
-enum class DenoiserPath { unavailable, zeroCopy, staging, cpu };
+// beauty/albedo/normal -> output. Zero-copy is used only when the shared path
+// is available; otherwise staging/readback -> CPU OIDN -> upload is used. If
+// OIDN itself is unavailable, execute() reports an explicit passthrough.
+// No CUDA premise: HIP is runtime-optional. Pass input/output compatibility
+// is checked only at execution time.
+enum class DenoiserPath { unavailable, zeroCopy, staging, cpu, passthrough };
 
 struct DenoiserExecuteArgs {
     std::uint32_t width{0};
@@ -61,6 +61,10 @@ class DenoiserRuntime {
     [[nodiscard]] bool usedFallback() const noexcept {
         return lastPath_ != DenoiserPath::zeroCopy;
     }
+    [[nodiscard]] bool denoised() const noexcept {
+        return lastPath_ == DenoiserPath::zeroCopy || lastPath_ == DenoiserPath::staging ||
+               lastPath_ == DenoiserPath::cpu;
+    }
     [[nodiscard]] std::uint32_t width() const noexcept {
         return width_;
     }
@@ -92,9 +96,17 @@ class DenoiserRuntime {
     std::uint64_t executeCount_{0};
     DenoiserStatus status_;
     std::vector<float> staging_;
+    std::vector<float> stagingAlbedo_;
+    std::vector<float> stagingNormal_;
+    std::vector<float> stagingOutput_;
 #if DAYO_HAS_OIDN
+    bool ensureCpuFilter();
+    bool executeOidn(void* device, void* filter, std::span<const float> beauty, std::span<const float> albedo,
+                     std::span<const float> normal, std::span<float> output);
     void* device_{nullptr};
     void* filter_{nullptr};
+    void* cpuDevice_{nullptr};
+    void* cpuFilter_{nullptr};
 #endif
 };
 
