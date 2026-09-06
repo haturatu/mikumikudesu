@@ -113,57 +113,76 @@ struct TaskScheduler::Impl {
                 worker.join();
     }
 
-    bool anyLocalTasks() {
-        for (const auto& worker : workers) {
-            std::lock_guard lock(worker->mutex);
-            if (!worker->tasks.empty())
-                return true;
-        }
-        return false;
-    }
-
-    bool tryTake(std::size_t index, Task& result) {
-        {
+    bool tryTake(std::size_t index, Task& result, std::size_t& localRuns) {
+        const auto tryLocal = [&] {
             auto& local = *workers[index];
             std::lock_guard lock(local.mutex);
-            if (!local.tasks.empty()) {
-                result = std::move(local.tasks.back());
-                local.tasks.pop_back();
-                return true;
-            }
-        }
-        {
+            if (local.tasks.empty())
+                return false;
+            result = std::move(local.tasks.back());
+            local.tasks.pop_back();
+            queuedTasks.fetch_sub(1U, std::memory_order_acq_rel);
+            return true;
+        };
+        const auto tryGlobal = [&] {
             std::lock_guard lock(mutex);
-            if (!tasks.empty()) {
-                result = std::move(tasks.front());
-                tasks.pop_front();
-                return true;
-            }
-        }
-        for (std::size_t offset = 1; offset < workers.size(); ++offset) {
-            auto& victim = *workers[(index + offset) % workers.size()];
-            std::lock_guard lock(victim.mutex);
-            if (!victim.tasks.empty()) {
+            if (tasks.empty())
+                return false;
+            result = std::move(tasks.front());
+            tasks.pop_front();
+            queuedTasks.fetch_sub(1U, std::memory_order_acq_rel);
+            return true;
+        };
+        const auto trySteal = [&] {
+            for (std::size_t offset = 1; offset < workers.size(); ++offset) {
+                auto& victim = *workers[(index + offset) % workers.size()];
+                std::lock_guard lock(victim.mutex);
+                if (victim.tasks.empty())
+                    continue;
                 result = std::move(victim.tasks.front());
                 victim.tasks.pop_front();
+                queuedTasks.fetch_sub(1U, std::memory_order_acq_rel);
                 return true;
             }
+            return false;
+        };
+
+        constexpr std::size_t localBurst = 8U;
+        if (localRuns >= localBurst) {
+            if (tryGlobal()) {
+                localRuns = 0;
+                return true;
+            }
+            localRuns = 0;
+        }
+        if (tryLocal()) {
+            ++localRuns;
+            return true;
+        }
+        if (tryGlobal()) {
+            localRuns = 0;
+            return true;
+        }
+        if (trySteal()) {
+            localRuns = 0;
+            return true;
         }
         return false;
     }
 
     void run(std::size_t index) {
+        std::size_t localRuns{};
         while (true) {
             Task task;
-            if (tryTake(index, task)) {
+            if (tryTake(index, task, localRuns)) {
                 WorkerScope workerScope(this, index);
                 task.function();
                 continue;
             }
 
             std::unique_lock lock(mutex);
-            condition.wait(lock, [this] { return stopping || !tasks.empty() || anyLocalTasks(); });
-            if (stopping && tasks.empty() && !anyLocalTasks())
+            condition.wait(lock, [this] { return stopping || queuedTasks.load(std::memory_order_acquire) != 0; });
+            if (stopping && queuedTasks.load(std::memory_order_acquire) == 0)
                 return;
         }
     }
@@ -180,12 +199,14 @@ struct TaskScheduler::Impl {
             std::lock_guard lock(mutex);
             tasks.push_back({std::move(function)});
         }
+        queuedTasks.fetch_add(1U, std::memory_order_release);
         condition.notify_one();
     }
 
     std::vector<std::unique_ptr<Worker>> workers;
     std::vector<std::thread> threads;
     std::deque<Task> tasks;
+    std::atomic<std::size_t> queuedTasks{};
     std::mutex mutex;
     std::condition_variable condition;
     bool stopping{};
