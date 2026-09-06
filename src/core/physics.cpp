@@ -30,6 +30,7 @@ struct MmdPhysics::Impl {
     std::vector<btTransform> kinematicTargets;
     std::vector<std::uint8_t> kinematicDirty;
     std::vector<std::uint8_t> modes;
+    std::vector<std::uint8_t> constraintEndpointsUsable;
     std::unique_ptr<btStaticPlaneShape> floorShape;
     std::unique_ptr<btDefaultMotionState> floorMotionState;
     std::unique_ptr<btRigidBody> floorBody;
@@ -127,6 +128,7 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
     impl_->kinematicTargets.reserve(model.rigidBodies.size());
     impl_->kinematicDirty.reserve(model.rigidBodies.size());
     impl_->modes.reserve(model.rigidBodies.size());
+    impl_->constraintEndpointsUsable.reserve(model.rigidBodies.size());
     for (const auto& source : model.rigidBodies) {
         const auto validDimension = [](float value) { return std::isfinite(value) && std::abs(value) >= 0.001F; };
         bool invalidShape = !source.physicsEnabled;
@@ -184,6 +186,8 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
             candidateMass > 0.0F && (!std::isfinite(inertia.x()) || !std::isfinite(inertia.y()) ||
                                      !std::isfinite(inertia.z()) || inertia.length2() <= SIMD_EPSILON * SIMD_EPSILON);
         const bool dynamicUsable = candidateMass > 0.0F && !unusableDynamicBody && !invalidTransform;
+        const bool constraintEndpointUsable = source.physicsEnabled && !invalidShape && !invalidTransform &&
+                                              (source.mode == 0 || (dynamicUsable && !invalidMass));
         const btScalar effectiveMass = dynamicUsable ? candidateMass : 0.0F;
         const auto effectiveMode = dynamicUsable ? source.mode : std::uint8_t{0};
         if (!dynamicUsable)
@@ -197,6 +201,7 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
         info.m_friction = source.friction;
         impl_->bodies.push_back(std::make_unique<btRigidBody>(info));
         impl_->modes.push_back(effectiveMode);
+        impl_->constraintEndpointsUsable.push_back(constraintEndpointUsable ? 1U : 0U);
         impl_->bodies.back()->setSleepingThresholds(0.01F, 0.1F * std::numbers::pi_v<float> / 180.0F);
         impl_->bodies.back()->setActivationState(DISABLE_DEACTIVATION);
         if (effectiveMode == 0) {
@@ -222,7 +227,7 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
             continue;
         const auto bodyAIndex = static_cast<std::size_t>(source.bodyA);
         const auto bodyBIndex = static_cast<std::size_t>(source.bodyB);
-        if (!model.rigidBodies[bodyAIndex].physicsEnabled || !model.rigidBodies[bodyBIndex].physicsEnabled)
+        if (impl_->constraintEndpointsUsable[bodyAIndex] == 0 || impl_->constraintEndpointsUsable[bodyBIndex] == 0)
             continue;
         const auto& bodyA = impl_->bodies[bodyAIndex];
         const auto& bodyB = impl_->bodies[bodyBIndex];

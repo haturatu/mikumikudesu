@@ -1511,6 +1511,13 @@ int main() {
         ok &= check(disabledBodyJointPhysics.bodyCount() == 2 && disabledBodyJointPhysics.jointCount() == 0,
                     "Bullet skips joints attached to disabled PMX bodies");
 
+        auto invalidShapeJointModel = jointModel;
+        invalidShapeJointModel.rigidBodies[0].shape = 0;
+        invalidShapeJointModel.rigidBodies[0].size = {0.0F, 0.0F, 0.0F};
+        dayo::core::MmdPhysics invalidShapeJointPhysics(invalidShapeJointModel);
+        ok &= check(invalidShapeJointPhysics.bodyCount() == 2 && invalidShapeJointPhysics.jointCount() == 0,
+                    "Bullet skips joints attached to unusable PMX shapes");
+
         dayo::core::PmxModel invalidInertiaModel;
         dayo::core::PmxRigidBody invalidInertiaBody;
         invalidInertiaBody.shape = 0;
