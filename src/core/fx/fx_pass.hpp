@@ -67,9 +67,8 @@ struct FxOidnOp {
     std::string output;
 };
 
-using FxPassOp =
-    std::variant<FxRasterOp, FxPostProcessOp, FxComputeOp, FxRayTracingOp, FxCopyOp, FxClearRtvOp, FxClearUavOp,
-                 FxMipmapGenOp, FxOidnOp>;
+using FxPassOp = std::variant<FxRasterOp, FxPostProcessOp, FxComputeOp, FxRayTracingOp, FxCopyOp, FxClearRtvOp,
+                              FxClearUavOp, FxMipmapGenOp, FxOidnOp>;
 
 struct FxPass {
     std::string name;

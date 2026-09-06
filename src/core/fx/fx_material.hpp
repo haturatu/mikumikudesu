@@ -95,8 +95,8 @@ struct MaterialBindingPlan {
 // - shared=true    -> canonical("shared:" + trimmed id).
 // - otherwise      -> canonical(trimmed id).
 // Cycles resolve to the lexicographically smallest id in the cycle.
-[[nodiscard]] std::string resolveCanonicalResourceId(
-    std::string_view id, const std::unordered_map<std::string, MaterialResourceDecl>& byId);
+[[nodiscard]] std::string resolveCanonicalResourceId(std::string_view id,
+                                                     const std::unordered_map<std::string, MaterialResourceDecl>& byId);
 
 [[nodiscard]] MaterialGpuLayout linkMaterialLayout(const MaterialTemplate& templ,
                                                    const MaterialInstance* instance = nullptr);
