@@ -200,6 +200,24 @@ add_library(dayo_platform src/platform/sdl_platform.cpp)
 target_include_directories(dayo_platform PUBLIC src)
 target_link_libraries(dayo_platform PUBLIC SDL3::SDL3)
 
+add_library(
+  dayo_fx
+  src/fx/fx_catalog.cpp
+  src/fx/fx_compiler.cpp
+  src/fx/fx_preview_path.cpp
+  src/fx/fx_resource_registry.cpp
+  src/fx/fx_scheduler.cpp
+  src/fx/fx_shader_cache.cpp
+  src/fx/fx_texture_cache.cpp
+  src/fx/fx_watcher.cpp
+  # The generic executor depends only on the header-only Device/CommandList
+  # contract, so it lives here to keep the CPU-testable pipeline free of the
+  # dayo_graphics GPU toolchain (DXC shader embedding).
+  src/graphics/vulkan_fx_executor.cpp
+)
+target_include_directories(dayo_fx PUBLIC src)
+target_link_libraries(dayo_fx PUBLIC dayo_core)
+
 if(DAYO_ENABLE_VMA)
   find_path(DAYO_VMA_INCLUDE_DIR vk_mem_alloc.h PATH_SUFFIXES include)
   if(NOT DAYO_VMA_INCLUDE_DIR)
@@ -223,7 +241,7 @@ add_library(
   src/graphics/vulkan/vulkan_upload_context.cpp
 )
 target_include_directories(dayo_graphics PUBLIC src)
-target_link_libraries(dayo_graphics PUBLIC dayo_core Vulkan::Vulkan SDL3::SDL3)
+target_link_libraries(dayo_graphics PUBLIC dayo_fx dayo_core Vulkan::Vulkan SDL3::SDL3)
 target_compile_definitions(dayo_graphics PRIVATE DAYO_ENABLE_VALIDATION=$<BOOL:${DAYO_ENABLE_VALIDATION}>)
 if(DAYO_ENABLE_VMA)
   target_sources(dayo_graphics PRIVATE src/graphics/vulkan/vma_impl.cpp)
@@ -393,7 +411,14 @@ if(DAYO_HAS_MEDIA)
 endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-  foreach(target dayo_core dayo_platform dayo_graphics mikumikudesu)
+  foreach(
+    target
+    dayo_core
+    dayo_fx
+    dayo_platform
+    dayo_graphics
+    mikumikudesu
+  )
     target_compile_options(
       ${target}
       PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
@@ -506,6 +531,11 @@ if(BUILD_TESTING)
   add_executable(dayo_upstream_compat_tests tests/upstream_compat_tests.cpp)
   target_link_libraries(dayo_upstream_compat_tests PRIVATE dayo_core)
   target_compile_definitions(dayo_upstream_compat_tests PRIVATE DAYO_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  add_executable(dayo_fx_executor_tests tests/fx_executor_tests.cpp)
+  target_include_directories(dayo_fx_executor_tests PRIVATE src)
+  # Links dayo_fx only: the executor + plan layers are CPU-testable with mock
+  # backends and must not pull the dayo_graphics GPU toolchain into unit tests.
+  target_link_libraries(dayo_fx_executor_tests PRIVATE dayo_fx)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(
       dayo_upstream_compat_tests
@@ -519,7 +549,33 @@ if(BUILD_TESTING)
     endif()
   endif()
 
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      dayo_fx_executor_tests
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_fx_executor_tests PRIVATE -Werror)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(dayo_fx_executor_tests PRIVATE -Wno-error=deprecated-literal-operator)
+      endif()
+    endif()
+  endif()
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      dayo_fx
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_fx PRIVATE -Werror)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(dayo_fx PRIVATE -Wno-error=deprecated-literal-operator)
+      endif()
+    endif()
+  endif()
+
   add_test(NAME core COMMAND dayo_core_tests)
+  add_test(NAME fx_executor COMMAND dayo_fx_executor_tests)
   add_test(NAME upload_ring COMMAND dayo_upload_ring_tests)
   add_test(NAME upstream_compat COMMAND dayo_upstream_compat_tests)
   set_tests_properties(upstream_compat PROPERTIES LABELS "upstream" TIMEOUT 60)
@@ -550,10 +606,12 @@ if(DAYO_ENABLE_SANITIZERS)
   foreach(
     target
     dayo_core
+    dayo_fx
     dayo_platform
     dayo_graphics
     mikumikudesu
     dayo_core_tests
+    dayo_fx_executor_tests
     dayo_upload_ring_tests
     dayo_preview_tests
     dayo_upstream_compat_tests
@@ -565,6 +623,9 @@ if(DAYO_ENABLE_SANITIZERS)
   target_link_options(mikumikudesu PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   if(TARGET dayo_core_tests)
     target_link_options(dayo_core_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+  if(TARGET dayo_fx_executor_tests)
+    target_link_options(dayo_fx_executor_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
   if(TARGET dayo_upload_ring_tests)
     target_link_options(dayo_upload_ring_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
