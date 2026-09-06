@@ -151,6 +151,9 @@ add_library(
   src/core/denoiser.cpp
   src/core/effect.cpp
   src/core/ffmpeg_utils.cpp
+  src/core/fx/fx_expr.cpp
+  src/core/fx/fx_size.cpp
+  src/core/fx/fx_symbol.cpp
   src/core/image.cpp
   src/core/audio_export.cpp
   src/core/video_export.cpp
@@ -235,7 +238,12 @@ target_link_libraries(dayo_fx PUBLIC dayo_core)
 
 add_library(
   dayo_graphics
+  src/graphics/bdpt_accumulation.cpp
   src/graphics/device.cpp
+  src/graphics/sbt.cpp
+  src/graphics/subayai_acceleration_structure.cpp
+  src/graphics/subayai_environment.cpp
+  src/graphics/subayai_light_sampling.cpp
   src/graphics/vulkan/vulkan_device.cpp
   src/graphics/vulkan/vulkan_upload_context.cpp
   src/graphics/vulkan_fx_executor.cpp
@@ -251,6 +259,37 @@ if(DAYO_ENABLE_VMA)
 else()
   target_compile_definitions(dayo_graphics PUBLIC DAYO_ENABLE_VMA=0)
 endif()
+
+set(DAYO_HAS_BULLET 0)
+if(DAYO_ENABLE_PHYSICS)
+  find_package(Bullet QUIET)
+  if(NOT Bullet_FOUND AND DAYO_FETCH_DEPENDENCIES)
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
+    set(BUILD_BULLET2_DEMOS OFF CACHE BOOL "" FORCE)
+    set(BUILD_BULLET3 OFF CACHE BOOL "" FORCE)
+    set(BUILD_EXTRAS OFF CACHE BOOL "" FORCE)
+    set(BUILD_CPU_DEMOS OFF CACHE BOOL "" FORCE)
+    set(BUILD_OPENGL3_DEMOS OFF CACHE BOOL "" FORCE)
+    set(BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+    set(USE_GRAPHICAL_BENCHMARK OFF CACHE BOOL "" FORCE)
+    set(INSTALL_LIBS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+      bullet
+      URL https://github.com/bulletphysics/bullet3/archive/refs/tags/3.25.tar.gz
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(bullet)
+    set(BULLET_INCLUDE_DIRS "${bullet_SOURCE_DIR}/src")
+    set(BULLET_LIBRARIES BulletDynamics BulletCollision LinearMath)
+    set(Bullet_FOUND TRUE)
+  endif()
+  if(Bullet_FOUND)
+    set(DAYO_HAS_BULLET 1)
+    target_include_directories(dayo_core PRIVATE ${BULLET_INCLUDE_DIRS})
+    target_link_libraries(dayo_core PUBLIC ${BULLET_LIBRARIES})
+  endif()
+endif()
+target_compile_definitions(dayo_core PUBLIC DAYO_HAS_BULLET=${DAYO_HAS_BULLET})
 
 include(cmake/CompileHlsl.cmake)
 dayo_compile_hlsl(DAYO_PREVIEW_VERTEX_SPV SOURCE shaders/preview.hlsl ENTRY VS PROFILE vs_6_6 STAGE vert)
@@ -312,6 +351,36 @@ if(DAYO_HAS_OIDN)
   target_link_libraries(dayo_core PUBLIC OpenImageDenoise)
 endif()
 
+set(DAYO_HAS_BULLET 0)
+if(DAYO_ENABLE_PHYSICS)
+  find_package(Bullet QUIET)
+  if(NOT Bullet_FOUND AND DAYO_FETCH_DEPENDENCIES)
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
+    set(BUILD_BULLET2_DEMOS OFF CACHE BOOL "" FORCE)
+    set(BUILD_BULLET3 OFF CACHE BOOL "" FORCE)
+    set(BUILD_EXTRAS OFF CACHE BOOL "" FORCE)
+    set(BUILD_CPU_DEMOS OFF CACHE BOOL "" FORCE)
+    set(BUILD_OPENGL3_DEMOS OFF CACHE BOOL "" FORCE)
+    set(BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+    set(USE_GRAPHICAL_BENCHMARK OFF CACHE BOOL "" FORCE)
+    set(INSTALL_LIBS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+      bullet
+      URL https://github.com/bulletphysics/bullet3/archive/refs/tags/3.25.tar.gz
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(bullet)
+    set(BULLET_INCLUDE_DIRS "${bullet_SOURCE_DIR}/src")
+    set(BULLET_LIBRARIES BulletDynamics BulletCollision LinearMath)
+    set(Bullet_FOUND TRUE)
+  endif()
+  if(Bullet_FOUND)
+    set(DAYO_HAS_BULLET 1)
+    target_include_directories(dayo_core PRIVATE ${BULLET_INCLUDE_DIRS})
+    target_link_libraries(dayo_core PUBLIC ${BULLET_LIBRARIES})
+  endif()
+endif()
+target_compile_definitions(dayo_core PUBLIC DAYO_HAS_BULLET=${DAYO_HAS_BULLET})
 find_package(cereal CONFIG QUIET)
 find_package(directxtex CONFIG QUIET)
 set(DAYO_HAS_JSONNET 0)
@@ -602,12 +671,45 @@ if(BUILD_TESTING)
     endif()
   endif()
 
+  add_executable(dayo_fx_semantic_tests tests/fx_semantic_tests.cpp)
+  target_link_libraries(dayo_fx_semantic_tests PRIVATE dayo_core)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      dayo_fx_semantic_tests
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_fx_semantic_tests PRIVATE -Werror)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(dayo_fx_semantic_tests PRIVATE -Wno-error=deprecated-literal-operator)
+      endif()
+    endif()
+  endif()
+
+  add_executable(dayo_subayai_bdpt_tests tests/subayai_bdpt_tests.cpp)
+  target_include_directories(dayo_subayai_bdpt_tests PRIVATE src)
+  target_link_libraries(dayo_subayai_bdpt_tests PRIVATE dayo_core dayo_graphics)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      dayo_subayai_bdpt_tests
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_subayai_bdpt_tests PRIVATE -Werror)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(dayo_subayai_bdpt_tests PRIVATE -Wno-error=deprecated-literal-operator)
+      endif()
+    endif()
+  endif()
+
   add_test(NAME core COMMAND dayo_core_tests)
   add_test(NAME fx_linker COMMAND dayo_fx_linker_tests)
+  add_test(NAME fx_semantic COMMAND dayo_fx_semantic_tests)
   add_test(NAME fx_executor COMMAND dayo_fx_executor_tests)
   add_test(NAME upload_ring COMMAND dayo_upload_ring_tests)
   add_test(NAME graph_device COMMAND dayo_graph_device_tests)
   set_tests_properties(graph_device PROPERTIES TIMEOUT 20)
+  add_test(NAME subayai_bdpt COMMAND dayo_subayai_bdpt_tests)
   add_test(NAME upstream_compat COMMAND dayo_upstream_compat_tests)
   set_tests_properties(upstream_compat PROPERTIES LABELS "upstream" TIMEOUT 60)
   add_test(NAME vulkan_probe COMMAND mikumikudesu --probe --hidden)
@@ -644,10 +746,12 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_core_tests
     dayo_fx_executor_tests
     dayo_upload_ring_tests
-    dayo_graph_device_tests
     dayo_preview_tests
+    dayo_graph_device_tests
+    dayo_subayai_bdpt_tests
     dayo_upstream_compat_tests
     dayo_fx_linker_tests
+    dayo_fx_semantic_tests
   )
     if(TARGET ${target})
       target_compile_options(${target} PRIVATE ${DAYO_SANITIZER_COMPILE_OPTIONS})
@@ -674,6 +778,12 @@ if(DAYO_ENABLE_SANITIZERS)
   endif()
   if(TARGET dayo_fx_linker_tests)
     target_link_options(dayo_fx_linker_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+  if(TARGET dayo_fx_semantic_tests)
+    target_link_options(dayo_fx_semantic_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+  if(TARGET dayo_subayai_bdpt_tests)
+    target_link_options(dayo_subayai_bdpt_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
 endif()
 
