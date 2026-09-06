@@ -89,11 +89,10 @@ int main() {
     // Sequence path spec: parse + format round trip.
     {
         const auto parsed = dayo::core::parseSequencePath("frame_000003.ppm");
-        ok &= check(parsed.has_value() && parsed->prefix == "frame_" && parsed->digits == 6 &&
-                        parsed->start == 3 && parsed->extension == ".ppm",
+        ok &= check(parsed.has_value() && parsed->prefix == "frame_" && parsed->digits == 6 && parsed->start == 3 &&
+                        parsed->extension == ".ppm",
                     "sequence path parses prefix/digits/extension");
-        ok &= check(!dayo::core::parseSequencePath("frame.ppm").has_value(),
-                    "sequence path rejects digit-less names");
+        ok &= check(!dayo::core::parseSequencePath("frame.ppm").has_value(), "sequence path rejects digit-less names");
         if (parsed.has_value()) {
             const auto formatted = dayo::core::formatSequencePath("out", *parsed, 18);
             ok &= check(formatted == std::filesystem::path("out/frame_000018.ppm"), "sequence path formats frames");

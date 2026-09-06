@@ -7,7 +7,6 @@ BulletSoftBodyNative::BulletSoftBodyNative(const PmxModel& model) {
     // Count anchors so the fallback parity check has something deterministic.
     for (const auto& softBody : model.softBodies)
         anchorCount_ += softBody.pinnedVertices.size();
-    nativeAvailable_ = false;
 }
 
 void BulletSoftBodyNative::reset() {

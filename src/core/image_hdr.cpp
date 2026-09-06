@@ -97,7 +97,7 @@ ImageRgba8 halfToRgba8(const ImageData& image) {
         for (std::size_t channel = 0; channel < 4; ++channel) {
             const float value = halfToFloat(source[index * 4U + channel]);
             result.pixels[index * 4U + channel] =
-                static_cast<std::uint8_t>(std::clamp(value, 0.0F, 1.0F) * 255.0F + 0.5F);
+                static_cast<std::uint8_t>(std::lround(std::clamp(value, 0.0F, 1.0F) * 255.0F));
         }
     }
     return result;

@@ -27,8 +27,8 @@ FxRuntimeDebugSnapshot FxRuntimeInspector::empty(std::uint64_t frame) {
 
 std::string FxRuntimeInspector::format(const FxRuntimeDebugSnapshot& snapshot) {
     std::ostringstream line;
-    line << "fx frame=" << snapshot.frame << " passes=" << snapshot.passCount
-         << " materials=" << snapshot.materialCount << " backend=" << snapshot.backend;
+    line << "fx frame=" << snapshot.frame << " passes=" << snapshot.passCount << " materials=" << snapshot.materialCount
+         << " backend=" << snapshot.backend;
     return line.str();
 }
 

@@ -4,6 +4,15 @@
 
 namespace dayo::editor {
 
+namespace {
+
+core::VmdMotion snapshotMotion(core::Scene& scene, core::ModelId target, bool global) {
+    const auto* current = scene.motion(target, global);
+    return current != nullptr ? *current : core::VmdMotion{};
+}
+
+} // namespace
+
 void EditorOperationQueue::push(EditorOperation operation) {
     operations_.push_back(std::move(operation));
 }
@@ -19,9 +28,9 @@ std::size_t EditorOperationQueue::flush(core::Scene& scene, core::CommandHistory
             auto& value = std::get<ReplaceMotionOperation>(operation);
             const auto* before = scene.motion(value.target, value.global);
             core::VmdMotion snapshot = before != nullptr ? *before : core::VmdMotion{};
-            history.execute(scene, std::make_unique<core::EditMotionCommand>(value.target, value.global,
-                                                                             std::move(snapshot),
-                                                                             std::move(value.motion), value.label));
+            history.execute(scene,
+                            std::make_unique<core::EditMotionCommand>(value.target, value.global, std::move(snapshot),
+                                                                      std::move(value.motion), value.label));
             ++applied;
         } else {
             // MoveKeysOperation is intentionally a skeleton: stable-id
@@ -41,11 +50,8 @@ void EditorOperationQueue::discard() noexcept {
 
 UndoTransaction::UndoTransaction(core::Scene& scene, core::CommandHistory& history, core::ModelId target, bool global,
                                  std::string label)
-    : scene_(&scene), history_(&history), target_(target), global_(global), label_(std::move(label)) {
-    const auto* current = scene_->motion(target_, global_);
-    before_ = current != nullptr ? *current : core::VmdMotion{};
-    current_ = *before_;
-}
+    : scene_(&scene), history_(&history), target_(target), global_(global), label_(std::move(label)),
+      before_(snapshotMotion(scene, target, global)), current_(before_) {}
 
 UndoTransaction::~UndoTransaction() {
     if (active_)
@@ -70,7 +76,7 @@ void UndoTransaction::commit() {
     // undo returns exactly to `before`.
     static_cast<void>(scene_->replaceMotion(*before_, target_, global_));
     history_->execute(*scene_, std::make_unique<core::EditMotionCommand>(target_, global_, std::move(*before_),
-                                                                        std::move(*current_), label_));
+                                                                         std::move(*current_), label_));
     before_.reset();
     current_.reset();
 }

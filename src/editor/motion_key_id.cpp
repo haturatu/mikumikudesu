@@ -43,7 +43,7 @@ std::string StableIdTable::keyName(const core::MotionDocument& document, core::M
 }
 
 std::uint32_t StableIdTable::keyFrame(const core::MotionDocument& document, core::MotionTrack track,
-                                       std::size_t index) {
+                                      std::size_t index) {
     switch (track) {
     case core::MotionTrack::bone:
         return index < document.bones.size() ? document.bones[index].frame : 0U;
@@ -74,8 +74,8 @@ void StableIdTable::rebuild(const core::MotionDocument& document) {
         const auto count = trackSize(document, track);
         for (std::size_t index = 0; index < count; ++index) {
             const MotionKeyId id{track, nextId_++};
-            fingerprints_.emplace(id, Fingerprint{track, keyName(document, track, index),
-                                                  keyFrame(document, track, index)});
+            fingerprints_.emplace(
+                id, Fingerprint{track, keyName(document, track, index), keyFrame(document, track, index)});
             order_.emplace(id.stableId, static_cast<std::uint64_t>(index));
         }
     }
