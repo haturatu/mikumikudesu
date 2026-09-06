@@ -40,13 +40,14 @@ VulkanUploadContext::VulkanUploadContext(VkDevice device, VkPhysicalDevice physi
     check(vkCreateBuffer(device_, &bufferInfo, nullptr, &stagingBuffer_), "create persistent upload buffer");
     VkMemoryRequirements requirements{};
     vkGetBufferMemoryRequirements(device_, stagingBuffer_, &requirements);
-    const VkMemoryAllocateInfo allocationInfo{
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize = requirements.size,
-        .memoryTypeIndex = findMemoryType(physicalDevice, requirements.memoryTypeBits,
-                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-    };
     try {
+        const VkMemoryAllocateInfo allocationInfo{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = requirements.size,
+            .memoryTypeIndex =
+                findMemoryType(physicalDevice, requirements.memoryTypeBits,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+        };
         check(vkAllocateMemory(device_, &allocationInfo, nullptr, &stagingMemory_),
               "allocate persistent upload memory");
         check(vkBindBufferMemory(device_, stagingBuffer_, stagingMemory_, 0), "bind persistent upload memory");
@@ -108,6 +109,14 @@ void VulkanUploadContext::begin() {
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
     check(vkBeginCommandBuffer(commandBuffers_[batchIndex_], &beginInfo), "begin persistent upload command");
+}
+
+void VulkanUploadContext::abort() noexcept {
+    if (pendingSignalValue_ == 0)
+        return;
+    ring_.rollback(pendingSignalValue_);
+    static_cast<void>(vkResetCommandBuffer(commandBuffers_[batchIndex_], 0));
+    pendingSignalValue_ = 0;
 }
 
 VulkanUploadContext::Slice VulkanUploadContext::allocate(VkDeviceSize size, VkDeviceSize alignment) {
