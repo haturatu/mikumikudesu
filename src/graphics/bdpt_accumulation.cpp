@@ -52,9 +52,8 @@ bool BdptAccumulation::syncScene(core::Scene& scene) {
     }
     scene.advanceAccumulation();
     const auto samples = scene.accumulatedSamples();
-    sampleIndex_ = samples > std::numeric_limits<std::uint32_t>::max()
-                       ? std::numeric_limits<std::uint32_t>::max()
-                       : static_cast<std::uint32_t>(samples);
+    sampleIndex_ = samples > std::numeric_limits<std::uint32_t>::max() ? std::numeric_limits<std::uint32_t>::max()
+                                                                       : static_cast<std::uint32_t>(samples);
     needsClear_ = false;
     log::debug("BDPT accumulation synced with scene: sample ", sampleIndex_);
     return false;
