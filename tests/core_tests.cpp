@@ -853,6 +853,12 @@ int main() {
         static_cast<void>(firstFrameAnimator.evaluate(0.0F, 0.0F));
         ok &= check(std::abs(firstFramePhysics.bodyTransform(0).position[0] - 1.0F) < 1e-4F,
                     "first PMX physics evaluation synchronizes dynamic bodies with the animated pose");
+        dayo::core::VpdPose firstFramePose;
+        firstFramePose.bones.push_back({.name = "animated", .translation = {1.0F, 0.0F, 0.0F}});
+        firstFrameAnimator.setPose(&firstFramePose);
+        static_cast<void>(firstFrameAnimator.evaluate(0.0F, 0.0F));
+        ok &= check(std::abs(firstFramePhysics.bodyTransform(0).position[0] - 2.0F) < 1e-4F,
+                    "VPD pose changes resynchronize dynamic bodies with the animated pose");
 
         dayo::core::PmxModel alignedModel;
         alignedModel.vertices.resize(2);
