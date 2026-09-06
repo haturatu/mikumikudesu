@@ -31,6 +31,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Restore APT package cache
         uses: ./.github/actions/cache-apt
@@ -75,6 +77,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Restore APT package cache
         uses: ./.github/actions/cache-apt
