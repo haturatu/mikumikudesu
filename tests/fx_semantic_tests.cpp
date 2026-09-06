@@ -24,7 +24,7 @@ bool expectDouble(double actual, double expected, std::string_view message, doub
     return ok;
 }
 
-template <typename F> bool expectThrows(F&& fn, std::string_view message) {
+template <typename F> bool expectThrows(const F& fn, std::string_view message) {
     try {
         fn();
     } catch (const std::exception&) {
@@ -55,8 +55,8 @@ int main() {
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("1+2*3"), ctx)), 7.0, "arith precedence");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("(1+2)*3"), ctx)), 9.0, "parens");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("-5+10"), ctx)), 5.0, "unary minus");
-    ok &= check(fxToBool(evaluateFxExpr(parseFxExpr("!false"), ctx)) == true, "unary not");
-    ok &= check(fxToBool(evaluateFxExpr(parseFxExpr("!0"), ctx)) == true, "unary not zero");
+    ok &= check(fxToBool(evaluateFxExpr(parseFxExpr("!false"), ctx)), "unary not");
+    ok &= check(fxToBool(evaluateFxExpr(parseFxExpr("!0"), ctx)), "unary not zero");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("10%3"), ctx)), 1.0, "modulo");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("min(3,5)"), ctx)), 3.0, "min");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("max(3,5)"), ctx)), 5.0, "max");
