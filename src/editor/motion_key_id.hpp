@@ -21,8 +21,7 @@ struct MotionKeyId {
 
 struct MotionKeyIdHash {
     [[nodiscard]] std::size_t operator()(const MotionKeyId& key) const noexcept {
-        return std::hash<std::uint64_t>{}(static_cast<std::uint64_t>(key.track) * 0x9E3779B97F4A7C15ULL ^
-                                           key.stableId);
+        return std::hash<std::uint64_t>{}(static_cast<std::uint64_t>(key.track) * 0x9E3779B97F4A7C15ULL ^ key.stableId);
     }
 };
 

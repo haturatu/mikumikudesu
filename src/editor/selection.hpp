@@ -28,8 +28,8 @@ class Selection {
     }
     // Resolve to transient indices for one frame only. Callers must not
     // persist the returned indices across edits.
-    [[nodiscard]] std::vector<core::MotionKeyRef> resolveTransient(
-        const core::MotionDocument& document, const StableIdTable& table) const;
+    [[nodiscard]] std::vector<core::MotionKeyRef> resolveTransient(const core::MotionDocument& document,
+                                                                   const StableIdTable& table) const;
 
   private:
     std::vector<MotionKeyId> ids_;

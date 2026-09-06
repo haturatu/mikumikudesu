@@ -63,8 +63,8 @@ class MotionSolver {
     [[nodiscard]] VmdCameraState solveCamera(const VmdMotion& motion, float frame) const;
 
     // Tolerance comparison skeleton for fixture oracles.
-    [[nodiscard]] bool compareBones(const std::vector<SolverBoneState>& left,
-                                    const std::vector<SolverBoneState>& right, std::string* report = nullptr) const;
+    [[nodiscard]] bool compareBones(const std::vector<SolverBoneState>& left, const std::vector<SolverBoneState>& right,
+                                    std::string* report = nullptr) const;
     [[nodiscard]] bool compareCamera(const VmdCameraState& left, const VmdCameraState& right,
                                      std::string* report = nullptr) const;
     [[nodiscard]] const SolverCompatibilityProfile& profile() const noexcept {

@@ -37,7 +37,7 @@ std::optional<SequencePathSpec> parseSequencePath(const std::filesystem::path& p
 }
 
 std::filesystem::path formatSequencePath(const std::filesystem::path& directory, const SequencePathSpec& spec,
-                                          std::uint32_t frame) {
+                                         std::uint32_t frame) {
     char name[256]{};
     std::snprintf(name, sizeof(name), "%s%0*u%s", spec.prefix.c_str(), static_cast<int>(spec.digits), frame,
                   spec.extension.c_str());

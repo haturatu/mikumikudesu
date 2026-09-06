@@ -39,7 +39,8 @@ std::vector<SolverBoneState> MotionSolver::runSampling(const VmdMotion& motion, 
     for (const auto& key : motion.bones) {
         // Skeleton sampler: nearest key at or before the frame.
         if (key.frame <= index || bones.empty()) {
-            auto found = std::ranges::find_if(bones, [&](const SolverBoneState& state) { return state.name == key.name; });
+            auto found =
+                std::ranges::find_if(bones, [&](const SolverBoneState& state) { return state.name == key.name; });
             if (found == bones.end()) {
                 bones.push_back({key.name, key.translation, key.rotation, key.physics});
             } else if (key.frame <= index) {
@@ -123,7 +124,8 @@ bool MotionSolver::compareBones(const std::vector<SolverBoneState>& left, const 
     for (std::size_t index = 0; index < left.size(); ++index) {
         float positionError = 0.0F;
         for (std::size_t axis = 0; axis < 3; ++axis)
-            positionError = std::max(positionError, std::abs(left[index].translation[axis] - right[index].translation[axis]));
+            positionError =
+                std::max(positionError, std::abs(left[index].translation[axis] - right[index].translation[axis]));
         if (positionError > profile_.positionTolerance) {
             if (report != nullptr) {
                 std::ostringstream message;
