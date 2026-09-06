@@ -25,7 +25,13 @@ using mmd::PmxSoftBodyAnchor;
 using mmd::PmxVertex;
 using mmd::PmxWeightType;
 
-[[nodiscard]] inline PmxMetadata probePmx(const std::filesystem::path& path) { return mmd::pmx::probe(path); }
-[[nodiscard]] inline PmxModel loadPmxModel(const std::filesystem::path& path) { return mmd::pmx::load(path); }
-[[nodiscard]] inline PmxMesh loadPmxMesh(const std::filesystem::path& path) { return mmd::pmx::loadMesh(path); }
+[[nodiscard]] inline PmxMetadata probePmx(const std::filesystem::path& path) {
+    return mmd::pmx::probe(path);
+}
+[[nodiscard]] inline PmxModel loadPmxModel(const std::filesystem::path& path) {
+    return mmd::pmx::load(path);
+}
+[[nodiscard]] inline PmxMesh loadPmxMesh(const std::filesystem::path& path) {
+    return mmd::pmx::loadMesh(path);
+}
 } // namespace dayo::core
