@@ -753,6 +753,7 @@ void MmdAnimator::setMotion(const VmdMotion* motion) {
 }
 void MmdAnimator::setPose(const VpdPose* pose) {
     pose_ = pose;
+    previousFrame_ = -1.0F;
 }
 void MmdAnimator::setPhysics(MmdPhysics* physics) {
     physics_ = physics;
@@ -948,11 +949,15 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
     if (physics_ != nullptr && physics_->available()) {
         const float frameDelta = frame - previousFrame_;
         const float expectedFrameDelta = std::max(deltaSeconds, 0.0F) * 30.0F;
+        const bool firstEvaluation = previousFrame_ < 0.0F;
+        // Motion or pose attachment can change the animated pose while Bullet still
+        // holds the PMX bind pose, so the first evaluation must synchronize
+        // every body before physics is allowed to advance.
         const bool discontinuousSeek =
-            (previousFrame_ < 0.0F && std::abs(frame) > 1e-6F) ||
-            (previousFrame_ >= 0.0F &&
-             (frameDelta < 0.0F || (std::abs(frameDelta) > 1e-6F &&
-                                    (deltaSeconds <= 0.0F || std::abs(frameDelta - expectedFrameDelta) > 2.0F))));
+            previousFrame_ >= 0.0F &&
+            (frameDelta < 0.0F || (std::abs(frameDelta) > 1e-6F &&
+                                   (deltaSeconds <= 0.0F || std::abs(frameDelta - expectedFrameDelta) > 2.0F)));
+        const bool synchronizePhysics = firstEvaluation || discontinuousSeek;
         if (discontinuousSeek)
             physics_->reset();
         float physicsDelta = std::max(deltaSeconds, 0.0F);
@@ -972,10 +977,10 @@ AnimatedModelFrame MmdAnimator::evaluate(float frame, float deltaSeconds, bool g
             PhysicsTransform value;
             value.position = add(global[bone].position, rotate(global[bone].rotation, offset));
             value.rotation = multiply(global[bone].rotation, offsetRotation);
-            if (discontinuousSeek) {
-                // A seek invalidates the old dynamic chain state. Place every
-                // bone-bound body at the current animated pose before Bullet
-                // resumes, including mode 1 and mode 2 bodies.
+            if (synchronizePhysics) {
+                // A new motion/pose or seek invalidates the old dynamic chain
+                // state. Place every bone-bound body at the current animated
+                // pose before Bullet resumes, including mode 1 and mode 2 bodies.
                 physics_->teleportBody(bodyIndex, value);
             } else if (physics_->bodyMode(bodyIndex) == 0) {
                 physics_->setKinematicTransform(bodyIndex, value);
