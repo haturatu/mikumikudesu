@@ -501,6 +501,11 @@ int main() {
         const auto mixedGroups = mixed.computeAliasGroups();
         ok &= check(mixedGroups[unused] == std::numeric_limits<std::uint32_t>::max(),
                     "unused resources receive no allocation alias group");
+        RenderGraph untyped;
+        const auto untypedA = untyped.createResource("untyped-a");
+        const auto untypedB = untyped.createResource("untyped-b");
+        ok &= check(untyped.mayAliasByLifetime(untypedA, untypedB),
+                    "two untyped transient resources remain alias candidates");
     }
 
     // ---- retirement timing: destroyed resources survive in-flight frames ----

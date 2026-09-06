@@ -241,6 +241,9 @@ class RenderGraph {
             return graphics::mayAliasByLifetime(leftRes.desc.value(), rightRes.desc.value());
         if (leftRes.bufferDesc.has_value() && rightRes.bufferDesc.has_value())
             return graphics::mayAliasByLifetime(leftRes.bufferDesc.value(), rightRes.bufferDesc.value());
+        if (!leftRes.desc.has_value() && !leftRes.bufferDesc.has_value() && !rightRes.desc.has_value() &&
+            !rightRes.bufferDesc.has_value())
+            return true;
         // Texture/buffer pairs cannot share an alias group without backend
         // memory-requirement validation, even when both are transient.
         return false;
