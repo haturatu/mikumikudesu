@@ -208,9 +208,44 @@ void StableIdTable::notifyMoved(const core::MotionDocument& document, const std:
         if (found == fingerprints_.end())
             continue;
         found->second.frame = shiftedFrame(found->second.frame, frameDelta);
-        const auto resolved = resolve(document, id);
-        if (resolved.has_value()) {
-            found->second.name = keyName(document, id.track, *resolved);
+    }
+
+    // MotionEditor uses stable_sort, so keys that become equal retain their
+    // pre-edit order. Rebuild ordinals from that order; otherwise two IDs can
+    // acquire the same (name, frame, ordinal) fingerprint after a move.
+    std::unordered_map<std::string, std::vector<MotionKeyId>> groups;
+    for (const auto& [id, fingerprint] : fingerprints_) {
+        const std::string key = std::to_string(static_cast<int>(fingerprint.track)) + '\0' + fingerprint.name + '\0' +
+                                std::to_string(fingerprint.frame);
+        groups[key].push_back(id);
+    }
+    for (auto& [key, group] : groups) {
+        static_cast<void>(key);
+        std::sort(group.begin(), group.end(), [&](MotionKeyId left, MotionKeyId right) {
+            const auto leftOrder = order_.find(left);
+            const auto rightOrder = order_.find(right);
+            if (leftOrder == order_.end() || rightOrder == order_.end())
+                return left.stableId < right.stableId;
+            if (leftOrder->second != rightOrder->second)
+                return leftOrder->second < rightOrder->second;
+            return left.stableId < right.stableId;
+        });
+        if (group.empty())
+            continue;
+
+        const auto& fingerprint = fingerprints_.at(group.front());
+        std::vector<std::size_t> currentIndices;
+        const auto count = trackCount(document, fingerprint.track);
+        for (std::size_t index = 0; index < count; ++index) {
+            if (keyName(document, fingerprint.track, index) == fingerprint.name &&
+                keyFrame(document, fingerprint.track, index) == fingerprint.frame)
+                currentIndices.push_back(index);
+        }
+        for (std::size_t ordinal = 0; ordinal < group.size(); ++ordinal) {
+            auto& current = fingerprints_.at(group[ordinal]);
+            current.duplicateOrdinal = ordinal;
+            if (ordinal < currentIndices.size())
+                order_[group[ordinal]] = currentIndices[ordinal];
         }
     }
 }

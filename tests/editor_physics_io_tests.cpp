@@ -68,6 +68,20 @@ int main() {
                         duplicateTable.resolve(duplicates, secondDuplicate).has_value() &&
                         firstDuplicate != secondDuplicate,
                     "stable ids retain duplicate key ordinals");
+
+        dayo::core::MotionDocument movedDuplicates;
+        movedDuplicates.bones.push_back({.name = "A", .frame = 1});
+        movedDuplicates.bones.push_back({.name = "A", .frame = 2});
+        dayo::editor::StableIdTable movedTable;
+        movedTable.rebuild(movedDuplicates);
+        const auto movedId = movedTable.keyId(dayo::core::MotionTrack::bone, 0);
+        const auto retainedId = movedTable.keyId(dayo::core::MotionTrack::bone, 1);
+        dayo::core::MotionEditor::move(movedDuplicates, {{dayo::core::MotionTrack::bone, 0}}, 1);
+        movedTable.notifyMoved(movedDuplicates, {movedId}, 1);
+        const auto movedIndex = movedTable.resolve(movedDuplicates, movedId);
+        const auto retainedIndex = movedTable.resolve(movedDuplicates, retainedId);
+        ok &= check(movedIndex.has_value() && retainedIndex.has_value() && *movedIndex != *retainedIndex,
+                    "stable ids retain distinct identities after duplicate move");
     }
 
     // Undo transaction: drag coalesces into a single history entry.
