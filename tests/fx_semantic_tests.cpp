@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <string>
 #include <string_view>
 
 namespace {
@@ -72,6 +73,17 @@ int main() {
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("DEFAULT_RTSIZE.x/2"), ctx)), 640.0, "rt half");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("VERTEXCOUNT+CLONEDVERTEXCOUNT"), ctx)), 50000.0,
                        "vertex sum");
+    ok &= check(fxToBool(evaluateFxExpr(parseFxExpr("FRAME >= 30 && FRAME < 31"), ctx)),
+                "comparison and logical precedence");
+    ok &= check(fxToBool(evaluateFxExpr(parseFxExpr("FRAME == 30 || FRAME != 30"), ctx)), "equality and logical or");
+    ok &= check(fxToBool(evaluateFxExpr(parseFxExpr("1.0 == true"), ctx)), "explicit scalar coercion comparison");
+    ok &= check(!fxToBool(evaluateFxExpr(parseFxExpr("false && MISSING"), ctx)), "logical and short circuits");
+    ok &= check(fxToBool(evaluateFxExpr(parseFxExpr("true || MISSING"), ctx)), "logical or short circuits");
+    {
+        std::string deepUnary(65, '!');
+        deepUnary += '1';
+        ok &= expectThrows([&] { static_cast<void>(parseFxExpr(deepUnary)); }, "unary depth guard");
+    }
 
     // --- dependencies ---
     ok &= check(fxDependencies(parseFxExpr("1+2")) == FxExprDependency::Static, "dep static");

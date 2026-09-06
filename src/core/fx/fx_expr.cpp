@@ -139,12 +139,17 @@ class Parser {
     }
 
     FxExpr parseFactor(std::size_t depth) {
-        (void)depth;
         skipWs();
         const char c = peek();
         if (c == '-' || c == '!') {
             ++pos_;
+            // Unary operators recurse through parseFactor rather than
+            // parseExpr, so they must participate in the same depth budget.
+            // Otherwise an untrusted chain such as "!!!!!!!!1" can bypass
+            // kMaxExprDepth until the text-size limit is reached.
+            enterDepth();
             FxExpr operand = parseFactor(depth);
+            leaveDepth();
             trackNode();
             FxExpr out;
             out.node = FxExpr::Unary{c, std::make_shared<FxExpr>(std::move(operand))};
