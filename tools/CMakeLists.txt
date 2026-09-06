@@ -16,6 +16,9 @@ target_link_libraries(capability_suite PRIVATE dayo_core)
 
 foreach(tool fxedit sequence_movie vdb2dds capability_suite)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(${tool} PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+    target_compile_options(
+      ${tool}
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
   endif()
 endforeach()
