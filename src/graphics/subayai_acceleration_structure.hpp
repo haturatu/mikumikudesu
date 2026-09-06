@@ -32,6 +32,16 @@ struct TlasInstanceDesc {
     std::uint32_t flags{};
 };
 
+// World-facing instance input. Mesh identity is explicit so clone transforms
+// cannot be detached from the BLAS they address.
+struct WorldInstance {
+    std::uint32_t meshId{};
+    Matrix3x4 transform{};
+    std::uint32_t mask{0xFFU};
+    std::uint32_t sbtRecordOffset{};
+    std::uint32_t flags{};
+};
+
 class IAccelerationBackend {
   public:
     virtual ~IAccelerationBackend() = default;
@@ -41,6 +51,8 @@ class IAccelerationBackend {
     virtual AccelerationStructureHandle createTlas(std::span<const TlasInstanceDesc> instances) = 0;
     virtual void rebuildTlas(AccelerationStructureHandle tlas, std::span<const TlasInstanceDesc> instances) = 0;
     virtual void updateTlas(AccelerationStructureHandle tlas, std::span<const TlasInstanceDesc> instances) = 0;
+    virtual void destroyBlas(AccelerationStructureHandle) {}
+    virtual void destroyTlas(AccelerationStructureHandle) {}
 };
 
 class AccelerationStructureService {
@@ -54,9 +66,14 @@ class AccelerationStructureService {
     [[nodiscard]] BlasAction notifyMesh(std::uint32_t meshId, BufferHandle vertexBuffer,
                                         std::uint64_t topologyGeneration, std::uint64_t deformVersion);
     // cloneCountsPerMesh holds visible-model clone counts only; the TLAS
-    // instance count is their sum so CloneCount is reflected directly.
+    // instance count is their sum so CloneCount is reflected directly. Meshes
+    // are ordered by mesh ID for this compatibility overload. New callers
+    // should use the transform-aware overload below.
     [[nodiscard]] TlasAction notifyWorld(std::uint64_t worldGeneration,
                                          std::span<const std::uint32_t> cloneCountsPerMesh);
+    [[nodiscard]] TlasAction notifyWorld(std::uint64_t worldGeneration, std::span<const WorldInstance> instances);
+
+    [[nodiscard]] bool removeMesh(std::uint32_t meshId);
 
     [[nodiscard]] std::size_t blasCount() const noexcept {
         return meshes_.size();

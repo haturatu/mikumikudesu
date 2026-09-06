@@ -79,29 +79,46 @@ TlasAction AccelerationStructureService::notifyWorld(std::uint64_t worldGenerati
     if (cloneCountsPerMesh.size() != meshIds.size())
         throw std::invalid_argument("TLAS clone counts must have one entry per registered mesh");
 
-    std::size_t instances = 0;
-    for (const auto value : cloneCountsPerMesh) {
-        if (value > std::numeric_limits<std::size_t>::max() - instances)
+    std::vector<WorldInstance> legacyInstances;
+    for (std::size_t meshIndex = 0; meshIndex < cloneCountsPerMesh.size(); ++meshIndex) {
+        const auto value = cloneCountsPerMesh[meshIndex];
+        if (value > std::numeric_limits<std::size_t>::max() - legacyInstances.size())
             throw std::overflow_error("TLAS instance count overflow");
-        instances += static_cast<std::size_t>(value);
+        legacyInstances.reserve(legacyInstances.size() + value);
+        const auto meshId = meshIds[meshIndex];
+        for (std::uint32_t clone = 0; clone < value; ++clone)
+            legacyInstances.push_back(WorldInstance{.meshId = meshId});
     }
-    const bool countChanged = instances != tlasInstanceCount_;
+    return notifyWorld(worldGeneration, std::span<const WorldInstance>(legacyInstances.data(), legacyInstances.size()));
+}
+
+TlasAction AccelerationStructureService::notifyWorld(std::uint64_t worldGeneration,
+                                                     std::span<const WorldInstance> instances) {
+    const std::size_t instanceCount = instances.size();
+    for (const auto& instance : instances) {
+        if (!meshes_.contains(instance.meshId))
+            throw std::invalid_argument("TLAS instance references an unknown mesh");
+    }
+    const bool countChanged = instanceCount != tlasInstanceCount_;
     const bool worldChanged = !hasCachedWorld_ || cachedWorldGeneration_ != worldGeneration;
     const bool blasChanged = blasChangedSinceTlas_;
 
     const auto rebuildInstances = [&] {
         tlasScratch_.clear();
-        tlasScratch_.reserve(instances);
+        tlasScratch_.reserve(instanceCount);
         std::uint32_t instanceId = 0;
-        for (std::size_t meshIndex = 0; meshIndex < meshIds.size(); ++meshIndex) {
-            const auto& state = meshes_.at(meshIds[meshIndex]);
-            for (std::uint32_t clone = 0; clone < cloneCountsPerMesh[meshIndex]; ++clone) {
-                if (instanceId == std::numeric_limits<std::uint32_t>::max())
-                    throw std::overflow_error("TLAS instance id overflow");
-                tlasScratch_.push_back(TlasInstanceDesc{.blas = state.blas, .instanceId = instanceId++});
-            }
+        for (const auto& instance : instances) {
+            if (instanceId == std::numeric_limits<std::uint32_t>::max())
+                throw std::overflow_error("TLAS instance id overflow");
+            const auto& state = meshes_.at(instance.meshId);
+            tlasScratch_.push_back(TlasInstanceDesc{.blas = state.blas,
+                                                    .transform = instance.transform,
+                                                    .instanceId = instanceId++,
+                                                    .mask = instance.mask,
+                                                    .sbtRecordOffset = instance.sbtRecordOffset,
+                                                    .flags = instance.flags});
         }
-        if (tlasScratch_.size() != instances)
+        if (tlasScratch_.size() != instanceCount)
             throw std::logic_error("TLAS instance expansion did not match CloneCount");
     };
 
@@ -111,12 +128,12 @@ TlasAction AccelerationStructureService::notifyWorld(std::uint64_t worldGenerati
             tlas_ = backend_->createTlas(std::span<const TlasInstanceDesc>(tlasScratch_.data(), tlasScratch_.size()));
         }
         tlasBuilt_ = true;
-        tlasInstanceCount_ = instances;
+        tlasInstanceCount_ = instanceCount;
         cachedWorldGeneration_ = worldGeneration;
         hasCachedWorld_ = true;
         blasChangedSinceTlas_ = false;
         ++tlasRebuilds_;
-        log::info("TLAS rebuild: instances ", instances);
+        log::info("TLAS rebuild: instances ", instanceCount);
         return TlasAction::rebuild;
     }
 
@@ -125,12 +142,12 @@ TlasAction AccelerationStructureService::notifyWorld(std::uint64_t worldGenerati
         if (backend_ != nullptr) {
             backend_->rebuildTlas(tlas_, std::span<const TlasInstanceDesc>(tlasScratch_.data(), tlasScratch_.size()));
         }
-        tlasInstanceCount_ = instances;
+        tlasInstanceCount_ = instanceCount;
         cachedWorldGeneration_ = worldGeneration;
         hasCachedWorld_ = true;
         blasChangedSinceTlas_ = false;
         ++tlasRebuilds_;
-        log::info("TLAS rebuild: instances ", instances);
+        log::info("TLAS rebuild: instances ", instanceCount);
         return TlasAction::rebuild;
     }
     if (worldChanged) {
@@ -143,8 +160,31 @@ TlasAction AccelerationStructureService::notifyWorld(std::uint64_t worldGenerati
         log::debug("TLAS update: world ", worldGeneration);
         return TlasAction::update;
     }
-    log::debug("TLAS unchanged: instances ", instances);
+    log::debug("TLAS unchanged: instances ", instanceCount);
     return TlasAction::none;
+}
+
+bool AccelerationStructureService::removeMesh(std::uint32_t meshId) {
+    const auto found = meshes_.find(meshId);
+    if (found == meshes_.end())
+        return false;
+
+    if (tlasBuilt_) {
+        if (backend_ != nullptr && tlas_ != 0)
+            backend_->destroyTlas(tlas_);
+        tlas_ = {};
+        tlasBuilt_ = false;
+        tlasInstanceCount_ = 0;
+        tlasScratch_.clear();
+        hasCachedWorld_ = false;
+        cachedWorldGeneration_ = 0;
+    }
+    if (backend_ != nullptr && found->second.built && found->second.blas != 0)
+        backend_->destroyBlas(found->second.blas);
+    meshes_.erase(found);
+    blasChangedSinceTlas_ = true;
+    log::info("BLAS removed: mesh ", meshId);
+    return true;
 }
 
 const char* toString(BlasAction action) noexcept {

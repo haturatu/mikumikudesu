@@ -32,7 +32,10 @@ struct MockAccelerationBackend : dayo::graphics::IAccelerationBackend {
     std::uint64_t createTlasCalls{0};
     std::uint64_t rebuildTlasCalls{0};
     std::uint64_t updateTlasCalls{0};
+    std::uint64_t destroyBlasCalls{0};
+    std::uint64_t destroyTlasCalls{0};
     std::size_t lastTlasInstanceCount{};
+    std::vector<dayo::graphics::TlasInstanceDesc> lastTlasInstances;
 
     dayo::graphics::AccelerationStructureHandle createBlas(dayo::graphics::BufferHandle) override {
         ++createBlasCalls;
@@ -48,17 +51,26 @@ struct MockAccelerationBackend : dayo::graphics::IAccelerationBackend {
     createTlas(std::span<const dayo::graphics::TlasInstanceDesc> instances) override {
         ++createTlasCalls;
         lastTlasInstanceCount = instances.size();
+        lastTlasInstances.assign(instances.begin(), instances.end());
         return next++;
     }
     void rebuildTlas(dayo::graphics::AccelerationStructureHandle,
                      std::span<const dayo::graphics::TlasInstanceDesc> instances) override {
         ++rebuildTlasCalls;
         lastTlasInstanceCount = instances.size();
+        lastTlasInstances.assign(instances.begin(), instances.end());
     }
     void updateTlas(dayo::graphics::AccelerationStructureHandle,
                     std::span<const dayo::graphics::TlasInstanceDesc> instances) override {
         ++updateTlasCalls;
         lastTlasInstanceCount = instances.size();
+        lastTlasInstances.assign(instances.begin(), instances.end());
+    }
+    void destroyBlas(dayo::graphics::AccelerationStructureHandle) override {
+        ++destroyBlasCalls;
+    }
+    void destroyTlas(dayo::graphics::AccelerationStructureHandle) override {
+        ++destroyTlasCalls;
     }
 };
 
@@ -114,6 +126,37 @@ int main() {
         ok &= check(service.tlasInstanceCount() == 6, "TLAS instance count follows CloneCount");
         static_cast<void>(service.notifyMesh(0, 11, 1, 9));
         ok &= check(service.notifyWorld(11, grown) == TlasAction::none, "BLAS refit keeps stable TLAS addresses");
+        ok &= check(service.removeMesh(1), "removing a mesh succeeds");
+        ok &= check(service.blasCount() == 1 && !service.tlasBuilt(), "mesh removal retires TLAS state");
+        ok &= check(backend.destroyBlasCalls == 1 && backend.destroyTlasCalls == 1,
+                    "mesh removal destroys BLAS and TLAS resources");
+    }
+    // Transform-aware world instances preserve clone placement and metadata.
+    {
+        MockAccelerationBackend backend;
+        AccelerationStructureService service(&backend);
+        static_cast<void>(service.notifyMesh(10, 11, 1, 1));
+        static_cast<void>(service.notifyMesh(20, 12, 1, 1));
+        std::array<dayo::graphics::WorldInstance, 3> world{};
+        world[0].meshId = 20;
+        world[0].transform.values[3] = 4.0F;
+        world[0].mask = 0x7FU;
+        world[0].sbtRecordOffset = 3;
+        world[1].meshId = 10;
+        world[1].transform.values[7] = 5.0F;
+        world[1].flags = 1;
+        world[2].meshId = 20;
+        world[2].transform.values[11] = 6.0F;
+        ok &=
+            check(service.notifyWorld(20, world) == TlasAction::rebuild, "transform-aware world instances build TLAS");
+        ok &= check(backend.lastTlasInstances.size() == 3 && backend.lastTlasInstances[0].blas == 2 &&
+                        backend.lastTlasInstances[0].transform.values[3] == 4.0F &&
+                        backend.lastTlasInstances[0].mask == 0x7FU && backend.lastTlasInstances[0].sbtRecordOffset == 3,
+                    "TLAS preserves mesh mapping, transform, and metadata");
+        ok &=
+            check(backend.lastTlasInstances[1].blas == 1 && backend.lastTlasInstances[1].transform.values[7] == 5.0F &&
+                      backend.lastTlasInstances[1].flags == 1 && backend.lastTlasInstances[2].instanceId == 2,
+                  "TLAS expands each world instance independently");
     }
     // EnvironmentService keeps cubemap/prefiltered/SH/Skywalker without regen.
     {
