@@ -36,7 +36,7 @@ struct FxSizeExpr {
         ceil,
     };
 
-    std::string base; // "" = absolute, otherwise resource or builtin name
+    std::string base;          // "" = absolute, otherwise resource or builtin name
     std::uint32_t dimension{}; // 0 = inherit from base (default 2 when no base)
     std::string xExpr;         // "" = inherit from base
     std::string yExpr;
@@ -74,8 +74,7 @@ class FxSizeResolver {
   public:
     // Resolve an FxSizeExpr to a concrete extent. Throws std::runtime_error
     // on unknown base/identifier and std::overflow_error on any limit breach.
-    [[nodiscard]] FxExtent resolve(const FxSizeExpr& expr, const FxEvalContext& context,
-                                   const FxResourceTable& table,
+    [[nodiscard]] FxExtent resolve(const FxSizeExpr& expr, const FxEvalContext& context, const FxResourceTable& table,
                                    FxCompatibilityProfile profile = FxCompatibilityProfile::upstream130,
                                    bool allowPowQuirk = false) const;
 

@@ -151,8 +151,8 @@ FxExtent FxSizeResolver::resolve(const FxSizeExpr& expr, const FxEvalContext& co
     // 3-6. x/y/z expr -> conv -> ratio -> rounding (per axis)
     FxExtent out;
     out.dimension = dimension;
-    const std::int64_t x = resolveAxis(expr.xExpr, baseX, expr.widthRatio, expr.rounding, "x", context, table,
-                                       profile, allowPowQuirk);
+    const std::int64_t x =
+        resolveAxis(expr.xExpr, baseX, expr.widthRatio, expr.rounding, "x", context, table, profile, allowPowQuirk);
     std::int64_t y = 1;
     std::int64_t z = 1;
     if (dimension >= 2)

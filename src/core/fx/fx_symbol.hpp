@@ -37,7 +37,7 @@ class FxSymbolResolver {
 // Evaluate with named-resource fallback: builtins come from the context,
 // unknown identifiers resolve via resolver.resolveScalar().
 [[nodiscard]] FxScalar evaluateFxExprWithSymbols(const FxExpr& expr, const FxSymbolResolver& resolver,
-                                                FxCompatibilityProfile profile = FxCompatibilityProfile::upstream130,
-                                                bool allowPowQuirk = false);
+                                                 FxCompatibilityProfile profile = FxCompatibilityProfile::upstream130,
+                                                 bool allowPowQuirk = false);
 
 } // namespace dayo::core::fx
