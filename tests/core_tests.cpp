@@ -29,6 +29,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <latch>
 #include <limits>
 #include <numbers>
 #include <stdexcept>
@@ -466,7 +467,6 @@ int main() {
         });
         scheduler.wait(upload);
         ok &= check(dependencyOrder.load() == 3 && upload.valid(), "task scheduler dependency graph");
-
         dayo::core::TaskScheduler singleWorker(1);
         const auto root = singleWorker.schedule([] {});
         const auto dependent = singleWorker.scheduleAfter(root, [] {});
@@ -481,6 +481,34 @@ int main() {
             workerWaitRejected = true;
         }
         ok &= check(workerWaitRejected, "task scheduler rejects blocking waits from workers");
+        std::latch localChildren(32);
+        std::atomic<std::uint32_t> localChildCount{};
+        const auto parent = scheduler.schedule([&] {
+            for (std::uint32_t index = 0; index < 32; ++index) {
+                static_cast<void>(scheduler.schedule([&] {
+                    localChildCount.fetch_add(1);
+                    localChildren.count_down();
+                }));
+            }
+        });
+        localChildren.wait();
+        scheduler.wait(parent);
+        ok &= check(localChildCount.load() == 32, "task scheduler steals worker-local tasks");
+
+        dayo::core::TaskScheduler nestedScheduler(1);
+        std::atomic<int> dependentOrder{};
+        dayo::core::TaskHandle nestedDependent;
+        const auto schedulerParent = nestedScheduler.schedule([&] {
+            const auto dependency = nestedScheduler.schedule([&] { dependentOrder.store(1); });
+            nestedDependent = nestedScheduler.scheduleAfter(dependency, [&] {
+                if (dependentOrder.load() != 1)
+                    throw std::runtime_error("dependency order");
+                dependentOrder.store(2);
+            });
+        });
+        nestedScheduler.wait(schedulerParent);
+        nestedScheduler.wait(nestedDependent);
+        ok &= check(dependentOrder.load() == 2, "task scheduler releases dependent work without blocking workers");
     }
     {
         using dayo::graphics::RenderGraphLite;
