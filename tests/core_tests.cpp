@@ -24,6 +24,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -34,6 +35,7 @@
 #include <numbers>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 
 namespace {
 
@@ -509,6 +511,32 @@ int main() {
         nestedScheduler.wait(schedulerParent);
         nestedScheduler.wait(nestedDependent);
         ok &= check(dependentOrder.load() == 2, "task scheduler releases dependent work without blocking workers");
+
+        dayo::core::TaskScheduler fairnessScheduler(1);
+        constexpr std::size_t localTaskCount = 256U;
+        std::latch localTasksQueued(1);
+        std::atomic<std::size_t> localTasksCompleted{};
+        const auto localProducer = fairnessScheduler.schedule([&] {
+            for (std::size_t index = 0; index < localTaskCount; ++index) {
+                static_cast<void>(fairnessScheduler.schedule([&] {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    localTasksCompleted.fetch_add(1U, std::memory_order_relaxed);
+                }));
+            }
+            localTasksQueued.count_down();
+        });
+        localTasksQueued.wait();
+        std::atomic<bool> globalTaskRan{};
+        const auto globalTask =
+            fairnessScheduler.schedule([&] { globalTaskRan.store(true, std::memory_order_release); });
+        const auto fairnessDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+        while (!globalTaskRan.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < fairnessDeadline)
+            std::this_thread::yield();
+        ok &= check(globalTaskRan.load(std::memory_order_acquire), "task scheduler services global work fairly");
+        fairnessScheduler.wait(globalTask);
+        fairnessScheduler.wait(localProducer);
+        ok &= check(localTasksCompleted.load(std::memory_order_relaxed) == localTaskCount,
+                    "task scheduler drains local work after fair global service");
     }
     {
         using dayo::graphics::RenderGraphLite;
