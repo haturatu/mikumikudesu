@@ -67,9 +67,8 @@ std::vector<ScheduledFx> FrameEffectScheduler::schedule(const EffectCatalog& cat
             renderers.push_back(entry);
     }
     // Active renderer first, then remaining renderer/particle/sample in order.
-    std::sort(renderers.begin(), renderers.end(), [](const auto& left, const auto& right) {
-        return left.executionOrder < right.executionOrder;
-    });
+    std::sort(renderers.begin(), renderers.end(),
+              [](const auto& left, const auto& right) { return left.executionOrder < right.executionOrder; });
     bool emittedActive = rendererName.empty();
     if (!rendererName.empty()) {
         for (const auto& entry : renderers) {
