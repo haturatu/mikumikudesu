@@ -138,11 +138,10 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
         };
         switch (pass.type) {
         case core::EffectPassType::copy:
-            if (pass.inputs.size() != 1 || pass.renderTargets.size() != 1 || pass.inputs.front().name.empty() ||
-                pass.renderTargets.front().name.empty())
+            if (pass.inputs.size() != 1 || pass.inputs.front().name.empty())
                 throw std::runtime_error("FX copy pass requires one input and one output");
             appendInput(pass.inputs.front());
-            appendOutput(pass.renderTargets.front());
+            appendUtilityTarget("copy");
             break;
         case core::EffectPassType::clear:
             appendUtilityTarget("clear");
