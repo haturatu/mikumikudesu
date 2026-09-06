@@ -72,11 +72,11 @@ class RenderGraphLite {
         std::vector<Tracking> tracking(resources_.size());
         std::vector<RenderGraphPassPlan> result;
         result.reserve(passes_.size());
-        auto addDependency = [](std::vector<RenderGraphPass>& dependencies, RenderGraphPass pass,
+        auto addDependency = [](std::vector<RenderGraphPass>& dependencies, RenderGraphPass dependency,
                                 RenderGraphPass currentPass) {
-            if (pass != invalidPass && pass != currentPass &&
-                std::find(dependencies.begin(), dependencies.end(), pass) == dependencies.end())
-                dependencies.push_back(pass);
+            if (dependency != invalidPass && dependency != currentPass &&
+                std::find(dependencies.begin(), dependencies.end(), dependency) == dependencies.end())
+                dependencies.push_back(dependency);
         };
 
         for (std::uint32_t passIndex = 0; passIndex < passes_.size(); ++passIndex) {
