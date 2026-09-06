@@ -8,7 +8,6 @@
 
 #if DAYO_ENABLE_VMA
 VK_DEFINE_HANDLE(VmaAllocator)
-VK_DEFINE_HANDLE(VmaAllocation)
 #endif
 
 #include "graphics/vulkan/vulkan_resources.hpp"

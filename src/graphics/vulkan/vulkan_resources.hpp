@@ -2,6 +2,10 @@
 
 #include <vulkan/vulkan.h>
 
+#if DAYO_ENABLE_VMA
+VK_DEFINE_HANDLE(VmaAllocation)
+#endif
+
 namespace dayo::graphics {
 
 struct VulkanBuffer {
