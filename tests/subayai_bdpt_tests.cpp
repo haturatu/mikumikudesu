@@ -268,8 +268,7 @@ int main() {
         ok &= check(capabilities.supportsPreview(), "Preview stays available without RT");
         ok &= check(capabilities.hardwareSupportsSubayai() && capabilities.hardwareSupportsBdpt(),
                     "hardware detection independent of native flags");
-        ok &= check(!AccelerationStructureService::canBuildNative(capabilities, dayo::graphics::RendererKind::bdpt) ==
-                        false,
+        ok &= check(AccelerationStructureService::canBuildNative(capabilities, dayo::graphics::RendererKind::bdpt),
                     "host bookkeeping allowed on RT hardware");
         dayo::graphics::DeviceCapabilities noRt;
         noRt.swapchain = true;
