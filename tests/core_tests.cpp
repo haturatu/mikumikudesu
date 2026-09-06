@@ -433,6 +433,10 @@ int main() {
         std::atomic<std::uint64_t> sum{};
         scheduler.parallelFor(100, [&](std::size_t index) { sum.fetch_add(static_cast<std::uint64_t>(index + 1)); });
         ok &= check(scheduler.workerCount() == 2 && sum.load() == 5050, "task scheduler parallel batch");
+        std::atomic<std::uint64_t> chunkedSum{};
+        scheduler.parallelFor(101, 17,
+                              [&](std::size_t index) { chunkedSum.fetch_add(static_cast<std::uint64_t>(index + 1)); });
+        ok &= check(chunkedSum.load() == 5151, "task scheduler chunked batch");
         bool propagated = false;
         try {
             scheduler.parallelFor(2, [](std::size_t index) {
@@ -447,6 +451,20 @@ int main() {
         scheduler.parallelFor(
             2, [&](std::size_t) { scheduler.parallelFor(4, [&](std::size_t) { nested.fetch_add(1); }); });
         ok &= check(nested.load() == 8, "task scheduler runs nested batches inline");
+        std::atomic<int> dependencyOrder{};
+        const auto motion = scheduler.schedule([&] { dependencyOrder.store(1); });
+        const auto morph = scheduler.scheduleAfter(motion, [&] {
+            if (dependencyOrder.load() != 1)
+                throw std::runtime_error("dependency order");
+            dependencyOrder.store(2);
+        });
+        const auto upload = scheduler.scheduleAfter({motion, morph}, [&] {
+            if (dependencyOrder.load() != 2)
+                throw std::runtime_error("dependency order");
+            dependencyOrder.store(3);
+        });
+        scheduler.wait(upload);
+        ok &= check(dependencyOrder.load() == 3 && upload.valid(), "task scheduler dependency graph");
     }
     {
         const auto schemaPath = std::filesystem::temp_directory_path() / "mikumikudesu-subayai-template.txt";

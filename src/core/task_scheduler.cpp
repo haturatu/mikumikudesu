@@ -1,15 +1,42 @@
 #include "core/task_scheduler.hpp"
 
+#include <algorithm>
 #include <condition_variable>
 #include <deque>
 #include <exception>
 #include <latch>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 #include <vector>
 
 namespace dayo::core {
+
+struct TaskHandle::State {
+    std::condition_variable condition;
+    std::mutex mutex;
+    bool completed{};
+    std::exception_ptr exception;
+};
+
+void completeTask(const std::shared_ptr<TaskHandle::State>& state, std::exception_ptr exception) {
+    {
+        std::lock_guard lock(state->mutex);
+        state->exception = std::move(exception);
+        state->completed = true;
+    }
+    state->condition.notify_all();
+}
+
+void waitTask(const std::shared_ptr<TaskHandle::State>& state) {
+    if (state == nullptr)
+        throw std::invalid_argument("cannot wait for an invalid task handle");
+    std::unique_lock lock(state->mutex);
+    state->condition.wait(lock, [&] { return state->completed; });
+    if (state->exception != nullptr)
+        std::rethrow_exception(state->exception);
+}
 
 struct TaskScheduler::Impl {
     struct Task {
@@ -68,6 +95,14 @@ struct TaskScheduler::Impl {
         }
     }
 
+    void enqueue(std::function<void()> function) {
+        {
+            std::lock_guard lock(mutex);
+            tasks.push_back({std::move(function)});
+        }
+        condition.notify_one();
+    }
+
     std::vector<std::thread> workers;
     std::deque<Task> tasks;
     std::mutex mutex;
@@ -81,27 +116,40 @@ TaskScheduler::TaskScheduler(TaskScheduler&&) noexcept = default;
 TaskScheduler& TaskScheduler::operator=(TaskScheduler&&) noexcept = default;
 
 void TaskScheduler::parallelFor(std::size_t count, const std::function<void(std::size_t)>& function) {
+    const auto workers = workerCount();
+    const auto grainSize = workers == 0 ? count : std::max<std::size_t>(1U, count / (workers * 4U));
+    parallelFor(count, grainSize, function);
+}
+
+void TaskScheduler::parallelFor(std::size_t count, std::size_t grainSize,
+                                const std::function<void(std::size_t)>& function) {
     if (count == 0)
         return;
+    grainSize = std::max<std::size_t>(1U, grainSize);
     if (impl_->workers.empty() || count == 1 || Impl::currentWorker() == impl_.get()) {
         for (std::size_t index = 0; index < count; ++index)
             function(index);
         return;
     }
 
-    std::latch complete(static_cast<std::ptrdiff_t>(count));
+    const auto taskCount = (count - 1U) / grainSize + 1U;
+    std::latch complete(static_cast<std::ptrdiff_t>(taskCount));
     std::mutex exceptionMutex;
     std::exception_ptr firstException;
-    for (std::size_t index = 0; index < count; ++index) {
+    for (std::size_t taskIndex = 0; taskIndex < taskCount; ++taskIndex) {
+        const auto begin = taskIndex * grainSize;
+        const auto end = begin + std::min(grainSize, count - begin);
         {
             std::lock_guard lock(impl_->mutex);
-            impl_->tasks.push_back({[&, index] {
-                try {
-                    function(index);
-                } catch (...) {
-                    std::lock_guard exceptionLock(exceptionMutex);
-                    if (firstException == nullptr)
-                        firstException = std::current_exception();
+            impl_->tasks.push_back({[&, begin, end] {
+                for (auto index = begin; index < end; ++index) {
+                    try {
+                        function(index);
+                    } catch (...) {
+                        std::lock_guard exceptionLock(exceptionMutex);
+                        if (firstException == nullptr)
+                            firstException = std::current_exception();
+                    }
                 }
                 complete.count_down();
             }});
@@ -111,6 +159,62 @@ void TaskScheduler::parallelFor(std::size_t count, const std::function<void(std:
     complete.wait();
     if (firstException != nullptr)
         std::rethrow_exception(firstException);
+}
+
+TaskHandle TaskScheduler::schedule(TaskFunction function) {
+    if (!function)
+        throw std::invalid_argument("cannot schedule an empty task");
+    auto state = std::make_shared<TaskHandle::State>();
+    const TaskHandle handle(state);
+    impl_->enqueue([state = std::move(state), function = std::move(function)]() mutable {
+        std::exception_ptr exception;
+        try {
+            function();
+        } catch (...) {
+            exception = std::current_exception();
+        }
+        completeTask(state, std::move(exception));
+    });
+    return handle;
+}
+
+TaskHandle TaskScheduler::scheduleAfter(const TaskHandle& dependency, TaskFunction function) {
+    return scheduleAfter(std::span<const TaskHandle>(&dependency, 1), std::move(function));
+}
+
+TaskHandle TaskScheduler::scheduleAfter(std::span<const TaskHandle> dependencies, TaskFunction function) {
+    if (!function)
+        throw std::invalid_argument("cannot schedule an empty task");
+    std::vector<std::shared_ptr<TaskHandle::State>> states;
+    states.reserve(dependencies.size());
+    for (const auto& dependency : dependencies) {
+        if (!dependency.valid())
+            throw std::invalid_argument("cannot schedule after an invalid task handle");
+        states.push_back(dependency.state_);
+    }
+    auto state = std::make_shared<TaskHandle::State>();
+    const TaskHandle handle(state);
+    impl_->enqueue(
+        [dependencies = std::move(states), state = std::move(state), function = std::move(function)]() mutable {
+            std::exception_ptr exception;
+            try {
+                for (const auto& dependency : dependencies)
+                    waitTask(dependency);
+                function();
+            } catch (...) {
+                exception = std::current_exception();
+            }
+            completeTask(state, std::move(exception));
+        });
+    return handle;
+}
+
+TaskHandle TaskScheduler::scheduleAfter(std::initializer_list<TaskHandle> dependencies, TaskFunction function) {
+    return scheduleAfter(std::span<const TaskHandle>(dependencies.begin(), dependencies.size()), std::move(function));
+}
+
+void TaskScheduler::wait(const TaskHandle& handle) const {
+    waitTask(handle.state_);
 }
 
 std::size_t TaskScheduler::workerCount() const noexcept {
