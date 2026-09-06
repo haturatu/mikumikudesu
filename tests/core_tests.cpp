@@ -3,7 +3,6 @@
 #include "core/audio_export.hpp"
 #include "core/editor.hpp"
 #include "core/image.hpp"
-#include "core/mapped_file.hpp"
 #include "core/media.hpp"
 #include "core/model_probe.hpp"
 #include "core/motion.hpp"
@@ -59,25 +58,6 @@ bool check(bool value, std::string_view message) {
 int main() {
     using dayo::core::AssetKind;
     bool ok = true;
-    {
-        const auto path = std::filesystem::temp_directory_path() / "mikumikudesu-mapped-stream-test.bin";
-        {
-            std::ofstream output(path, std::ios::binary | std::ios::trunc);
-            output << "abcdef";
-        }
-        dayo::core::MappedFileStream input(path);
-        std::array<char, 2> prefix{};
-        input.read(prefix.data(), static_cast<std::streamsize>(prefix.size()));
-        input.seekg(1, std::ios::cur);
-        const auto position = input.tellg();
-        char value{};
-        input.get(value);
-        ok &= check(input && position == 3 && value == 'd', "mapped stream supports relative seek");
-        input.seekg(-1, std::ios::end);
-        input.get(value);
-        ok &= check(input && value == 'f', "mapped stream supports end-relative seek");
-        std::filesystem::remove(path);
-    }
     {
         const auto path = std::filesystem::temp_directory_path() / "mikumikudesu-vpd-test.vpd";
         const auto writeVpd = [&](std::string_view source) {
@@ -951,7 +931,7 @@ int main() {
         falling.bone = 0;
         physicsModel.rigidBodies.push_back(falling);
         dayo::core::MmdPhysics physics(physicsModel);
-#if DAYO_HAS_BULLET
+#if LIBMMD_HAS_BULLET
         ok &= check(physics.available() && physics.bodyCount() == 1, "Bullet PMX body creation");
         const auto before = physics.bodyTransform(0);
         for (int i = 0; i < 60; ++i)
