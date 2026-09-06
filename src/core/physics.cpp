@@ -220,8 +220,12 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
             source.bodyA == source.bodyB || static_cast<std::size_t>(source.bodyA) >= impl_->bodies.size() ||
             static_cast<std::size_t>(source.bodyB) >= impl_->bodies.size())
             continue;
-        const auto& bodyA = impl_->bodies[static_cast<std::size_t>(source.bodyA)];
-        const auto& bodyB = impl_->bodies[static_cast<std::size_t>(source.bodyB)];
+        const auto bodyAIndex = static_cast<std::size_t>(source.bodyA);
+        const auto bodyBIndex = static_cast<std::size_t>(source.bodyB);
+        if (!model.rigidBodies[bodyAIndex].physicsEnabled || !model.rigidBodies[bodyBIndex].physicsEnabled)
+            continue;
+        const auto& bodyA = impl_->bodies[bodyAIndex];
+        const auto& bodyB = impl_->bodies[bodyBIndex];
         // Bullet cannot solve a 6DoF row when neither endpoint has inverse
         // mass. A number of PMX files contain decorative static-static joints.
         if (bodyA->getInvMass() <= 0.0F && bodyB->getInvMass() <= 0.0F)
@@ -231,8 +235,8 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
             !finite(source.translationSpring) || !finite(source.rotationSpring))
             continue;
         const auto jointWorld = transform(source.position, source.rotation);
-        const auto frameA = impl_->initialTransforms[static_cast<std::size_t>(source.bodyA)].inverse() * jointWorld;
-        const auto frameB = impl_->initialTransforms[static_cast<std::size_t>(source.bodyB)].inverse() * jointWorld;
+        const auto frameA = impl_->initialTransforms[bodyAIndex].inverse() * jointWorld;
+        const auto frameB = impl_->initialTransforms[bodyBIndex].inverse() * jointWorld;
         auto joint = std::make_unique<btGeneric6DofSpringConstraint>(*bodyA, *bodyB, frameA, frameB, true);
         joint->setLinearLowerLimit(vector(source.translationMinimum));
         joint->setLinearUpperLimit(vector(source.translationMaximum));

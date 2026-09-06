@@ -390,11 +390,13 @@ void readPhysics(std::istream& input, const Header& header, PmxModel& model) {
         sanitizeScalar(body.angularDamping);
         sanitizeScalar(body.restitution);
         sanitizeScalar(body.friction);
+        const auto repairedMass = !std::isfinite(body.mass);
         sanitizeScalar(body.mass);
         const auto invalidShape =
             !std::ranges::all_of(body.size, [](const float value) { return std::isfinite(value); }) || body.shape > 2 ||
             body.mode > 2;
-        if (invalidShape) {
+        const auto invalidDynamicMass = body.mode != 0 && repairedMass;
+        if (invalidShape || invalidDynamicMass) {
             body.physicsEnabled = false;
             sanitize(body.size);
         }

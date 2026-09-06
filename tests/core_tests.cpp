@@ -1505,6 +1505,12 @@ int main() {
         ok &= check(jointAfter.vertices[0].position[1] < jointBefore.vertices[0].position[1],
                     "Bullet joint model still drives a dynamic PMX bone");
 
+        auto disabledBodyJointModel = jointModel;
+        disabledBodyJointModel.rigidBodies[0].physicsEnabled = false;
+        dayo::core::MmdPhysics disabledBodyJointPhysics(disabledBodyJointModel);
+        ok &= check(disabledBodyJointPhysics.bodyCount() == 2 && disabledBodyJointPhysics.jointCount() == 0,
+                    "Bullet skips joints attached to disabled PMX bodies");
+
         dayo::core::PmxModel invalidInertiaModel;
         dayo::core::PmxRigidBody invalidInertiaBody;
         invalidInertiaBody.shape = 0;
