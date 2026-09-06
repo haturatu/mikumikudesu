@@ -110,11 +110,6 @@ FxScalar evalBinaryScalar(FxExpr::BinaryOp op, const FxScalar& lhs, const FxScal
             throw std::runtime_error("fx expression has unknown binary operator");
         }
     }
-    auto asInt = [](const FxScalar& v) -> std::int64_t {
-        if (const auto* b = std::get_if<bool>(&v))
-            return *b ? 1 : 0;
-        return std::get<std::int64_t>(v);
-    };
     const std::int64_t left = asInt(lhs);
     const std::int64_t right = asInt(rhs);
     std::int64_t out{};
@@ -176,6 +171,11 @@ FxScalar evalCallScalar(const FxExpr::Call& call, const FxSymbolResolver& resolv
             }
             return FxScalar{best};
         }
+        const auto asInt = [](const FxScalar& value) -> std::int64_t {
+            if (const auto* b = std::get_if<bool>(&value))
+                return *b ? 1 : 0;
+            return std::get<std::int64_t>(value);
+        };
         std::int64_t best = asInt(evalWithResolver(*call.args[0], resolver, profile, allowPowQuirk));
         for (std::size_t i = 1; i < call.args.size(); ++i) {
             const std::int64_t v = asInt(evalWithResolver(*call.args[i], resolver, profile, allowPowQuirk));
