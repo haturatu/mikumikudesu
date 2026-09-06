@@ -318,11 +318,13 @@ VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, ui
 }
 
 VertexOutput VS(VertexInput input, uint instanceIndex : SV_InstanceID) {
-    return makeVertex(input, scene.materialIndex, 0, instanceIndex);
+    const bool indirect = scene.materialIndex == 0xffffffffU;
+    return makeVertex(input, indirect ? instanceIndex : scene.materialIndex, 0, indirect ? 0 : instanceIndex);
 }
 
 VertexOutput EdgeVS(VertexInput input, uint instanceIndex : SV_InstanceID) {
-    return makeVertex(input, scene.materialIndex, 1, instanceIndex);
+    const bool indirect = scene.materialIndex == 0xffffffffU;
+    return makeVertex(input, indirect ? instanceIndex : scene.materialIndex, 1, indirect ? 0 : instanceIndex);
 }
 
 float4 applyTextureMorphRgb(float4 sample, float4 multiply, float4 add, float3 neutral) {
@@ -342,13 +344,9 @@ float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0 {
     const PreviewMaterialData material = previewMaterials[input.materialIndex];
     const uint debugFlags = uint(scene.debug.y);
     const uint4 textureSlots = material.textureSlots;
-    const float4 legacySampled = applyTextureMorphRgb(baseTexture.Sample(repeatSampler, input.uv),
-                                                       material.textureMultiply, material.textureAdd, 1.0.xxx);
     const float4 sampled = applyTextureMorphRgb(
         samplePreviewTextureRepeat(textureSlots.x, input.uv),
         material.textureMultiply, material.textureAdd, 1.0.xxx);
-    if (input.color.x == 0.0 && input.color.y == 0.0 && input.color.z == 0.0)
-        return legacySampled;
     if (scene.debug.x >= 0.0 && input.materialIndex != uint(scene.debug.x))
         discard;
     const float4 baseSampled = (debugFlags & 0x01U) != 0U ? 1.0.xxxx : sampled;
