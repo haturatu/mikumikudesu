@@ -26,33 +26,39 @@ bool check(bool value, std::string_view message) {
 
 struct MockAccelerationBackend : dayo::graphics::IAccelerationBackend {
     std::uint64_t next{1};
-    std::uint64_t createBlas{0};
-    std::uint64_t rebuildBlas{0};
-    std::uint64_t refitBlas{0};
-    std::uint64_t createTlas{0};
-    std::uint64_t rebuildTlas{0};
-    std::uint64_t updateTlas{0};
+    std::uint64_t createBlasCalls{0};
+    std::uint64_t rebuildBlasCalls{0};
+    std::uint64_t refitBlasCalls{0};
+    std::uint64_t createTlasCalls{0};
+    std::uint64_t rebuildTlasCalls{0};
+    std::uint64_t updateTlasCalls{0};
+    std::size_t lastTlasInstanceCount{};
 
     dayo::graphics::AccelerationStructureHandle createBlas(dayo::graphics::BufferHandle) override {
-        ++createBlas;
+        ++createBlasCalls;
         return next++;
     }
     void rebuildBlas(dayo::graphics::AccelerationStructureHandle) override {
-        ++rebuildBlas;
+        ++rebuildBlasCalls;
     }
     void refitBlas(dayo::graphics::AccelerationStructureHandle) override {
-        ++refitBlas;
+        ++refitBlasCalls;
     }
-    dayo::graphics::AccelerationStructureHandle createTlas(
-        std::span<const dayo::graphics::AccelerationStructureHandle>) override {
-        ++createTlas;
+    dayo::graphics::AccelerationStructureHandle
+    createTlas(std::span<const dayo::graphics::TlasInstanceDesc> instances) override {
+        ++createTlasCalls;
+        lastTlasInstanceCount = instances.size();
         return next++;
     }
-    void rebuildTlas(dayo::graphics::AccelerationStructureHandle) override {
-        ++rebuildTlas;
+    void rebuildTlas(dayo::graphics::AccelerationStructureHandle,
+                     std::span<const dayo::graphics::TlasInstanceDesc> instances) override {
+        ++rebuildTlasCalls;
+        lastTlasInstanceCount = instances.size();
     }
-    void updateTlas(dayo::graphics::AccelerationStructureHandle) override {
-        ++updateTlas;
+    void updateTlas(dayo::graphics::AccelerationStructureHandle,
+                    std::span<const dayo::graphics::TlasInstanceDesc> instances) override {
+        ++updateTlasCalls;
+        lastTlasInstanceCount = instances.size();
     }
 };
 
@@ -82,31 +88,32 @@ int main() {
         MockAccelerationBackend backend;
         AccelerationStructureService service(&backend);
         ok &= check(service.notifyMesh(0, 11, 1, 1) == BlasAction::rebuild, "BLAS first build is rebuild");
-        ok &= check(backend.createBlas == 1, "BLAS create called once");
+        ok &= check(backend.createBlasCalls == 1, "BLAS create called once");
         ok &= check(service.notifyMesh(0, 11, 1, 1) == BlasAction::none, "BLAS unchanged reports none");
         ok &= check(service.notifyMesh(0, 11, 1, 2) == BlasAction::refit, "BLAS deform-only refits");
-        ok &= check(backend.refitBlas == 1, "BLAS refit called once");
+        ok &= check(backend.refitBlasCalls == 1, "BLAS refit called once");
         ok &= check(service.notifyMesh(0, 11, 2, 2) == BlasAction::rebuild, "BLAS topology change rebuilds");
-        ok &= check(backend.rebuildBlas == 1, "BLAS rebuild called once");
+        ok &= check(backend.rebuildBlasCalls == 1, "BLAS rebuild called once");
         ok &= check(service.blasCount() == 1, "BLAS count tracks meshes");
     }
     // TLAS count reflects CloneCount; count/BLAS change rebuilds, world-only updates.
     {
         MockAccelerationBackend backend;
         AccelerationStructureService service(&backend);
-        service.notifyMesh(0, 11, 1, 1);
-        service.notifyMesh(1, 12, 1, 1);
+        static_cast<void>(service.notifyMesh(0, 11, 1, 1));
+        static_cast<void>(service.notifyMesh(1, 12, 1, 1));
         const std::array<std::uint32_t, 2> clones{2, 3};
         ok &= check(service.notifyWorld(10, clones) == TlasAction::rebuild, "TLAS first build rebuilds");
         ok &= check(service.tlasInstanceCount() == 5, "TLAS instance count sums CloneCount");
+        ok &= check(backend.lastTlasInstanceCount == 5, "TLAS backend receives every cloned instance");
         ok &= check(service.notifyWorld(10, clones) == TlasAction::none, "TLAS unchanged reports none");
         ok &= check(service.notifyWorld(11, clones) == TlasAction::update, "TLAS world change updates");
-        ok &= check(backend.updateTlas == 1, "TLAS update called once");
+        ok &= check(backend.updateTlasCalls == 1, "TLAS update called once");
         const std::array<std::uint32_t, 2> grown{2, 4};
         ok &= check(service.notifyWorld(11, grown) == TlasAction::rebuild, "TLAS clone growth rebuilds");
         ok &= check(service.tlasInstanceCount() == 6, "TLAS instance count follows CloneCount");
-        service.notifyMesh(0, 11, 1, 9);
-        ok &= check(service.notifyWorld(11, grown) == TlasAction::rebuild, "TLAS BLAS refit triggers rebuild");
+        static_cast<void>(service.notifyMesh(0, 11, 1, 9));
+        ok &= check(service.notifyWorld(11, grown) == TlasAction::none, "BLAS refit keeps stable TLAS addresses");
     }
     // EnvironmentService keeps cubemap/prefiltered/SH/Skywalker without regen.
     {
@@ -152,9 +159,9 @@ int main() {
     {
         BdptAccumulation accumulation;
         accumulation.ensurePersistent();
-        ok &= check(accumulation.persistentReady() && accumulation.spectralLutReady() &&
-                        accumulation.blackbodyLutReady(),
-                    "BDPT spectral/blackbody LUTs ready");
+        ok &=
+            check(accumulation.persistentReady() && accumulation.spectralLutReady() && accumulation.blackbodyLutReady(),
+                  "BDPT spectral/blackbody LUTs ready");
         ok &= check(accumulation.volumeCount() == BdptAccumulation::kVolumeSlots, "BDPT keeps 8 volume slots");
         bool volumesValid = true;
         for (std::size_t index = 0; index < accumulation.volumeCount(); ++index) {
@@ -237,12 +244,8 @@ int main() {
         forced.setShareable(true);
         static_cast<void>(forced.ensure(2, 1));
         std::array<float, 6> forcedOutput{};
-        const dayo::core::DenoiserExecuteArgs forcedArgs{.width = 2,
-                                                        .height = 1,
-                                                        .beauty = beauty,
-                                                        .albedo = {},
-                                                        .normal = {},
-                                                        .output = forcedOutput};
+        const dayo::core::DenoiserExecuteArgs forcedArgs{
+            .width = 2, .height = 1, .beauty = beauty, .albedo = {}, .normal = {}, .output = forcedOutput};
         ok &= check(forced.execute(forcedArgs), "denoiser forced CPU fallback executes");
         ok &= check(forced.usedFallback() && (!forced.available() ? forcedOutput == beauty : forced.denoised()),
                     "denoiser forced path distinguishes CPU denoise from passthrough");

@@ -2,6 +2,7 @@
 
 #include "graphics/device.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -18,15 +19,28 @@ namespace dayo::graphics {
 enum class BlasAction { none, rebuild, refit };
 enum class TlasAction { none, rebuild, update };
 
+struct Matrix3x4 {
+    std::array<float, 12> values{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F};
+};
+
+struct TlasInstanceDesc {
+    AccelerationStructureHandle blas{};
+    Matrix3x4 transform{};
+    std::uint32_t instanceId{};
+    std::uint32_t mask{0xFFU};
+    std::uint32_t sbtRecordOffset{};
+    std::uint32_t flags{};
+};
+
 class IAccelerationBackend {
   public:
     virtual ~IAccelerationBackend() = default;
     virtual AccelerationStructureHandle createBlas(BufferHandle vertexBuffer) = 0;
     virtual void rebuildBlas(AccelerationStructureHandle blas) = 0;
     virtual void refitBlas(AccelerationStructureHandle blas) = 0;
-    virtual AccelerationStructureHandle createTlas(std::span<const AccelerationStructureHandle> instances) = 0;
-    virtual void rebuildTlas(AccelerationStructureHandle tlas) = 0;
-    virtual void updateTlas(AccelerationStructureHandle tlas) = 0;
+    virtual AccelerationStructureHandle createTlas(std::span<const TlasInstanceDesc> instances) = 0;
+    virtual void rebuildTlas(AccelerationStructureHandle tlas, std::span<const TlasInstanceDesc> instances) = 0;
+    virtual void updateTlas(AccelerationStructureHandle tlas, std::span<const TlasInstanceDesc> instances) = 0;
 };
 
 class AccelerationStructureService {
@@ -35,8 +49,7 @@ class AccelerationStructureService {
 
     // Returns true when the requested renderer can use native RT paths.
     // RT-incapable GPUs keep running Preview; this never enables native passes.
-    [[nodiscard]] static bool canBuildNative(const DeviceCapabilities& capabilities,
-                                             RendererKind renderer) noexcept;
+    [[nodiscard]] static bool canBuildNative(const DeviceCapabilities& capabilities, RendererKind renderer) noexcept;
 
     [[nodiscard]] BlasAction notifyMesh(std::uint32_t meshId, BufferHandle vertexBuffer,
                                         std::uint64_t topologyGeneration, std::uint64_t deformVersion);
@@ -84,7 +97,7 @@ class AccelerationStructureService {
     std::uint64_t cachedWorldGeneration_{0};
     bool hasCachedWorld_{false};
     std::size_t tlasInstanceCount_{0};
-    std::vector<AccelerationStructureHandle> tlasScratch_;
+    std::vector<TlasInstanceDesc> tlasScratch_;
     std::uint64_t blasRebuilds_{0};
     std::uint64_t blasRefits_{0};
     std::uint64_t tlasRebuilds_{0};
