@@ -25,7 +25,7 @@ bool check(bool value, std::string_view message) {
 }
 
 struct MockAccelerationBackend : dayo::graphics::IAccelerationBackend {
-    std::uint64_t next{1};
+    std::uint32_t next{1};
     std::uint64_t createBlasCalls{0};
     std::uint64_t rebuildBlasCalls{0};
     std::uint64_t refitBlasCalls{0};
@@ -39,43 +39,45 @@ struct MockAccelerationBackend : dayo::graphics::IAccelerationBackend {
     std::vector<dayo::graphics::BufferHandle> refitVertexBuffers;
     std::vector<dayo::graphics::TlasInstanceDesc> lastTlasInstances;
 
-    dayo::graphics::AccelerationStructureHandle createBlas(dayo::graphics::BufferHandle) override {
+    dayo::graphics::handles::AccelerationStructureHandle createBlas(dayo::graphics::BufferHandle) override {
         ++createBlasCalls;
-        return next++;
+        return {next++, 1};
     }
-    dayo::graphics::AccelerationStructureHandle rebuildBlas(dayo::graphics::AccelerationStructureHandle blas,
-                                                            dayo::graphics::BufferHandle vertexBuffer) override {
+    dayo::graphics::handles::AccelerationStructureHandle
+    rebuildBlas(dayo::graphics::handles::AccelerationStructureHandle blas,
+                dayo::graphics::BufferHandle vertexBuffer) override {
         ++rebuildBlasCalls;
         rebuildVertexBuffers.push_back(vertexBuffer);
         return blas;
     }
-    void refitBlas(dayo::graphics::AccelerationStructureHandle, dayo::graphics::BufferHandle vertexBuffer) override {
+    void refitBlas(dayo::graphics::handles::AccelerationStructureHandle,
+                   dayo::graphics::BufferHandle vertexBuffer) override {
         ++refitBlasCalls;
         refitVertexBuffers.push_back(vertexBuffer);
     }
-    dayo::graphics::AccelerationStructureHandle
+    dayo::graphics::handles::AccelerationStructureHandle
     createTlas(std::span<const dayo::graphics::TlasInstanceDesc> instances) override {
         ++createTlasCalls;
         lastTlasInstanceCount = instances.size();
         lastTlasInstances.assign(instances.begin(), instances.end());
-        return next++;
+        return {next++, 1};
     }
-    void rebuildTlas(dayo::graphics::AccelerationStructureHandle,
+    void rebuildTlas(dayo::graphics::handles::AccelerationStructureHandle,
                      std::span<const dayo::graphics::TlasInstanceDesc> instances) override {
         ++rebuildTlasCalls;
         lastTlasInstanceCount = instances.size();
         lastTlasInstances.assign(instances.begin(), instances.end());
     }
-    void updateTlas(dayo::graphics::AccelerationStructureHandle,
+    void updateTlas(dayo::graphics::handles::AccelerationStructureHandle,
                     std::span<const dayo::graphics::TlasInstanceDesc> instances) override {
         ++updateTlasCalls;
         lastTlasInstanceCount = instances.size();
         lastTlasInstances.assign(instances.begin(), instances.end());
     }
-    void destroyBlas(dayo::graphics::AccelerationStructureHandle) override {
+    void destroyBlas(dayo::graphics::handles::AccelerationStructureHandle) override {
         ++destroyBlasCalls;
     }
-    void destroyTlas(dayo::graphics::AccelerationStructureHandle) override {
+    void destroyTlas(dayo::graphics::handles::AccelerationStructureHandle) override {
         ++destroyTlasCalls;
     }
 };
@@ -175,14 +177,16 @@ int main() {
         world[2].transform.values[11] = 6.0F;
         ok &=
             check(service.notifyWorld(20, world) == TlasAction::rebuild, "transform-aware world instances build TLAS");
-        ok &= check(backend.lastTlasInstances.size() == 3 && backend.lastTlasInstances[0].blas == 2 &&
-                        backend.lastTlasInstances[0].transform.values[3] == 4.0F &&
-                        backend.lastTlasInstances[0].mask == 0x7FU && backend.lastTlasInstances[0].sbtRecordOffset == 3,
-                    "TLAS preserves mesh mapping, transform, and metadata");
         ok &=
-            check(backend.lastTlasInstances[1].blas == 1 && backend.lastTlasInstances[1].transform.values[7] == 5.0F &&
-                      backend.lastTlasInstances[1].flags == 1 && backend.lastTlasInstances[2].instanceId == 2,
-                  "TLAS expands each world instance independently");
+            check(backend.lastTlasInstances.size() == 3 &&
+                      backend.lastTlasInstances[0].blas == dayo::graphics::handles::AccelerationStructureHandle{2, 1} &&
+                      backend.lastTlasInstances[0].transform.values[3] == 4.0F &&
+                      backend.lastTlasInstances[0].mask == 0x7FU && backend.lastTlasInstances[0].sbtRecordOffset == 3,
+                  "TLAS preserves mesh mapping, transform, and metadata");
+        ok &= check(backend.lastTlasInstances[1].blas == dayo::graphics::handles::AccelerationStructureHandle{1, 1} &&
+                        backend.lastTlasInstances[1].transform.values[7] == 5.0F &&
+                        backend.lastTlasInstances[1].flags == 1 && backend.lastTlasInstances[2].instanceId == 2,
+                    "TLAS expands each world instance independently");
     }
     // EnvironmentService keeps cubemap/prefiltered/SH/Skywalker without regen.
     {

@@ -24,7 +24,7 @@ struct Matrix3x4 {
 };
 
 struct TlasInstanceDesc {
-    AccelerationStructureHandle blas{};
+    handles::AccelerationStructureHandle blas{};
     Matrix3x4 transform{};
     std::uint32_t instanceId{};
     std::uint32_t mask{0xFFU};
@@ -45,16 +45,18 @@ struct WorldInstance {
 class IAccelerationBackend {
   public:
     virtual ~IAccelerationBackend() = default;
-    virtual AccelerationStructureHandle createBlas(BufferHandle vertexBuffer) = 0;
+    virtual handles::AccelerationStructureHandle createBlas(BufferHandle vertexBuffer) = 0;
     // A topology rebuild may reallocate the BLAS, so it returns the current
     // handle and receives the buffer that contains the new geometry.
-    virtual AccelerationStructureHandle rebuildBlas(AccelerationStructureHandle blas, BufferHandle vertexBuffer) = 0;
-    virtual void refitBlas(AccelerationStructureHandle blas, BufferHandle vertexBuffer) = 0;
-    virtual AccelerationStructureHandle createTlas(std::span<const TlasInstanceDesc> instances) = 0;
-    virtual void rebuildTlas(AccelerationStructureHandle tlas, std::span<const TlasInstanceDesc> instances) = 0;
-    virtual void updateTlas(AccelerationStructureHandle tlas, std::span<const TlasInstanceDesc> instances) = 0;
-    virtual void destroyBlas(AccelerationStructureHandle) {}
-    virtual void destroyTlas(AccelerationStructureHandle) {}
+    virtual handles::AccelerationStructureHandle rebuildBlas(handles::AccelerationStructureHandle blas,
+                                                             BufferHandle vertexBuffer) = 0;
+    virtual void refitBlas(handles::AccelerationStructureHandle blas, BufferHandle vertexBuffer) = 0;
+    virtual handles::AccelerationStructureHandle createTlas(std::span<const TlasInstanceDesc> instances) = 0;
+    virtual void rebuildTlas(handles::AccelerationStructureHandle tlas,
+                             std::span<const TlasInstanceDesc> instances) = 0;
+    virtual void updateTlas(handles::AccelerationStructureHandle tlas, std::span<const TlasInstanceDesc> instances) = 0;
+    virtual void destroyBlas(handles::AccelerationStructureHandle) {}
+    virtual void destroyTlas(handles::AccelerationStructureHandle) {}
 };
 
 class AccelerationStructureService {
@@ -111,13 +113,13 @@ class AccelerationStructureService {
         std::uint64_t topologyGeneration{};
         std::uint64_t deformVersion{};
         BufferHandle vertexBuffer{};
-        AccelerationStructureHandle blas{};
+        handles::AccelerationStructureHandle blas{};
         bool built{false};
     };
 
     IAccelerationBackend* backend_{nullptr};
     std::unordered_map<std::uint32_t, MeshState> meshes_;
-    AccelerationStructureHandle tlas_{};
+    handles::AccelerationStructureHandle tlas_{};
     bool tlasBuilt_{false};
     bool blasChangedSinceTlas_{false};
     std::uint64_t cachedWorldGeneration_{0};

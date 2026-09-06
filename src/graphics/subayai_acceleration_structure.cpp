@@ -53,7 +53,7 @@ BlasAction AccelerationStructureService::notifyMesh(std::uint32_t meshId, Buffer
             const auto previousBlas = state.blas;
             const auto replacement = backend_->rebuildBlas(state.blas, vertexBuffer);
             if (replacement != previousBlas) {
-                if (previousBlas != 0)
+                if (previousBlas.valid())
                     backend_->destroyBlas(previousBlas);
                 state.blas = replacement;
             }
@@ -180,7 +180,7 @@ bool AccelerationStructureService::removeMesh(std::uint32_t meshId) {
         return false;
 
     if (tlasBuilt_) {
-        if (backend_ != nullptr && tlas_ != 0)
+        if (backend_ != nullptr && tlas_.valid())
             backend_->destroyTlas(tlas_);
         tlas_ = {};
         tlasBuilt_ = false;
@@ -189,7 +189,7 @@ bool AccelerationStructureService::removeMesh(std::uint32_t meshId) {
         hasCachedWorld_ = false;
         cachedWorldGeneration_ = 0;
     }
-    if (backend_ != nullptr && found->second.built && found->second.blas != 0)
+    if (backend_ != nullptr && found->second.built && found->second.blas.valid())
         backend_->destroyBlas(found->second.blas);
     meshes_.erase(found);
     blasChangedSinceTlas_ = true;
@@ -199,7 +199,7 @@ bool AccelerationStructureService::removeMesh(std::uint32_t meshId) {
 
 void AccelerationStructureService::reset() noexcept {
     if (backend_ != nullptr) {
-        if (tlasBuilt_ && tlas_ != 0) {
+        if (tlasBuilt_ && tlas_.valid()) {
             try {
                 backend_->destroyTlas(tlas_);
             } catch (...) {
@@ -208,7 +208,7 @@ void AccelerationStructureService::reset() noexcept {
         }
         for (const auto& [meshId, state] : meshes_) {
             static_cast<void>(meshId);
-            if (state.built && state.blas != 0) {
+            if (state.built && state.blas.valid()) {
                 try {
                     backend_->destroyBlas(state.blas);
                 } catch (...) {
