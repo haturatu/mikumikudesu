@@ -2,6 +2,11 @@
 set -euo pipefail
 
 project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+if [[ ! -f "$project_dir/external/libmmd/CMakeLists.txt" ]]; then
+  printf '[ERROR] libmmd submodule is not initialized\n' >&2
+  printf '[ERROR] run: git submodule update --init --recursive\n' >&2
+  exit 1
+fi
 test_dir=$(mktemp -d -t mikumikudesu-amd-test.XXXXXX)
 trap 'rm -rf -- "$test_dir"' EXIT
 
