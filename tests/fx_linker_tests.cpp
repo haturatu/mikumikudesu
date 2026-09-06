@@ -206,6 +206,13 @@ int main() {
         ok &= check(toEffectPassType(deformPass.op) == toEffectPassType(renderPass.op) &&
                         deformPass.category != renderPass.category,
                     "category and op type vary independently");
+        bool unknownTypeThrew = false;
+        try {
+            static_cast<void>(fxPassOpFromEffectPassType(EffectPassType::unknown));
+        } catch (const std::runtime_error&) {
+            unknownTypeThrew = true;
+        }
+        ok &= check(unknownTypeThrew, "unknown legacy pass type is rejected");
     }
 
     // RasterModelTarget semantic resolution.
@@ -242,6 +249,25 @@ int main() {
         const EffectPass computeLegacy{.name = "cs", .type = EffectPassType::compute, .computeShader = "cs_main"};
         const auto computeConverted = fxPassFromEffectPass(computeLegacy, "render");
         ok &= check(std::holds_alternative<FxComputeOp>(computeConverted.op), "legacy compute converts");
+
+        EffectPass unknown;
+        unknown.name = "malformed";
+        bool unknownPassThrew = false;
+        try {
+            static_cast<void>(fxPassFromEffectPass(unknown, FxCategory::render));
+        } catch (const std::runtime_error&) {
+            unknownPassThrew = true;
+        }
+        ok &= check(unknownPassThrew, "unknown legacy pass is rejected");
+
+        const FxPass utility{.name = "clear", .category = FxCategory::postprocess, .op = FxPassOp{FxClearRtvOp{}}};
+        bool utilityThrew = false;
+        try {
+            static_cast<void>(effectPassFromFxPass(utility));
+        } catch (const std::runtime_error&) {
+            utilityThrew = true;
+        }
+        ok &= check(utilityThrew, "utility pass is rejected by legacy conversion");
     }
 
     if (!ok)

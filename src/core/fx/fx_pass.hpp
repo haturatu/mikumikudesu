@@ -86,8 +86,8 @@ struct FxPass {
 [[nodiscard]] RasterModelTarget resolveRasterModelTarget(std::string_view semantic);
 
 // EffectPassType interop: raster ops map to rasterizer, postprocess ops to
-// postprocess, compute to compute, raytracing to raytracing, and the
-// copy/clear/mipmap/oidn utility ops map to unknown (no legacy equivalent).
+// postprocess, compute to compute, and raytracing to raytracing. Utility ops
+// have no legacy equivalent and are rejected when converted back.
 [[nodiscard]] EffectPassType toEffectPassType(const FxPassOp& op) noexcept;
 [[nodiscard]] FxPassOp fxPassOpFromEffectPassType(EffectPassType type);
 [[nodiscard]] const char* fxPassOpTypeName(const FxPassOp& op) noexcept;

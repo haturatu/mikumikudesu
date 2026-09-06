@@ -117,10 +117,9 @@ FxPassOp fxPassOpFromEffectPassType(EffectPassType type) {
     case EffectPassType::raytracing:
         return FxPassOp{FxRayTracingOp{}};
     case EffectPassType::unknown:
-        log::warn("fx pass: unknown EffectPassType maps to ClearRtv utility op");
-        return FxPassOp{FxClearRtvOp{}};
+        throw std::runtime_error("unsupported unknown FX pass type");
     }
-    return FxPassOp{FxClearRtvOp{}};
+    throw std::runtime_error("unsupported FX pass type");
 }
 
 const char* fxPassOpTypeName(const FxPassOp& op) noexcept {
@@ -210,9 +209,7 @@ FxPass fxPassFromEffectPass(const EffectPass& pass, FxCategory category) {
         break;
     }
     case EffectPassType::unknown:
-        log::warn("fx pass '", pass.name, "': unknown type maps to ClearRtv utility op");
-        out.op = FxClearRtvOp{};
-        break;
+        throw std::runtime_error("unsupported unknown FX pass type: " + pass.name);
     }
     log::debug("fx pass '", out.name, "' category=", toString(out.category), " op=", fxPassOpTypeName(out.op));
     return out;
@@ -223,6 +220,16 @@ FxPass fxPassFromEffectPass(const EffectPass& pass, std::string_view categoryNam
 }
 
 EffectPass effectPassFromFxPass(const FxPass& pass) {
+    const bool legacyEquivalent = std::visit(
+        [](const auto& concrete) {
+            using T = std::decay_t<decltype(concrete)>;
+            return std::is_same_v<T, FxRasterOp> || std::is_same_v<T, FxPostProcessOp> ||
+                   std::is_same_v<T, FxComputeOp> || std::is_same_v<T, FxRayTracingOp>;
+        },
+        pass.op);
+    if (!legacyEquivalent)
+        throw std::runtime_error("utility FX pass has no legacy EffectPass representation");
+
     EffectPass out;
     out.name = pass.name;
     out.type = toEffectPassType(pass.op);
@@ -251,9 +258,6 @@ EffectPass effectPassFromFxPass(const FxPass& pass) {
                 out.maxPayloadSize = concrete.maxPayloadSize;
                 out.maxAttributeSize = concrete.maxAttributeSize;
                 out.maxRecursionDepth = concrete.maxRecursionDepth;
-            } else {
-                // Utility ops (copy/clear/mipmap/oidn) have no legacy
-                // EffectPass equivalent; the type stays unknown on purpose.
             }
         },
         pass.op);
