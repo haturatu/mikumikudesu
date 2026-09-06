@@ -1110,145 +1110,154 @@ VulkanDevice::PreviewTextureResource VulkanDevice::createPreviewTextureResource(
         throw std::invalid_argument("invalid preview texture data");
     }
     PreviewTextureResource texture;
-    const VkImageCreateInfo imageInfo{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .imageType = VK_IMAGE_TYPE_2D,
-        .format = VK_FORMAT_R8G8B8A8_SRGB,
-        .extent = {width, height, 1},
-        .mipLevels = 1,
-        .arrayLayers = 1,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
-        .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-    };
-    check(vkCreateImage(device_, &imageInfo, nullptr, &texture.image), "create preview texture");
-    VkMemoryRequirements imageRequirements{};
-    vkGetImageMemoryRequirements(device_, texture.image, &imageRequirements);
-    const VkMemoryAllocateInfo imageAllocation{
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize = imageRequirements.size,
-        .memoryTypeIndex = findMemoryType(imageRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
-    };
-    check(vkAllocateMemory(device_, &imageAllocation, nullptr, &texture.memory), "allocate preview texture");
-    check(vkBindImageMemory(device_, texture.image, texture.memory, 0), "bind preview texture");
+    std::uint64_t uploadValue = 0;
+    try {
+        const VkImageCreateInfo imageInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = VK_FORMAT_R8G8B8A8_SRGB,
+            .extent = {width, height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        check(vkCreateImage(device_, &imageInfo, nullptr, &texture.image), "create preview texture");
+        VkMemoryRequirements imageRequirements{};
+        vkGetImageMemoryRequirements(device_, texture.image, &imageRequirements);
+        const VkMemoryAllocateInfo imageAllocation{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = imageRequirements.size,
+            .memoryTypeIndex = findMemoryType(imageRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+        };
+        check(vkAllocateMemory(device_, &imageAllocation, nullptr, &texture.memory), "allocate preview texture");
+        check(vkBindImageMemory(device_, texture.image, texture.memory, 0), "bind preview texture");
 
-    uploadContext_->begin();
-    const auto slice = uploadContext_->allocate(byteSize, 4);
-    std::memcpy(slice.mapped, rgba.data(), rgba.size_bytes());
-    const auto command = uploadContext_->commandBuffer();
-    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    const VkImageMemoryBarrier2 toTransfer{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
-        .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-        .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = texture.image,
-        .subresourceRange = range,
-    };
-    const VkDependencyInfo transferDependency{
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .imageMemoryBarrierCount = 1,
-        .pImageMemoryBarriers = &toTransfer,
-    };
-    vkCmdPipelineBarrier2(command, &transferDependency);
-    const VkBufferImageCopy copy{
-        .bufferOffset = slice.offset,
-        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-        .imageExtent = {width, height, 1},
-    };
-    vkCmdCopyBufferToImage(command, slice.buffer, texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-    const VkImageMemoryBarrier2 toShader{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-        .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = texture.image,
-        .subresourceRange = range,
-    };
-    const VkDependencyInfo shaderDependency{
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .imageMemoryBarrierCount = 1,
-        .pImageMemoryBarriers = &toShader,
-    };
-    vkCmdPipelineBarrier2(command, &shaderDependency);
-    static_cast<void>(uploadContext_->submit());
+        uploadContext_->begin();
+        const auto slice = uploadContext_->allocate(byteSize, 4);
+        std::memcpy(slice.mapped, rgba.data(), rgba.size_bytes());
+        const auto command = uploadContext_->commandBuffer();
+        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        const VkImageMemoryBarrier2 toTransfer{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+            .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = texture.image,
+            .subresourceRange = range,
+        };
+        const VkDependencyInfo transferDependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &toTransfer,
+        };
+        vkCmdPipelineBarrier2(command, &transferDependency);
+        const VkBufferImageCopy copy{
+            .bufferOffset = slice.offset,
+            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .imageExtent = {width, height, 1},
+        };
+        vkCmdCopyBufferToImage(command, slice.buffer, texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        const VkImageMemoryBarrier2 toShader{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = texture.image,
+            .subresourceRange = range,
+        };
+        const VkDependencyInfo shaderDependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &toShader,
+        };
+        vkCmdPipelineBarrier2(command, &shaderDependency);
+        uploadValue = uploadContext_->submit();
 
-    const VkImageViewCreateInfo viewInfo{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .image = texture.image,
-        .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = VK_FORMAT_R8G8B8A8_SRGB,
-        .subresourceRange = range,
-    };
-    check(vkCreateImageView(device_, &viewInfo, nullptr, &texture.view), "create preview texture view");
-    const VkDescriptorSetAllocateInfo setInfo{
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = previewDescriptorPool_,
-        .descriptorSetCount = 1,
-        .pSetLayouts = &previewDescriptorSetLayout_,
-    };
-    check(vkAllocateDescriptorSets(device_, &setInfo, &texture.descriptor), "allocate preview texture descriptor");
-    const VkDescriptorImageInfo descriptorImage{
-        .imageView = texture.view,
-        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-    };
-    const VkDescriptorImageInfo descriptorSampler{.sampler = previewSampler_};
-    const VkDescriptorImageInfo descriptorClampSampler{.sampler = previewClampSampler_};
-    const std::array writes{
-        VkWriteDescriptorSet{
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = texture.descriptor,
-            .dstBinding = 0,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-            .pImageInfo = &descriptorImage,
-        },
-        VkWriteDescriptorSet{
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = texture.descriptor,
-            .dstBinding = 1,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-            .pImageInfo = &descriptorImage,
-        },
-        VkWriteDescriptorSet{
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = texture.descriptor,
-            .dstBinding = 2,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-            .pImageInfo = &descriptorImage,
-        },
-        VkWriteDescriptorSet{
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = texture.descriptor,
-            .dstBinding = 3,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
-            .pImageInfo = &descriptorSampler,
-        },
-        VkWriteDescriptorSet{
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = texture.descriptor,
-            .dstBinding = 4,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
-            .pImageInfo = &descriptorClampSampler,
-        },
-    };
-    vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
-    return texture;
+        const VkImageViewCreateInfo viewInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = texture.image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = VK_FORMAT_R8G8B8A8_SRGB,
+            .subresourceRange = range,
+        };
+        check(vkCreateImageView(device_, &viewInfo, nullptr, &texture.view), "create preview texture view");
+        const VkDescriptorSetAllocateInfo setInfo{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = previewDescriptorPool_,
+            .descriptorSetCount = 1,
+            .pSetLayouts = &previewDescriptorSetLayout_,
+        };
+        check(vkAllocateDescriptorSets(device_, &setInfo, &texture.descriptor), "allocate preview texture descriptor");
+        const VkDescriptorImageInfo descriptorImage{
+            .imageView = texture.view,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+        const VkDescriptorImageInfo descriptorSampler{.sampler = previewSampler_};
+        const VkDescriptorImageInfo descriptorClampSampler{.sampler = previewClampSampler_};
+        const std::array writes{
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = texture.descriptor,
+                .dstBinding = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                .pImageInfo = &descriptorImage,
+            },
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = texture.descriptor,
+                .dstBinding = 1,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                .pImageInfo = &descriptorImage,
+            },
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = texture.descriptor,
+                .dstBinding = 2,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                .pImageInfo = &descriptorImage,
+            },
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = texture.descriptor,
+                .dstBinding = 3,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+                .pImageInfo = &descriptorSampler,
+            },
+            VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = texture.descriptor,
+                .dstBinding = 4,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+                .pImageInfo = &descriptorClampSampler,
+            },
+        };
+        vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        return texture;
+    } catch (...) {
+        uploadContext_->abort();
+        if (uploadValue != 0)
+            uploadContext_->wait(uploadValue);
+        destroyPreviewTextureResource(texture);
+        throw;
+    }
 }
 
 VulkanDevice::PreviewTextureResource VulkanDevice::createEmptyPreviewTextureResource(std::uint32_t width,
@@ -2955,6 +2964,10 @@ void VulkanDevice::uploadPreviewMesh(std::span<const PreviewVertex> vertices, st
                                        previewIndexBuffer_, previewIndexMemory_);
         previewIndexCount_ = static_cast<std::uint32_t>(indices.size());
     } catch (...) {
+        uploadContext_->abort();
+        const auto uploadValue = uploadContext_->lastSubmittedValue();
+        if (uploadValue != 0)
+            uploadContext_->wait(uploadValue);
         destroyPreviewMesh();
         throw;
     }
@@ -3223,17 +3236,26 @@ void VulkanDevice::uploadPreviewTextures(std::span<const PreviewTexture> texture
     waitIdle();
     destroyPreviewTextures();
     const std::array<std::uint8_t, 4> white{255, 255, 255, 255};
-    createPreviewTexture(1, 1, white);
-    for (const auto& texture : textures) {
-        if (texture.width == 0 || texture.height == 0 || texture.rgba.empty()) {
-            // Preserve source texture numbering with a white placeholder.
-            createPreviewTexture(1, 1, white);
-        } else {
-            createPreviewTexture(texture.width, texture.height, texture.rgba);
+    try {
+        createPreviewTexture(1, 1, white);
+        for (const auto& texture : textures) {
+            if (texture.width == 0 || texture.height == 0 || texture.rgba.empty()) {
+                // Preserve source texture numbering with a white placeholder.
+                createPreviewTexture(1, 1, white);
+            } else {
+                createPreviewTexture(texture.width, texture.height, texture.rgba);
+            }
         }
+        refreshPreviewMaterialDescriptors(false);
+        refreshPreviewBindlessDescriptor();
+    } catch (...) {
+        uploadContext_->abort();
+        const auto uploadValue = uploadContext_->lastSubmittedValue();
+        if (uploadValue != 0)
+            uploadContext_->wait(uploadValue);
+        destroyPreviewTextures();
+        throw;
     }
-    refreshPreviewMaterialDescriptors(false);
-    refreshPreviewBindlessDescriptor();
     log::info("Uploaded ", textures.size(), " PMX texture(s) plus fallback");
 }
 

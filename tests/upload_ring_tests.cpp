@@ -90,6 +90,16 @@ int main() {
     rollback.rollback(30);
     if (rollback.used() != 0 || rollback.available() != rollback.capacity() || !rollback.tryAllocate(64, 31))
         return 22;
+    UploadRing orderedRollback(64, 8);
+    if (!orderedRollback.tryAllocate(16, 10) || !orderedRollback.tryAllocate(16, 11) ||
+        orderedRollback.oldestRetireValue() != std::optional<std::uint64_t>{10})
+        return 23;
+    orderedRollback.rollback(11);
+    if (orderedRollback.used() != 16 || orderedRollback.oldestRetireValue() != std::optional<std::uint64_t>{10})
+        return 24;
+    orderedRollback.reclaim(10);
+    if (orderedRollback.used() != 0 || orderedRollback.oldestRetireValue())
+        return 25;
 
     std::cout << "upload ring tests passed\n";
     return 0;

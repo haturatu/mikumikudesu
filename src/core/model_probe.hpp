@@ -137,6 +137,9 @@ struct PmxRigidBody {
     float restitution{};
     float friction{};
     std::uint8_t mode{};
+    // Compatibility repairs preserve PMX body indices while keeping unsafe
+    // physics data out of Bullet.
+    bool physicsEnabled{true};
 };
 
 struct PmxJoint {
@@ -153,6 +156,7 @@ struct PmxJoint {
     Float3 rotationMaximum{};
     Float3 translationSpring{};
     Float3 rotationSpring{};
+    bool physicsEnabled{true};
 };
 
 struct PmxSoftBodyAnchor {

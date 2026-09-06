@@ -30,6 +30,7 @@ struct MmdPhysics::Impl {
     std::vector<btTransform> kinematicTargets;
     std::vector<std::uint8_t> kinematicDirty;
     std::vector<std::uint8_t> modes;
+    std::vector<std::uint8_t> constraintEndpointsUsable;
     std::unique_ptr<btStaticPlaneShape> floorShape;
     std::unique_ptr<btDefaultMotionState> floorMotionState;
     std::unique_ptr<btRigidBody> floorBody;
@@ -127,31 +128,35 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
     impl_->kinematicTargets.reserve(model.rigidBodies.size());
     impl_->kinematicDirty.reserve(model.rigidBodies.size());
     impl_->modes.reserve(model.rigidBodies.size());
+    impl_->constraintEndpointsUsable.reserve(model.rigidBodies.size());
     for (const auto& source : model.rigidBodies) {
         const auto validDimension = [](float value) { return std::isfinite(value) && std::abs(value) >= 0.001F; };
-        bool invalidShape = false;
-        switch (source.shape) {
-        case 0:
-            invalidShape = !validDimension(source.size[0]);
-            if (!invalidShape)
-                impl_->shapes.push_back(std::make_unique<btSphereShape>(std::abs(source.size[0])));
-            break;
-        case 1:
-            invalidShape =
-                !validDimension(source.size[0]) || !validDimension(source.size[1]) || !validDimension(source.size[2]);
-            if (!invalidShape) {
-                const Float3 boxSize{std::abs(source.size[0]), std::abs(source.size[1]), std::abs(source.size[2])};
-                impl_->shapes.push_back(std::make_unique<btBoxShape>(vector(boxSize)));
+        bool invalidShape = !source.physicsEnabled;
+        if (!invalidShape) {
+            switch (source.shape) {
+            case 0:
+                invalidShape = !validDimension(source.size[0]);
+                if (!invalidShape)
+                    impl_->shapes.push_back(std::make_unique<btSphereShape>(std::abs(source.size[0])));
+                break;
+            case 1:
+                invalidShape = !validDimension(source.size[0]) || !validDimension(source.size[1]) ||
+                               !validDimension(source.size[2]);
+                if (!invalidShape) {
+                    const Float3 boxSize{std::abs(source.size[0]), std::abs(source.size[1]), std::abs(source.size[2])};
+                    impl_->shapes.push_back(std::make_unique<btBoxShape>(vector(boxSize)));
+                }
+                break;
+            case 2:
+                invalidShape = !validDimension(source.size[0]) || !validDimension(source.size[1]);
+                if (!invalidShape)
+                    impl_->shapes.push_back(
+                        std::make_unique<btCapsuleShape>(std::abs(source.size[0]), std::abs(source.size[1])));
+                break;
+            default:
+                invalidShape = true;
+                break;
             }
-            break;
-        case 2:
-            invalidShape = !validDimension(source.size[0]) || !validDimension(source.size[1]);
-            if (!invalidShape)
-                impl_->shapes.push_back(
-                    std::make_unique<btCapsuleShape>(std::abs(source.size[0]), std::abs(source.size[1])));
-            break;
-        default:
-            throw std::runtime_error("unsupported PMX rigid body shape");
         }
         if (invalidShape)
             impl_->shapes.push_back(std::make_unique<btEmptyShape>());
@@ -181,6 +186,8 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
             candidateMass > 0.0F && (!std::isfinite(inertia.x()) || !std::isfinite(inertia.y()) ||
                                      !std::isfinite(inertia.z()) || inertia.length2() <= SIMD_EPSILON * SIMD_EPSILON);
         const bool dynamicUsable = candidateMass > 0.0F && !unusableDynamicBody && !invalidTransform;
+        const bool constraintEndpointUsable = source.physicsEnabled && !invalidShape && !invalidTransform &&
+                                              (source.mode == 0 || (dynamicUsable && !invalidMass));
         const btScalar effectiveMass = dynamicUsable ? candidateMass : 0.0F;
         const auto effectiveMode = dynamicUsable ? source.mode : std::uint8_t{0};
         if (!dynamicUsable)
@@ -194,6 +201,7 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
         info.m_friction = source.friction;
         impl_->bodies.push_back(std::make_unique<btRigidBody>(info));
         impl_->modes.push_back(effectiveMode);
+        impl_->constraintEndpointsUsable.push_back(constraintEndpointUsable ? 1U : 0U);
         impl_->bodies.back()->setSleepingThresholds(0.01F, 0.1F * std::numbers::pi_v<float> / 180.0F);
         impl_->bodies.back()->setActivationState(DISABLE_DEACTIVATION);
         if (effectiveMode == 0) {
@@ -213,12 +221,16 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
     }
     impl_->constraints.reserve(model.joints.size());
     for (const auto& source : model.joints) {
-        if (source.type != 0 || source.bodyA < 0 || source.bodyB < 0 || source.bodyA == source.bodyB ||
-            static_cast<std::size_t>(source.bodyA) >= impl_->bodies.size() ||
+        if (!source.physicsEnabled || source.type != 0 || source.bodyA < 0 || source.bodyB < 0 ||
+            source.bodyA == source.bodyB || static_cast<std::size_t>(source.bodyA) >= impl_->bodies.size() ||
             static_cast<std::size_t>(source.bodyB) >= impl_->bodies.size())
             continue;
-        const auto& bodyA = impl_->bodies[static_cast<std::size_t>(source.bodyA)];
-        const auto& bodyB = impl_->bodies[static_cast<std::size_t>(source.bodyB)];
+        const auto bodyAIndex = static_cast<std::size_t>(source.bodyA);
+        const auto bodyBIndex = static_cast<std::size_t>(source.bodyB);
+        if (impl_->constraintEndpointsUsable[bodyAIndex] == 0 || impl_->constraintEndpointsUsable[bodyBIndex] == 0)
+            continue;
+        const auto& bodyA = impl_->bodies[bodyAIndex];
+        const auto& bodyB = impl_->bodies[bodyBIndex];
         // Bullet cannot solve a 6DoF row when neither endpoint has inverse
         // mass. A number of PMX files contain decorative static-static joints.
         if (bodyA->getInvMass() <= 0.0F && bodyB->getInvMass() <= 0.0F)
@@ -228,8 +240,8 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
             !finite(source.translationSpring) || !finite(source.rotationSpring))
             continue;
         const auto jointWorld = transform(source.position, source.rotation);
-        const auto frameA = impl_->initialTransforms[static_cast<std::size_t>(source.bodyA)].inverse() * jointWorld;
-        const auto frameB = impl_->initialTransforms[static_cast<std::size_t>(source.bodyB)].inverse() * jointWorld;
+        const auto frameA = impl_->initialTransforms[bodyAIndex].inverse() * jointWorld;
+        const auto frameB = impl_->initialTransforms[bodyBIndex].inverse() * jointWorld;
         auto joint = std::make_unique<btGeneric6DofSpringConstraint>(*bodyA, *bodyB, frameA, frameB, true);
         joint->setLinearLowerLimit(vector(source.translationMinimum));
         joint->setLinearUpperLimit(vector(source.translationMaximum));
