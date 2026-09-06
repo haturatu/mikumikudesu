@@ -249,6 +249,12 @@ struct RayTracingPipelineDesc {
     std::vector<ShaderHandle> miss;
     std::vector<ShaderHandle> closestHit;
 };
+struct RayTracingPipelineDescEx {
+    handles::PipelineLayoutHandle layout{};
+    std::vector<ShaderHandle> rayGeneration;
+    std::vector<ShaderHandle> miss;
+    std::vector<ShaderHandle> closestHit;
+};
 struct DescriptorBinding {
     std::uint32_t slot{};
     BufferHandle buffer{};
@@ -311,6 +317,7 @@ struct PipelineLayoutDesc {
 // are preserved for the Preview backend; new FX/RT paths use handles:: types.
 struct DescriptorBindingEx {
     std::uint32_t slot{};
+    std::uint32_t arrayElement{};
     handles::BufferHandle buffer{};
     handles::TextureHandle texture{};
     handles::SamplerHandle sampler{};
@@ -494,6 +501,9 @@ class Device {
         throw std::logic_error("Typed compute pipelines are not implemented by this backend");
     }
     [[nodiscard]] virtual handles::PipelineHandle createRayTracingPipelineEx(const RayTracingPipelineDesc&) {
+        throw std::logic_error("Typed ray-tracing pipelines are not implemented by this backend");
+    }
+    [[nodiscard]] virtual handles::PipelineHandle createRayTracingPipelineEx(const RayTracingPipelineDescEx&) {
         throw std::logic_error("Typed ray-tracing pipelines are not implemented by this backend");
     }
     virtual void destroyPipelineEx(handles::PipelineHandle) {

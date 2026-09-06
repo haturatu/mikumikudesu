@@ -395,6 +395,14 @@ int main() {
         }
         ok &= check(layoutComputeThrew, "layout-aware compute pipeline reports unimplemented");
 
+        bool layoutRayTracingThrew = false;
+        try {
+            static_cast<void>(device.createRayTracingPipelineEx(dayo::graphics::RayTracingPipelineDescEx{}));
+        } catch (const std::logic_error&) {
+            layoutRayTracingThrew = true;
+        }
+        ok &= check(layoutRayTracingThrew, "layout-aware ray-tracing pipeline reports unimplemented");
+
         bool sbtThrew = false;
         try {
             static_cast<void>(device.createShaderBindingTable(dayo::graphics::ShaderBindingTableDesc{}));
