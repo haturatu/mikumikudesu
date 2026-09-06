@@ -176,11 +176,6 @@ FxScalar evalCallScalar(const FxExpr::Call& call, const FxSymbolResolver& resolv
             }
             return FxScalar{best};
         }
-        auto asInt = [](const FxScalar& v) -> std::int64_t {
-            if (const auto* b = std::get_if<bool>(&v))
-                return *b ? 1 : 0;
-            return std::get<std::int64_t>(v);
-        };
         std::int64_t best = asInt(evalWithResolver(*call.args[0], resolver, profile, allowPowQuirk));
         for (std::size_t i = 1; i < call.args.size(); ++i) {
             const std::int64_t v = asInt(evalWithResolver(*call.args[i], resolver, profile, allowPowQuirk));
