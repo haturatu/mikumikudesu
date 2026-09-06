@@ -515,12 +515,14 @@ int main() {
         dayo::core::TaskScheduler fairnessScheduler(1);
         constexpr std::size_t localTaskCount = 256U;
         std::latch localTasksQueued(1);
+        std::latch localTasksDone(static_cast<std::ptrdiff_t>(localTaskCount));
         std::atomic<std::size_t> localTasksCompleted{};
         const auto localProducer = fairnessScheduler.schedule([&] {
             for (std::size_t index = 0; index < localTaskCount; ++index) {
                 static_cast<void>(fairnessScheduler.schedule([&] {
                     std::this_thread::sleep_for(std::chrono::milliseconds(2));
                     localTasksCompleted.fetch_add(1U, std::memory_order_relaxed);
+                    localTasksDone.count_down();
                 }));
             }
             localTasksQueued.count_down();
@@ -535,6 +537,7 @@ int main() {
         ok &= check(globalTaskRan.load(std::memory_order_acquire), "task scheduler services global work fairly");
         fairnessScheduler.wait(globalTask);
         fairnessScheduler.wait(localProducer);
+        localTasksDone.wait();
         ok &= check(localTasksCompleted.load(std::memory_order_relaxed) == localTaskCount,
                     "task scheduler drains local work after fair global service");
     }
