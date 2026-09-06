@@ -311,23 +311,12 @@ EffectExecutionStats EffectExecutor::execute(const CompiledEffect& effect, const
     EffectExecutionStats stats;
     for (const auto& pass : effect.passes) {
         stats.barriers += pass.barriers.size();
-        switch (pass.type) {
-        case EffectPassType::rasterizer:
-        case EffectPassType::postprocess:
+        if (pass.type == EffectPassType::rasterizer || pass.type == EffectPassType::postprocess) {
             ++stats.rasterPasses;
-            break;
-        case EffectPassType::compute:
+        } else if (pass.type == EffectPassType::compute) {
             ++stats.computePasses;
-            break;
-        case EffectPassType::raytracing:
+        } else if (pass.type == EffectPassType::raytracing) {
             ++stats.rayTracingPasses;
-            break;
-        case EffectPassType::copy:
-        case EffectPassType::clear:
-        case EffectPassType::mipmap:
-            break;
-        case EffectPassType::unknown:
-            break;
         }
         if (callback)
             callback(pass);
