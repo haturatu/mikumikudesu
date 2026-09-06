@@ -145,6 +145,9 @@ add_library(
   src/core/denoiser.cpp
   src/core/effect.cpp
   src/core/ffmpeg_utils.cpp
+  src/core/fx/fx_expr.cpp
+  src/core/fx/fx_size.cpp
+  src/core/fx/fx_symbol.cpp
   src/core/image.cpp
   src/core/audio_export.cpp
   src/core/video_export.cpp
@@ -548,7 +551,23 @@ if(BUILD_TESTING)
     endif()
   endif()
 
+  add_executable(dayo_fx_semantic_tests tests/fx_semantic_tests.cpp)
+  target_link_libraries(dayo_fx_semantic_tests PRIVATE dayo_core)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      dayo_fx_semantic_tests
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_fx_semantic_tests PRIVATE -Werror)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(dayo_fx_semantic_tests PRIVATE -Wno-error=deprecated-literal-operator)
+      endif()
+    endif()
+  endif()
+
   add_test(NAME core COMMAND dayo_core_tests)
+  add_test(NAME fx_semantic COMMAND dayo_fx_semantic_tests)
   add_test(NAME upload_ring COMMAND dayo_upload_ring_tests)
   add_test(NAME upstream_compat COMMAND dayo_upstream_compat_tests)
   set_tests_properties(upstream_compat PROPERTIES LABELS "upstream" TIMEOUT 60)
@@ -586,6 +605,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_upload_ring_tests
     dayo_preview_tests
     dayo_upstream_compat_tests
+    dayo_fx_semantic_tests
   )
     if(TARGET ${target})
       target_compile_options(${target} PRIVATE ${DAYO_SANITIZER_COMPILE_OPTIONS})
@@ -603,6 +623,9 @@ if(DAYO_ENABLE_SANITIZERS)
   endif()
   if(TARGET dayo_upstream_compat_tests)
     target_link_options(dayo_upstream_compat_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+  if(TARGET dayo_fx_semantic_tests)
+    target_link_options(dayo_fx_semantic_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
 endif()
 
