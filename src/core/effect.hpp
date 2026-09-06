@@ -199,6 +199,9 @@ class EffectHotReloader {
 };
 
 [[nodiscard]] EffectGraph loadEffectGraph(const std::filesystem::path& path);
+// Parses an already loaded source buffer. This is the hot-reload entry point;
+// callers must not be forced back to the stale on-disk version.
+[[nodiscard]] EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::string_view source);
 [[nodiscard]] const char* toString(EffectPassType type) noexcept;
 
 } // namespace dayo::core

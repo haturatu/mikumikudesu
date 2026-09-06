@@ -138,9 +138,15 @@ if(NOT DAYO_STB_INCLUDE_DIR)
   set(DAYO_STB_INCLUDE_DIR "${stb_SOURCE_DIR}")
 endif()
 
+set(LIBMMD_ENABLE_PHYSICS ON CACHE BOOL "Build the libmmd physics API required by the runtime" FORCE)
+set(LIBMMD_ENABLE_BULLET ${DAYO_ENABLE_PHYSICS} CACHE BOOL "Use Bullet acceleration in libmmd" FORCE)
+set(LIBMMD_BUILD_TESTS OFF CACHE BOOL "Build libmmd standalone tests" FORCE)
+set(LIBMMD_FETCH_DEPENDENCIES ${DAYO_FETCH_DEPENDENCIES} CACHE BOOL "Fetch libmmd optional dependencies" FORCE)
+set(LIBMMD_INSTALL OFF CACHE BOOL "Do not install embedded libmmd separately" FORCE)
+add_subdirectory(external/libmmd EXCLUDE_FROM_ALL)
+
 add_library(
   dayo_core
-  src/core/animation.cpp
   src/core/asset.cpp
   src/core/denoiser.cpp
   src/core/effect.cpp
@@ -149,12 +155,8 @@ add_library(
   src/core/audio_export.cpp
   src/core/video_export.cpp
   src/core/media.cpp
-  src/core/mapped_file.cpp
-  src/core/model_probe.cpp
-  src/core/motion.cpp
   src/core/editor.cpp
   src/core/output.cpp
-  src/core/physics.cpp
   src/core/profiling.cpp
   src/core/project.cpp
   src/core/scene.cpp
@@ -169,13 +171,12 @@ add_library(
 )
 target_include_directories(dayo_core PUBLIC src)
 target_include_directories(dayo_core PRIVATE "${DAYO_STB_INCLUDE_DIR}")
-target_link_libraries(dayo_core PUBLIC SDL3::SDL3)
+target_link_libraries(dayo_core PUBLIC SDL3::SDL3 mmd::core mmd::animation mmd::physics)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   set_source_files_properties(
     src/core/image.cpp
     PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-unused-but-set-variable"
   )
-  set_source_files_properties(src/core/physics.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-float-conversion")
   set_source_files_properties(src/core/media.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-old-style-cast")
   set_source_files_properties(
     src/core/output.cpp
@@ -219,13 +220,28 @@ if(DAYO_ENABLE_VMA)
 endif()
 
 add_library(
+  dayo_fx
+  src/fx/fx_catalog.cpp
+  src/fx/fx_compiler.cpp
+  src/fx/fx_preview_path.cpp
+  src/fx/fx_resource_registry.cpp
+  src/fx/fx_scheduler.cpp
+  src/fx/fx_shader_cache.cpp
+  src/fx/fx_texture_cache.cpp
+  src/fx/fx_watcher.cpp
+)
+target_include_directories(dayo_fx PUBLIC src)
+target_link_libraries(dayo_fx PUBLIC dayo_core)
+
+add_library(
   dayo_graphics
   src/graphics/device.cpp
   src/graphics/vulkan/vulkan_device.cpp
   src/graphics/vulkan/vulkan_upload_context.cpp
+  src/graphics/vulkan_fx_executor.cpp
 )
 target_include_directories(dayo_graphics PUBLIC src)
-target_link_libraries(dayo_graphics PUBLIC dayo_core Vulkan::Vulkan SDL3::SDL3)
+target_link_libraries(dayo_graphics PUBLIC dayo_fx dayo_core Vulkan::Vulkan SDL3::SDL3)
 target_compile_definitions(dayo_graphics PRIVATE DAYO_ENABLE_VALIDATION=$<BOOL:${DAYO_ENABLE_VALIDATION}>)
 if(DAYO_ENABLE_VMA)
   target_sources(dayo_graphics PRIVATE src/graphics/vulkan/vma_impl.cpp)
@@ -296,36 +312,6 @@ if(DAYO_HAS_OIDN)
   target_link_libraries(dayo_core PUBLIC OpenImageDenoise)
 endif()
 
-set(DAYO_HAS_BULLET 0)
-if(DAYO_ENABLE_PHYSICS)
-  find_package(Bullet QUIET)
-  if(NOT Bullet_FOUND AND DAYO_FETCH_DEPENDENCIES)
-    set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
-    set(BUILD_BULLET2_DEMOS OFF CACHE BOOL "" FORCE)
-    set(BUILD_BULLET3 OFF CACHE BOOL "" FORCE)
-    set(BUILD_EXTRAS OFF CACHE BOOL "" FORCE)
-    set(BUILD_CPU_DEMOS OFF CACHE BOOL "" FORCE)
-    set(BUILD_OPENGL3_DEMOS OFF CACHE BOOL "" FORCE)
-    set(BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
-    set(USE_GRAPHICAL_BENCHMARK OFF CACHE BOOL "" FORCE)
-    set(INSTALL_LIBS OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-      bullet
-      URL https://github.com/bulletphysics/bullet3/archive/refs/tags/3.25.tar.gz
-      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    )
-    FetchContent_MakeAvailable(bullet)
-    set(BULLET_INCLUDE_DIRS "${bullet_SOURCE_DIR}/src")
-    set(BULLET_LIBRARIES BulletDynamics BulletCollision LinearMath)
-    set(Bullet_FOUND TRUE)
-  endif()
-  if(Bullet_FOUND)
-    set(DAYO_HAS_BULLET 1)
-    target_include_directories(dayo_core PRIVATE ${BULLET_INCLUDE_DIRS})
-    target_link_libraries(dayo_core PUBLIC ${BULLET_LIBRARIES})
-  endif()
-endif()
-target_compile_definitions(dayo_core PUBLIC DAYO_HAS_BULLET=${DAYO_HAS_BULLET})
 find_package(cereal CONFIG QUIET)
 find_package(directxtex CONFIG QUIET)
 set(DAYO_HAS_JSONNET 0)
@@ -425,7 +411,14 @@ if(DAYO_HAS_MEDIA)
 endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-  foreach(target dayo_core dayo_platform dayo_graphics mikumikudesu)
+  foreach(
+    target
+    dayo_core
+    dayo_fx
+    dayo_platform
+    dayo_graphics
+    mikumikudesu
+  )
     target_compile_options(
       ${target}
       PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
@@ -535,9 +528,28 @@ if(BUILD_TESTING)
     endif()
   endif()
 
+  add_executable(dayo_graph_device_tests tests/graph_device_tests.cpp)
+  target_include_directories(dayo_graph_device_tests PRIVATE src)
+  target_link_libraries(dayo_graph_device_tests PRIVATE dayo_graphics)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      dayo_graph_device_tests
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_graph_device_tests PRIVATE -Werror)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(dayo_graph_device_tests PRIVATE -Wno-error=deprecated-literal-operator)
+      endif()
+    endif()
+  endif()
+
   add_executable(dayo_upstream_compat_tests tests/upstream_compat_tests.cpp)
   target_link_libraries(dayo_upstream_compat_tests PRIVATE dayo_core)
   target_compile_definitions(dayo_upstream_compat_tests PRIVATE DAYO_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  add_executable(dayo_fx_executor_tests tests/fx_executor_tests.cpp)
+  target_include_directories(dayo_fx_executor_tests PRIVATE src)
+  target_link_libraries(dayo_fx_executor_tests PRIVATE dayo_fx dayo_graphics)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(
       dayo_upstream_compat_tests
@@ -547,6 +559,30 @@ if(BUILD_TESTING)
       target_compile_options(dayo_upstream_compat_tests PRIVATE -Werror)
       if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         target_compile_options(dayo_upstream_compat_tests PRIVATE -Wno-error=deprecated-literal-operator)
+      endif()
+    endif()
+  endif()
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      dayo_fx_executor_tests
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_fx_executor_tests PRIVATE -Werror)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(dayo_fx_executor_tests PRIVATE -Wno-error=deprecated-literal-operator)
+      endif()
+    endif()
+  endif()
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      dayo_fx
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_fx PRIVATE -Werror)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(dayo_fx PRIVATE -Wno-error=deprecated-literal-operator)
       endif()
     endif()
   endif()
@@ -568,7 +604,10 @@ if(BUILD_TESTING)
 
   add_test(NAME core COMMAND dayo_core_tests)
   add_test(NAME fx_linker COMMAND dayo_fx_linker_tests)
+  add_test(NAME fx_executor COMMAND dayo_fx_executor_tests)
   add_test(NAME upload_ring COMMAND dayo_upload_ring_tests)
+  add_test(NAME graph_device COMMAND dayo_graph_device_tests)
+  set_tests_properties(graph_device PROPERTIES TIMEOUT 20)
   add_test(NAME upstream_compat COMMAND dayo_upstream_compat_tests)
   set_tests_properties(upstream_compat PROPERTIES LABELS "upstream" TIMEOUT 60)
   add_test(NAME vulkan_probe COMMAND mikumikudesu --probe --hidden)
@@ -598,11 +637,14 @@ if(DAYO_ENABLE_SANITIZERS)
   foreach(
     target
     dayo_core
+    dayo_fx
     dayo_platform
     dayo_graphics
     mikumikudesu
     dayo_core_tests
+    dayo_fx_executor_tests
     dayo_upload_ring_tests
+    dayo_graph_device_tests
     dayo_preview_tests
     dayo_upstream_compat_tests
     dayo_fx_linker_tests
@@ -615,11 +657,17 @@ if(DAYO_ENABLE_SANITIZERS)
   if(TARGET dayo_core_tests)
     target_link_options(dayo_core_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
+  if(TARGET dayo_fx_executor_tests)
+    target_link_options(dayo_fx_executor_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
   if(TARGET dayo_upload_ring_tests)
     target_link_options(dayo_upload_ring_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
   if(TARGET dayo_preview_tests)
     target_link_options(dayo_preview_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+  if(TARGET dayo_graph_device_tests)
+    target_link_options(dayo_graph_device_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
   if(TARGET dayo_upstream_compat_tests)
     target_link_options(dayo_upstream_compat_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
@@ -634,7 +682,7 @@ message(STATUS "mikumikudesu backend: ${DAYO_BACKEND}")
 message(STATUS "Dear ImGui: ${DAYO_ENABLE_IMGUI}")
 message(STATUS "OIDN detected: ${DAYO_HAS_OIDN} (CPU always preferred; HIP is runtime-optional)")
 message(STATUS "FFmpeg detected: ${DAYO_HAS_MEDIA}")
-message(STATUS "Bullet physics: ${DAYO_HAS_BULLET}")
+message(STATUS "libmmd physics: enabled (Bullet acceleration follows DAYO_ENABLE_PHYSICS)")
 message(STATUS "cereal detected: ${cereal_FOUND}")
 message(STATUS "DirectXTex detected: ${directxtex_FOUND}")
 message(STATUS "Jsonnet effects: ${DAYO_HAS_JSONNET}")
