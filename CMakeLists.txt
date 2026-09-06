@@ -138,9 +138,12 @@ if(NOT DAYO_STB_INCLUDE_DIR)
   set(DAYO_STB_INCLUDE_DIR "${stb_SOURCE_DIR}")
 endif()
 
+set(LIBMMD_ENABLE_PHYSICS ON CACHE BOOL "Build the libmmd physics API required by the runtime" FORCE)
+set(LIBMMD_ENABLE_BULLET ${DAYO_ENABLE_PHYSICS} CACHE BOOL "Use Bullet acceleration in libmmd" FORCE)
+add_subdirectory(external/libmmd EXCLUDE_FROM_ALL)
+
 add_library(
   dayo_core
-  src/core/animation.cpp
   src/core/asset.cpp
   src/core/denoiser.cpp
   src/core/effect.cpp
@@ -149,12 +152,8 @@ add_library(
   src/core/audio_export.cpp
   src/core/video_export.cpp
   src/core/media.cpp
-  src/core/mapped_file.cpp
-  src/core/model_probe.cpp
-  src/core/motion.cpp
   src/core/editor.cpp
   src/core/output.cpp
-  src/core/physics.cpp
   src/core/profiling.cpp
   src/core/project.cpp
   src/core/scene.cpp
@@ -166,13 +165,12 @@ add_library(
 )
 target_include_directories(dayo_core PUBLIC src)
 target_include_directories(dayo_core PRIVATE "${DAYO_STB_INCLUDE_DIR}")
-target_link_libraries(dayo_core PUBLIC SDL3::SDL3)
+target_link_libraries(dayo_core PUBLIC SDL3::SDL3 mmd::core mmd::animation mmd::physics)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   set_source_files_properties(
     src/core/image.cpp
     PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-unused-but-set-variable"
   )
-  set_source_files_properties(src/core/physics.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-float-conversion")
   set_source_files_properties(src/core/media.cpp PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-old-style-cast")
   set_source_files_properties(
     src/core/output.cpp
@@ -293,36 +291,6 @@ if(DAYO_HAS_OIDN)
   target_link_libraries(dayo_core PUBLIC OpenImageDenoise)
 endif()
 
-set(DAYO_HAS_BULLET 0)
-if(DAYO_ENABLE_PHYSICS)
-  find_package(Bullet QUIET)
-  if(NOT Bullet_FOUND AND DAYO_FETCH_DEPENDENCIES)
-    set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
-    set(BUILD_BULLET2_DEMOS OFF CACHE BOOL "" FORCE)
-    set(BUILD_BULLET3 OFF CACHE BOOL "" FORCE)
-    set(BUILD_EXTRAS OFF CACHE BOOL "" FORCE)
-    set(BUILD_CPU_DEMOS OFF CACHE BOOL "" FORCE)
-    set(BUILD_OPENGL3_DEMOS OFF CACHE BOOL "" FORCE)
-    set(BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
-    set(USE_GRAPHICAL_BENCHMARK OFF CACHE BOOL "" FORCE)
-    set(INSTALL_LIBS OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-      bullet
-      URL https://github.com/bulletphysics/bullet3/archive/refs/tags/3.25.tar.gz
-      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    )
-    FetchContent_MakeAvailable(bullet)
-    set(BULLET_INCLUDE_DIRS "${bullet_SOURCE_DIR}/src")
-    set(BULLET_LIBRARIES BulletDynamics BulletCollision LinearMath)
-    set(Bullet_FOUND TRUE)
-  endif()
-  if(Bullet_FOUND)
-    set(DAYO_HAS_BULLET 1)
-    target_include_directories(dayo_core PRIVATE ${BULLET_INCLUDE_DIRS})
-    target_link_libraries(dayo_core PUBLIC ${BULLET_LIBRARIES})
-  endif()
-endif()
-target_compile_definitions(dayo_core PUBLIC DAYO_HAS_BULLET=${DAYO_HAS_BULLET})
 find_package(cereal CONFIG QUIET)
 find_package(directxtex CONFIG QUIET)
 set(DAYO_HAS_JSONNET 0)
@@ -611,7 +579,7 @@ message(STATUS "mikumikudesu backend: ${DAYO_BACKEND}")
 message(STATUS "Dear ImGui: ${DAYO_ENABLE_IMGUI}")
 message(STATUS "OIDN detected: ${DAYO_HAS_OIDN} (CPU always preferred; HIP is runtime-optional)")
 message(STATUS "FFmpeg detected: ${DAYO_HAS_MEDIA}")
-message(STATUS "Bullet physics: ${DAYO_HAS_BULLET}")
+message(STATUS "libmmd physics: enabled (Bullet acceleration follows DAYO_ENABLE_PHYSICS)")
 message(STATUS "cereal detected: ${cereal_FOUND}")
 message(STATUS "DirectXTex detected: ${directxtex_FOUND}")
 message(STATUS "Jsonnet effects: ${DAYO_HAS_JSONNET}")
