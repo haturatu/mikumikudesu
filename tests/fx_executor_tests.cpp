@@ -319,6 +319,22 @@ raw_cs
             return false;
         }(),
         "compiler rejects unknown pass types");
+
+    const auto utilitySource = R"FX([YRZFX]
+{
+  fx: {
+    category: "postprocess",
+    passes: [{name: "copy", type: "copy", inputs: ["source"], RTV: ["destination"]}],
+  },
+}
+[HLSL]
+)FX";
+    const auto utilityProgram = compiler.compileSource(dayo::fx::makeFxSourceDocument("copy.fxdayo", utilitySource));
+    ok &=
+        check(utilityProgram.passes.size() == 1 && utilityProgram.passes.front().kind == dayo::fx::FxOpKind::copy &&
+                  utilityProgram.passes.front().resources.size() == 2 &&
+                  !utilityProgram.passes.front().resources[0].write && utilityProgram.passes.front().resources[1].write,
+              "source-driven copy preserves read/write resource contract");
     return ok;
 }
 

@@ -14,7 +14,7 @@
 
 namespace dayo::core {
 
-enum class EffectPassType { rasterizer, postprocess, compute, raytracing, unknown };
+enum class EffectPassType { rasterizer, postprocess, compute, raytracing, copy, clear, mipmap, unknown };
 
 struct EffectSize {
     std::string base;
@@ -77,6 +77,7 @@ struct EffectPass {
     std::vector<EffectHitGroup> hitGroups;
     std::vector<std::string> macros;
     std::vector<std::string> conditions;
+    std::vector<EffectAttachment> inputs;
     std::vector<EffectAttachment> renderTargets;
     std::vector<EffectAttachment> unorderedAccess;
     EffectAttachment depth;

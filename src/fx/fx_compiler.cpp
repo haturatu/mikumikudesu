@@ -39,6 +39,12 @@ FxOpKind fxOpFromPassType(core::EffectPassType type) {
         return FxOpKind::compute;
     case core::EffectPassType::raytracing:
         return FxOpKind::raytracing;
+    case core::EffectPassType::copy:
+        return FxOpKind::copy;
+    case core::EffectPassType::clear:
+        return FxOpKind::clear;
+    case core::EffectPassType::mipmap:
+        return FxOpKind::mipmap;
     case core::EffectPassType::unknown:
         throw std::runtime_error("unsupported FX pass type: unknown");
     }
@@ -90,8 +96,6 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
         program.label = graph.category.empty() ? "fx" : graph.category;
     program.generation = 1;
     for (const auto& pass : graph.passes) {
-        if (pass.type == core::EffectPassType::unknown)
-            throw std::runtime_error("unsupported FX pass '" + pass.name + "': unknown type");
         FxDispatch dispatch;
         dispatch.name = pass.name.empty() ? "pass" : pass.name;
         dispatch.kind = fxOpFromPassType(pass.type);
@@ -101,14 +105,67 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
             dispatch.shader = pass.pixelShader;
         else
             dispatch.shader = pass.vertexShader;
-        for (const auto& attachment : pass.renderTargets)
+        const auto appendInput = [&](const core::EffectAttachment& attachment) {
+            if (!attachment.name.empty())
+                dispatch.resources.push_back({attachment.name, false});
+        };
+        const auto appendOutput = [&](const core::EffectAttachment& attachment) {
             if (!attachment.name.empty())
                 dispatch.resources.push_back({attachment.name, true});
-        for (const auto& attachment : pass.unorderedAccess)
-            if (!attachment.name.empty())
-                dispatch.resources.push_back({attachment.name, true});
-        if (!pass.depth.name.empty())
-            dispatch.resources.push_back({pass.depth.name, true});
+        };
+        const auto appendUtilityTarget = [&](std::string_view kind) {
+            std::size_t targetCount = 0;
+            const core::EffectAttachment* target = nullptr;
+            for (const auto& attachment : pass.renderTargets) {
+                if (!attachment.name.empty()) {
+                    ++targetCount;
+                    target = &attachment;
+                }
+            }
+            for (const auto& attachment : pass.unorderedAccess) {
+                if (!attachment.name.empty()) {
+                    ++targetCount;
+                    target = &attachment;
+                }
+            }
+            if (!pass.depth.name.empty()) {
+                ++targetCount;
+                target = &pass.depth;
+            }
+            if (targetCount != 1 || target == nullptr)
+                throw std::runtime_error("FX " + std::string(kind) + " pass requires one write target");
+            appendOutput(*target);
+        };
+        switch (pass.type) {
+        case core::EffectPassType::copy:
+            if (pass.inputs.size() != 1 || pass.renderTargets.size() != 1 || pass.inputs.front().name.empty() ||
+                pass.renderTargets.front().name.empty())
+                throw std::runtime_error("FX copy pass requires one input and one output");
+            appendInput(pass.inputs.front());
+            appendOutput(pass.renderTargets.front());
+            break;
+        case core::EffectPassType::clear:
+            appendUtilityTarget("clear");
+            break;
+        case core::EffectPassType::mipmap:
+            appendUtilityTarget("mipmap");
+            break;
+        case core::EffectPassType::rasterizer:
+        case core::EffectPassType::postprocess:
+        case core::EffectPassType::compute:
+        case core::EffectPassType::raytracing:
+            for (const auto& attachment : pass.inputs)
+                appendInput(attachment);
+            for (const auto& attachment : pass.renderTargets)
+                appendOutput(attachment);
+            for (const auto& attachment : pass.unorderedAccess)
+                appendOutput(attachment);
+            if (!pass.depth.name.empty())
+                appendOutput(pass.depth);
+            break;
+        case core::EffectPassType::unknown:
+            throw std::runtime_error("unsupported FX pass '" + pass.name + "': unknown type");
+        }
         program.passes.push_back(std::move(dispatch));
     }
     if (program.passes.empty())
@@ -122,6 +179,15 @@ FxProgram FxCompiler::compileSource(const FxSourceDocument& document) const {
     FxProgram program = compile(linked);
     program.sourceVersion = document.version;
     return program;
+}
+
+std::uint64_t FxInstance::beginReloadRequest() {
+    std::scoped_lock lock(mutex_);
+    if (requestSequence_ == std::numeric_limits<std::uint64_t>::max())
+        throw std::overflow_error("FX reload request sequence exhausted");
+    const auto request = requestSequence_++;
+    newestRequestSequence_ = request;
+    return request;
 }
 
 FxFramePlan FxCompiler::plan(const FxProgram& program, const FxFrameContext& context) const {
@@ -164,6 +230,14 @@ bool FxInstance::tryHotReload(const FxSourceDocument& document, const FxFrameCon
     // parse -> link -> compile -> plan -> pipeline; swap only on success.
     if (error != nullptr)
         error->clear();
+    std::uint64_t request = 0;
+    try {
+        request = beginReloadRequest();
+    } catch (const std::exception& exception) {
+        if (error != nullptr)
+            *error = exception.what();
+        return false;
+    }
     core::EffectGraph graph;
     try {
         graph = compiler_.parse(document);
@@ -202,6 +276,11 @@ bool FxInstance::tryHotReload(const FxSourceDocument& document, const FxFrameCon
     }
     {
         std::scoped_lock lock(mutex_);
+        if (request != newestRequestSequence_) {
+            if (error != nullptr)
+                *error = "fx reload request is stale";
+            return false;
+        }
         if (document.version != 0 && hasSourceVersion_ && document.version <= newestSourceVersion_) {
             if (error != nullptr)
                 *error = "fx reload source version is stale";
@@ -220,6 +299,14 @@ bool FxInstance::tryHotReload(const FxSourceDocument& document, const FxFrameCon
 bool FxInstance::stagePending(const FxSourceDocument& document, std::string* error) {
     if (error != nullptr)
         error->clear();
+    std::uint64_t request = 0;
+    try {
+        request = beginReloadRequest();
+    } catch (const std::exception& exception) {
+        if (error != nullptr)
+            *error = exception.what();
+        return false;
+    }
     try {
         FxProgram candidate = compiler_.compileSource(document);
         std::string pipelineError;
@@ -229,6 +316,11 @@ bool FxInstance::stagePending(const FxSourceDocument& document, std::string* err
             return false;
         }
         std::scoped_lock lock(mutex_);
+        if (request != newestRequestSequence_) {
+            if (error != nullptr)
+                *error = "fx reload request is stale";
+            return false;
+        }
         if (candidate.sourceVersion != 0 && hasSourceVersion_ && candidate.sourceVersion <= newestSourceVersion_) {
             if (error != nullptr)
                 *error = "fx reload source version is stale";

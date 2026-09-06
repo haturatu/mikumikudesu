@@ -126,7 +126,11 @@ class FxInstance {
     std::uint64_t nextGeneration_{1};
     std::uint64_t newestSourceVersion_{};
     bool hasSourceVersion_{false};
+    std::uint64_t requestSequence_{1};
+    std::uint64_t newestRequestSequence_{};
     FxCompiler compiler_;
+
+    [[nodiscard]] std::uint64_t beginReloadRequest();
 };
 
 } // namespace dayo::fx
