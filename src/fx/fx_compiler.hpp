@@ -48,6 +48,10 @@ struct FxDispatch {
         bool write{};
     };
     std::vector<ResourceUse> resources;
+    // Conditions remain attached to the dispatch until the frame executor
+    // evaluates them; compiling them away would make conditional passes run
+    // unconditionally when the plan is shared with another scheduler.
+    std::vector<std::string> conditions;
 };
 
 struct FxProgram {

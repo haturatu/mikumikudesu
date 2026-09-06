@@ -99,6 +99,7 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
         FxDispatch dispatch;
         dispatch.name = pass.name.empty() ? "pass" : pass.name;
         dispatch.kind = fxOpFromPassType(pass.type);
+        dispatch.conditions = pass.conditions;
         if (!pass.computeShader.empty())
             dispatch.shader = pass.computeShader;
         else if (!pass.pixelShader.empty())

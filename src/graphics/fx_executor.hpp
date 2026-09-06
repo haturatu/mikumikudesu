@@ -7,21 +7,35 @@
 #include <cstddef>
 #include <functional>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace dayo::graphics {
 
 struct FxExecutionResources {
     using TextureResolver = std::function<std::optional<TextureHandle>(std::string_view)>;
+    using PipelineResolver = std::function<std::optional<PipelineHandle>(const dayo::fx::FxDispatch&)>;
+    using ResourceBindingResolver =
+        std::function<std::optional<DescriptorBinding>(std::string_view, bool, std::uint32_t)>;
+    using PushConstantResolver =
+        std::function<std::vector<std::byte>(const dayo::fx::FxDispatch&, const dayo::fx::FxFrameContext&)>;
+    using ConditionEvaluator = std::function<bool(std::span<const std::string>, const dayo::fx::FxFrameContext&)>;
     TextureResolver resolveTexture;
+    // Generic resource providers keep shader compilation and descriptor
+    // allocation backend-specific while making the command contract explicit.
+    PipelineResolver resolvePipeline;
+    ResourceBindingResolver resolveBinding;
+    PushConstantResolver makePushConstants;
+    ConditionEvaluator evaluateConditions;
 };
 
-// Generic Vulkan FX executor skeleton. Reuses the existing Device and
-// CommandList contracts without owning or destroying them:
-//   plan (FxFramePlan) -> executor -> backend (CommandList).
-// Supported: raster / postprocess / compute / copy / clear / mipmap.
+// Generic Vulkan FX executor. Shader passes require a resolved pipeline and
+// record resource transitions, descriptor bindings, optional push constants,
+// and the draw/dispatch command. Utility passes record their typed operation.
+// The executor does not own device resources or shader-cache entries.
 // Raytracing fails explicitly so Preview callers notice the missing path
 // instead of silently dropping a pass.
 class VulkanFxExecutor {

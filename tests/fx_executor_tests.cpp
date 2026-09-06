@@ -98,6 +98,9 @@ dayo::fx::FxFrameContext testContext() {
 dayo::graphics::FxExecutionResources testResources() {
     dayo::graphics::FxExecutionResources resources;
     resources.resolveTexture = [](std::string_view) -> std::optional<dayo::graphics::TextureHandle> { return 1; };
+    resources.resolvePipeline = [](const dayo::fx::FxDispatch&) -> std::optional<dayo::graphics::PipelineHandle> {
+        return 1;
+    };
     return resources;
 }
 
@@ -118,7 +121,8 @@ bool testMockTraceMatches() {
     dayo::fx::FxCompiler compiler;
     const auto plan = compiler.plan(program, testContext());
     const auto stats = executor.execute(plan, commands, testContext(), testResources());
-    const std::vector<std::string> kinds = {"clear", "draw", "dispatch", "copy", "mipmap"};
+    const std::vector<std::string> kinds = {"transition", "clear",      "bind", "draw",       "bind",
+                                            "dispatch",   "transition", "copy", "transition", "mipmap"};
     bool ok = true;
     ok &= check(commands.trace.size() == kinds.size(), "mock trace length matches plan");
     for (std::size_t index = 0; index < kinds.size() && index < commands.trace.size(); ++index) {
