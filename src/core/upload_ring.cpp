@@ -59,6 +59,17 @@ std::optional<UploadSlice> UploadRing::tryAllocate(std::size_t size, std::uint64
     return UploadSlice{offset, size};
 }
 
+void UploadRing::rollback(std::uint64_t retireValue) noexcept {
+    while (!allocations_.empty() && allocations_.back().retireValue == retireValue) {
+        const auto allocation = allocations_.back();
+        allocations_.pop_back();
+        used_ -= allocation.occupied;
+        head_ = allocation.begin;
+    }
+    if (used_ == 0)
+        head_ = tail_ = 0;
+}
+
 void UploadRing::reclaim(std::uint64_t completedValue) {
     while (!allocations_.empty() && allocations_.front().retireValue <= completedValue) {
         const auto allocation = allocations_.front();

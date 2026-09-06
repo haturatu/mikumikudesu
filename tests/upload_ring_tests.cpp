@@ -84,6 +84,13 @@ int main() {
     if (!ordered.tryAllocate(8, 20))
         return 20;
 
+    UploadRing rollback(64, 16);
+    if (!rollback.tryAllocate(12, 30) || !rollback.tryAllocate(8, 30))
+        return 21;
+    rollback.rollback(30);
+    if (rollback.used() != 0 || rollback.available() != rollback.capacity() || !rollback.tryAllocate(64, 31))
+        return 22;
+
     std::cout << "upload ring tests passed\n";
     return 0;
 }
