@@ -1,8 +1,11 @@
 #pragma once
 
+#include "graphics/resource.hpp"
+
 #include <algorithm>
 #include <cstdint>
 #include <initializer_list>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -130,6 +133,236 @@ class RenderGraphLite {
     struct Pass {
         std::string name;
         std::vector<RenderGraphUse> uses;
+    };
+
+    std::vector<Resource> resources_;
+    std::vector<Pass> passes_;
+};
+
+// Typed render graph built on ResourceUsage/ResourceLifetime. RenderGraphLite
+// above is preserved unchanged for the Preview backend; this class adds the
+// 20-usage barrier model plus per-resource descriptors for alias analysis.
+using TypedResource = std::uint32_t;
+using TypedPass = std::uint32_t;
+
+struct TypedUse {
+    TypedResource resource{};
+    ResourceUsage usage{ResourceUsage::sampledRead};
+};
+
+struct TypedBarrier {
+    TypedResource resource{};
+    ResourceUsage before{ResourceUsage::none};
+    ResourceUsage after{ResourceUsage::none};
+};
+
+struct TypedLifetime {
+    std::uint32_t firstPass{};
+    std::uint32_t lastPass{};
+};
+
+struct TypedPassPlan {
+    std::string name;
+    std::vector<TypedPass> dependencies;
+    std::vector<TypedBarrier> barriers;
+};
+
+// Two pass ranges overlap unless one ends strictly before the other starts.
+// Unused resources (invalidPass on both ends) overlap nothing and may share.
+[[nodiscard]] inline bool lifetimesOverlap(const TypedLifetime& left, const TypedLifetime& right) noexcept {
+    constexpr std::uint32_t invalid = UINT32_MAX;
+    const bool leftUnused = left.firstPass == invalid && left.lastPass == invalid;
+    const bool rightUnused = right.firstPass == invalid && right.lastPass == invalid;
+    if (leftUnused || rightUnused)
+        return false;
+    return left.firstPass <= right.lastPass && right.firstPass <= left.lastPass;
+}
+
+class RenderGraph {
+  public:
+    static constexpr TypedPass invalidPass = UINT32_MAX;
+
+    [[nodiscard]] TypedResource createResource(std::string name) {
+        resources_.push_back(Resource{std::move(name), std::nullopt, std::nullopt});
+        return static_cast<TypedResource>(resources_.size() - 1U);
+    }
+
+    [[nodiscard]] TypedResource createResource(std::string name, const TextureResourceDesc& desc) {
+        resources_.push_back(Resource{std::move(name), desc, std::nullopt});
+        return static_cast<TypedResource>(resources_.size() - 1U);
+    }
+
+    [[nodiscard]] TypedResource createBufferResource(std::string name, const BufferResourceDesc& desc) {
+        resources_.push_back(Resource{std::move(name), std::nullopt, desc});
+        return static_cast<TypedResource>(resources_.size() - 1U);
+    }
+
+    [[nodiscard]] TypedPass addPass(std::string name, std::span<const TypedUse> uses) {
+        passes_.push_back(Pass{std::move(name), std::vector<TypedUse>(uses.begin(), uses.end())});
+        return static_cast<TypedPass>(passes_.size() - 1U);
+    }
+
+    [[nodiscard]] TypedPass addPass(std::string name, std::initializer_list<TypedUse> uses) {
+        return addPass(std::move(name), std::span<const TypedUse>(uses.begin(), uses.size()));
+    }
+
+    [[nodiscard]] std::size_t resourceCount() const noexcept {
+        return resources_.size();
+    }
+
+    [[nodiscard]] std::size_t passCount() const noexcept {
+        return passes_.size();
+    }
+
+    [[nodiscard]] const TextureResourceDesc* resourceDesc(TypedResource resource) const noexcept {
+        if (resource >= resources_.size())
+            return nullptr;
+        const auto& desc = resources_[resource].desc;
+        return desc.has_value() ? &desc.value() : nullptr;
+    }
+
+    [[nodiscard]] const BufferResourceDesc* resourceBufferDesc(TypedResource resource) const noexcept {
+        if (resource >= resources_.size())
+            return nullptr;
+        const auto& desc = resources_[resource].bufferDesc;
+        return desc.has_value() ? &desc.value() : nullptr;
+    }
+
+    // Alias query backed by ResourceLifetime: transient resources may share
+    // physical memory, persistent history (PreviousFrame/BDPT accumulation,
+    // particles/history) may not. Resources without a descriptor are treated
+    // as transient scratch.
+    [[nodiscard]] bool canAlias(TypedResource left, TypedResource right) const noexcept {
+        if (left >= resources_.size() || right >= resources_.size())
+            return false;
+        const auto& leftRes = resources_[left];
+        const auto& rightRes = resources_[right];
+        if (leftRes.desc.has_value() && rightRes.desc.has_value())
+            return graphics::canAlias(leftRes.desc.value(), rightRes.desc.value());
+        if (leftRes.bufferDesc.has_value() && rightRes.bufferDesc.has_value())
+            return graphics::canAlias(leftRes.bufferDesc.value(), rightRes.bufferDesc.value());
+        return isAliasingAllowed(lifetimeOf(left)) && isAliasingAllowed(lifetimeOf(right));
+    }
+
+    // Overlap-aware alias query: even two transient resources may only alias
+    // when their pass lifetimes are disjoint (e.g. A: pass 0-2, B: pass 3-5).
+    // Overlapping lifetimes or any persistent endpoint forbids aliasing.
+    [[nodiscard]] bool canAliasWithLifetimes(TypedResource left, TypedResource right) const {
+        if (!canAlias(left, right))
+            return false;
+        const auto lives = lifetimes();
+        if (left >= lives.size() || right >= lives.size())
+            return false;
+        return !lifetimesOverlap(lives[left], lives[right]);
+    }
+
+    // Greedy alias-group assignment for VMA: resources sharing a group id may
+    // be suballocated from one physical allocation. Overlapping or persistent
+    // resources always land in distinct groups.
+    [[nodiscard]] std::vector<std::uint32_t> computeAliasGroups() const {
+        const auto lives = lifetimes();
+        std::vector<std::uint32_t> groups(resources_.size(), 0);
+        std::uint32_t nextGroup = 0;
+        for (std::size_t i = 0; i < resources_.size(); ++i) {
+            std::uint32_t assigned = nextGroup;
+            for (std::uint32_t candidate = 0; candidate < nextGroup; ++candidate) {
+                bool fits = true;
+                for (std::size_t j = 0; j < i; ++j) {
+                    if (groups[j] != candidate)
+                        continue;
+                    if (!canAlias(static_cast<TypedResource>(i), static_cast<TypedResource>(j)) ||
+                        lifetimesOverlap(lives[i], lives[j])) {
+                        fits = false;
+                        break;
+                    }
+                }
+                if (fits) {
+                    assigned = candidate;
+                    break;
+                }
+            }
+            groups[i] = assigned;
+            if (assigned == nextGroup)
+                ++nextGroup;
+        }
+        return groups;
+    }
+
+    [[nodiscard]] std::vector<TypedPassPlan> compile() const {
+        struct Tracking {
+            TypedPass lastWriter{invalidPass};
+            std::vector<TypedPass> readers;
+            ResourceUsage state{ResourceUsage::none};
+        };
+        std::vector<Tracking> tracking(resources_.size());
+        std::vector<TypedPassPlan> result;
+        result.reserve(passes_.size());
+        auto addDependency = [](std::vector<TypedPass>& dependencies, TypedPass dependency, TypedPass currentPass) {
+            if (dependency != invalidPass && dependency != currentPass &&
+                std::find(dependencies.begin(), dependencies.end(), dependency) == dependencies.end())
+                dependencies.push_back(dependency);
+        };
+
+        for (std::uint32_t passIndex = 0; passIndex < passes_.size(); ++passIndex) {
+            const auto& pass = passes_[passIndex];
+            TypedPassPlan plan{pass.name, {}, {}};
+            for (const auto& use : pass.uses) {
+                if (use.resource >= resources_.size())
+                    throw std::invalid_argument("render graph use references an unknown resource");
+                auto& resource = tracking[use.resource];
+                const bool write = isWriteUsage(use.usage);
+                if (write) {
+                    addDependency(plan.dependencies, resource.lastWriter, passIndex);
+                    for (const auto reader : resource.readers)
+                        addDependency(plan.dependencies, reader, passIndex);
+                    resource.readers.clear();
+                    resource.lastWriter = passIndex;
+                } else {
+                    addDependency(plan.dependencies, resource.lastWriter, passIndex);
+                    resource.readers.push_back(passIndex);
+                }
+                if (resource.state != use.usage) {
+                    plan.barriers.push_back({use.resource, resource.state, use.usage});
+                    resource.state = use.usage;
+                }
+            }
+            result.push_back(std::move(plan));
+        }
+        return result;
+    }
+
+    [[nodiscard]] std::vector<TypedLifetime> lifetimes() const {
+        std::vector<TypedLifetime> result(resources_.size(), {invalidPass, invalidPass});
+        for (std::uint32_t passIndex = 0; passIndex < passes_.size(); ++passIndex) {
+            for (const auto& use : passes_[passIndex].uses) {
+                if (use.resource >= resources_.size())
+                    throw std::invalid_argument("render graph use references an unknown resource");
+                auto& lifetime = result[use.resource];
+                lifetime.firstPass = std::min(lifetime.firstPass, passIndex);
+                lifetime.lastPass = passIndex;
+            }
+        }
+        return result;
+    }
+
+  private:
+    [[nodiscard]] ResourceLifetime lifetimeOf(TypedResource resource) const noexcept {
+        const auto& res = resources_[resource];
+        if (res.desc.has_value())
+            return res.desc->lifetime;
+        if (res.bufferDesc.has_value())
+            return res.bufferDesc->lifetime;
+        return ResourceLifetime::transient;
+    }
+
+    struct Resource {
+        std::string name;
+        std::optional<TextureResourceDesc> desc;
+        std::optional<BufferResourceDesc> bufferDesc;
+    };
+    struct Pass {
+        std::string name;
+        std::vector<TypedUse> uses;
     };
 
     std::vector<Resource> resources_;
