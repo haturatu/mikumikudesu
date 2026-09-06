@@ -72,8 +72,10 @@ class RenderGraphLite {
         std::vector<Tracking> tracking(resources_.size());
         std::vector<RenderGraphPassPlan> result;
         result.reserve(passes_.size());
-        auto addDependency = [](std::vector<RenderGraphPass>& dependencies, RenderGraphPass pass) {
-            if (pass != invalidPass && std::find(dependencies.begin(), dependencies.end(), pass) == dependencies.end())
+        auto addDependency = [](std::vector<RenderGraphPass>& dependencies, RenderGraphPass pass,
+                                RenderGraphPass currentPass) {
+            if (pass != invalidPass && pass != currentPass &&
+                std::find(dependencies.begin(), dependencies.end(), pass) == dependencies.end())
                 dependencies.push_back(pass);
         };
 
@@ -85,13 +87,13 @@ class RenderGraphLite {
                     throw std::invalid_argument("render graph use references an unknown resource");
                 auto& resource = tracking[use.resource];
                 if (use.write) {
-                    addDependency(plan.dependencies, resource.lastWriter);
+                    addDependency(plan.dependencies, resource.lastWriter, passIndex);
                     for (const auto reader : resource.readers)
-                        addDependency(plan.dependencies, reader);
+                        addDependency(plan.dependencies, reader, passIndex);
                     resource.readers.clear();
                     resource.lastWriter = passIndex;
                 } else {
-                    addDependency(plan.dependencies, resource.lastWriter);
+                    addDependency(plan.dependencies, resource.lastWriter, passIndex);
                     resource.readers.push_back(passIndex);
                 }
                 if (resource.state != use.state) {

@@ -488,6 +488,20 @@ int main() {
                     "render graph tracks resource lifetimes");
     }
     {
+        using dayo::graphics::RenderGraphLite;
+        using dayo::graphics::RenderResourceState;
+        RenderGraphLite graph;
+        const auto readWrite = graph.createResource("read-write");
+        const auto writeWrite = graph.createResource("write-write");
+        static_cast<void>(graph.addPass("read-write", {{readWrite, RenderResourceState::shaderRead, false},
+                                                         {readWrite, RenderResourceState::colorAttachment, true}}));
+        static_cast<void>(graph.addPass("write-write", {{writeWrite, RenderResourceState::colorAttachment, true},
+                                                          {writeWrite, RenderResourceState::depthAttachment, true}}));
+        const auto plan = graph.compile();
+        ok &= check(plan.size() == 2 && plan[0].dependencies.empty() && plan[1].dependencies.empty(),
+                    "render graph ignores same-pass self dependencies");
+    }
+    {
         const auto schemaPath = std::filesystem::temp_directory_path() / "mikumikudesu-subayai-template.txt";
         const auto hairPath = std::filesystem::temp_directory_path() / "mikumikudesu-subayai-hair.txt";
         const auto metalPath = std::filesystem::temp_directory_path() / "mikumikudesu-subayai-metal.txt";
