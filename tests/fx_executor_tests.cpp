@@ -231,7 +231,7 @@ bool testHotReloadKeepsCurrentOnFailure() {
     initial.label = "Preview";
     initial.generation = 7;
     initial.passes = {{"MMD", dayo::fx::FxOpKind::raster, {}}};
-    dayo::fx::FxInstance instance(initial, dayo::fx::FxCompilerOptions{.allowSyntheticProgramForTests = true});
+    dayo::fx::FxInstance instance(initial);
     bool ok = true;
     const auto empty = dayo::fx::makeFxSourceDocument("empty.fxdayo", "", 1);
     std::string error;
@@ -239,8 +239,24 @@ bool testHotReloadKeepsCurrentOnFailure() {
                 "hot reload rejects empty source");
     ok &= check(instance.active()->generation == 7, "failed reload keeps current program");
     ok &= check(!instance.hasPending(), "failed reload stages nothing");
+    const auto broken = dayo::fx::makeFxSourceDocument("broken.fxdayo", "[YRZFX]\n{ fx: { passes: [ }\n[HLSL]\n", 2);
+    ok &= check(!instance.tryHotReload(broken, testContext(), &error) && !error.empty(),
+                "hot reload rejects malformed raw source");
+    ok &= check(instance.active()->generation == 7 && !instance.hasPending(),
+                "malformed raw source keeps current program");
     // Successful reload swaps only at frame boundary and retires old via timeline.
-    const auto good = dayo::fx::makeFxSourceDocument("good.fxdayo", "pass MMD {}", 2);
+    const auto good = dayo::fx::makeFxSourceDocument("good.fxdayo",
+                                                     R"FX([YRZFX]
+{
+  fx: {
+    category: "render",
+    passes: [{name: "from-raw", type: "compute", computeShader: "raw_cs"}],
+  },
+}
+[HLSL]
+raw_cs
+)FX",
+                                                     3);
     instance.setNextTimelineValue(42);
     ok &= check(instance.tryHotReload(good, testContext(), &error), "hot reload accepts valid source");
     ok &= check(instance.active()->generation == 8, "reload swaps generation at frame boundary");
