@@ -390,7 +390,7 @@ bool bindlessTextureSlotsSelectTable(dayo::graphics::VulkanDevice& device) {
     return sawRed && sawBlue;
 }
 
-bool multiMaterialDrawUsesPushConstantIndex(dayo::graphics::VulkanDevice& device) {
+bool multiMaterialDrawUsesIndirectMaterialIndex(dayo::graphics::VulkanDevice& device) {
     dayo::graphics::PreviewScene scene;
     scene.cameraDistance = 3.0F;
     scene.backgroundEnabled = false;
@@ -629,8 +629,8 @@ int main() {
             std::cerr << "FAIL: bindless preview texture slots did not select the correct textures\n";
             return 1;
         }
-        if (!multiMaterialDrawUsesPushConstantIndex(device)) {
-            std::cerr << "FAIL: preview material index was not preserved across draw calls\n";
+        if (!multiMaterialDrawUsesIndirectMaterialIndex(device)) {
+            std::cerr << "FAIL: preview material index was not preserved across indirect draws\n";
             return 1;
         }
         if (!singleSidedMaterialsUseClockwiseFrontFaces(device)) {
