@@ -215,9 +215,14 @@ if(DAYO_ENABLE_VMA)
   endif()
 endif()
 
-add_library(dayo_graphics src/graphics/device.cpp src/graphics/vulkan/vulkan_device.cpp)
+add_library(
+  dayo_graphics
+  src/graphics/device.cpp
+  src/graphics/vulkan/vulkan_device.cpp
+  src/graphics/vulkan/vulkan_upload_context.cpp
+)
 target_include_directories(dayo_graphics PUBLIC src)
-target_link_libraries(dayo_graphics PUBLIC Vulkan::Vulkan SDL3::SDL3)
+target_link_libraries(dayo_graphics PUBLIC dayo_core Vulkan::Vulkan SDL3::SDL3)
 target_compile_definitions(dayo_graphics PRIVATE DAYO_ENABLE_VALIDATION=$<BOOL:${DAYO_ENABLE_VALIDATION}>)
 if(DAYO_ENABLE_VMA)
   target_sources(dayo_graphics PRIVATE src/graphics/vulkan/vma_impl.cpp)
