@@ -19,12 +19,9 @@ dayo::core::fx::MaterialTemplate makeAliasTemplate() {
     templ.name = "alias";
     templ.defaults.set("roughness", 0.5F);
     templ.resources = {
-        {.id = "albedo", .shared = true},
-        {.id = "albedoCopy", .ref = "albedo"},
-        {.id = "chain", .ref = "albedoCopy"},
-        {.id = "baseA", .shareTags = {"base"}},
-        {.id = "baseB", .shareTags = {"base"}},
-        {.id = "local", .shareTags = {}},
+        {.id = "albedo", .shared = true},       {.id = "albedoCopy", .ref = "albedo"},
+        {.id = "chain", .ref = "albedoCopy"},   {.id = "baseA", .shareTags = {"base"}},
+        {.id = "baseB", .shareTags = {"base"}}, {.id = "local", .shareTags = {}},
     };
     return templ;
 }
@@ -45,8 +42,7 @@ int main() {
         ok &= check(table.at("albedo") == "shared:albedo", "shared folds to shared:albedo");
         ok &= check(table.at("albedoCopy") == "shared:albedo", "ref folds to shared target");
         ok &= check(table.at("chain") == "shared:albedo", "chained ref folds transitively");
-        ok &= check(table.at("baseA") == "tag:base" && table.at("baseB") == "tag:base",
-                    "shareTags fold to tag:base");
+        ok &= check(table.at("baseA") == "tag:base" && table.at("baseB") == "tag:base", "shareTags fold to tag:base");
         ok &= check(table.at("local") == "local", "concrete id keeps its name");
         ok &= check(layout.slotForLocal("chain") == layout.slotForCanonical("shared:albedo"),
                     "aliased locals share one _R slot");
@@ -129,11 +125,17 @@ int main() {
         const auto multi = compileFxCondition("load, frame if time > 0");
         ok &= check(multi.events == (kFxEventLoad | kFxEventFrame), "condition multi-event mask");
         ok &= check(multi.predicate == "time > 0", "condition predicate kept");
+        const auto predicateOnly = compileFxCondition("if time > 0");
+        ok &= check(predicateOnly.events == kFxEventNone && predicateOnly.predicate == "time > 0",
+                    "condition predicate-only prefix");
+        const auto parenthesized = compileFxCondition("when (FRAME > 0)");
+        ok &= check(parenthesized.events == kFxEventNone && parenthesized.predicate == "(FRAME > 0)",
+                    "condition parenthesized predicate-only prefix");
         const auto plus = compileFxCondition("start+resize");
         ok &= check(plus.events == (kFxEventStart | kFxEventResize), "condition plus-separated events");
         const auto models = compileFxCondition("on modelChanged, materialChanged");
-        ok &= check(models.events == (kFxEventModelChanged | kFxEventMaterialChanged),
-                    "condition model/material events");
+        ok &=
+            check(models.events == (kFxEventModelChanged | kFxEventMaterialChanged), "condition model/material events");
         ok &= check(fxEventFromName("model_changed") == kFxEventModelChanged, "condition snake_case alias");
         ok &= check(fxEventFromName("MATERIAL-CHANGED") == kFxEventMaterialChanged, "condition kebab-case alias");
         ok &= check(toStringMask(kFxEventLoad | kFxEventFrame) == "load,frame", "condition mask to string");
@@ -168,7 +170,8 @@ int main() {
         ok &= check(fxCategoryFromString("render") == FxCategory::render, "category render");
         ok &= check(fxCategoryFromString("postprocess") == FxCategory::postprocess, "category postprocess");
         ok &= check(std::string(toString(FxCategory::deform)) == "deform", "category to string");
-        ok &= check(toEffectPassType(FxPassOp{FxRasterOp{}}) == EffectPassType::rasterizer, "raster maps to rasterizer");
+        ok &=
+            check(toEffectPassType(FxPassOp{FxRasterOp{}}) == EffectPassType::rasterizer, "raster maps to rasterizer");
         ok &= check(toEffectPassType(FxPassOp{FxPostProcessOp{}}) == EffectPassType::postprocess,
                     "postprocess op maps to postprocess");
         ok &= check(toEffectPassType(FxPassOp{FxComputeOp{}}) == EffectPassType::compute, "compute maps to compute");
@@ -222,8 +225,7 @@ int main() {
         const auto roundTrip = effectPassFromFxPass(converted);
         ok &= check(roundTrip.type == EffectPassType::rasterizer && roundTrip.vertexShader == "vs",
                     "FxRasterOp round trips to EffectPass");
-        const EffectPass computeLegacy{
-            .name = "cs", .type = EffectPassType::compute, .computeShader = "cs_main"};
+        const EffectPass computeLegacy{.name = "cs", .type = EffectPassType::compute, .computeShader = "cs_main"};
         const auto computeConverted = fxPassFromEffectPass(computeLegacy, "render");
         ok &= check(std::holds_alternative<FxComputeOp>(computeConverted.op), "legacy compute converts");
     }

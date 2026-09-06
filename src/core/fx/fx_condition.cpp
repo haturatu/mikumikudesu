@@ -93,6 +93,33 @@ std::vector<std::string> splitEvents(std::string_view text) {
 
 // Splits "events [if|when|:|where] predicate" at the first predicate marker.
 void splitPredicateMarker(const std::string& text, std::string& events, std::string& predicate) {
+    const std::string lowered = toLowerCopy(text);
+    const auto startsWithWord = [&](std::string_view word) {
+        if (!lowered.starts_with(word))
+            return false;
+        return lowered.size() == word.size() || std::isspace(static_cast<unsigned char>(lowered[word.size()])) != 0 ||
+               lowered[word.size()] == '(';
+    };
+    // Predicate-only forms have no event prefix. Checking only for a
+    // whitespace-surrounded marker misses the common source form
+    // "if time > 0".
+    for (const std::string_view marker : {std::string_view{"if"}, std::string_view{"where"}}) {
+        if (startsWithWord(marker)) {
+            events.clear();
+            predicate = trimCopy(std::string_view(text).substr(marker.size()));
+            return;
+        }
+    }
+    // `when` is also an event-prefix alias, so only its parenthesized form is
+    // unambiguously predicate-only (`when (FRAME > 0)`).
+    if (startsWithWord("when")) {
+        const auto remainder = trimCopy(std::string_view(text).substr(4));
+        if (!remainder.empty() && remainder.front() == '(') {
+            events.clear();
+            predicate = remainder;
+            return;
+        }
+    }
     // Colon form: "when resize: w > 0" or "frame: time>0".
     const auto colon = text.find(':');
     // Avoid treating "::" scope as a marker.
@@ -101,7 +128,6 @@ void splitPredicateMarker(const std::string& text, std::string& events, std::str
         predicate = trimCopy(std::string_view(text).substr(colon + 1));
         return;
     }
-    std::string lowered = toLowerCopy(text);
     const std::string_view markers[] = {" if ", " when ", " where "};
     for (const std::string_view marker : markers) {
         const auto pos = lowered.find(marker);
@@ -215,8 +241,8 @@ FxConditionProgram compileFxCondition(std::string_view source) {
         program.eventNames.emplace_back(token);
     }
     program.predicate = predicateText;
-    log::debug("fx condition '", std::string(source), "' -> events=", toStringMask(program.events),
-               " predicate='", program.predicate, "'");
+    log::debug("fx condition '", std::string(source), "' -> events=", toStringMask(program.events), " predicate='",
+               program.predicate, "'");
     return program;
 }
 
@@ -233,9 +259,8 @@ void FxConditionScheduler::add(FxConditionProgram condition, int passIndex, std:
         .passIndex = passIndex,
         .passName = std::move(passName),
     });
-    std::sort(passes_.begin(), passes_.end(), [](const FxScheduledPass& lhs, const FxScheduledPass& rhs) {
-        return lhs.passIndex < rhs.passIndex;
-    });
+    std::sort(passes_.begin(), passes_.end(),
+              [](const FxScheduledPass& lhs, const FxScheduledPass& rhs) { return lhs.passIndex < rhs.passIndex; });
 }
 
 void FxConditionScheduler::clear() noexcept {
