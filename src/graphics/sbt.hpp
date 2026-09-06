@@ -6,12 +6,22 @@
 
 namespace dayo::graphics {
 
+struct SbtProperties {
+    std::uint32_t handleSize{1};
+    std::uint32_t handleAlignment{1};
+    std::uint32_t baseAlignment{1};
+    std::uint32_t maxStride{0xFFFFFFFFU};
+};
+
 // Standalone Shader Binding Table layout builder shared by Subayai and BDPT.
 // Ray generation, miss and hit groups share handle size/alignment; only the
 // group lists differ. Pure CPU layout math so Preview-only GPUs can still
 // construct (and skip) native tables.
 class ShaderBindingTableBuilder {
   public:
+    using Properties = dayo::graphics::SbtProperties;
+    using SbtProperties = dayo::graphics::SbtProperties;
+
     struct Layout {
         std::uint64_t raygenAddress{0};
         std::uint64_t missAddress{0};
@@ -50,8 +60,17 @@ class ShaderBindingTableBuilder {
         return hitGroups_;
     }
 
+    // Properties correspond to VkPhysicalDeviceRayTracingPipelinePropertiesKHR.
+    // Region starts are aligned independently; handleAlignment constrains the
+    // stride and maxStride is enforced before returning a layout.
+    [[nodiscard]] Layout build(std::uint64_t baseAddress, const Properties& properties) const noexcept;
+    // Compatibility overload for callers that have not queried Vulkan yet.
+    // Such a layout is only a host-side estimate because baseAlignment is
+    // unknown; native Vulkan callers must use Properties.
     [[nodiscard]] Layout build(std::uint64_t baseAddress, std::uint32_t handleSize,
-                               std::uint32_t handleAlignment) const noexcept;
+                               std::uint32_t handleAlignment) const noexcept {
+        return build(baseAddress, Properties{handleSize, handleAlignment, 1, 0xFFFFFFFFU});
+    }
 
   private:
     std::vector<std::string> raygen_;
