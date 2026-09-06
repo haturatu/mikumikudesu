@@ -145,7 +145,7 @@ std::string stripPrefixWord(std::string events) {
     std::string lowered = toLowerCopy(events);
     const std::string_view prefixes[] = {"on ", "when "};
     for (const std::string_view prefix : prefixes) {
-        if (lowered.rfind(prefix, 0) == 0)
+        if (lowered.starts_with(prefix))
             return trimCopy(std::string_view(events).substr(prefix.size()));
     }
     if (equalsIgnoreCase(events, "on") || equalsIgnoreCase(events, "when"))
