@@ -26,6 +26,7 @@ option(DAYO_FETCH_DEPENDENCIES "Fetch small missing source dependencies" ON)
 option(DAYO_ENABLE_VMA "Use AMD/Vulkan Memory Allocator for generic resources" ON)
 option(DAYO_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(DAYO_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(DAYO_ENABLE_TOOLS "Build standalone tools (fxedit, sequence_movie, vdb2dds, capability_suite)" OFF)
 option(DAYO_ENABLE_NATIVE_TUNING "Enable -march=native/-mtune=native for local Linux builds" OFF)
 option(DAYO_ENABLE_BOLT "Run LLVM BOLT on the Linux executable after linking" OFF)
 set(DAYO_BOLT_PROFILE "" CACHE FILEPATH "perf2bolt/fdata profile used by LLVM BOLT")
@@ -148,8 +149,12 @@ add_subdirectory(external/libmmd EXCLUDE_FROM_ALL)
 add_library(
   dayo_core
   src/core/asset.cpp
+  src/core/cache_key.cpp
   src/core/denoiser.cpp
+  src/core/fx_debug.cpp
+  src/core/image_hdr.cpp
   src/core/physics_profile.cpp
+  src/core/sequence_path.cpp
   src/core/softbody_native.cpp
   src/core/solver.cpp
   src/editor/bone_window.cpp
@@ -539,6 +544,23 @@ if(BUILD_TESTING)
   add_test(NAME upload_ring COMMAND dayo_upload_ring_tests)
   add_test(NAME upstream_compat COMMAND dayo_upstream_compat_tests)
   set_tests_properties(upstream_compat PROPERTIES LABELS "upstream" TIMEOUT 60)
+  add_executable(dayo_editor_physics_io_tests tests/editor_physics_io_tests.cpp)
+  target_include_directories(dayo_editor_physics_io_tests PRIVATE src)
+  target_link_libraries(dayo_editor_physics_io_tests PRIVATE dayo_core)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      dayo_editor_physics_io_tests
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_editor_physics_io_tests PRIVATE -Werror)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(dayo_editor_physics_io_tests PRIVATE -Wno-error=deprecated-literal-operator)
+      endif()
+    endif()
+  endif()
+  add_test(NAME editor_physics_io COMMAND dayo_editor_physics_io_tests)
+  set_tests_properties(editor_physics_io PROPERTIES TIMEOUT 60)
   add_test(NAME vulkan_probe COMMAND mikumikudesu --probe --hidden)
   add_test(NAME preview_render COMMAND dayo_preview_tests)
   set_tests_properties(vulkan_probe PROPERTIES TIMEOUT 60)
@@ -570,6 +592,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_graphics
     mikumikudesu
     dayo_core_tests
+    dayo_editor_physics_io_tests
     dayo_upload_ring_tests
     dayo_preview_tests
     dayo_upstream_compat_tests
@@ -591,6 +614,13 @@ if(DAYO_ENABLE_SANITIZERS)
   if(TARGET dayo_upstream_compat_tests)
     target_link_options(dayo_upstream_compat_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
+  if(TARGET dayo_editor_physics_io_tests)
+    target_link_options(dayo_editor_physics_io_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+endif()
+
+if(DAYO_ENABLE_TOOLS)
+  add_subdirectory(tools)
 endif()
 
 message(STATUS "MikuMikuDayo upstream baseline: ${DAYO_UPSTREAM_VERSION}")
@@ -599,6 +629,7 @@ message(STATUS "Dear ImGui: ${DAYO_ENABLE_IMGUI}")
 message(STATUS "OIDN detected: ${DAYO_HAS_OIDN} (CPU always preferred; HIP is runtime-optional)")
 message(STATUS "FFmpeg detected: ${DAYO_HAS_MEDIA}")
 message(STATUS "libmmd physics: enabled (Bullet acceleration follows DAYO_ENABLE_PHYSICS)")
+message(STATUS "standalone tools: ${DAYO_ENABLE_TOOLS}")
 message(STATUS "cereal detected: ${cereal_FOUND}")
 message(STATUS "DirectXTex detected: ${directxtex_FOUND}")
 message(STATUS "Jsonnet effects: ${DAYO_HAS_JSONNET}")
