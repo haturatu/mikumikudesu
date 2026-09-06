@@ -167,6 +167,9 @@ add_library(
   src/core/task_scheduler.cpp
   src/core/subayai_hair.cpp
   src/core/subayai_material.cpp
+  src/core/fx/fx_condition.cpp
+  src/core/fx/fx_material.cpp
+  src/core/fx/fx_pass.cpp
   src/core/vmdayo.cpp
 )
 target_include_directories(dayo_core PUBLIC src)
@@ -653,6 +656,21 @@ if(BUILD_TESTING)
     endif()
   endif()
 
+  add_executable(dayo_fx_linker_tests tests/fx_linker_tests.cpp)
+  target_link_libraries(dayo_fx_linker_tests PRIVATE dayo_core)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      dayo_fx_linker_tests
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wno-missing-field-initializers
+    )
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_fx_linker_tests PRIVATE -Werror)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(dayo_fx_linker_tests PRIVATE -Wno-error=deprecated-literal-operator)
+      endif()
+    endif()
+  endif()
+
   add_executable(dayo_fx_semantic_tests tests/fx_semantic_tests.cpp)
   target_link_libraries(dayo_fx_semantic_tests PRIVATE dayo_core)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
@@ -685,6 +703,7 @@ if(BUILD_TESTING)
   endif()
 
   add_test(NAME core COMMAND dayo_core_tests)
+  add_test(NAME fx_linker COMMAND dayo_fx_linker_tests)
   add_test(NAME fx_semantic COMMAND dayo_fx_semantic_tests)
   add_test(NAME fx_executor COMMAND dayo_fx_executor_tests)
   add_test(NAME upload_ring COMMAND dayo_upload_ring_tests)
@@ -731,6 +750,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_graph_device_tests
     dayo_subayai_bdpt_tests
     dayo_upstream_compat_tests
+    dayo_fx_linker_tests
     dayo_fx_semantic_tests
   )
     if(TARGET ${target})
@@ -755,6 +775,9 @@ if(DAYO_ENABLE_SANITIZERS)
   endif()
   if(TARGET dayo_upstream_compat_tests)
     target_link_options(dayo_upstream_compat_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+  if(TARGET dayo_fx_linker_tests)
+    target_link_options(dayo_fx_linker_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
   if(TARGET dayo_fx_semantic_tests)
     target_link_options(dayo_fx_semantic_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
