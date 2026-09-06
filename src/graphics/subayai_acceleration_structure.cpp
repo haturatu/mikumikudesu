@@ -9,6 +9,10 @@
 
 namespace dayo::graphics {
 
+AccelerationStructureService::~AccelerationStructureService() {
+    reset();
+}
+
 bool AccelerationStructureService::canBuildNative(const DeviceCapabilities& capabilities,
                                                   RendererKind renderer) noexcept {
     switch (renderer) {
@@ -46,7 +50,13 @@ BlasAction AccelerationStructureService::notifyMesh(std::uint32_t meshId, Buffer
         state.deformVersion = deformVersion;
         state.vertexBuffer = vertexBuffer;
         if (backend_ != nullptr) {
-            backend_->rebuildBlas(state.blas);
+            const auto previousBlas = state.blas;
+            const auto replacement = backend_->rebuildBlas(state.blas, vertexBuffer);
+            if (replacement != previousBlas) {
+                if (previousBlas != 0)
+                    backend_->destroyBlas(previousBlas);
+                state.blas = replacement;
+            }
         }
         blasChangedSinceTlas_ = true;
         ++blasRebuilds_;
@@ -57,7 +67,7 @@ BlasAction AccelerationStructureService::notifyMesh(std::uint32_t meshId, Buffer
         state.deformVersion = deformVersion;
         state.vertexBuffer = vertexBuffer;
         if (backend_ != nullptr) {
-            backend_->refitBlas(state.blas);
+            backend_->refitBlas(state.blas, vertexBuffer);
         }
         ++blasRefits_;
         log::debug("BLAS refit: mesh ", meshId, " deform ", deformVersion);
@@ -185,6 +195,36 @@ bool AccelerationStructureService::removeMesh(std::uint32_t meshId) {
     blasChangedSinceTlas_ = true;
     log::info("BLAS removed: mesh ", meshId);
     return true;
+}
+
+void AccelerationStructureService::reset() noexcept {
+    if (backend_ != nullptr) {
+        if (tlasBuilt_ && tlas_ != 0) {
+            try {
+                backend_->destroyTlas(tlas_);
+            } catch (...) {
+                log::error("TLAS destruction failed during acceleration service reset");
+            }
+        }
+        for (const auto& [meshId, state] : meshes_) {
+            static_cast<void>(meshId);
+            if (state.built && state.blas != 0) {
+                try {
+                    backend_->destroyBlas(state.blas);
+                } catch (...) {
+                    log::error("BLAS destruction failed during acceleration service reset");
+                }
+            }
+        }
+    }
+    meshes_.clear();
+    tlas_ = {};
+    tlasBuilt_ = false;
+    blasChangedSinceTlas_ = false;
+    cachedWorldGeneration_ = 0;
+    hasCachedWorld_ = false;
+    tlasInstanceCount_ = 0;
+    tlasScratch_.clear();
 }
 
 const char* toString(BlasAction action) noexcept {

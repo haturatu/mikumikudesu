@@ -35,17 +35,23 @@ struct MockAccelerationBackend : dayo::graphics::IAccelerationBackend {
     std::uint64_t destroyBlasCalls{0};
     std::uint64_t destroyTlasCalls{0};
     std::size_t lastTlasInstanceCount{};
+    std::vector<dayo::graphics::BufferHandle> rebuildVertexBuffers;
+    std::vector<dayo::graphics::BufferHandle> refitVertexBuffers;
     std::vector<dayo::graphics::TlasInstanceDesc> lastTlasInstances;
 
     dayo::graphics::AccelerationStructureHandle createBlas(dayo::graphics::BufferHandle) override {
         ++createBlasCalls;
         return next++;
     }
-    void rebuildBlas(dayo::graphics::AccelerationStructureHandle) override {
+    dayo::graphics::AccelerationStructureHandle rebuildBlas(dayo::graphics::AccelerationStructureHandle blas,
+                                                            dayo::graphics::BufferHandle vertexBuffer) override {
         ++rebuildBlasCalls;
+        rebuildVertexBuffers.push_back(vertexBuffer);
+        return blas;
     }
-    void refitBlas(dayo::graphics::AccelerationStructureHandle) override {
+    void refitBlas(dayo::graphics::AccelerationStructureHandle, dayo::graphics::BufferHandle vertexBuffer) override {
         ++refitBlasCalls;
+        refitVertexBuffers.push_back(vertexBuffer);
     }
     dayo::graphics::AccelerationStructureHandle
     createTlas(std::span<const dayo::graphics::TlasInstanceDesc> instances) override {
@@ -104,9 +110,29 @@ int main() {
         ok &= check(service.notifyMesh(0, 11, 1, 1) == BlasAction::none, "BLAS unchanged reports none");
         ok &= check(service.notifyMesh(0, 11, 1, 2) == BlasAction::refit, "BLAS deform-only refits");
         ok &= check(backend.refitBlasCalls == 1, "BLAS refit called once");
+        ok &= check(backend.refitVertexBuffers.size() == 1 && backend.refitVertexBuffers.front() == 11,
+                    "BLAS refit receives the current vertex buffer");
         ok &= check(service.notifyMesh(0, 11, 2, 2) == BlasAction::rebuild, "BLAS topology change rebuilds");
         ok &= check(backend.rebuildBlasCalls == 1, "BLAS rebuild called once");
+        ok &= check(backend.rebuildVertexBuffers.size() == 1 && backend.rebuildVertexBuffers.front() == 11,
+                    "BLAS rebuild receives the current vertex buffer");
         ok &= check(service.blasCount() == 1, "BLAS count tracks meshes");
+    }
+    // A changed vertex-buffer allocation is forwarded to BLAS rebuild/refit,
+    // and service destruction releases all remaining backend resources.
+    {
+        MockAccelerationBackend backend;
+        {
+            AccelerationStructureService service(&backend);
+            static_cast<void>(service.notifyMesh(0, 11, 1, 1));
+            static_cast<void>(service.notifyMesh(0, 22, 1, 2));
+            static_cast<void>(service.notifyMesh(0, 33, 2, 3));
+        }
+        ok &= check(backend.refitVertexBuffers.size() == 1 && backend.refitVertexBuffers.front() == 22,
+                    "deform update forwards a replaced vertex buffer");
+        ok &= check(backend.rebuildVertexBuffers.size() == 1 && backend.rebuildVertexBuffers.front() == 33,
+                    "topology update forwards a replaced vertex buffer");
+        ok &= check(backend.destroyBlasCalls == 1, "service destructor releases remaining BLAS");
     }
     // TLAS count reflects CloneCount; count/BLAS change rebuilds, world-only updates.
     {

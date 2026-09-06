@@ -46,8 +46,10 @@ class IAccelerationBackend {
   public:
     virtual ~IAccelerationBackend() = default;
     virtual AccelerationStructureHandle createBlas(BufferHandle vertexBuffer) = 0;
-    virtual void rebuildBlas(AccelerationStructureHandle blas) = 0;
-    virtual void refitBlas(AccelerationStructureHandle blas) = 0;
+    // A topology rebuild may reallocate the BLAS, so it returns the current
+    // handle and receives the buffer that contains the new geometry.
+    virtual AccelerationStructureHandle rebuildBlas(AccelerationStructureHandle blas, BufferHandle vertexBuffer) = 0;
+    virtual void refitBlas(AccelerationStructureHandle blas, BufferHandle vertexBuffer) = 0;
     virtual AccelerationStructureHandle createTlas(std::span<const TlasInstanceDesc> instances) = 0;
     virtual void rebuildTlas(AccelerationStructureHandle tlas, std::span<const TlasInstanceDesc> instances) = 0;
     virtual void updateTlas(AccelerationStructureHandle tlas, std::span<const TlasInstanceDesc> instances) = 0;
@@ -58,6 +60,10 @@ class IAccelerationBackend {
 class AccelerationStructureService {
   public:
     explicit AccelerationStructureService(IAccelerationBackend* backend) : backend_(backend) {}
+    ~AccelerationStructureService();
+
+    AccelerationStructureService(const AccelerationStructureService&) = delete;
+    AccelerationStructureService& operator=(const AccelerationStructureService&) = delete;
 
     // Returns true when the requested renderer can use native RT paths.
     // RT-incapable GPUs keep running Preview; this never enables native passes.
@@ -74,6 +80,9 @@ class AccelerationStructureService {
     [[nodiscard]] TlasAction notifyWorld(std::uint64_t worldGeneration, std::span<const WorldInstance> instances);
 
     [[nodiscard]] bool removeMesh(std::uint32_t meshId);
+    // Releases all backend-owned acceleration structures. Safe to call more
+    // than once and used by the destructor for service lifetime cleanup.
+    void reset() noexcept;
 
     [[nodiscard]] std::size_t blasCount() const noexcept {
         return meshes_.size();
