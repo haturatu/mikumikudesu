@@ -38,16 +38,16 @@ void completeTask(const std::shared_ptr<TaskHandle::State>& state, std::exceptio
 }
 
 void addContinuation(const std::shared_ptr<TaskHandle::State>& state, TaskHandle::State::Continuation continuation) {
-    bool completed = false;
+    TaskHandle::State::Continuation readyContinuation;
     {
         std::lock_guard lock(state->mutex);
         if (state->completed)
-            completed = true;
+            readyContinuation = std::move(continuation);
         else
             state->continuations.push_back(std::move(continuation));
     }
-    if (completed)
-        continuation();
+    if (readyContinuation)
+        readyContinuation();
 }
 
 void waitTask(const std::shared_ptr<TaskHandle::State>& state) {
