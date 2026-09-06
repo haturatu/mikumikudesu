@@ -931,7 +931,7 @@ int main() {
         falling.bone = 0;
         physicsModel.rigidBodies.push_back(falling);
         dayo::core::MmdPhysics physics(physicsModel);
-#if DAYO_HAS_BULLET
+#if LIBMMD_HAS_BULLET
         ok &= check(physics.available() && physics.bodyCount() == 1, "Bullet PMX body creation");
         const auto before = physics.bodyTransform(0);
         for (int i = 0; i < 60; ++i)
