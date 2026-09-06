@@ -466,6 +466,21 @@ int main() {
         });
         scheduler.wait(upload);
         ok &= check(dependencyOrder.load() == 3 && upload.valid(), "task scheduler dependency graph");
+
+        dayo::core::TaskScheduler singleWorker(1);
+        const auto root = singleWorker.schedule([] {});
+        const auto dependent = singleWorker.scheduleAfter(root, [] {});
+        singleWorker.wait(dependent);
+        ok &= check(dependent.valid(), "task scheduler releases dependent tasks after completion");
+
+        const auto workerWait = singleWorker.schedule([&] { singleWorker.wait(root); });
+        bool workerWaitRejected = false;
+        try {
+            singleWorker.wait(workerWait);
+        } catch (const std::logic_error&) {
+            workerWaitRejected = true;
+        }
+        ok &= check(workerWaitRejected, "task scheduler rejects blocking waits from workers");
     }
     {
         using dayo::graphics::RenderGraphLite;

@@ -46,6 +46,8 @@ class TaskScheduler {
     [[nodiscard]] TaskHandle scheduleAfter(const TaskHandle& dependency, TaskFunction function);
     [[nodiscard]] TaskHandle scheduleAfter(std::span<const TaskHandle> dependencies, TaskFunction function);
     [[nodiscard]] TaskHandle scheduleAfter(std::initializer_list<TaskHandle> dependencies, TaskFunction function);
+    // Blocking waits are for callers outside the worker pool. Worker tasks
+    // should express ordering with scheduleAfter instead.
     void wait(const TaskHandle& handle) const;
     [[nodiscard]] std::size_t workerCount() const noexcept;
 

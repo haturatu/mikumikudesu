@@ -1,6 +1,7 @@
 #include "core/task_scheduler.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <exception>
@@ -14,19 +15,39 @@
 namespace dayo::core {
 
 struct TaskHandle::State {
+    using Continuation = std::function<void()>;
+
     std::condition_variable condition;
     std::mutex mutex;
     bool completed{};
     std::exception_ptr exception;
+    std::vector<Continuation> continuations;
 };
 
 void completeTask(const std::shared_ptr<TaskHandle::State>& state, std::exception_ptr exception) {
+    std::vector<TaskHandle::State::Continuation> continuations;
     {
         std::lock_guard lock(state->mutex);
         state->exception = std::move(exception);
         state->completed = true;
+        continuations = std::move(state->continuations);
     }
     state->condition.notify_all();
+    for (auto& continuation : continuations)
+        continuation();
+}
+
+void addContinuation(const std::shared_ptr<TaskHandle::State>& state, TaskHandle::State::Continuation continuation) {
+    TaskHandle::State::Continuation readyContinuation;
+    {
+        std::lock_guard lock(state->mutex);
+        if (state->completed)
+            readyContinuation = std::move(continuation);
+        else
+            state->continuations.push_back(std::move(continuation));
+    }
+    if (readyContinuation)
+        readyContinuation();
 }
 
 void waitTask(const std::shared_ptr<TaskHandle::State>& state) {
@@ -192,10 +213,21 @@ TaskHandle TaskScheduler::scheduleAfter(std::span<const TaskHandle> dependencies
             throw std::invalid_argument("cannot schedule after an invalid task handle");
         states.push_back(dependency.state_);
     }
+    if (states.empty())
+        return schedule(std::move(function));
+
     auto state = std::make_shared<TaskHandle::State>();
     const TaskHandle handle(state);
-    impl_->enqueue(
-        [dependencies = std::move(states), state = std::move(state), function = std::move(function)]() mutable {
+    struct DependencyGate {
+        std::atomic<std::size_t> remaining{0};
+        std::function<void()> ready;
+    };
+    auto gate = std::make_shared<DependencyGate>();
+    gate->remaining = states.size();
+    gate->ready = [this, dependencies = std::move(states), state = std::move(state),
+                   function = std::move(function)]() mutable {
+        impl_->enqueue([dependencies = std::move(dependencies), state = std::move(state),
+                        function = std::move(function)]() mutable {
             std::exception_ptr exception;
             try {
                 for (const auto& dependency : dependencies)
@@ -206,6 +238,13 @@ TaskHandle TaskScheduler::scheduleAfter(std::span<const TaskHandle> dependencies
             }
             completeTask(state, std::move(exception));
         });
+    };
+    for (const auto& dependency : dependencies) {
+        addContinuation(dependency.state_, [gate] {
+            if (gate->remaining.fetch_sub(1U, std::memory_order_acq_rel) == 1U)
+                gate->ready();
+        });
+    }
     return handle;
 }
 
@@ -214,6 +253,8 @@ TaskHandle TaskScheduler::scheduleAfter(std::initializer_list<TaskHandle> depend
 }
 
 void TaskScheduler::wait(const TaskHandle& handle) const {
+    if (Impl::currentWorker() == impl_.get())
+        throw std::logic_error("worker tasks must use scheduleAfter instead of blocking wait");
     waitTask(handle.state_);
 }
 
