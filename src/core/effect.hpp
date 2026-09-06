@@ -14,7 +14,7 @@
 
 namespace dayo::core {
 
-enum class EffectPassType { rasterizer, postprocess, compute, raytracing, unknown };
+enum class EffectPassType { rasterizer, postprocess, compute, raytracing, copy, clear, mipmap, unknown };
 
 struct EffectSize {
     std::string base;
@@ -77,6 +77,7 @@ struct EffectPass {
     std::vector<EffectHitGroup> hitGroups;
     std::vector<std::string> macros;
     std::vector<std::string> conditions;
+    std::vector<EffectAttachment> inputs;
     std::vector<EffectAttachment> renderTargets;
     std::vector<EffectAttachment> unorderedAccess;
     EffectAttachment depth;
@@ -198,6 +199,9 @@ class EffectHotReloader {
 };
 
 [[nodiscard]] EffectGraph loadEffectGraph(const std::filesystem::path& path);
+// Parses an already loaded source buffer. This is the hot-reload entry point;
+// callers must not be forced back to the stale on-disk version.
+[[nodiscard]] EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::string_view source);
 [[nodiscard]] const char* toString(EffectPassType type) noexcept;
 
 } // namespace dayo::core

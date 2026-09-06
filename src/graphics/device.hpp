@@ -1,7 +1,10 @@
 #pragma once
 
 #include "core/image.hpp"
+#include "graphics/handles.hpp"
+#include "graphics/resource.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -106,7 +109,9 @@ enum class PreviewSkinningType : std::uint32_t {
     qdef,
 };
 
-enum PreviewDebugFlags : std::uint32_t {
+// Bitmask values are part of the legacy Preview ABI and remain implicitly
+// combinable by callers.
+enum PreviewDebugFlags : std::uint32_t { // NOLINT(cppcoreguidelines-use-enum-class)
     previewDebugDisableBaseTexture = 1U << 0U,
     previewDebugDisableSphere = 1U << 1U,
     previewDebugDisableToon = 1U << 2U,
@@ -231,7 +236,21 @@ struct PipelineDesc {
     std::vector<ShaderHandle> shaders;
     bool compute{};
 };
+struct GraphicsPipelineDescEx {
+    handles::PipelineLayoutHandle layout{};
+    std::vector<ShaderHandle> shaders;
+};
+struct ComputePipelineDescEx {
+    handles::PipelineLayoutHandle layout{};
+    std::vector<ShaderHandle> shaders;
+};
 struct RayTracingPipelineDesc {
+    std::vector<ShaderHandle> rayGeneration;
+    std::vector<ShaderHandle> miss;
+    std::vector<ShaderHandle> closestHit;
+};
+struct RayTracingPipelineDescEx {
+    handles::PipelineLayoutHandle layout{};
     std::vector<ShaderHandle> rayGeneration;
     std::vector<ShaderHandle> miss;
     std::vector<ShaderHandle> closestHit;
@@ -241,6 +260,82 @@ struct DescriptorBinding {
     BufferHandle buffer{};
     TextureViewHandle texture{};
     SamplerHandle sampler{};
+};
+
+enum class DescriptorKind : std::uint8_t {
+    sampler,
+    sampledImage,
+    combinedImageSampler,
+    storageImage,
+    uniformBuffer,
+    storageBuffer,
+    accelerationStructure,
+};
+
+enum class ShaderStageMask : std::uint32_t {
+    none = 0,
+    vertex = 1U << 0U,
+    fragment = 1U << 1U,
+    compute = 1U << 2U,
+    rayGeneration = 1U << 3U,
+    miss = 1U << 4U,
+    closestHit = 1U << 5U,
+};
+
+constexpr ShaderStageMask operator|(ShaderStageMask left, ShaderStageMask right) noexcept {
+    return static_cast<ShaderStageMask>(static_cast<std::uint32_t>(left) | static_cast<std::uint32_t>(right));
+}
+
+constexpr ShaderStageMask& operator|=(ShaderStageMask& left, ShaderStageMask right) noexcept {
+    left = left | right;
+    return left;
+}
+
+struct DescriptorSetLayoutBinding {
+    std::uint32_t binding{};
+    DescriptorKind kind{DescriptorKind::sampledImage};
+    std::uint32_t count{1};
+    ShaderStageMask stages{ShaderStageMask::none};
+};
+
+struct DescriptorSetLayoutDesc {
+    std::vector<DescriptorSetLayoutBinding> bindings;
+};
+
+struct PushConstantRange {
+    ShaderStageMask stages{ShaderStageMask::none};
+    std::uint32_t offset{};
+    std::uint32_t size{};
+};
+
+struct PipelineLayoutDesc {
+    std::vector<handles::DescriptorSetLayoutHandle> setLayouts;
+    std::vector<PushConstantRange> pushConstants;
+};
+
+// Typed (generation-checked) descriptors. The legacy uint64_t handles above
+// are preserved for the Preview backend; new FX/RT paths use handles:: types.
+struct DescriptorBindingEx {
+    std::uint32_t slot{};
+    std::uint32_t arrayElement{};
+    handles::BufferHandle buffer{};
+    handles::TextureHandle texture{};
+    handles::SamplerHandle sampler{};
+    handles::AccelerationStructureHandle accelerationStructure{};
+};
+
+struct ExternalTextureImportDesc {
+    TextureResourceDesc desc{};
+    std::uint64_t externalMemoryId{};
+    std::size_t offset{};
+    std::size_t size{};
+};
+
+struct ShaderBindingTableDesc {
+    handles::PipelineHandle pipeline{};
+    std::uint32_t raygenCount{};
+    std::uint32_t missCount{};
+    std::uint32_t hitCount{};
 };
 
 class CommandList {
@@ -257,6 +352,17 @@ class CommandList {
     virtual void clearTexture(TextureHandle) {}
     virtual void generateMipmaps(TextureHandle) {}
     virtual void buildAccelerationStructure(AccelerationStructureHandle) {}
+    // Typed (generation-checked) recording. Preview command lists that do not
+    // implement the typed path fail explicitly instead of dropping commands.
+    virtual void copyTextureEx(handles::TextureHandle, handles::TextureHandle) {
+        throw std::logic_error("Typed command-list texture copy is not implemented by this backend");
+    }
+    virtual void clearTextureEx(handles::TextureHandle) {
+        throw std::logic_error("Typed command-list texture clear is not implemented by this backend");
+    }
+    virtual void generateMipmapsEx(handles::TextureHandle) {
+        throw std::logic_error("Typed command-list mipmap generation is not implemented by this backend");
+    }
 };
 
 class Device {
@@ -327,6 +433,129 @@ class Device {
     }
     [[nodiscard]] virtual AccelerationStructureHandle createTLAS(std::span<const AccelerationStructureHandle>) {
         throw std::logic_error("TLAS is not implemented by this backend");
+    }
+
+    // ---- Typed resource creation (3D/mip/array/typed usage) ----
+    // TextureResourceDesc already carries dimension/extent/mipLevels/arrayLayers
+    // so 2D, 3D, cube, mip chains, and texture arrays share one entry point.
+    // All new virtuals default to logic_error so Preview backends keep building
+    // without modification; FX/RT backends override them. Mock devices use the
+    // same defaults for unit testing.
+    [[nodiscard]] virtual handles::TextureHandle createTextureEx(const TextureResourceDesc&) {
+        throw std::logic_error("Typed textures are not implemented by this backend");
+    }
+    [[nodiscard]] virtual handles::BufferHandle createBufferEx(const BufferResourceDesc&) {
+        throw std::logic_error("Typed buffers are not implemented by this backend");
+    }
+    // ---- destroy / retirement ----
+    virtual void destroyTextureEx(handles::TextureHandle) {
+        throw std::logic_error("Typed texture destroy is not implemented by this backend");
+    }
+    virtual void destroyBufferEx(handles::BufferHandle) {
+        throw std::logic_error("Typed buffer destroy is not implemented by this backend");
+    }
+    virtual void retireTextureEx(handles::TextureHandle, std::uint64_t /*frameIndex*/) {
+        throw std::logic_error("Typed texture retirement is not implemented by this backend");
+    }
+    virtual void retireBufferEx(handles::BufferHandle, std::uint64_t /*frameIndex*/) {
+        throw std::logic_error("Typed buffer retirement is not implemented by this backend");
+    }
+    // ---- descriptor ----
+    [[nodiscard]] virtual handles::DescriptorSetHandle allocateDescriptorSetEx(std::span<const DescriptorBindingEx>) {
+        throw std::logic_error("Typed descriptor sets are not implemented by this backend");
+    }
+    [[nodiscard]] virtual handles::DescriptorSetHandle allocateDescriptorSetEx(handles::DescriptorSetLayoutHandle,
+                                                                               std::span<const DescriptorBindingEx>) {
+        throw std::logic_error("Typed descriptor sets are not implemented by this backend");
+    }
+    virtual void updateDescriptorSetEx(handles::DescriptorSetHandle, std::span<const DescriptorBindingEx>) {
+        throw std::logic_error("Typed descriptor update is not implemented by this backend");
+    }
+    virtual void destroyDescriptorSetEx(handles::DescriptorSetHandle) {
+        throw std::logic_error("Typed descriptor destroy is not implemented by this backend");
+    }
+    [[nodiscard]] virtual handles::DescriptorSetLayoutHandle
+    createDescriptorSetLayoutEx(const DescriptorSetLayoutDesc&) {
+        throw std::logic_error("Typed descriptor set layouts are not implemented by this backend");
+    }
+    virtual void destroyDescriptorSetLayoutEx(handles::DescriptorSetLayoutHandle) {
+        throw std::logic_error("Typed descriptor set layout destroy is not implemented by this backend");
+    }
+    [[nodiscard]] virtual handles::PipelineLayoutHandle createPipelineLayoutEx(const PipelineLayoutDesc&) {
+        throw std::logic_error("Typed pipeline layouts are not implemented by this backend");
+    }
+    virtual void destroyPipelineLayoutEx(handles::PipelineLayoutHandle) {
+        throw std::logic_error("Typed pipeline layout destroy is not implemented by this backend");
+    }
+    // ---- pipeline / SBT ----
+    [[nodiscard]] virtual handles::PipelineHandle createGraphicsPipelineEx(const PipelineDesc&) {
+        throw std::logic_error("Typed graphics pipelines are not implemented by this backend");
+    }
+    [[nodiscard]] virtual handles::PipelineHandle createGraphicsPipelineEx(const GraphicsPipelineDescEx&) {
+        throw std::logic_error("Typed graphics pipelines are not implemented by this backend");
+    }
+    [[nodiscard]] virtual handles::PipelineHandle createComputePipelineEx(const PipelineDesc&) {
+        throw std::logic_error("Typed compute pipelines are not implemented by this backend");
+    }
+    [[nodiscard]] virtual handles::PipelineHandle createComputePipelineEx(const ComputePipelineDescEx&) {
+        throw std::logic_error("Typed compute pipelines are not implemented by this backend");
+    }
+    [[nodiscard]] virtual handles::PipelineHandle createRayTracingPipelineEx(const RayTracingPipelineDesc&) {
+        throw std::logic_error("Typed ray-tracing pipelines are not implemented by this backend");
+    }
+    [[nodiscard]] virtual handles::PipelineHandle createRayTracingPipelineEx(const RayTracingPipelineDescEx&) {
+        throw std::logic_error("Typed ray-tracing pipelines are not implemented by this backend");
+    }
+    virtual void destroyPipelineEx(handles::PipelineHandle) {
+        throw std::logic_error("Typed pipeline destroy is not implemented by this backend");
+    }
+    [[nodiscard]] virtual handles::ShaderBindingTableHandle createShaderBindingTable(const ShaderBindingTableDesc&) {
+        throw std::logic_error("Shader binding tables are not implemented by this backend");
+    }
+    virtual void destroyShaderBindingTable(handles::ShaderBindingTableHandle) {
+        throw std::logic_error("Shader binding table destroy is not implemented by this backend");
+    }
+    // ---- copy / clear (typed, incl. mip generation) ----
+    virtual void copyBufferEx(handles::BufferHandle, handles::BufferHandle) {
+        throw std::logic_error("Typed buffer copy is not implemented by this backend");
+    }
+    virtual void copyBufferToTextureEx(handles::BufferHandle, handles::TextureHandle) {
+        throw std::logic_error("Typed buffer-to-texture copy is not implemented by this backend");
+    }
+    virtual void copyTextureToBufferEx(handles::TextureHandle, handles::BufferHandle) {
+        throw std::logic_error("Typed texture-to-buffer copy is not implemented by this backend");
+    }
+    virtual void copyTextureEx(handles::TextureHandle, handles::TextureHandle) {
+        throw std::logic_error("Typed texture copy is not implemented by this backend");
+    }
+    virtual void clearTextureEx(handles::TextureHandle, const std::array<float, 4>&) {
+        throw std::logic_error("Typed texture clear is not implemented by this backend");
+    }
+    virtual void clearBufferEx(handles::BufferHandle, std::uint32_t) {
+        throw std::logic_error("Typed buffer clear is not implemented by this backend");
+    }
+    virtual void generateMipmapsEx(handles::TextureHandle) {
+        throw std::logic_error("Typed mipmap generation is not implemented by this backend");
+    }
+    // ---- external memory ----
+    [[nodiscard]] virtual handles::TextureHandle importExternalTexture(const ExternalTextureImportDesc&) {
+        throw std::logic_error("External texture import is not implemented by this backend");
+    }
+    // ---- readback / upload ----
+    virtual void uploadTextureEx(handles::TextureHandle, std::span<const std::uint8_t>, std::uint32_t /*mipLevel*/,
+                                 std::uint32_t /*arrayLayer*/) {
+        throw std::logic_error("Typed texture upload is not implemented by this backend");
+    }
+    [[nodiscard]] virtual std::vector<std::uint8_t>
+    readbackTextureEx(handles::TextureHandle, std::uint32_t /*mipLevel*/, std::uint32_t /*arrayLayer*/) {
+        throw std::logic_error("Typed texture readback is not implemented by this backend");
+    }
+    virtual void uploadBufferEx(handles::BufferHandle, std::span<const std::byte>, std::size_t /*offset*/) {
+        throw std::logic_error("Typed buffer upload is not implemented by this backend");
+    }
+    [[nodiscard]] virtual std::vector<std::byte> readbackBufferEx(handles::BufferHandle, std::size_t /*offset*/,
+                                                                  std::size_t /*size*/) {
+        throw std::logic_error("Typed buffer readback is not implemented by this backend");
     }
 
   protected:

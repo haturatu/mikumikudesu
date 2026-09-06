@@ -18,6 +18,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Restore MikuMikuDayo archive
         uses: actions/cache@v6
