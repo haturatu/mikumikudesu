@@ -149,6 +149,19 @@ add_library(
   dayo_core
   src/core/asset.cpp
   src/core/denoiser.cpp
+  src/editor/bone_window.cpp
+  src/editor/config.cpp
+  src/editor/editor_operation.cpp
+  src/editor/editor_session.cpp
+  src/editor/external_parent_window.cpp
+  src/editor/fx_debug_window.cpp
+  src/editor/interpolation_window.cpp
+  src/editor/keyframe_window.cpp
+  src/editor/localization.cpp
+  src/editor/material_window.cpp
+  src/editor/motion_key_id.cpp
+  src/editor/output_window.cpp
+  src/editor/selection.cpp
   src/core/effect.cpp
   src/core/ffmpeg_utils.cpp
   src/core/image.cpp
