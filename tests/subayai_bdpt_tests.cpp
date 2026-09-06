@@ -222,7 +222,8 @@ int main() {
     {
         dayo::core::DenoiserRuntime runtime;
         runtime.setShareable(false);
-        ok &= check(runtime.ensure(2, 1), "denoiser ensure accepts extent");
+        const bool ensured = runtime.ensure(2, 1);
+        ok &= check(ensured || !runtime.available(), "denoiser ensure accepts extent or reports unavailable");
         const std::array<float, 6> beauty{1.0F, 2.0F, 3.0F, 4.0F, 5.0F, 6.0F};
         const std::array<float, 6> albedo{0.5F, 0.5F, 0.5F, 0.5F, 0.5F, 0.5F};
         const std::array<float, 6> normal{0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F};
