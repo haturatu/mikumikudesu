@@ -129,29 +129,32 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
     impl_->modes.reserve(model.rigidBodies.size());
     for (const auto& source : model.rigidBodies) {
         const auto validDimension = [](float value) { return std::isfinite(value) && std::abs(value) >= 0.001F; };
-        bool invalidShape = false;
-        switch (source.shape) {
-        case 0:
-            invalidShape = !validDimension(source.size[0]);
-            if (!invalidShape)
-                impl_->shapes.push_back(std::make_unique<btSphereShape>(std::abs(source.size[0])));
-            break;
-        case 1:
-            invalidShape =
-                !validDimension(source.size[0]) || !validDimension(source.size[1]) || !validDimension(source.size[2]);
-            if (!invalidShape) {
-                const Float3 boxSize{std::abs(source.size[0]), std::abs(source.size[1]), std::abs(source.size[2])};
-                impl_->shapes.push_back(std::make_unique<btBoxShape>(vector(boxSize)));
+        bool invalidShape = !source.physicsEnabled;
+        if (!invalidShape) {
+            switch (source.shape) {
+            case 0:
+                invalidShape = !validDimension(source.size[0]);
+                if (!invalidShape)
+                    impl_->shapes.push_back(std::make_unique<btSphereShape>(std::abs(source.size[0])));
+                break;
+            case 1:
+                invalidShape = !validDimension(source.size[0]) || !validDimension(source.size[1]) ||
+                               !validDimension(source.size[2]);
+                if (!invalidShape) {
+                    const Float3 boxSize{std::abs(source.size[0]), std::abs(source.size[1]), std::abs(source.size[2])};
+                    impl_->shapes.push_back(std::make_unique<btBoxShape>(vector(boxSize)));
+                }
+                break;
+            case 2:
+                invalidShape = !validDimension(source.size[0]) || !validDimension(source.size[1]);
+                if (!invalidShape)
+                    impl_->shapes.push_back(
+                        std::make_unique<btCapsuleShape>(std::abs(source.size[0]), std::abs(source.size[1])));
+                break;
+            default:
+                invalidShape = true;
+                break;
             }
-            break;
-        case 2:
-            invalidShape = !validDimension(source.size[0]) || !validDimension(source.size[1]);
-            if (!invalidShape)
-                impl_->shapes.push_back(
-                    std::make_unique<btCapsuleShape>(std::abs(source.size[0]), std::abs(source.size[1])));
-            break;
-        default:
-            throw std::runtime_error("unsupported PMX rigid body shape");
         }
         if (invalidShape)
             impl_->shapes.push_back(std::make_unique<btEmptyShape>());
@@ -213,8 +216,8 @@ MmdPhysics::MmdPhysics(const PmxModel& model) : impl_(std::make_unique<Impl>()) 
     }
     impl_->constraints.reserve(model.joints.size());
     for (const auto& source : model.joints) {
-        if (source.type != 0 || source.bodyA < 0 || source.bodyB < 0 || source.bodyA == source.bodyB ||
-            static_cast<std::size_t>(source.bodyA) >= impl_->bodies.size() ||
+        if (!source.physicsEnabled || source.type != 0 || source.bodyA < 0 || source.bodyB < 0 ||
+            source.bodyA == source.bodyB || static_cast<std::size_t>(source.bodyA) >= impl_->bodies.size() ||
             static_cast<std::size_t>(source.bodyB) >= impl_->bodies.size())
             continue;
         const auto& bodyA = impl_->bodies[static_cast<std::size_t>(source.bodyA)];

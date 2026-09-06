@@ -1,4 +1,5 @@
 #include "core/model_probe.hpp"
+#include "core/log.hpp"
 #include "core/mapped_file.hpp"
 
 #include <algorithm>
@@ -351,7 +352,8 @@ void readDisplayFrames(std::istream& input, const Header& header, PmxModel& mode
 void readPhysics(std::istream& input, const Header& header, PmxModel& model) {
     const auto bodyCount = readCount(input, "rigid body count", 1'000'000);
     model.rigidBodies.resize(static_cast<std::size_t>(bodyCount));
-    for (auto& body : model.rigidBodies) {
+    for (std::size_t bodyIndex = 0; bodyIndex < model.rigidBodies.size(); ++bodyIndex) {
+        auto& body = model.rigidBodies[bodyIndex];
         body.name = readText(input, header.metadata.textEncoding);
         body.englishName = readText(input, header.metadata.textEncoding);
         body.bone = readSignedIndex(input, header.settings[5], "rigid body bone");
@@ -367,17 +369,44 @@ void readPhysics(std::istream& input, const Header& header, PmxModel& model) {
         body.restitution = read<float>(input, "rigid body restitution");
         body.friction = read<float>(input, "rigid body friction");
         body.mode = read<std::uint8_t>(input, "rigid body mode");
-        const auto finite = [](const auto& values) {
-            return std::ranges::all_of(values, [](const float value) { return std::isfinite(value); });
+        std::size_t repaired = 0;
+        const auto sanitize = [&repaired](auto& values, const float fallback = 0.0F) {
+            for (auto& value : values) {
+                if (!std::isfinite(value)) {
+                    value = fallback;
+                    ++repaired;
+                }
+            }
         };
-        if (!finite(body.size) || !finite(body.position) || !finite(body.rotation) || !std::isfinite(body.mass) ||
-            !std::isfinite(body.linearDamping) || !std::isfinite(body.angularDamping) ||
-            !std::isfinite(body.restitution) || !std::isfinite(body.friction))
-            throw std::runtime_error("invalid PMX rigid body numeric value");
+        const auto sanitizeScalar = [&repaired](float& value, const float fallback = 0.0F) {
+            if (!std::isfinite(value)) {
+                value = fallback;
+                ++repaired;
+            }
+        };
+        sanitize(body.position);
+        sanitize(body.rotation);
+        sanitizeScalar(body.linearDamping);
+        sanitizeScalar(body.angularDamping);
+        sanitizeScalar(body.restitution);
+        sanitizeScalar(body.friction);
+        sanitizeScalar(body.mass);
+        const auto invalidShape =
+            !std::ranges::all_of(body.size, [](const float value) { return std::isfinite(value); }) || body.shape > 2 ||
+            body.mode > 2;
+        if (invalidShape) {
+            body.physicsEnabled = false;
+            sanitize(body.size);
+        }
+        if (repaired != 0 || invalidShape)
+            log::warn("PMX rigid body #", bodyIndex, " \"", body.name,
+                      "\": repaired invalid physics values; body physics ",
+                      (body.physicsEnabled ? "enabled" : "disabled"));
     }
     const auto jointCount = readCount(input, "joint count", 1'000'000);
     model.joints.resize(static_cast<std::size_t>(jointCount));
-    for (auto& joint : model.joints) {
+    for (std::size_t jointIndex = 0; jointIndex < model.joints.size(); ++jointIndex) {
+        auto& joint = model.joints[jointIndex];
         joint.name = readText(input, header.metadata.textEncoding);
         joint.englishName = readText(input, header.metadata.textEncoding);
         joint.type = read<std::uint8_t>(input, "joint type");
@@ -391,6 +420,16 @@ void readPhysics(std::istream& input, const Header& header, PmxModel& model) {
         joint.rotationMaximum = readFloatArray<3>(input, "joint rotation maximum");
         joint.translationSpring = readFloatArray<3>(input, "joint translation spring");
         joint.rotationSpring = readFloatArray<3>(input, "joint rotation spring");
+        const auto finite = [](const auto& values) {
+            return std::ranges::all_of(values, [](const float value) { return std::isfinite(value); });
+        };
+        if (!finite(joint.position) || !finite(joint.rotation) || !finite(joint.translationMinimum) ||
+            !finite(joint.translationMaximum) || !finite(joint.rotationMinimum) || !finite(joint.rotationMaximum) ||
+            !finite(joint.translationSpring) || !finite(joint.rotationSpring)) {
+            joint.physicsEnabled = false;
+            log::warn("PMX joint #", jointIndex, " \"", joint.name,
+                      "\": disabled because it contains non-finite physics values");
+        }
     }
 }
 

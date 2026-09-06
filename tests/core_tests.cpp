@@ -664,9 +664,33 @@ int main() {
         append(output, static_cast<std::int32_t>(-1));
         appendText(output, "");
         append(output, static_cast<std::int32_t>(3));
-        // bones, morphs, display frames, bodies and joints
-        for (int section = 0; section < 5; ++section)
+        // bones, morphs and display frames
+        for (int section = 0; section < 3; ++section)
             append(output, static_cast<std::int32_t>(0));
+        append(output, static_cast<std::int32_t>(1)); // rigid bodies
+        appendText(output, "compat body");
+        appendText(output, "compat body");
+        append(output, static_cast<std::int32_t>(-1));
+        append(output, static_cast<std::uint8_t>(0));
+        append(output, static_cast<std::uint16_t>(0xffff));
+        append(output, static_cast<std::uint8_t>(0));
+        const std::array<float, 3> rigidBodySize{1.0F, 1.0F, 1.0F};
+        const std::array<float, 3> rigidBodyPosition{};
+        const std::array<float, 3> rigidBodyRotation{
+            std::numeric_limits<float>::quiet_NaN(),
+            std::numeric_limits<float>::quiet_NaN(),
+            std::numeric_limits<float>::quiet_NaN(),
+        };
+        output.write(reinterpret_cast<const char*>(rigidBodySize.data()), sizeof(rigidBodySize));
+        output.write(reinterpret_cast<const char*>(rigidBodyPosition.data()), sizeof(rigidBodyPosition));
+        output.write(reinterpret_cast<const char*>(rigidBodyRotation.data()), sizeof(rigidBodyRotation));
+        append(output, 1.0F);
+        append(output, 0.5F);
+        append(output, 0.5F);
+        append(output, 0.0F);
+        append(output, 0.5F);
+        append(output, static_cast<std::uint8_t>(0));
+        append(output, static_cast<std::int32_t>(0)); // joints
     }
     try {
         const auto metadata = dayo::core::probePmx(path);
@@ -678,6 +702,9 @@ int main() {
         ok &= check(mesh.indices.size() == 3 && mesh.indices[2] == 2, "PMX index loading");
         const auto model = dayo::core::loadPmxModel(path);
         ok &= check(model.materials.size() == 1 && model.bones.empty(), "complete PMX sections");
+        ok &= check(model.rigidBodies.size() == 1 && model.rigidBodies[0].physicsEnabled &&
+                        model.rigidBodies[0].rotation == dayo::core::Float3{},
+                    "PMX repairs non-finite rigid body rotations");
         dayo::core::Scene scene;
         ok &= check(scene.physicsSettings().gravity == 98.0F, "MMD gravity default");
         const auto initialTopologyGeneration = scene.topologyGeneration();
