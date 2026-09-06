@@ -274,14 +274,12 @@ int main() {
         }
         ok &= check(unknownPassThrew, "unknown legacy pass is rejected");
 
-        const FxPass utility{.name = "clear", .category = FxCategory::postprocess, .op = FxPassOp{FxClearRtvOp{}}};
-        bool utilityThrew = false;
-        try {
-            static_cast<void>(effectPassFromFxPass(utility));
-        } catch (const std::runtime_error&) {
-            utilityThrew = true;
-        }
-        ok &= check(utilityThrew, "utility pass is rejected by legacy conversion");
+        const FxPass utility{.name = "clear",
+                             .category = FxCategory::postprocess,
+                             .op = FxPassOp{FxClearRtvOp{.target = "color", .clear = true}}};
+        const auto utilityLegacy = effectPassFromFxPass(utility);
+        ok &= check(utilityLegacy.type == EffectPassType::clear && utilityLegacy.renderTargets.size() == 1,
+                    "clear utility pass preserves legacy conversion");
     }
 
     if (!ok)
