@@ -88,6 +88,11 @@ struct FxExpr {
     };
 
     std::variant<Literal, Identifier, Unary, Binary, Call> node;
+
+    // Keep construction portable across standard library implementations:
+    // the recursive alternatives do not need to determine variant's default
+    // alternative.
+    FxExpr() : node(Literal{FxScalar{std::int64_t{0}}}) {}
 };
 
 // Parse a scalar expression. Supports:
