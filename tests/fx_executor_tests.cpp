@@ -112,11 +112,11 @@ bool testMockTraceMatches() {
     program.label = "trace";
     program.generation = 1;
     program.passes = {
-        {"BG", dayo::fx::FxOpKind::clear, {}, 1, 1, {{"background", true}}},
-        {"MMD", dayo::fx::FxOpKind::raster, {}, 1, 1, {}},
-        {"DENOISE", dayo::fx::FxOpKind::compute, {}, 1, 1, {}},
-        {"Copy", dayo::fx::FxOpKind::copy, {}, 1, 1, {{"source", false}, {"destination", true}}},
-        {"Mip", dayo::fx::FxOpKind::mipmap, {}, 1, 1, {{"destination", true}}},
+        {"BG", dayo::fx::FxOpKind::clear, {}, 1, 1, {{"background", true}}, {}},
+        {"MMD", dayo::fx::FxOpKind::raster, {}, 1, 1, {}, {}},
+        {"DENOISE", dayo::fx::FxOpKind::compute, {}, 1, 1, {}, {}},
+        {"Copy", dayo::fx::FxOpKind::copy, {}, 1, 1, {{"source", false}, {"destination", true}}, {}},
+        {"Mip", dayo::fx::FxOpKind::mipmap, {}, 1, 1, {{"destination", true}}, {}},
     };
     dayo::fx::FxCompiler compiler;
     const auto plan = compiler.plan(program, testContext());
@@ -133,7 +133,7 @@ bool testMockTraceMatches() {
                 "executor stats count each kind");
     // Raytracing must fail explicitly, never silently skip.
     dayo::fx::FxProgram rayProgram = program;
-    rayProgram.passes.push_back({"RT", dayo::fx::FxOpKind::raytracing, {}, 1, 1, {}});
+    rayProgram.passes.push_back({"RT", dayo::fx::FxOpKind::raytracing, {}, 1, 1, {}, {}});
     bool threw = false;
     try {
         const auto rayPlan = compiler.plan(rayProgram, testContext());
@@ -243,7 +243,7 @@ bool testHotReloadKeepsCurrentOnFailure() {
     dayo::fx::FxProgram initial;
     initial.label = "Preview";
     initial.generation = 7;
-    initial.passes = {{"MMD", dayo::fx::FxOpKind::raster, {}, 1, 1, {}}};
+    initial.passes = {{"MMD", dayo::fx::FxOpKind::raster, {}, 1, 1, {}, {}}};
     dayo::fx::FxInstance instance(initial);
     bool ok = true;
     const auto empty = dayo::fx::makeFxSourceDocument("empty.fxdayo", "", 1);

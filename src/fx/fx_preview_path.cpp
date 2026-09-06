@@ -27,11 +27,11 @@ FxProgram makePreviewReferenceProgram() {
     program.label = "PreviewReference";
     program.generation = 1;
     program.passes = {
-        {"BG", FxOpKind::clear, {}, 1, 1, {{"preview.background", true}}},
-        {"MMD", FxOpKind::raster, {}, 1, 1, {{"preview.color", true}}},
-        {"GBuffer", FxOpKind::raster, {}, 1, 1, {{"preview.gbuffer", true}}},
-        {"Copy", FxOpKind::copy, {}, 1, 1, {{"preview.gbuffer", false}, {"preview.color", true}}},
-        {"DENOISE", FxOpKind::compute, {}, 1, 1, {{"preview.color", false}, {"preview.denoised", true}}},
+        {"BG", FxOpKind::clear, {}, 1, 1, {{"preview.background", true}}, {}},
+        {"MMD", FxOpKind::raster, {}, 1, 1, {{"preview.color", true}}, {}},
+        {"GBuffer", FxOpKind::raster, {}, 1, 1, {{"preview.gbuffer", true}}, {}},
+        {"Copy", FxOpKind::copy, {}, 1, 1, {{"preview.gbuffer", false}, {"preview.color", true}}, {}},
+        {"DENOISE", FxOpKind::compute, {}, 1, 1, {{"preview.color", false}, {"preview.denoised", true}}, {}},
     };
     return program;
 }
