@@ -100,6 +100,12 @@ EffectPassType toEffectPassType(const FxPassOp& op) noexcept {
                 return EffectPassType::compute;
             else if constexpr (std::is_same_v<T, FxRayTracingOp>)
                 return EffectPassType::raytracing;
+            else if constexpr (std::is_same_v<T, FxCopyOp>)
+                return EffectPassType::copy;
+            else if constexpr (std::is_same_v<T, FxClearRtvOp> || std::is_same_v<T, FxClearUavOp>)
+                return EffectPassType::clear;
+            else if constexpr (std::is_same_v<T, FxMipmapGenOp>)
+                return EffectPassType::mipmap;
             else
                 return EffectPassType::unknown;
         },
@@ -116,6 +122,12 @@ FxPassOp fxPassOpFromEffectPassType(EffectPassType type) {
         return FxPassOp{FxComputeOp{}};
     case EffectPassType::raytracing:
         return FxPassOp{FxRayTracingOp{}};
+    case EffectPassType::copy:
+        return FxPassOp{FxCopyOp{}};
+    case EffectPassType::clear:
+        return FxPassOp{FxClearRtvOp{}};
+    case EffectPassType::mipmap:
+        return FxPassOp{FxMipmapGenOp{}};
     case EffectPassType::unknown:
         throw std::runtime_error("unsupported unknown FX pass type");
     }
@@ -208,6 +220,31 @@ FxPass fxPassFromEffectPass(const EffectPass& pass, FxCategory category) {
         out.op = std::move(op);
         break;
     }
+    case EffectPassType::copy: {
+        if (pass.inputs.size() != 1 || pass.renderTargets.size() != 1)
+            throw std::runtime_error("copy pass requires one input and one output: " + pass.name);
+        out.op = FxCopyOp{.source = pass.inputs.front().name, .destination = pass.renderTargets.front().name};
+        break;
+    }
+    case EffectPassType::clear: {
+        if (pass.renderTargets.size() == 1) {
+            out.op = FxClearRtvOp{.target = pass.renderTargets.front().name, .clear = pass.renderTargets.front().clear};
+        } else if (pass.unorderedAccess.size() == 1) {
+            out.op = FxClearUavOp{.target = pass.unorderedAccess.front().name};
+        } else {
+            throw std::runtime_error("clear pass requires one target: " + pass.name);
+        }
+        break;
+    }
+    case EffectPassType::mipmap: {
+        if (pass.renderTargets.size() == 1)
+            out.op = FxMipmapGenOp{.texture = pass.renderTargets.front().name};
+        else if (pass.unorderedAccess.size() == 1)
+            out.op = FxMipmapGenOp{.texture = pass.unorderedAccess.front().name};
+        else
+            throw std::runtime_error("mipmap pass requires one target: " + pass.name);
+        break;
+    }
     case EffectPassType::unknown:
         throw std::runtime_error("unsupported unknown FX pass type: " + pass.name);
     }
@@ -224,7 +261,9 @@ EffectPass effectPassFromFxPass(const FxPass& pass) {
         [](const auto& concrete) {
             using T = std::decay_t<decltype(concrete)>;
             return std::is_same_v<T, FxRasterOp> || std::is_same_v<T, FxPostProcessOp> ||
-                   std::is_same_v<T, FxComputeOp> || std::is_same_v<T, FxRayTracingOp>;
+                   std::is_same_v<T, FxComputeOp> || std::is_same_v<T, FxRayTracingOp> || std::is_same_v<T, FxCopyOp> ||
+                   std::is_same_v<T, FxClearRtvOp> || std::is_same_v<T, FxClearUavOp> ||
+                   std::is_same_v<T, FxMipmapGenOp>;
         },
         pass.op);
     if (!legacyEquivalent)
@@ -258,6 +297,19 @@ EffectPass effectPassFromFxPass(const FxPass& pass) {
                 out.maxPayloadSize = concrete.maxPayloadSize;
                 out.maxAttributeSize = concrete.maxAttributeSize;
                 out.maxRecursionDepth = concrete.maxRecursionDepth;
+            } else if constexpr (std::is_same_v<T, FxCopyOp>) {
+                out.type = EffectPassType::copy;
+                out.inputs.push_back(EffectAttachment{.name = concrete.source, .clear = false});
+                out.renderTargets.push_back(EffectAttachment{.name = concrete.destination, .clear = false});
+            } else if constexpr (std::is_same_v<T, FxClearRtvOp>) {
+                out.type = EffectPassType::clear;
+                out.renderTargets.push_back(EffectAttachment{.name = concrete.target, .clear = concrete.clear});
+            } else if constexpr (std::is_same_v<T, FxClearUavOp>) {
+                out.type = EffectPassType::clear;
+                out.unorderedAccess.push_back(EffectAttachment{.name = concrete.target, .clear = false});
+            } else if constexpr (std::is_same_v<T, FxMipmapGenOp>) {
+                out.type = EffectPassType::mipmap;
+                out.renderTargets.push_back(EffectAttachment{.name = concrete.texture, .clear = false});
             }
         },
         pass.op);

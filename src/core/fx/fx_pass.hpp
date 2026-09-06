@@ -12,7 +12,9 @@
 namespace dayo::core::fx {
 
 // Category (when a pass runs) is orthogonal to the op (what it does).
-// EffectPassType stays untouched; this layer converts to/from it.
+// EffectPassType carries the file-level utility pass kinds as well as the
+// shader pass kinds; this layer converts both directions without lossy
+// unknown fallbacks.
 enum class FxCategory { deform, render, postprocess };
 
 enum class RasterModelTarget { all, self, other, buffer };
@@ -85,9 +87,9 @@ struct FxPass {
 // case-insensitive). Throws std::runtime_error on unknown semantics.
 [[nodiscard]] RasterModelTarget resolveRasterModelTarget(std::string_view semantic);
 
-// EffectPassType interop: raster ops map to rasterizer, postprocess ops to
-// postprocess, compute to compute, and raytracing to raytracing. Utility ops
-// have no legacy equivalent and are rejected when converted back.
+// EffectPassType interop preserves raster, postprocess, compute, raytracing,
+// copy, clear, and mipmap operations. OIDN remains FX-only and is rejected
+// when converted to the legacy representation.
 [[nodiscard]] EffectPassType toEffectPassType(const FxPassOp& op) noexcept;
 [[nodiscard]] FxPassOp fxPassOpFromEffectPassType(EffectPassType type);
 [[nodiscard]] const char* fxPassOpTypeName(const FxPassOp& op) noexcept;

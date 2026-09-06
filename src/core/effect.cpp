@@ -28,6 +28,12 @@ EffectPassType passType(std::string_view value) {
         return EffectPassType::compute;
     if (value == "raytracing")
         return EffectPassType::raytracing;
+    if (value == "copy")
+        return EffectPassType::copy;
+    if (value == "clear" || value == "clearRtv" || value == "clearUav")
+        return EffectPassType::clear;
+    if (value == "mipmap" || value == "mipmapGen")
+        return EffectPassType::mipmap;
     return EffectPassType::unknown;
 }
 #endif
@@ -207,6 +213,9 @@ EffectGraph loadEffectGraph(const std::filesystem::path& path) {
             }
             pass.macros = strings(value, "macros");
             pass.conditions = strings(value, "conditions");
+            pass.inputs = attachments(value, "inputs");
+            if (pass.inputs.empty())
+                pass.inputs = attachments(value, "readResources");
             pass.renderTargets = attachments(value, "RTV");
             pass.unorderedAccess = attachments(value, "UAV");
             if (const auto depth = value.find("DSV"); depth != value.end()) {
@@ -264,6 +273,13 @@ CompiledEffect compileEffectGraph(const EffectGraph& graph) {
             .maxAttributeSize = pass.maxAttributeSize,
             .maxRecursionDepth = pass.maxRecursionDepth,
         };
+        for (const auto& input : pass.inputs) {
+            if (input.name.empty())
+                continue;
+            compiled.resources.push_back({input.name, false});
+            if (writers.contains(input.name))
+                compiled.barriers.push_back("read-after-write:" + input.name);
+        }
         for (const auto& input : pass.renderTargets) {
             if (input.name.empty())
                 continue;
@@ -305,6 +321,10 @@ EffectExecutionStats EffectExecutor::execute(const CompiledEffect& effect, const
             break;
         case EffectPassType::raytracing:
             ++stats.rayTracingPasses;
+            break;
+        case EffectPassType::copy:
+        case EffectPassType::clear:
+        case EffectPassType::mipmap:
             break;
         case EffectPassType::unknown:
             break;
@@ -353,6 +373,12 @@ const char* toString(EffectPassType type) noexcept {
         return "compute";
     case EffectPassType::raytracing:
         return "raytracing";
+    case EffectPassType::copy:
+        return "copy";
+    case EffectPassType::clear:
+        return "clear";
+    case EffectPassType::mipmap:
+        return "mipmap";
     case EffectPassType::unknown:
         return "unknown";
     }

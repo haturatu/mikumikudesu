@@ -4,6 +4,7 @@
 
 #include <iostream>
 #include <string_view>
+#include <variant>
 
 namespace {
 
@@ -191,10 +192,13 @@ int main() {
         ok &= check(toEffectPassType(FxPassOp{FxComputeOp{}}) == EffectPassType::compute, "compute maps to compute");
         ok &= check(toEffectPassType(FxPassOp{FxRayTracingOp{}}) == EffectPassType::raytracing,
                     "raytracing maps to raytracing");
-        ok &= check(toEffectPassType(FxPassOp{FxCopyOp{}}) == EffectPassType::unknown, "copy has no legacy type");
-        ok &= check(toEffectPassType(FxPassOp{FxClearRtvOp{}}) == EffectPassType::unknown, "clearRtv is utility");
-        ok &= check(toEffectPassType(FxPassOp{FxClearUavOp{}}) == EffectPassType::unknown, "clearUav is utility");
-        ok &= check(toEffectPassType(FxPassOp{FxMipmapGenOp{}}) == EffectPassType::unknown, "mipmapGen is utility");
+        ok &= check(toEffectPassType(FxPassOp{FxCopyOp{}}) == EffectPassType::copy, "copy preserves legacy type");
+        ok &= check(toEffectPassType(FxPassOp{FxClearRtvOp{}}) == EffectPassType::clear,
+                    "clearRtv preserves legacy type");
+        ok &= check(toEffectPassType(FxPassOp{FxClearUavOp{}}) == EffectPassType::clear,
+                    "clearUav preserves legacy type");
+        ok &= check(toEffectPassType(FxPassOp{FxMipmapGenOp{}}) == EffectPassType::mipmap,
+                    "mipmapGen preserves legacy type");
         ok &= check(toEffectPassType(FxPassOp{FxOidnOp{}}) == EffectPassType::unknown, "oidn is utility");
         ok &= check(std::string(fxPassOpTypeName(FxPassOp{FxCopyOp{}})) == "copy", "op type name copy");
         ok &= check(defaultCategoryForOp(FxPassOp{FxPostProcessOp{}}) == FxCategory::postprocess,
@@ -213,6 +217,16 @@ int main() {
             unknownTypeThrew = true;
         }
         ok &= check(unknownTypeThrew, "unknown legacy pass type is rejected");
+
+        const FxPass copy{.name = "copy",
+                          .category = FxCategory::postprocess,
+                          .op = FxPassOp{FxCopyOp{.source = "source", .destination = "destination"}}};
+        const auto copyLegacy = effectPassFromFxPass(copy);
+        ok &= check(copyLegacy.type == EffectPassType::copy && copyLegacy.inputs.size() == 1 &&
+                        copyLegacy.renderTargets.size() == 1,
+                    "copy preserves legacy input/output contract");
+        const auto copyRoundTrip = fxPassFromEffectPass(copyLegacy, FxCategory::postprocess);
+        ok &= check(std::holds_alternative<FxCopyOp>(copyRoundTrip.op), "copy round-trips through EffectPass");
     }
 
     // RasterModelTarget semantic resolution.
