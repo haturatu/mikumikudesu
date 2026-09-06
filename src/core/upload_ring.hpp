@@ -22,6 +22,9 @@ class UploadRing {
 
     [[nodiscard]] std::optional<UploadSlice> tryAllocate(std::size_t size, std::uint64_t retireValue,
                                                          std::size_t alignment = 0);
+    // Cancels the allocations made by an unsubmitted batch. Batches are
+    // allocated consecutively, so only the newest retire value can be rolled
+    // back without invalidating work already visible to the GPU.
     void rollback(std::uint64_t retireValue) noexcept;
     void reclaim(std::uint64_t completedValue);
     void reset() noexcept;
@@ -35,6 +38,7 @@ class UploadRing {
     [[nodiscard]] std::size_t available() const noexcept {
         return capacity_ - used_;
     }
+    [[nodiscard]] std::optional<std::uint64_t> oldestRetireValue() const noexcept;
 
   private:
     struct Allocation {

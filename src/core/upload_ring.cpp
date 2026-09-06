@@ -81,6 +81,23 @@ void UploadRing::reclaim(std::uint64_t completedValue) {
         head_ = tail_ = 0;
 }
 
+void UploadRing::rollback(std::uint64_t retireValue) noexcept {
+    while (!allocations_.empty() && allocations_.back().retireValue == retireValue) {
+        const auto allocation = allocations_.back();
+        allocations_.pop_back();
+        used_ -= allocation.occupied;
+        head_ = allocation.begin;
+    }
+    if (used_ == 0)
+        head_ = tail_ = 0;
+}
+
+std::optional<std::uint64_t> UploadRing::oldestRetireValue() const noexcept {
+    if (allocations_.empty())
+        return std::nullopt;
+    return allocations_.front().retireValue;
+}
+
 void UploadRing::reset() noexcept {
     allocations_.clear();
     head_ = tail_ = used_ = 0;
