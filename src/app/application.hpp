@@ -3,6 +3,7 @@
 #include "app/audio_export_job.hpp"
 #include "app/video_export_job.hpp"
 #include "core/editor.hpp"
+#include "core/frame_scratch.hpp"
 #include "core/output.hpp"
 #include "core/profiling.hpp"
 #include "core/project.hpp"
@@ -94,6 +95,7 @@ class Application {
     graphics::Device* device_{};
     core::Scene scene_;
     core::TaskScheduler taskScheduler_;
+    core::FrameScratch frameScratch_;
     core::FrameProfiler frameProfiler_;
     core::CommandHistory history_;
     core::AudioPlayer audioPlayer_;

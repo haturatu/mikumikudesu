@@ -149,6 +149,7 @@ VulkanDevice::VulkanDevice(platform::Window& window, bool validation) : window_(
     selectPhysicalDevice();
     queryCapabilities();
     createLogicalDevice();
+    createPipelineCache();
     uploadContext_ = std::make_unique<VulkanUploadContext>(device_, physicalDevice_, queue_, queueFamily_,
                                                            timelineSemaphore_, nextTimelineValue_);
     createSwapchain();
@@ -211,6 +212,8 @@ VulkanDevice::~VulkanDevice() {
     }
     destroyFrames();
     destroyPipeline();
+    savePipelineCache();
+    destroyPipelineCache();
     destroyPreviewDescriptors();
     destroySwapchain();
     if (timelineSemaphore_ != VK_NULL_HANDLE)
@@ -630,6 +633,57 @@ void VulkanDevice::destroySwapchain() {
     swapchain_ = VK_NULL_HANDLE;
 }
 
+void VulkanDevice::createPipelineCache() {
+    constexpr std::size_t maxCacheBytes = 64U * 1024U * 1024U;
+    std::vector<std::byte> initialData;
+    std::ifstream input("pipeline.cache", std::ios::binary | std::ios::ate);
+    if (input) {
+        const auto end = input.tellg();
+        if (end > 0 && static_cast<std::uintmax_t>(end) <= maxCacheBytes) {
+            initialData.resize(static_cast<std::size_t>(end));
+            input.seekg(0);
+            input.read(reinterpret_cast<char*>(initialData.data()), static_cast<std::streamsize>(initialData.size()));
+            if (!input)
+                initialData.clear();
+        }
+    }
+
+    VkPipelineCacheCreateInfo createInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+        .initialDataSize = initialData.size(),
+        .pInitialData = initialData.data(),
+    };
+    auto result = vkCreatePipelineCache(device_, &createInfo, nullptr, &pipelineCache_);
+    if (result != VK_SUCCESS && !initialData.empty()) {
+        log::warn("Ignoring incompatible Vulkan pipeline cache");
+        createInfo.initialDataSize = 0;
+        createInfo.pInitialData = nullptr;
+        result = vkCreatePipelineCache(device_, &createInfo, nullptr, &pipelineCache_);
+    }
+    check(result, "create Vulkan pipeline cache");
+}
+
+void VulkanDevice::savePipelineCache() const noexcept {
+    if (pipelineCache_ == VK_NULL_HANDLE)
+        return;
+    std::size_t size = 0;
+    if (vkGetPipelineCacheData(device_, pipelineCache_, &size, nullptr) != VK_SUCCESS || size == 0)
+        return;
+    std::vector<std::byte> data(size);
+    if (vkGetPipelineCacheData(device_, pipelineCache_, &size, data.data()) != VK_SUCCESS)
+        return;
+    std::ofstream output("pipeline.cache", std::ios::binary | std::ios::trunc);
+    if (!output)
+        return;
+    output.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(size));
+}
+
+void VulkanDevice::destroyPipelineCache() {
+    if (pipelineCache_ != VK_NULL_HANDLE)
+        vkDestroyPipelineCache(device_, pipelineCache_, nullptr);
+    pipelineCache_ = VK_NULL_HANDLE;
+}
+
 void VulkanDevice::createPipeline() {
     const auto vertexCode = readBinary(DAYO_PREVIEW_VERTEX_SPV);
     const auto edgeVertexCode = readBinary(DAYO_PREVIEW_EDGE_VERTEX_SPV);
@@ -829,23 +883,23 @@ void VulkanDevice::createPipeline() {
         .pDynamicState = &dynamic,
         .layout = pipelineLayout_,
     };
-    const auto result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline_);
+    const auto result = vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &pipeline_);
     auto transparentPipelineInfo = pipelineInfo;
     transparentPipelineInfo.pDepthStencilState = &transparentDepthStencil;
     transparentPipelineInfo.pColorBlendState = &transparentBlend;
     const auto transparentResult =
-        vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &transparentPipelineInfo, nullptr, &transparentPipeline_);
+        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &transparentPipelineInfo, nullptr, &transparentPipeline_);
     auto backgroundPipelineInfo = pipelineInfo;
     backgroundPipelineInfo.pDepthStencilState = &backgroundDepthStencil;
     const auto backgroundResult =
-        vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &backgroundPipelineInfo, nullptr, &backgroundPipeline_);
+        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &backgroundPipelineInfo, nullptr, &backgroundPipeline_);
     auto edgePipelineInfo = pipelineInfo;
     edgePipelineInfo.pStages = edgeStages.data();
     edgePipelineInfo.pDepthStencilState = &edgeDepthStencil;
     edgePipelineInfo.pRasterizationState = &edgeRasterizer;
     edgePipelineInfo.pColorBlendState = &transparentBlend;
     const auto edgeResult =
-        vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &edgePipelineInfo, nullptr, &edgePipeline_);
+        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &edgePipelineInfo, nullptr, &edgePipeline_);
     vkDestroyShaderModule(device_, fragment, nullptr);
     vkDestroyShaderModule(device_, edgeVertex, nullptr);
     vkDestroyShaderModule(device_, vertex, nullptr);
@@ -1617,9 +1671,26 @@ void VulkanDevice::beginUiFrame() {
 #endif
 }
 
-void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPushConstants& constants) {
+PreviewRenderPlan VulkanDevice::buildPreviewRenderPlan(bool includeUi) const noexcept {
+    const bool hasModelData = previewIndexBuffer_ != VK_NULL_HANDLE && previewIndexCount_ != 0;
+    const bool hasMaterialDraws = !previewGpuScene_.materials.empty() && !previewGpuScene_.draws.empty();
+    return {
+        .background = previewGpuScene_.view.backgroundEnabled &&
+                      (previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::backgroundImage ||
+                       previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::backgroundVideo) &&
+                      previewBackgroundTexture_.descriptor != VK_NULL_HANDLE && previewBackgroundIndexCount_ != 0,
+        .model = hasModelData,
+        .transparent = hasModelData && hasMaterialDraws,
+        .edge =
+            hasModelData && hasMaterialDraws && previewGpuScene_.view.outlineEnabled && edgePipeline_ != VK_NULL_HANDLE,
+        .ui = includeUi,
+    };
+}
+
+void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPushConstants& constants,
+                                      const PreviewRenderPlan& plan) {
     auto& frame = frames_[frameIndex_];
-    if (frame.previewMaterialDescriptor == VK_NULL_HANDLE)
+    if (!plan.model || frame.previewMaterialDescriptor == VK_NULL_HANDLE)
         return;
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 2, 1,
                             &frame.previewMaterialDescriptor, 0, nullptr);
@@ -1655,7 +1726,7 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
         vkCmdDrawIndexed(command, count, drawConstants.instanceCount, item.firstIndex, 0, 0);
     };
 
-    if (previewGpuScene_.materials.empty() || previewGpuScene_.draws.empty()) {
+    if (!plan.transparent) {
         if (!previewTextures_.empty()) {
             const auto descriptor = previewTextures_.front().descriptor;
             vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
@@ -1672,7 +1743,7 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
     for (const auto& item : previewGpuScene_.draws)
         draw(item, transparentPipeline_);
 
-    if (!previewGpuScene_.view.outlineEnabled || edgePipeline_ == VK_NULL_HANDLE)
+    if (!plan.edge)
         return;
     for (const auto& item : previewGpuScene_.draws)
         draw(item, edgePipeline_);
@@ -1826,12 +1897,8 @@ void VulkanDevice::renderFrame() {
                        static_cast<float>(previewGpuScene_.view.debugFlags), 0.0F, 0.0F};
     constants.viewport = {static_cast<float>(swapchainExtent_.width), static_cast<float>(swapchainExtent_.height), 0.0F,
                           0.0F};
-    const bool hasBackground = previewGpuScene_.view.backgroundEnabled &&
-                               (previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::backgroundImage ||
-                                previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::backgroundVideo) &&
-                               previewBackgroundTexture_.descriptor != VK_NULL_HANDLE &&
-                               previewBackgroundIndexCount_ != 0;
-    if (hasBackground) {
+    const auto plan = buildPreviewRenderPlan(true);
+    if (plan.background) {
         vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, backgroundPipeline_);
         const VkDeviceSize backgroundOffset = 0;
         vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewBackgroundVertexBuffer_, &backgroundOffset);
@@ -1845,13 +1912,14 @@ void VulkanDevice::renderFrame() {
         vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
         vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     }
-    if (!hasBackground) {
+    if (!plan.background) {
         vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
         vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     }
-    recordPreviewModel(frame.commandBuffer, constants);
+    recordPreviewModel(frame.commandBuffer, constants, plan);
 #if DAYO_HAS_IMGUI
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.commandBuffer);
+    if (plan.ui)
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.commandBuffer);
 #endif
     vkCmdEndRendering(frame.commandBuffer);
     if (frame.timestampQueryPool != VK_NULL_HANDLE)
@@ -2186,12 +2254,8 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     constants.debug = {static_cast<float>(previewGpuScene_.view.debugMaterial),
                        static_cast<float>(previewGpuScene_.view.debugFlags), 0.0F, 0.0F};
     constants.viewport = {static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0F, 0.0F};
-    const bool hasBackground = previewGpuScene_.view.backgroundEnabled &&
-                               (previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::backgroundImage ||
-                                previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::backgroundVideo) &&
-                               previewBackgroundTexture_.descriptor != VK_NULL_HANDLE &&
-                               previewBackgroundIndexCount_ != 0;
-    if (hasBackground) {
+    const auto plan = buildPreviewRenderPlan(false);
+    if (plan.background) {
         vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, backgroundPipeline_);
         const VkDeviceSize backgroundOffset = 0;
         vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewBackgroundVertexBuffer_, &backgroundOffset);
@@ -2205,11 +2269,11 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
         vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
         vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     }
-    if (!hasBackground) {
+    if (!plan.background) {
         vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
         vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     }
-    recordPreviewModel(frame.commandBuffer, constants);
+    recordPreviewModel(frame.commandBuffer, constants, plan);
     vkCmdEndRendering(frame.commandBuffer);
     if (frame.timestampQueryPool != VK_NULL_HANDLE)
         vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timestampQueryPool, 1);
