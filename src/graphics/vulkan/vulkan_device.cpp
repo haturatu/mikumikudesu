@@ -1638,17 +1638,17 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 4, 1,
                                 &frame.previewMorphDescriptor, 0, nullptr);
 
-    const auto textureDescriptor = [&](std::uint32_t materialIndex) {
-        if (materialIndex < previewMaterialDescriptors_.size()) {
-            return previewMaterialDescriptors_[materialIndex];
-        }
-        return previewTextures_.empty() ? VK_NULL_HANDLE : previewTextures_.front().descriptor;
+    constexpr auto indirectMaterialSentinel = std::numeric_limits<std::uint32_t>::max();
+    const auto validDraw = [&](const PreviewDraw& item) {
+        return item.materialIndex < previewGpuScene_.materials.size() && item.indexCount != 0 &&
+               item.firstIndex < previewIndexCount_;
     };
-    const auto draw = [&](const PreviewDraw& item, std::size_t drawIndex, VkPipeline pipeline) {
-        if (item.materialIndex >= previewGpuScene_.materials.size() || item.indexCount == 0 ||
-            item.firstIndex >= previewIndexCount_)
+    const auto drawDirect = [&](const PreviewDraw& item, VkPipeline pipeline) {
+        if (!validDraw(item))
             return;
-        const auto descriptor = textureDescriptor(item.materialIndex);
+        if (previewTextures_.empty())
+            return;
+        const auto descriptor = previewTextures_.front().descriptor;
         if (descriptor == VK_NULL_HANDLE)
             return;
         auto drawConstants = constants;
@@ -1660,13 +1660,48 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
         vkCmdPushConstants(command, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(drawConstants), &drawConstants);
         const auto count = std::min(item.indexCount, previewIndexCount_ - item.firstIndex);
-        if (frame.previewIndirectBuffer != VK_NULL_HANDLE && drawIndex < previewGpuScene_.draws.size()) {
-            vkCmdDrawIndexedIndirect(command, frame.previewIndirectBuffer,
-                                     static_cast<VkDeviceSize>(drawIndex) * sizeof(VkDrawIndexedIndirectCommand), 1,
-                                     sizeof(VkDrawIndexedIndirectCommand));
-        } else {
-            vkCmdDrawIndexed(command, count, drawConstants.instanceCount, item.firstIndex, 0, 0);
+        vkCmdDrawIndexed(command, count, drawConstants.instanceCount, item.firstIndex, 0, 0);
+    };
+    const auto drawIndirectBatch = [&](std::size_t begin, std::size_t end, VkPipeline pipeline) {
+        if (begin == end || frame.previewIndirectBuffer == VK_NULL_HANDLE || previewTextures_.empty())
+            return;
+        const auto descriptor = previewTextures_.front().descriptor;
+        if (descriptor == VK_NULL_HANDLE)
+            return;
+        auto drawConstants = constants;
+        drawConstants.materialIndex = indirectMaterialSentinel;
+        drawConstants.instanceCount = 1;
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1, &descriptor, 0,
+                                nullptr);
+        vkCmdPushConstants(command, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(drawConstants), &drawConstants);
+        const auto drawCount = static_cast<std::uint32_t>(end - begin);
+        vkCmdDrawIndexedIndirect(command, frame.previewIndirectBuffer,
+                                 static_cast<VkDeviceSize>(begin) * sizeof(VkDrawIndexedIndirectCommand), drawCount,
+                                 sizeof(VkDrawIndexedIndirectCommand));
+    };
+    const auto drawPass = [&](VkPipeline pipeline) {
+        std::size_t indirectBegin = previewGpuScene_.draws.size();
+        const auto flushIndirect = [&](std::size_t end) {
+            if (indirectBegin != previewGpuScene_.draws.size()) {
+                drawIndirectBatch(indirectBegin, end, pipeline);
+                indirectBegin = previewGpuScene_.draws.size();
+            }
+        };
+        for (std::size_t index = 0; index < previewGpuScene_.draws.size(); ++index) {
+            const auto& item = previewGpuScene_.draws[index];
+            const bool canBatch = frame.previewIndirectBuffer != VK_NULL_HANDLE && validDraw(item) &&
+                                  std::max(item.instanceCount, 1U) == 1U;
+            if (canBatch) {
+                if (indirectBegin == previewGpuScene_.draws.size())
+                    indirectBegin = index;
+                continue;
+            }
+            flushIndirect(index);
+            drawDirect(item, pipeline);
         }
+        flushIndirect(previewGpuScene_.draws.size());
     };
 
     if (!plan.transparent) {
@@ -1682,14 +1717,12 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
         return;
     }
 
-    // Original Preview.fxdayo draws all PMX materials in file order with the MMD blend/depth state.
-    for (std::size_t index = 0; index < previewGpuScene_.draws.size(); ++index)
-        draw(previewGpuScene_.draws[index], index, transparentPipeline_);
+    // Keep file order for alpha blending while coalescing adjacent single-instance draws.
+    drawPass(transparentPipeline_);
 
     if (!plan.edge)
         return;
-    for (std::size_t index = 0; index < previewGpuScene_.draws.size(); ++index)
-        draw(previewGpuScene_.draws[index], index, edgePipeline_);
+    drawPass(edgePipeline_);
 }
 
 void VulkanDevice::renderFrame() {
@@ -3151,7 +3184,7 @@ void VulkanDevice::updatePreviewDraws(std::span<const PreviewDraw> draws) {
             .instanceCount = std::max(draw.instanceCount, 1U),
             .firstIndex = draw.firstIndex,
             .vertexOffset = 0,
-            .firstInstance = 0,
+            .firstInstance = draw.materialIndex,
         };
     }
     if (previewIndirectCommands_.empty()) {

@@ -1276,7 +1276,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             }
         }
         device_->updatePreviewMaterials(materials);
-        device_->updatePreviewDraws(draws);
+        if (initialUpload || rebuildTopology)
+            device_->updatePreviewDraws(draws);
         upload.finish();
     }
     const auto byteCount = [](std::size_t count, std::size_t elementSize) {
