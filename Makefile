@@ -17,11 +17,12 @@ PREFIX ?= $(CURDIR)/install
 MIKUMIKUDAYO_STAMP := MikuMikuDayo/.mikumikudayo-ready
 MIKUMIKUDAYO_LOCK := deps/mikumikudayo.lock
 MIKUMIKUDAYO_FETCH := scripts/fetch-mikumikudayo.py
+LIBMMD_DIR := external/libmmd
 
 TIDY_JOBS ?= 2
 
 .PHONY: \
-	help all setup configure build package \
+	help all setup submodules configure build package \
 	debug release sanitize system \
 	test run probe amd-check ci \
 	format format-check shellcheck lint tidy \
@@ -33,12 +34,19 @@ TIDY_JOBS ?= 2
 
 all: build
 
-setup: $(MIKUMIKUDAYO_STAMP)
+setup: submodules $(MIKUMIKUDAYO_STAMP)
+
+submodules:
+	@git submodule update --init --recursive -- $(LIBMMD_DIR)
+	@test -f "$(LIBMMD_DIR)/CMakeLists.txt" || { \
+		echo "error: failed to initialize libmmd submodule" >&2; \
+		exit 1; \
+	}
 
 $(MIKUMIKUDAYO_STAMP): $(MIKUMIKUDAYO_LOCK) $(MIKUMIKUDAYO_FETCH)
 	python3 $(MIKUMIKUDAYO_FETCH)
 
-configure:
+configure: submodules
 	cmake --preset "$(PRESET)" $(CMAKE_ARGS)
 
 build: configure
@@ -69,7 +77,7 @@ run: build
 probe: build
 	"./$(BINARY)" --probe --hidden $(ARGS)
 
-amd-check:
+amd-check: submodules
 	./scripts/check-linux-amd.sh
 
 # Roughly mirrors the normal GitHub Actions build/test path.
@@ -88,8 +96,9 @@ format:
 	find src tests -type f \
 		\( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) \
 		-print0 | xargs -0 -r clang-format -i
-	gersemi --in-place \
-		--definitions cmake/CompileHlsl.cmake -- .
+	@./scripts/cmake-format-files.sh | \
+		xargs -0 -r gersemi --in-place \
+		--definitions cmake/CompileHlsl.cmake --
 	find scripts tests -type f -name '*.sh' \
 		-print0 | xargs -0 -r shfmt -w -ln bash -i 2 -ci
 
@@ -97,8 +106,9 @@ format-check:
 	find src tests -type f \
 		\( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) \
 		-print0 | xargs -0 -r clang-format --dry-run --Werror
-	gersemi --check --warnings-as-errors \
-		--definitions cmake/CompileHlsl.cmake -- .
+	@./scripts/cmake-format-files.sh | \
+		xargs -0 -r gersemi --check --warnings-as-errors \
+		--definitions cmake/CompileHlsl.cmake --
 	find scripts tests -type f -name '*.sh' \
 		-print0 | xargs -0 -r shfmt -ln bash -d -i 2 -ci
 
