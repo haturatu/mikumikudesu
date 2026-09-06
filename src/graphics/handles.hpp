@@ -135,6 +135,24 @@ struct PipelineLayoutHandle {
     }
 };
 
+struct AccelerationStructureHandle {
+    std::uint32_t index{kInvalidHandleIndex};
+    std::uint32_t generation{};
+
+    [[nodiscard]] constexpr bool valid() const noexcept {
+        return index != kInvalidHandleIndex;
+    }
+    [[nodiscard]] constexpr bool operator==(const AccelerationStructureHandle& other) const noexcept {
+        return index == other.index && generation == other.generation;
+    }
+    [[nodiscard]] constexpr bool operator!=(const AccelerationStructureHandle& other) const noexcept {
+        return !(*this == other);
+    }
+    [[nodiscard]] constexpr explicit operator bool() const noexcept {
+        return valid();
+    }
+};
+
 struct ShaderBindingTableHandle {
     std::uint32_t index{kInvalidHandleIndex};
     std::uint32_t generation{};
@@ -235,6 +253,7 @@ using DescriptorSetPool = GenerationRegistry<DescriptorSetHandle>;
 using DescriptorSetLayoutPool = GenerationRegistry<DescriptorSetLayoutHandle>;
 using PipelinePool = GenerationRegistry<PipelineHandle>;
 using PipelineLayoutPool = GenerationRegistry<PipelineLayoutHandle>;
+using AccelerationStructurePool = GenerationRegistry<AccelerationStructureHandle>;
 using ShaderBindingTablePool = GenerationRegistry<ShaderBindingTableHandle>;
 
 // RAII guard that returns the handle to the pool on destruction. Move-only so
