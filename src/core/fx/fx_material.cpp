@@ -61,13 +61,13 @@ std::string resolveImpl(std::string_view id, const std::unordered_map<std::strin
     const MaterialResourceDecl& decl = found->second;
     const std::string ref = trimCopy(decl.ref);
     if (!ref.empty()) {
-        if (std::find(stack.begin(), stack.end(), key) != stack.end() ||
-            std::find(stack.begin(), stack.end(), ref) != stack.end()) {
+        const auto cycleStart = std::find(stack.begin(), stack.end(), ref);
+        if (cycleStart != stack.end()) {
             // Alias cycle: deterministic fallback to the smallest id in the cycle.
-            std::string smallest = key;
-            for (const auto& entry : stack)
-                smallest = std::min(smallest, entry);
-            smallest = std::min(smallest, ref);
+            std::string smallest = ref;
+            for (auto it = cycleStart; it != stack.end(); ++it)
+                smallest = std::min(smallest, *it);
+            smallest = std::min(smallest, key);
             log::warn("fx material alias cycle at '", key, "' -> '", smallest, "'");
             return smallest;
         }
@@ -153,8 +153,7 @@ std::string MaterialGpuLayout::slotForCanonical(std::string_view canonical) cons
 
 bool MaterialGpuLayout::hasLocal(std::string_view localId) const noexcept {
     try {
-        return localToCanonical.contains(std::string(localId)) ||
-               localToCanonical.contains(trimCopy(localId));
+        return localToCanonical.contains(std::string(localId)) || localToCanonical.contains(trimCopy(localId));
     } catch (...) {
         return false;
     }

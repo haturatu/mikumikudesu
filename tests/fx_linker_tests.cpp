@@ -48,6 +48,20 @@ int main() {
                     "aliased locals share one _R slot");
     }
 
+    // Alias cycles canonicalize to the cycle itself, independent of the
+    // entrypoint used to resolve the chain.
+    {
+        std::unordered_map<std::string, MaterialResourceDecl> cycle{
+            {"A", {.id = "A", .ref = "B"}},
+            {"B", {.id = "B", .ref = "C"}},
+            {"C", {.id = "C", .ref = "B"}},
+        };
+        const auto a = resolveCanonicalResourceId("A", cycle);
+        const auto b = resolveCanonicalResourceId("B", cycle);
+        const auto c = resolveCanonicalResourceId("C", cycle);
+        ok &= check(a == "B" && b == "B" && c == "B", "alias cycle has entrypoint-independent canonical id");
+    }
+
     // UniqueTextures: canonical path+format+colorspace+mip dedup.
     {
         MaterialTemplate templ;
