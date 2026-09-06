@@ -494,9 +494,9 @@ int main() {
         const auto readWrite = graph.createResource("read-write");
         const auto writeWrite = graph.createResource("write-write");
         static_cast<void>(graph.addPass("read-write", {{readWrite, RenderResourceState::shaderRead, false},
-                                                         {readWrite, RenderResourceState::colorAttachment, true}}));
+                                                       {readWrite, RenderResourceState::colorAttachment, true}}));
         static_cast<void>(graph.addPass("write-write", {{writeWrite, RenderResourceState::colorAttachment, true},
-                                                          {writeWrite, RenderResourceState::depthAttachment, true}}));
+                                                        {writeWrite, RenderResourceState::depthAttachment, true}}));
         const auto plan = graph.compile();
         ok &= check(plan.size() == 2 && plan[0].dependencies.empty() && plan[1].dependencies.empty(),
                     "render graph ignores same-pass self dependencies");
