@@ -532,6 +532,22 @@ if(BUILD_TESTING)
     endif()
   endif()
 
+  add_executable(dayo_graph_device_tests tests/graph_device_tests.cpp)
+  target_include_directories(dayo_graph_device_tests PRIVATE src)
+  target_link_libraries(dayo_graph_device_tests PRIVATE dayo_graphics)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      dayo_graph_device_tests
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_graph_device_tests PRIVATE -Werror)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(dayo_graph_device_tests PRIVATE -Wno-error=deprecated-literal-operator)
+      endif()
+    endif()
+  endif()
+
   add_executable(dayo_upstream_compat_tests tests/upstream_compat_tests.cpp)
   target_link_libraries(dayo_upstream_compat_tests PRIVATE dayo_core)
   target_compile_definitions(dayo_upstream_compat_tests PRIVATE DAYO_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
@@ -550,6 +566,8 @@ if(BUILD_TESTING)
 
   add_test(NAME core COMMAND dayo_core_tests)
   add_test(NAME upload_ring COMMAND dayo_upload_ring_tests)
+  add_test(NAME graph_device COMMAND dayo_graph_device_tests)
+  set_tests_properties(graph_device PROPERTIES TIMEOUT 20)
   add_test(NAME upstream_compat COMMAND dayo_upstream_compat_tests)
   set_tests_properties(upstream_compat PROPERTIES LABELS "upstream" TIMEOUT 60)
   add_test(NAME vulkan_probe COMMAND mikumikudesu --probe --hidden)
@@ -584,6 +602,7 @@ if(DAYO_ENABLE_SANITIZERS)
     mikumikudesu
     dayo_core_tests
     dayo_upload_ring_tests
+    dayo_graph_device_tests
     dayo_preview_tests
     dayo_upstream_compat_tests
   )
@@ -600,6 +619,9 @@ if(DAYO_ENABLE_SANITIZERS)
   endif()
   if(TARGET dayo_preview_tests)
     target_link_options(dayo_preview_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+  if(TARGET dayo_graph_device_tests)
+    target_link_options(dayo_graph_device_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
   if(TARGET dayo_upstream_compat_tests)
     target_link_options(dayo_upstream_compat_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
