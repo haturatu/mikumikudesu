@@ -5,10 +5,18 @@
 #include "graphics/device.hpp"
 
 #include <cstddef>
+#include <functional>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace dayo::graphics {
+
+struct FxExecutionResources {
+    using TextureResolver = std::function<std::optional<TextureHandle>(std::string_view)>;
+    TextureResolver resolveTexture;
+};
 
 // Generic Vulkan FX executor skeleton. Reuses the existing Device and
 // CommandList contracts without owning or destroying them:
@@ -36,8 +44,8 @@ class VulkanFxExecutor {
         return *device_;
     }
 
-    Stats execute(const dayo::fx::FxFramePlan& plan, CommandList& commands,
-                  const dayo::fx::FxFrameContext& context) const;
+    Stats execute(const dayo::fx::FxFramePlan& plan, CommandList& commands, const dayo::fx::FxFrameContext& context,
+                  const FxExecutionResources& resources = {}) const;
 
   private:
     Device* device_;

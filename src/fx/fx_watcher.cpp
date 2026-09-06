@@ -50,6 +50,47 @@ void FxAssetWatcher::removeEffect(const std::string& effect) {
     dirty_.erase(effect);
 }
 
+void FxAssetWatcher::snapshot() {
+    std::scoped_lock lock(mutex_);
+    snapshots_.clear();
+    for (const auto& [file, effects] : reverseDeps_) {
+        static_cast<void>(effects);
+        std::error_code error;
+        const auto time = std::filesystem::last_write_time(file, error);
+        if (!error)
+            snapshots_[file] = time;
+    }
+}
+
+std::vector<std::string> FxAssetWatcher::poll() {
+    std::scoped_lock lock(mutex_);
+    std::unordered_set<std::string> affectedSet;
+    for (const auto& [file, effects] : reverseDeps_) {
+        std::error_code error;
+        const auto time = std::filesystem::last_write_time(file, error);
+        const auto previous = snapshots_.find(file);
+        if (error) {
+            // A path that was already missing at snapshot time is not a
+            // change. Once an existing dependency disappears, however, it
+            // must invalidate its dependents exactly once.
+            if (previous == snapshots_.end())
+                continue;
+            snapshots_.erase(previous);
+        } else if (previous != snapshots_.end() && previous->second == time) {
+            continue;
+        } else {
+            snapshots_[file] = time;
+        }
+        for (const auto& effect : effects) {
+            affectedSet.insert(effect);
+            dirty_.insert(effect);
+        }
+    }
+    std::vector<std::string> affected(affectedSet.begin(), affectedSet.end());
+    std::sort(affected.begin(), affected.end());
+    return affected;
+}
+
 std::vector<std::string> FxAssetWatcher::notifyChanged(const std::filesystem::path& file) {
     std::scoped_lock lock(mutex_);
     std::vector<std::string> affected;
@@ -81,6 +122,7 @@ void FxAssetWatcher::clear() noexcept {
     reverseDeps_.clear();
     forwardDeps_.clear();
     dirty_.clear();
+    snapshots_.clear();
 }
 
 std::size_t FxAssetWatcher::effectCount() const noexcept {

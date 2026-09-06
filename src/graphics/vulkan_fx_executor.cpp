@@ -5,10 +5,19 @@
 namespace dayo::graphics {
 
 VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& plan, CommandList& commands,
-                                                 const dayo::fx::FxFrameContext& context) const {
+                                                  const dayo::fx::FxFrameContext& context,
+                                                  const FxExecutionResources& resources) const {
     Stats stats;
-    dayo::log::info("VulkanFxExecutor executing ", plan.ordered.size(), " passes (",
-                    context.renderWidth, "x", context.renderHeight, ")");
+    dayo::log::info("VulkanFxExecutor executing ", plan.ordered.size(), " passes (", context.renderWidth, "x",
+                    context.renderHeight, ")");
+    const auto resolve = [&](const dayo::fx::FxDispatch::ResourceUse& resource) -> TextureHandle {
+        if (resource.name.empty() || !resources.resolveTexture)
+            throw std::logic_error("VulkanFxExecutor: pass resource has no backend binding: " + resource.name);
+        const auto handle = resources.resolveTexture(resource.name);
+        if (!handle.has_value())
+            throw std::logic_error("VulkanFxExecutor: pass resource is unavailable: " + resource.name);
+        return *handle;
+    };
     for (const auto& dispatch : plan.ordered) {
         dayo::log::debug("VulkanFxExecutor pass ", dispatch.name, " kind ", dayo::fx::toString(dispatch.kind));
         switch (dispatch.kind) {
@@ -25,18 +34,21 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             ++stats.compute;
             break;
         case dayo::fx::FxOpKind::copy:
-            // Skeleton handle: backend copy path. Real pipelines resolve the
-            // source/destination views from the frame plan; here we forward
-            // the call so mock backends can trace ordering.
-            commands.copyTexture(TextureHandle{}, TextureHandle{});
+            if (dispatch.resources.size() < 2 || dispatch.resources[0].write || !dispatch.resources[1].write)
+                throw std::logic_error("VulkanFxExecutor: copy pass requires read source and write destination");
+            commands.copyTexture(resolve(dispatch.resources[0]), resolve(dispatch.resources[1]));
             ++stats.copy;
             break;
         case dayo::fx::FxOpKind::clear:
-            commands.clearTexture(TextureHandle{});
+            if (dispatch.resources.size() != 1 || !dispatch.resources[0].write)
+                throw std::logic_error("VulkanFxExecutor: clear pass requires one write target");
+            commands.clearTexture(resolve(dispatch.resources[0]));
             ++stats.clear;
             break;
         case dayo::fx::FxOpKind::mipmap:
-            commands.generateMipmaps(TextureHandle{});
+            if (dispatch.resources.size() != 1)
+                throw std::logic_error("VulkanFxExecutor: mipmap pass requires one target");
+            commands.generateMipmaps(resolve(dispatch.resources[0]));
             ++stats.mipmap;
             break;
         case dayo::fx::FxOpKind::raytracing:

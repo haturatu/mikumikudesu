@@ -11,9 +11,13 @@ namespace dayo::fx {
 
 struct FxTextureKey {
     std::filesystem::path path;
+    std::string contentHash;
+    std::string colorSpace;
+    std::string decodeFormat;
     bool srgb{};
     [[nodiscard]] std::string combined() const {
-        return path.string() + (srgb ? "|srgb" : "|unorm");
+        return path.lexically_normal().generic_string() + "|" + contentHash + "|" + colorSpace + "|" + decodeFormat +
+               (srgb ? "|srgb" : "|unorm");
     }
 };
 

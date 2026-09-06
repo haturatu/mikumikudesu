@@ -43,12 +43,18 @@ struct FxDispatch {
     std::string shader;
     std::uint32_t widthRatioNumerator{1};
     std::uint32_t widthRatioDenominator{1};
+    struct ResourceUse {
+        std::string name;
+        bool write{};
+    };
+    std::vector<ResourceUse> resources;
 };
 
 struct FxProgram {
     std::string label;
     std::vector<FxDispatch> passes;
     std::uint64_t generation{};
+    std::uint64_t sourceVersion{};
 };
 
 struct FxFramePlan {
@@ -91,7 +97,8 @@ class FxInstance {
 
     [[nodiscard]] std::shared_ptr<const FxProgram> active() const;
     // Full hot-reload pipeline: parse -> link -> compile -> plan -> pipeline.
-    // Returns false and leaves active() untouched on any failure.
+    // Successful candidates are staged; the render thread must call
+    // commitPendingAtFrameBoundary() to mutate active().
     bool tryHotReload(const FxSourceDocument& document, const FxFrameContext& contextForPlan,
                       std::string* error = nullptr);
     // Stage without swapping (for callers that drive frame boundaries).
@@ -116,6 +123,9 @@ class FxInstance {
     };
     std::vector<Retired> retired_;
     std::uint64_t nextTimelineValue_{1};
+    std::uint64_t nextGeneration_{1};
+    std::uint64_t newestSourceVersion_{};
+    bool hasSourceVersion_{false};
     FxCompiler compiler_;
 };
 

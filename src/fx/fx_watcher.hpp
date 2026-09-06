@@ -17,6 +17,10 @@ class FxAssetWatcher {
   public:
     void addEffect(std::string effect, std::vector<std::filesystem::path> files);
     void removeEffect(const std::string& effect);
+    // Captures current mtimes for all tracked files without marking effects dirty.
+    void snapshot();
+    // Returns effects affected by files whose mtime changed since snapshot().
+    std::vector<std::string> poll();
     // Manual notification used by tests and by the platform file watcher.
     // Returns the sorted list of effects that depend on the file.
     std::vector<std::string> notifyChanged(const std::filesystem::path& file);
@@ -34,6 +38,7 @@ class FxAssetWatcher {
     std::unordered_map<std::string, std::unordered_set<std::string>> reverseDeps_; // file -> effects
     std::unordered_map<std::string, std::unordered_set<std::string>> forwardDeps_; // effect -> files
     std::unordered_set<std::string> dirty_;
+    std::unordered_map<std::string, std::filesystem::file_time_type> snapshots_;
 };
 
 } // namespace dayo::fx

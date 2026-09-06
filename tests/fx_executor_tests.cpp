@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -94,6 +95,12 @@ dayo::fx::FxFrameContext testContext() {
     return dayo::fx::makeFxFrameContext(12.0F, 3, 64, 64, 1, 0, 90, 2, 2, 4);
 }
 
+dayo::graphics::FxExecutionResources testResources() {
+    dayo::graphics::FxExecutionResources resources;
+    resources.resolveTexture = [](std::string_view) -> std::optional<dayo::graphics::TextureHandle> { return 1; };
+    return resources;
+}
+
 bool testMockTraceMatches() {
     MockDevice device;
     dayo::graphics::VulkanFxExecutor executor(device);
@@ -102,13 +109,15 @@ bool testMockTraceMatches() {
     program.label = "trace";
     program.generation = 1;
     program.passes = {
-        {"BG", dayo::fx::FxOpKind::clear, {}},        {"MMD", dayo::fx::FxOpKind::raster, {}},
-        {"DENOISE", dayo::fx::FxOpKind::compute, {}}, {"Copy", dayo::fx::FxOpKind::copy, {}},
-        {"Mip", dayo::fx::FxOpKind::mipmap, {}},
+        {"BG", dayo::fx::FxOpKind::clear, {}, 1, 1, {{"background", true}}},
+        {"MMD", dayo::fx::FxOpKind::raster, {}, 1, 1, {}},
+        {"DENOISE", dayo::fx::FxOpKind::compute, {}, 1, 1, {}},
+        {"Copy", dayo::fx::FxOpKind::copy, {}, 1, 1, {{"source", false}, {"destination", true}}},
+        {"Mip", dayo::fx::FxOpKind::mipmap, {}, 1, 1, {{"destination", true}}},
     };
     dayo::fx::FxCompiler compiler;
     const auto plan = compiler.plan(program, testContext());
-    const auto stats = executor.execute(plan, commands, testContext());
+    const auto stats = executor.execute(plan, commands, testContext(), testResources());
     const std::vector<std::string> kinds = {"clear", "draw", "dispatch", "copy", "mipmap"};
     bool ok = true;
     ok &= check(commands.trace.size() == kinds.size(), "mock trace length matches plan");
@@ -120,11 +129,11 @@ bool testMockTraceMatches() {
                 "executor stats count each kind");
     // Raytracing must fail explicitly, never silently skip.
     dayo::fx::FxProgram rayProgram = program;
-    rayProgram.passes.push_back({"RT", dayo::fx::FxOpKind::raytracing, {}});
+    rayProgram.passes.push_back({"RT", dayo::fx::FxOpKind::raytracing, {}, 1, 1, {}});
     bool threw = false;
     try {
         const auto rayPlan = compiler.plan(rayProgram, testContext());
-        static_cast<void>(executor.execute(rayPlan, commands, testContext()));
+        static_cast<void>(executor.execute(rayPlan, commands, testContext(), testResources()));
     } catch (const dayo::graphics::FxRaytracingUnsupported&) {
         threw = true;
     }
@@ -142,7 +151,7 @@ bool testPreviewReferencePath() {
     MockDevice device;
     dayo::graphics::VulkanFxExecutor executor(device);
     MockCommands commands;
-    const auto stats = executor.execute(plan, commands, testContext());
+    const auto stats = executor.execute(plan, commands, testContext(), testResources());
     ok &= check(stats.clear == 1 && stats.raster == 2 && stats.copy == 1 && stats.compute == 1,
                 "preview reference delegates plan->executor->backend");
     return ok;
@@ -230,7 +239,7 @@ bool testHotReloadKeepsCurrentOnFailure() {
     dayo::fx::FxProgram initial;
     initial.label = "Preview";
     initial.generation = 7;
-    initial.passes = {{"MMD", dayo::fx::FxOpKind::raster, {}}};
+    initial.passes = {{"MMD", dayo::fx::FxOpKind::raster, {}, 1, 1, {}}};
     dayo::fx::FxInstance instance(initial);
     bool ok = true;
     const auto empty = dayo::fx::makeFxSourceDocument("empty.fxdayo", "", 1);
@@ -244,7 +253,8 @@ bool testHotReloadKeepsCurrentOnFailure() {
                 "hot reload rejects malformed raw source");
     ok &= check(instance.active()->generation == 7 && !instance.hasPending(),
                 "malformed raw source keeps current program");
-    // Successful reload swaps only at frame boundary and retires old via timeline.
+    // Successful reload stages on the worker path; only the explicit frame
+    // boundary commit swaps the live program.
     const auto good = dayo::fx::makeFxSourceDocument("good.fxdayo",
                                                      R"FX([YRZFX]
 {
@@ -259,12 +269,19 @@ raw_cs
                                                      3);
     instance.setNextTimelineValue(42);
     ok &= check(instance.tryHotReload(good, testContext(), &error), "hot reload accepts valid source");
+    ok &= check(instance.active()->generation == 7 && instance.hasPending(),
+                "hot reload stages without swapping before frame boundary");
+    ok &= check(instance.commitPendingAtFrameBoundary(), "frame boundary commits staged reload");
     ok &= check(instance.active()->generation == 8, "reload swaps generation at frame boundary");
+    ok &= check(instance.active()->sourceVersion == 3, "committed program keeps source version");
     ok &= check(instance.retiredCount() == 1, "old program retires after swap");
     instance.retireCompleted(41);
     ok &= check(instance.retiredCount() == 1, "retire waits for timeline semaphore");
     instance.retireCompleted(42);
     ok &= check(instance.retiredCount() == 0, "retire drains after timeline passes");
+    const auto stale = dayo::fx::makeFxSourceDocument("stale.fxdayo", good.raw, 2);
+    ok &= check(!instance.stagePending(stale, &error) && error.find("stale") != std::string::npos,
+                "out-of-order reload cannot replace a newer staged source");
     return ok;
 }
 
@@ -288,7 +305,10 @@ raw_cs
 
     dayo::core::EffectGraph unknown;
     unknown.sourcePath = "unknown.fxdayo";
-    unknown.passes.push_back({.name = "unsupported", .type = dayo::core::EffectPassType::unknown});
+    dayo::core::EffectPass unsupported;
+    unsupported.name = "unsupported";
+    unsupported.type = dayo::core::EffectPassType::unknown;
+    unknown.passes.push_back(unsupported);
     ok &= check(
         [&] {
             try {

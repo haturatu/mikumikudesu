@@ -3,6 +3,7 @@
 #include "core/log.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -100,6 +101,14 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
             dispatch.shader = pass.pixelShader;
         else
             dispatch.shader = pass.vertexShader;
+        for (const auto& attachment : pass.renderTargets)
+            if (!attachment.name.empty())
+                dispatch.resources.push_back({attachment.name, true});
+        for (const auto& attachment : pass.unorderedAccess)
+            if (!attachment.name.empty())
+                dispatch.resources.push_back({attachment.name, true});
+        if (!pass.depth.name.empty())
+            dispatch.resources.push_back({pass.depth.name, true});
         program.passes.push_back(std::move(dispatch));
     }
     if (program.passes.empty())
@@ -110,7 +119,9 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
 FxProgram FxCompiler::compileSource(const FxSourceDocument& document) const {
     auto graph = parse(document);
     auto linked = link(graph);
-    return compile(linked);
+    FxProgram program = compile(linked);
+    program.sourceVersion = document.version;
+    return program;
 }
 
 FxFramePlan FxCompiler::plan(const FxProgram& program, const FxFrameContext& context) const {
@@ -133,7 +144,14 @@ bool FxCompiler::buildPipelines(const FxProgram& program, std::string* error) co
 }
 
 FxInstance::FxInstance(FxProgram initial, FxCompilerOptions options)
-    : active_(std::make_shared<const FxProgram>(std::move(initial))), compiler_(options) {}
+    : active_(std::make_shared<const FxProgram>(std::move(initial))), compiler_(options) {
+    nextGeneration_ = active_->generation == std::numeric_limits<std::uint64_t>::max() ? active_->generation
+                                                                                       : active_->generation + 1U;
+    if (active_->sourceVersion != 0) {
+        newestSourceVersion_ = active_->sourceVersion;
+        hasSourceVersion_ = true;
+    }
+}
 
 std::shared_ptr<const FxProgram> FxInstance::active() const {
     std::scoped_lock lock(mutex_);
@@ -165,7 +183,7 @@ bool FxInstance::tryHotReload(const FxSourceDocument& document, const FxFrameCon
     FxProgram candidate;
     try {
         candidate = compiler_.compile(graph);
-        candidate.generation = active()->generation + 1;
+        candidate.sourceVersion = document.version;
         // Plan validation before pipeline creation catches size/context errors.
         static_cast<void>(compiler_.plan(candidate, contextForPlan));
         std::string pipelineError;
@@ -183,14 +201,24 @@ bool FxInstance::tryHotReload(const FxSourceDocument& document, const FxFrameCon
     }
     {
         std::scoped_lock lock(mutex_);
-        if (active_ && active_->generation >= candidate.generation)
-            candidate.generation = active_->generation + 1;
+        if (document.version != 0 && hasSourceVersion_ && document.version <= newestSourceVersion_) {
+            if (error != nullptr)
+                *error = "fx reload source version is stale";
+            return false;
+        }
+        candidate.generation = nextGeneration_++;
+        if (document.version != 0) {
+            newestSourceVersion_ = document.version;
+            hasSourceVersion_ = true;
+        }
         pending_ = std::move(candidate);
     }
-    return commitPendingAtFrameBoundary();
+    return true;
 }
 
 bool FxInstance::stagePending(const FxSourceDocument& document, std::string* error) {
+    if (error != nullptr)
+        error->clear();
     try {
         FxProgram candidate = compiler_.compileSource(document);
         std::string pipelineError;
@@ -200,6 +228,16 @@ bool FxInstance::stagePending(const FxSourceDocument& document, std::string* err
             return false;
         }
         std::scoped_lock lock(mutex_);
+        if (candidate.sourceVersion != 0 && hasSourceVersion_ && candidate.sourceVersion <= newestSourceVersion_) {
+            if (error != nullptr)
+                *error = "fx reload source version is stale";
+            return false;
+        }
+        candidate.generation = nextGeneration_++;
+        if (candidate.sourceVersion != 0) {
+            newestSourceVersion_ = candidate.sourceVersion;
+            hasSourceVersion_ = true;
+        }
         pending_ = std::move(candidate);
         return true;
     } catch (const std::exception& exception) {
