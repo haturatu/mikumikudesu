@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/model_probe.hpp"
+
 #include <mmd/vmd.hpp>
 
 // Transitional compatibility facade. New application code should use mmd::*.

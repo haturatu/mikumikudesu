@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/model_probe.hpp"
+
 #include <mmd/physics.hpp>
 
 namespace dayo::core {

@@ -1,5 +1,8 @@
 #pragma once
 
+#include "core/model_probe.hpp"
+#include "core/motion.hpp"
+
 #include <mmd/animation.hpp>
 
 namespace dayo::core {
