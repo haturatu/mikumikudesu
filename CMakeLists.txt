@@ -217,7 +217,12 @@ endif()
 
 add_library(
   dayo_graphics
+  src/graphics/bdpt_accumulation.cpp
   src/graphics/device.cpp
+  src/graphics/sbt.cpp
+  src/graphics/subayai_acceleration_structure.cpp
+  src/graphics/subayai_environment.cpp
+  src/graphics/subayai_light_sampling.cpp
   src/graphics/vulkan/vulkan_device.cpp
   src/graphics/vulkan/vulkan_upload_context.cpp
 )
@@ -548,8 +553,25 @@ if(BUILD_TESTING)
     endif()
   endif()
 
+  add_executable(dayo_subayai_bdpt_tests tests/subayai_bdpt_tests.cpp)
+  target_include_directories(dayo_subayai_bdpt_tests PRIVATE src)
+  target_link_libraries(dayo_subayai_bdpt_tests PRIVATE dayo_core dayo_graphics)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      dayo_subayai_bdpt_tests
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_subayai_bdpt_tests PRIVATE -Werror)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(dayo_subayai_bdpt_tests PRIVATE -Wno-error=deprecated-literal-operator)
+      endif()
+    endif()
+  endif()
+
   add_test(NAME core COMMAND dayo_core_tests)
   add_test(NAME upload_ring COMMAND dayo_upload_ring_tests)
+  add_test(NAME subayai_bdpt COMMAND dayo_subayai_bdpt_tests)
   add_test(NAME upstream_compat COMMAND dayo_upstream_compat_tests)
   set_tests_properties(upstream_compat PROPERTIES LABELS "upstream" TIMEOUT 60)
   add_test(NAME vulkan_probe COMMAND mikumikudesu --probe --hidden)
@@ -585,6 +607,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_core_tests
     dayo_upload_ring_tests
     dayo_preview_tests
+    dayo_subayai_bdpt_tests
     dayo_upstream_compat_tests
   )
     if(TARGET ${target})
@@ -603,6 +626,9 @@ if(DAYO_ENABLE_SANITIZERS)
   endif()
   if(TARGET dayo_upstream_compat_tests)
     target_link_options(dayo_upstream_compat_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+  if(TARGET dayo_subayai_bdpt_tests)
+    target_link_options(dayo_subayai_bdpt_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
 endif()
 
