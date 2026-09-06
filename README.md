@@ -1,5 +1,7 @@
 # mikumikudesu
 
+Windows環境が無いのでただの `GNU/Linux` + AMD 環境でどうしても動かしたい為だけのプロジェクト。
+  
 MikuMikuDayo 1.30を初回セットアップ時に取得して使用するLinux向けネイティブ実行系です。
 Linux側を`SDL3 + Vulkan 1.3 + HLSL/SPIR-V`で構成しています。
 
