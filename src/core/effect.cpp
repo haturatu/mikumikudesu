@@ -135,6 +135,10 @@ EffectGraph loadEffectGraph(const std::filesystem::path& path) {
     if (!input)
         throw std::runtime_error("cannot open effect: " + path.string());
     const std::string source((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    return loadEffectGraphFromText(path, source);
+}
+
+EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::string_view source) {
     constexpr std::string_view jsonMarker = "[YRZFX]";
     constexpr std::string_view hlslMarker = "[HLSL]";
     const auto jsonStart = source.find(jsonMarker);

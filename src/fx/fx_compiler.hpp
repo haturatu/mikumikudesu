@@ -29,7 +29,13 @@ enum class FxOpKind : std::uint8_t {
 };
 
 [[nodiscard]] const char* toString(FxOpKind kind) noexcept;
-[[nodiscard]] FxOpKind fxOpFromPassType(core::EffectPassType type) noexcept;
+[[nodiscard]] FxOpKind fxOpFromPassType(core::EffectPassType type);
+
+struct FxCompilerOptions {
+    // Test-only compatibility for callers that intentionally use a synthetic
+    // document without YRZFX/HLSL sections. Production parsing remains strict.
+    bool allowSyntheticProgramForTests{false};
+};
 
 struct FxDispatch {
     std::string name;
@@ -56,6 +62,8 @@ struct FxFramePlan {
 // Each stage is pure; only the frame-boundary swap mutates live state.
 class FxCompiler {
   public:
+    explicit FxCompiler(FxCompilerOptions options = {}) : options_(options) {}
+
     // Parse: raw document -> EffectGraph. Throws on missing markers.
     [[nodiscard]] core::EffectGraph parse(const FxSourceDocument& document) const;
     // Link: resolve cross-file references (skeleton: validate pass names).
@@ -68,6 +76,9 @@ class FxCompiler {
     // Pipeline: validate that every dispatch has backend support short of
     // raytracing (which the executor rejects explicitly at record time).
     bool buildPipelines(const FxProgram& program, std::string* error = nullptr) const;
+
+  private:
+    FxCompilerOptions options_;
 };
 
 // Per-effect live slot. Hot reload stages a candidate off-thread and swaps
@@ -76,7 +87,7 @@ class FxCompiler {
 // in-flight GPU work never observes a use-after-free (API skeleton).
 class FxInstance {
   public:
-    explicit FxInstance(FxProgram initial);
+    explicit FxInstance(FxProgram initial, FxCompilerOptions options = {});
 
     [[nodiscard]] std::shared_ptr<const FxProgram> active() const;
     // Full hot-reload pipeline: parse -> link -> compile -> plan -> pipeline.

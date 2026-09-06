@@ -2,6 +2,8 @@
 
 #include "core/log.hpp"
 
+#include <algorithm>
+#include <stdexcept>
 #include <utility>
 
 namespace dayo::fx {
@@ -26,7 +28,7 @@ const char* toString(FxOpKind kind) noexcept {
     return "raster";
 }
 
-FxOpKind fxOpFromPassType(core::EffectPassType type) noexcept {
+FxOpKind fxOpFromPassType(core::EffectPassType type) {
     switch (type) {
     case core::EffectPassType::rasterizer:
         return FxOpKind::raster;
@@ -37,24 +39,24 @@ FxOpKind fxOpFromPassType(core::EffectPassType type) noexcept {
     case core::EffectPassType::raytracing:
         return FxOpKind::raytracing;
     case core::EffectPassType::unknown:
-        return FxOpKind::raster;
+        throw std::runtime_error("unsupported FX pass type: unknown");
     }
-    return FxOpKind::raster;
+    throw std::runtime_error("unsupported FX pass type");
 }
 
 core::EffectGraph FxCompiler::parse(const FxSourceDocument& document) const {
     if (document.raw.empty()) {
         throw std::runtime_error("fx source is empty: " + document.path.string());
     }
-    // Transactional parse: write to a temp file is avoided; core loader
-    // already keeps failures from touching live state. For skeleton docs
-    // without YRZFX markers, synthesize a single raster pass so unit tests
-    // and reference paths can run without fixture files.
+    // Parse the caller's immutable buffer. In particular, a watcher/editor
+    // may have newer text than the path on disk.
     try {
-        core::EffectGraph graph = core::loadEffectGraph(document.path);
+        core::EffectGraph graph = core::loadEffectGraphFromText(document.path, document.raw);
         graph.sourcePath = document.path;
         return graph;
     } catch (const std::exception&) {
+        if (!options_.allowSyntheticProgramForTests)
+            throw;
         core::EffectGraph graph;
         graph.sourcePath = document.path;
         graph.category = "generic";
@@ -64,7 +66,7 @@ core::EffectGraph FxCompiler::parse(const FxSourceDocument& document) const {
             pass.name = "main";
         pass.type = core::EffectPassType::rasterizer;
         graph.passes.push_back(std::move(pass));
-        dayo::log::debug("FxCompiler falling back to synthetic pass for ", document.path.string());
+        dayo::log::debug("FxCompiler using explicit test-only synthetic pass for ", document.path.string());
         return graph;
     }
 }
@@ -87,6 +89,8 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
         program.label = graph.category.empty() ? "fx" : graph.category;
     program.generation = 1;
     for (const auto& pass : graph.passes) {
+        if (pass.type == core::EffectPassType::unknown)
+            throw std::runtime_error("unsupported FX pass '" + pass.name + "': unknown type");
         FxDispatch dispatch;
         dispatch.name = pass.name.empty() ? "pass" : pass.name;
         dispatch.kind = fxOpFromPassType(pass.type);
@@ -98,12 +102,8 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
             dispatch.shader = pass.vertexShader;
         program.passes.push_back(std::move(dispatch));
     }
-    if (program.passes.empty()) {
-        FxDispatch fallback;
-        fallback.name = "main";
-        fallback.kind = FxOpKind::raster;
-        program.passes.push_back(std::move(fallback));
-    }
+    if (program.passes.empty())
+        throw std::runtime_error("FX graph contains no passes");
     return program;
 }
 
@@ -123,18 +123,17 @@ FxFramePlan FxCompiler::plan(const FxProgram& program, const FxFrameContext& con
 }
 
 bool FxCompiler::buildPipelines(const FxProgram& program, std::string* error) const {
-    for (const auto& pass : program.passes) {
-        if (pass.name.empty()) {
-            if (error != nullptr)
-                *error = "fx pipeline: dispatch with empty name";
-            dayo::log::error("FxCompiler pipeline validation failed: empty dispatch name");
-            return false;
-        }
-    }
-    return true;
+    const auto empty = std::ranges::find_if(program.passes, [](const FxDispatch& pass) { return pass.name.empty(); });
+    if (empty == program.passes.end())
+        return true;
+    if (error != nullptr)
+        *error = "fx pipeline: dispatch with empty name";
+    dayo::log::error("FxCompiler pipeline validation failed: empty dispatch name");
+    return false;
 }
 
-FxInstance::FxInstance(FxProgram initial) : active_(std::make_shared<const FxProgram>(std::move(initial))) {}
+FxInstance::FxInstance(FxProgram initial, FxCompilerOptions options)
+    : active_(std::make_shared<const FxProgram>(std::move(initial))), compiler_(options) {}
 
 std::shared_ptr<const FxProgram> FxInstance::active() const {
     std::scoped_lock lock(mutex_);
@@ -144,6 +143,8 @@ std::shared_ptr<const FxProgram> FxInstance::active() const {
 bool FxInstance::tryHotReload(const FxSourceDocument& document, const FxFrameContext& contextForPlan,
                               std::string* error) {
     // parse -> link -> compile -> plan -> pipeline; swap only on success.
+    if (error != nullptr)
+        error->clear();
     core::EffectGraph graph;
     try {
         graph = compiler_.parse(document);
@@ -161,15 +162,23 @@ bool FxInstance::tryHotReload(const FxSourceDocument& document, const FxFrameCon
         dayo::log::warn("FxInstance hot reload link failed, keeping current: ", exception.what());
         return false;
     }
-    FxProgram candidate = compiler_.compile(graph);
-    candidate.generation = active()->generation + 1;
-    // Plan validation before pipeline creation catches size/context errors.
-    static_cast<void>(compiler_.plan(candidate, contextForPlan));
-    std::string pipelineError;
-    if (!compiler_.buildPipelines(candidate, &pipelineError)) {
+    FxProgram candidate;
+    try {
+        candidate = compiler_.compile(graph);
+        candidate.generation = active()->generation + 1;
+        // Plan validation before pipeline creation catches size/context errors.
+        static_cast<void>(compiler_.plan(candidate, contextForPlan));
+        std::string pipelineError;
+        if (!compiler_.buildPipelines(candidate, &pipelineError)) {
+            if (error != nullptr)
+                *error = pipelineError;
+            dayo::log::warn("FxInstance hot reload pipeline failed, keeping current: ", pipelineError);
+            return false;
+        }
+    } catch (const std::exception& exception) {
         if (error != nullptr)
-            *error = pipelineError;
-        dayo::log::warn("FxInstance hot reload pipeline failed, keeping current: ", pipelineError);
+            *error = std::string("fx compile: ") + exception.what();
+        dayo::log::warn("FxInstance hot reload compile failed, keeping current: ", exception.what());
         return false;
     }
     {
