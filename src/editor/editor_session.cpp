@@ -37,6 +37,7 @@ std::size_t EditorSession::flushOperations() {
         operations_.discard();
         return 0;
     }
+    operations_.setStableIdTable(stableIds_);
     return operations_.flush(*scene_, *history_);
 }
 

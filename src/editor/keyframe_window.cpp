@@ -2,6 +2,8 @@
 
 #include "editor/editor_session.hpp"
 
+#include <utility>
+
 namespace dayo::editor {
 
 void KeyframeWindow::refresh(EditorSession& session) {
@@ -12,22 +14,30 @@ void KeyframeWindow::refresh(EditorSession& session) {
     const auto* motion = scene->motion(session.target(), session.global());
     if (motion == nullptr)
         return;
-    auto pushBone = [&](const auto& key, std::int32_t track, std::uint64_t id) {
+    const auto document = core::toMotionDocument(*motion);
+    session.stableIds().rebuild(document);
+    auto pushRow = [&](std::string name, std::uint32_t frame, core::MotionTrack track, std::size_t index) {
+        const auto id = session.stableIds().keyId(track, index);
         Row row;
-        row.stableId = id;
-        row.track = track;
-        row.name = key.name;
-        row.frame = key.frame;
-        row.selected = session.selection().contains(MotionKeyId{static_cast<core::MotionTrack>(track), id});
+        row.stableId = id.stableId;
+        row.track = static_cast<std::int32_t>(track);
+        row.name = std::move(name);
+        row.frame = frame;
+        row.selected = session.selection().contains(id);
         rows_.push_back(std::move(row));
     };
-    std::uint64_t id = 1;
-    for (const auto& key : motion->bones)
-        pushBone(key, 0, id++);
-    for (const auto& key : motion->morphs)
-        pushBone(key, 1, id++);
-    // Camera/light/shadow/IK rows are summarized by frame only; saving
-    // re-sorts by frame so the list order here is presentational.
+    for (std::size_t index = 0; index < motion->bones.size(); ++index)
+        pushRow(motion->bones[index].name, motion->bones[index].frame, core::MotionTrack::bone, index);
+    for (std::size_t index = 0; index < motion->morphs.size(); ++index)
+        pushRow(motion->morphs[index].name, motion->morphs[index].frame, core::MotionTrack::morph, index);
+    for (std::size_t index = 0; index < motion->cameras.size(); ++index)
+        pushRow("camera", motion->cameras[index].frame, core::MotionTrack::camera, index);
+    for (std::size_t index = 0; index < motion->lights.size(); ++index)
+        pushRow("light", motion->lights[index].frame, core::MotionTrack::light, index);
+    for (std::size_t index = 0; index < motion->shadows.size(); ++index)
+        pushRow("shadow", motion->shadows[index].frame, core::MotionTrack::shadow, index);
+    for (std::size_t index = 0; index < motion->ik.size(); ++index)
+        pushRow("ik", motion->ik[index].frame, core::MotionTrack::ik, index);
 }
 
 void KeyframeWindow::requestMoveSelected(EditorSession& session, std::int64_t frameDelta) {
@@ -37,8 +47,7 @@ void KeyframeWindow::requestMoveSelected(EditorSession& session, std::int64_t fr
     operation.target = session.target();
     operation.global = session.global();
     operation.frameDelta = frameDelta;
-    for (const auto& id : session.selection().ids())
-        operation.stableIds.push_back(id.stableId);
+    operation.keys = session.selection().ids();
     session.operations().push(std::move(operation));
 }
 

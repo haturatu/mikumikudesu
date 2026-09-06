@@ -12,7 +12,9 @@
 #include "editor/selection.hpp"
 
 #include <cmath>
+#include <cstring>
 #include <iostream>
+#include <limits>
 #include <string_view>
 
 namespace {
@@ -40,6 +42,7 @@ int main() {
         ok &= check(armId.stableId != 0 && legId.stableId != 0 && armId.stableId != legId.stableId,
                     "stable ids are unique per key");
         dayo::core::MotionEditor::normalize(document);
+        table.rebuild(document);
         const auto armIndex = table.resolve(document, armId);
         const auto legIndex = table.resolve(document, legId);
         ok &= check(armIndex.has_value() && legIndex.has_value() && document.bones[*armIndex].name == "arm" &&
@@ -51,6 +54,20 @@ int main() {
         const auto refs = selection.resolveTransient(document, table);
         ok &= check(refs.size() == 1 && document.bones[refs.front().index].name == "arm",
                     "selection resolves stable id transiently");
+
+        dayo::core::MotionDocument duplicates;
+        duplicates.bones.push_back({.name = "dup", .frame = 3});
+        duplicates.bones.push_back({.name = "dup", .frame = 3});
+        dayo::editor::StableIdTable duplicateTable;
+        duplicateTable.rebuild(duplicates);
+        const auto firstDuplicate = duplicateTable.keyId(dayo::core::MotionTrack::bone, 0);
+        const auto secondDuplicate = duplicateTable.keyId(dayo::core::MotionTrack::bone, 1);
+        dayo::core::MotionEditor::normalize(duplicates);
+        duplicateTable.rebuild(duplicates);
+        ok &= check(duplicateTable.resolve(duplicates, firstDuplicate).has_value() &&
+                        duplicateTable.resolve(duplicates, secondDuplicate).has_value() &&
+                        firstDuplicate != secondDuplicate,
+                    "stable ids retain duplicate key ordinals");
     }
 
     // Undo transaction: drag coalesces into a single history entry.
@@ -100,6 +117,31 @@ int main() {
         }
     }
 
+    // MoveKeysOperation resolves stable ids and records a real history command.
+    {
+        dayo::core::Scene scene;
+        dayo::core::CommandHistory history;
+        dayo::core::VmdMotion initial;
+        initial.bones.push_back({.name = "arm", .frame = 5});
+        scene.replaceMotion(initial, 0, true);
+        dayo::editor::StableIdTable table;
+        table.rebuild(dayo::core::toMotionDocument(initial));
+        const auto id = table.keyId(dayo::core::MotionTrack::bone, 0);
+        dayo::editor::EditorOperationQueue queue;
+        queue.setStableIdTable(table);
+        dayo::editor::MoveKeysOperation move;
+        move.target = 0;
+        move.global = true;
+        move.keys = {id};
+        move.frameDelta = 7;
+        queue.push(std::move(move));
+        ok &= check(queue.flush(scene, history) == 1 && history.undoCount() == 1 &&
+                        scene.motion(0, true)->bones.front().frame == 12,
+                    "MoveKeysOperation changes motion through history");
+        ok &= check(history.undo(scene) && scene.motion(0, true)->bones.front().frame == 5,
+                    "MoveKeysOperation undo restores motion");
+    }
+
     // HDR: half round trip + RGBA16F skeleton.
     {
         dayo::core::ImageRgba8 ldr{2, 1, {255, 0, 0, 255, 0, 255, 0, 255}};
@@ -110,6 +152,41 @@ int main() {
         ok &= check(roundTrip.pixels == ldr.pixels, "half round trip preserves LDR bytes");
         const float one = dayo::core::halfToFloat(dayo::core::floatToHalf(1.0F));
         ok &= check(std::abs(one - 1.0F) < 0.001F, "half conversion near 1.0");
+        ok &= check(dayo::core::halfToFloat(0x0001U) > 0.0F, "half conversion preserves subnormal values");
+        ok &=
+            check(std::isinf(dayo::core::halfToFloat(dayo::core::floatToHalf(std::numeric_limits<float>::infinity()))),
+                  "half conversion preserves infinity");
+
+        dayo::core::ImageData unorm{
+            1, 1, 4, dayo::core::PixelType::unorm8, dayo::core::ColorSpace::srgb, {128, 64, 32, 255}};
+        const auto linearHalf =
+            dayo::core::convertImage(unorm, dayo::core::PixelType::half16, dayo::core::ColorSpace::linear);
+        ok &= check(linearHalf.bytes.size() == 4U * sizeof(std::uint16_t) &&
+                        linearHalf.space == dayo::core::ColorSpace::linear,
+                    "HDR conversion allocates target half storage");
+        std::uint16_t linearRedBits{};
+        std::memcpy(&linearRedBits, linearHalf.bytes.data(), sizeof(linearRedBits));
+        ok &= check(dayo::core::halfToFloat(linearRedBits) < 0.22F, "HDR conversion applies sRGB to linear transfer");
+        const auto floatImage =
+            dayo::core::convertImage(linearHalf, dayo::core::PixelType::float32, dayo::core::ColorSpace::linear);
+        float convertedRed{};
+        std::memcpy(&convertedRed, floatImage.bytes.data(), sizeof(convertedRed));
+        ok &= check(convertedRed > 0.0F && floatImage.bytes.size() == 4U * sizeof(float),
+                    "HDR conversion writes real float32 samples");
+        dayo::core::ImageData spoofed = unorm;
+        spoofed.type = dayo::core::PixelType::float32;
+        spoofed.bytes.resize(4);
+        ok &= check(
+            [&] {
+                try {
+                    static_cast<void>(dayo::core::convertImage(spoofed, dayo::core::PixelType::half16,
+                                                               dayo::core::ColorSpace::linear));
+                } catch (const std::invalid_argument&) {
+                    return true;
+                }
+                return false;
+            }(),
+            "HDR conversion rejects metadata-only type spoofing");
     }
 
     // Solver smoke: documented pipeline runs + camera chain separated.

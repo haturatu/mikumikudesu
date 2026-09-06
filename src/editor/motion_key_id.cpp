@@ -1,5 +1,11 @@
 #include "editor/motion_key_id.hpp"
 
+#include <algorithm>
+#include <limits>
+#include <stdexcept>
+#include <unordered_map>
+#include <vector>
+
 namespace dayo::editor {
 
 namespace {
@@ -43,7 +49,7 @@ std::string StableIdTable::keyName(const core::MotionDocument& document, core::M
 }
 
 std::uint32_t StableIdTable::keyFrame(const core::MotionDocument& document, core::MotionTrack track,
-                                       std::size_t index) {
+                                      std::size_t index) {
     switch (track) {
     case core::MotionTrack::bone:
         return index < document.bones.size() ? document.bones[index].frame : 0U;
@@ -66,27 +72,84 @@ std::size_t StableIdTable::trackSize(const core::MotionDocument& document, core:
 }
 
 void StableIdTable::rebuild(const core::MotionDocument& document) {
-    fingerprints_.clear();
-    order_.clear();
-    nextId_ = 1;
+    const auto previous = fingerprints_;
+    std::vector<std::pair<MotionKeyId, Fingerprint>> old;
+    old.reserve(previous.size());
+    for (const auto& entry : previous)
+        old.emplace_back(entry);
+    std::vector<bool> used(old.size(), false);
+
+    std::unordered_map<MotionKeyId, Fingerprint, MotionKeyIdHash> rebuilt;
+    std::unordered_map<MotionKeyId, std::size_t, MotionKeyIdHash> rebuiltOrder;
+    rebuilt.reserve(document.bones.size() + document.morphs.size() + document.cameras.size() + document.lights.size() +
+                    document.shadows.size() + document.ik.size());
+    rebuiltOrder.reserve(rebuilt.size());
+
     for (int trackValue = 0; trackValue < 6; ++trackValue) {
         const auto track = static_cast<core::MotionTrack>(trackValue);
         const auto count = trackSize(document, track);
+        std::unordered_map<std::string, std::size_t> ordinals;
         for (std::size_t index = 0; index < count; ++index) {
-            const MotionKeyId id{track, nextId_++};
-            fingerprints_.emplace(id, Fingerprint{track, keyName(document, track, index),
-                                                  keyFrame(document, track, index)});
-            order_.emplace(id.stableId, static_cast<std::uint64_t>(index));
+            const Fingerprint candidate{track, keyName(document, track, index), keyFrame(document, track, index), 0};
+            const std::string ordinalKey = candidate.name + '\0' + std::to_string(candidate.frame);
+            const std::size_t duplicateOrdinal = ordinals[ordinalKey]++;
+            Fingerprint current = candidate;
+            current.duplicateOrdinal = duplicateOrdinal;
+
+            std::optional<std::size_t> matched;
+            for (std::size_t oldIndex = 0; oldIndex < old.size(); ++oldIndex) {
+                if (used[oldIndex] || old[oldIndex].second.track != current.track ||
+                    old[oldIndex].second.name != current.name || old[oldIndex].second.frame != current.frame ||
+                    old[oldIndex].second.duplicateOrdinal != current.duplicateOrdinal)
+                    continue;
+                matched = oldIndex;
+                break;
+            }
+            // A caller may rebuild after changing a frame without calling
+            // notifyMoved. Preserve a unique named key in that case too;
+            // duplicate names still require the explicit ordinal identity.
+            if (!matched.has_value()) {
+                std::size_t currentNameCount = 0;
+                for (std::size_t other = 0; other < count; ++other)
+                    currentNameCount += keyName(document, track, other) == current.name ? 1U : 0U;
+                std::size_t oldNameCount = 0;
+                std::size_t oldCandidate = 0;
+                for (std::size_t oldIndex = 0; oldIndex < old.size(); ++oldIndex) {
+                    if (used[oldIndex] || old[oldIndex].second.track != current.track ||
+                        old[oldIndex].second.name != current.name)
+                        continue;
+                    ++oldNameCount;
+                    oldCandidate = oldIndex;
+                }
+                if (currentNameCount == 1 && oldNameCount == 1)
+                    matched = oldCandidate;
+            }
+
+            MotionKeyId id;
+            if (matched.has_value()) {
+                used[*matched] = true;
+                id = old[*matched].first;
+            } else {
+                if (nextId_ == 0)
+                    throw std::overflow_error("stable motion key id exhausted");
+                id = MotionKeyId{track, nextId_++};
+            }
+            rebuilt.emplace(id, std::move(current));
+            rebuiltOrder.emplace(id, index);
         }
     }
+    fingerprints_.swap(rebuilt);
+    order_.clear();
+    order_.swap(rebuiltOrder);
 }
 
 MotionKeyId StableIdTable::keyId(core::MotionTrack track, std::size_t index) const {
     for (const auto& [id, fingerprint] : fingerprints_) {
+        static_cast<void>(fingerprint);
         if (id.track != track)
             continue;
-        const auto order = order_.find(id.stableId);
-        if (order != order_.end() && order->second == static_cast<std::uint64_t>(index))
+        const auto order = order_.find(id);
+        if (order != order_.end() && order->second == index)
             return id;
     }
     return MotionKeyId{track, 0};
@@ -97,43 +160,56 @@ std::optional<std::size_t> StableIdTable::resolve(const core::MotionDocument& do
     if (found == fingerprints_.end() || id.stableId == 0)
         return std::nullopt;
     const auto& fingerprint = found->second;
-    // Linear scan by (name, frame) survives frame-order sorts; indices are
-    // never trusted across edits.
+    // Linear scan by (name, frame, duplicate ordinal) survives frame-order
+    // sorts; indices are never trusted across edits.
+    std::size_t duplicateOrdinal = 0;
     const auto count = trackCount(document, id.track);
     for (std::size_t index = 0; index < count; ++index) {
         // NOTE: keyName/keyFrame are non-noexcept; resolve stays noexcept by
         // catching allocation failure as "not found".
         try {
             if (keyName(document, id.track, index) == fingerprint.name &&
-                keyFrame(document, id.track, index) == fingerprint.frame)
-                return index;
+                keyFrame(document, id.track, index) == fingerprint.frame) {
+                const auto currentOrdinal = duplicateOrdinal++;
+                if (currentOrdinal == fingerprint.duplicateOrdinal)
+                    return index;
+            }
         } catch (...) {
             return std::nullopt;
         }
     }
-    // Fallback: match by name only (frame may have been dragged without
-    // notifyMoved in a skeleton caller).
+    // Fallback: match by name only when that name is unique. Never guess
+    // among duplicate names after an edit, because doing so can select a
+    // different key than the stable id identifies.
+    std::optional<std::size_t> uniqueName;
     for (std::size_t index = 0; index < count; ++index) {
         try {
-            if (keyName(document, id.track, index) == fingerprint.name)
-                return index;
+            if (keyName(document, id.track, index) == fingerprint.name) {
+                if (uniqueName.has_value())
+                    return std::nullopt;
+                uniqueName = index;
+            }
         } catch (...) {
             return std::nullopt;
         }
     }
-    return std::nullopt;
+    return uniqueName;
 }
 
 void StableIdTable::notifyMoved(const core::MotionDocument& document, const std::vector<MotionKeyId>& ids,
                                 std::int64_t frameDelta) {
-    static_cast<void>(frameDelta);
+    const auto shiftedFrame = [](std::uint32_t frame, std::int64_t delta) {
+        const auto value = static_cast<std::int64_t>(frame) + delta;
+        return static_cast<std::uint32_t>(
+            std::clamp<std::int64_t>(value, 0, static_cast<std::int64_t>(std::numeric_limits<std::uint32_t>::max())));
+    };
     for (const auto& id : ids) {
         auto found = fingerprints_.find(id);
         if (found == fingerprints_.end())
             continue;
+        found->second.frame = shiftedFrame(found->second.frame, frameDelta);
         const auto resolved = resolve(document, id);
         if (resolved.has_value()) {
-            found->second.frame = keyFrame(document, id.track, *resolved);
             found->second.name = keyName(document, id.track, *resolved);
         }
     }

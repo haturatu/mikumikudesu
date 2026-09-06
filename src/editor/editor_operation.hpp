@@ -2,6 +2,7 @@
 
 #include "core/editor.hpp"
 #include "core/scene.hpp"
+#include "editor/motion_key_id.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -30,6 +31,8 @@ struct MoveKeysOperation {
     bool global{};
     // Stable ids; resolved transiently at flush time.
     std::vector<std::uint64_t> stableIds;
+    // Preferred form: preserves the track for mixed-track selections.
+    std::vector<MotionKeyId> keys;
     std::int32_t track{};
     std::int64_t frameDelta{};
 };
@@ -39,6 +42,8 @@ using EditorOperation = std::variant<SetFrameOperation, ReplaceMotionOperation, 
 class EditorOperationQueue {
   public:
     void push(EditorOperation operation);
+    void setStableIdTable(const StableIdTable& table);
+    void setStableIdTable(StableIdTable& table);
     // Applies every queued operation through history. Returns applied count.
     std::size_t flush(core::Scene& scene, core::CommandHistory& history);
     void discard() noexcept;
@@ -51,6 +56,9 @@ class EditorOperationQueue {
 
   private:
     std::vector<EditorOperation> operations_;
+    StableIdTable stableIdTable_;
+    bool hasStableIdTable_{false};
+    StableIdTable* externalStableIdTable_{};
 };
 
 // Drag transaction: begin captures `before`, dragTo updates the preview
