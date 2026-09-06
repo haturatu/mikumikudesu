@@ -429,8 +429,8 @@ FxScalar evalBinary(FxExpr::BinaryOp op, const FxScalar& lhs, const FxScalar& rh
         };
         const double leftDouble = toDoubleImpl(leftValue);
         const double rightDouble = toDoubleImpl(rightValue);
-        const std::int64_t leftInt = asInt(leftValue);
-        const std::int64_t rightInt = asInt(rightValue);
+        const std::int64_t leftInt = useDouble ? 0 : asInt(leftValue);
+        const std::int64_t rightInt = useDouble ? 0 : asInt(rightValue);
         switch (op) {
         case FxExpr::BinaryOp::less:
             return useDouble ? leftDouble < rightDouble : leftInt < rightInt;
