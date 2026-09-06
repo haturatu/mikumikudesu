@@ -149,6 +149,9 @@ add_library(
   dayo_core
   src/core/asset.cpp
   src/core/denoiser.cpp
+  src/core/physics_profile.cpp
+  src/core/softbody_native.cpp
+  src/core/solver.cpp
   src/editor/bone_window.cpp
   src/editor/config.cpp
   src/editor/editor_operation.cpp
