@@ -51,6 +51,22 @@ inline FxExprDependency& operator|=(FxExprDependency& lhs, FxExprDependency rhs)
 
 // Recursive AST. Nodes own children via shared_ptr so FxExpr stays copyable.
 struct FxExpr {
+    enum class BinaryOp : std::uint8_t {
+        add,
+        subtract,
+        multiply,
+        divide,
+        modulo,
+        less,
+        lessEqual,
+        greater,
+        greaterEqual,
+        equal,
+        notEqual,
+        logicalAnd,
+        logicalOr,
+    };
+
     struct Literal {
         FxScalar value{};
     };
@@ -62,7 +78,7 @@ struct FxExpr {
         std::shared_ptr<FxExpr> operand;
     };
     struct Binary {
-        char op{}; // '+' '-' '*' '/' '%'
+        BinaryOp op{BinaryOp::add};
         std::shared_ptr<FxExpr> lhs;
         std::shared_ptr<FxExpr> rhs;
     };
@@ -77,7 +93,8 @@ struct FxExpr {
 // Parse a scalar expression. Supports:
 //   numbers, DEFAULT_RTSIZE.x/.y, VERTEXCOUNT, CLONEDVERTEXCOUNT,
 //   TOTALMATERIAL, CloneCount, FRAME/FRAMEINDEX, SAMPLE/SAMPLEINDEX,
-//   MODELINDEX, true/false, + - * / %, pow/min/max, parens, unary -/!.
+//   MODELINDEX, true/false, + - * / %, comparisons, &&, ||,
+//   pow/min/max, parens, unary -/!.
 // Throws std::runtime_error on syntax errors. Profile-independent: pow
 // gating happens at evaluate() time so one AST serves both profiles.
 [[nodiscard]] FxExpr parseFxExpr(std::string_view text);

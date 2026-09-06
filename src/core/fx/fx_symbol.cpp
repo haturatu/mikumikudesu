@@ -53,26 +53,46 @@ bool builtinScalar(std::string_view name, const FxEvalContext& context, FxScalar
 FxScalar evalWithResolver(const FxExpr& expr, const FxSymbolResolver& resolver, FxCompatibilityProfile profile,
                           bool allowPowQuirk);
 
-FxScalar evalBinaryScalar(char op, const FxScalar& lhs, const FxScalar& rhs) {
+FxScalar evalBinaryScalar(FxExpr::BinaryOp op, const FxScalar& lhs, const FxScalar& rhs) {
     // Reuse the same semantics as fx_expr evaluation for consistency.
     // Integer path uses checked arithmetic to surface overflow early.
+    switch (op) {
+    case FxExpr::BinaryOp::less:
+        return FxScalar{fxToDouble(lhs) < fxToDouble(rhs)};
+    case FxExpr::BinaryOp::lessEqual:
+        return FxScalar{fxToDouble(lhs) <= fxToDouble(rhs)};
+    case FxExpr::BinaryOp::greater:
+        return FxScalar{fxToDouble(lhs) > fxToDouble(rhs)};
+    case FxExpr::BinaryOp::greaterEqual:
+        return FxScalar{fxToDouble(lhs) >= fxToDouble(rhs)};
+    case FxExpr::BinaryOp::equal:
+        return FxScalar{fxToDouble(lhs) == fxToDouble(rhs)};
+    case FxExpr::BinaryOp::notEqual:
+        return FxScalar{fxToDouble(lhs) != fxToDouble(rhs)};
+    case FxExpr::BinaryOp::logicalAnd:
+        return FxScalar{fxToBool(lhs) && fxToBool(rhs)};
+    case FxExpr::BinaryOp::logicalOr:
+        return FxScalar{fxToBool(lhs) || fxToBool(rhs)};
+    default:
+        break;
+    }
     const bool lhsDouble = std::holds_alternative<double>(lhs);
     const bool rhsDouble = std::holds_alternative<double>(rhs);
     if (lhsDouble || rhsDouble) {
         const double left = fxToDouble(lhs);
         const double right = fxToDouble(rhs);
         switch (op) {
-        case '+':
+        case FxExpr::BinaryOp::add:
             return FxScalar{left + right};
-        case '-':
+        case FxExpr::BinaryOp::subtract:
             return FxScalar{left - right};
-        case '*':
+        case FxExpr::BinaryOp::multiply:
             return FxScalar{left * right};
-        case '/':
+        case FxExpr::BinaryOp::divide:
             if (right == 0.0)
                 throw std::runtime_error("fx expression division by zero");
             return FxScalar{left / right};
-        case '%':
+        case FxExpr::BinaryOp::modulo:
             if (right == 0.0)
                 throw std::runtime_error("fx expression modulo by zero");
             return FxScalar{std::fmod(left, right)};
@@ -89,25 +109,25 @@ FxScalar evalBinaryScalar(char op, const FxScalar& lhs, const FxScalar& rhs) {
     const std::int64_t right = asInt(rhs);
     std::int64_t out{};
     switch (op) {
-    case '+':
+    case FxExpr::BinaryOp::add:
         if (__builtin_add_overflow(left, right, &out))
             throw std::overflow_error("fx expression integer overflow");
         return FxScalar{out};
-    case '-':
+    case FxExpr::BinaryOp::subtract:
         if (__builtin_sub_overflow(left, right, &out))
             throw std::overflow_error("fx expression integer overflow");
         return FxScalar{out};
-    case '*':
+    case FxExpr::BinaryOp::multiply:
         if (__builtin_mul_overflow(left, right, &out))
             throw std::overflow_error("fx expression integer overflow");
         return FxScalar{out};
-    case '/':
+    case FxExpr::BinaryOp::divide:
         if (right == 0)
             throw std::runtime_error("fx expression division by zero");
         if (left == std::numeric_limits<std::int64_t>::min() && right == -1)
             throw std::overflow_error("fx expression integer overflow");
         return FxScalar{left / right};
-    case '%':
+    case FxExpr::BinaryOp::modulo:
         if (right == 0)
             throw std::runtime_error("fx expression modulo by zero");
         return FxScalar{left % right};
@@ -185,6 +205,10 @@ FxScalar evalWithResolver(const FxExpr& expr, const FxSymbolResolver& resolver, 
     }
     if (const auto* binary = std::get_if<FxExpr::Binary>(&expr.node)) {
         const FxScalar lhs = evalWithResolver(*binary->lhs, resolver, profile, allowPowQuirk);
+        if (binary->op == FxExpr::BinaryOp::logicalAnd && !fxToBool(lhs))
+            return FxScalar{false};
+        if (binary->op == FxExpr::BinaryOp::logicalOr && fxToBool(lhs))
+            return FxScalar{true};
         const FxScalar rhs = evalWithResolver(*binary->rhs, resolver, profile, allowPowQuirk);
         return evalBinaryScalar(binary->op, lhs, rhs);
     }
@@ -260,8 +284,8 @@ FxExtent FxSymbolResolver::resolveExtent(std::string_view name) const {
     throw std::runtime_error("fx symbol has unknown resource: " + std::string(name));
 }
 
-FxScalar evaluateFxExprWithSymbols(const FxExpr& expr, const FxSymbolResolver& resolver,
-                                   FxCompatibilityProfile profile, bool allowPowQuirk) {
+FxScalar evaluateFxExprWithSymbols(const FxExpr& expr, const FxSymbolResolver& resolver, FxCompatibilityProfile profile,
+                                   bool allowPowQuirk) {
     return evalWithResolver(expr, resolver, profile, allowPowQuirk);
 }
 

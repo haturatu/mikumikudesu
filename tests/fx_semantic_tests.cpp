@@ -62,12 +62,10 @@ int main() {
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("max(3,5)"), ctx)), 5.0, "max");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("max(1,5,3)"), ctx)), 5.0, "max variadic");
 
-    ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("DEFAULT_RTSIZE.x"), ctx)), 1280.0,
-                       "DEFAULT_RTSIZE.x");
+    ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("DEFAULT_RTSIZE.x"), ctx)), 1280.0, "DEFAULT_RTSIZE.x");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("DEFAULT_RTSIZE.y"), ctx)), 720.0, "DEFAULT_RTSIZE.y");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("VERTEXCOUNT"), ctx)), 10000.0, "VERTEXCOUNT");
-    ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("CLONEDVERTEXCOUNT"), ctx)), 40000.0,
-                       "CLONEDVERTEXCOUNT");
+    ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("CLONEDVERTEXCOUNT"), ctx)), 40000.0, "CLONEDVERTEXCOUNT");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("TOTALMATERIAL"), ctx)), 8.0, "TOTALMATERIAL");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("CloneCount"), ctx)), 4.0, "CloneCount");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("DEFAULT_RTSIZE.x/2"), ctx)), 640.0, "rt half");
@@ -89,8 +87,7 @@ int main() {
     ok &= check(fxDependencies(parseFxExpr("1+2")) == FxExprDependency::Static, "dep static");
     ok &= check(any(fxDependencies(parseFxExpr("DEFAULT_RTSIZE.x")), FxExprDependency::Resize), "dep resize");
     ok &= check(any(fxDependencies(parseFxExpr("VERTEXCOUNT+1")), FxExprDependency::Model), "dep model");
-    ok &= check(any(fxDependencies(parseFxExpr("CLONEDVERTEXCOUNT")), FxExprDependency::Model),
-                "dep cloned model");
+    ok &= check(any(fxDependencies(parseFxExpr("CLONEDVERTEXCOUNT")), FxExprDependency::Model), "dep cloned model");
     ok &= check(any(fxDependencies(parseFxExpr("TOTALMATERIAL")), FxExprDependency::Material), "dep material");
     ok &= check(any(fxDependencies(parseFxExpr("CloneCount")), FxExprDependency::Model), "dep clone");
     {
@@ -99,9 +96,8 @@ int main() {
     }
 
     // --- pow profile split ---
-    ok &= expectDouble(
-        fxToDouble(evaluateFxExpr(parseFxExpr("pow(2,3)"), ctx, FxCompatibilityProfile::nativeExtended)), 8.0,
-        "pow native");
+    ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("pow(2,3)"), ctx, FxCompatibilityProfile::nativeExtended)),
+                       8.0, "pow native");
     ok &= expectDouble(
         fxToDouble(evaluateFxExpr(parseFxExpr("pow(2,3)"), ctx, FxCompatibilityProfile::upstream130, true)), 8.0,
         "pow upstream quirk");
@@ -203,9 +199,8 @@ int main() {
         // Overflow: element count / byte guards.
         ok &= expectThrows([&] { static_cast<void>(FxSizeResolver::textureBytes(FxExtent{16384, 16384, 1, 2}, 64)); },
                            "texture bytes overflow throws");
-        ok &= expectThrows(
-            [&] { static_cast<void>(FxSizeResolver::bufferBytes(FxExtent{1 << 30, 1, 1, 1}, 2)); },
-            "buffer bytes overflow throws");
+        ok &= expectThrows([&] { static_cast<void>(FxSizeResolver::bufferBytes(FxExtent{1 << 30, 1, 1, 1}, 2)); },
+                           "buffer bytes overflow throws");
 
         // DoS: huge literal / huge multiply must throw, never allocate.
         FxSizeExpr huge;
@@ -224,10 +219,7 @@ int main() {
         hugePow.dimension = 1;
         hugePow.xExpr = "pow(10,30)";
         ok &= expectThrows(
-            [&] {
-                static_cast<void>(
-                    resolver.resolve(hugePow, ctx, table, FxCompatibilityProfile::nativeExtended));
-            },
+            [&] { static_cast<void>(resolver.resolve(hugePow, ctx, table, FxCompatibilityProfile::nativeExtended)); },
             "size huge pow throws");
 
         // Checked helpers throw on overflow.

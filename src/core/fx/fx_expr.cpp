@@ -2,9 +2,10 @@
 
 #include "core/log.hpp"
 
-#include <cmath>
 #include <cctype>
+#include <cmath>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 
 namespace dayo::core::fx {
@@ -98,42 +99,105 @@ class Parser {
         --depth_;
     }
 
+    bool consume(std::string_view token) {
+        skipWs();
+        if (text_.substr(pos_, token.size()) != token)
+            return false;
+        pos_ += token.size();
+        return true;
+    }
+
+    FxExpr makeBinary(FxExpr::BinaryOp op, FxExpr lhs, FxExpr rhs) {
+        trackNode();
+        FxExpr out;
+        out.node =
+            FxExpr::Binary{op, std::make_shared<FxExpr>(std::move(lhs)), std::make_shared<FxExpr>(std::move(rhs))};
+        return out;
+    }
+
     FxExpr parseExpr(std::size_t depth) {
         enterDepth();
-        FxExpr lhs = parseTerm(depth);
-        for (;;) {
-            skipWs();
-            const char c = peek();
-            if (c != '+' && c != '-')
-                break;
-            ++pos_;
-            FxExpr rhs = parseTerm(depth);
-            trackNode();
-            FxExpr out;
-            auto lhsPtr = std::make_shared<FxExpr>(std::move(lhs));
-            auto rhsPtr = std::make_shared<FxExpr>(std::move(rhs));
-            out.node = FxExpr::Binary{c, std::move(lhsPtr), std::move(rhsPtr)};
-            lhs = std::move(out);
-        }
+        FxExpr result = parseLogicalOr(depth);
         leaveDepth();
+        return result;
+    }
+
+    FxExpr parseLogicalOr(std::size_t depth) {
+        FxExpr lhs = parseLogicalAnd(depth);
+        while (consume("||")) {
+            FxExpr rhs = parseLogicalAnd(depth);
+            lhs = makeBinary(FxExpr::BinaryOp::logicalOr, std::move(lhs), std::move(rhs));
+        }
         return lhs;
     }
 
-    FxExpr parseTerm(std::size_t depth) {
+    FxExpr parseLogicalAnd(std::size_t depth) {
+        FxExpr lhs = parseEquality(depth);
+        while (consume("&&")) {
+            FxExpr rhs = parseEquality(depth);
+            lhs = makeBinary(FxExpr::BinaryOp::logicalAnd, std::move(lhs), std::move(rhs));
+        }
+        return lhs;
+    }
+
+    FxExpr parseEquality(std::size_t depth) {
+        FxExpr lhs = parseRelational(depth);
+        for (;;) {
+            if (consume("==")) {
+                lhs = makeBinary(FxExpr::BinaryOp::equal, std::move(lhs), parseRelational(depth));
+            } else if (consume("!=")) {
+                lhs = makeBinary(FxExpr::BinaryOp::notEqual, std::move(lhs), parseRelational(depth));
+            } else {
+                break;
+            }
+        }
+        return lhs;
+    }
+
+    FxExpr parseRelational(std::size_t depth) {
+        FxExpr lhs = parseAdditive(depth);
+        for (;;) {
+            if (consume("<=")) {
+                lhs = makeBinary(FxExpr::BinaryOp::lessEqual, std::move(lhs), parseAdditive(depth));
+            } else if (consume(">=")) {
+                lhs = makeBinary(FxExpr::BinaryOp::greaterEqual, std::move(lhs), parseAdditive(depth));
+            } else if (consume("<")) {
+                lhs = makeBinary(FxExpr::BinaryOp::less, std::move(lhs), parseAdditive(depth));
+            } else if (consume(">")) {
+                lhs = makeBinary(FxExpr::BinaryOp::greater, std::move(lhs), parseAdditive(depth));
+            } else {
+                break;
+            }
+        }
+        return lhs;
+    }
+
+    FxExpr parseAdditive(std::size_t depth) {
+        FxExpr lhs = parseMultiplicative(depth);
+        for (;;) {
+            if (consume("+")) {
+                lhs = makeBinary(FxExpr::BinaryOp::add, std::move(lhs), parseMultiplicative(depth));
+            } else if (consume("-")) {
+                lhs = makeBinary(FxExpr::BinaryOp::subtract, std::move(lhs), parseMultiplicative(depth));
+            } else {
+                break;
+            }
+        }
+        return lhs;
+    }
+
+    FxExpr parseMultiplicative(std::size_t depth) {
         FxExpr lhs = parseFactor(depth);
         for (;;) {
-            skipWs();
-            const char c = peek();
-            if (c != '*' && c != '/' && c != '%')
+            if (consume("*")) {
+                lhs = makeBinary(FxExpr::BinaryOp::multiply, std::move(lhs), parseFactor(depth));
+            } else if (consume("/")) {
+                lhs = makeBinary(FxExpr::BinaryOp::divide, std::move(lhs), parseFactor(depth));
+            } else if (consume("%")) {
+                lhs = makeBinary(FxExpr::BinaryOp::modulo, std::move(lhs), parseFactor(depth));
+            } else {
                 break;
-            ++pos_;
-            FxExpr rhs = parseFactor(depth);
-            trackNode();
-            FxExpr out;
-            auto lhsPtr = std::make_shared<FxExpr>(std::move(lhs));
-            auto rhsPtr = std::make_shared<FxExpr>(std::move(rhs));
-            out.node = FxExpr::Binary{c, std::move(lhsPtr), std::move(rhsPtr)};
-            lhs = std::move(out);
+            }
         }
         return lhs;
     }
@@ -353,27 +417,50 @@ bool resolveBuiltin(std::string_view name, const FxEvalContext& context, FxScala
     return false;
 }
 
-FxScalar evalNode(const FxExpr& expr, const FxEvalContext& context, FxCompatibilityProfile profile,
-                  bool allowPowQuirk);
+FxScalar evalNode(const FxExpr& expr, const FxEvalContext& context, FxCompatibilityProfile profile, bool allowPowQuirk);
 
-FxScalar evalBinary(char op, const FxScalar& lhs, const FxScalar& rhs) {
+FxScalar evalBinary(FxExpr::BinaryOp op, const FxScalar& lhs, const FxScalar& rhs) {
+    const auto comparison = [op](double left, double right) -> std::optional<bool> {
+        switch (op) {
+        case FxExpr::BinaryOp::less:
+            return left < right;
+        case FxExpr::BinaryOp::lessEqual:
+            return left <= right;
+        case FxExpr::BinaryOp::greater:
+            return left > right;
+        case FxExpr::BinaryOp::greaterEqual:
+            return left >= right;
+        case FxExpr::BinaryOp::equal:
+            return left == right;
+        case FxExpr::BinaryOp::notEqual:
+            return left != right;
+        default:
+            return std::nullopt;
+        }
+    };
+    if (const auto result = comparison(toDoubleImpl(lhs), toDoubleImpl(rhs)); result.has_value())
+        return FxScalar{*result};
+    if (op == FxExpr::BinaryOp::logicalAnd || op == FxExpr::BinaryOp::logicalOr)
+        return FxScalar{op == FxExpr::BinaryOp::logicalAnd ? (toBoolImpl(lhs) && toBoolImpl(rhs))
+                                                           : (toBoolImpl(lhs) || toBoolImpl(rhs))};
+
     const bool lhsDouble = std::holds_alternative<double>(lhs);
     const bool rhsDouble = std::holds_alternative<double>(rhs);
     if (lhsDouble || rhsDouble) {
         const double left = toDoubleImpl(lhs);
         const double right = toDoubleImpl(rhs);
         switch (op) {
-        case '+':
+        case FxExpr::BinaryOp::add:
             return lhsDouble || rhsDouble ? FxScalar{left + right} : FxScalar{lhs};
-        case '-':
+        case FxExpr::BinaryOp::subtract:
             return FxScalar{left - right};
-        case '*':
+        case FxExpr::BinaryOp::multiply:
             return FxScalar{left * right};
-        case '/':
+        case FxExpr::BinaryOp::divide:
             if (right == 0.0)
                 throw std::runtime_error("fx expression division by zero");
             return FxScalar{left / right};
-        case '%':
+        case FxExpr::BinaryOp::modulo:
             if (right == 0.0)
                 throw std::runtime_error("fx expression modulo by zero");
             return FxScalar{std::fmod(left, right)};
@@ -390,19 +477,19 @@ FxScalar evalBinary(char op, const FxScalar& lhs, const FxScalar& rhs) {
     const std::int64_t left = asInt(lhs);
     const std::int64_t right = asInt(rhs);
     switch (op) {
-    case '+':
+    case FxExpr::BinaryOp::add:
         return FxScalar{checkedAdd(left, right)};
-    case '-':
+    case FxExpr::BinaryOp::subtract:
         return FxScalar{checkedSub(left, right)};
-    case '*':
+    case FxExpr::BinaryOp::multiply:
         return FxScalar{checkedMul(left, right)};
-    case '/':
+    case FxExpr::BinaryOp::divide:
         if (right == 0)
             throw std::runtime_error("fx expression division by zero");
         if (left == std::numeric_limits<std::int64_t>::min() && right == -1)
             throw std::overflow_error("fx expression integer overflow");
         return FxScalar{left / right};
-    case '%':
+    case FxExpr::BinaryOp::modulo:
         if (right == 0)
             throw std::runtime_error("fx expression modulo by zero");
         return FxScalar{left % right};
@@ -484,6 +571,10 @@ FxScalar evalNode(const FxExpr& expr, const FxEvalContext& context, FxCompatibil
     }
     if (const auto* binary = std::get_if<FxExpr::Binary>(&expr.node)) {
         const FxScalar lhs = evalNode(*binary->lhs, context, profile, allowPowQuirk);
+        if (binary->op == FxExpr::BinaryOp::logicalAnd && !toBoolImpl(lhs))
+            return FxScalar{false};
+        if (binary->op == FxExpr::BinaryOp::logicalOr && toBoolImpl(lhs))
+            return FxScalar{true};
         const FxScalar rhs = evalNode(*binary->rhs, context, profile, allowPowQuirk);
         return evalBinary(binary->op, lhs, rhs);
     }
