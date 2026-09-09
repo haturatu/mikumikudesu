@@ -100,6 +100,7 @@ float videoSourceFrame(std::uint64_t outputFrame, std::uint64_t firstFrame, std:
     return static_cast<float>(std::min(static_cast<double>(lastFrame), value));
 }
 
+#if DAYO_HAS_IMGUI
 const char* workspaceSuffix(ui::Workspace workspace) noexcept {
     switch (workspace) {
     case ui::Workspace::layout:
@@ -115,6 +116,7 @@ const char* workspaceSuffix(ui::Workspace workspace) noexcept {
     }
     return "Layout";
 }
+#endif
 
 } // namespace
 
