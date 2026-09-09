@@ -213,6 +213,9 @@ class Scene {
     [[nodiscard]] const VmdMotion* cameraMotion() const noexcept {
         return cameraMotion_.get();
     }
+    [[nodiscard]] std::uint64_t motionRevision() const noexcept {
+        return motionRevision_;
+    }
     [[nodiscard]] RuntimeMode runtimeMode() const noexcept {
         return runtimeMode_;
     }
@@ -226,6 +229,7 @@ class Scene {
   private:
     void refreshModelResources(ModelInstance& instance);
     ModelId nextId_{1};
+    std::uint64_t motionRevision_{};
     ModelId selectedModel_{};
     std::vector<ModelInstance> models_;
     std::unique_ptr<VmdMotion> cameraMotion_;

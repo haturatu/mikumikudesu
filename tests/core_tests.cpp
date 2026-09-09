@@ -734,6 +734,21 @@ int main() {
         dayo::core::VmdMotion shortMotion;
         shortMotion.morphs.push_back({"smile", 20, 1.0F});
         scene.attachMotion(std::move(shortMotion), firstModel);
+        const auto originalMotion = *scene.motion(firstModel);
+        const auto originalRevision = scene.motionRevision();
+        dayo::core::CommandHistory motionHistory;
+        auto editedMotion = originalMotion;
+        editedMotion.morphs.push_back({"smile", 21, 0.5F});
+        motionHistory.execute(
+            scene, std::make_unique<dayo::core::EditMotionCommand>(firstModel, false, originalMotion, editedMotion));
+        const auto editedRevision = scene.motionRevision();
+        ok &= check(editedRevision > originalRevision && motionHistory.undo(scene) &&
+                        scene.motionRevision() > editedRevision,
+                    "motion revision invalidates indexed selection across edit and undo");
+        const auto undoRevision = scene.motionRevision();
+        ok &= check(motionHistory.redo(scene) && scene.motionRevision() > undoRevision,
+                    "motion revision invalidates indexed selection on redo");
+        static_cast<void>(motionHistory.undo(scene));
         dayo::core::VmdMotion longMotion;
         longMotion.morphs.push_back({"smile", 100, 1.0F});
         scene.attachMotion(std::move(longMotion), secondModel);
@@ -793,6 +808,25 @@ int main() {
         dayo::core::writeFrame(outputDirectory / "frame.png", pngImage, dayo::core::OutputFormat::png);
         ok &= check(std::filesystem::file_size(outputDirectory / "frame.png") > 8, "PNG frame output");
         ok &= check(queue.written() == 16, "thread-safe output counter");
+        dayo::core::OutputQueue interactiveQueue(settings);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        std::uint32_t nextFrame = 0;
+        while (nextFrame < 100 && std::chrono::steady_clock::now() < deadline) {
+            dayo::core::ImageRgba8 image{1, 1, {255, 64, 32, 255}};
+            if (interactiveQueue.tryPush(nextFrame, std::move(image))) {
+                ++nextFrame;
+            } else {
+                ok &= check(image.pixels.size() == 4, "full queue preserves unsubmitted image");
+                std::this_thread::yield();
+            }
+        }
+        interactiveQueue.requestClose();
+        while (!interactiveQueue.finished() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+        ok &= check(nextFrame == 100 && interactiveQueue.finished() && interactiveQueue.written() == 100 &&
+                        !interactiveQueue.canAcceptFrame(),
+                    "nonblocking output drains all accepted frames before completion");
+        interactiveQueue.rethrowIfFailed();
         dayo::core::OutputSettings failingSettings;
         failingSettings.directory = outputDirectory;
         failingSettings.format = dayo::core::OutputFormat::exr;

@@ -36,7 +36,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void refreshAnimatedMesh(bool initialUpload, float deltaSeconds = 0.0F);
     void resetPhysicsSimulation();
     void evaluateExportFrame(float frame, float deltaSeconds, bool initialUpload = false);
-    void prepareDeterministicFrameEvaluation(float targetFrame);
+    bool advanceDeterministicFrameEvaluation(float targetFrame, std::uint64_t& nextFrame);
     void refreshVideoFrame();
     void refreshPreviewTextures();
     void refreshPreviewBackground();
@@ -146,7 +146,14 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     bool videoPreRollDone_{};
     bool videoExportFramesFinished_{};
     bool videoExportUiActive_{};
+    struct ActiveVideoExport {
+        std::uint32_t width{};
+        std::uint32_t height{};
+    };
+    std::optional<ActiveVideoExport> activeVideoExport_;
     bool videoExportRestorePending_{};
+    std::uint64_t videoEvaluationNextFrame_{};
+    std::uint64_t videoRestoreNextFrame_{};
     float videoExportRestoreFrame_{};
     double videoExportRestoreMediaSeconds_{};
     bool videoExportRestorePlaying_{};
@@ -184,6 +191,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
         std::vector<std::uint32_t> frames;
     };
     struct TimelineTrackCache {
+        std::uint64_t motionRevision{};
         core::ModelId modelId{};
         const core::VmdMotion* motion{};
         bool globalMotion{};
@@ -191,19 +199,18 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
         std::vector<TimelineTrack> morphs;
     };
     TimelineTrackCache timelineTrackCache_;
+    bool timelineKeyListVisible_{};
     bool imageSequenceExportRunning_{};
     bool imageSequenceCancelRequested_{};
     bool imageSequenceFramesFinished_{};
     bool imageSequencePreRollDone_{};
     bool imageSequenceRestoring_{};
-    bool imageSequenceRestoreFractionDone_{};
     std::optional<core::OutputQueue> imageSequenceOutput_;
     std::uint32_t imageSequenceNextFrame_{};
     std::uint32_t imageSequenceSampleIndex_{};
     std::uint32_t imageSequenceSampleCount_{1};
     std::uint64_t imageSequencePreRollFrame_{};
     std::uint64_t imageSequenceRestoreNextFrame_{};
-    std::uint64_t imageSequenceRestoreLastWholeFrame_{};
     float imageSequencePreviousSampleFrame_{};
     float imageSequenceRestoreFrame_{};
     double imageSequenceRestoreMediaSeconds_{};

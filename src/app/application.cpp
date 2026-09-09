@@ -145,6 +145,7 @@ void Application::resetProjectRuntimeState() {
     videoExportUiActive_ = false;
     videoExportFramesFinished_ = false;
     videoExportRestorePending_ = false;
+    activeVideoExport_.reset();
     videoRangeInitialized_ = false;
     scene_.clearProjectState();
     if (device_ != nullptr)
@@ -270,41 +271,43 @@ int Application::run() {
             if (videoExportFramesFinished_) {
                 if (!videoExportJob_.running()) {
                     restoreVideoExportState();
-                    videoExportUiActive_ = false;
+                    videoExportUiActive_ = videoExportRestorePending_;
                 }
             } else if (videoExportJob_.running()) {
-                const auto& exportOptions = *options_.videoExport;
-                if (videoNextFrame_ < videoOutputFrameCount_) {
+                const auto& exportOptions = activeVideoExport_.value();
+                if (videoNextFrame_ < videoOutputFrameCount_ && videoExportJob_.canAcceptFrame()) {
                     if (!videoPreRollDone_) {
-                        prepareDeterministicFrameEvaluation(static_cast<float>(videoFromFrame_));
-                        videoPreRollDone_ = true;
+                        videoPreRollDone_ = advanceDeterministicFrameEvaluation(static_cast<float>(videoFromFrame_),
+                                                                                videoEvaluationNextFrame_);
                         videoPreviousSourceFrame_ = static_cast<float>(videoFromFrame_);
                     }
-                    const auto sourceFrame =
-                        videoSourceFrame(videoNextFrame_, videoFromFrame_, videoToFrame_, videoSourceFps_, videoFps_);
-                    if (videoNextFrame_ != 0U) {
-                        animationFrame_ = sourceFrame;
-                        scene_.setFrame(animationFrame_);
-                        const auto delta = std::max(0.0F, sourceFrame - videoPreviousSourceFrame_) /
-                                           static_cast<float>(videoSourceFps_);
-                        refreshAnimatedMesh(false, delta);
+                    if (videoPreRollDone_) {
+                        const auto sourceFrame = videoSourceFrame(videoNextFrame_, videoFromFrame_, videoToFrame_,
+                                                                  videoSourceFps_, videoFps_);
+                        if (videoNextFrame_ != 0U) {
+                            animationFrame_ = sourceFrame;
+                            scene_.setFrame(animationFrame_);
+                            const auto delta = std::max(0.0F, sourceFrame - videoPreviousSourceFrame_) /
+                                               static_cast<float>(videoSourceFps_);
+                            refreshAnimatedMesh(false, delta);
+                        }
+                        if (videoMode_) {
+                            mediaSeconds_ = std::max(0.0, static_cast<double>(sourceFrame) / videoSourceFps_);
+                            refreshVideoFrame();
+                        }
+                        refreshPreviewScene();
+                        try {
+                            if (videoExportJob_.trySubmitFrame(
+                                    device_->renderToImage({exportOptions.width, exportOptions.height})))
+                                ++videoNextFrame_;
+                        } catch (const std::exception& exception) {
+                            videoExportStatus_ = exception.what();
+                            videoExportJob_.requestCancel();
+                            videoExportFramesFinished_ = true;
+                        }
+                        videoPreviousSourceFrame_ = sourceFrame;
                     }
-                    if (videoMode_) {
-                        mediaSeconds_ = std::max(0.0, static_cast<double>(sourceFrame) / videoSourceFps_);
-                        refreshVideoFrame();
-                    }
-                    refreshPreviewScene();
-                    try {
-                        videoExportJob_.submitFrame(
-                            device_->renderToImage({exportOptions.width, exportOptions.height}));
-                    } catch (const std::exception& exception) {
-                        videoExportStatus_ = exception.what();
-                        videoExportJob_.cancel();
-                        videoExportFramesFinished_ = true;
-                    }
-                    videoPreviousSourceFrame_ = sourceFrame;
-                    ++videoNextFrame_;
-                } else {
+                } else if (videoNextFrame_ >= videoOutputFrameCount_) {
                     videoExportJob_.finishFrames();
                     videoExportFramesFinished_ = true;
                 }
@@ -313,7 +316,7 @@ int Application::run() {
                 videoExportStatus_ = error ? *error : "Video export stopped unexpectedly";
                 videoExportFramesFinished_ = true;
                 restoreVideoExportState();
-                videoExportUiActive_ = false;
+                videoExportUiActive_ = videoExportRestorePending_;
             }
         } else if (scene_.advanceFrame(deltaSeconds * playbackSpeed_, playing_)) {
             animationFrame_ = scene_.timeline().frame;
@@ -1134,6 +1137,11 @@ void Application::refreshPreviewBackground() {
     if (device_ == nullptr)
         return;
     const auto& background = scene_.background();
+    uploadedVideoFrame_ = -1;
+    if (background.screenSource == core::ScreenTextureSource::backgroundVideo) {
+        refreshVideoFrame();
+        return;
+    }
     if (background.screenSource != core::ScreenTextureSource::backgroundImage || !background.image.has_value()) {
         device_->uploadPreviewBackground({});
         return;
@@ -1145,13 +1153,13 @@ void Application::refreshPreviewBackground() {
 
 void Application::refreshVideoFrame() {
     auto* media = scene_.media();
-    if (!videoMode_ || media == nullptr || device_ == nullptr)
+    if (!videoMode_ || media == nullptr || device_ == nullptr ||
+        scene_.background().screenSource != core::ScreenTextureSource::backgroundVideo)
         return;
     const auto frameIndex = static_cast<std::int64_t>(mediaSeconds_ * media->info().videoFramesPerSecond);
     if (frameIndex == uploadedVideoFrame_)
         return;
     const auto image = media->decodeVideoFrame(mediaSeconds_);
-    scene_.setBackgroundScreenSource(core::ScreenTextureSource::backgroundVideo);
     const std::array textures{graphics::PreviewTexture{image.width, image.height, image.pixels}};
     device_->uploadPreviewBackground(textures);
     if (scene_.models().empty()) {
@@ -1231,17 +1239,26 @@ void Application::evaluateExportFrame(float frame, float deltaSeconds, bool init
     refreshPreviewScene();
 }
 
-void Application::prepareDeterministicFrameEvaluation(float targetFrame) {
+bool Application::advanceDeterministicFrameEvaluation(float targetFrame, std::uint64_t& nextFrame) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(5);
     const float target = std::max(targetFrame, 0.0F);
     const float frameDuration = static_cast<float>(1.0 / sceneTimelineFps(scene_));
     const auto wholeFrames = static_cast<std::uint64_t>(std::floor(target));
-    resetPhysicsSimulation();
-    evaluateExportFrame(0.0F, 0.0F, true);
-    for (std::uint64_t frame = 1; frame <= wholeFrames; ++frame)
-        evaluateExportFrame(static_cast<float>(frame), frameDuration);
+    if (nextFrame == 0) {
+        resetPhysicsSimulation();
+        evaluateExportFrame(0.0F, 0.0F, true);
+        nextFrame = 1;
+    }
+    while (nextFrame <= wholeFrames && std::chrono::steady_clock::now() < deadline) {
+        evaluateExportFrame(static_cast<float>(nextFrame), frameDuration);
+        ++nextFrame;
+    }
+    if (nextFrame <= wholeFrames)
+        return false;
     const float fraction = target - static_cast<float>(wholeFrames);
     if (fraction > 0.0F)
         evaluateExportFrame(target, fraction * frameDuration);
+    return true;
 }
 
 void Application::buildUi() {
@@ -1415,6 +1432,16 @@ void Application::handleEditorShortcuts() {
     const auto& io = ImGui::GetIO();
     if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false))
         saveProjectNow();
+    if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false) && history_.undo(scene_)) {
+        animationFrame_ = scene_.timeline().frame;
+        refreshAnimatedMesh(false);
+        refreshPreviewScene();
+    }
+    if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false) && history_.redo(scene_)) {
+        animationFrame_ = scene_.timeline().frame;
+        refreshAnimatedMesh(false);
+        refreshPreviewScene();
+    }
     const bool editorShortcutScope = uiState_.viewportHovered || uiState_.timelineFocused;
     if (!editorShortcutScope || io.WantTextInput)
         return;
@@ -1437,16 +1464,6 @@ void Application::handleEditorShortcuts() {
             if (audioPlayer_.active())
                 audioPlayer_.setPaused(!playing_);
         }
-    }
-    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false) && history_.undo(scene_)) {
-        animationFrame_ = scene_.timeline().frame;
-        refreshAnimatedMesh(false);
-        refreshPreviewScene();
-    }
-    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false) && history_.redo(scene_)) {
-        animationFrame_ = scene_.timeline().frame;
-        refreshAnimatedMesh(false);
-        refreshPreviewScene();
     }
 #endif
 }
@@ -1809,7 +1826,8 @@ void Application::restoreVideoExportState() {
     if (!videoExportRestorePending_)
         return;
     const float restoreFrame = std::max(videoExportRestoreFrame_, 0.0F);
-    prepareDeterministicFrameEvaluation(restoreFrame);
+    if (!advanceDeterministicFrameEvaluation(restoreFrame, videoRestoreNextFrame_))
+        return;
     animationFrame_ = videoExportRestoreFrame_;
     scene_.setFrame(animationFrame_);
     mediaSeconds_ = videoExportRestoreMediaSeconds_;
@@ -1829,6 +1847,7 @@ void Application::restoreVideoExportState() {
     }
     refreshPreviewScene();
     videoExportRestorePending_ = false;
+    activeVideoExport_.reset();
 #endif
 }
 
@@ -1889,7 +1908,6 @@ void Application::startImageSequenceExport() {
         imageSequencePreRollDone_ = sequenceOutput_.firstFrame == 0U;
         imageSequencePreRollFrame_ = imageSequencePreRollDone_ ? 0U : 1U;
         imageSequenceRestoring_ = false;
-        imageSequenceRestoreFractionDone_ = false;
         imageSequenceCancelRequested_ = false;
         imageSequenceCompletionStatus_.clear();
         imageSequenceImage_ = {};
@@ -1942,7 +1960,12 @@ void Application::finishImageSequenceExport(std::string status) {
 #if DAYO_HAS_IMGUI
     try {
         if (imageSequenceOutput_) {
-            imageSequenceOutput_->close();
+            imageSequenceOutput_->requestClose();
+            if (!imageSequenceOutput_->finished()) {
+                imageSequenceCompletionStatus_ = std::move(status);
+                imageSequenceFramesFinished_ = true;
+                return;
+            }
             imageSequenceOutput_->rethrowIfFailed();
         }
         imageSequenceCompletionStatus_ = std::move(status);
@@ -1956,9 +1979,6 @@ void Application::finishImageSequenceExport(std::string status) {
     imageSequenceSum_.clear();
     imageSequenceRestoring_ = true;
     imageSequenceRestoreNextFrame_ = 1U;
-    imageSequenceRestoreLastWholeFrame_ =
-        static_cast<std::uint64_t>(std::floor(std::max(imageSequenceRestoreFrame_, 0.0F)));
-    imageSequenceRestoreFractionDone_ = false;
     resetPhysicsSimulation();
     evaluateExportFrame(0.0F, 0.0F, true);
     sequenceOutputStatus_ = "Restoring preview...";
@@ -1972,19 +1992,8 @@ void Application::advanceImageSequenceExport() {
     if (!imageSequenceExportRunning_)
         return;
     if (imageSequenceRestoring_) {
-        const float frameDuration = static_cast<float>(1.0 / sceneTimelineFps(scene_));
-        const float target = std::max(imageSequenceRestoreFrame_, 0.0F);
-        const float wholeTarget = std::floor(target);
-        if (imageSequenceRestoreNextFrame_ <= imageSequenceRestoreLastWholeFrame_) {
-            evaluateExportFrame(static_cast<float>(imageSequenceRestoreNextFrame_), frameDuration);
-            ++imageSequenceRestoreNextFrame_;
+        if (!advanceDeterministicFrameEvaluation(imageSequenceRestoreFrame_, imageSequenceRestoreNextFrame_))
             return;
-        }
-        if (!imageSequenceRestoreFractionDone_ && target > wholeTarget) {
-            evaluateExportFrame(target, (target - wholeTarget) * frameDuration);
-            imageSequenceRestoreFractionDone_ = true;
-            return;
-        }
         imageSequenceRestoring_ = false;
         imageSequenceExportRunning_ = false;
         sequenceOutputStatus_ = std::move(imageSequenceCompletionStatus_);
@@ -1996,21 +2005,21 @@ void Application::advanceImageSequenceExport() {
         return;
     }
     if (imageSequenceFramesFinished_) {
-        finishImageSequenceExport("Sequence rendered");
+        finishImageSequenceExport(imageSequenceCompletionStatus_.empty() ? "Sequence rendered"
+                                                                         : imageSequenceCompletionStatus_);
         return;
     }
     if (!imageSequencePreRollDone_) {
-        const float frameDuration = static_cast<float>(1.0 / sceneTimelineFps(scene_));
-        evaluateExportFrame(static_cast<float>(imageSequencePreRollFrame_), frameDuration);
-        if (imageSequencePreRollFrame_ >= sequenceOutput_.firstFrame) {
-            imageSequencePreRollDone_ = true;
+        imageSequencePreRollDone_ = advanceDeterministicFrameEvaluation(static_cast<float>(sequenceOutput_.firstFrame),
+                                                                        imageSequencePreRollFrame_);
+        if (imageSequencePreRollDone_) {
             imageSequencePreviousSampleFrame_ = static_cast<float>(sequenceOutput_.firstFrame);
-        } else {
-            ++imageSequencePreRollFrame_;
         }
         return;
     }
     try {
+        if (!imageSequenceOutput_->canAcceptFrame())
+            return;
         const auto frame = imageSequenceNextFrame_;
         const float offset = sequenceOutput_.motionBlur ? static_cast<float>(imageSequenceSampleIndex_) /
                                                               static_cast<float>(imageSequenceSampleCount_)
@@ -2041,7 +2050,8 @@ void Application::advanceImageSequenceExport() {
         for (std::size_t index = 0; index < imageSequenceImage_.pixels.size(); ++index)
             imageSequenceImage_.pixels[index] =
                 static_cast<std::uint8_t>(imageSequenceSum_[index] / imageSequenceSampleCount_);
-        imageSequenceOutput_->push(frame, std::move(imageSequenceImage_));
+        if (!imageSequenceOutput_->tryPush(frame, std::move(imageSequenceImage_)))
+            throw std::runtime_error("image output queue unexpectedly full");
         imageSequenceSum_.clear();
         imageSequenceSampleIndex_ = 0;
         if (frame == sequenceOutput_.lastFrame)
@@ -2175,8 +2185,10 @@ void Application::buildEditorUi() {
     const auto target = model != nullptr ? model->id : core::ModelId{};
     const auto cacheModelId = global ? core::ModelId{} : target;
     if (timelineTrackCache_.modelId != cacheModelId || timelineTrackCache_.motion != active ||
-        timelineTrackCache_.globalMotion != global) {
+        timelineTrackCache_.globalMotion != global || timelineTrackCache_.motionRevision != scene_.motionRevision()) {
+        selectedKeys_.clear();
         timelineTrackCache_ = {};
+        timelineTrackCache_.motionRevision = scene_.motionRevision();
         timelineTrackCache_.modelId = cacheModelId;
         timelineTrackCache_.motion = active;
         timelineTrackCache_.globalMotion = global;
@@ -2203,6 +2215,8 @@ void Application::buildEditorUi() {
         auto after = core::toVmdMotion(std::move(document), outputModelName);
         history_.execute(scene_, std::make_unique<core::EditMotionCommand>(target, globalMotion, std::move(before),
                                                                            std::move(after), std::move(label)));
+        selectedKeys_.clear();
+        active = global ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
         refreshAnimatedMesh(false);
         refreshPreviewScene();
     };
@@ -2253,15 +2267,17 @@ void Application::buildEditorUi() {
         if (!waveformPeaks_.empty())
             ImGui::PlotLines("Audio", waveformPeaks_.data(), static_cast<int>(waveformPeaks_.size()), 0, nullptr, 0.0F,
                              1.0F, {-1.0F, 44.0F});
-        ImGui::SeparatorText("Dope Sheet");
+        ImGui::Checkbox("Key List", &timelineKeyListVisible_);
+        ImGui::SameLine();
         if (ImGui::Checkbox("Edit global camera/light motion", &editGlobalMotion_))
             selectedKeys_.clear();
         if (active == nullptr) {
             ImGui::TextUnformatted("Load a VMD/VMdayo motion to edit keyframes.");
         } else {
-            ImGui::Text("Bone %zu  Morph %zu  Camera %zu  Light %zu  Shadow %zu  IK %zu", active->bones.size(),
-                        active->morphs.size(), active->cameras.size(), active->lights.size(), active->shadows.size(),
-                        active->ik.size());
+            if (timelineKeyListVisible_)
+                ImGui::Text("Bone %zu  Morph %zu  Camera %zu  Light %zu  Shadow %zu  IK %zu", active->bones.size(),
+                            active->morphs.size(), active->cameras.size(), active->lights.size(),
+                            active->shadows.size(), active->ik.size());
             auto row = [&](core::MotionTrack track, std::size_t index, std::uint32_t frame, const std::string& name) {
                 const core::MotionKeyRef key{track, index};
                 const bool selected = std::find(selectedKeys_.begin(), selectedKeys_.end(), key) != selectedKeys_.end();
@@ -2277,140 +2293,163 @@ void Application::buildEditorUi() {
                 else
                     selectedKeys_.erase(found);
             };
-            if (ImGui::BeginChild("key-list", {0.0F, 220.0F}, true)) {
-                for (std::size_t i = 0; i < active->bones.size(); ++i)
-                    row(core::MotionTrack::bone, i, active->bones[i].frame, active->bones[i].name);
-                for (std::size_t i = 0; i < active->morphs.size(); ++i)
-                    row(core::MotionTrack::morph, i, active->morphs[i].frame, active->morphs[i].name);
-                for (std::size_t i = 0; i < active->cameras.size(); ++i)
-                    row(core::MotionTrack::camera, i, active->cameras[i].frame, "Camera");
-                for (std::size_t i = 0; i < active->lights.size(); ++i)
-                    row(core::MotionTrack::light, i, active->lights[i].frame, "Light");
-                for (std::size_t i = 0; i < active->shadows.size(); ++i)
-                    row(core::MotionTrack::shadow, i, active->shadows[i].frame, "Self shadow");
-                for (std::size_t i = 0; i < active->ik.size(); ++i)
-                    row(core::MotionTrack::ik, i, active->ik[i].frame, "IK / visibility");
+            const float canvasHeight = std::max(ImGui::GetFrameHeight() * 3.0F, ImGui::GetContentRegionAvail().y);
+            if (timelineKeyListVisible_) {
+                if (ImGui::BeginChild("key-list", {0.0F, canvasHeight}, true)) {
+                    const auto count = active->bones.size() + active->morphs.size() + active->cameras.size() +
+                                       active->lights.size() + active->shadows.size() + active->ik.size();
+                    ImGuiListClipper clipper;
+                    clipper.Begin(static_cast<int>(count));
+                    while (clipper.Step()) {
+                        for (int visible = clipper.DisplayStart; visible < clipper.DisplayEnd; ++visible) {
+                            auto index = static_cast<std::size_t>(visible);
+                            const auto visit = [&](const auto& keys, core::MotionTrack track, const char* label) {
+                                if (index < keys.size()) {
+                                    const auto& key = keys[index];
+                                    if constexpr (requires { key.name; })
+                                        row(track, index, key.frame, key.name);
+                                    else
+                                        row(track, index, key.frame, label);
+                                    return true;
+                                }
+                                index -= keys.size();
+                                return false;
+                            };
+                            if (visit(active->bones, core::MotionTrack::bone, "Bone") ||
+                                visit(active->morphs, core::MotionTrack::morph, "Morph") ||
+                                visit(active->cameras, core::MotionTrack::camera, "Camera") ||
+                                visit(active->lights, core::MotionTrack::light, "Light") ||
+                                visit(active->shadows, core::MotionTrack::shadow, "Self shadow"))
+                                continue;
+                            static_cast<void>(visit(active->ik, core::MotionTrack::ik, "IK / visibility"));
+                        }
+                    }
+                }
+                ImGui::EndChild();
+            } else {
+                if (ImGui::BeginChild("timeline-canvas", {0.0F, canvasHeight}, true,
+                                      ImGuiWindowFlags_NoScrollWithMouse)) {
+                    const auto canvasMin = ImGui::GetWindowPos();
+                    const auto canvasSize = ImGui::GetWindowSize();
+                    auto* drawList = ImGui::GetWindowDrawList();
+                    const float left = canvasMin.x + ImGui::GetFontSize() * 8.0F;
+                    const float top = canvasMin.y + ImGui::GetFrameHeight();
+                    const float right = canvasMin.x + canvasSize.x - 8.0F;
+                    const float bottom = canvasMin.y + canvasSize.y - 8.0F;
+                    const float duration = std::max(scene_.timeline().duration, 1.0F);
+                    float pixelsPerFrame = (right - left) / duration * timelineZoom_;
+                    float maxPan = std::max(0.0F, duration * pixelsPerFrame - (right - left));
+                    timelinePan_ = std::clamp(timelinePan_, 0.0F, maxPan);
+                    const float rowHeight = 22.0F;
+                    const int trackCount = global ? 2
+                                                  : 2 + static_cast<int>(timelineTrackCache_.bones.size() +
+                                                                         timelineTrackCache_.morphs.size());
+                    const float contentHeight = 16.0F + static_cast<float>(trackCount) * rowHeight;
+                    const float visibleHeight = std::max(0.0F, bottom - top);
+                    const float maxScrollY = std::max(0.0F, contentHeight - visibleHeight);
+                    timelineScrollY_ = std::clamp(timelineScrollY_, 0.0F, maxScrollY);
+                    const auto frameX = [&](float frame) { return left + frame * pixelsPerFrame - timelinePan_; };
+                    drawList->AddText({canvasMin.x + 8.0F, canvasMin.y + 5.0F}, ImGui::GetColorU32(ImGuiCol_Text),
+                                      "Tracks");
+                    for (int tick = 0; tick <= 10; ++tick) {
+                        const float frame = duration * static_cast<float>(tick) / 10.0F;
+                        const float x = frameX(frame);
+                        if (x < left - 1.0F || x > right + 1.0F)
+                            continue;
+                        drawList->AddLine({x, top}, {x, bottom}, ImGui::GetColorU32(ImGuiCol_Border));
+                        const auto label = std::to_string(static_cast<int>(frame));
+                        drawList->AddText({x + 2.0F, canvasMin.y + 5.0F}, ImGui::GetColorU32(ImGuiCol_TextDisabled),
+                                          label.c_str());
+                    }
+                    const auto trackY = [&](int trackRow) {
+                        return top + 16.0F + static_cast<float>(trackRow) * rowHeight - timelineScrollY_;
+                    };
+                    const auto trackVisible = [&](int trackRow) {
+                        const float y = trackY(trackRow);
+                        return y >= top - ImGui::GetFontSize() && y <= bottom + ImGui::GetFontSize();
+                    };
+                    const auto drawDiamond = [&](float frame, int trackRow, ImU32 color) {
+                        const float x = frameX(frame);
+                        const float y = trackY(trackRow);
+                        if (x < left - 8.0F || x > right + 8.0F || y < top - 8.0F || y > bottom + 8.0F)
+                            return;
+                        drawList->AddQuadFilled({x, y - 5.0F}, {x + 5.0F, y}, {x, y + 5.0F}, {x - 5.0F, y}, color);
+                    };
+                    const auto drawTrack = [&](const char* name, int trackRow) {
+                        if (!trackVisible(trackRow))
+                            return;
+                        const float y = trackY(trackRow);
+                        drawList->AddText({canvasMin.x + 8.0F, y - ImGui::GetFontSize() * 0.5F},
+                                          ImGui::GetColorU32(ImGuiCol_Text), name);
+                    };
+                    drawTrack("Camera", 0);
+                    drawTrack("Light", 1);
+                    if (global) {
+                        if (trackVisible(0))
+                            for (const auto& key : active->cameras)
+                                drawDiamond(static_cast<float>(key.frame), 0, ImGui::GetColorU32(ImGuiCol_CheckMark));
+                        if (trackVisible(1))
+                            for (const auto& key : active->lights)
+                                drawDiamond(static_cast<float>(key.frame), 1, ImGui::GetColorU32(ImGuiCol_CheckMark));
+                    } else if (model != nullptr) {
+                        int trackRow = 2;
+                        for (const auto& track : timelineTrackCache_.bones) {
+                            if (trackVisible(trackRow)) {
+                                drawTrack(track.name.c_str(), trackRow);
+                                for (const auto frame : track.frames)
+                                    drawDiamond(static_cast<float>(frame), trackRow,
+                                                ImGui::GetColorU32(ImGuiCol_SliderGrab));
+                            }
+                            ++trackRow;
+                        }
+                        for (const auto& track : timelineTrackCache_.morphs) {
+                            if (trackVisible(trackRow)) {
+                                drawTrack(track.name.c_str(), trackRow);
+                                for (const auto frame : track.frames)
+                                    drawDiamond(static_cast<float>(frame), trackRow,
+                                                ImGui::GetColorU32(ImGuiCol_PlotLines));
+                            }
+                            ++trackRow;
+                        }
+                    }
+                    const float currentX = frameX(animationFrame_);
+                    if (currentX >= left && currentX <= right)
+                        drawList->AddLine({currentX, top}, {currentX, bottom},
+                                          ImGui::GetColorU32(ImGuiCol_PlotHistogram), 2.0F);
+                    ImGui::SetCursorScreenPos({left, top});
+                    ImGui::InvisibleButton("timeline-canvas-input", {right - left, bottom - top},
+                                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
+                    if (ImGui::IsItemHovered()) {
+                        if (ImGui::GetIO().MouseWheel != 0.0F) {
+                            if (ImGui::GetIO().KeyCtrl) {
+                                const float frameUnderCursor =
+                                    (ImGui::GetIO().MousePos.x - left + timelinePan_) / pixelsPerFrame;
+                                timelineZoom_ =
+                                    std::clamp(timelineZoom_ + ImGui::GetIO().MouseWheel * 0.1F, 0.5F, 8.0F);
+                                pixelsPerFrame = (right - left) / duration * timelineZoom_;
+                                maxPan = std::max(0.0F, duration * pixelsPerFrame - (right - left));
+                                timelinePan_ =
+                                    std::clamp(frameUnderCursor * pixelsPerFrame - (ImGui::GetIO().MousePos.x - left),
+                                               0.0F, maxPan);
+                            } else {
+                                timelineScrollY_ = std::clamp(timelineScrollY_ - ImGui::GetIO().MouseWheel * rowHeight,
+                                                              0.0F, maxScrollY);
+                            }
+                        }
+                        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+                            timelinePan_ = std::clamp(timelinePan_ - ImGui::GetIO().MouseDelta.x, 0.0F, maxPan);
+                        }
+                        if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+                            const float frame = (ImGui::GetIO().MousePos.x - left + timelinePan_) / pixelsPerFrame;
+                            animationFrame_ = std::clamp(frame, 0.0F, duration);
+                            scene_.setFrame(animationFrame_);
+                            refreshAnimatedMesh(false);
+                            refreshPreviewScene();
+                        }
+                    }
+                }
+                ImGui::EndChild();
             }
-            ImGui::EndChild();
-            if (ImGui::BeginChild("timeline-canvas", {0.0F, 174.0F}, true, ImGuiWindowFlags_NoScrollWithMouse)) {
-                const auto canvasMin = ImGui::GetWindowPos();
-                const auto canvasSize = ImGui::GetWindowSize();
-                auto* drawList = ImGui::GetWindowDrawList();
-                const float left = canvasMin.x + ImGui::GetFontSize() * 8.0F;
-                const float top = canvasMin.y + ImGui::GetFrameHeight();
-                const float right = canvasMin.x + canvasSize.x - 8.0F;
-                const float bottom = canvasMin.y + canvasSize.y - 8.0F;
-                const float duration = std::max(scene_.timeline().duration, 1.0F);
-                float pixelsPerFrame = (right - left) / duration * timelineZoom_;
-                float maxPan = std::max(0.0F, duration * pixelsPerFrame - (right - left));
-                timelinePan_ = std::clamp(timelinePan_, 0.0F, maxPan);
-                const float rowHeight = 22.0F;
-                const int trackCount =
-                    global ? 2
-                           : 2 + static_cast<int>(timelineTrackCache_.bones.size() + timelineTrackCache_.morphs.size());
-                const float contentHeight = 16.0F + static_cast<float>(trackCount) * rowHeight;
-                const float visibleHeight = std::max(0.0F, bottom - top);
-                const float maxScrollY = std::max(0.0F, contentHeight - visibleHeight);
-                timelineScrollY_ = std::clamp(timelineScrollY_, 0.0F, maxScrollY);
-                const auto frameX = [&](float frame) { return left + frame * pixelsPerFrame - timelinePan_; };
-                drawList->AddText({canvasMin.x + 8.0F, canvasMin.y + 5.0F}, ImGui::GetColorU32(ImGuiCol_Text),
-                                  "Tracks");
-                for (int tick = 0; tick <= 10; ++tick) {
-                    const float frame = duration * static_cast<float>(tick) / 10.0F;
-                    const float x = frameX(frame);
-                    if (x < left - 1.0F || x > right + 1.0F)
-                        continue;
-                    drawList->AddLine({x, top}, {x, bottom}, ImGui::GetColorU32(ImGuiCol_Border));
-                    const auto label = std::to_string(static_cast<int>(frame));
-                    drawList->AddText({x + 2.0F, canvasMin.y + 5.0F}, ImGui::GetColorU32(ImGuiCol_TextDisabled),
-                                      label.c_str());
-                }
-                const auto trackY = [&](int trackRow) {
-                    return top + 16.0F + static_cast<float>(trackRow) * rowHeight - timelineScrollY_;
-                };
-                const auto trackVisible = [&](int trackRow) {
-                    const float y = trackY(trackRow);
-                    return y >= top - ImGui::GetFontSize() && y <= bottom + ImGui::GetFontSize();
-                };
-                const auto drawDiamond = [&](float frame, int trackRow, ImU32 color) {
-                    const float x = frameX(frame);
-                    const float y = trackY(trackRow);
-                    if (x < left - 8.0F || x > right + 8.0F || y < top - 8.0F || y > bottom + 8.0F)
-                        return;
-                    drawList->AddQuadFilled({x, y - 5.0F}, {x + 5.0F, y}, {x, y + 5.0F}, {x - 5.0F, y}, color);
-                };
-                const auto drawTrack = [&](const char* name, int trackRow) {
-                    if (!trackVisible(trackRow))
-                        return;
-                    const float y = trackY(trackRow);
-                    drawList->AddText({canvasMin.x + 8.0F, y - ImGui::GetFontSize() * 0.5F},
-                                      ImGui::GetColorU32(ImGuiCol_Text), name);
-                };
-                drawTrack("Camera", 0);
-                drawTrack("Light", 1);
-                if (global) {
-                    if (trackVisible(0))
-                        for (const auto& key : active->cameras)
-                            drawDiamond(static_cast<float>(key.frame), 0, ImGui::GetColorU32(ImGuiCol_CheckMark));
-                    if (trackVisible(1))
-                        for (const auto& key : active->lights)
-                            drawDiamond(static_cast<float>(key.frame), 1, ImGui::GetColorU32(ImGuiCol_CheckMark));
-                } else if (model != nullptr) {
-                    int trackRow = 2;
-                    for (const auto& track : timelineTrackCache_.bones) {
-                        if (trackVisible(trackRow)) {
-                            drawTrack(track.name.c_str(), trackRow);
-                            for (const auto frame : track.frames)
-                                drawDiamond(static_cast<float>(frame), trackRow,
-                                            ImGui::GetColorU32(ImGuiCol_SliderGrab));
-                        }
-                        ++trackRow;
-                    }
-                    for (const auto& track : timelineTrackCache_.morphs) {
-                        if (trackVisible(trackRow)) {
-                            drawTrack(track.name.c_str(), trackRow);
-                            for (const auto frame : track.frames)
-                                drawDiamond(static_cast<float>(frame), trackRow,
-                                            ImGui::GetColorU32(ImGuiCol_PlotLines));
-                        }
-                        ++trackRow;
-                    }
-                }
-                const float currentX = frameX(animationFrame_);
-                if (currentX >= left && currentX <= right)
-                    drawList->AddLine({currentX, top}, {currentX, bottom}, ImGui::GetColorU32(ImGuiCol_PlotHistogram),
-                                      2.0F);
-                ImGui::SetCursorScreenPos({left, top});
-                ImGui::InvisibleButton("timeline-canvas-input", {right - left, bottom - top},
-                                       ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
-                if (ImGui::IsItemHovered()) {
-                    if (ImGui::GetIO().MouseWheel != 0.0F) {
-                        if (ImGui::GetIO().KeyCtrl) {
-                            const float frameUnderCursor =
-                                (ImGui::GetIO().MousePos.x - left + timelinePan_) / pixelsPerFrame;
-                            timelineZoom_ = std::clamp(timelineZoom_ + ImGui::GetIO().MouseWheel * 0.1F, 0.5F, 8.0F);
-                            pixelsPerFrame = (right - left) / duration * timelineZoom_;
-                            maxPan = std::max(0.0F, duration * pixelsPerFrame - (right - left));
-                            timelinePan_ = std::clamp(
-                                frameUnderCursor * pixelsPerFrame - (ImGui::GetIO().MousePos.x - left), 0.0F, maxPan);
-                        } else {
-                            timelineScrollY_ =
-                                std::clamp(timelineScrollY_ - ImGui::GetIO().MouseWheel * rowHeight, 0.0F, maxScrollY);
-                        }
-                    }
-                    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
-                        timelinePan_ = std::clamp(timelinePan_ - ImGui::GetIO().MouseDelta.x, 0.0F, maxPan);
-                    }
-                    if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-                        const float frame = (ImGui::GetIO().MousePos.x - left + timelinePan_) / pixelsPerFrame;
-                        animationFrame_ = std::clamp(frame, 0.0F, duration);
-                        scene_.setFrame(animationFrame_);
-                        refreshAnimatedMesh(false);
-                        refreshPreviewScene();
-                    }
-                }
-            }
-            ImGui::EndChild();
             const bool keyWindowFocused =
                 ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput;
             const bool copyShortcut =
@@ -2904,6 +2943,7 @@ void Application::buildVideoExportUi() {
         if (!DAYO_HAS_MEDIA) {
             ImGui::TextUnformatted("FFmpeg support is not available in this build.");
         } else {
+            ImGui::BeginDisabled(videoExportUiActive_);
             if (!videoRangeInitialized_) {
                 videoFromFrame_ = 0;
                 videoToFrame_ = scene_.timeline().duration > 0.0F
@@ -2947,13 +2987,20 @@ void Application::buildVideoExportUi() {
             if (ImGui::InputScalar("To frame", ImGuiDataType_U64, &to))
                 videoToFrame_ = to;
             ImGui::Checkbox("Overwrite existing file", &audioOverwrite_);
+            ImGui::EndDisabled();
             ImGui::Separator();
 
-            if (videoExportUiActive_ && videoExportJob_.running()) {
+            if (videoExportUiActive_) {
+                if (videoExportFramesFinished_ && !videoExportJob_.running())
+                    ImGui::TextUnformatted("Restoring preview...");
+                else if (!videoPreRollDone_)
+                    ImGui::Text("Preparing frame %llu / %llu",
+                                static_cast<unsigned long long>(videoEvaluationNextFrame_),
+                                static_cast<unsigned long long>(videoFromFrame_));
                 ImGui::ProgressBar(videoExportJob_.progress(), {-1.0F, 0.0F});
                 ImGui::Text("%.1f%%", static_cast<double>(videoExportJob_.progress()) * 100.0);
                 if (ImGui::Button("Cancel video export")) {
-                    videoExportJob_.cancel();
+                    videoExportJob_.requestCancel();
                     videoExportFramesFinished_ = true;
                     videoExportStatus_ = "Cancelled";
                 }
@@ -2992,22 +3039,28 @@ void Application::buildVideoExportUi() {
                         videoExportRestoreManualCamera_ = manualCamera_;
                         videoExportRestoreAudioActive_ = audioPlayer_.active();
                         videoExportRestorePending_ = true;
+                        videoRestoreNextFrame_ = 0;
+                        videoEvaluationNextFrame_ = 0;
                         videoSourceFps_ = sceneTimelineFps(scene_);
                         request.audioStartSeconds = static_cast<double>(videoFromFrame_) / videoSourceFps_;
                         videoOutputFrameCount_ =
                             videoOutputFrameCount(videoFromFrame_, videoToFrame_, videoSourceFps_, request.fps);
+                        activeVideoExport_ = ActiveVideoExport{request.width, request.height};
                         videoExportJob_.start(std::move(request), std::move(audioSource), videoOutputFrameCount_);
                         videoNextFrame_ = 0;
                         videoPreviousSourceFrame_ = 0.0F;
                         videoPreRollDone_ = false;
                         videoExportFramesFinished_ = false;
                         videoExportUiActive_ = true;
+                        playing_ = false;
                         videoExportStatus_.clear();
                         audioPlayer_.stop();
                     } catch (const std::exception& exception) {
                         if (videoExportRestorePending_) {
                             try {
                                 restoreVideoExportState();
+                                videoExportFramesFinished_ = true;
+                                videoExportUiActive_ = videoExportRestorePending_;
                             } catch (const std::exception& restoreException) {
                                 videoExportStatus_ = std::string("Export error: ") + exception.what() +
                                                      "; restore error: " + restoreException.what();
@@ -3019,7 +3072,7 @@ void Application::buildVideoExportUi() {
                 }
             }
         }
-        if (!videoExportJob_.running()) {
+        if (!videoExportUiActive_) {
             ImGui::Separator();
             if (ImGui::Button("Close"))
                 ImGui::CloseCurrentPopup();

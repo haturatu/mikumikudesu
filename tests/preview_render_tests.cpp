@@ -1,6 +1,11 @@
 #include "core/model_probe.hpp"
 #include "graphics/vulkan/vulkan_device.hpp"
 #include "platform/window.hpp"
+#include "ui/theme.hpp"
+
+#if DAYO_HAS_IMGUI
+#include <imgui.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -606,6 +611,23 @@ bool sphereAlphaDoesNotHideMaterial(dayo::graphics::VulkanDevice& device) {
 } // namespace
 
 int main() {
+#if DAYO_HAS_IMGUI
+    ImGui::CreateContext();
+    dayo::ui::applyEditorTheme(2.0F);
+    const auto expected = ImGui::GetStyle();
+    dayo::ui::applyEditorTheme(1.0F);
+    dayo::ui::applyEditorTheme(1.5F);
+    dayo::ui::applyEditorTheme(2.0F);
+    const auto actual = ImGui::GetStyle();
+    ImGui::DestroyContext();
+    if (actual.WindowBorderSize != expected.WindowBorderSize || actual.ChildBorderSize != expected.ChildBorderSize ||
+        actual.IndentSpacing != expected.IndentSpacing || actual.GrabMinSize != expected.GrabMinSize ||
+        actual.DisplayWindowPadding.x != expected.DisplayWindowPadding.x ||
+        actual.FramePadding.y != expected.FramePadding.y) {
+        std::cerr << "FAIL: repeated DPI changes accumulate style metrics\n";
+        return 1;
+    }
+#endif
     try {
         const auto window = dayo::platform::createWindow({"preview shader test", 64, 64, true});
         dayo::graphics::VulkanDevice device(*window, false);

@@ -8,7 +8,7 @@
 namespace dayo::ui {
 
 void applyEditorTheme(float scale) {
-    auto& style = ImGui::GetStyle();
+    ImGuiStyle style{};
     ImGui::StyleColorsDark(&style);
     style.WindowPadding = {10.0F, 9.0F};
     style.FramePadding = {8.0F, 5.0F};
@@ -45,6 +45,7 @@ void applyEditorTheme(float scale) {
     colors[ImGuiCol_SliderGrabActive] = {0.430F, 0.720F, 0.980F, 1.0F};
     colors[ImGuiCol_DockingEmptyBg] = {0.045F, 0.050F, 0.060F, 1.0F};
     colors[ImGuiCol_DockingPreview] = {0.220F, 0.500F, 0.760F, 0.55F};
+    ImGui::GetStyle() = style;
 }
 
 } // namespace dayo::ui
