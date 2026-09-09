@@ -3,6 +3,7 @@
 #if DAYO_HAS_IMGUI
 #include "core/log.hpp"
 
+#include <SDL3/SDL.h>
 #include <imgui.h>
 
 #include <cstdlib>
@@ -17,6 +18,11 @@ std::vector<std::filesystem::path> fontCandidates() {
     std::vector<std::filesystem::path> result;
     if (const auto* configured = std::getenv("DAYO_FONT_PATH"); configured != nullptr && configured[0] != '\0')
         result.emplace_back(configured);
+    if (const char* basePath = SDL_GetBasePath(); basePath != nullptr) {
+        const auto base = std::filesystem::path(basePath);
+        result.emplace_back(base / "../share/mikumikudesu/fonts/NotoSansCJKjp-Regular.otf");
+        result.emplace_back(base / "assets/fonts/NotoSansCJKjp-Regular.otf");
+    }
     result.emplace_back("assets/fonts/NotoSansCJKjp-Regular.otf");
     result.emplace_back("assets/fonts/NotoSansJP-Regular.ttf");
     result.emplace_back("assets/fonts/NotoSansCJK-Regular.ttc");

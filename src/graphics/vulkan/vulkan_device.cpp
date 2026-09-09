@@ -1544,9 +1544,9 @@ void VulkanDevice::createUi() {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     io.ConfigDpiScaleFonts = true;
-    ui::applyEditorTheme();
-    ui::loadEditorFonts();
     const float displayScale = std::max(SDL_GetWindowDisplayScale(window_.sdlHandle()), 1.0F);
+    ui::applyEditorTheme(displayScale);
+    ui::loadEditorFonts();
     ImGui::GetStyle().FontScaleDpi = displayScale;
     if (!ImGui_ImplSDL3_InitForVulkan(window_.sdlHandle())) {
         throw std::runtime_error("ImGui SDL3 initialization failed");

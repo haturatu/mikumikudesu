@@ -3,9 +3,11 @@
 #if DAYO_HAS_IMGUI
 #include <imgui.h>
 
+#include <algorithm>
+
 namespace dayo::ui {
 
-void applyEditorTheme() {
+void applyEditorTheme(float scale) {
     auto& style = ImGui::GetStyle();
     ImGui::StyleColorsDark(&style);
     style.WindowPadding = {10.0F, 9.0F};
@@ -20,6 +22,7 @@ void applyEditorTheme() {
     style.PopupRounding = 3.0F;
     style.GrabRounding = 3.0F;
     style.TabRounding = 3.0F;
+    style.ScaleAllSizes(std::max(scale, 0.1F));
 
     auto& colors = style.Colors;
     colors[ImGuiCol_WindowBg] = {0.075F, 0.085F, 0.100F, 1.0F};

@@ -348,7 +348,7 @@ if(DAYO_ENABLE_IMGUI)
     ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
   )
-  target_include_directories(dayo_imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+  target_include_directories(dayo_imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
   target_link_libraries(dayo_imgui PUBLIC SDL3::SDL3 Vulkan::Vulkan)
   target_link_libraries(dayo_graphics PUBLIC dayo_imgui)
   target_link_libraries(dayo_platform PUBLIC dayo_imgui)
