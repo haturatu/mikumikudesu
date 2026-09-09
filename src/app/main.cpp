@@ -1,5 +1,6 @@
 #include "app/application.hpp"
 #include "app/audio_export_command.hpp"
+#include "app/cli.hpp"
 
 #include "core/log.hpp"
 

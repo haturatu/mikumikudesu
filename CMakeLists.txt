@@ -35,6 +35,24 @@ option(DAYO_ENABLE_PGO_GENERATE "Instrument native targets for PGO profile gener
 option(DAYO_ENABLE_PGO_USE "Use an existing PGO profile for native targets" OFF)
 set(DAYO_PGO_PROFILE_DIR "${CMAKE_BINARY_DIR}/pgo" CACHE PATH "Directory containing or receiving PGO data")
 
+find_package(argparse 3.2 CONFIG QUIET)
+if(NOT TARGET argparse::argparse)
+  if(NOT DAYO_FETCH_DEPENDENCIES)
+    message(FATAL_ERROR "argparse was not found. Install argparse or enable DAYO_FETCH_DEPENDENCIES.")
+  endif()
+  message(STATUS "System argparse was not found; fetching argparse v3.2")
+  set(ARGPARSE_INSTALL OFF CACHE BOOL "" FORCE)
+  set(ARGPARSE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(ARGPARSE_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    argparse
+    URL https://github.com/p-ranav/argparse/archive/refs/tags/v3.2.tar.gz
+    URL_HASH SHA256=9dcb3d8ce0a41b2a48ac8baa54b51a9f1b6a2c52dd374e28cc713bab0568ec98
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  )
+  FetchContent_MakeAvailable(argparse)
+endif()
+
 if(DAYO_ENABLE_PGO_GENERATE AND DAYO_ENABLE_PGO_USE)
   message(FATAL_ERROR "DAYO_ENABLE_PGO_GENERATE and DAYO_ENABLE_PGO_USE are mutually exclusive")
 endif()
@@ -470,7 +488,11 @@ add_executable(
   src/app/main.cpp
 )
 target_include_directories(mikumikudesu PRIVATE src)
-target_link_libraries(mikumikudesu PRIVATE dayo_core dayo_platform dayo_graphics)
+add_library(dayo_cli src/app/cli.cpp)
+target_include_directories(dayo_cli PUBLIC src)
+target_link_libraries(dayo_cli PRIVATE argparse::argparse)
+target_compile_definitions(dayo_cli PRIVATE DAYO_VERSION="${PROJECT_VERSION}")
+target_link_libraries(mikumikudesu PRIVATE dayo_cli dayo_core dayo_platform dayo_graphics)
 target_compile_definitions(
   mikumikudesu
   PRIVATE DAYO_HAS_OIDN=${DAYO_HAS_OIDN} DAYO_HAS_MEDIA=${DAYO_HAS_MEDIA} DAYO_VERSION="${PROJECT_VERSION}"
@@ -486,6 +508,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     dayo_fx
     dayo_platform
     dayo_graphics
+    dayo_cli
     mikumikudesu
   )
     target_compile_options(
@@ -565,6 +588,8 @@ endif()
 if(BUILD_TESTING)
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
   add_test(NAME upstream_fetch COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/fetch_mikumikudayo_tests.py")
+  add_executable(dayo_cli_tests tests/cli_tests.cpp)
+  target_link_libraries(dayo_cli_tests PRIVATE dayo_cli)
   add_executable(dayo_core_tests tests/core_tests.cpp)
   target_link_libraries(dayo_core_tests PRIVATE dayo_core)
   add_executable(dayo_upload_ring_tests tests/upload_ring_tests.cpp)
@@ -581,6 +606,18 @@ if(BUILD_TESTING)
       target_compile_options(dayo_preview_tests PRIVATE -Werror)
       if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         target_compile_options(dayo_preview_tests PRIVATE -Wno-error=deprecated-literal-operator)
+      endif()
+    endif()
+  endif()
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      dayo_cli_tests
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_cli_tests PRIVATE -Werror)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(dayo_cli_tests PRIVATE -Wno-error=deprecated-literal-operator)
       endif()
     endif()
   endif()
@@ -703,6 +740,9 @@ if(BUILD_TESTING)
   endif()
 
   add_test(NAME core COMMAND dayo_core_tests)
+  add_test(NAME cli COMMAND dayo_cli_tests)
+  add_test(NAME cli_help COMMAND mikumikudesu --help)
+  add_test(NAME cli_version COMMAND mikumikudesu --version)
   add_test(NAME fx_linker COMMAND dayo_fx_linker_tests)
   add_test(NAME fx_semantic COMMAND dayo_fx_semantic_tests)
   add_test(NAME fx_executor COMMAND dayo_fx_executor_tests)
@@ -744,6 +784,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_graphics
     mikumikudesu
     dayo_core_tests
+    dayo_cli_tests
     dayo_fx_executor_tests
     dayo_upload_ring_tests
     dayo_preview_tests
@@ -758,6 +799,9 @@ if(DAYO_ENABLE_SANITIZERS)
     endif()
   endforeach()
   target_link_options(mikumikudesu PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  if(TARGET dayo_cli_tests)
+    target_link_options(dayo_cli_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
   if(TARGET dayo_core_tests)
     target_link_options(dayo_core_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()

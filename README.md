@@ -63,6 +63,7 @@ axis別MMD/Catmull-Rom方式）を実装しています。単体ファイルの�
 
 - Linux x86_64
 - CMake 3.25以上、Ninja、C++20コンパイラ
+- argparse 3.2（通常presetはCMakeが取得、system-onlyはCONFIG packageが必要）
 - SDL 3.2以上
 - Vulkan loaderとVulkan 1.3対応ドライバ
 - glslc、またはDXC
@@ -115,7 +116,8 @@ sudo pacman -S --needed \
 ```
 
 不足するVulkan-Headers、stb、Dear ImGui、Bullet、Jsonnet等は、通常presetでは固定versionを
-CMakeが取得します。取得を禁止する場合は必要なdevelopment packageを先に導入してください。
+CMakeが取得します。argparseも同様ですが、取得を禁止する場合はargparseを含む必要なdevelopment
+packageを先に導入してください。
 
 ## ビルドと実行
 
