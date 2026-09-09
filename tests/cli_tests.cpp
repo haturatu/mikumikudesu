@@ -52,6 +52,10 @@ int main() {
     const auto aliases = parse({"mikumikudesu", "--asset", "explicit.pmx", "--model", "motion.vmd", "pose.vpd"});
     ok &= aliases.assets == std::vector<std::filesystem::path>{"explicit.pmx", "motion.vmd", "pose.vpd"};
 
+    const auto mixed =
+        parse({"mikumikudesu", "model.pmx", "--asset", "motion.vmd", "pose.vpd", "--model", "second.pmx"});
+    ok &= mixed.assets == std::vector<std::filesystem::path>{"model.pmx", "motion.vmd", "pose.vpd", "second.pmx"};
+
     const auto before = parse({"mikumikudesu", "--audio-source", "song.wav", "--audio-bitrate", "256", "--export-video",
                                "out.mp4", "--overwrite"});
     const auto after = parse({"mikumikudesu", "--export-video", "out.mp4", "--overwrite", "--audio-bitrate", "256",
@@ -77,6 +81,10 @@ int main() {
     ok &= rejects([] { static_cast<void>(parse({"mikumikudesu", "--renderer", "invalid"})); }, "invalid renderer");
     ok &= rejects([] { static_cast<void>(parse({"mikumikudesu", "--frames", "0"})); }, "zero frames");
     ok &= rejects([] { static_cast<void>(parse({"mikumikudesu", "--video-width", "0"})); }, "zero video width");
+    ok &= rejects([] { static_cast<void>(parse({"mikumikudesu", "--video-width", "1920"})); },
+                  "video option without export destination");
+    ok &= rejects([] { static_cast<void>(parse({"mikumikudesu", "--audio-source", "song.wav"})); },
+                  "audio option without export destination");
     ok &=
         rejects([] { static_cast<void>(parse({"mikumikudesu", "--export-m4a", "a.m4a", "--export-video", "b.mp4"})); },
                 "mutually exclusive exports");

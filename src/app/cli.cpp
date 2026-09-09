@@ -2,6 +2,7 @@
 
 #include <argparse/argparse.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -22,8 +23,7 @@ struct RawCliOptions {
     bool validation{true};
     std::string renderer{"preview"};
     std::optional<std::uint64_t> frames;
-    std::vector<std::string> explicitAssets;
-    std::vector<std::string> positionalAssets;
+    std::vector<std::string> assets;
     std::optional<std::string> saveProject;
 
     std::optional<std::string> exportM4a;
@@ -43,6 +43,29 @@ struct RawCliOptions {
     bool videoHardware{};
     bool noAudio{};
     bool overwrite{};
+};
+
+struct ConfiguredParser {
+    argparse::ArgumentParser program;
+    std::vector<std::string> valueOptions;
+
+    ConfiguredParser(std::string programName, std::string version)
+        : program(std::move(programName), std::move(version)) {}
+
+    template <typename... Names> argparse::Argument& addValueArgument(Names... names) {
+        (valueOptions.emplace_back(names), ...);
+        return program.add_argument(names...);
+    }
+
+    template <typename... Names>
+    argparse::Argument& addValueArgumentTo(argparse::ArgumentParser::MutuallyExclusiveGroup& group, Names... names) {
+        (valueOptions.emplace_back(names), ...);
+        return group.add_argument(names...);
+    }
+};
+
+struct PreprocessedArguments {
+    std::vector<std::string> argv;
 };
 
 template <typename T> std::optional<T> present(const argparse::ArgumentParser& program, std::string_view name) {
@@ -102,10 +125,8 @@ Options normalizeOptions(const RawCliOptions& raw) {
     options.frameLimit = raw.frames;
     options.saveProject = pathOption(raw.saveProject);
 
-    options.assets.reserve(raw.explicitAssets.size() + raw.positionalAssets.size());
-    for (const auto& asset : raw.explicitAssets)
-        options.assets.emplace_back(asset);
-    for (const auto& asset : raw.positionalAssets)
+    options.assets.reserve(raw.assets.size());
+    for (const auto& asset : raw.assets)
         options.assets.emplace_back(asset);
 
     const bool hasVideoOptions = raw.videoWidth || raw.videoHeight || raw.videoFps || raw.videoCodec ||
@@ -114,8 +135,10 @@ Options normalizeOptions(const RawCliOptions& raw) {
     const bool hasAudioOptions =
         raw.audioSource || raw.audioBitrateKbps || raw.audioFrom || raw.audioTo || raw.overwrite;
 
-    if (raw.exportM4a && hasVideoOptions)
+    if (hasVideoOptions && !raw.exportVideo)
         throw std::invalid_argument("video options require --export-video");
+    if (hasAudioOptions && !raw.exportM4a && !raw.exportVideo)
+        throw std::invalid_argument("export options require --export-m4a or --export-video");
     if (raw.exportVideo && (raw.audioFrom || raw.audioTo))
         throw std::invalid_argument("--audio-from and --audio-to are only available with --export-m4a");
     if (raw.videoFromFrame && raw.videoToFrame && *raw.videoFromFrame > *raw.videoToFrame)
@@ -132,7 +155,7 @@ Options normalizeOptions(const RawCliOptions& raw) {
     if (raw.videoHeight && *raw.videoHeight == 0)
         throw std::invalid_argument("--video-height expects a positive integer");
 
-    if (raw.exportVideo || hasVideoOptions) {
+    if (raw.exportVideo) {
         VideoExportOptions video;
         video.destination = pathOption(raw.exportVideo).value_or(std::filesystem::path{});
         if (raw.audioSource)
@@ -157,7 +180,7 @@ Options normalizeOptions(const RawCliOptions& raw) {
         video.includeAudio = !raw.noAudio;
         video.overwrite = raw.overwrite;
         options.videoExport = std::move(video);
-    } else if (raw.exportM4a || hasAudioOptions) {
+    } else if (raw.exportM4a) {
         AudioExportOptions audio;
         audio.destination = pathOption(raw.exportM4a).value_or(std::filesystem::path{});
         audio.source = pathOption(raw.audioSource);
@@ -179,8 +202,7 @@ RawCliOptions extractOptions(const argparse::ArgumentParser& program) {
     raw.validation = !program.get<bool>("--no-validation");
     raw.renderer = program.get<std::string>("--renderer");
     raw.frames = present<std::uint64_t>(program, "--frames");
-    raw.explicitAssets = present<std::vector<std::string>>(program, "--asset").value_or(std::vector<std::string>{});
-    raw.positionalAssets = present<std::vector<std::string>>(program, "assets").value_or(std::vector<std::string>{});
+    raw.assets = present<std::vector<std::string>>(program, "--asset").value_or(std::vector<std::string>{});
     raw.saveProject = present<std::string>(program, "--save-project");
 
     raw.exportM4a = present<std::string>(program, "--export-m4a");
@@ -203,106 +225,99 @@ RawCliOptions extractOptions(const argparse::ArgumentParser& program) {
     return raw;
 }
 
-void configureParser(argparse::ArgumentParser& program) {
+void configureParser(ConfiguredParser& parser) {
+    auto& program = parser.program;
     program.add_description("Native MikuMikuDance-compatible editor and renderer");
 
     program.add_argument("--probe").flag().help("Print renderer/device capabilities and exit");
     program.add_argument("--hidden").flag().help("Create the application window hidden");
     program.add_argument("--no-validation").flag().help("Disable Vulkan validation");
-    program.add_argument("--renderer")
+    parser.addValueArgument("--renderer")
         .default_value(std::string{"preview"})
         .choices("preview", "subayai", "bdpt")
         .metavar("RENDERER")
         .help("Select renderer");
-    program.add_argument("--frames").scan<'u', std::uint64_t>().metavar("N").help("Exit after rendering N frames");
-    program.add_argument("--asset", "--model").append().metavar("PATH").help("Load an asset (may be repeated)");
-    program.add_argument("--save-project").metavar("PATH").help("Save the current project and exit or continue");
+    parser.addValueArgument("--frames").scan<'u', std::uint64_t>().metavar("N").help("Exit after rendering N frames");
+    parser.addValueArgument("--asset", "--model").append().metavar("PATH").help("Load an asset (may be repeated)");
+    parser.addValueArgument("--save-project").metavar("PATH").help("Save the current project and exit or continue");
 
     auto& exportGroup = program.add_mutually_exclusive_group();
-    exportGroup.add_argument("--export-m4a").metavar("PATH").help("Export audio to M4A");
-    exportGroup.add_argument("--export-video").metavar("PATH").help("Export video to MP4");
+    parser.addValueArgumentTo(exportGroup, "--export-m4a").metavar("PATH").help("Export audio to M4A");
+    parser.addValueArgumentTo(exportGroup, "--export-video").metavar("PATH").help("Export video to MP4");
 
-    program.add_argument("--audio-source").metavar("PATH").help("Select an audio/video source");
-    program.add_argument("--audio-bitrate").scan<'u', std::uint32_t>().metavar("KBPS").help("Set AAC bitrate in kbps");
-    program.add_argument("--audio-from")
+    parser.addValueArgument("--audio-source").metavar("PATH").help("Select an audio/video source");
+    parser.addValueArgument("--audio-bitrate")
+        .scan<'u', std::uint32_t>()
+        .metavar("KBPS")
+        .help("Set AAC bitrate in kbps");
+    parser.addValueArgument("--audio-from")
         .scan<'g', double>()
         .metavar("SEC")
         .help("Start audio export at this time in seconds");
-    program.add_argument("--audio-to")
+    parser.addValueArgument("--audio-to")
         .scan<'g', double>()
         .metavar("SEC")
         .help("End audio export at this time in seconds");
 
-    program.add_argument("--video-width").scan<'u', std::uint32_t>().metavar("PX").help("Set video width");
-    program.add_argument("--video-height").scan<'u', std::uint32_t>().metavar("PX").help("Set video height");
-    program.add_argument("--video-fps").scan<'g', double>().metavar("FPS").help("Set video frame rate");
-    program.add_argument("--video-codec")
+    parser.addValueArgument("--video-width").scan<'u', std::uint32_t>().metavar("PX").help("Set video width");
+    parser.addValueArgument("--video-height").scan<'u', std::uint32_t>().metavar("PX").help("Set video height");
+    parser.addValueArgument("--video-fps").scan<'g', double>().metavar("FPS").help("Set video frame rate");
+    parser.addValueArgument("--video-codec")
         .choices("h264", "h265", "hevc", "av1")
         .metavar("CODEC")
         .help("Select video codec");
-    program.add_argument("--video-bitrate")
+    parser.addValueArgument("--video-bitrate")
         .scan<'u', std::uint32_t>()
         .metavar("KBPS")
         .help("Set video bitrate in kbps");
     program.add_argument("--video-hardware").flag().help("Prefer hardware video encoding");
-    program.add_argument("--video-from-frame")
+    parser.addValueArgument("--video-from-frame")
         .scan<'u', std::uint64_t>()
         .metavar("N")
         .help("Start video export at this frame");
-    program.add_argument("--video-to-frame")
+    parser.addValueArgument("--video-to-frame")
         .scan<'u', std::uint64_t>()
         .metavar("N")
         .help("End video export at this frame");
     program.add_argument("--no-audio").flag().help("Disable audio in video export");
     program.add_argument("--overwrite").flag().help("Replace an existing export destination");
-
-    program.add_argument("assets")
-        .nargs(argparse::nargs_pattern::any)
-        .metavar("ASSET")
-        .help("Assets to load (positional form)");
 }
 
-bool takesValue(std::string_view argument) {
-    return argument == "--renderer" || argument == "--frames" || argument == "--asset" || argument == "--model" ||
-           argument == "--save-project" || argument == "--export-m4a" || argument == "--export-video" ||
-           argument == "--audio-source" || argument == "--audio-bitrate" || argument == "--audio-from" ||
-           argument == "--audio-to" || argument == "--video-width" || argument == "--video-height" ||
-           argument == "--video-fps" || argument == "--video-codec" || argument == "--video-bitrate" ||
-           argument == "--video-from-frame" || argument == "--video-to-frame";
+bool isValueOption(std::string_view argument, const std::vector<std::string>& valueOptions) {
+    return std::find(valueOptions.begin(), valueOptions.end(), argument) != valueOptions.end();
 }
 
-std::vector<std::string> reorderPositionalAssets(int argc, char** argv) {
-    std::vector<std::string> reordered;
-    std::vector<std::string> positional;
-    reordered.emplace_back(argv[0]);
+PreprocessedArguments preprocessArguments(int argc, char** argv, const std::vector<std::string>& valueOptions) {
+    PreprocessedArguments result;
+    result.argv.emplace_back(argv[0]);
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
-        if (takesValue(argument) && argument.find('=') == std::string_view::npos) {
-            reordered.emplace_back(argument);
+        if (isValueOption(argument, valueOptions) && argument.find('=') == std::string_view::npos) {
+            result.argv.emplace_back(argument);
             if (index + 1 < argc)
-                reordered.emplace_back(argv[++index]);
+                result.argv.emplace_back(argv[++index]);
         } else if (!argument.empty() && argument.front() == '-') {
-            reordered.emplace_back(argument);
+            result.argv.emplace_back(argument);
         } else {
-            positional.emplace_back(argument);
+            result.argv.emplace_back("--asset");
+            result.argv.emplace_back(argument);
         }
     }
-    reordered.insert(reordered.end(), positional.begin(), positional.end());
-    return reordered;
+    return result;
 }
 
 } // namespace
 
 Options parseOptions(int argc, char** argv) {
-    argparse::ArgumentParser program("mikumikudesu", DAYO_VERSION);
-    configureParser(program);
-    const auto arguments = reorderPositionalAssets(argc, argv);
+    ConfiguredParser parser("mikumikudesu", DAYO_VERSION);
+    configureParser(parser);
+    const auto arguments = preprocessArguments(argc, argv, parser.valueOptions);
     std::vector<const char*> argumentPointers;
-    argumentPointers.reserve(arguments.size());
-    for (const auto& argument : arguments)
+    argumentPointers.reserve(arguments.argv.size());
+    for (const auto& argument : arguments.argv)
         argumentPointers.push_back(argument.c_str());
-    program.parse_args(static_cast<int>(argumentPointers.size()), argumentPointers.data());
-    return normalizeOptions(extractOptions(program));
+    parser.program.parse_args(static_cast<int>(argumentPointers.size()), argumentPointers.data());
+    return normalizeOptions(extractOptions(parser.program));
 }
 
 } // namespace dayo::app
