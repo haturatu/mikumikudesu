@@ -193,11 +193,33 @@ jobs:
       - name: Restore or build SDL3
         uses: ./.github/actions/setup-sdl3
 
+      - name: Install argparse system package
+        run: |
+          curl -fsSL \
+            -o "$RUNNER_TEMP/argparse.tar.gz" \
+            https://github.com/p-ranav/argparse/archive/refs/tags/v3.2.tar.gz
+          echo "9dcb3d8ce0a41b2a48ac8baa54b51a9f1b6a2c52dd374e28cc713bab0568ec98  $RUNNER_TEMP/argparse.tar.gz" |
+            sha256sum --check
+          cmake -E make_directory "$RUNNER_TEMP/argparse-src"
+          tar --extract --gzip --strip-components=1 \
+            --file "$RUNNER_TEMP/argparse.tar.gz" \
+            --directory "$RUNNER_TEMP/argparse-src"
+          cmake \
+            -S "$RUNNER_TEMP/argparse-src" \
+            -B "$RUNNER_TEMP/argparse-build" \
+            -DARGPARSE_INSTALL=ON \
+            -DARGPARSE_BUILD_TESTS=OFF \
+            -DARGPARSE_BUILD_SAMPLES=OFF
+          cmake --install "$RUNNER_TEMP/argparse-build" --prefix "$RUNNER_TEMP/argparse-prefix"
+
       - name: Configure without FetchContent dependencies
         env:
           CC: gcc
           CXX: g++
-        run: cmake --preset linux-system-only -DCMAKE_PREFIX_PATH="$SDL3_PREFIX" -DDAYO_WARNINGS_AS_ERRORS=ON
+        run: >-
+          cmake --preset linux-system-only
+          -DCMAKE_PREFIX_PATH="$SDL3_PREFIX;$RUNNER_TEMP/argparse-prefix"
+          -DDAYO_WARNINGS_AS_ERRORS=ON
 
       - name: Build
         run: cmake --build --preset linux-system-only --parallel
