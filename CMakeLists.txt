@@ -38,10 +38,7 @@ set(DAYO_PGO_PROFILE_DIR "${CMAKE_BINARY_DIR}/pgo" CACHE PATH "Directory contain
 find_package(argparse 3.2 CONFIG QUIET)
 if(NOT TARGET argparse::argparse)
   if(NOT DAYO_FETCH_DEPENDENCIES)
-    message(
-      FATAL_ERROR
-      "argparse was not found. Install argparse or enable DAYO_FETCH_DEPENDENCIES."
-    )
+    message(FATAL_ERROR "argparse was not found. Install argparse or enable DAYO_FETCH_DEPENDENCIES.")
   endif()
   message(STATUS "System argparse was not found; fetching argparse v3.2")
   set(ARGPARSE_INSTALL OFF CACHE BOOL "" FORCE)
