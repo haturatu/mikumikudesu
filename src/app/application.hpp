@@ -51,6 +51,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void handleEditorShortcuts();
     [[nodiscard]] std::string workspaceWindowName(const char* title, const char* id) const;
     void saveProjectNow();
+    void saveProjectAsNow();
+    void restoreVideoExportState();
     void startImageSequenceExport();
     void advanceImageSequenceExport();
     void finishImageSequenceExport(std::string status);
@@ -103,6 +105,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::int64_t uploadedVideoFrame_{-1};
     std::string lastAsset_{"Drop PMX/VMD/VPD/media files into the window"};
     std::vector<core::ProjectAsset> projectAssets_;
+    std::optional<std::filesystem::path> currentProjectPath_;
     std::optional<core::EffectHotReloader> effectReloader_;
     core::PreviewNormalization normalization_;
     float cameraYaw_{};
@@ -143,6 +146,12 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     bool videoPreRollDone_{};
     bool videoExportFramesFinished_{};
     bool videoExportUiActive_{};
+    bool videoExportRestorePending_{};
+    float videoExportRestoreFrame_{};
+    double videoExportRestoreMediaSeconds_{};
+    bool videoExportRestorePlaying_{};
+    bool videoExportRestoreManualCamera_{};
+    bool videoExportRestoreAudioActive_{};
     bool videoRangeInitialized_{};
     std::string videoExportStatus_;
 #if DAYO_HAS_IMGUI

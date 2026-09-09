@@ -144,6 +144,7 @@ void Application::resetProjectRuntimeState() {
     videoExportJob_.cancel();
     videoExportUiActive_ = false;
     videoExportFramesFinished_ = false;
+    videoExportRestorePending_ = false;
     videoRangeInitialized_ = false;
     scene_.clearProjectState();
     if (device_ != nullptr)
@@ -266,7 +267,12 @@ int Application::run() {
 #else
         if (videoExportUiActive_) {
 #endif
-            if (videoExportJob_.running() && !videoExportFramesFinished_) {
+            if (videoExportFramesFinished_) {
+                if (!videoExportJob_.running()) {
+                    restoreVideoExportState();
+                    videoExportUiActive_ = false;
+                }
+            } else if (videoExportJob_.running()) {
                 const auto& exportOptions = *options_.videoExport;
                 if (videoNextFrame_ < videoOutputFrameCount_) {
                     if (!videoPreRollDone_) {
@@ -295,7 +301,6 @@ int Application::run() {
                         videoExportStatus_ = exception.what();
                         videoExportJob_.cancel();
                         videoExportFramesFinished_ = true;
-                        videoExportUiActive_ = false;
                     }
                     videoPreviousSourceFrame_ = sourceFrame;
                     ++videoNextFrame_;
@@ -307,6 +312,7 @@ int Application::run() {
                 const auto error = videoExportJob_.error();
                 videoExportStatus_ = error ? *error : "Video export stopped unexpectedly";
                 videoExportFramesFinished_ = true;
+                restoreVideoExportState();
                 videoExportUiActive_ = false;
             }
         } else if (scene_.advanceFrame(deltaSeconds * playbackSpeed_, playing_)) {
@@ -542,6 +548,13 @@ void Application::handleAsset(const std::filesystem::path& path) {
     if (kind == core::AssetKind::project) {
         try {
             const auto project = core::loadProject(path);
+            currentProjectPath_ = std::filesystem::absolute(path).lexically_normal();
+#if DAYO_HAS_IMGUI
+            const auto projectText = currentProjectPath_->string();
+            const auto projectLength = std::min(projectText.size(), projectDestination_.size() - 1U);
+            std::copy_n(projectText.data(), projectLength, projectDestination_.data());
+            projectDestination_[projectLength] = '\0';
+#endif
             resetProjectRuntimeState();
             if (project.renderer == "subayai")
                 device_->selectRenderer(graphics::RendererKind::subayai);
@@ -1210,6 +1223,10 @@ void Application::resetPhysicsSimulation() {
 void Application::evaluateExportFrame(float frame, float deltaSeconds, bool initialUpload) {
     animationFrame_ = frame;
     scene_.setFrame(frame);
+    if (videoMode_ && scene_.media() != nullptr) {
+        mediaSeconds_ = std::max(0.0, static_cast<double>(frame) / sceneTimelineFps(scene_));
+        refreshVideoFrame();
+    }
     refreshAnimatedMesh(initialUpload, deltaSeconds);
     refreshPreviewScene();
 }
@@ -1674,8 +1691,8 @@ void Application::buildInspectorPanel() {
             ImGui::DragFloat4("Rotation", editedBoneRotation_.data(), 0.01F, -1.0F, 1.0F);
             ImGui::Checkbox("Physics", &editedBonePhysics_);
             if (ImGui::Button("Register Bone Key")) {
-                auto before = model->motion ? *model->motion : core::VmdMotion{};
-                before.modelName = model->displayName;
+                const auto before = model->motion ? *model->motion : core::VmdMotion{};
+                const auto outputModelName = before.modelName.empty() ? model->displayName : before.modelName;
                 auto document = core::toMotionDocument(before);
                 const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
                 const auto& name = bones[static_cast<std::size_t>(selectedBone_)].name;
@@ -1685,7 +1702,7 @@ void Application::buildInspectorPanel() {
                 core::MotionEditor::normalize(document);
                 history_.execute(scene_,
                                  std::make_unique<core::EditMotionCommand>(
-                                     model->id, false, before, core::toVmdMotion(std::move(document), before.modelName),
+                                     model->id, false, before, core::toVmdMotion(std::move(document), outputModelName),
                                      "Register bone key"));
                 refreshAnimatedMesh(false);
                 refreshPreviewScene();
@@ -1702,8 +1719,8 @@ void Application::buildInspectorPanel() {
             }
             ImGui::SliderFloat("Weight", &editedMorphWeight_, 0.0F, 1.0F);
             if (ImGui::Button("Register Morph Key")) {
-                core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
-                before.modelName = model->displayName;
+                const auto before = model->motion ? *model->motion : core::VmdMotion{};
+                const auto outputModelName = before.modelName.empty() ? model->displayName : before.modelName;
                 auto document = core::toMotionDocument(before);
                 const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
                 const auto& name = morphs[static_cast<std::size_t>(selectedMorph_)].name;
@@ -1712,7 +1729,7 @@ void Application::buildInspectorPanel() {
                 core::MotionEditor::normalize(document);
                 history_.execute(scene_,
                                  std::make_unique<core::EditMotionCommand>(
-                                     model->id, false, before, core::toVmdMotion(std::move(document), before.modelName),
+                                     model->id, false, before, core::toVmdMotion(std::move(document), outputModelName),
                                      "Register morph key"));
                 refreshAnimatedMesh(false);
                 refreshPreviewScene();
@@ -1774,7 +1791,7 @@ void Application::buildSaveAsDialog() {
     ImGui::TextUnformatted("Choose a Dayo project destination.");
     ImGui::InputText("Path", projectDestination_.data(), projectDestination_.size());
     if (ImGui::Button("Save")) {
-        saveProjectNow();
+        saveProjectAsNow();
         if (projectSaveStatus_ == "Project saved")
             ImGui::CloseCurrentPopup();
     }
@@ -1787,10 +1804,62 @@ void Application::buildSaveAsDialog() {
 #endif
 }
 
+void Application::restoreVideoExportState() {
+#if DAYO_HAS_IMGUI
+    if (!videoExportRestorePending_)
+        return;
+    const float restoreFrame = std::max(videoExportRestoreFrame_, 0.0F);
+    prepareDeterministicFrameEvaluation(restoreFrame);
+    animationFrame_ = videoExportRestoreFrame_;
+    scene_.setFrame(animationFrame_);
+    mediaSeconds_ = videoExportRestoreMediaSeconds_;
+    playing_ = videoExportRestorePlaying_;
+    manualCamera_ = videoExportRestoreManualCamera_;
+    if (videoMode_) {
+        uploadedVideoFrame_ = -1;
+        refreshVideoFrame();
+    }
+    if (videoExportRestoreAudioActive_ && !loadedAudio_.samples.empty()) {
+        const auto audioStart = std::max(0.0, videoExportRestoreMediaSeconds_ + audioOffsetSeconds_);
+        audioPlayer_.play(loadedAudio_, audioStart);
+        audioPlayer_.setVolume(audioVolume_);
+        audioPlayer_.setPaused(!playing_);
+    } else {
+        audioPlayer_.stop();
+    }
+    refreshPreviewScene();
+    videoExportRestorePending_ = false;
+#endif
+}
+
 void Application::saveProjectNow() {
 #if DAYO_HAS_IMGUI
+    if (!currentProjectPath_) {
+        uiState_.saveAsOpen = true;
+        projectSaveStatus_ = "Project has no path; choose a destination.";
+        return;
+    }
     try {
-        core::saveProject(projectDestination_.data(), currentProject());
+        core::saveProject(*currentProjectPath_, currentProject());
+        projectSaveStatus_ = "Project saved";
+    } catch (const std::exception& error) {
+        projectSaveStatus_ = error.what();
+    }
+#endif
+}
+
+void Application::saveProjectAsNow() {
+#if DAYO_HAS_IMGUI
+    try {
+        if (projectDestination_[0] == '\0')
+            throw std::invalid_argument("project destination is empty");
+        const auto destination = std::filesystem::absolute(projectDestination_.data()).lexically_normal();
+        core::saveProject(destination, currentProject());
+        currentProjectPath_ = destination;
+        const auto text = currentProjectPath_->string();
+        const auto count = std::min(text.size(), projectDestination_.size() - 1U);
+        std::copy_n(text.data(), count, projectDestination_.data());
+        projectDestination_[count] = '\0';
         projectSaveStatus_ = "Project saved";
     } catch (const std::exception& error) {
         projectSaveStatus_ = error.what();
@@ -1800,12 +1869,14 @@ void Application::saveProjectNow() {
 
 void Application::startImageSequenceExport() {
 #if DAYO_HAS_IMGUI
+    bool stateMutationStarted = false;
     try {
         if (device_ == nullptr)
             throw std::logic_error("image sequence export has no graphics device");
         if (sequenceOutput_.lastFrame < sequenceOutput_.firstFrame)
             throw std::invalid_argument("last frame precedes first frame");
         sequenceOutput_.directory = sequenceOutputDirectory_.data();
+        core::OutputQueue output(sequenceOutput_);
         imageSequenceRestoreFrame_ = scene_.timeline().frame;
         imageSequenceRestoreMediaSeconds_ = mediaSeconds_;
         imageSequenceRestorePlaying_ = playing_;
@@ -1823,9 +1894,10 @@ void Application::startImageSequenceExport() {
         imageSequenceCompletionStatus_.clear();
         imageSequenceImage_ = {};
         imageSequenceSum_.clear();
+        stateMutationStarted = true;
         resetPhysicsSimulation();
         evaluateExportFrame(0.0F, 0.0F, true);
-        imageSequenceOutput_.emplace(sequenceOutput_);
+        imageSequenceOutput_.emplace(std::move(output));
         imageSequenceExportRunning_ = true;
         playing_ = false;
         if (audioPlayer_.active())
@@ -1834,6 +1906,15 @@ void Application::startImageSequenceExport() {
     } catch (const std::exception& error) {
         imageSequenceOutput_.reset();
         imageSequenceExportRunning_ = false;
+        imageSequenceRestoring_ = false;
+        if (stateMutationStarted) {
+            try {
+                restoreImageSequenceState();
+            } catch (const std::exception& restoreError) {
+                sequenceOutputStatus_ = std::string(error.what()) + "; restore error: " + restoreError.what();
+                return;
+            }
+        }
         sequenceOutputStatus_ = error.what();
     }
 #endif
@@ -2079,7 +2160,8 @@ void Application::buildStatusBar() {
         ImGui::SameLine();
         ImGui::Text("%.0f FPS", ImGui::GetIO().Framerate);
         ImGui::SameLine();
-        ImGui::TextDisabled("%s", projectDestination_.data());
+        const std::string projectText = currentProjectPath_ ? currentProjectPath_->string() : "Untitled project";
+        ImGui::TextDisabled("%s", projectText.c_str());
     }
     ImGui::End();
 #endif
@@ -2116,7 +2198,9 @@ void Application::buildEditorUi() {
     }
     const auto execute = [&](core::VmdMotion before, core::MotionDocument document, bool globalMotion,
                              std::string label) {
-        auto after = core::toVmdMotion(std::move(document), before.modelName);
+        const auto outputModelName =
+            before.modelName.empty() && !globalMotion && model != nullptr ? model->displayName : before.modelName;
+        auto after = core::toVmdMotion(std::move(document), outputModelName);
         history_.execute(scene_, std::make_unique<core::EditMotionCommand>(target, globalMotion, std::move(before),
                                                                            std::move(after), std::move(label)));
         refreshAnimatedMesh(false);
@@ -2404,8 +2488,7 @@ void Application::buildEditorUi() {
                 ImGui::DragFloat4("Rotation quaternion", editedBoneRotation_.data(), 0.01F, -1.0F, 1.0F);
                 ImGui::Checkbox("Bone physics", &editedBonePhysics_);
                 if (ImGui::Button("Register bone")) {
-                    core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
-                    before.modelName = model->displayName;
+                    const core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
                     auto document = core::toMotionDocument(before);
                     const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
                     const auto& name = bones[static_cast<std::size_t>(selectedBone_)].name;
@@ -2414,7 +2497,7 @@ void Application::buildEditorUi() {
                     document.bones.push_back(
                         {name, frame, editedBoneTranslation_, editedBoneRotation_, {}, editedBonePhysics_});
                     core::MotionEditor::normalize(document);
-                    execute(std::move(before), std::move(document), false, "Register bone key");
+                    execute(before, std::move(document), false, "Register bone key");
                 }
             }
             const auto& morphs = model->model->morphs;
@@ -2428,8 +2511,7 @@ void Application::buildEditorUi() {
                 }
                 ImGui::SliderFloat("Weight", &editedMorphWeight_, 0.0F, 1.0F);
                 if (ImGui::Button("Register morph")) {
-                    core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
-                    before.modelName = model->displayName;
+                    const core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
                     auto document = core::toMotionDocument(before);
                     const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
                     const auto& name = morphs[static_cast<std::size_t>(selectedMorph_)].name;
@@ -2437,7 +2519,7 @@ void Application::buildEditorUi() {
                                   [&](const auto& key) { return key.frame == frame && key.name == name; });
                     document.morphs.push_back({name, frame, editedMorphWeight_});
                     core::MotionEditor::normalize(document);
-                    execute(std::move(before), std::move(document), false, "Register morph key");
+                    execute(before, std::move(document), false, "Register morph key");
                 }
             }
         }
@@ -2499,14 +2581,8 @@ void Application::buildEditorUi() {
 
     if (debugWorkspace && ImGui::Begin(workspaceWindowName("Project tools", "legacy-project").c_str())) {
         ImGui::InputText("Project file", projectDestination_.data(), projectDestination_.size());
-        if (ImGui::Button("Save Dayo 1.30 project")) {
-            try {
-                core::saveProject(projectDestination_.data(), currentProject());
-                projectSaveStatus_ = "Project saved";
-            } catch (const std::exception& error) {
-                projectSaveStatus_ = error.what();
-            }
-        }
+        if (ImGui::Button("Save Dayo 1.30 project"))
+            saveProjectAsNow();
         if (!projectSaveStatus_.empty())
             ImGui::TextWrapped("%s", projectSaveStatus_.c_str());
         ImGui::Separator();
@@ -2590,14 +2666,13 @@ void Application::buildEditorUi() {
                                                   &error)) {
                         lastAsset_ = "External parent: " + error;
                     } else {
-                        core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
-                        before.modelName = model->displayName;
+                        const core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
                         auto document = core::toMotionDocument(before);
                         const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
                         document.externalParents.push_back(
                             {frame, static_cast<std::int32_t>(parent.id), parentBone.data(), childBone.data()});
                         core::MotionEditor::normalize(document);
-                        execute(std::move(before), std::move(document), false, "Register external parent key");
+                        execute(before, std::move(document), false, "Register external parent key");
                     }
                 }
                 ImGui::TreePop();
@@ -2880,7 +2955,6 @@ void Application::buildVideoExportUi() {
                 if (ImGui::Button("Cancel video export")) {
                     videoExportJob_.cancel();
                     videoExportFramesFinished_ = true;
-                    videoExportUiActive_ = false;
                     videoExportStatus_ = "Cancelled";
                 }
             } else {
@@ -2912,6 +2986,12 @@ void Application::buildVideoExportUi() {
                         std::optional<std::filesystem::path> audioSource;
                         if (request.includeAudio)
                             audioSource = audioSource_;
+                        videoExportRestoreFrame_ = animationFrame_;
+                        videoExportRestoreMediaSeconds_ = mediaSeconds_;
+                        videoExportRestorePlaying_ = playing_;
+                        videoExportRestoreManualCamera_ = manualCamera_;
+                        videoExportRestoreAudioActive_ = audioPlayer_.active();
+                        videoExportRestorePending_ = true;
                         videoSourceFps_ = sceneTimelineFps(scene_);
                         request.audioStartSeconds = static_cast<double>(videoFromFrame_) / videoSourceFps_;
                         videoOutputFrameCount_ =
@@ -2925,6 +3005,15 @@ void Application::buildVideoExportUi() {
                         videoExportStatus_.clear();
                         audioPlayer_.stop();
                     } catch (const std::exception& exception) {
+                        if (videoExportRestorePending_) {
+                            try {
+                                restoreVideoExportState();
+                            } catch (const std::exception& restoreException) {
+                                videoExportStatus_ = std::string("Export error: ") + exception.what() +
+                                                     "; restore error: " + restoreException.what();
+                                return;
+                            }
+                        }
                         videoExportStatus_ = std::string("Export error: ") + exception.what();
                     }
                 }
