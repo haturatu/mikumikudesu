@@ -46,6 +46,11 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void buildSaveAsDialog();
     void buildStatusBar();
     void handleEditorShortcuts();
+    void saveProjectNow();
+    void startImageSequenceExport();
+    void advanceImageSequenceExport();
+    void finishImageSequenceExport(std::string status);
+    void restoreImageSequenceState();
     void setWorkspace(ui::Workspace workspace);
     void setAudioExportDestinationForSource(const std::filesystem::path& source);
     void buildAudioExportUi();
@@ -139,6 +144,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::vector<core::MotionKeyRef> selectedKeys_;
     float timelineZoom_{1.0F};
     float timelinePan_{};
+    float timelineScrollY_{};
     bool editGlobalMotion_{};
     bool recordCamera_{};
     int selectedBone_{};
@@ -157,9 +163,32 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::array<char, 1024> projectDestination_{'p', 'r', 'o', 'j', 'e', 'c', 't', '.', 'd', 'a', 'y', 'o', '\0'};
     std::string projectSaveStatus_;
     std::array<char, 1024> sequenceOutputDirectory_{'o', 'u', 't', 'p', 'u', 't', '\0'};
-    float pendingCameraDragX_{};
-    float pendingCameraDragY_{};
-    float pendingCameraZoom_{};
+    struct TimelineTrack {
+        std::string name;
+        std::vector<std::uint32_t> frames;
+    };
+    struct TimelineTrackCache {
+        core::ModelId modelId{};
+        const core::VmdMotion* motion{};
+        bool globalMotion{};
+        std::vector<TimelineTrack> bones;
+        std::vector<TimelineTrack> morphs;
+    };
+    TimelineTrackCache timelineTrackCache_;
+    bool imageSequenceExportRunning_{};
+    bool imageSequenceCancelRequested_{};
+    bool imageSequenceFramesFinished_{};
+    std::optional<core::OutputQueue> imageSequenceOutput_;
+    std::uint32_t imageSequenceNextFrame_{};
+    std::uint32_t imageSequenceSampleIndex_{};
+    std::uint32_t imageSequenceSampleCount_{1};
+    float imageSequencePreviousSampleFrame_{};
+    float imageSequenceRestoreFrame_{};
+    double imageSequenceRestoreMediaSeconds_{};
+    bool imageSequenceRestorePlaying_{};
+    bool imageSequenceRestoreManualCamera_{};
+    core::ImageRgba8 imageSequenceImage_;
+    std::vector<std::uint64_t> imageSequenceSum_;
 #endif
 };
 

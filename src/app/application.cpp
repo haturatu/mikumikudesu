@@ -29,9 +29,9 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
-#include <map>
 #include <stdexcept>
 #include <thread>
+#include <unordered_map>
 
 namespace dayo::app {
 namespace {
@@ -105,6 +105,13 @@ float videoSourceFrame(std::uint64_t outputFrame, std::uint64_t firstFrame, std:
 Application::Application(Options options) : options_(std::move(options)) {}
 
 void Application::resetProjectRuntimeState() {
+#if DAYO_HAS_IMGUI
+    if (imageSequenceExportRunning_)
+        finishImageSequenceExport("Sequence export cancelled by project reload");
+    else
+        imageSequenceOutput_.reset();
+    timelineTrackCache_ = {};
+#endif
     videoExportJob_.cancel();
     videoExportUiActive_ = false;
     videoExportFramesFinished_ = false;
@@ -194,24 +201,23 @@ int Application::run() {
                 break;
             case platform::WindowEvent::Type::cameraDragged:
 #if DAYO_HAS_IMGUI
-                pendingCameraDragX_ += event.x;
-                pendingCameraDragY_ += event.y;
+                // Camera input is consumed from ImGui while drawing the viewport so
+                // it cannot leak from another docked panel or use stale hover state.
+            case platform::WindowEvent::Type::cameraZoomed:
+                // See cameraDragged: read the current ImGui mouse state in the viewport.
+                break;
 #else
                 cameraYaw_ += event.x * 0.008F;
                 cameraPitch_ = std::clamp(cameraPitch_ + event.y * 0.008F, -1.5F, 1.5F);
                 manualCamera_ = true;
                 refreshPreviewScene();
-#endif
                 break;
             case platform::WindowEvent::Type::cameraZoomed:
-#if DAYO_HAS_IMGUI
-                pendingCameraZoom_ += event.x;
-#else
                 cameraDistance_ = std::clamp(cameraDistance_ * std::exp(-event.x * 0.12F), 0.4F, 30.0F);
                 manualCamera_ = true;
                 refreshPreviewScene();
-#endif
                 break;
+#endif
             }
         }
         if (!running)
@@ -224,7 +230,13 @@ int Application::run() {
         const float deltaSeconds = std::chrono::duration<float>(tick - previousTick).count();
         previousTick = tick;
         frameProfiler_.beginFrame();
+#if DAYO_HAS_IMGUI
+        if (imageSequenceExportRunning_) {
+            advanceImageSequenceExport();
+        } else if (videoExportUiActive_) {
+#else
         if (videoExportUiActive_) {
+#endif
             if (videoExportJob_.running() && !videoExportFramesFinished_) {
                 const auto& exportOptions = *options_.videoExport;
                 if (videoNextFrame_ < videoOutputFrameCount_) {
@@ -1174,6 +1186,7 @@ void Application::buildUi() {
     uiState_.viewportHovered = false;
     uiState_.timelineFocused = false;
     buildMainMenuBar();
+    buildStatusBar();
     buildDockLayout();
     auto* model = selectedModel();
     const auto* motion =
@@ -1181,11 +1194,12 @@ void Application::buildUi() {
     auto* media = scene_.media();
     if (ImGui::Begin("Viewport##viewport", nullptr, ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar)) {
         uiState_.viewportHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
-        if (uiState_.viewportHovered &&
-            (pendingCameraDragX_ != 0.0F || pendingCameraDragY_ != 0.0F || pendingCameraZoom_ != 0.0F)) {
-            cameraYaw_ += pendingCameraDragX_ * 0.008F;
-            cameraPitch_ = std::clamp(cameraPitch_ + pendingCameraDragY_ * 0.008F, -1.5F, 1.5F);
-            cameraDistance_ = std::clamp(cameraDistance_ * std::exp(-pendingCameraZoom_ * 0.12F), 0.4F, 30.0F);
+        const auto& io = ImGui::GetIO();
+        const bool viewportInput = uiState_.viewportHovered && !ImGui::IsAnyItemActive();
+        if (viewportInput && (ImGui::IsMouseDragging(ImGuiMouseButton_Right) || io.MouseWheel != 0.0F)) {
+            cameraYaw_ += io.MouseDelta.x * 0.008F;
+            cameraPitch_ = std::clamp(cameraPitch_ + io.MouseDelta.y * 0.008F, -1.5F, 1.5F);
+            cameraDistance_ = std::clamp(cameraDistance_ * std::exp(-io.MouseWheel * 0.12F), 0.4F, 30.0F);
             manualCamera_ = true;
             refreshPreviewScene();
         }
@@ -1316,23 +1330,22 @@ void Application::buildUi() {
     if (uiState_.physicsVisible)
         ImGui::End();
     buildInspectorPanel();
-    buildStatusBar();
     buildEditorUi();
     handleEditorShortcuts();
     buildAudioExportUi();
     buildVideoExportUi();
     buildImageSequenceExportUi();
     buildSaveAsDialog();
-    pendingCameraDragX_ = 0.0F;
-    pendingCameraDragY_ = 0.0F;
-    pendingCameraZoom_ = 0.0F;
 #endif
 }
 
 void Application::handleEditorShortcuts() {
 #if DAYO_HAS_IMGUI
+    const auto& io = ImGui::GetIO();
+    if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false))
+        saveProjectNow();
     const bool editorShortcutScope = uiState_.viewportHovered || uiState_.timelineFocused;
-    if (!editorShortcutScope || ImGui::GetIO().WantTextInput)
+    if (!editorShortcutScope || io.WantTextInput)
         return;
     if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
         if (recordCamera_) {
@@ -1370,7 +1383,6 @@ void Application::handleEditorShortcuts() {
 void Application::setWorkspace(ui::Workspace workspace) {
 #if DAYO_HAS_IMGUI
     uiState_.workspace = workspace;
-    uiState_.layoutDirty = true;
     uiState_.performanceVisible = workspace == ui::Workspace::debug;
     uiState_.fxDebugVisible = workspace == ui::Workspace::debug;
     uiState_.materialDebugVisible = workspace == ui::Workspace::debug;
@@ -1404,14 +1416,8 @@ void Application::buildMainMenuBar() {
     if (!ImGui::BeginMainMenuBar())
         return;
     if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("Save", "Ctrl+S")) {
-            try {
-                core::saveProject(projectDestination_.data(), currentProject());
-                projectSaveStatus_ = "Project saved";
-            } catch (const std::exception& error) {
-                projectSaveStatus_ = error.what();
-            }
-        }
+        if (ImGui::MenuItem("Save", "Ctrl+S"))
+            saveProjectNow();
         if (ImGui::MenuItem("Save As..."))
             uiState_.saveAsOpen = true;
         ImGui::Separator();
@@ -1439,16 +1445,15 @@ void Application::buildMainMenuBar() {
     }
     if (ImGui::BeginMenu("View")) {
         if (ImGui::MenuItem("Scene", nullptr, &uiState_.sceneVisible))
-            uiState_.layoutDirty = true;
+            uiState_.resetLayoutRequested = true;
         if (ImGui::MenuItem("Inspector", nullptr, &uiState_.inspectorVisible))
-            uiState_.layoutDirty = true;
+            uiState_.resetLayoutRequested = true;
         if (ImGui::MenuItem("Timeline", nullptr, &uiState_.timelineVisible))
-            uiState_.layoutDirty = true;
+            uiState_.resetLayoutRequested = true;
         ImGui::MenuItem("Status bar", nullptr, &uiState_.statusBarVisible);
         ImGui::Separator();
         if (ImGui::MenuItem("Reset Layout")) {
-            uiState_.layoutDirty = true;
-            ++uiState_.layoutVersion;
+            uiState_.resetLayoutRequested = true;
         }
         ImGui::EndMenu();
     }
@@ -1496,10 +1501,27 @@ void Application::buildMainMenuBar() {
 
 void Application::buildDockLayout() {
 #if DAYO_HAS_IMGUI
-    const auto* viewport = ImGui::GetMainViewport();
-    const ImGuiID dockspaceId = ImGui::GetID("DayoEditorDockSpace");
+    auto* viewport = ImGui::GetMainViewport();
+    const char* workspaceId = [&] {
+        switch (uiState_.workspace) {
+        case ui::Workspace::layout:
+            return "Layout";
+        case ui::Workspace::animation:
+            return "Animation";
+        case ui::Workspace::camera:
+            return "Camera";
+        case ui::Workspace::render:
+            return "Render";
+        case ui::Workspace::debug:
+            return "Debug";
+        }
+        return "Layout";
+    }();
+    const ImGuiID dockspaceId = ImGui::GetID((std::string("DayoEditorDockSpace.") + workspaceId).c_str());
     ImGui::DockSpaceOverViewport(dockspaceId, viewport, ImGuiDockNodeFlags_PassthruCentralNode);
-    if (!uiState_.layoutDirty)
+    const auto* node = ImGui::DockBuilderGetNode(dockspaceId);
+    const bool hasLayout = node != nullptr && (node->IsSplitNode() || node->Windows.Size > 0);
+    if (hasLayout && !uiState_.resetLayoutRequested)
         return;
 
     ImGui::DockBuilderRemoveNode(dockspaceId);
@@ -1542,7 +1564,7 @@ void Application::buildDockLayout() {
     if (uiState_.workspace == ui::Workspace::camera || uiState_.workspace == ui::Workspace::debug)
         ImGui::DockBuilderDockWindow("Camera / Light / Self Shadow##legacy-camera", auxiliaryNode);
     ImGui::DockBuilderFinish(dockspaceId);
-    uiState_.layoutDirty = false;
+    uiState_.resetLayoutRequested = false;
 #endif
 }
 
@@ -1614,7 +1636,8 @@ void Application::buildInspectorPanel() {
             ImGui::DragFloat4("Rotation", editedBoneRotation_.data(), 0.01F, -1.0F, 1.0F);
             ImGui::Checkbox("Physics", &editedBonePhysics_);
             if (ImGui::Button("Register Bone Key")) {
-                const auto before = model->motion ? *model->motion : core::VmdMotion{};
+                auto before = model->motion ? *model->motion : core::VmdMotion{};
+                before.modelName = model->displayName;
                 auto document = core::toMotionDocument(before);
                 const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
                 const auto& name = bones[static_cast<std::size_t>(selectedBone_)].name;
@@ -1688,7 +1711,7 @@ void Application::buildInspectorPanel() {
                                          .string()
                                          .c_str()
                                    : "none");
-            if (ImGui::Checkbox("Outline enabled", &previewOutlineEnabled_))
+            if (ImGui::Checkbox("Enable PMX outlines (preview)", &previewOutlineEnabled_))
                 refreshPreviewScene();
         }
     }
@@ -1713,13 +1736,9 @@ void Application::buildSaveAsDialog() {
     ImGui::TextUnformatted("Choose a Dayo project destination.");
     ImGui::InputText("Path", projectDestination_.data(), projectDestination_.size());
     if (ImGui::Button("Save")) {
-        try {
-            core::saveProject(projectDestination_.data(), currentProject());
-            projectSaveStatus_ = "Project saved";
+        saveProjectNow();
+        if (projectSaveStatus_ == "Project saved")
             ImGui::CloseCurrentPopup();
-        } catch (const std::exception& error) {
-            projectSaveStatus_ = error.what();
-        }
     }
     ImGui::SameLine();
     if (ImGui::Button("Cancel"))
@@ -1727,6 +1746,150 @@ void Application::buildSaveAsDialog() {
     if (!projectSaveStatus_.empty())
         ImGui::TextWrapped("%s", projectSaveStatus_.c_str());
     ImGui::EndPopup();
+#endif
+}
+
+void Application::saveProjectNow() {
+#if DAYO_HAS_IMGUI
+    try {
+        core::saveProject(projectDestination_.data(), currentProject());
+        projectSaveStatus_ = "Project saved";
+    } catch (const std::exception& error) {
+        projectSaveStatus_ = error.what();
+    }
+#endif
+}
+
+void Application::startImageSequenceExport() {
+#if DAYO_HAS_IMGUI
+    try {
+        if (device_ == nullptr)
+            throw std::logic_error("image sequence export has no graphics device");
+        if (sequenceOutput_.lastFrame < sequenceOutput_.firstFrame)
+            throw std::invalid_argument("last frame precedes first frame");
+        sequenceOutput_.directory = sequenceOutputDirectory_.data();
+        imageSequenceRestoreFrame_ = scene_.timeline().frame;
+        imageSequenceRestoreMediaSeconds_ = mediaSeconds_;
+        imageSequenceRestorePlaying_ = playing_;
+        imageSequenceRestoreManualCamera_ = manualCamera_;
+        imageSequenceNextFrame_ = sequenceOutput_.firstFrame;
+        imageSequenceSampleIndex_ = 0;
+        imageSequenceSampleCount_ = std::max(sequenceOutput_.samples, std::uint32_t{1});
+        imageSequencePreviousSampleFrame_ = static_cast<float>(sequenceOutput_.firstFrame);
+        imageSequenceFramesFinished_ = false;
+        imageSequenceCancelRequested_ = false;
+        imageSequenceImage_ = {};
+        imageSequenceSum_.clear();
+        imageSequenceOutput_.emplace(sequenceOutput_);
+        imageSequenceExportRunning_ = true;
+        playing_ = false;
+        if (audioPlayer_.active())
+            audioPlayer_.setPaused(true);
+        sequenceOutputStatus_ = "Rendering image sequence...";
+    } catch (const std::exception& error) {
+        imageSequenceOutput_.reset();
+        imageSequenceExportRunning_ = false;
+        sequenceOutputStatus_ = error.what();
+    }
+#endif
+}
+
+void Application::restoreImageSequenceState() {
+#if DAYO_HAS_IMGUI
+    scene_.setFrame(imageSequenceRestoreFrame_);
+    animationFrame_ = imageSequenceRestoreFrame_;
+    mediaSeconds_ = imageSequenceRestoreMediaSeconds_;
+    playing_ = imageSequenceRestorePlaying_;
+    manualCamera_ = imageSequenceRestoreManualCamera_;
+    if (audioPlayer_.active())
+        audioPlayer_.setPaused(!playing_);
+    refreshAnimatedMesh(false);
+    if (videoMode_) {
+        uploadedVideoFrame_ = -1;
+        refreshVideoFrame();
+    }
+    refreshPreviewScene();
+#endif
+}
+
+void Application::finishImageSequenceExport(std::string status) {
+#if DAYO_HAS_IMGUI
+    try {
+        if (imageSequenceOutput_) {
+            imageSequenceOutput_->close();
+            imageSequenceOutput_->rethrowIfFailed();
+        }
+        sequenceOutputStatus_ = std::move(status);
+    } catch (const std::exception& error) {
+        sequenceOutputStatus_ = error.what();
+    }
+    imageSequenceOutput_.reset();
+    imageSequenceExportRunning_ = false;
+    imageSequenceCancelRequested_ = false;
+    imageSequenceFramesFinished_ = false;
+    imageSequenceImage_ = {};
+    imageSequenceSum_.clear();
+    restoreImageSequenceState();
+#else
+    static_cast<void>(status);
+#endif
+}
+
+void Application::advanceImageSequenceExport() {
+#if DAYO_HAS_IMGUI
+    if (!imageSequenceExportRunning_)
+        return;
+    if (imageSequenceCancelRequested_) {
+        finishImageSequenceExport("Sequence export cancelled");
+        return;
+    }
+    if (imageSequenceFramesFinished_) {
+        finishImageSequenceExport("Sequence rendered");
+        return;
+    }
+    try {
+        const auto frame = imageSequenceNextFrame_;
+        const float offset = sequenceOutput_.motionBlur ? static_cast<float>(imageSequenceSampleIndex_) /
+                                                              static_cast<float>(imageSequenceSampleCount_)
+                                                        : 0.0F;
+        const float sampleFrame = static_cast<float>(frame) + offset;
+        const float physicsDelta = std::max(sampleFrame - imageSequencePreviousSampleFrame_, 0.0F) / 30.0F;
+        scene_.setFrame(sampleFrame);
+        animationFrame_ = scene_.timeline().frame;
+        refreshAnimatedMesh(false, physicsDelta);
+        imageSequencePreviousSampleFrame_ = sampleFrame;
+        refreshPreviewScene();
+
+        auto rendered = device_->renderToImage({videoWidth_, videoHeight_});
+        if (imageSequenceSampleIndex_ == 0U) {
+            imageSequenceImage_ = std::move(rendered);
+            imageSequenceSum_.assign(imageSequenceImage_.pixels.size(), 0U);
+            for (std::size_t index = 0; index < imageSequenceImage_.pixels.size(); ++index)
+                imageSequenceSum_[index] += imageSequenceImage_.pixels[index];
+        } else if (rendered.width != imageSequenceImage_.width || rendered.height != imageSequenceImage_.height ||
+                   rendered.pixels.size() != imageSequenceImage_.pixels.size()) {
+            throw std::runtime_error("image sequence samples have inconsistent dimensions");
+        } else {
+            for (std::size_t index = 0; index < imageSequenceImage_.pixels.size(); ++index)
+                imageSequenceSum_[index] += rendered.pixels[index];
+        }
+        ++imageSequenceSampleIndex_;
+        if (imageSequenceSampleIndex_ < imageSequenceSampleCount_)
+            return;
+
+        for (std::size_t index = 0; index < imageSequenceImage_.pixels.size(); ++index)
+            imageSequenceImage_.pixels[index] =
+                static_cast<std::uint8_t>(imageSequenceSum_[index] / imageSequenceSampleCount_);
+        imageSequenceOutput_->push(frame, std::move(imageSequenceImage_));
+        imageSequenceSum_.clear();
+        imageSequenceSampleIndex_ = 0;
+        if (frame == sequenceOutput_.lastFrame)
+            imageSequenceFramesFinished_ = true;
+        else
+            ++imageSequenceNextFrame_;
+    } catch (const std::exception& error) {
+        finishImageSequenceExport(error.what());
+    }
 #endif
 }
 
@@ -1738,71 +1901,43 @@ void Application::buildImageSequenceExportUi() {
     }
     if (!ImGui::BeginPopupModal("Export Image Sequence", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
         return;
-    ImGui::InputText("Directory", sequenceOutputDirectory_.data(), sequenceOutputDirectory_.size());
-    int first = static_cast<int>(sequenceOutput_.firstFrame);
-    int last = static_cast<int>(sequenceOutput_.lastFrame);
-    int samples = static_cast<int>(sequenceOutput_.samples);
-    if (ImGui::InputInt("First frame", &first))
-        sequenceOutput_.firstFrame = static_cast<std::uint32_t>(std::max(first, 0));
-    if (ImGui::InputInt("Last frame", &last))
-        sequenceOutput_.lastFrame = static_cast<std::uint32_t>(std::max(last, 0));
-    if (ImGui::InputInt("Samples", &samples))
-        sequenceOutput_.samples = static_cast<std::uint32_t>(std::clamp(samples, 1, 4096));
-    ImGui::Checkbox("Motion blur", &sequenceOutput_.motionBlur);
-    int format = static_cast<int>(sequenceOutput_.format);
-    if (ImGui::Combo("Format", &format, "PPM\0PNG\0EXR\0"))
-        sequenceOutput_.format = static_cast<core::OutputFormat>(format);
-    if (ImGui::Button("Render sequence")) {
-        const auto restoreFrame = scene_.timeline().frame;
-        try {
-            if (sequenceOutput_.lastFrame < sequenceOutput_.firstFrame)
-                throw std::invalid_argument("last frame precedes first frame");
-            sequenceOutput_.directory = sequenceOutputDirectory_.data();
-            const auto sampleCount = std::max(sequenceOutput_.samples, std::uint32_t{1});
-            core::OutputQueue output(sequenceOutput_);
-            float previousSampleFrame = static_cast<float>(sequenceOutput_.firstFrame);
-            for (std::uint32_t frame = sequenceOutput_.firstFrame; frame <= sequenceOutput_.lastFrame; ++frame) {
-                core::ImageRgba8 image;
-                std::vector<std::uint64_t> sum;
-                for (std::uint32_t sample = 0; sample < sampleCount; ++sample) {
-                    const float offset = sequenceOutput_.motionBlur
-                                             ? static_cast<float>(sample) / static_cast<float>(sampleCount)
-                                             : 0.0F;
-                    const float sampleFrame = static_cast<float>(frame) + offset;
-                    const float physicsDelta = std::max(sampleFrame - previousSampleFrame, 0.0F) / 30.0F;
-                    scene_.setFrame(sampleFrame);
-                    animationFrame_ = scene_.timeline().frame;
-                    refreshAnimatedMesh(false, physicsDelta);
-                    previousSampleFrame = sampleFrame;
-                    refreshPreviewScene();
-                    auto rendered = device_->renderToImage({videoWidth_, videoHeight_});
-                    if (sum.empty()) {
-                        image = rendered;
-                        sum.resize(rendered.pixels.size());
-                    }
-                    for (std::size_t i = 0; i < rendered.pixels.size(); ++i)
-                        sum[i] += rendered.pixels[i];
-                }
-                for (std::size_t i = 0; i < image.pixels.size(); ++i)
-                    image.pixels[i] = static_cast<std::uint8_t>(sum[i] / sampleCount);
-                output.push(frame, std::move(image));
-                if (frame == std::numeric_limits<std::uint32_t>::max())
-                    break;
-            }
-            output.close();
-            output.rethrowIfFailed();
-            scene_.setFrame(restoreFrame);
-            animationFrame_ = restoreFrame;
-            sequenceOutputStatus_ = "Sequence rendered";
-        } catch (const std::exception& error) {
-            scene_.setFrame(restoreFrame);
-            animationFrame_ = restoreFrame;
-            sequenceOutputStatus_ = error.what();
-        }
+    if (imageSequenceExportRunning_) {
+        const auto total = static_cast<std::uint64_t>(sequenceOutput_.lastFrame) -
+                           static_cast<std::uint64_t>(sequenceOutput_.firstFrame) + 1U;
+        const auto completed = imageSequenceFramesFinished_
+                                   ? total
+                                   : static_cast<std::uint64_t>(imageSequenceNextFrame_) -
+                                         static_cast<std::uint64_t>(sequenceOutput_.firstFrame);
+        ImGui::Text("Rendering %u / %u",
+                    imageSequenceFramesFinished_ ? sequenceOutput_.lastFrame : imageSequenceNextFrame_,
+                    sequenceOutput_.lastFrame);
+        ImGui::ProgressBar(total == 0U ? 0.0F : static_cast<float>(completed) / static_cast<float>(total),
+                           {-1.0F, 0.0F});
+        ImGui::Text("Current sample: %u / %u", imageSequenceSampleIndex_ + 1U, imageSequenceSampleCount_);
+        if (ImGui::Button("Cancel"))
+            imageSequenceCancelRequested_ = true;
+    } else {
+        ImGui::InputText("Directory", sequenceOutputDirectory_.data(), sequenceOutputDirectory_.size());
+        int first = static_cast<int>(sequenceOutput_.firstFrame);
+        int last = static_cast<int>(sequenceOutput_.lastFrame);
+        int samples = static_cast<int>(sequenceOutput_.samples);
+        if (ImGui::InputInt("First frame", &first))
+            sequenceOutput_.firstFrame = static_cast<std::uint32_t>(std::max(first, 0));
+        if (ImGui::InputInt("Last frame", &last))
+            sequenceOutput_.lastFrame = static_cast<std::uint32_t>(std::max(last, 0));
+        if (ImGui::InputInt("Samples", &samples))
+            sequenceOutput_.samples = static_cast<std::uint32_t>(std::clamp(samples, 1, 4096));
+        ImGui::Checkbox("Motion blur", &sequenceOutput_.motionBlur);
+        int format = static_cast<int>(sequenceOutput_.format);
+        if (ImGui::Combo("Format", &format, "PPM\0PNG\0EXR\0"))
+            sequenceOutput_.format = static_cast<core::OutputFormat>(format);
+        if (ImGui::Button("Render sequence"))
+            startImageSequenceExport();
     }
-    ImGui::TextWrapped("%s", sequenceOutputStatus_.c_str());
+    if (!sequenceOutputStatus_.empty())
+        ImGui::TextWrapped("%s", sequenceOutputStatus_.c_str());
     ImGui::SameLine();
-    if (ImGui::Button("Close"))
+    if (!imageSequenceExportRunning_ && ImGui::Button("Close"))
         ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
 #endif
@@ -1812,14 +1947,11 @@ void Application::buildStatusBar() {
 #if DAYO_HAS_IMGUI
     if (!uiState_.statusBarVisible)
         return;
-    const auto* viewport = ImGui::GetMainViewport();
+    auto* viewport = ImGui::GetMainViewport();
     const float height = ImGui::GetFrameHeightWithSpacing();
-    ImGui::SetNextWindowPos({viewport->WorkPos.x, viewport->WorkPos.y + viewport->WorkSize.y - height});
-    ImGui::SetNextWindowSize({viewport->WorkSize.x, height});
     constexpr auto flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDocking |
-                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoNav |
-                           ImGuiWindowFlags_NoScrollbar;
-    if (ImGui::Begin("##status-bar", nullptr, flags)) {
+                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollbar;
+    if (ImGui::BeginViewportSideBar("##status-bar", viewport, ImGuiDir_Down, height, flags)) {
         ImGui::TextUnformatted("Ready");
         ImGui::SameLine();
         if (const auto* model = selectedModel()) {
@@ -1842,6 +1974,29 @@ void Application::buildEditorUi() {
     const bool global = editGlobalMotion_;
     const auto* active = global ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
     const auto target = model != nullptr ? model->id : core::ModelId{};
+    const auto cacheModelId = global ? core::ModelId{} : target;
+    if (timelineTrackCache_.modelId != cacheModelId || timelineTrackCache_.motion != active ||
+        timelineTrackCache_.globalMotion != global) {
+        timelineTrackCache_ = {};
+        timelineTrackCache_.modelId = cacheModelId;
+        timelineTrackCache_.motion = active;
+        timelineTrackCache_.globalMotion = global;
+        timelineScrollY_ = 0.0F;
+        if (active != nullptr) {
+            const auto groupTracks = [](const auto& keys, std::vector<TimelineTrack>& tracks) {
+                std::unordered_map<std::string, std::size_t> indices;
+                indices.reserve(keys.size());
+                for (const auto& key : keys) {
+                    const auto [iterator, inserted] = indices.emplace(key.name, tracks.size());
+                    if (inserted)
+                        tracks.push_back({key.name, {}});
+                    tracks[iterator->second].frames.push_back(key.frame);
+                }
+            };
+            groupTracks(active->bones, timelineTrackCache_.bones);
+            groupTracks(active->morphs, timelineTrackCache_.morphs);
+        }
+    }
     const auto execute = [&](core::VmdMotion before, core::MotionDocument document, bool globalMotion,
                              std::string label) {
         auto after = core::toVmdMotion(std::move(document), before.modelName);
@@ -1936,8 +2091,7 @@ void Application::buildEditorUi() {
                     row(core::MotionTrack::ik, i, active->ik[i].frame, "IK / visibility");
             }
             ImGui::EndChild();
-            if (ImGui::BeginChild("timeline-canvas", {0.0F, 174.0F}, true,
-                                  ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+            if (ImGui::BeginChild("timeline-canvas", {0.0F, 174.0F}, true, ImGuiWindowFlags_NoScrollWithMouse)) {
                 const auto canvasMin = ImGui::GetWindowPos();
                 const auto canvasSize = ImGui::GetWindowSize();
                 auto* drawList = ImGui::GetWindowDrawList();
@@ -1949,6 +2103,14 @@ void Application::buildEditorUi() {
                 float pixelsPerFrame = (right - left) / duration * timelineZoom_;
                 float maxPan = std::max(0.0F, duration * pixelsPerFrame - (right - left));
                 timelinePan_ = std::clamp(timelinePan_, 0.0F, maxPan);
+                const float rowHeight = 22.0F;
+                const int trackCount =
+                    global ? 2
+                           : 2 + static_cast<int>(timelineTrackCache_.bones.size() + timelineTrackCache_.morphs.size());
+                const float contentHeight = 16.0F + static_cast<float>(trackCount) * rowHeight;
+                const float visibleHeight = std::max(0.0F, bottom - top);
+                const float maxScrollY = std::max(0.0F, contentHeight - visibleHeight);
+                timelineScrollY_ = std::clamp(timelineScrollY_, 0.0F, maxScrollY);
                 const auto frameX = [&](float frame) { return left + frame * pixelsPerFrame - timelinePan_; };
                 drawList->AddText({canvasMin.x + 8.0F, canvasMin.y + 5.0F}, ImGui::GetColorU32(ImGuiCol_Text),
                                   "Tracks");
@@ -1962,45 +2124,54 @@ void Application::buildEditorUi() {
                     drawList->AddText({x + 2.0F, canvasMin.y + 5.0F}, ImGui::GetColorU32(ImGuiCol_TextDisabled),
                                       label.c_str());
                 }
+                const auto trackY = [&](int trackRow) {
+                    return top + 16.0F + static_cast<float>(trackRow) * rowHeight - timelineScrollY_;
+                };
+                const auto trackVisible = [&](int trackRow) {
+                    const float y = trackY(trackRow);
+                    return y >= top - ImGui::GetFontSize() && y <= bottom + ImGui::GetFontSize();
+                };
                 const auto drawDiamond = [&](float frame, int trackRow, ImU32 color) {
                     const float x = frameX(frame);
-                    const float y = top + 16.0F + static_cast<float>(trackRow) * 22.0F;
-                    if (x < left - 8.0F || x > right + 8.0F || y > bottom)
+                    const float y = trackY(trackRow);
+                    if (x < left - 8.0F || x > right + 8.0F || y < top - 8.0F || y > bottom + 8.0F)
                         return;
                     drawList->AddQuadFilled({x, y - 5.0F}, {x + 5.0F, y}, {x, y + 5.0F}, {x - 5.0F, y}, color);
                 };
                 const auto drawTrack = [&](const char* name, int trackRow) {
-                    const float y = top + 16.0F + static_cast<float>(trackRow) * 22.0F;
-                    if (y > bottom)
+                    if (!trackVisible(trackRow))
                         return;
+                    const float y = trackY(trackRow);
                     drawList->AddText({canvasMin.x + 8.0F, y - ImGui::GetFontSize() * 0.5F},
                                       ImGui::GetColorU32(ImGuiCol_Text), name);
                 };
                 drawTrack("Camera", 0);
                 drawTrack("Light", 1);
                 if (global) {
-                    for (const auto& key : active->cameras)
-                        drawDiamond(static_cast<float>(key.frame), 0, ImGui::GetColorU32(ImGuiCol_CheckMark));
-                    for (const auto& key : active->lights)
-                        drawDiamond(static_cast<float>(key.frame), 1, ImGui::GetColorU32(ImGuiCol_CheckMark));
+                    if (trackVisible(0))
+                        for (const auto& key : active->cameras)
+                            drawDiamond(static_cast<float>(key.frame), 0, ImGui::GetColorU32(ImGuiCol_CheckMark));
+                    if (trackVisible(1))
+                        for (const auto& key : active->lights)
+                            drawDiamond(static_cast<float>(key.frame), 1, ImGui::GetColorU32(ImGuiCol_CheckMark));
                 } else if (model != nullptr) {
-                    std::map<std::string, std::vector<std::uint32_t>> boneTracks;
-                    for (const auto& key : active->bones)
-                        boneTracks[key.name].push_back(key.frame);
-                    std::map<std::string, std::vector<std::uint32_t>> morphTracks;
-                    for (const auto& key : active->morphs)
-                        morphTracks[key.name].push_back(key.frame);
                     int trackRow = 2;
-                    for (const auto& [name, frames] : boneTracks) {
-                        drawTrack(name.c_str(), trackRow);
-                        for (const auto frame : frames)
-                            drawDiamond(static_cast<float>(frame), trackRow, ImGui::GetColorU32(ImGuiCol_SliderGrab));
+                    for (const auto& track : timelineTrackCache_.bones) {
+                        if (trackVisible(trackRow)) {
+                            drawTrack(track.name.c_str(), trackRow);
+                            for (const auto frame : track.frames)
+                                drawDiamond(static_cast<float>(frame), trackRow,
+                                            ImGui::GetColorU32(ImGuiCol_SliderGrab));
+                        }
                         ++trackRow;
                     }
-                    for (const auto& [name, frames] : morphTracks) {
-                        drawTrack(name.c_str(), trackRow);
-                        for (const auto frame : frames)
-                            drawDiamond(static_cast<float>(frame), trackRow, ImGui::GetColorU32(ImGuiCol_PlotLines));
+                    for (const auto& track : timelineTrackCache_.morphs) {
+                        if (trackVisible(trackRow)) {
+                            drawTrack(track.name.c_str(), trackRow);
+                            for (const auto frame : track.frames)
+                                drawDiamond(static_cast<float>(frame), trackRow,
+                                            ImGui::GetColorU32(ImGuiCol_PlotLines));
+                        }
                         ++trackRow;
                     }
                 }
@@ -2013,13 +2184,18 @@ void Application::buildEditorUi() {
                                        ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
                 if (ImGui::IsItemHovered()) {
                     if (ImGui::GetIO().MouseWheel != 0.0F) {
-                        const float frameUnderCursor =
-                            (ImGui::GetIO().MousePos.x - left + timelinePan_) / pixelsPerFrame;
-                        timelineZoom_ = std::clamp(timelineZoom_ + ImGui::GetIO().MouseWheel * 0.1F, 0.5F, 8.0F);
-                        pixelsPerFrame = (right - left) / duration * timelineZoom_;
-                        maxPan = std::max(0.0F, duration * pixelsPerFrame - (right - left));
-                        timelinePan_ = std::clamp(
-                            frameUnderCursor * pixelsPerFrame - (ImGui::GetIO().MousePos.x - left), 0.0F, maxPan);
+                        if (ImGui::GetIO().KeyCtrl) {
+                            const float frameUnderCursor =
+                                (ImGui::GetIO().MousePos.x - left + timelinePan_) / pixelsPerFrame;
+                            timelineZoom_ = std::clamp(timelineZoom_ + ImGui::GetIO().MouseWheel * 0.1F, 0.5F, 8.0F);
+                            pixelsPerFrame = (right - left) / duration * timelineZoom_;
+                            maxPan = std::max(0.0F, duration * pixelsPerFrame - (right - left));
+                            timelinePan_ = std::clamp(
+                                frameUnderCursor * pixelsPerFrame - (ImGui::GetIO().MousePos.x - left), 0.0F, maxPan);
+                        } else {
+                            timelineScrollY_ =
+                                std::clamp(timelineScrollY_ - ImGui::GetIO().MouseWheel * rowHeight, 0.0F, maxScrollY);
+                        }
                     }
                     if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
                         timelinePan_ = std::clamp(timelinePan_ - ImGui::GetIO().MouseDelta.x, 0.0F, maxPan);

@@ -21,9 +21,8 @@ struct UiState {
     bool videoExportOpen{};
     bool imageSequenceExportOpen{};
     bool saveAsOpen{};
-    bool layoutDirty{true};
+    bool resetLayoutRequested{};
     float userScale{1.0F};
-    int layoutVersion{1};
     std::array<char, 256> sceneFilter{};
     bool viewportHovered{};
     bool timelineFocused{};
