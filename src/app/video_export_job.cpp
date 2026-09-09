@@ -58,7 +58,7 @@ void VideoExportJob::start(core::VideoExportRequest request, std::optional<std::
                         std::unique_lock lock(queueMutex_);
                         queueChanged_.wait(lock, token, [this] { return !frames_.empty() || inputFinished_; });
                         if (token.stop_requested())
-                            return;
+                            throw std::runtime_error("video export cancelled");
                         if (frames_.empty() && inputFinished_)
                             break;
                         frame = std::move(frames_.front());
@@ -85,6 +85,22 @@ void VideoExportJob::start(core::VideoExportRequest request, std::optional<std::
         });
 }
 
+bool VideoExportJob::canAcceptFrame() {
+    std::lock_guard lock(queueMutex_);
+    return running_ && !inputFinished_ && frames_.size() < kFrameQueueCapacity;
+}
+
+bool VideoExportJob::trySubmitFrame(core::ImageRgba8&& frame) {
+    std::lock_guard lock(queueMutex_);
+    if (!running_ || inputFinished_)
+        throw std::runtime_error("video export is not running");
+    if (frames_.size() >= kFrameQueueCapacity)
+        return false;
+    frames_.push_back(std::move(frame));
+    queueChanged_.notify_all();
+    return true;
+}
+
 void VideoExportJob::submitFrame(core::ImageRgba8 frame) {
     std::unique_lock lock(queueMutex_);
     queueChanged_.wait(lock, [this] { return frames_.size() < kFrameQueueCapacity || !running_.load(); });
@@ -102,7 +118,7 @@ void VideoExportJob::finishFrames() {
     queueChanged_.notify_all();
 }
 
-void VideoExportJob::cancel() noexcept {
+void VideoExportJob::requestCancel() noexcept {
     if (worker_.joinable()) {
         worker_.request_stop();
         {
@@ -110,8 +126,13 @@ void VideoExportJob::cancel() noexcept {
             inputFinished_ = true;
         }
         queueChanged_.notify_all();
-        worker_.join();
     }
+}
+
+void VideoExportJob::cancel() noexcept {
+    requestCancel();
+    if (worker_.joinable())
+        worker_.join();
     running_ = false;
 }
 

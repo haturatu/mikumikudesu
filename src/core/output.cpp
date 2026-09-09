@@ -74,8 +74,10 @@ struct OutputWorker {
                 {
                     std::unique_lock lock(mutex);
                     condition.wait(lock, [this] { return done || !queue.empty(); });
-                    if (queue.empty() && done)
+                    if (queue.empty() && done) {
+                        finished = true;
                         return;
+                    }
                     item = std::move(queue.front());
                     queue.pop();
                     condition.notify_all();
@@ -92,6 +94,7 @@ struct OutputWorker {
                 queue.swap(discarded);
             }
             condition.notify_all();
+            finished = true;
         }
     }
     void push(Item item) {
@@ -116,10 +119,12 @@ struct OutputWorker {
     std::queue<Item> queue;
     std::mutex mutex;
     std::condition_variable condition;
-    std::thread thread;
     bool done{};
     std::atomic_uint64_t count{};
+    std::atomic<bool> finished{};
     std::exception_ptr error;
+    // Start only after every field accessed by run() has been initialized.
+    std::thread thread;
 };
 
 OutputQueue::OutputQueue(OutputSettings settings) : worker_(std::make_unique<OutputWorker>(std::move(settings))) {}
@@ -128,6 +133,30 @@ OutputQueue::OutputQueue(OutputQueue&&) noexcept = default;
 OutputQueue& OutputQueue::operator=(OutputQueue&&) noexcept = default;
 void OutputQueue::push(std::uint32_t frame, ImageRgba8 image) {
     worker_->push({frame, std::move(image)});
+}
+bool OutputQueue::canAcceptFrame() const {
+    rethrowIfFailed();
+    std::lock_guard lock(worker_->mutex);
+    return !worker_->done && worker_->queue.size() < worker_->settings.maxPendingFrames;
+}
+bool OutputQueue::tryPush(std::uint32_t frame, ImageRgba8&& image) {
+    rethrowIfFailed();
+    std::lock_guard lock(worker_->mutex);
+    if (worker_->done)
+        throw std::runtime_error("output queue is closed");
+    if (worker_->queue.size() >= worker_->settings.maxPendingFrames)
+        return false;
+    worker_->queue.push({frame, std::move(image)});
+    worker_->condition.notify_one();
+    return true;
+}
+void OutputQueue::requestClose() {
+    std::lock_guard lock(worker_->mutex);
+    worker_->done = true;
+    worker_->condition.notify_all();
+}
+bool OutputQueue::finished() const {
+    return worker_->finished.load();
 }
 void OutputQueue::close() {
     if (worker_)

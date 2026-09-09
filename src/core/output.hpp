@@ -39,6 +39,11 @@ class OutputQueue {
     OutputQueue& operator=(const OutputQueue&) = delete;
 
     void push(std::uint32_t frame, ImageRgba8 image);
+    [[nodiscard]] bool canAcceptFrame() const;
+    // False means full; image remains owned by the caller. Closed/error throws.
+    [[nodiscard]] bool tryPush(std::uint32_t frame, ImageRgba8&& image);
+    void requestClose();
+    [[nodiscard]] bool finished() const;
     void close();
     // Re-throws an encoder/IO failure captured by the worker. It is safe to
     // call after close(), and is intentionally separate so destructors never

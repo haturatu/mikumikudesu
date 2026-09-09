@@ -595,6 +595,14 @@ if(BUILD_TESTING)
   target_link_libraries(dayo_cli_tests PRIVATE dayo_cli)
   add_executable(dayo_core_tests tests/core_tests.cpp)
   target_link_libraries(dayo_core_tests PRIVATE dayo_core)
+  add_executable(dayo_video_export_job_tests tests/video_export_job_tests.cpp src/app/video_export_job.cpp)
+  target_link_libraries(dayo_video_export_job_tests PRIVATE dayo_core)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(dayo_video_export_job_tests PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_video_export_job_tests PRIVATE -Werror)
+    endif()
+  endif()
   add_executable(dayo_upload_ring_tests tests/upload_ring_tests.cpp)
   target_link_libraries(dayo_upload_ring_tests PRIVATE dayo_core)
   add_executable(dayo_preview_tests tests/preview_render_tests.cpp)
@@ -743,6 +751,8 @@ if(BUILD_TESTING)
   endif()
 
   add_test(NAME core COMMAND dayo_core_tests)
+  add_test(NAME video_export_job COMMAND dayo_video_export_job_tests)
+  set_tests_properties(video_export_job PROPERTIES TIMEOUT 20)
   add_test(NAME cli COMMAND dayo_cli_tests)
   add_test(NAME cli_help COMMAND mikumikudesu --help)
   add_test(NAME cli_version COMMAND mikumikudesu --version)
@@ -787,6 +797,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_graphics
     mikumikudesu
     dayo_core_tests
+    dayo_video_export_job_tests
     dayo_cli_tests
     dayo_fx_executor_tests
     dayo_upload_ring_tests
@@ -807,6 +818,9 @@ if(DAYO_ENABLE_SANITIZERS)
   endif()
   if(TARGET dayo_core_tests)
     target_link_options(dayo_core_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+  if(TARGET dayo_video_export_job_tests)
+    target_link_options(dayo_video_export_job_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
   if(TARGET dayo_fx_executor_tests)
     target_link_options(dayo_fx_executor_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
