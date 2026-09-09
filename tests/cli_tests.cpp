@@ -21,7 +21,7 @@ dayo::app::Options parse(std::initializer_list<std::string> arguments) {
     return dayo::app::parseOptions(static_cast<int>(argv.size()), argv.data());
 }
 
-template <typename Function> bool rejects(Function&& function, std::string_view name) {
+template <typename Function> bool rejects(const Function& function, std::string_view name) {
     try {
         function();
     } catch (const std::exception&) {
