@@ -123,7 +123,11 @@ bool probeVaapiEncoder(VideoCodec codec) noexcept {
 } // namespace
 
 struct VideoExporter::Impl {
-    explicit Impl(const VideoExportRequest& request) : request(request) {
+    explicit Impl(const VideoExportRequest& request)
+#if DAYO_HAS_MEDIA
+        : request(request)
+#endif
+    {
 #if DAYO_HAS_MEDIA
         initialize();
 #else
