@@ -24,7 +24,7 @@
 
 namespace dayo::app {
 
-class Application {
+class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
   public:
     explicit Application(Options options);
     int run();
@@ -42,7 +42,10 @@ class Application {
     void buildMainMenuBar();
     void buildDockLayout();
     void buildInspectorPanel();
+    void buildImageSequenceExportUi();
+    void buildSaveAsDialog();
     void buildStatusBar();
+    void handleEditorShortcuts();
     void setWorkspace(ui::Workspace workspace);
     void setAudioExportDestinationForSource(const std::filesystem::path& source);
     void buildAudioExportUi();
@@ -153,6 +156,10 @@ class Application {
     std::string sequenceOutputStatus_;
     std::array<char, 1024> projectDestination_{'p', 'r', 'o', 'j', 'e', 'c', 't', '.', 'd', 'a', 'y', 'o', '\0'};
     std::string projectSaveStatus_;
+    std::array<char, 1024> sequenceOutputDirectory_{'o', 'u', 't', 'p', 'u', 't', '\0'};
+    float pendingCameraDragX_{};
+    float pendingCameraDragY_{};
+    float pendingCameraZoom_{};
 #endif
 };
 

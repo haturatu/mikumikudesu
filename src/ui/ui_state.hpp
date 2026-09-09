@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 
 namespace dayo::ui {
 
@@ -18,12 +19,15 @@ struct UiState {
     bool physicsVisible{};
     bool audioExportOpen{};
     bool videoExportOpen{};
+    bool imageSequenceExportOpen{};
+    bool saveAsOpen{};
     bool layoutDirty{true};
     float userScale{1.0F};
     int layoutVersion{1};
     std::array<char, 256> sceneFilter{};
     bool viewportHovered{};
     bool timelineFocused{};
+    std::int32_t selectedMaterial{-1};
 };
 
 } // namespace dayo::ui
