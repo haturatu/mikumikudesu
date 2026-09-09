@@ -34,6 +34,9 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     [[nodiscard]] core::DayoProject currentProject() const;
     void handleAsset(const std::filesystem::path& path);
     void refreshAnimatedMesh(bool initialUpload, float deltaSeconds = 0.0F);
+    void resetPhysicsSimulation();
+    void evaluateExportFrame(float frame, float deltaSeconds, bool initialUpload = false);
+    void prepareDeterministicFrameEvaluation(float targetFrame);
     void refreshVideoFrame();
     void refreshPreviewTextures();
     void refreshPreviewBackground();
@@ -46,6 +49,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void buildSaveAsDialog();
     void buildStatusBar();
     void handleEditorShortcuts();
+    [[nodiscard]] std::string workspaceWindowName(const char* title, const char* id) const;
     void saveProjectNow();
     void startImageSequenceExport();
     void advanceImageSequenceExport();
@@ -117,6 +121,9 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::array<char, 1024> videoDestination_{};
     std::uint32_t videoWidth_{1920};
     std::uint32_t videoHeight_{1080};
+    std::uint32_t sequenceWidth_{1920};
+    std::uint32_t sequenceHeight_{1080};
+    int sequencePreset_{2};
 #endif
     float videoFps_{30.0F};
 #if DAYO_HAS_IMGUI
@@ -178,10 +185,16 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     bool imageSequenceExportRunning_{};
     bool imageSequenceCancelRequested_{};
     bool imageSequenceFramesFinished_{};
+    bool imageSequencePreRollDone_{};
+    bool imageSequenceRestoring_{};
+    bool imageSequenceRestoreFractionDone_{};
     std::optional<core::OutputQueue> imageSequenceOutput_;
     std::uint32_t imageSequenceNextFrame_{};
     std::uint32_t imageSequenceSampleIndex_{};
     std::uint32_t imageSequenceSampleCount_{1};
+    std::uint64_t imageSequencePreRollFrame_{};
+    std::uint64_t imageSequenceRestoreNextFrame_{};
+    std::uint64_t imageSequenceRestoreLastWholeFrame_{};
     float imageSequencePreviousSampleFrame_{};
     float imageSequenceRestoreFrame_{};
     double imageSequenceRestoreMediaSeconds_{};
@@ -189,6 +202,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     bool imageSequenceRestoreManualCamera_{};
     core::ImageRgba8 imageSequenceImage_;
     std::vector<std::uint64_t> imageSequenceSum_;
+    std::string imageSequenceCompletionStatus_;
 #endif
 };
 

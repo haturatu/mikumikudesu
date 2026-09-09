@@ -41,7 +41,7 @@ void loadEditorFonts() {
     ImFontConfig config;
     config.OversampleH = 2;
     config.OversampleV = 1;
-    config.GlyphRanges = io.Fonts->GetGlyphRangesJapanese();
+    config.GlyphRanges = io.Fonts->GetGlyphRangesChineseFull();
     for (const auto& candidate : fontCandidates()) {
         if (!std::filesystem::exists(candidate))
             continue;

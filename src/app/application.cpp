@@ -100,16 +100,43 @@ float videoSourceFrame(std::uint64_t outputFrame, std::uint64_t firstFrame, std:
     return static_cast<float>(std::min(static_cast<double>(lastFrame), value));
 }
 
+const char* workspaceSuffix(ui::Workspace workspace) noexcept {
+    switch (workspace) {
+    case ui::Workspace::layout:
+        return "Layout";
+    case ui::Workspace::animation:
+        return "Animation";
+    case ui::Workspace::camera:
+        return "Camera";
+    case ui::Workspace::render:
+        return "Render";
+    case ui::Workspace::debug:
+        return "Debug";
+    }
+    return "Layout";
+}
+
 } // namespace
 
 Application::Application(Options options) : options_(std::move(options)) {}
 
+std::string Application::workspaceWindowName(const char* title, const char* id) const {
+#if DAYO_HAS_IMGUI
+    return std::string(title) + "##" + id + "." + workspaceSuffix(uiState_.workspace);
+#else
+    return std::string(title) + "##" + id;
+#endif
+}
+
 void Application::resetProjectRuntimeState() {
 #if DAYO_HAS_IMGUI
-    if (imageSequenceExportRunning_)
-        finishImageSequenceExport("Sequence export cancelled by project reload");
-    else
+    if (imageSequenceExportRunning_) {
+        if (imageSequenceOutput_)
+            imageSequenceOutput_->close();
         imageSequenceOutput_.reset();
+        imageSequenceExportRunning_ = false;
+        imageSequenceRestoring_ = false;
+    }
     timelineTrackCache_ = {};
 #endif
     videoExportJob_.cancel();
@@ -241,19 +268,7 @@ int Application::run() {
                 const auto& exportOptions = *options_.videoExport;
                 if (videoNextFrame_ < videoOutputFrameCount_) {
                     if (!videoPreRollDone_) {
-                        animationFrame_ = 0.0F;
-                        scene_.setFrame(animationFrame_);
-                        refreshAnimatedMesh(true, 0.0F);
-                        refreshPreviewScene();
-                        if (videoFromFrame_ > 0U) {
-                            const auto sourceFrameDuration = static_cast<float>(1.0 / videoSourceFps_);
-                            for (std::uint64_t frame = 1; frame <= videoFromFrame_; ++frame) {
-                                animationFrame_ = static_cast<float>(frame);
-                                scene_.setFrame(animationFrame_);
-                                refreshAnimatedMesh(false, sourceFrameDuration);
-                                refreshPreviewScene();
-                            }
-                        }
+                        prepareDeterministicFrameEvaluation(static_cast<float>(videoFromFrame_));
                         videoPreRollDone_ = true;
                         videoPreviousSourceFrame_ = static_cast<float>(videoFromFrame_);
                     }
@@ -1181,6 +1196,35 @@ void Application::refreshPreviewScene() {
     device_->updatePreviewScene(scene);
 }
 
+void Application::resetPhysicsSimulation() {
+    for (auto& instance : scene_.models()) {
+        if (instance.physics != nullptr)
+            (*instance.physics).reset();
+        if (instance.softBody != nullptr && instance.softBody->available())
+            (*instance.softBody).reset();
+    }
+}
+
+void Application::evaluateExportFrame(float frame, float deltaSeconds, bool initialUpload) {
+    animationFrame_ = frame;
+    scene_.setFrame(frame);
+    refreshAnimatedMesh(initialUpload, deltaSeconds);
+    refreshPreviewScene();
+}
+
+void Application::prepareDeterministicFrameEvaluation(float targetFrame) {
+    const float target = std::max(targetFrame, 0.0F);
+    const float frameDuration = static_cast<float>(1.0 / sceneTimelineFps(scene_));
+    const auto wholeFrames = static_cast<std::uint64_t>(std::floor(target));
+    resetPhysicsSimulation();
+    evaluateExportFrame(0.0F, 0.0F, true);
+    for (std::uint64_t frame = 1; frame <= wholeFrames; ++frame)
+        evaluateExportFrame(static_cast<float>(frame), frameDuration);
+    const float fraction = target - static_cast<float>(wholeFrames);
+    if (fraction > 0.0F)
+        evaluateExportFrame(target, fraction * frameDuration);
+}
+
 void Application::buildUi() {
 #if DAYO_HAS_IMGUI
     uiState_.viewportHovered = false;
@@ -1192,14 +1236,22 @@ void Application::buildUi() {
     const auto* motion =
         scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
     auto* media = scene_.media();
-    if (ImGui::Begin("Viewport##viewport", nullptr, ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar)) {
+    if (ImGui::Begin(workspaceWindowName("Viewport", "viewport").c_str(), nullptr,
+                     ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar)) {
         uiState_.viewportHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
         const auto& io = ImGui::GetIO();
         const bool viewportInput = uiState_.viewportHovered && !ImGui::IsAnyItemActive();
-        if (viewportInput && (ImGui::IsMouseDragging(ImGuiMouseButton_Right) || io.MouseWheel != 0.0F)) {
+        bool cameraChanged = false;
+        if (viewportInput && ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
             cameraYaw_ += io.MouseDelta.x * 0.008F;
             cameraPitch_ = std::clamp(cameraPitch_ + io.MouseDelta.y * 0.008F, -1.5F, 1.5F);
+            cameraChanged = true;
+        }
+        if (viewportInput && io.MouseWheel != 0.0F) {
             cameraDistance_ = std::clamp(cameraDistance_ * std::exp(-io.MouseWheel * 0.12F), 0.4F, 30.0F);
+            cameraChanged = true;
+        }
+        if (cameraChanged) {
             manualCamera_ = true;
             refreshPreviewScene();
         }
@@ -1224,7 +1276,7 @@ void Application::buildUi() {
     }
     ImGui::End();
 
-    if (uiState_.performanceVisible && ImGui::Begin("Performance##performance")) {
+    if (uiState_.performanceVisible && ImGui::Begin(workspaceWindowName("Performance", "performance").c_str())) {
         const auto& totals = frameProfiler_.totals();
         ImGui::TextUnformatted(frameProfiler_.report().c_str());
         ImGui::Text("Upload: %.2f MiB/frame", totals.frames == 0 ? 0.0
@@ -1239,7 +1291,7 @@ void Application::buildUi() {
     if (uiState_.performanceVisible)
         ImGui::End();
 
-    if (uiState_.sceneVisible && ImGui::Begin("Scene##scene")) {
+    if (uiState_.sceneVisible && ImGui::Begin(workspaceWindowName("Scene", "scene").c_str())) {
         ImGui::InputTextWithHint("##scene-filter", "Search scene...", uiState_.sceneFilter.data(),
                                  uiState_.sceneFilter.size());
         ImGui::SeparatorText("Models");
@@ -1273,7 +1325,7 @@ void Application::buildUi() {
     if (uiState_.sceneVisible)
         ImGui::End();
 
-    if (uiState_.physicsVisible && ImGui::Begin("Physics##physics")) {
+    if (uiState_.physicsVisible && ImGui::Begin(workspaceWindowName("Physics", "physics").c_str())) {
         ImGui::Text("Timeline: %.1f / %.1f frames", animationFrame_, scene_.timeline().duration);
         ImGui::Checkbox("Repeat", &repeat_);
         ImGui::SliderFloat("Playback speed", &playbackSpeed_, 0.1F, 4.0F, "%.2fx");
@@ -1382,30 +1434,19 @@ void Application::handleEditorShortcuts() {
 
 void Application::setWorkspace(ui::Workspace workspace) {
 #if DAYO_HAS_IMGUI
+    auto& previousPanels = uiState_.workspacePanels[static_cast<std::size_t>(uiState_.workspace)];
+    previousPanels.sceneVisible = uiState_.sceneVisible;
+    previousPanels.inspectorVisible = uiState_.inspectorVisible;
+    previousPanels.timelineVisible = uiState_.timelineVisible;
     uiState_.workspace = workspace;
+    const auto& panels = uiState_.workspacePanels[static_cast<std::size_t>(workspace)];
+    uiState_.sceneVisible = panels.sceneVisible;
+    uiState_.inspectorVisible = panels.inspectorVisible;
+    uiState_.timelineVisible = panels.timelineVisible;
     uiState_.performanceVisible = workspace == ui::Workspace::debug;
     uiState_.fxDebugVisible = workspace == ui::Workspace::debug;
     uiState_.materialDebugVisible = workspace == ui::Workspace::debug;
     uiState_.physicsVisible = workspace == ui::Workspace::debug;
-    switch (workspace) {
-    case ui::Workspace::layout:
-    case ui::Workspace::animation:
-    case ui::Workspace::camera:
-        uiState_.sceneVisible = true;
-        uiState_.inspectorVisible = true;
-        uiState_.timelineVisible = true;
-        break;
-    case ui::Workspace::render:
-        uiState_.sceneVisible = false;
-        uiState_.inspectorVisible = true;
-        uiState_.timelineVisible = true;
-        break;
-    case ui::Workspace::debug:
-        uiState_.sceneVisible = true;
-        uiState_.inspectorVisible = true;
-        uiState_.timelineVisible = true;
-        break;
-    }
 #else
     static_cast<void>(workspace);
 #endif
@@ -1502,21 +1543,7 @@ void Application::buildMainMenuBar() {
 void Application::buildDockLayout() {
 #if DAYO_HAS_IMGUI
     auto* viewport = ImGui::GetMainViewport();
-    const char* workspaceId = [&] {
-        switch (uiState_.workspace) {
-        case ui::Workspace::layout:
-            return "Layout";
-        case ui::Workspace::animation:
-            return "Animation";
-        case ui::Workspace::camera:
-            return "Camera";
-        case ui::Workspace::render:
-            return "Render";
-        case ui::Workspace::debug:
-            return "Debug";
-        }
-        return "Layout";
-    }();
+    const char* workspaceId = workspaceSuffix(uiState_.workspace);
     const ImGuiID dockspaceId = ImGui::GetID((std::string("DayoEditorDockSpace.") + workspaceId).c_str());
     ImGui::DockSpaceOverViewport(dockspaceId, viewport, ImGuiDockNodeFlags_PassthruCentralNode);
     const auto* node = ImGui::DockBuilderGetNode(dockspaceId);
@@ -1545,24 +1572,31 @@ void Application::buildDockLayout() {
         ImGui::DockBuilderSplitNode(main, ImGuiDir_Left, 0.18F, &scene, &viewportNode);
         main = viewportNode;
     }
-    ImGui::DockBuilderDockWindow("Viewport##viewport", main);
+    ImGui::DockBuilderDockWindow(workspaceWindowName("Viewport", "viewport").c_str(), main);
     if (uiState_.sceneVisible)
-        ImGui::DockBuilderDockWindow("Scene##scene", scene);
+        ImGui::DockBuilderDockWindow(workspaceWindowName("Scene", "scene").c_str(), scene);
     if (uiState_.inspectorVisible)
-        ImGui::DockBuilderDockWindow("Inspector##inspector", right);
+        ImGui::DockBuilderDockWindow(workspaceWindowName("Inspector", "inspector").c_str(), right);
     if (uiState_.timelineVisible)
-        ImGui::DockBuilderDockWindow("Timeline##timeline", timeline);
+        ImGui::DockBuilderDockWindow(workspaceWindowName("Timeline", "timeline").c_str(), timeline);
     const ImGuiID auxiliaryNode = uiState_.inspectorVisible ? right : main;
     if (uiState_.physicsVisible)
-        ImGui::DockBuilderDockWindow("Physics##physics", uiState_.timelineVisible ? timeline : main);
+        ImGui::DockBuilderDockWindow(workspaceWindowName("Physics", "physics").c_str(),
+                                     uiState_.timelineVisible ? timeline : main);
     if (uiState_.performanceVisible)
-        ImGui::DockBuilderDockWindow("Performance##performance", auxiliaryNode);
+        ImGui::DockBuilderDockWindow(workspaceWindowName("Performance", "performance").c_str(), auxiliaryNode);
     if (uiState_.fxDebugVisible)
-        ImGui::DockBuilderDockWindow("FX Debug##fx-debug", auxiliaryNode);
+        ImGui::DockBuilderDockWindow(workspaceWindowName("FX Debug", "fx-debug").c_str(), auxiliaryNode);
     if (uiState_.materialDebugVisible)
-        ImGui::DockBuilderDockWindow("Preview Material Inspector##material-debug", auxiliaryNode);
+        ImGui::DockBuilderDockWindow(workspaceWindowName("Preview Material Inspector", "material-debug").c_str(),
+                                     auxiliaryNode);
+    if (uiState_.workspace == ui::Workspace::debug) {
+        ImGui::DockBuilderDockWindow(workspaceWindowName("Bone / Expression", "legacy-bone").c_str(), auxiliaryNode);
+        ImGui::DockBuilderDockWindow(workspaceWindowName("Project tools", "legacy-project").c_str(), auxiliaryNode);
+    }
     if (uiState_.workspace == ui::Workspace::camera || uiState_.workspace == ui::Workspace::debug)
-        ImGui::DockBuilderDockWindow("Camera / Light / Self Shadow##legacy-camera", auxiliaryNode);
+        ImGui::DockBuilderDockWindow(workspaceWindowName("Camera / Light / Self Shadow", "legacy-camera").c_str(),
+                                     auxiliaryNode);
     ImGui::DockBuilderFinish(dockspaceId);
     uiState_.resetLayoutRequested = false;
 #endif
@@ -1573,7 +1607,7 @@ void Application::buildInspectorPanel() {
     if (!uiState_.inspectorVisible)
         return;
     auto* model = selectedModel();
-    if (!ImGui::Begin("Inspector##inspector")) {
+    if (!ImGui::Begin(workspaceWindowName("Inspector", "inspector").c_str())) {
         ImGui::End();
         return;
     }
@@ -1598,8 +1632,10 @@ void Application::buildInspectorPanel() {
                 ImGui::EndTable();
             }
             bool enabled = background.enabled;
-            if (ImGui::Checkbox("Enabled", &enabled))
+            if (ImGui::Checkbox("Enabled", &enabled)) {
                 scene_.setBackgroundEnabled(enabled);
+                refreshPreviewScene();
+            }
         }
         ImGui::End();
         return;
@@ -1777,9 +1813,16 @@ void Application::startImageSequenceExport() {
         imageSequenceSampleCount_ = std::max(sequenceOutput_.samples, std::uint32_t{1});
         imageSequencePreviousSampleFrame_ = static_cast<float>(sequenceOutput_.firstFrame);
         imageSequenceFramesFinished_ = false;
+        imageSequencePreRollDone_ = sequenceOutput_.firstFrame == 0U;
+        imageSequencePreRollFrame_ = imageSequencePreRollDone_ ? 0U : 1U;
+        imageSequenceRestoring_ = false;
+        imageSequenceRestoreFractionDone_ = false;
         imageSequenceCancelRequested_ = false;
+        imageSequenceCompletionStatus_.clear();
         imageSequenceImage_ = {};
         imageSequenceSum_.clear();
+        resetPhysicsSimulation();
+        evaluateExportFrame(0.0F, 0.0F, true);
         imageSequenceOutput_.emplace(sequenceOutput_);
         imageSequenceExportRunning_ = true;
         playing_ = false;
@@ -1819,17 +1862,23 @@ void Application::finishImageSequenceExport(std::string status) {
             imageSequenceOutput_->close();
             imageSequenceOutput_->rethrowIfFailed();
         }
-        sequenceOutputStatus_ = std::move(status);
+        imageSequenceCompletionStatus_ = std::move(status);
     } catch (const std::exception& error) {
-        sequenceOutputStatus_ = error.what();
+        imageSequenceCompletionStatus_ = error.what();
     }
     imageSequenceOutput_.reset();
-    imageSequenceExportRunning_ = false;
     imageSequenceCancelRequested_ = false;
     imageSequenceFramesFinished_ = false;
     imageSequenceImage_ = {};
     imageSequenceSum_.clear();
-    restoreImageSequenceState();
+    imageSequenceRestoring_ = true;
+    imageSequenceRestoreNextFrame_ = 1U;
+    imageSequenceRestoreLastWholeFrame_ =
+        static_cast<std::uint64_t>(std::floor(std::max(imageSequenceRestoreFrame_, 0.0F)));
+    imageSequenceRestoreFractionDone_ = false;
+    resetPhysicsSimulation();
+    evaluateExportFrame(0.0F, 0.0F, true);
+    sequenceOutputStatus_ = "Restoring preview...";
 #else
     static_cast<void>(status);
 #endif
@@ -1839,6 +1888,26 @@ void Application::advanceImageSequenceExport() {
 #if DAYO_HAS_IMGUI
     if (!imageSequenceExportRunning_)
         return;
+    if (imageSequenceRestoring_) {
+        const float frameDuration = static_cast<float>(1.0 / sceneTimelineFps(scene_));
+        const float target = std::max(imageSequenceRestoreFrame_, 0.0F);
+        const float wholeTarget = std::floor(target);
+        if (imageSequenceRestoreNextFrame_ <= imageSequenceRestoreLastWholeFrame_) {
+            evaluateExportFrame(static_cast<float>(imageSequenceRestoreNextFrame_), frameDuration);
+            ++imageSequenceRestoreNextFrame_;
+            return;
+        }
+        if (!imageSequenceRestoreFractionDone_ && target > wholeTarget) {
+            evaluateExportFrame(target, (target - wholeTarget) * frameDuration);
+            imageSequenceRestoreFractionDone_ = true;
+            return;
+        }
+        imageSequenceRestoring_ = false;
+        imageSequenceExportRunning_ = false;
+        sequenceOutputStatus_ = std::move(imageSequenceCompletionStatus_);
+        restoreImageSequenceState();
+        return;
+    }
     if (imageSequenceCancelRequested_) {
         finishImageSequenceExport("Sequence export cancelled");
         return;
@@ -1847,20 +1916,29 @@ void Application::advanceImageSequenceExport() {
         finishImageSequenceExport("Sequence rendered");
         return;
     }
+    if (!imageSequencePreRollDone_) {
+        const float frameDuration = static_cast<float>(1.0 / sceneTimelineFps(scene_));
+        evaluateExportFrame(static_cast<float>(imageSequencePreRollFrame_), frameDuration);
+        if (imageSequencePreRollFrame_ >= sequenceOutput_.firstFrame) {
+            imageSequencePreRollDone_ = true;
+            imageSequencePreviousSampleFrame_ = static_cast<float>(sequenceOutput_.firstFrame);
+        } else {
+            ++imageSequencePreRollFrame_;
+        }
+        return;
+    }
     try {
         const auto frame = imageSequenceNextFrame_;
         const float offset = sequenceOutput_.motionBlur ? static_cast<float>(imageSequenceSampleIndex_) /
                                                               static_cast<float>(imageSequenceSampleCount_)
                                                         : 0.0F;
         const float sampleFrame = static_cast<float>(frame) + offset;
-        const float physicsDelta = std::max(sampleFrame - imageSequencePreviousSampleFrame_, 0.0F) / 30.0F;
-        scene_.setFrame(sampleFrame);
-        animationFrame_ = scene_.timeline().frame;
-        refreshAnimatedMesh(false, physicsDelta);
+        const float physicsDelta = std::max(sampleFrame - imageSequencePreviousSampleFrame_, 0.0F) /
+                                   static_cast<float>(sceneTimelineFps(scene_));
+        evaluateExportFrame(sampleFrame, physicsDelta);
         imageSequencePreviousSampleFrame_ = sampleFrame;
-        refreshPreviewScene();
 
-        auto rendered = device_->renderToImage({videoWidth_, videoHeight_});
+        auto rendered = device_->renderToImage({sequenceWidth_, sequenceHeight_});
         if (imageSequenceSampleIndex_ == 0U) {
             imageSequenceImage_ = std::move(rendered);
             imageSequenceSum_.assign(imageSequenceImage_.pixels.size(), 0U);
@@ -1902,20 +1980,26 @@ void Application::buildImageSequenceExportUi() {
     if (!ImGui::BeginPopupModal("Export Image Sequence", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
         return;
     if (imageSequenceExportRunning_) {
-        const auto total = static_cast<std::uint64_t>(sequenceOutput_.lastFrame) -
-                           static_cast<std::uint64_t>(sequenceOutput_.firstFrame) + 1U;
-        const auto completed = imageSequenceFramesFinished_
-                                   ? total
-                                   : static_cast<std::uint64_t>(imageSequenceNextFrame_) -
-                                         static_cast<std::uint64_t>(sequenceOutput_.firstFrame);
-        ImGui::Text("Rendering %u / %u",
-                    imageSequenceFramesFinished_ ? sequenceOutput_.lastFrame : imageSequenceNextFrame_,
-                    sequenceOutput_.lastFrame);
-        ImGui::ProgressBar(total == 0U ? 0.0F : static_cast<float>(completed) / static_cast<float>(total),
-                           {-1.0F, 0.0F});
-        ImGui::Text("Current sample: %u / %u", imageSequenceSampleIndex_ + 1U, imageSequenceSampleCount_);
-        if (ImGui::Button("Cancel"))
-            imageSequenceCancelRequested_ = true;
+        if (imageSequenceRestoring_) {
+            ImGui::TextUnformatted("Restoring preview state...");
+        } else {
+            const auto total = static_cast<std::uint64_t>(sequenceOutput_.lastFrame) -
+                               static_cast<std::uint64_t>(sequenceOutput_.firstFrame) + 1U;
+            const auto completed =
+                imageSequencePreRollDone_
+                    ? (imageSequenceFramesFinished_ ? total
+                                                    : static_cast<std::uint64_t>(imageSequenceNextFrame_) -
+                                                          static_cast<std::uint64_t>(sequenceOutput_.firstFrame))
+                    : 0U;
+            ImGui::Text("Rendering %u / %u",
+                        imageSequenceFramesFinished_ ? sequenceOutput_.lastFrame : imageSequenceNextFrame_,
+                        sequenceOutput_.lastFrame);
+            ImGui::ProgressBar(total == 0U ? 0.0F : static_cast<float>(completed) / static_cast<float>(total),
+                               {-1.0F, 0.0F});
+            ImGui::Text("Current sample: %u / %u", imageSequenceSampleIndex_ + 1U, imageSequenceSampleCount_);
+            if (ImGui::Button("Cancel"))
+                imageSequenceCancelRequested_ = true;
+        }
     } else {
         ImGui::InputText("Directory", sequenceOutputDirectory_.data(), sequenceOutputDirectory_.size());
         int first = static_cast<int>(sequenceOutput_.firstFrame);
@@ -1927,9 +2011,40 @@ void Application::buildImageSequenceExportUi() {
             sequenceOutput_.lastFrame = static_cast<std::uint32_t>(std::max(last, 0));
         if (ImGui::InputInt("Samples", &samples))
             sequenceOutput_.samples = static_cast<std::uint32_t>(std::clamp(samples, 1, 4096));
+        int width = static_cast<int>(sequenceWidth_);
+        int height = static_cast<int>(sequenceHeight_);
+        if (ImGui::InputInt("Width", &width)) {
+            sequenceWidth_ = static_cast<std::uint32_t>(std::max(width, 1));
+            sequencePreset_ = 0;
+        }
+        if (ImGui::InputInt("Height", &height)) {
+            sequenceHeight_ = static_cast<std::uint32_t>(std::max(height, 1));
+            sequencePreset_ = 0;
+        }
+        if (ImGui::Combo("Preset", &sequencePreset_,
+                         "Custom\0"
+                         "720p\0"
+                         "1080p\0"
+                         "1440p\0"
+                         "4K\0")) {
+            constexpr std::array<std::array<std::uint32_t, 2>, 5> presets{{
+                {0, 0},
+                {1280, 720},
+                {1920, 1080},
+                {2560, 1440},
+                {3840, 2160},
+            }};
+            const auto selected = presets[static_cast<std::size_t>(sequencePreset_)];
+            if (selected[0] != 0U) {
+                sequenceWidth_ = selected[0];
+                sequenceHeight_ = selected[1];
+            }
+        }
         ImGui::Checkbox("Motion blur", &sequenceOutput_.motionBlur);
-        int format = static_cast<int>(sequenceOutput_.format);
-        if (ImGui::Combo("Format", &format, "PPM\0PNG\0EXR\0"))
+        if (sequenceOutput_.format == core::OutputFormat::exr)
+            sequenceOutput_.format = core::OutputFormat::ppm;
+        int format = std::clamp(static_cast<int>(sequenceOutput_.format), 0, 1);
+        if (ImGui::Combo("Format", &format, "PPM\0PNG\0"))
             sequenceOutput_.format = static_cast<core::OutputFormat>(format);
         if (ImGui::Button("Render sequence"))
             startImageSequenceExport();
@@ -2007,7 +2122,7 @@ void Application::buildEditorUi() {
     };
     const bool debugWorkspace = uiState_.workspace == ui::Workspace::debug;
 
-    if (uiState_.timelineVisible && ImGui::Begin("Timeline##timeline")) {
+    if (uiState_.timelineVisible && ImGui::Begin(workspaceWindowName("Timeline", "timeline").c_str())) {
         uiState_.timelineFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
         if (ImGui::Button("|<")) {
             animationFrame_ = 0.0F;
@@ -2270,7 +2385,7 @@ void Application::buildEditorUi() {
     if (uiState_.timelineVisible)
         ImGui::End();
 
-    if (debugWorkspace && ImGui::Begin("Bone / Expression##legacy-bone")) {
+    if (debugWorkspace && ImGui::Begin(workspaceWindowName("Bone / Expression", "legacy-bone").c_str())) {
         if (model == nullptr || model->model == nullptr) {
             ImGui::TextUnformatted("Select a model to edit bones and morphs.");
         } else {
@@ -2329,7 +2444,8 @@ void Application::buildEditorUi() {
         ImGui::End();
 
     const bool cameraPanelVisible = debugWorkspace || uiState_.workspace == ui::Workspace::camera;
-    if (cameraPanelVisible && ImGui::Begin("Camera / Light / Self Shadow##legacy-camera")) {
+    if (cameraPanelVisible &&
+        ImGui::Begin(workspaceWindowName("Camera / Light / Self Shadow", "legacy-camera").c_str())) {
         ImGui::Checkbox("Realtime camera recording (Space registers)", &recordCamera_);
         ImGui::DragFloat3("Camera target", editedCamera_.position.data(), 0.01F);
         ImGui::DragFloat3("Camera rotation", editedCamera_.rotation.data(), 0.01F);
@@ -2379,7 +2495,7 @@ void Application::buildEditorUi() {
     if (cameraPanelVisible)
         ImGui::End();
 
-    if (debugWorkspace && ImGui::Begin("Project tools##legacy-project")) {
+    if (debugWorkspace && ImGui::Begin(workspaceWindowName("Project tools", "legacy-project").c_str())) {
         ImGui::InputText("Project file", projectDestination_.data(), projectDestination_.size());
         if (ImGui::Button("Save Dayo 1.30 project")) {
             try {
@@ -2394,17 +2510,26 @@ void Application::buildEditorUi() {
         ImGui::Separator();
         auto background = scene_.background();
         int source = static_cast<int>(background.screenSource);
-        if (ImGui::Combo("Background source", &source, "Previous frame\0Video\0Image\0White\0"))
+        if (ImGui::Combo("Background source", &source, "Previous frame\0Video\0Image\0White\0")) {
             scene_.setBackgroundScreenSource(static_cast<core::ScreenTextureSource>(source));
+            refreshPreviewBackground();
+            refreshPreviewScene();
+        }
         bool enabled = background.enabled;
-        if (ImGui::Checkbox("Background enabled", &enabled))
+        if (ImGui::Checkbox("Background enabled", &enabled)) {
             scene_.setBackgroundEnabled(enabled);
+            refreshPreviewScene();
+        }
         bool crop = background.crop == core::ScreenCropMode::crop4x3;
-        if (ImGui::Checkbox("Crop 4:3", &crop))
+        if (ImGui::Checkbox("Crop 4:3", &crop)) {
             scene_.setBackgroundCrop(crop ? core::ScreenCropMode::crop4x3 : core::ScreenCropMode::none);
+            refreshPreviewScene();
+        }
         bool alpha = background.mode == core::BackgroundMode::alpha;
-        if (ImGui::Checkbox("Alpha background", &alpha))
+        if (ImGui::Checkbox("Alpha background", &alpha)) {
             scene_.setBackgroundMode(alpha ? core::BackgroundMode::alpha : core::BackgroundMode::opaque);
+            refreshPreviewScene();
+        }
         if (model != nullptr) {
             ImGui::SeparatorText("Model order");
             ImGui::DragInt("Motion order", &model->order.motion, 1.0F, 0, 1024);
@@ -2515,7 +2640,8 @@ void Application::buildEditorUi() {
     if (debugWorkspace)
         ImGui::End();
 
-    if (uiState_.materialDebugVisible && ImGui::Begin("Preview Material Inspector##material-debug")) {
+    if (uiState_.materialDebugVisible &&
+        ImGui::Begin(workspaceWindowName("Preview Material Inspector", "material-debug").c_str())) {
         bool previewChanged = false;
         previewChanged |= ImGui::Checkbox("Optional PMX outline", &previewOutlineEnabled_);
         if (model != nullptr && !model->model->materials.empty()) {
@@ -2576,7 +2702,7 @@ void Application::buildEditorUi() {
     if (uiState_.materialDebugVisible)
         ImGui::End();
 
-    if (uiState_.fxDebugVisible && ImGui::Begin("FX Debug##fx-debug")) {
+    if (uiState_.fxDebugVisible && ImGui::Begin(workspaceWindowName("FX Debug", "fx-debug").c_str())) {
         if (const auto* effect = scene_.effect()) {
             const auto compiled = core::compileEffectGraph(*effect);
             ImGui::Text("Resources: %zu", effect->textures.size());
