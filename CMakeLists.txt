@@ -333,7 +333,7 @@ if(DAYO_ENABLE_IMGUI)
   endif()
   FetchContent_Declare(
     imgui
-    URL https://github.com/ocornut/imgui/archive/refs/tags/v1.92.9.tar.gz
+    URL https://github.com/ocornut/imgui/archive/refs/tags/v1.92.9-docking.tar.gz
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
   FetchContent_MakeAvailable(imgui)

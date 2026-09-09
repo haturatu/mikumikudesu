@@ -12,6 +12,7 @@
 #include "core/task_scheduler.hpp"
 #include "core/video_export.hpp"
 #include "graphics/device.hpp"
+#include "ui/ui_state.hpp"
 
 #include <array>
 #include <cstdint>
@@ -38,6 +39,11 @@ class Application {
     void refreshPreviewBackground();
     void refreshPreviewScene();
     void buildUi();
+    void buildMainMenuBar();
+    void buildDockLayout();
+    void buildInspectorPanel();
+    void buildStatusBar();
+    void setWorkspace(ui::Workspace workspace);
     void setAudioExportDestinationForSource(const std::filesystem::path& source);
     void buildAudioExportUi();
     void buildVideoExportUi();
@@ -125,8 +131,11 @@ class Application {
     bool videoRangeInitialized_{};
     std::string videoExportStatus_;
 #if DAYO_HAS_IMGUI
+    ui::UiState uiState_;
     core::MotionClipboard motionClipboard_;
     std::vector<core::MotionKeyRef> selectedKeys_;
+    float timelineZoom_{1.0F};
+    float timelinePan_{};
     bool editGlobalMotion_{};
     bool recordCamera_{};
     int selectedBone_{};

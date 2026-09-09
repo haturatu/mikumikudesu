@@ -19,7 +19,7 @@ struct WindowOptions {
 };
 
 struct WindowEvent {
-    enum class Type { quit, resized, fileDropped, cameraDragged, cameraZoomed };
+    enum class Type { quit, resized, displayScaleChanged, fileDropped, cameraDragged, cameraZoomed };
     Type type{};
     std::filesystem::path path;
     float x{};
