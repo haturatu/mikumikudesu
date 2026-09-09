@@ -265,6 +265,8 @@ add_library(
   src/graphics/vulkan/vulkan_device.cpp
   src/graphics/vulkan/vulkan_upload_context.cpp
   src/graphics/vulkan_fx_executor.cpp
+  src/ui/fonts.cpp
+  src/ui/theme.cpp
 )
 target_include_directories(dayo_graphics PUBLIC src)
 target_link_libraries(dayo_graphics PUBLIC dayo_fx dayo_core Vulkan::Vulkan SDL3::SDL3)
@@ -572,6 +574,7 @@ if(DAYO_ENABLE_BOLT)
 else()
   install(TARGETS mikumikudesu RUNTIME DESTINATION bin)
 endif()
+install(DIRECTORY assets/fonts/ DESTINATION share/mikumikudesu/fonts)
 include(cmake/InstallMikuMikuDayo.cmake)
 if(DAYO_ENABLE_PGO_GENERATE AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   add_custom_target(

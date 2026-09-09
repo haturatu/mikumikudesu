@@ -4,6 +4,8 @@
 #include "core/log.hpp"
 #include "graphics/timestamp.hpp"
 #include "platform/window.hpp"
+#include "ui/fonts.hpp"
+#include "ui/theme.hpp"
 
 #if DAYO_ENABLE_VMA
 #include <vk_mem_alloc.h>
@@ -1538,7 +1540,14 @@ void VulkanDevice::createUi() {
     check(vkCreateDescriptorPool(device_, &poolInfo, nullptr, &imguiDescriptorPool_), "create ImGui descriptor pool");
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGui::StyleColorsDark();
+    auto& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    io.ConfigDpiScaleFonts = true;
+    ui::applyEditorTheme();
+    ui::loadEditorFonts();
+    const float displayScale = std::max(SDL_GetWindowDisplayScale(window_.sdlHandle()), 1.0F);
+    ImGui::GetStyle().FontScaleDpi = displayScale;
     if (!ImGui_ImplSDL3_InitForVulkan(window_.sdlHandle())) {
         throw std::runtime_error("ImGui SDL3 initialization failed");
     }
