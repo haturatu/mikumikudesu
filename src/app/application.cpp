@@ -656,6 +656,9 @@ void Application::handleAsset(const std::filesystem::path& path) {
         try {
             const auto modelId = scene_.addModel(path);
             scene_.selectModel(modelId);
+            if (scene_.models().empty() || scene_.selectedModelId() != modelId)
+                throw std::logic_error("PMX model was not retained in the scene");
+            log::info("PMX scene state: models=", scene_.models().size(), " selected=", scene_.selectedModelId());
             videoMode_ = scene_.media() != nullptr && scene_.media()->info().hasVideo;
             normalization_ = scene_.selectedModel()->normalization;
             refreshPreviewTextures();
@@ -1286,6 +1289,20 @@ void Application::buildUi() {
                 const auto imagePosition = ImGui::GetCursorScreenPos();
                 ImGui::Image(ImTextureRef{static_cast<ImTextureID>(preview.textureId)}, available);
                 const bool imageHovered = ImGui::IsItemHovered();
+                if (scene_.models().empty()) {
+                    constexpr auto message = "No model loaded\nDrop a PMX file into the window";
+                    const auto messageSize = ImGui::CalcTextSize(message);
+                    const ImVec2 padding{ImGui::GetStyle().FramePadding.x * 2.0F,
+                                         ImGui::GetStyle().FramePadding.y * 2.0F};
+                    const ImVec2 messagePosition{imagePosition.x + (available.x - messageSize.x) * 0.5F,
+                                                 imagePosition.y + (available.y - messageSize.y) * 0.5F};
+                    auto* drawList = ImGui::GetWindowDrawList();
+                    drawList->AddRectFilled(
+                        {messagePosition.x - padding.x, messagePosition.y - padding.y},
+                        {messagePosition.x + messageSize.x + padding.x, messagePosition.y + messageSize.y + padding.y},
+                        ImGui::GetColorU32(ImGuiCol_WindowBg, 0.88F), ImGui::GetStyle().FrameRounding);
+                    drawList->AddText(messagePosition, ImGui::GetColorU32(ImGuiCol_TextDisabled), message);
+                }
                 bool overlayHovered = false;
                 if (manualCamera_) {
                     ImGui::SetCursorScreenPos({imagePosition.x + ImGui::GetStyle().ItemSpacing.x,
@@ -2176,18 +2193,31 @@ void Application::buildStatusBar() {
     constexpr auto flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDocking |
                            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollbar;
     if (ImGui::BeginViewportSideBar("##status-bar", viewport, ImGuiDir_Down, height, flags)) {
-        ImGui::TextUnformatted("Ready");
-        ImGui::SameLine();
-        if (const auto* model = selectedModel()) {
-            ImGui::Text("%s", model->displayName.c_str());
-            ImGui::SameLine();
+        if (ImGui::BeginTable("##editor-status", 5, ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 2.0F);
+            ImGui::TableSetupColumn("Model", ImGuiTableColumnFlags_WidthStretch, 1.0F);
+            ImGui::TableSetupColumn("Frame", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 9.0F);
+            ImGui::TableSetupColumn("FPS", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 5.0F);
+            ImGui::TableSetupColumn("Project", ImGuiTableColumnFlags_WidthStretch, 1.5F);
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(lastAsset_.c_str());
+            if (ImGui::IsItemHovered() && !lastAsset_.empty())
+                ImGui::SetTooltip("%s", lastAsset_.c_str());
+            ImGui::TableSetColumnIndex(1);
+            if (const auto* model = selectedModel())
+                ImGui::TextUnformatted(model->displayName.c_str());
+            else
+                ImGui::TextDisabled("Scene");
+            ImGui::TableSetColumnIndex(2);
+            ImGui::Text("Frame %.0f / %.0f", animationFrame_, scene_.timeline().duration);
+            ImGui::TableSetColumnIndex(3);
+            ImGui::Text("%.0f FPS", ImGui::GetIO().Framerate);
+            ImGui::TableSetColumnIndex(4);
+            const std::string projectText = currentProjectPath_ ? currentProjectPath_->string() : "Untitled project";
+            ImGui::TextDisabled("%s", projectText.c_str());
+            ImGui::EndTable();
         }
-        ImGui::Text("Frame %.0f / %.0f", animationFrame_, scene_.timeline().duration);
-        ImGui::SameLine();
-        ImGui::Text("%.0f FPS", ImGui::GetIO().Framerate);
-        ImGui::SameLine();
-        const std::string projectText = currentProjectPath_ ? currentProjectPath_->string() : "Untitled project";
-        ImGui::TextDisabled("%s", projectText.c_str());
     }
     ImGui::End();
 #endif
