@@ -75,6 +75,10 @@ class SdlWindow final : public Window {
                 updateSize();
                 result.push_back({WindowEvent::Type::resized, {}, 0.0F, 0.0F});
                 break;
+            case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
+                result.push_back(
+                    {WindowEvent::Type::displayScaleChanged, {}, SDL_GetWindowDisplayScale(window_), 0.0F});
+                break;
             case SDL_EVENT_WINDOW_MINIMIZED:
                 minimized_ = true;
                 break;

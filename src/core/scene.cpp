@@ -347,6 +347,7 @@ void Scene::syncGlobalMotionTracks() {
 }
 
 void Scene::attachMotion(MotionDocument document, ModelId target, std::string modelName) {
+    ++motionRevision_;
     auto motion = std::make_unique<VmdMotion>(toVmdMotion(std::move(document), std::move(modelName)));
     // A camera/light-only VMD is global even when a model is selected. Model
     // motion remains the default for files containing bone or morph tracks.
@@ -375,6 +376,7 @@ const VmdMotion* Scene::motion(ModelId target, bool global) const noexcept {
 }
 
 bool Scene::replaceMotion(VmdMotion motionValue, ModelId target, bool global) {
+    ++motionRevision_;
     if (global) {
         cameraMotion_ = std::make_unique<VmdMotion>(std::move(motionValue));
         syncGlobalMotionTracks();

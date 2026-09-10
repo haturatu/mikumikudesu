@@ -12,6 +12,7 @@
 #include "core/task_scheduler.hpp"
 #include "core/video_export.hpp"
 #include "graphics/device.hpp"
+#include "ui/ui_state.hpp"
 
 #include <array>
 #include <cstdint>
@@ -23,7 +24,7 @@
 
 namespace dayo::app {
 
-class Application {
+class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
   public:
     explicit Application(Options options);
     int run();
@@ -33,11 +34,30 @@ class Application {
     [[nodiscard]] core::DayoProject currentProject() const;
     void handleAsset(const std::filesystem::path& path);
     void refreshAnimatedMesh(bool initialUpload, float deltaSeconds = 0.0F);
+    void resetPhysicsSimulation();
+    void evaluateExportFrame(float frame, float deltaSeconds, bool initialUpload = false);
+    bool advanceDeterministicFrameEvaluation(float targetFrame, std::uint64_t& nextFrame);
     void refreshVideoFrame();
     void refreshPreviewTextures();
     void refreshPreviewBackground();
     void refreshPreviewScene();
     void buildUi();
+    void buildMainMenuBar();
+    void buildDockLayout();
+    void buildInspectorPanel();
+    void buildImageSequenceExportUi();
+    void buildSaveAsDialog();
+    void buildStatusBar();
+    void handleEditorShortcuts();
+    [[nodiscard]] std::string workspaceWindowName(const char* title, const char* id) const;
+    void saveProjectNow();
+    void saveProjectAsNow();
+    void restoreVideoExportState();
+    void startImageSequenceExport();
+    void advanceImageSequenceExport();
+    void finishImageSequenceExport(std::string status);
+    void restoreImageSequenceState();
+    void setWorkspace(ui::Workspace workspace);
     void setAudioExportDestinationForSource(const std::filesystem::path& source);
     void buildAudioExportUi();
     void buildVideoExportUi();
@@ -85,6 +105,7 @@ class Application {
     std::int64_t uploadedVideoFrame_{-1};
     std::string lastAsset_{"Drop PMX/VMD/VPD/media files into the window"};
     std::vector<core::ProjectAsset> projectAssets_;
+    std::optional<std::filesystem::path> currentProjectPath_;
     std::optional<core::EffectHotReloader> effectReloader_;
     core::PreviewNormalization normalization_;
     float cameraYaw_{};
@@ -103,6 +124,9 @@ class Application {
     std::array<char, 1024> videoDestination_{};
     std::uint32_t videoWidth_{1920};
     std::uint32_t videoHeight_{1080};
+    std::uint32_t sequenceWidth_{1920};
+    std::uint32_t sequenceHeight_{1080};
+    int sequencePreset_{2};
 #endif
     float videoFps_{30.0F};
 #if DAYO_HAS_IMGUI
@@ -122,11 +146,28 @@ class Application {
     bool videoPreRollDone_{};
     bool videoExportFramesFinished_{};
     bool videoExportUiActive_{};
+    struct ActiveVideoExport {
+        std::uint32_t width{};
+        std::uint32_t height{};
+    };
+    std::optional<ActiveVideoExport> activeVideoExport_;
+    bool videoExportRestorePending_{};
+    std::uint64_t videoEvaluationNextFrame_{};
+    std::uint64_t videoRestoreNextFrame_{};
+    float videoExportRestoreFrame_{};
+    double videoExportRestoreMediaSeconds_{};
+    bool videoExportRestorePlaying_{};
+    bool videoExportRestoreManualCamera_{};
+    bool videoExportRestoreAudioActive_{};
     bool videoRangeInitialized_{};
     std::string videoExportStatus_;
 #if DAYO_HAS_IMGUI
+    ui::UiState uiState_;
     core::MotionClipboard motionClipboard_;
     std::vector<core::MotionKeyRef> selectedKeys_;
+    float timelineZoom_{1.0F};
+    float timelinePan_{};
+    float timelineScrollY_{};
     bool editGlobalMotion_{};
     bool recordCamera_{};
     int selectedBone_{};
@@ -144,6 +185,42 @@ class Application {
     std::string sequenceOutputStatus_;
     std::array<char, 1024> projectDestination_{'p', 'r', 'o', 'j', 'e', 'c', 't', '.', 'd', 'a', 'y', 'o', '\0'};
     std::string projectSaveStatus_;
+    std::array<char, 1024> sequenceOutputDirectory_{'o', 'u', 't', 'p', 'u', 't', '\0'};
+    struct TimelineTrack {
+        std::string name;
+        std::vector<std::uint32_t> frames;
+    };
+    struct TimelineTrackCache {
+        std::uint64_t motionRevision{};
+        core::ModelId modelId{};
+        const core::VmdMotion* motion{};
+        bool globalMotion{};
+        std::vector<TimelineTrack> bones;
+        std::vector<TimelineTrack> morphs;
+        std::vector<std::uint32_t> cameras;
+        std::vector<std::uint32_t> lights;
+    };
+    TimelineTrackCache timelineTrackCache_;
+    bool timelineKeyListVisible_{};
+    bool imageSequenceExportRunning_{};
+    bool imageSequenceCancelRequested_{};
+    bool imageSequenceFramesFinished_{};
+    bool imageSequencePreRollDone_{};
+    bool imageSequenceRestoring_{};
+    std::optional<core::OutputQueue> imageSequenceOutput_;
+    std::uint32_t imageSequenceNextFrame_{};
+    std::uint32_t imageSequenceSampleIndex_{};
+    std::uint32_t imageSequenceSampleCount_{1};
+    std::uint64_t imageSequencePreRollFrame_{};
+    std::uint64_t imageSequenceRestoreNextFrame_{};
+    float imageSequencePreviousSampleFrame_{};
+    float imageSequenceRestoreFrame_{};
+    double imageSequenceRestoreMediaSeconds_{};
+    bool imageSequenceRestorePlaying_{};
+    bool imageSequenceRestoreManualCamera_{};
+    core::ImageRgba8 imageSequenceImage_;
+    std::vector<std::uint64_t> imageSequenceSum_;
+    std::string imageSequenceCompletionStatus_;
 #endif
 };
 

@@ -265,6 +265,8 @@ add_library(
   src/graphics/vulkan/vulkan_device.cpp
   src/graphics/vulkan/vulkan_upload_context.cpp
   src/graphics/vulkan_fx_executor.cpp
+  src/ui/fonts.cpp
+  src/ui/theme.cpp
 )
 target_include_directories(dayo_graphics PUBLIC src)
 target_link_libraries(dayo_graphics PUBLIC dayo_fx dayo_core Vulkan::Vulkan SDL3::SDL3)
@@ -333,7 +335,7 @@ if(DAYO_ENABLE_IMGUI)
   endif()
   FetchContent_Declare(
     imgui
-    URL https://github.com/ocornut/imgui/archive/refs/tags/v1.92.9.tar.gz
+    URL https://github.com/ocornut/imgui/archive/refs/tags/v1.92.9-docking.tar.gz
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
   FetchContent_MakeAvailable(imgui)
@@ -346,7 +348,7 @@ if(DAYO_ENABLE_IMGUI)
     ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
   )
-  target_include_directories(dayo_imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+  target_include_directories(dayo_imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
   target_link_libraries(dayo_imgui PUBLIC SDL3::SDL3 Vulkan::Vulkan)
   target_link_libraries(dayo_graphics PUBLIC dayo_imgui)
   target_link_libraries(dayo_platform PUBLIC dayo_imgui)
@@ -572,6 +574,7 @@ if(DAYO_ENABLE_BOLT)
 else()
   install(TARGETS mikumikudesu RUNTIME DESTINATION bin)
 endif()
+install(DIRECTORY assets/fonts/ DESTINATION share/mikumikudesu/fonts)
 include(cmake/InstallMikuMikuDayo.cmake)
 if(DAYO_ENABLE_PGO_GENERATE AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   add_custom_target(
@@ -592,6 +595,17 @@ if(BUILD_TESTING)
   target_link_libraries(dayo_cli_tests PRIVATE dayo_cli)
   add_executable(dayo_core_tests tests/core_tests.cpp)
   target_link_libraries(dayo_core_tests PRIVATE dayo_core)
+  add_executable(dayo_video_export_job_tests tests/video_export_job_tests.cpp src/app/video_export_job.cpp)
+  target_link_libraries(dayo_video_export_job_tests PRIVATE dayo_core)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      dayo_video_export_job_tests
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_video_export_job_tests PRIVATE -Werror)
+    endif()
+  endif()
   add_executable(dayo_upload_ring_tests tests/upload_ring_tests.cpp)
   target_link_libraries(dayo_upload_ring_tests PRIVATE dayo_core)
   add_executable(dayo_preview_tests tests/preview_render_tests.cpp)
@@ -740,6 +754,8 @@ if(BUILD_TESTING)
   endif()
 
   add_test(NAME core COMMAND dayo_core_tests)
+  add_test(NAME video_export_job COMMAND dayo_video_export_job_tests)
+  set_tests_properties(video_export_job PROPERTIES TIMEOUT 20)
   add_test(NAME cli COMMAND dayo_cli_tests)
   add_test(NAME cli_help COMMAND mikumikudesu --help)
   add_test(NAME cli_version COMMAND mikumikudesu --version)
@@ -784,6 +800,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_graphics
     mikumikudesu
     dayo_core_tests
+    dayo_video_export_job_tests
     dayo_cli_tests
     dayo_fx_executor_tests
     dayo_upload_ring_tests
@@ -804,6 +821,9 @@ if(DAYO_ENABLE_SANITIZERS)
   endif()
   if(TARGET dayo_core_tests)
     target_link_options(dayo_core_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+  if(TARGET dayo_video_export_job_tests)
+    target_link_options(dayo_video_export_job_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
   if(TARGET dayo_fx_executor_tests)
     target_link_options(dayo_fx_executor_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})

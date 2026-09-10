@@ -11,11 +11,13 @@
 #include "core/vmdayo.hpp"
 #include "graphics/device.hpp"
 #include "platform/window.hpp"
+#include "ui/theme.hpp"
 
 #include <SDL3/SDL.h>
 
 #if DAYO_HAS_IMGUI
 #include <imgui.h>
+#include <imgui_internal.h>
 #endif
 
 #include <algorithm>
@@ -29,6 +31,7 @@
 #include <limits>
 #include <stdexcept>
 #include <thread>
+#include <unordered_map>
 
 namespace dayo::app {
 namespace {
@@ -97,14 +100,52 @@ float videoSourceFrame(std::uint64_t outputFrame, std::uint64_t firstFrame, std:
     return static_cast<float>(std::min(static_cast<double>(lastFrame), value));
 }
 
+#if DAYO_HAS_IMGUI
+const char* workspaceSuffix(ui::Workspace workspace) noexcept {
+    switch (workspace) {
+    case ui::Workspace::layout:
+        return "Layout";
+    case ui::Workspace::animation:
+        return "Animation";
+    case ui::Workspace::camera:
+        return "Camera";
+    case ui::Workspace::render:
+        return "Render";
+    case ui::Workspace::debug:
+        return "Debug";
+    }
+    return "Layout";
+}
+#endif
+
 } // namespace
 
 Application::Application(Options options) : options_(std::move(options)) {}
 
+std::string Application::workspaceWindowName(const char* title, const char* id) const {
+#if DAYO_HAS_IMGUI
+    return std::string(title) + "##" + id + "." + workspaceSuffix(uiState_.workspace);
+#else
+    return std::string(title) + "##" + id;
+#endif
+}
+
 void Application::resetProjectRuntimeState() {
+#if DAYO_HAS_IMGUI
+    if (imageSequenceExportRunning_) {
+        if (imageSequenceOutput_)
+            imageSequenceOutput_->close();
+        imageSequenceOutput_.reset();
+        imageSequenceExportRunning_ = false;
+        imageSequenceRestoring_ = false;
+    }
+    timelineTrackCache_ = {};
+#endif
     videoExportJob_.cancel();
     videoExportUiActive_ = false;
     videoExportFramesFinished_ = false;
+    videoExportRestorePending_ = false;
+    activeVideoExport_.reset();
     videoRangeInitialized_ = false;
     scene_.clearProjectState();
     if (device_ != nullptr)
@@ -179,10 +220,24 @@ int Application::run() {
             case platform::WindowEvent::Type::resized:
                 device->resize();
                 break;
+            case platform::WindowEvent::Type::displayScaleChanged:
+#if DAYO_HAS_IMGUI
+                uiState_.userScale = std::max(event.x, 1.0F);
+                ui::applyEditorTheme(uiState_.userScale);
+                ImGui::GetStyle().FontScaleDpi = uiState_.userScale;
+#endif
+                break;
             case platform::WindowEvent::Type::fileDropped:
                 handleAsset(event.path);
                 break;
             case platform::WindowEvent::Type::cameraDragged:
+#if DAYO_HAS_IMGUI
+                // Camera input is consumed from ImGui while drawing the viewport so
+                // it cannot leak from another docked panel or use stale hover state.
+            case platform::WindowEvent::Type::cameraZoomed:
+                // See cameraDragged: read the current ImGui mouse state in the viewport.
+                break;
+#else
                 cameraYaw_ += event.x * 0.008F;
                 cameraPitch_ = std::clamp(cameraPitch_ + event.y * 0.008F, -1.5F, 1.5F);
                 manualCamera_ = true;
@@ -193,6 +248,7 @@ int Application::run() {
                 manualCamera_ = true;
                 refreshPreviewScene();
                 break;
+#endif
             }
         }
         if (!running)
@@ -205,53 +261,53 @@ int Application::run() {
         const float deltaSeconds = std::chrono::duration<float>(tick - previousTick).count();
         previousTick = tick;
         frameProfiler_.beginFrame();
+#if DAYO_HAS_IMGUI
+        if (imageSequenceExportRunning_) {
+            advanceImageSequenceExport();
+        } else if (videoExportUiActive_) {
+#else
         if (videoExportUiActive_) {
-            if (videoExportJob_.running() && !videoExportFramesFinished_) {
-                const auto& exportOptions = *options_.videoExport;
-                if (videoNextFrame_ < videoOutputFrameCount_) {
+#endif
+            if (videoExportFramesFinished_) {
+                if (!videoExportJob_.running()) {
+                    restoreVideoExportState();
+                    videoExportUiActive_ = videoExportRestorePending_;
+                }
+            } else if (videoExportJob_.running()) {
+                const auto& exportOptions = activeVideoExport_.value();
+                if (videoNextFrame_ < videoOutputFrameCount_ && videoExportJob_.canAcceptFrame()) {
                     if (!videoPreRollDone_) {
-                        animationFrame_ = 0.0F;
-                        scene_.setFrame(animationFrame_);
-                        refreshAnimatedMesh(true, 0.0F);
-                        refreshPreviewScene();
-                        if (videoFromFrame_ > 0U) {
-                            const auto sourceFrameDuration = static_cast<float>(1.0 / videoSourceFps_);
-                            for (std::uint64_t frame = 1; frame <= videoFromFrame_; ++frame) {
-                                animationFrame_ = static_cast<float>(frame);
-                                scene_.setFrame(animationFrame_);
-                                refreshAnimatedMesh(false, sourceFrameDuration);
-                                refreshPreviewScene();
-                            }
-                        }
-                        videoPreRollDone_ = true;
+                        videoPreRollDone_ = advanceDeterministicFrameEvaluation(static_cast<float>(videoFromFrame_),
+                                                                                videoEvaluationNextFrame_);
                         videoPreviousSourceFrame_ = static_cast<float>(videoFromFrame_);
                     }
-                    const auto sourceFrame =
-                        videoSourceFrame(videoNextFrame_, videoFromFrame_, videoToFrame_, videoSourceFps_, videoFps_);
-                    if (videoNextFrame_ != 0U) {
-                        animationFrame_ = sourceFrame;
-                        scene_.setFrame(animationFrame_);
-                        const auto delta = std::max(0.0F, sourceFrame - videoPreviousSourceFrame_) /
-                                           static_cast<float>(videoSourceFps_);
-                        refreshAnimatedMesh(false, delta);
+                    if (videoPreRollDone_) {
+                        const auto sourceFrame = videoSourceFrame(videoNextFrame_, videoFromFrame_, videoToFrame_,
+                                                                  videoSourceFps_, videoFps_);
+                        if (videoNextFrame_ != 0U) {
+                            animationFrame_ = sourceFrame;
+                            scene_.setFrame(animationFrame_);
+                            const auto delta = std::max(0.0F, sourceFrame - videoPreviousSourceFrame_) /
+                                               static_cast<float>(videoSourceFps_);
+                            refreshAnimatedMesh(false, delta);
+                        }
+                        if (videoMode_) {
+                            mediaSeconds_ = std::max(0.0, static_cast<double>(sourceFrame) / videoSourceFps_);
+                            refreshVideoFrame();
+                        }
+                        refreshPreviewScene();
+                        try {
+                            if (videoExportJob_.trySubmitFrame(
+                                    device_->renderToImage({exportOptions.width, exportOptions.height})))
+                                ++videoNextFrame_;
+                        } catch (const std::exception& exception) {
+                            videoExportStatus_ = exception.what();
+                            videoExportJob_.requestCancel();
+                            videoExportFramesFinished_ = true;
+                        }
+                        videoPreviousSourceFrame_ = sourceFrame;
                     }
-                    if (videoMode_) {
-                        mediaSeconds_ = std::max(0.0, static_cast<double>(sourceFrame) / videoSourceFps_);
-                        refreshVideoFrame();
-                    }
-                    refreshPreviewScene();
-                    try {
-                        videoExportJob_.submitFrame(
-                            device_->renderToImage({exportOptions.width, exportOptions.height}));
-                    } catch (const std::exception& exception) {
-                        videoExportStatus_ = exception.what();
-                        videoExportJob_.cancel();
-                        videoExportFramesFinished_ = true;
-                        videoExportUiActive_ = false;
-                    }
-                    videoPreviousSourceFrame_ = sourceFrame;
-                    ++videoNextFrame_;
-                } else {
+                } else if (videoNextFrame_ >= videoOutputFrameCount_) {
                     videoExportJob_.finishFrames();
                     videoExportFramesFinished_ = true;
                 }
@@ -259,7 +315,8 @@ int Application::run() {
                 const auto error = videoExportJob_.error();
                 videoExportStatus_ = error ? *error : "Video export stopped unexpectedly";
                 videoExportFramesFinished_ = true;
-                videoExportUiActive_ = false;
+                restoreVideoExportState();
+                videoExportUiActive_ = videoExportRestorePending_;
             }
         } else if (scene_.advanceFrame(deltaSeconds * playbackSpeed_, playing_)) {
             animationFrame_ = scene_.timeline().frame;
@@ -494,6 +551,13 @@ void Application::handleAsset(const std::filesystem::path& path) {
     if (kind == core::AssetKind::project) {
         try {
             const auto project = core::loadProject(path);
+            currentProjectPath_ = std::filesystem::absolute(path).lexically_normal();
+#if DAYO_HAS_IMGUI
+            const auto projectText = currentProjectPath_->string();
+            const auto projectLength = std::min(projectText.size(), projectDestination_.size() - 1U);
+            std::copy_n(projectText.data(), projectLength, projectDestination_.data());
+            projectDestination_[projectLength] = '\0';
+#endif
             resetProjectRuntimeState();
             if (project.renderer == "subayai")
                 device_->selectRenderer(graphics::RendererKind::subayai);
@@ -592,6 +656,9 @@ void Application::handleAsset(const std::filesystem::path& path) {
         try {
             const auto modelId = scene_.addModel(path);
             scene_.selectModel(modelId);
+            if (scene_.models().empty() || scene_.selectedModelId() != modelId)
+                throw std::logic_error("PMX model was not retained in the scene");
+            log::info("PMX scene state: models=", scene_.models().size(), " selected=", scene_.selectedModelId());
             videoMode_ = scene_.media() != nullptr && scene_.media()->info().hasVideo;
             normalization_ = scene_.selectedModel()->normalization;
             refreshPreviewTextures();
@@ -1073,6 +1140,14 @@ void Application::refreshPreviewBackground() {
     if (device_ == nullptr)
         return;
     const auto& background = scene_.background();
+    uploadedVideoFrame_ = -1;
+    if (background.screenSource == core::ScreenTextureSource::backgroundVideo) {
+        if (videoMode_ && scene_.media() != nullptr && scene_.media()->info().hasVideo)
+            refreshVideoFrame();
+        else
+            device_->uploadPreviewBackground({});
+        return;
+    }
     if (background.screenSource != core::ScreenTextureSource::backgroundImage || !background.image.has_value()) {
         device_->uploadPreviewBackground({});
         return;
@@ -1084,13 +1159,13 @@ void Application::refreshPreviewBackground() {
 
 void Application::refreshVideoFrame() {
     auto* media = scene_.media();
-    if (!videoMode_ || media == nullptr || device_ == nullptr)
+    if (!videoMode_ || media == nullptr || device_ == nullptr ||
+        scene_.background().screenSource != core::ScreenTextureSource::backgroundVideo)
         return;
     const auto frameIndex = static_cast<std::int64_t>(mediaSeconds_ * media->info().videoFramesPerSecond);
     if (frameIndex == uploadedVideoFrame_)
         return;
     const auto image = media->decodeVideoFrame(mediaSeconds_);
-    scene_.setBackgroundScreenSource(core::ScreenTextureSource::backgroundVideo);
     const std::array textures{graphics::PreviewTexture{image.width, image.height, image.pixels}};
     device_->uploadPreviewBackground(textures);
     if (scene_.models().empty()) {
@@ -1150,115 +1225,121 @@ void Application::refreshPreviewScene() {
     device_->updatePreviewScene(scene);
 }
 
+void Application::resetPhysicsSimulation() {
+    for (auto& instance : scene_.models()) {
+        if (instance.physics != nullptr)
+            (*instance.physics).reset();
+        if (instance.softBody != nullptr && instance.softBody->available())
+            (*instance.softBody).reset();
+    }
+}
+
+void Application::evaluateExportFrame(float frame, float deltaSeconds, bool initialUpload) {
+    animationFrame_ = frame;
+    scene_.setFrame(frame);
+    if (videoMode_ && scene_.media() != nullptr) {
+        mediaSeconds_ = std::max(0.0, static_cast<double>(frame) / sceneTimelineFps(scene_));
+        refreshVideoFrame();
+    }
+    refreshAnimatedMesh(initialUpload, deltaSeconds);
+    refreshPreviewScene();
+}
+
+bool Application::advanceDeterministicFrameEvaluation(float targetFrame, std::uint64_t& nextFrame) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(5);
+    const float target = std::max(targetFrame, 0.0F);
+    const float frameDuration = static_cast<float>(1.0 / sceneTimelineFps(scene_));
+    const auto wholeFrames = static_cast<std::uint64_t>(std::floor(target));
+    if (nextFrame == 0) {
+        resetPhysicsSimulation();
+        evaluateExportFrame(0.0F, 0.0F, true);
+        nextFrame = 1;
+    }
+    while (nextFrame <= wholeFrames && std::chrono::steady_clock::now() < deadline) {
+        evaluateExportFrame(static_cast<float>(nextFrame), frameDuration);
+        ++nextFrame;
+    }
+    if (nextFrame <= wholeFrames)
+        return false;
+    const float fraction = target - static_cast<float>(wholeFrames);
+    if (fraction > 0.0F)
+        evaluateExportFrame(target, fraction * frameDuration);
+    return true;
+}
+
 void Application::buildUi() {
 #if DAYO_HAS_IMGUI
-    if (!ImGui::GetIO().WantTextInput) {
-        if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
-            if (recordCamera_) {
-                core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
-                auto document = core::toMotionDocument(before);
-                core::VmdCameraKey key = editedCamera_;
-                key.frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
-                key.distance = -cameraDistance_ / std::max(normalization_.scale, 0.0001F);
-                key.rotation = {cameraPitch_, cameraYaw_, 0.0F};
-                std::erase_if(document.cameras, [&](const auto& item) { return item.frame == key.frame; });
-                document.cameras.push_back(key);
-                core::MotionEditor::normalize(document);
-                history_.execute(scene_, std::make_unique<core::EditMotionCommand>(
-                                             0, true, before, core::toVmdMotion(std::move(document), before.modelName),
-                                             "Record camera key"));
-            } else {
-                playing_ = !playing_;
-                if (audioPlayer_.active())
-                    audioPlayer_.setPaused(!playing_);
-            }
-        }
-        if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
-            if (history_.undo(scene_)) {
-                animationFrame_ = scene_.timeline().frame;
-                refreshAnimatedMesh(false);
-                refreshPreviewScene();
-            }
-        }
-        if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
-            if (history_.redo(scene_)) {
-                animationFrame_ = scene_.timeline().frame;
-                refreshAnimatedMesh(false);
-                refreshPreviewScene();
-            }
-        }
-    }
-    ImGui::SetNextWindowPos({24.0F, 24.0F}, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize({460.0F, 420.0F}, ImGuiCond_FirstUseEver);
+    uiState_.viewportHovered = false;
+    uiState_.timelineFocused = false;
+    buildMainMenuBar();
+    buildStatusBar();
+    buildDockLayout();
     auto* model = selectedModel();
-    const auto* motion =
-        scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
-    auto* media = scene_.media();
-    if (ImGui::Begin("Renderer")) {
-        ImGui::TextUnformatted("SDL3 + Vulkan native backend");
-        ImGui::Separator();
-        ImGui::Text("Renderer request: %s", graphics::toString(options_.renderer).data());
-        ImGui::TextWrapped("%s", lastAsset_.c_str());
-        ImGui::Spacing();
-        ImGui::TextUnformatted("Files: DAYO / PMX / VMD / VPD / images / audio / video / FXDAYO");
-        ImGui::Text("OIDN: %s", DAYO_HAS_OIDN ? "CPU available; HIP optional" : "not installed");
-        ImGui::Text("Media: %s", DAYO_HAS_MEDIA ? "FFmpeg enabled" : "metadata/drop only");
-        if (motion != nullptr) {
-            if (ImGui::Checkbox("Play", &playing_) && audioPlayer_.active())
-                audioPlayer_.setPaused(!playing_);
-            float maximum = std::max(scene_.timeline().duration, 1.0F);
-            if (ImGui::SliderFloat("Frame", &animationFrame_, 0.0F, maximum, "%.1f")) {
-                const auto before = scene_.timeline().frame;
-                history_.execute(scene_, std::make_unique<core::SetFrameCommand>(before, animationFrame_));
-                refreshAnimatedMesh(false);
-                refreshPreviewScene();
+    if (ImGui::Begin(workspaceWindowName("Viewport", "viewport").c_str(), nullptr,
+                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+        const ImVec2 available = ImGui::GetContentRegionAvail();
+        if (available.x > 0.0F && available.y > 0.0F) {
+            const auto* imguiViewport = ImGui::GetWindowViewport();
+            const float dpiScale = std::max(imguiViewport->DpiScale, 1.0F);
+            const auto pixelWidth = static_cast<std::uint32_t>(std::max(1.0F, std::round(available.x * dpiScale)));
+            const auto pixelHeight = static_cast<std::uint32_t>(std::max(1.0F, std::round(available.y * dpiScale)));
+            device_->setPreviewViewportExtent({pixelWidth, pixelHeight});
+            const auto preview = device_->previewViewport();
+            if (preview) {
+                const auto imagePosition = ImGui::GetCursorScreenPos();
+                ImGui::Image(ImTextureRef{static_cast<ImTextureID>(preview.textureId)}, available);
+                const bool imageHovered = ImGui::IsItemHovered();
+                if (scene_.models().empty()) {
+                    constexpr auto message = "No model loaded\nDrop a PMX file into the window";
+                    const auto messageSize = ImGui::CalcTextSize(message);
+                    const ImVec2 padding{ImGui::GetStyle().FramePadding.x * 2.0F,
+                                         ImGui::GetStyle().FramePadding.y * 2.0F};
+                    const ImVec2 messagePosition{imagePosition.x + (available.x - messageSize.x) * 0.5F,
+                                                 imagePosition.y + (available.y - messageSize.y) * 0.5F};
+                    auto* drawList = ImGui::GetWindowDrawList();
+                    drawList->AddRectFilled(
+                        {messagePosition.x - padding.x, messagePosition.y - padding.y},
+                        {messagePosition.x + messageSize.x + padding.x, messagePosition.y + messageSize.y + padding.y},
+                        ImGui::GetColorU32(ImGuiCol_WindowBg, 0.88F), ImGui::GetStyle().FrameRounding);
+                    drawList->AddText(messagePosition, ImGui::GetColorU32(ImGuiCol_TextDisabled), message);
+                }
+                bool overlayHovered = false;
+                if (manualCamera_) {
+                    ImGui::SetCursorScreenPos({imagePosition.x + ImGui::GetStyle().ItemSpacing.x,
+                                               imagePosition.y + ImGui::GetStyle().ItemSpacing.y});
+                    if (ImGui::Button("Use VMD camera")) {
+                        manualCamera_ = false;
+                        refreshPreviewScene();
+                    }
+                    overlayHovered = ImGui::IsItemHovered();
+                }
+                uiState_.viewportHovered = imageHovered && !overlayHovered;
             }
+        } else {
+            device_->setPreviewViewportExtent({});
         }
-        if (media != nullptr) {
-            if (motion == nullptr && ImGui::Checkbox("Play", &playing_) && audioPlayer_.active()) {
-                audioPlayer_.setPaused(!playing_);
-            }
-            ImGui::Text("Media: %.2f / %.2f s%s%s", mediaSeconds_, media->info().durationSeconds,
-                        media->info().hasVideo ? " video" : "", media->info().hasAudio ? " audio" : "");
+        const auto& io = ImGui::GetIO();
+        const bool viewportInput = uiState_.viewportHovered && !ImGui::IsAnyItemActive();
+        bool cameraChanged = false;
+        if (viewportInput && ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
+            cameraYaw_ += io.MouseDelta.x * 0.008F;
+            cameraPitch_ = std::clamp(cameraPitch_ + io.MouseDelta.y * 0.008F, -1.5F, 1.5F);
+            cameraChanged = true;
         }
-        if (model != nullptr && model->physics != nullptr) {
-            ImGui::Text("Bullet: %s (%zu bodies, %zu joints)", model->physics->available() ? "enabled" : "unavailable",
-                        model->physics->bodyCount(), model->physics->jointCount());
-            if (model->softBody != nullptr) {
-                ImGui::Text("Soft body: %s (%zu)", model->softBody->available() ? "fallback" : "none",
-                            model->softBody->bodyCount());
-            }
+        if (viewportInput && io.MouseWheel != 0.0F) {
+            cameraDistance_ = std::clamp(cameraDistance_ * std::exp(-io.MouseWheel * 0.12F), 0.4F, 30.0F);
+            cameraChanged = true;
         }
-        if (scene_.effect() != nullptr) {
-            ImGui::Text("Effect graph: %zu passes / %zu textures / %zu samplers", scene_.effect()->passes.size(),
-                        scene_.effect()->textures.size(), scene_.effect()->samplers.size());
-        }
-        ImGui::TextUnformatted("Camera: right-drag to orbit, wheel to zoom");
-        if (ImGui::Button("Undo")) {
-            if (history_.undo(scene_)) {
-                animationFrame_ = scene_.timeline().frame;
-                refreshAnimatedMesh(false);
-                refreshPreviewScene();
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Redo")) {
-            if (history_.redo(scene_)) {
-                animationFrame_ = scene_.timeline().frame;
-                refreshAnimatedMesh(false);
-                refreshPreviewScene();
-            }
-        }
-        if (manualCamera_ && ImGui::Button("Use VMD camera")) {
-            manualCamera_ = false;
+        if (cameraChanged) {
+            manualCamera_ = true;
             refreshPreviewScene();
         }
-        ImGui::Separator();
-        ImGui::TextUnformatted("Subayai and BDPT are enabled only when Vulkan RT features are present.");
+    } else {
+        device_->setPreviewViewportExtent({});
     }
     ImGui::End();
 
-    if (ImGui::Begin("Performance")) {
+    if (uiState_.performanceVisible && ImGui::Begin(workspaceWindowName("Performance", "performance").c_str())) {
         const auto& totals = frameProfiler_.totals();
         ImGui::TextUnformatted(frameProfiler_.report().c_str());
         ImGui::Text("Upload: %.2f MiB/frame", totals.frames == 0 ? 0.0
@@ -1270,38 +1351,47 @@ void Application::buildUi() {
         if (ImGui::Button("Reset profiler"))
             frameProfiler_.reset();
     }
-    ImGui::End();
+    if (uiState_.performanceVisible)
+        ImGui::End();
 
-    if (ImGui::Begin("Models")) {
-        ImGui::Text("%zu model instance(s)", scene_.models().size());
+    if (uiState_.sceneVisible && ImGui::Begin(workspaceWindowName("Scene", "scene").c_str())) {
+        if (ImGui::Selectable("Scene / Background", uiState_.inspectScene))
+            uiState_.inspectScene = true;
+        ImGui::InputTextWithHint("##scene-filter", "Search scene...", uiState_.sceneFilter.data(),
+                                 uiState_.sceneFilter.size());
+        ImGui::SeparatorText("Models");
         for (const auto& instance : scene_.models()) {
+            if (uiState_.sceneFilter[0] != '\0' &&
+                instance.displayName.find(uiState_.sceneFilter.data()) == std::string::npos)
+                continue;
             ImGui::PushID(static_cast<int>(instance.id));
-            bool selected = scene_.selectedModelId() == instance.id;
-            if (ImGui::Selectable(instance.displayName.c_str(), selected)) {
+            bool selected = !uiState_.inspectScene && scene_.selectedModelId() == instance.id;
+            const auto label = std::string(instance.visible ? "[visible]  " : "[hidden]  ") + instance.displayName;
+            if (ImGui::Selectable(label.c_str(), selected)) {
+                uiState_.inspectScene = false;
                 scene_.selectModel(instance.id);
                 normalization_ = instance.normalization;
                 refreshAnimatedMesh(true);
                 refreshPreviewScene();
             }
-            ImGui::SameLine();
-            bool visible = instance.visible;
-            if (ImGui::Checkbox("Visible", &visible)) {
-                scene_.setModelVisible(instance.id, visible);
-                refreshAnimatedMesh(true);
+            if (ImGui::BeginPopupContextItem("scene-item-context")) {
+                ImGui::MenuItem("Rename", nullptr, false, false);
+                ImGui::MenuItem("Duplicate / Clone", nullptr, false, false);
+                if (ImGui::MenuItem("Open Source Folder")) {
+                    const auto url = "file://" + instance.sourcePath.parent_path().generic_string();
+                    if (!SDL_OpenURL(url.c_str()))
+                        lastAsset_ = std::string("Open folder: ") + SDL_GetError();
+                }
+                ImGui::MenuItem("Set External Parent", nullptr, false, false);
+                ImGui::EndPopup();
             }
             ImGui::PopID();
         }
-        if (model != nullptr) {
-            int clones = static_cast<int>(model->cloneCount);
-            if (ImGui::SliderInt("Clone count", &clones, 1, 16)) {
-                scene_.setCloneCount(model->id, static_cast<std::uint32_t>(clones));
-                refreshAnimatedMesh(true);
-            }
-        }
     }
-    ImGui::End();
+    if (uiState_.sceneVisible)
+        ImGui::End();
 
-    if (ImGui::Begin("Animation / Physics")) {
+    if (uiState_.physicsVisible && ImGui::Begin(workspaceWindowName("Physics", "physics").c_str())) {
         ImGui::Text("Timeline: %.1f / %.1f frames", animationFrame_, scene_.timeline().duration);
         ImGui::Checkbox("Repeat", &repeat_);
         ImGui::SliderFloat("Playback speed", &playbackSpeed_, 0.1F, 4.0F, "%.2fx");
@@ -1355,10 +1445,781 @@ void Application::buildUi() {
             ImGui::EndChild();
         }
     }
-    ImGui::End();
+    if (uiState_.physicsVisible)
+        ImGui::End();
+    buildInspectorPanel();
     buildEditorUi();
+    handleEditorShortcuts();
     buildAudioExportUi();
     buildVideoExportUi();
+    buildImageSequenceExportUi();
+    buildSaveAsDialog();
+#endif
+}
+
+void Application::handleEditorShortcuts() {
+#if DAYO_HAS_IMGUI
+    const auto& io = ImGui::GetIO();
+    if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false))
+        saveProjectNow();
+    if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false) && history_.undo(scene_)) {
+        animationFrame_ = scene_.timeline().frame;
+        refreshAnimatedMesh(false);
+        refreshPreviewScene();
+    }
+    if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false) && history_.redo(scene_)) {
+        animationFrame_ = scene_.timeline().frame;
+        refreshAnimatedMesh(false);
+        refreshPreviewScene();
+    }
+    const bool editorShortcutScope = uiState_.viewportHovered || uiState_.timelineFocused;
+    if (!editorShortcutScope || io.WantTextInput)
+        return;
+    if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
+        if (recordCamera_) {
+            core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
+            auto document = core::toMotionDocument(before);
+            core::VmdCameraKey key = editedCamera_;
+            key.frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
+            key.distance = -cameraDistance_ / std::max(normalization_.scale, 0.0001F);
+            key.rotation = {cameraPitch_, cameraYaw_, 0.0F};
+            std::erase_if(document.cameras, [&](const auto& item) { return item.frame == key.frame; });
+            document.cameras.push_back(key);
+            core::MotionEditor::normalize(document);
+            history_.execute(scene_, std::make_unique<core::EditMotionCommand>(
+                                         0, true, before, core::toVmdMotion(std::move(document), before.modelName),
+                                         "Record camera key"));
+        } else {
+            playing_ = !playing_;
+            if (audioPlayer_.active())
+                audioPlayer_.setPaused(!playing_);
+        }
+    }
+#endif
+}
+
+void Application::setWorkspace(ui::Workspace workspace) {
+#if DAYO_HAS_IMGUI
+    auto& previousPanels = uiState_.workspacePanels[static_cast<std::size_t>(uiState_.workspace)];
+    previousPanels.sceneVisible = uiState_.sceneVisible;
+    previousPanels.inspectorVisible = uiState_.inspectorVisible;
+    previousPanels.timelineVisible = uiState_.timelineVisible;
+    uiState_.workspace = workspace;
+    const auto& panels = uiState_.workspacePanels[static_cast<std::size_t>(workspace)];
+    uiState_.sceneVisible = panels.sceneVisible;
+    uiState_.inspectorVisible = panels.inspectorVisible;
+    uiState_.timelineVisible = panels.timelineVisible;
+    uiState_.performanceVisible = workspace == ui::Workspace::debug;
+    uiState_.fxDebugVisible = workspace == ui::Workspace::debug;
+    uiState_.materialDebugVisible = workspace == ui::Workspace::debug;
+    uiState_.physicsVisible = workspace == ui::Workspace::debug;
+#else
+    static_cast<void>(workspace);
+#endif
+}
+
+void Application::buildMainMenuBar() {
+#if DAYO_HAS_IMGUI
+    if (!ImGui::BeginMainMenuBar())
+        return;
+    if (ImGui::BeginMenu("File")) {
+        if (ImGui::MenuItem("Save", "Ctrl+S"))
+            saveProjectNow();
+        if (ImGui::MenuItem("Save As..."))
+            uiState_.saveAsOpen = true;
+        ImGui::Separator();
+        if (ImGui::MenuItem("Quit", "Alt+F4")) {
+            SDL_Event event{};
+            event.type = SDL_EVENT_QUIT;
+            SDL_PushEvent(&event);
+        }
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Edit")) {
+        const bool canUndo = history_.canUndo();
+        const bool canRedo = history_.canRedo();
+        if (ImGui::MenuItem("Undo", "Ctrl+Z", false, canUndo) && history_.undo(scene_)) {
+            animationFrame_ = scene_.timeline().frame;
+            refreshAnimatedMesh(false);
+            refreshPreviewScene();
+        }
+        if (ImGui::MenuItem("Redo", "Ctrl+Y", false, canRedo) && history_.redo(scene_)) {
+            animationFrame_ = scene_.timeline().frame;
+            refreshAnimatedMesh(false);
+            refreshPreviewScene();
+        }
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("View")) {
+        if (ImGui::MenuItem("Scene", nullptr, &uiState_.sceneVisible))
+            uiState_.resetLayoutRequested = true;
+        if (ImGui::MenuItem("Inspector", nullptr, &uiState_.inspectorVisible))
+            uiState_.resetLayoutRequested = true;
+        if (ImGui::MenuItem("Timeline", nullptr, &uiState_.timelineVisible))
+            uiState_.resetLayoutRequested = true;
+        ImGui::MenuItem("Status bar", nullptr, &uiState_.statusBarVisible);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Reset Layout")) {
+            uiState_.resetLayoutRequested = true;
+        }
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Animation")) {
+        if (ImGui::MenuItem(playing_ ? "Pause" : "Play", "Space")) {
+            playing_ = !playing_;
+            if (audioPlayer_.active())
+                audioPlayer_.setPaused(!playing_);
+        }
+        ImGui::MenuItem("Loop", nullptr, &repeat_);
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Render")) {
+        if (ImGui::MenuItem("Export Video..."))
+            uiState_.videoExportOpen = true;
+        if (ImGui::MenuItem("Export Audio..."))
+            uiState_.audioExportOpen = true;
+        if (ImGui::MenuItem("Export Image Sequence...")) {
+            uiState_.imageSequenceExportOpen = true;
+            setWorkspace(ui::Workspace::render);
+        }
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Help")) {
+        ImGui::TextUnformatted("Space  Play / Pause");
+        ImGui::TextUnformatted("Ctrl+Z / Ctrl+Y  Undo / Redo");
+        ImGui::TextUnformatted("Right-drag / Wheel  Viewport camera");
+        ImGui::EndMenu();
+    }
+    ImGui::Separator();
+    ImGui::TextUnformatted("Workspace");
+    const auto workspaceButton = [&](const char* label, ui::Workspace workspace) {
+        ImGui::SameLine();
+        if (ImGui::Selectable(label, uiState_.workspace == workspace, ImGuiSelectableFlags_DontClosePopups))
+            setWorkspace(workspace);
+    };
+    workspaceButton("Layout", ui::Workspace::layout);
+    workspaceButton("Animation", ui::Workspace::animation);
+    workspaceButton("Camera", ui::Workspace::camera);
+    workspaceButton("Render", ui::Workspace::render);
+    workspaceButton("Debug", ui::Workspace::debug);
+    ImGui::EndMainMenuBar();
+#endif
+}
+
+void Application::buildDockLayout() {
+#if DAYO_HAS_IMGUI
+    auto* viewport = ImGui::GetMainViewport();
+    const char* workspaceId = workspaceSuffix(uiState_.workspace);
+    const ImGuiID dockspaceId = ImGui::GetID((std::string("DayoEditorDockSpace.") + workspaceId).c_str());
+    ImGui::DockSpaceOverViewport(dockspaceId, viewport, ImGuiDockNodeFlags_None);
+    const auto* node = ImGui::DockBuilderGetNode(dockspaceId);
+    const bool hasLayout = node != nullptr && (node->IsSplitNode() || node->Windows.Size > 0);
+    if (hasLayout && !uiState_.resetLayoutRequested)
+        return;
+
+    ImGui::DockBuilderRemoveNode(dockspaceId);
+    ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dockspaceId, viewport->WorkSize);
+    ImGuiID right{};
+    ImGuiID main = dockspaceId;
+    const float inspectorRatio = uiState_.workspace == ui::Workspace::camera ? 0.30F : 0.25F;
+    const float timelineRatio = uiState_.workspace == ui::Workspace::animation ? 0.40F : 0.30F;
+    ImGuiID timeline{};
+    if (uiState_.inspectorVisible)
+        ImGui::DockBuilderSplitNode(main, ImGuiDir_Right, inspectorRatio, &right, &main);
+    if (uiState_.timelineVisible) {
+        ImGuiID center{};
+        ImGui::DockBuilderSplitNode(main, ImGuiDir_Down, timelineRatio, &timeline, &center);
+        main = center;
+    }
+    ImGuiID scene{};
+    if (uiState_.sceneVisible) {
+        ImGuiID viewportNode{};
+        ImGui::DockBuilderSplitNode(main, ImGuiDir_Left, 0.18F, &scene, &viewportNode);
+        main = viewportNode;
+    }
+    ImGui::DockBuilderDockWindow(workspaceWindowName("Viewport", "viewport").c_str(), main);
+    if (uiState_.sceneVisible)
+        ImGui::DockBuilderDockWindow(workspaceWindowName("Scene", "scene").c_str(), scene);
+    if (uiState_.inspectorVisible)
+        ImGui::DockBuilderDockWindow(workspaceWindowName("Inspector", "inspector").c_str(), right);
+    if (uiState_.timelineVisible)
+        ImGui::DockBuilderDockWindow(workspaceWindowName("Timeline", "timeline").c_str(), timeline);
+    const ImGuiID auxiliaryNode = uiState_.inspectorVisible ? right : main;
+    if (uiState_.physicsVisible)
+        ImGui::DockBuilderDockWindow(workspaceWindowName("Physics", "physics").c_str(),
+                                     uiState_.timelineVisible ? timeline : main);
+    if (uiState_.performanceVisible)
+        ImGui::DockBuilderDockWindow(workspaceWindowName("Performance", "performance").c_str(), auxiliaryNode);
+    if (uiState_.fxDebugVisible)
+        ImGui::DockBuilderDockWindow(workspaceWindowName("FX Debug", "fx-debug").c_str(), auxiliaryNode);
+    if (uiState_.materialDebugVisible)
+        ImGui::DockBuilderDockWindow(workspaceWindowName("Preview Material Inspector", "material-debug").c_str(),
+                                     auxiliaryNode);
+    if (uiState_.workspace == ui::Workspace::debug) {
+        ImGui::DockBuilderDockWindow(workspaceWindowName("Bone / Expression", "legacy-bone").c_str(), auxiliaryNode);
+        ImGui::DockBuilderDockWindow(workspaceWindowName("Project tools", "legacy-project").c_str(), auxiliaryNode);
+    }
+    if (uiState_.workspace == ui::Workspace::camera || uiState_.workspace == ui::Workspace::debug)
+        ImGui::DockBuilderDockWindow(workspaceWindowName("Camera / Light / Self Shadow", "legacy-camera").c_str(),
+                                     auxiliaryNode);
+    ImGui::DockBuilderFinish(dockspaceId);
+    uiState_.resetLayoutRequested = false;
+#endif
+}
+
+void Application::buildInspectorPanel() {
+#if DAYO_HAS_IMGUI
+    if (!uiState_.inspectorVisible)
+        return;
+    auto* model = selectedModel();
+    if (!ImGui::Begin(workspaceWindowName("Inspector", "inspector").c_str())) {
+        ImGui::End();
+        return;
+    }
+    if (uiState_.inspectScene || model == nullptr || model->model == nullptr) {
+        ImGui::TextUnformatted("Scene settings");
+        if (ImGui::CollapsingHeader("Scene", ImGuiTreeNodeFlags_DefaultOpen)) {
+            auto background = scene_.background();
+            int source = static_cast<int>(background.screenSource);
+            if (ImGui::BeginTable("scene-properties", 2, ImGuiTableFlags_SizingStretchProp)) {
+                ImGui::TableSetupColumn("Property", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 10.0F);
+                ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted("Background");
+                ImGui::TableSetColumnIndex(1);
+                if (ImGui::Combo("##background-source", &source, "Previous frame\0Video\0Image\0White\0")) {
+                    scene_.setBackgroundScreenSource(static_cast<core::ScreenTextureSource>(source));
+                    refreshPreviewBackground();
+                    refreshPreviewScene();
+                }
+                ImGui::EndTable();
+            }
+            bool enabled = background.enabled;
+            if (ImGui::Checkbox("Enabled", &enabled)) {
+                scene_.setBackgroundEnabled(enabled);
+                refreshPreviewScene();
+            }
+        }
+        ImGui::End();
+        return;
+    }
+
+    ImGui::Text("Model: %s", model->displayName.c_str());
+    ImGui::TextDisabled("PMX  ·  %zu bones  ·  %zu morphs", model->model->bones.size(), model->model->morphs.size());
+    ImGui::Separator();
+    if (ImGui::CollapsingHeader("Model", ImGuiTreeNodeFlags_DefaultOpen)) {
+        bool visible = model->visible;
+        if (ImGui::Checkbox("Visible", &visible)) {
+            scene_.setModelVisible(model->id, visible);
+            refreshAnimatedMesh(true);
+        }
+        int clones = static_cast<int>(model->cloneCount);
+        if (ImGui::DragInt("Clone count", &clones, 1.0F, 1, 16)) {
+            scene_.setCloneCount(model->id, static_cast<std::uint32_t>(clones));
+            refreshAnimatedMesh(true);
+        }
+        ImGui::TextDisabled("Source: %s", model->sourcePath.filename().string().c_str());
+        ImGui::TextDisabled("%s", model->model->metadata.comment.c_str());
+    }
+    if (ImGui::CollapsingHeader("Bone / Morph", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const auto& bones = model->model->bones;
+        if (!bones.empty()) {
+            selectedBone_ = std::clamp(selectedBone_, 0, static_cast<int>(bones.size() - 1));
+            if (ImGui::BeginCombo("Bone", bones[static_cast<std::size_t>(selectedBone_)].name.c_str())) {
+                for (std::size_t index = 0; index < bones.size(); ++index)
+                    if (ImGui::Selectable(bones[index].name.c_str(), selectedBone_ == static_cast<int>(index)))
+                        selectedBone_ = static_cast<int>(index);
+                ImGui::EndCombo();
+            }
+            ImGui::DragFloat3("Position", editedBoneTranslation_.data(), 0.01F);
+            ImGui::DragFloat4("Rotation", editedBoneRotation_.data(), 0.01F, -1.0F, 1.0F);
+            ImGui::Checkbox("Physics", &editedBonePhysics_);
+            if (ImGui::Button("Register Bone Key")) {
+                const auto before = model->motion ? *model->motion : core::VmdMotion{};
+                const auto outputModelName = before.modelName.empty() ? model->displayName : before.modelName;
+                auto document = core::toMotionDocument(before);
+                const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
+                const auto& name = bones[static_cast<std::size_t>(selectedBone_)].name;
+                std::erase_if(document.bones, [&](const auto& key) { return key.frame == frame && key.name == name; });
+                document.bones.push_back(
+                    {name, frame, editedBoneTranslation_, editedBoneRotation_, {}, editedBonePhysics_});
+                core::MotionEditor::normalize(document);
+                history_.execute(scene_,
+                                 std::make_unique<core::EditMotionCommand>(
+                                     model->id, false, before, core::toVmdMotion(std::move(document), outputModelName),
+                                     "Register bone key"));
+                refreshAnimatedMesh(false);
+                refreshPreviewScene();
+            }
+        }
+        const auto& morphs = model->model->morphs;
+        if (!morphs.empty()) {
+            selectedMorph_ = std::clamp(selectedMorph_, 0, static_cast<int>(morphs.size() - 1));
+            if (ImGui::BeginCombo("Morph", morphs[static_cast<std::size_t>(selectedMorph_)].name.c_str())) {
+                for (std::size_t index = 0; index < morphs.size(); ++index)
+                    if (ImGui::Selectable(morphs[index].name.c_str(), selectedMorph_ == static_cast<int>(index)))
+                        selectedMorph_ = static_cast<int>(index);
+                ImGui::EndCombo();
+            }
+            ImGui::SliderFloat("Weight", &editedMorphWeight_, 0.0F, 1.0F);
+            if (ImGui::Button("Register Morph Key")) {
+                const auto before = model->motion ? *model->motion : core::VmdMotion{};
+                const auto outputModelName = before.modelName.empty() ? model->displayName : before.modelName;
+                auto document = core::toMotionDocument(before);
+                const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
+                const auto& name = morphs[static_cast<std::size_t>(selectedMorph_)].name;
+                std::erase_if(document.morphs, [&](const auto& key) { return key.frame == frame && key.name == name; });
+                document.morphs.push_back({name, frame, editedMorphWeight_});
+                core::MotionEditor::normalize(document);
+                history_.execute(scene_,
+                                 std::make_unique<core::EditMotionCommand>(
+                                     model->id, false, before, core::toVmdMotion(std::move(document), outputModelName),
+                                     "Register morph key"));
+                refreshAnimatedMesh(false);
+                refreshPreviewScene();
+            }
+        }
+    }
+    if (ImGui::CollapsingHeader("Material", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (model->model->materials.empty()) {
+            ImGui::TextDisabled("No materials");
+        } else {
+            int material = uiState_.selectedMaterial >= 0 &&
+                                   uiState_.selectedMaterial < static_cast<std::int32_t>(model->model->materials.size())
+                               ? uiState_.selectedMaterial
+                               : 0;
+            if (ImGui::BeginCombo("Material",
+                                  model->model->materials[static_cast<std::size_t>(material)].name.c_str())) {
+                for (std::size_t index = 0; index < model->model->materials.size(); ++index)
+                    if (ImGui::Selectable(model->model->materials[index].name.c_str(),
+                                          material == static_cast<int>(index))) {
+                        uiState_.selectedMaterial = static_cast<std::int32_t>(index);
+                        material = static_cast<int>(index);
+                    }
+                ImGui::EndCombo();
+            }
+            const auto& selectedMaterial = model->model->materials[static_cast<std::size_t>(material)];
+            ImGui::Text("Diffuse %.2f  Specular %.2f  Edge %.3f", selectedMaterial.diffuse[0],
+                        selectedMaterial.specular[0], selectedMaterial.edgeSize);
+            ImGui::TextWrapped("Base: %s",
+                               selectedMaterial.textureIndex >= 0 &&
+                                       static_cast<std::size_t>(selectedMaterial.textureIndex) <
+                                           model->model->textures.size()
+                                   ? model->model->textures[static_cast<std::size_t>(selectedMaterial.textureIndex)]
+                                         .filename()
+                                         .string()
+                                         .c_str()
+                                   : "none");
+            if (ImGui::Checkbox("Enable PMX outlines (preview)", &previewOutlineEnabled_))
+                refreshPreviewScene();
+        }
+    }
+    if (uiState_.workspace == ui::Workspace::debug && ImGui::CollapsingHeader("Evaluation Order (experimental)")) {
+        ImGui::TextDisabled("Not applied by the renderer or saved in projects.");
+        ImGui::BeginDisabled();
+        ImGui::DragInt("Motion", &model->order.motion, 1.0F, 0, 1024);
+        ImGui::DragInt("Deform", &model->order.deform, 1.0F, 0, 1024);
+        ImGui::DragInt("Postprocess", &model->order.postprocess, 1.0F, 0, 1024);
+        ImGui::DragInt("Raster", &model->order.raster, 1.0F, 0, 1024);
+        ImGui::EndDisabled();
+    }
+    ImGui::End();
+#endif
+}
+
+void Application::buildSaveAsDialog() {
+#if DAYO_HAS_IMGUI
+    if (uiState_.saveAsOpen) {
+        ImGui::OpenPopup("Save Project As");
+        uiState_.saveAsOpen = false;
+    }
+    if (!ImGui::BeginPopupModal("Save Project As", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+    ImGui::TextUnformatted("Choose a Dayo project destination.");
+    ImGui::InputText("Path", projectDestination_.data(), projectDestination_.size());
+    if (ImGui::Button("Save")) {
+        saveProjectAsNow();
+        if (projectSaveStatus_ == "Project saved")
+            ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel"))
+        ImGui::CloseCurrentPopup();
+    if (!projectSaveStatus_.empty())
+        ImGui::TextWrapped("%s", projectSaveStatus_.c_str());
+    ImGui::EndPopup();
+#endif
+}
+
+void Application::restoreVideoExportState() {
+#if DAYO_HAS_IMGUI
+    if (!videoExportRestorePending_)
+        return;
+    const float restoreFrame = std::max(videoExportRestoreFrame_, 0.0F);
+    if (!advanceDeterministicFrameEvaluation(restoreFrame, videoRestoreNextFrame_))
+        return;
+    animationFrame_ = videoExportRestoreFrame_;
+    scene_.setFrame(animationFrame_);
+    mediaSeconds_ = videoExportRestoreMediaSeconds_;
+    playing_ = videoExportRestorePlaying_;
+    manualCamera_ = videoExportRestoreManualCamera_;
+    if (videoMode_) {
+        uploadedVideoFrame_ = -1;
+        refreshVideoFrame();
+    }
+    if (videoExportRestoreAudioActive_ && !loadedAudio_.samples.empty()) {
+        const auto audioStart = std::max(0.0, videoExportRestoreMediaSeconds_ + audioOffsetSeconds_);
+        audioPlayer_.play(loadedAudio_, audioStart);
+        audioPlayer_.setVolume(audioVolume_);
+        audioPlayer_.setPaused(!playing_);
+    } else {
+        audioPlayer_.stop();
+    }
+    refreshPreviewScene();
+    videoExportRestorePending_ = false;
+    activeVideoExport_.reset();
+#endif
+}
+
+void Application::saveProjectNow() {
+#if DAYO_HAS_IMGUI
+    if (!currentProjectPath_) {
+        uiState_.saveAsOpen = true;
+        projectSaveStatus_ = "Project has no path; choose a destination.";
+        return;
+    }
+    try {
+        core::saveProject(*currentProjectPath_, currentProject());
+        projectSaveStatus_ = "Project saved";
+    } catch (const std::exception& error) {
+        projectSaveStatus_ = error.what();
+    }
+#endif
+}
+
+void Application::saveProjectAsNow() {
+#if DAYO_HAS_IMGUI
+    try {
+        if (projectDestination_[0] == '\0')
+            throw std::invalid_argument("project destination is empty");
+        const auto destination = std::filesystem::absolute(projectDestination_.data()).lexically_normal();
+        core::saveProject(destination, currentProject());
+        currentProjectPath_ = destination;
+        const auto text = currentProjectPath_->string();
+        const auto count = std::min(text.size(), projectDestination_.size() - 1U);
+        std::copy_n(text.data(), count, projectDestination_.data());
+        projectDestination_[count] = '\0';
+        projectSaveStatus_ = "Project saved";
+    } catch (const std::exception& error) {
+        projectSaveStatus_ = error.what();
+    }
+#endif
+}
+
+void Application::startImageSequenceExport() {
+#if DAYO_HAS_IMGUI
+    bool stateMutationStarted = false;
+    try {
+        if (device_ == nullptr)
+            throw std::logic_error("image sequence export has no graphics device");
+        if (sequenceOutput_.lastFrame < sequenceOutput_.firstFrame)
+            throw std::invalid_argument("last frame precedes first frame");
+        sequenceOutput_.directory = sequenceOutputDirectory_.data();
+        core::OutputQueue output(sequenceOutput_);
+        imageSequenceRestoreFrame_ = scene_.timeline().frame;
+        imageSequenceRestoreMediaSeconds_ = mediaSeconds_;
+        imageSequenceRestorePlaying_ = playing_;
+        imageSequenceRestoreManualCamera_ = manualCamera_;
+        imageSequenceNextFrame_ = sequenceOutput_.firstFrame;
+        imageSequenceSampleIndex_ = 0;
+        imageSequenceSampleCount_ = std::max(sequenceOutput_.samples, std::uint32_t{1});
+        imageSequencePreviousSampleFrame_ = static_cast<float>(sequenceOutput_.firstFrame);
+        imageSequenceFramesFinished_ = false;
+        imageSequencePreRollDone_ = sequenceOutput_.firstFrame == 0U;
+        imageSequencePreRollFrame_ = imageSequencePreRollDone_ ? 0U : 1U;
+        imageSequenceRestoring_ = false;
+        imageSequenceCancelRequested_ = false;
+        imageSequenceCompletionStatus_.clear();
+        imageSequenceImage_ = {};
+        imageSequenceSum_.clear();
+        stateMutationStarted = true;
+        resetPhysicsSimulation();
+        evaluateExportFrame(0.0F, 0.0F, true);
+        imageSequenceOutput_.emplace(std::move(output));
+        imageSequenceExportRunning_ = true;
+        playing_ = false;
+        if (audioPlayer_.active())
+            audioPlayer_.setPaused(true);
+        sequenceOutputStatus_ = "Rendering image sequence...";
+    } catch (const std::exception& error) {
+        imageSequenceOutput_.reset();
+        imageSequenceExportRunning_ = false;
+        imageSequenceRestoring_ = false;
+        if (stateMutationStarted) {
+            try {
+                restoreImageSequenceState();
+            } catch (const std::exception& restoreError) {
+                sequenceOutputStatus_ = std::string(error.what()) + "; restore error: " + restoreError.what();
+                return;
+            }
+        }
+        sequenceOutputStatus_ = error.what();
+    }
+#endif
+}
+
+void Application::restoreImageSequenceState() {
+#if DAYO_HAS_IMGUI
+    scene_.setFrame(imageSequenceRestoreFrame_);
+    animationFrame_ = imageSequenceRestoreFrame_;
+    mediaSeconds_ = imageSequenceRestoreMediaSeconds_;
+    playing_ = imageSequenceRestorePlaying_;
+    manualCamera_ = imageSequenceRestoreManualCamera_;
+    if (audioPlayer_.active())
+        audioPlayer_.setPaused(!playing_);
+    refreshAnimatedMesh(false);
+    if (videoMode_) {
+        uploadedVideoFrame_ = -1;
+        refreshVideoFrame();
+    }
+    refreshPreviewScene();
+#endif
+}
+
+void Application::finishImageSequenceExport(std::string status) {
+#if DAYO_HAS_IMGUI
+    try {
+        if (imageSequenceOutput_) {
+            imageSequenceOutput_->requestClose();
+            if (!imageSequenceOutput_->finished()) {
+                imageSequenceCompletionStatus_ = std::move(status);
+                imageSequenceFramesFinished_ = true;
+                return;
+            }
+            imageSequenceOutput_->rethrowIfFailed();
+        }
+        imageSequenceCompletionStatus_ = std::move(status);
+    } catch (const std::exception& error) {
+        imageSequenceCompletionStatus_ = error.what();
+    }
+    imageSequenceOutput_.reset();
+    imageSequenceCancelRequested_ = false;
+    imageSequenceFramesFinished_ = false;
+    imageSequenceImage_ = {};
+    imageSequenceSum_.clear();
+    imageSequenceRestoring_ = true;
+    imageSequenceRestoreNextFrame_ = 1U;
+    resetPhysicsSimulation();
+    evaluateExportFrame(0.0F, 0.0F, true);
+    sequenceOutputStatus_ = "Restoring preview...";
+#else
+    static_cast<void>(status);
+#endif
+}
+
+void Application::advanceImageSequenceExport() {
+#if DAYO_HAS_IMGUI
+    if (!imageSequenceExportRunning_)
+        return;
+    if (imageSequenceRestoring_) {
+        if (!advanceDeterministicFrameEvaluation(imageSequenceRestoreFrame_, imageSequenceRestoreNextFrame_))
+            return;
+        imageSequenceRestoring_ = false;
+        imageSequenceExportRunning_ = false;
+        sequenceOutputStatus_ = std::move(imageSequenceCompletionStatus_);
+        restoreImageSequenceState();
+        return;
+    }
+    if (imageSequenceCancelRequested_) {
+        finishImageSequenceExport("Sequence export cancelled");
+        return;
+    }
+    if (imageSequenceFramesFinished_) {
+        finishImageSequenceExport(imageSequenceCompletionStatus_.empty() ? "Sequence rendered"
+                                                                         : imageSequenceCompletionStatus_);
+        return;
+    }
+    if (!imageSequencePreRollDone_) {
+        imageSequencePreRollDone_ = advanceDeterministicFrameEvaluation(static_cast<float>(sequenceOutput_.firstFrame),
+                                                                        imageSequencePreRollFrame_);
+        if (imageSequencePreRollDone_) {
+            imageSequencePreviousSampleFrame_ = static_cast<float>(sequenceOutput_.firstFrame);
+        }
+        return;
+    }
+    try {
+        if (!imageSequenceOutput_->canAcceptFrame())
+            return;
+        const auto frame = imageSequenceNextFrame_;
+        const float offset = sequenceOutput_.motionBlur ? static_cast<float>(imageSequenceSampleIndex_) /
+                                                              static_cast<float>(imageSequenceSampleCount_)
+                                                        : 0.0F;
+        const float sampleFrame = static_cast<float>(frame) + offset;
+        const float physicsDelta = std::max(sampleFrame - imageSequencePreviousSampleFrame_, 0.0F) /
+                                   static_cast<float>(sceneTimelineFps(scene_));
+        evaluateExportFrame(sampleFrame, physicsDelta);
+        imageSequencePreviousSampleFrame_ = sampleFrame;
+
+        auto rendered = device_->renderToImage({sequenceWidth_, sequenceHeight_});
+        if (imageSequenceSampleIndex_ == 0U) {
+            imageSequenceImage_ = std::move(rendered);
+            imageSequenceSum_.assign(imageSequenceImage_.pixels.size(), 0U);
+            for (std::size_t index = 0; index < imageSequenceImage_.pixels.size(); ++index)
+                imageSequenceSum_[index] += imageSequenceImage_.pixels[index];
+        } else if (rendered.width != imageSequenceImage_.width || rendered.height != imageSequenceImage_.height ||
+                   rendered.pixels.size() != imageSequenceImage_.pixels.size()) {
+            throw std::runtime_error("image sequence samples have inconsistent dimensions");
+        } else {
+            for (std::size_t index = 0; index < imageSequenceImage_.pixels.size(); ++index)
+                imageSequenceSum_[index] += rendered.pixels[index];
+        }
+        ++imageSequenceSampleIndex_;
+        if (imageSequenceSampleIndex_ < imageSequenceSampleCount_)
+            return;
+
+        for (std::size_t index = 0; index < imageSequenceImage_.pixels.size(); ++index)
+            imageSequenceImage_.pixels[index] =
+                static_cast<std::uint8_t>(imageSequenceSum_[index] / imageSequenceSampleCount_);
+        if (!imageSequenceOutput_->tryPush(frame, std::move(imageSequenceImage_)))
+            throw std::runtime_error("image output queue unexpectedly full");
+        imageSequenceSum_.clear();
+        imageSequenceSampleIndex_ = 0;
+        if (frame == sequenceOutput_.lastFrame)
+            imageSequenceFramesFinished_ = true;
+        else
+            ++imageSequenceNextFrame_;
+    } catch (const std::exception& error) {
+        finishImageSequenceExport(error.what());
+    }
+#endif
+}
+
+void Application::buildImageSequenceExportUi() {
+#if DAYO_HAS_IMGUI
+    if (uiState_.imageSequenceExportOpen) {
+        ImGui::OpenPopup("Export Image Sequence");
+        uiState_.imageSequenceExportOpen = false;
+    }
+    if (!ImGui::BeginPopupModal("Export Image Sequence", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+    if (imageSequenceExportRunning_) {
+        if (imageSequenceRestoring_) {
+            ImGui::TextUnformatted("Restoring preview state...");
+        } else {
+            const auto total = static_cast<std::uint64_t>(sequenceOutput_.lastFrame) -
+                               static_cast<std::uint64_t>(sequenceOutput_.firstFrame) + 1U;
+            const auto completed =
+                imageSequencePreRollDone_
+                    ? (imageSequenceFramesFinished_ ? total
+                                                    : static_cast<std::uint64_t>(imageSequenceNextFrame_) -
+                                                          static_cast<std::uint64_t>(sequenceOutput_.firstFrame))
+                    : 0U;
+            ImGui::Text("Rendering %u / %u",
+                        imageSequenceFramesFinished_ ? sequenceOutput_.lastFrame : imageSequenceNextFrame_,
+                        sequenceOutput_.lastFrame);
+            ImGui::ProgressBar(total == 0U ? 0.0F : static_cast<float>(completed) / static_cast<float>(total),
+                               {-1.0F, 0.0F});
+            ImGui::Text("Current sample: %u / %u", imageSequenceSampleIndex_ + 1U, imageSequenceSampleCount_);
+            if (ImGui::Button("Cancel"))
+                imageSequenceCancelRequested_ = true;
+        }
+    } else {
+        ImGui::InputText("Directory", sequenceOutputDirectory_.data(), sequenceOutputDirectory_.size());
+        int first = static_cast<int>(sequenceOutput_.firstFrame);
+        int last = static_cast<int>(sequenceOutput_.lastFrame);
+        int samples = static_cast<int>(sequenceOutput_.samples);
+        if (ImGui::InputInt("First frame", &first))
+            sequenceOutput_.firstFrame = static_cast<std::uint32_t>(std::max(first, 0));
+        if (ImGui::InputInt("Last frame", &last))
+            sequenceOutput_.lastFrame = static_cast<std::uint32_t>(std::max(last, 0));
+        if (ImGui::InputInt("Samples", &samples))
+            sequenceOutput_.samples = static_cast<std::uint32_t>(std::clamp(samples, 1, 4096));
+        int width = static_cast<int>(sequenceWidth_);
+        int height = static_cast<int>(sequenceHeight_);
+        if (ImGui::InputInt("Width", &width)) {
+            sequenceWidth_ = static_cast<std::uint32_t>(std::max(width, 1));
+            sequencePreset_ = 0;
+        }
+        if (ImGui::InputInt("Height", &height)) {
+            sequenceHeight_ = static_cast<std::uint32_t>(std::max(height, 1));
+            sequencePreset_ = 0;
+        }
+        if (ImGui::Combo("Preset", &sequencePreset_,
+                         "Custom\0"
+                         "720p\0"
+                         "1080p\0"
+                         "1440p\0"
+                         "4K\0")) {
+            constexpr std::array<std::array<std::uint32_t, 2>, 5> presets{{
+                {0, 0},
+                {1280, 720},
+                {1920, 1080},
+                {2560, 1440},
+                {3840, 2160},
+            }};
+            const auto selected = presets[static_cast<std::size_t>(sequencePreset_)];
+            if (selected[0] != 0U) {
+                sequenceWidth_ = selected[0];
+                sequenceHeight_ = selected[1];
+            }
+        }
+        ImGui::Checkbox("Motion blur", &sequenceOutput_.motionBlur);
+        ImGui::Checkbox("Overwrite existing frames", &sequenceOutput_.overwrite);
+        if (sequenceOutput_.format == core::OutputFormat::exr)
+            sequenceOutput_.format = core::OutputFormat::ppm;
+        int format = std::clamp(static_cast<int>(sequenceOutput_.format), 0, 1);
+        if (ImGui::Combo("Format", &format, "PPM\0PNG\0"))
+            sequenceOutput_.format = static_cast<core::OutputFormat>(format);
+        if (ImGui::Button("Render sequence"))
+            startImageSequenceExport();
+    }
+    if (!sequenceOutputStatus_.empty())
+        ImGui::TextWrapped("%s", sequenceOutputStatus_.c_str());
+    ImGui::SameLine();
+    if (!imageSequenceExportRunning_ && ImGui::Button("Close"))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+#endif
+}
+
+void Application::buildStatusBar() {
+#if DAYO_HAS_IMGUI
+    if (!uiState_.statusBarVisible)
+        return;
+    auto* viewport = ImGui::GetMainViewport();
+    const float height = ImGui::GetFrameHeightWithSpacing();
+    constexpr auto flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDocking |
+                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollbar;
+    if (ImGui::BeginViewportSideBar("##status-bar", viewport, ImGuiDir_Down, height, flags)) {
+        if (ImGui::BeginTable("##editor-status", 5, ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 2.0F);
+            ImGui::TableSetupColumn("Model", ImGuiTableColumnFlags_WidthStretch, 1.0F);
+            ImGui::TableSetupColumn("Frame", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 9.0F);
+            ImGui::TableSetupColumn("FPS", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 5.0F);
+            ImGui::TableSetupColumn("Project", ImGuiTableColumnFlags_WidthStretch, 1.5F);
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(lastAsset_.c_str());
+            if (ImGui::IsItemHovered() && !lastAsset_.empty())
+                ImGui::SetTooltip("%s", lastAsset_.c_str());
+            ImGui::TableSetColumnIndex(1);
+            if (const auto* model = selectedModel())
+                ImGui::TextUnformatted(model->displayName.c_str());
+            else
+                ImGui::TextDisabled("Scene");
+            ImGui::TableSetColumnIndex(2);
+            ImGui::Text("Frame %.0f / %.0f", animationFrame_, scene_.timeline().duration);
+            ImGui::TableSetColumnIndex(3);
+            ImGui::Text("%.0f FPS", ImGui::GetIO().Framerate);
+            ImGui::TableSetColumnIndex(4);
+            const std::string projectText = currentProjectPath_ ? currentProjectPath_->string() : "Untitled project";
+            ImGui::TextDisabled("%s", projectText.c_str());
+            ImGui::EndTable();
+        }
+    }
+    ImGui::End();
 #endif
 }
 
@@ -1368,24 +2229,111 @@ void Application::buildEditorUi() {
     const bool global = editGlobalMotion_;
     const auto* active = global ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
     const auto target = model != nullptr ? model->id : core::ModelId{};
+    const auto cacheModelId = global ? core::ModelId{} : target;
+    if (timelineTrackCache_.modelId != cacheModelId || timelineTrackCache_.motion != active ||
+        timelineTrackCache_.globalMotion != global || timelineTrackCache_.motionRevision != scene_.motionRevision()) {
+        selectedKeys_.clear();
+        timelineTrackCache_ = {};
+        timelineTrackCache_.motionRevision = scene_.motionRevision();
+        timelineTrackCache_.modelId = cacheModelId;
+        timelineTrackCache_.motion = active;
+        timelineTrackCache_.globalMotion = global;
+        timelineScrollY_ = 0.0F;
+        if (active != nullptr) {
+            const auto groupTracks = [](const auto& keys, std::vector<TimelineTrack>& tracks) {
+                std::unordered_map<std::string, std::size_t> indices;
+                indices.reserve(keys.size());
+                for (const auto& key : keys) {
+                    const auto [iterator, inserted] = indices.emplace(key.name, tracks.size());
+                    if (inserted)
+                        tracks.push_back({key.name, {}});
+                    tracks[iterator->second].frames.push_back(key.frame);
+                }
+                for (auto& track : tracks)
+                    std::sort(track.frames.begin(), track.frames.end());
+            };
+            groupTracks(active->bones, timelineTrackCache_.bones);
+            groupTracks(active->morphs, timelineTrackCache_.morphs);
+            const auto cacheFrames = [](const auto& keys, std::vector<std::uint32_t>& frames) {
+                frames.reserve(keys.size());
+                for (const auto& key : keys)
+                    frames.push_back(key.frame);
+                std::sort(frames.begin(), frames.end());
+            };
+            cacheFrames(active->cameras, timelineTrackCache_.cameras);
+            cacheFrames(active->lights, timelineTrackCache_.lights);
+        }
+    }
     const auto execute = [&](core::VmdMotion before, core::MotionDocument document, bool globalMotion,
                              std::string label) {
-        auto after = core::toVmdMotion(std::move(document), before.modelName);
+        const auto outputModelName =
+            before.modelName.empty() && !globalMotion && model != nullptr ? model->displayName : before.modelName;
+        auto after = core::toVmdMotion(std::move(document), outputModelName);
         history_.execute(scene_, std::make_unique<core::EditMotionCommand>(target, globalMotion, std::move(before),
                                                                            std::move(after), std::move(label)));
+        selectedKeys_.clear();
+        active = global ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
         refreshAnimatedMesh(false);
         refreshPreviewScene();
     };
+    const bool debugWorkspace = uiState_.workspace == ui::Workspace::debug;
 
-    if (ImGui::Begin("Keyframes")) {
+    if (uiState_.timelineVisible && ImGui::Begin(workspaceWindowName("Timeline", "timeline").c_str())) {
+        uiState_.timelineFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+        if (ImGui::Button("|<")) {
+            animationFrame_ = 0.0F;
+            scene_.setFrame(animationFrame_);
+            refreshAnimatedMesh(false);
+            refreshPreviewScene();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("<")) {
+            animationFrame_ = std::max(0.0F, animationFrame_ - 1.0F);
+            scene_.setFrame(animationFrame_);
+            refreshAnimatedMesh(false);
+            refreshPreviewScene();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(playing_ ? "Pause" : "Play")) {
+            playing_ = !playing_;
+            if (audioPlayer_.active())
+                audioPlayer_.setPaused(!playing_);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(">")) {
+            animationFrame_ = std::min(scene_.timeline().duration, animationFrame_ + 1.0F);
+            scene_.setFrame(animationFrame_);
+            refreshAnimatedMesh(false);
+            refreshPreviewScene();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(">|")) {
+            animationFrame_ = scene_.timeline().duration;
+            scene_.setFrame(animationFrame_);
+            refreshAnimatedMesh(false);
+            refreshPreviewScene();
+        }
+        ImGui::SameLine();
+        ImGui::Text("Frame %.0f / %.0f", animationFrame_, scene_.timeline().duration);
+        ImGui::SameLine();
+        ImGui::Checkbox("Loop", &repeat_);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(90.0F);
+        ImGui::DragFloat("Speed", &playbackSpeed_, 0.01F, 0.1F, 4.0F, "%.2fx");
+        if (!waveformPeaks_.empty())
+            ImGui::PlotLines("Audio", waveformPeaks_.data(), static_cast<int>(waveformPeaks_.size()), 0, nullptr, 0.0F,
+                             1.0F, {-1.0F, 44.0F});
+        ImGui::Checkbox("Key List", &timelineKeyListVisible_);
+        ImGui::SameLine();
         if (ImGui::Checkbox("Edit global camera/light motion", &editGlobalMotion_))
             selectedKeys_.clear();
         if (active == nullptr) {
             ImGui::TextUnformatted("Load a VMD/VMdayo motion to edit keyframes.");
         } else {
-            ImGui::Text("Bone %zu  Morph %zu  Camera %zu  Light %zu  Shadow %zu  IK %zu", active->bones.size(),
-                        active->morphs.size(), active->cameras.size(), active->lights.size(), active->shadows.size(),
-                        active->ik.size());
+            if (timelineKeyListVisible_)
+                ImGui::Text("Bone %zu  Morph %zu  Camera %zu  Light %zu  Shadow %zu  IK %zu", active->bones.size(),
+                            active->morphs.size(), active->cameras.size(), active->lights.size(),
+                            active->shadows.size(), active->ik.size());
             auto row = [&](core::MotionTrack track, std::size_t index, std::uint32_t frame, const std::string& name) {
                 const core::MotionKeyRef key{track, index};
                 const bool selected = std::find(selectedKeys_.begin(), selectedKeys_.end(), key) != selectedKeys_.end();
@@ -1401,21 +2349,170 @@ void Application::buildEditorUi() {
                 else
                     selectedKeys_.erase(found);
             };
-            if (ImGui::BeginChild("key-list", {0.0F, 220.0F}, true)) {
-                for (std::size_t i = 0; i < active->bones.size(); ++i)
-                    row(core::MotionTrack::bone, i, active->bones[i].frame, active->bones[i].name);
-                for (std::size_t i = 0; i < active->morphs.size(); ++i)
-                    row(core::MotionTrack::morph, i, active->morphs[i].frame, active->morphs[i].name);
-                for (std::size_t i = 0; i < active->cameras.size(); ++i)
-                    row(core::MotionTrack::camera, i, active->cameras[i].frame, "Camera");
-                for (std::size_t i = 0; i < active->lights.size(); ++i)
-                    row(core::MotionTrack::light, i, active->lights[i].frame, "Light");
-                for (std::size_t i = 0; i < active->shadows.size(); ++i)
-                    row(core::MotionTrack::shadow, i, active->shadows[i].frame, "Self shadow");
-                for (std::size_t i = 0; i < active->ik.size(); ++i)
-                    row(core::MotionTrack::ik, i, active->ik[i].frame, "IK / visibility");
+            const float canvasHeight = std::max(ImGui::GetFrameHeight() * 3.0F, ImGui::GetContentRegionAvail().y);
+            if (timelineKeyListVisible_) {
+                if (ImGui::BeginChild("key-list", {0.0F, canvasHeight}, true)) {
+                    const auto count = active->bones.size() + active->morphs.size() + active->cameras.size() +
+                                       active->lights.size() + active->shadows.size() + active->ik.size();
+                    ImGuiListClipper clipper;
+                    clipper.Begin(static_cast<int>(count));
+                    while (clipper.Step()) {
+                        for (int visible = clipper.DisplayStart; visible < clipper.DisplayEnd; ++visible) {
+                            auto index = static_cast<std::size_t>(visible);
+                            const auto visit = [&](const auto& keys, core::MotionTrack track, const char* label) {
+                                if (index < keys.size()) {
+                                    const auto& key = keys[index];
+                                    if constexpr (requires { key.name; })
+                                        row(track, index, key.frame, key.name);
+                                    else
+                                        row(track, index, key.frame, label);
+                                    return true;
+                                }
+                                index -= keys.size();
+                                return false;
+                            };
+                            if (visit(active->bones, core::MotionTrack::bone, "Bone") ||
+                                visit(active->morphs, core::MotionTrack::morph, "Morph") ||
+                                visit(active->cameras, core::MotionTrack::camera, "Camera") ||
+                                visit(active->lights, core::MotionTrack::light, "Light") ||
+                                visit(active->shadows, core::MotionTrack::shadow, "Self shadow"))
+                                continue;
+                            static_cast<void>(visit(active->ik, core::MotionTrack::ik, "IK / visibility"));
+                        }
+                    }
+                }
+                ImGui::EndChild();
+            } else {
+                if (ImGui::BeginChild("timeline-canvas", {0.0F, canvasHeight}, true,
+                                      ImGuiWindowFlags_NoScrollWithMouse)) {
+                    const auto canvasMin = ImGui::GetWindowPos();
+                    const auto canvasSize = ImGui::GetWindowSize();
+                    auto* drawList = ImGui::GetWindowDrawList();
+                    const float left = canvasMin.x + ImGui::GetFontSize() * 8.0F;
+                    const float top = canvasMin.y + ImGui::GetFrameHeight();
+                    const float right = canvasMin.x + canvasSize.x - 8.0F;
+                    const float bottom = canvasMin.y + canvasSize.y - 8.0F;
+                    const float duration = std::max(scene_.timeline().duration, 1.0F);
+                    float pixelsPerFrame = (right - left) / duration * timelineZoom_;
+                    float maxPan = std::max(0.0F, duration * pixelsPerFrame - (right - left));
+                    timelinePan_ = std::clamp(timelinePan_, 0.0F, maxPan);
+                    const float rowHeight = 22.0F;
+                    const int trackCount = global ? 2
+                                                  : 2 + static_cast<int>(timelineTrackCache_.bones.size() +
+                                                                         timelineTrackCache_.morphs.size());
+                    const float contentHeight = 16.0F + static_cast<float>(trackCount) * rowHeight;
+                    const float visibleHeight = std::max(0.0F, bottom - top);
+                    const float maxScrollY = std::max(0.0F, contentHeight - visibleHeight);
+                    timelineScrollY_ = std::clamp(timelineScrollY_, 0.0F, maxScrollY);
+                    const auto frameX = [&](float frame) { return left + frame * pixelsPerFrame - timelinePan_; };
+                    drawList->AddText({canvasMin.x + 8.0F, canvasMin.y + 5.0F}, ImGui::GetColorU32(ImGuiCol_Text),
+                                      "Tracks");
+                    for (int tick = 0; tick <= 10; ++tick) {
+                        const float frame = duration * static_cast<float>(tick) / 10.0F;
+                        const float x = frameX(frame);
+                        if (x < left - 1.0F || x > right + 1.0F)
+                            continue;
+                        drawList->AddLine({x, top}, {x, bottom}, ImGui::GetColorU32(ImGuiCol_Border));
+                        const auto label = std::to_string(static_cast<int>(frame));
+                        drawList->AddText({x + 2.0F, canvasMin.y + 5.0F}, ImGui::GetColorU32(ImGuiCol_TextDisabled),
+                                          label.c_str());
+                    }
+                    const auto trackY = [&](int trackRow) {
+                        return top + 16.0F + static_cast<float>(trackRow) * rowHeight - timelineScrollY_;
+                    };
+                    const auto trackVisible = [&](int trackRow) {
+                        const float y = trackY(trackRow);
+                        return y >= top - ImGui::GetFontSize() && y <= bottom + ImGui::GetFontSize();
+                    };
+                    const auto drawDiamond = [&](float frame, int trackRow, ImU32 color) {
+                        const float x = frameX(frame);
+                        const float y = trackY(trackRow);
+                        if (x < left - 8.0F || x > right + 8.0F || y < top - 8.0F || y > bottom + 8.0F)
+                            return;
+                        drawList->AddQuadFilled({x, y - 5.0F}, {x + 5.0F, y}, {x, y + 5.0F}, {x - 5.0F, y}, color);
+                    };
+                    const auto drawTrack = [&](const char* name, int trackRow) {
+                        if (!trackVisible(trackRow))
+                            return;
+                        const float y = trackY(trackRow);
+                        drawList->AddText({canvasMin.x + 8.0F, y - ImGui::GetFontSize() * 0.5F},
+                                          ImGui::GetColorU32(ImGuiCol_Text), name);
+                    };
+                    drawTrack("Camera", 0);
+                    drawTrack("Light", 1);
+                    const auto drawFrames = [&](const std::vector<std::uint32_t>& frames, int trackRow, ImU32 color) {
+                        const float firstFrame = (timelinePan_ - 8.0F) / pixelsPerFrame;
+                        const float lastFrame = (right - left + timelinePan_ + 8.0F) / pixelsPerFrame;
+                        const auto first = std::lower_bound(
+                            frames.begin(), frames.end(), firstFrame,
+                            [](std::uint32_t frame, float value) { return static_cast<float>(frame) < value; });
+                        const auto last =
+                            std::upper_bound(first, frames.end(), lastFrame, [](float value, std::uint32_t frame) {
+                                return value < static_cast<float>(frame);
+                            });
+                        for (auto it = first; it != last; ++it)
+                            drawDiamond(static_cast<float>(*it), trackRow, color);
+                    };
+                    if (global) {
+                        if (trackVisible(0))
+                            drawFrames(timelineTrackCache_.cameras, 0, ImGui::GetColorU32(ImGuiCol_CheckMark));
+                        if (trackVisible(1))
+                            drawFrames(timelineTrackCache_.lights, 1, ImGui::GetColorU32(ImGuiCol_CheckMark));
+                    } else if (model != nullptr) {
+                        int trackRow = 2;
+                        for (const auto& track : timelineTrackCache_.bones) {
+                            if (trackVisible(trackRow)) {
+                                drawTrack(track.name.c_str(), trackRow);
+                                drawFrames(track.frames, trackRow, ImGui::GetColorU32(ImGuiCol_SliderGrab));
+                            }
+                            ++trackRow;
+                        }
+                        for (const auto& track : timelineTrackCache_.morphs) {
+                            if (trackVisible(trackRow)) {
+                                drawTrack(track.name.c_str(), trackRow);
+                                drawFrames(track.frames, trackRow, ImGui::GetColorU32(ImGuiCol_PlotLines));
+                            }
+                            ++trackRow;
+                        }
+                    }
+                    const float currentX = frameX(animationFrame_);
+                    if (currentX >= left && currentX <= right)
+                        drawList->AddLine({currentX, top}, {currentX, bottom},
+                                          ImGui::GetColorU32(ImGuiCol_PlotHistogram), 2.0F);
+                    ImGui::SetCursorScreenPos({left, top});
+                    ImGui::InvisibleButton("timeline-canvas-input", {right - left, bottom - top},
+                                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
+                    if (ImGui::IsItemHovered()) {
+                        if (ImGui::GetIO().MouseWheel != 0.0F) {
+                            if (ImGui::GetIO().KeyCtrl) {
+                                const float frameUnderCursor =
+                                    (ImGui::GetIO().MousePos.x - left + timelinePan_) / pixelsPerFrame;
+                                timelineZoom_ =
+                                    std::clamp(timelineZoom_ + ImGui::GetIO().MouseWheel * 0.1F, 0.5F, 8.0F);
+                                pixelsPerFrame = (right - left) / duration * timelineZoom_;
+                                maxPan = std::max(0.0F, duration * pixelsPerFrame - (right - left));
+                                timelinePan_ =
+                                    std::clamp(frameUnderCursor * pixelsPerFrame - (ImGui::GetIO().MousePos.x - left),
+                                               0.0F, maxPan);
+                            } else {
+                                timelineScrollY_ = std::clamp(timelineScrollY_ - ImGui::GetIO().MouseWheel * rowHeight,
+                                                              0.0F, maxScrollY);
+                            }
+                        }
+                        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+                            timelinePan_ = std::clamp(timelinePan_ - ImGui::GetIO().MouseDelta.x, 0.0F, maxPan);
+                        }
+                        if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+                            const float frame = (ImGui::GetIO().MousePos.x - left + timelinePan_) / pixelsPerFrame;
+                            animationFrame_ = std::clamp(frame, 0.0F, duration);
+                            scene_.setFrame(animationFrame_);
+                            refreshAnimatedMesh(false);
+                            refreshPreviewScene();
+                        }
+                    }
+                }
+                ImGui::EndChild();
             }
-            ImGui::EndChild();
             const bool keyWindowFocused =
                 ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput;
             const bool copyShortcut =
@@ -1473,9 +2570,10 @@ void Application::buildEditorUi() {
             }
         }
     }
-    ImGui::End();
+    if (uiState_.timelineVisible)
+        ImGui::End();
 
-    if (ImGui::Begin("Bone / Expression")) {
+    if (debugWorkspace && ImGui::Begin(workspaceWindowName("Bone / Expression", "legacy-bone").c_str())) {
         if (model == nullptr || model->model == nullptr) {
             ImGui::TextUnformatted("Select a model to edit bones and morphs.");
         } else {
@@ -1492,8 +2590,7 @@ void Application::buildEditorUi() {
                 ImGui::DragFloat4("Rotation quaternion", editedBoneRotation_.data(), 0.01F, -1.0F, 1.0F);
                 ImGui::Checkbox("Bone physics", &editedBonePhysics_);
                 if (ImGui::Button("Register bone")) {
-                    core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
-                    before.modelName = model->displayName;
+                    const core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
                     auto document = core::toMotionDocument(before);
                     const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
                     const auto& name = bones[static_cast<std::size_t>(selectedBone_)].name;
@@ -1502,7 +2599,7 @@ void Application::buildEditorUi() {
                     document.bones.push_back(
                         {name, frame, editedBoneTranslation_, editedBoneRotation_, {}, editedBonePhysics_});
                     core::MotionEditor::normalize(document);
-                    execute(std::move(before), std::move(document), false, "Register bone key");
+                    execute(before, std::move(document), false, "Register bone key");
                 }
             }
             const auto& morphs = model->model->morphs;
@@ -1516,8 +2613,7 @@ void Application::buildEditorUi() {
                 }
                 ImGui::SliderFloat("Weight", &editedMorphWeight_, 0.0F, 1.0F);
                 if (ImGui::Button("Register morph")) {
-                    core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
-                    before.modelName = model->displayName;
+                    const core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
                     auto document = core::toMotionDocument(before);
                     const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
                     const auto& name = morphs[static_cast<std::size_t>(selectedMorph_)].name;
@@ -1525,14 +2621,17 @@ void Application::buildEditorUi() {
                                   [&](const auto& key) { return key.frame == frame && key.name == name; });
                     document.morphs.push_back({name, frame, editedMorphWeight_});
                     core::MotionEditor::normalize(document);
-                    execute(std::move(before), std::move(document), false, "Register morph key");
+                    execute(before, std::move(document), false, "Register morph key");
                 }
             }
         }
     }
-    ImGui::End();
+    if (debugWorkspace)
+        ImGui::End();
 
-    if (ImGui::Begin("Camera / Light / Self Shadow")) {
+    const bool cameraPanelVisible = debugWorkspace || uiState_.workspace == ui::Workspace::camera;
+    if (cameraPanelVisible &&
+        ImGui::Begin(workspaceWindowName("Camera / Light / Self Shadow", "legacy-camera").c_str())) {
         ImGui::Checkbox("Realtime camera recording (Space registers)", &recordCamera_);
         ImGui::DragFloat3("Camera target", editedCamera_.position.data(), 0.01F);
         ImGui::DragFloat3("Camera rotation", editedCamera_.rotation.data(), 0.01F);
@@ -1579,34 +2678,38 @@ void Application::buildEditorUi() {
             execute(std::move(before), std::move(document), true, "Register self shadow key");
         }
     }
-    ImGui::End();
+    if (cameraPanelVisible)
+        ImGui::End();
 
-    if (ImGui::Begin("Project tools")) {
+    if (debugWorkspace && ImGui::Begin(workspaceWindowName("Project tools", "legacy-project").c_str())) {
         ImGui::InputText("Project file", projectDestination_.data(), projectDestination_.size());
-        if (ImGui::Button("Save Dayo 1.30 project")) {
-            try {
-                core::saveProject(projectDestination_.data(), currentProject());
-                projectSaveStatus_ = "Project saved";
-            } catch (const std::exception& error) {
-                projectSaveStatus_ = error.what();
-            }
-        }
+        if (ImGui::Button("Save Dayo 1.30 project"))
+            saveProjectAsNow();
         if (!projectSaveStatus_.empty())
             ImGui::TextWrapped("%s", projectSaveStatus_.c_str());
         ImGui::Separator();
         auto background = scene_.background();
         int source = static_cast<int>(background.screenSource);
-        if (ImGui::Combo("Background source", &source, "Previous frame\0Video\0Image\0White\0"))
+        if (ImGui::Combo("Background source", &source, "Previous frame\0Video\0Image\0White\0")) {
             scene_.setBackgroundScreenSource(static_cast<core::ScreenTextureSource>(source));
+            refreshPreviewBackground();
+            refreshPreviewScene();
+        }
         bool enabled = background.enabled;
-        if (ImGui::Checkbox("Background enabled", &enabled))
+        if (ImGui::Checkbox("Background enabled", &enabled)) {
             scene_.setBackgroundEnabled(enabled);
+            refreshPreviewScene();
+        }
         bool crop = background.crop == core::ScreenCropMode::crop4x3;
-        if (ImGui::Checkbox("Crop 4:3", &crop))
+        if (ImGui::Checkbox("Crop 4:3", &crop)) {
             scene_.setBackgroundCrop(crop ? core::ScreenCropMode::crop4x3 : core::ScreenCropMode::none);
+            refreshPreviewScene();
+        }
         bool alpha = background.mode == core::BackgroundMode::alpha;
-        if (ImGui::Checkbox("Alpha background", &alpha))
+        if (ImGui::Checkbox("Alpha background", &alpha)) {
             scene_.setBackgroundMode(alpha ? core::BackgroundMode::alpha : core::BackgroundMode::opaque);
+            refreshPreviewScene();
+        }
         if (model != nullptr) {
             ImGui::SeparatorText("Model order");
             ImGui::DragInt("Motion order", &model->order.motion, 1.0F, 0, 1024);
@@ -1665,14 +2768,13 @@ void Application::buildEditorUi() {
                                                   &error)) {
                         lastAsset_ = "External parent: " + error;
                     } else {
-                        core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
-                        before.modelName = model->displayName;
+                        const core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
                         auto document = core::toMotionDocument(before);
                         const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
                         document.externalParents.push_back(
                             {frame, static_cast<std::int32_t>(parent.id), parentBone.data(), childBone.data()});
                         core::MotionEditor::normalize(document);
-                        execute(std::move(before), std::move(document), false, "Register external parent key");
+                        execute(before, std::move(document), false, "Register external parent key");
                     }
                 }
                 ImGui::TreePop();
@@ -1713,78 +2815,12 @@ void Application::buildEditorUi() {
                                    "keys\nDelete: Delete selected keys");
             ImGui::TreePop();
         }
-        if (ImGui::TreeNode("Image sequence output")) {
-            static std::array<char, 1024> outputDirectory{'o', 'u', 't', 'p', 'u', 't', '\0'};
-            ImGui::InputText("Directory", outputDirectory.data(), outputDirectory.size());
-            int first = static_cast<int>(sequenceOutput_.firstFrame);
-            int last = static_cast<int>(sequenceOutput_.lastFrame);
-            int samples = static_cast<int>(sequenceOutput_.samples);
-            if (ImGui::InputInt("First frame", &first))
-                sequenceOutput_.firstFrame = static_cast<std::uint32_t>(std::max(first, 0));
-            if (ImGui::InputInt("Last frame", &last))
-                sequenceOutput_.lastFrame = static_cast<std::uint32_t>(std::max(last, 0));
-            if (ImGui::InputInt("Samples", &samples))
-                sequenceOutput_.samples = static_cast<std::uint32_t>(std::clamp(samples, 1, 4096));
-            ImGui::Checkbox("Motion blur", &sequenceOutput_.motionBlur);
-            int format = static_cast<int>(sequenceOutput_.format);
-            if (ImGui::Combo("Format", &format, "PPM\0PNG\0EXR\0"))
-                sequenceOutput_.format = static_cast<core::OutputFormat>(format);
-            if (ImGui::Button("Render sequence")) {
-                const auto restoreFrame = scene_.timeline().frame;
-                try {
-                    if (sequenceOutput_.lastFrame < sequenceOutput_.firstFrame)
-                        throw std::invalid_argument("last frame precedes first frame");
-                    sequenceOutput_.directory = outputDirectory.data();
-                    core::OutputQueue output(sequenceOutput_);
-                    float previousSampleFrame = static_cast<float>(sequenceOutput_.firstFrame);
-                    for (std::uint32_t frame = sequenceOutput_.firstFrame; frame <= sequenceOutput_.lastFrame;
-                         ++frame) {
-                        core::ImageRgba8 image;
-                        std::vector<std::uint64_t> sum;
-                        for (std::uint32_t sample = 0; sample < sequenceOutput_.samples; ++sample) {
-                            const float offset =
-                                sequenceOutput_.motionBlur
-                                    ? static_cast<float>(sample) / static_cast<float>(sequenceOutput_.samples)
-                                    : 0.0F;
-                            const float sampleFrame = static_cast<float>(frame) + offset;
-                            const float physicsDelta = std::max(sampleFrame - previousSampleFrame, 0.0F) / 30.0F;
-                            scene_.setFrame(sampleFrame);
-                            animationFrame_ = scene_.timeline().frame;
-                            refreshAnimatedMesh(false, physicsDelta);
-                            previousSampleFrame = sampleFrame;
-                            refreshPreviewScene();
-                            auto rendered = device_->renderToImage({videoWidth_, videoHeight_});
-                            if (sum.empty()) {
-                                image = rendered;
-                                sum.resize(rendered.pixels.size());
-                            }
-                            for (std::size_t i = 0; i < rendered.pixels.size(); ++i)
-                                sum[i] += rendered.pixels[i];
-                        }
-                        for (std::size_t i = 0; i < image.pixels.size(); ++i)
-                            image.pixels[i] = static_cast<std::uint8_t>(sum[i] / sequenceOutput_.samples);
-                        output.push(frame, std::move(image));
-                        if (frame == std::numeric_limits<std::uint32_t>::max())
-                            break;
-                    }
-                    output.close();
-                    output.rethrowIfFailed();
-                    scene_.setFrame(restoreFrame);
-                    animationFrame_ = restoreFrame;
-                    sequenceOutputStatus_ = "Sequence rendered";
-                } catch (const std::exception& error) {
-                    scene_.setFrame(restoreFrame);
-                    animationFrame_ = restoreFrame;
-                    sequenceOutputStatus_ = error.what();
-                }
-            }
-            ImGui::TextWrapped("%s", sequenceOutputStatus_.c_str());
-            ImGui::TreePop();
-        }
     }
-    ImGui::End();
+    if (debugWorkspace)
+        ImGui::End();
 
-    if (ImGui::Begin("Preview Material Inspector")) {
+    if (uiState_.materialDebugVisible &&
+        ImGui::Begin(workspaceWindowName("Preview Material Inspector", "material-debug").c_str())) {
         bool previewChanged = false;
         previewChanged |= ImGui::Checkbox("Optional PMX outline", &previewOutlineEnabled_);
         if (model != nullptr && !model->model->materials.empty()) {
@@ -1842,9 +2878,10 @@ void Application::buildEditorUi() {
         if (previewChanged)
             refreshPreviewScene();
     }
-    ImGui::End();
+    if (uiState_.materialDebugVisible)
+        ImGui::End();
 
-    if (ImGui::Begin("FX Debug")) {
+    if (uiState_.fxDebugVisible && ImGui::Begin(workspaceWindowName("FX Debug", "fx-debug").c_str())) {
         if (const auto* effect = scene_.effect()) {
             const auto compiled = core::compileEffectGraph(*effect);
             ImGui::Text("Resources: %zu", effect->textures.size());
@@ -1864,7 +2901,8 @@ void Application::buildEditorUi() {
         } else
             ImGui::TextUnformatted("Load an .fxdayo file to inspect resources and passes.");
     }
-    ImGui::End();
+    if (uiState_.fxDebugVisible)
+        ImGui::End();
 #endif
 }
 
@@ -1881,9 +2919,11 @@ void Application::setAudioExportDestinationForSource(const std::filesystem::path
 
 void Application::buildAudioExportUi() {
 #if DAYO_HAS_IMGUI
-    ImGui::SetNextWindowPos({520.0F, 24.0F}, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize({420.0F, 360.0F}, ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Audio Export")) {
+    if (uiState_.audioExportOpen) {
+        ImGui::OpenPopup("Export Audio");
+        uiState_.audioExportOpen = false;
+    }
+    if (ImGui::BeginPopupModal("Export Audio", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         if (!DAYO_HAS_MEDIA) {
             ImGui::TextUnformatted("FFmpeg support is not available in this build.");
         } else {
@@ -1946,19 +2986,27 @@ void Application::buildAudioExportUi() {
                 }
             }
         }
+        if (!audioExportJob_.running()) {
+            ImGui::Separator();
+            if (ImGui::Button("Close"))
+                ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
-    ImGui::End();
 #endif
 }
 
 void Application::buildVideoExportUi() {
 #if DAYO_HAS_IMGUI
-    ImGui::SetNextWindowPos({520.0F, 404.0F}, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize({420.0F, 410.0F}, ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Video Export")) {
+    if (uiState_.videoExportOpen) {
+        ImGui::OpenPopup("Export Video");
+        uiState_.videoExportOpen = false;
+    }
+    if (ImGui::BeginPopupModal("Export Video", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         if (!DAYO_HAS_MEDIA) {
             ImGui::TextUnformatted("FFmpeg support is not available in this build.");
         } else {
+            ImGui::BeginDisabled(videoExportUiActive_);
             if (!videoRangeInitialized_) {
                 videoFromFrame_ = 0;
                 videoToFrame_ = scene_.timeline().duration > 0.0F
@@ -2002,15 +3050,21 @@ void Application::buildVideoExportUi() {
             if (ImGui::InputScalar("To frame", ImGuiDataType_U64, &to))
                 videoToFrame_ = to;
             ImGui::Checkbox("Overwrite existing file", &audioOverwrite_);
+            ImGui::EndDisabled();
             ImGui::Separator();
 
-            if (videoExportUiActive_ && videoExportJob_.running()) {
+            if (videoExportUiActive_) {
+                if (videoExportFramesFinished_ && !videoExportJob_.running())
+                    ImGui::TextUnformatted("Restoring preview...");
+                else if (!videoPreRollDone_)
+                    ImGui::Text("Preparing frame %llu / %llu",
+                                static_cast<unsigned long long>(videoEvaluationNextFrame_),
+                                static_cast<unsigned long long>(videoFromFrame_));
                 ImGui::ProgressBar(videoExportJob_.progress(), {-1.0F, 0.0F});
                 ImGui::Text("%.1f%%", static_cast<double>(videoExportJob_.progress()) * 100.0);
                 if (ImGui::Button("Cancel video export")) {
-                    videoExportJob_.cancel();
+                    videoExportJob_.requestCancel();
                     videoExportFramesFinished_ = true;
-                    videoExportUiActive_ = false;
                     videoExportStatus_ = "Cancelled";
                 }
             } else {
@@ -2042,26 +3096,52 @@ void Application::buildVideoExportUi() {
                         std::optional<std::filesystem::path> audioSource;
                         if (request.includeAudio)
                             audioSource = audioSource_;
+                        videoExportRestoreFrame_ = animationFrame_;
+                        videoExportRestoreMediaSeconds_ = mediaSeconds_;
+                        videoExportRestorePlaying_ = playing_;
+                        videoExportRestoreManualCamera_ = manualCamera_;
+                        videoExportRestoreAudioActive_ = audioPlayer_.active();
+                        videoExportRestorePending_ = true;
+                        videoRestoreNextFrame_ = 0;
+                        videoEvaluationNextFrame_ = 0;
                         videoSourceFps_ = sceneTimelineFps(scene_);
                         request.audioStartSeconds = static_cast<double>(videoFromFrame_) / videoSourceFps_;
                         videoOutputFrameCount_ =
                             videoOutputFrameCount(videoFromFrame_, videoToFrame_, videoSourceFps_, request.fps);
+                        activeVideoExport_ = ActiveVideoExport{request.width, request.height};
                         videoExportJob_.start(std::move(request), std::move(audioSource), videoOutputFrameCount_);
                         videoNextFrame_ = 0;
                         videoPreviousSourceFrame_ = 0.0F;
                         videoPreRollDone_ = false;
                         videoExportFramesFinished_ = false;
                         videoExportUiActive_ = true;
+                        playing_ = false;
                         videoExportStatus_.clear();
                         audioPlayer_.stop();
                     } catch (const std::exception& exception) {
+                        if (videoExportRestorePending_) {
+                            try {
+                                restoreVideoExportState();
+                                videoExportFramesFinished_ = true;
+                                videoExportUiActive_ = videoExportRestorePending_;
+                            } catch (const std::exception& restoreException) {
+                                videoExportStatus_ = std::string("Export error: ") + exception.what() +
+                                                     "; restore error: " + restoreException.what();
+                                return;
+                            }
+                        }
                         videoExportStatus_ = std::string("Export error: ") + exception.what();
                     }
                 }
             }
         }
+        if (!videoExportUiActive_) {
+            ImGui::Separator();
+            if (ImGui::Button("Close"))
+                ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
-    ImGui::End();
 #endif
 }
 

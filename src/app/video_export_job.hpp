@@ -27,8 +27,12 @@ class VideoExportJob {
     void start(core::VideoExportRequest request, std::optional<std::filesystem::path> audioSource,
                std::uint64_t totalFrames);
     void submitFrame(core::ImageRgba8 frame);
+    [[nodiscard]] bool canAcceptFrame();
+    // False means full; frame remains owned by the caller. Stopped/error throws.
+    [[nodiscard]] bool trySubmitFrame(core::ImageRgba8&& frame);
     void finishFrames();
     void cancel() noexcept;
+    void requestCancel() noexcept;
 
     [[nodiscard]] bool running() const noexcept {
         return running_.load();

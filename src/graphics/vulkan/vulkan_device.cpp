@@ -4,6 +4,8 @@
 #include "core/log.hpp"
 #include "graphics/timestamp.hpp"
 #include "platform/window.hpp"
+#include "ui/fonts.hpp"
+#include "ui/theme.hpp"
 
 #if DAYO_ENABLE_VMA
 #include <vk_mem_alloc.h>
@@ -19,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -27,6 +30,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_set>
 #include <vector>
 
@@ -38,6 +42,17 @@ void check(VkResult result, std::string_view operation) {
         throw std::runtime_error(std::string(operation) + " failed with VkResult " + std::to_string(result));
     }
 }
+
+#if DAYO_HAS_IMGUI
+template <typename Descriptor> std::uint64_t descriptorId(Descriptor descriptor) noexcept {
+    if constexpr (std::is_pointer_v<Descriptor>) {
+        return static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(descriptor));
+    } else {
+        static_assert(sizeof(Descriptor) <= sizeof(std::uint64_t));
+        return static_cast<std::uint64_t>(descriptor);
+    }
+}
+#endif
 
 VkDeviceSize growPreviewCapacity(VkDeviceSize required) {
     if (required == 0)
@@ -177,6 +192,7 @@ VulkanDevice::~VulkanDevice() {
     if (device_ != VK_NULL_HANDLE)
         vkDeviceWaitIdle(device_);
     uploadContext_.reset();
+    destroyViewportResources();
     destroyUi();
     destroyOffscreenResource();
     destroyPreviewMesh();
@@ -1538,7 +1554,14 @@ void VulkanDevice::createUi() {
     check(vkCreateDescriptorPool(device_, &poolInfo, nullptr, &imguiDescriptorPool_), "create ImGui descriptor pool");
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGui::StyleColorsDark();
+    auto& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    io.ConfigDpiScaleFonts = true;
+    const float displayScale = std::max(SDL_GetWindowDisplayScale(window_.sdlHandle()), 1.0F);
+    ui::applyEditorTheme(displayScale);
+    ui::loadEditorFonts();
+    ImGui::GetStyle().FontScaleDpi = displayScale;
     if (!ImGui_ImplSDL3_InitForVulkan(window_.sdlHandle())) {
         throw std::runtime_error("ImGui SDL3 initialization failed");
     }
@@ -1597,6 +1620,7 @@ void VulkanDevice::recreateSwapchain() {
     if (window_.pixelWidth() == 0 || window_.pixelHeight() == 0)
         return;
     check(vkDeviceWaitIdle(device_), "wait before swapchain recreation");
+    destroyViewportResources();
     destroyUi();
     destroyOffscreenResource();
     destroyPipeline();
@@ -1604,6 +1628,8 @@ void VulkanDevice::recreateSwapchain() {
     createSwapchain();
     createPipeline();
     createUi();
+    viewportRequested_ = false;
+    requestedViewportExtent_ = {};
     swapchainDirty_ = false;
 }
 
@@ -1734,6 +1760,136 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
     drawPass(edgePipeline_);
 }
 
+void VulkanDevice::recordPreviewPass(VkCommandBuffer command, Frame& frame, VkImage colorImage, VkImageView colorView,
+                                     DepthResource& depth, VkExtent2D extent, bool colorInitialized,
+                                     VkImageLayout previousColorLayout, VkPipelineStageFlags2 previousColorStage,
+                                     VkAccessFlags2 previousColorAccess, bool preservePreviousFrame) {
+    const VkImageMemoryBarrier2 toColor{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = colorInitialized ? previousColorStage : VK_PIPELINE_STAGE_2_NONE,
+        .srcAccessMask = colorInitialized ? previousColorAccess : 0U,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        .oldLayout = colorInitialized ? previousColorLayout : VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = colorImage,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    const VkImageMemoryBarrier2 toDepth{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = depth.initialized ? VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT : VK_PIPELINE_STAGE_2_NONE,
+        .srcAccessMask = depth.initialized ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : 0U,
+        .dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
+        .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        .oldLayout = depth.initialized ? VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = depth.image,
+        .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
+    };
+    const std::array renderBarriers{toColor, toDepth};
+    const VkDependencyInfo renderDependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = static_cast<std::uint32_t>(renderBarriers.size()),
+        .pImageMemoryBarriers = renderBarriers.data(),
+    };
+    vkCmdPipelineBarrier2(command, &renderDependency);
+
+    VkClearValue clear{};
+    clear.color = !previewGpuScene_.view.backgroundEnabled ||
+                          previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::white
+                      ? VkClearColorValue{{1.0F, 1.0F, 1.0F, 1.0F}}
+                  : activeRenderer_ == RendererKind::preview ? VkClearColorValue{{0.025F, 0.035F, 0.055F, 1.0F}}
+                                                             : VkClearColorValue{{0.055F, 0.025F, 0.045F, 1.0F}};
+    const VkRenderingAttachmentInfo colorAttachment{
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = colorView,
+        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .loadOp = preservePreviousFrame && colorInitialized && previewGpuScene_.view.backgroundEnabled &&
+                          previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::previousFrame
+                      ? VK_ATTACHMENT_LOAD_OP_LOAD
+                      : VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue = clear,
+    };
+    VkClearValue depthClear{};
+    depthClear.depthStencil = {1.0F, 0};
+    const VkRenderingAttachmentInfo depthAttachment{
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = depth.view,
+        .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue = depthClear,
+    };
+    const VkRenderingInfo renderingInfo{
+        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+        .renderArea = {{0, 0}, extent},
+        .layerCount = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &colorAttachment,
+        .pDepthAttachment = &depthAttachment,
+    };
+    vkCmdBeginRendering(command, &renderingInfo);
+    depth.initialized = true;
+    const VkViewport viewport{0.0F, 0.0F, static_cast<float>(extent.width), static_cast<float>(extent.height),
+                              0.0F, 1.0F};
+    const VkRect2D scissor{{0, 0}, extent};
+    vkCmdSetViewport(command, 0, 1, &viewport);
+    vkCmdSetScissor(command, 0, 1, &scissor);
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 1, 1,
+                            &frame.previewBoneDescriptor, 0, nullptr);
+    if (frame.previewMaterialDescriptor != VK_NULL_HANDLE)
+        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 2, 1,
+                                &frame.previewMaterialDescriptor, 0, nullptr);
+    if (previewBindlessDescriptor_ != VK_NULL_HANDLE)
+        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 3, 1,
+                                &previewBindlessDescriptor_, 0, nullptr);
+    if (frame.previewMorphDescriptor != VK_NULL_HANDLE)
+        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 4, 1,
+                                &frame.previewMorphDescriptor, 0, nullptr);
+    const auto previewVertexBuffer =
+        previewStaticVertexBuffer_ != VK_NULL_HANDLE ? previewStaticVertexBuffer_ : frame.previewVertexBuffer;
+    const VkDeviceSize vertexOffset = 0;
+    vkCmdBindVertexBuffers(command, 0, 1, &previewVertexBuffer, &vertexOffset);
+    vkCmdBindIndexBuffer(command, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
+
+    PreviewPushConstants constants;
+    std::copy_n(previewGpuScene_.view.cameraRotation, 3, constants.camera.begin());
+    constants.camera[3] = previewGpuScene_.view.cameraDistance;
+    std::copy_n(previewGpuScene_.view.target, 3, constants.target.begin());
+    constants.target[3] = previewGpuScene_.view.perspective ? previewGpuScene_.view.verticalFovRadians
+                                                            : -previewGpuScene_.view.verticalFovRadians;
+    std::copy_n(previewGpuScene_.view.lightDirection, 3, constants.light.begin());
+    constants.light[3] =
+        extent.height == 0 ? 1.0F : static_cast<float>(extent.width) / static_cast<float>(extent.height);
+    std::copy_n(previewGpuScene_.view.lightColor, 3, constants.lightColor.begin());
+    constants.debug = {static_cast<float>(previewGpuScene_.view.debugMaterial),
+                       static_cast<float>(previewGpuScene_.view.debugFlags), 0.0F, 0.0F};
+    constants.viewport = {static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0F, 0.0F};
+    const auto plan = buildPreviewRenderPlan(false);
+    if (plan.background) {
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, backgroundPipeline_);
+        const VkDeviceSize backgroundOffset = 0;
+        vkCmdBindVertexBuffers(command, 0, 1, &previewBackgroundVertexBuffer_, &backgroundOffset);
+        vkCmdBindIndexBuffer(command, previewBackgroundIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1,
+                                &previewBackgroundTexture_.descriptor, 0, nullptr);
+        vkCmdPushConstants(command, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(constants), &constants);
+        vkCmdDrawIndexed(command, previewBackgroundIndexCount_, 1, 0, 0, 0);
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+        vkCmdBindVertexBuffers(command, 0, 1, &previewVertexBuffer, &vertexOffset);
+        vkCmdBindIndexBuffer(command, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
+    }
+    recordPreviewModel(command, constants, plan);
+    vkCmdEndRendering(command);
+}
+
 void VulkanDevice::renderFrame() {
     if (window_.pixelWidth() == 0 || window_.pixelHeight() == 0)
         return;
@@ -1748,8 +1904,6 @@ void VulkanDevice::renderFrame() {
     synchronizePreviewMorphs(frame);
     synchronizePreviewMaterials(frame);
     synchronizePreviewIndirect(frame);
-    const VkBuffer previewVertexBuffer =
-        previewStaticVertexBuffer_ != VK_NULL_HANDLE ? previewStaticVertexBuffer_ : frame.previewVertexBuffer;
 
     std::uint32_t imageIndex = 0;
     const auto acquire =
@@ -1770,6 +1924,38 @@ void VulkanDevice::renderFrame() {
     }
     recordPreviewBackgroundUpload(frame.commandBuffer, frame);
 
+#if DAYO_HAS_IMGUI
+    if (viewportRequested_) {
+        auto& viewport = viewportResources_[frameIndex_];
+        if (viewport.colorImage != VK_NULL_HANDLE) {
+            recordPreviewPass(frame.commandBuffer, frame, viewport.colorImage, viewport.colorView, viewport.depth,
+                              viewport.extent, viewport.colorInitialized, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, true);
+            const VkImageMemoryBarrier2 toSample{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = viewport.colorImage,
+                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+            };
+            const VkDependencyInfo toSampleDependency{
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                .imageMemoryBarrierCount = 1,
+                .pImageMemoryBarriers = &toSample,
+            };
+            vkCmdPipelineBarrier2(frame.commandBuffer, &toSampleDependency);
+            viewport.colorInitialized = true;
+        }
+    }
+    if (frame.timestampQueryPool != VK_NULL_HANDLE)
+        vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timestampQueryPool, 1);
+
     const VkImageMemoryBarrier2 toColor{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .srcStageMask = swapchainInitialized_[imageIndex] ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
@@ -1784,55 +1970,22 @@ void VulkanDevice::renderFrame() {
         .image = swapchainImages_[imageIndex],
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
     };
-    auto& depth = swapchainDepth_[imageIndex];
-    const VkImageMemoryBarrier2 toDepth{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask = depth.initialized ? VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT : VK_PIPELINE_STAGE_2_NONE,
-        .srcAccessMask = depth.initialized ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : 0U,
-        .dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
-        .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-        .oldLayout = depth.initialized ? VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = depth.image,
-        .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
-    };
-    const std::array renderBarriers{toColor, toDepth};
     const VkDependencyInfo toColorDependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .imageMemoryBarrierCount = static_cast<std::uint32_t>(renderBarriers.size()),
-        .pImageMemoryBarriers = renderBarriers.data(),
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &toColor,
     };
     vkCmdPipelineBarrier2(frame.commandBuffer, &toColorDependency);
 
     VkClearValue clear{};
-    clear.color = !previewGpuScene_.view.backgroundEnabled ||
-                          previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::white
-                      ? VkClearColorValue{{1.0F, 1.0F, 1.0F, 1.0F}}
-                  : activeRenderer_ == RendererKind::preview ? VkClearColorValue{{0.025F, 0.035F, 0.055F, 1.0F}}
-                                                             : VkClearColorValue{{0.055F, 0.025F, 0.045F, 1.0F}};
+    clear.color = {{0.045F, 0.050F, 0.060F, 1.0F}};
     const VkRenderingAttachmentInfo attachment{
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .imageView = swapchainViews_[imageIndex],
         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        .loadOp = previewGpuScene_.view.backgroundEnabled &&
-                          previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::previousFrame &&
-                          swapchainInitialized_[imageIndex]
-                      ? VK_ATTACHMENT_LOAD_OP_LOAD
-                      : VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-        .clearValue = clear,
-    };
-    VkClearValue depthClear{};
-    depthClear.depthStencil = {1.0F, 0};
-    const VkRenderingAttachmentInfo depthAttachment{
-        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        .imageView = depth.view,
-        .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-        .clearValue = depthClear,
+        .clearValue = clear,
     };
     const VkRenderingInfo renderingInfo{
         .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
@@ -1840,76 +1993,17 @@ void VulkanDevice::renderFrame() {
         .layerCount = 1,
         .colorAttachmentCount = 1,
         .pColorAttachments = &attachment,
-        .pDepthAttachment = &depthAttachment,
     };
     vkCmdBeginRendering(frame.commandBuffer, &renderingInfo);
-    depth.initialized = true;
-    const VkViewport viewport{
-        0.0F, 0.0F, static_cast<float>(swapchainExtent_.width), static_cast<float>(swapchainExtent_.height),
-        0.0F, 1.0F};
-    const VkRect2D scissor{{0, 0}, swapchainExtent_};
-    vkCmdSetViewport(frame.commandBuffer, 0, 1, &viewport);
-    vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
-    vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 1, 1,
-                            &frame.previewBoneDescriptor, 0, nullptr);
-    if (frame.previewMaterialDescriptor != VK_NULL_HANDLE) {
-        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 2, 1,
-                                &frame.previewMaterialDescriptor, 0, nullptr);
-    }
-    if (previewBindlessDescriptor_ != VK_NULL_HANDLE) {
-        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 3, 1,
-                                &previewBindlessDescriptor_, 0, nullptr);
-    }
-    if (frame.previewMorphDescriptor != VK_NULL_HANDLE) {
-        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 4, 1,
-                                &frame.previewMorphDescriptor, 0, nullptr);
-    }
-    const VkDeviceSize vertexOffset = 0;
-    vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
-    vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
-    PreviewPushConstants constants;
-    std::copy_n(previewGpuScene_.view.cameraRotation, 3, constants.camera.begin());
-    constants.camera[3] = previewGpuScene_.view.cameraDistance;
-    std::copy_n(previewGpuScene_.view.target, 3, constants.target.begin());
-    constants.target[3] = previewGpuScene_.view.perspective ? previewGpuScene_.view.verticalFovRadians
-                                                            : -previewGpuScene_.view.verticalFovRadians;
-    std::copy_n(previewGpuScene_.view.lightDirection, 3, constants.light.begin());
-    constants.light[3] = swapchainExtent_.height == 0
-                             ? 1.0F
-                             : static_cast<float>(swapchainExtent_.width) / static_cast<float>(swapchainExtent_.height);
-    std::copy_n(previewGpuScene_.view.lightColor, 3, constants.lightColor.begin());
-    constants.debug = {static_cast<float>(previewGpuScene_.view.debugMaterial),
-                       static_cast<float>(previewGpuScene_.view.debugFlags), 0.0F, 0.0F};
-    constants.viewport = {static_cast<float>(swapchainExtent_.width), static_cast<float>(swapchainExtent_.height), 0.0F,
-                          0.0F};
-    const auto plan = buildPreviewRenderPlan(true);
-    if (plan.background) {
-        vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, backgroundPipeline_);
-        const VkDeviceSize backgroundOffset = 0;
-        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewBackgroundVertexBuffer_, &backgroundOffset);
-        vkCmdBindIndexBuffer(frame.commandBuffer, previewBackgroundIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1,
-                                &previewBackgroundTexture_.descriptor, 0, nullptr);
-        vkCmdPushConstants(frame.commandBuffer, pipelineLayout_,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
-        vkCmdDrawIndexed(frame.commandBuffer, previewBackgroundIndexCount_, 1, 0, 0, 0);
-        vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
-        vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
-    }
-    if (!plan.background) {
-        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
-        vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
-    }
-    recordPreviewModel(frame.commandBuffer, constants, plan);
-#if DAYO_HAS_IMGUI
-    if (plan.ui)
-        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.commandBuffer);
-#endif
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.commandBuffer);
     vkCmdEndRendering(frame.commandBuffer);
+#else
+    recordPreviewPass(frame.commandBuffer, frame, swapchainImages_[imageIndex], swapchainViews_[imageIndex],
+                      swapchainDepth_[imageIndex], swapchainExtent_, swapchainInitialized_[imageIndex],
+                      VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0U, true);
     if (frame.timestampQueryPool != VK_NULL_HANDLE)
         vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timestampQueryPool, 1);
+#endif
 
     const VkImageMemoryBarrier2 toPresent{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -1999,6 +2093,157 @@ void VulkanDevice::destroyOffscreenResource() {
     if (offscreen_.depth.memory != VK_NULL_HANDLE)
         vkFreeMemory(device_, offscreen_.depth.memory, nullptr);
     offscreen_ = {};
+}
+
+void VulkanDevice::destroyViewportResource(ViewportResource& resource) {
+    if (device_ == VK_NULL_HANDLE)
+        return;
+#if DAYO_HAS_IMGUI
+    if (uiInitialized_ && resource.imguiDescriptor != VK_NULL_HANDLE)
+        ImGui_ImplVulkan_RemoveTexture(resource.imguiDescriptor);
+#endif
+    if (resource.depth.view != VK_NULL_HANDLE)
+        vkDestroyImageView(device_, resource.depth.view, nullptr);
+    if (resource.depth.image != VK_NULL_HANDLE)
+        vkDestroyImage(device_, resource.depth.image, nullptr);
+    if (resource.depth.memory != VK_NULL_HANDLE)
+        vkFreeMemory(device_, resource.depth.memory, nullptr);
+    if (resource.colorView != VK_NULL_HANDLE)
+        vkDestroyImageView(device_, resource.colorView, nullptr);
+    if (resource.colorImage != VK_NULL_HANDLE)
+        vkDestroyImage(device_, resource.colorImage, nullptr);
+    if (resource.colorMemory != VK_NULL_HANDLE)
+        vkFreeMemory(device_, resource.colorMemory, nullptr);
+    resource = {};
+}
+
+void VulkanDevice::destroyViewportResources() {
+    for (auto& resource : viewportResources_)
+        destroyViewportResource(resource);
+}
+
+void VulkanDevice::createViewportResource(ViewportResource& resource, VkExtent2D extent) {
+#if DAYO_HAS_IMGUI
+    if (extent.width == 0 || extent.height == 0)
+        throw std::invalid_argument("preview viewport is empty");
+    destroyViewportResource(resource);
+    try {
+        const VkImageCreateInfo colorInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = swapchainFormat_,
+            .extent = {extent.width, extent.height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        check(vkCreateImage(device_, &colorInfo, nullptr, &resource.colorImage), "create viewport color image");
+        VkMemoryRequirements colorRequirements{};
+        vkGetImageMemoryRequirements(device_, resource.colorImage, &colorRequirements);
+        const VkMemoryAllocateInfo colorAllocation{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = colorRequirements.size,
+            .memoryTypeIndex = findMemoryType(colorRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+        };
+        check(vkAllocateMemory(device_, &colorAllocation, nullptr, &resource.colorMemory),
+              "allocate viewport color memory");
+        check(vkBindImageMemory(device_, resource.colorImage, resource.colorMemory, 0), "bind viewport color memory");
+        const VkImageViewCreateInfo colorViewInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = resource.colorImage,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = swapchainFormat_,
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+        };
+        check(vkCreateImageView(device_, &colorViewInfo, nullptr, &resource.colorView), "create viewport color view");
+
+        const VkImageCreateInfo depthInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = VK_FORMAT_D32_SFLOAT,
+            .extent = {extent.width, extent.height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        check(vkCreateImage(device_, &depthInfo, nullptr, &resource.depth.image), "create viewport depth image");
+        VkMemoryRequirements depthRequirements{};
+        vkGetImageMemoryRequirements(device_, resource.depth.image, &depthRequirements);
+        const VkMemoryAllocateInfo depthAllocation{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = depthRequirements.size,
+            .memoryTypeIndex = findMemoryType(depthRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+        };
+        check(vkAllocateMemory(device_, &depthAllocation, nullptr, &resource.depth.memory),
+              "allocate viewport depth memory");
+        check(vkBindImageMemory(device_, resource.depth.image, resource.depth.memory, 0), "bind viewport depth memory");
+        const VkImageViewCreateInfo depthViewInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = resource.depth.image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = VK_FORMAT_D32_SFLOAT,
+            .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
+        };
+        check(vkCreateImageView(device_, &depthViewInfo, nullptr, &resource.depth.view), "create viewport depth view");
+        resource.imguiDescriptor =
+            ImGui_ImplVulkan_AddTexture(resource.colorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        if (resource.imguiDescriptor == VK_NULL_HANDLE)
+            throw std::runtime_error("create ImGui viewport descriptor failed");
+        resource.extent = extent;
+    } catch (...) {
+        destroyViewportResource(resource);
+        throw;
+    }
+#else
+    static_cast<void>(resource);
+    static_cast<void>(extent);
+#endif
+}
+
+void VulkanDevice::setPreviewViewportExtent(const RenderTargetDesc& target) {
+#if DAYO_HAS_IMGUI
+    if (target.width == 0 || target.height == 0) {
+        viewportRequested_ = false;
+        return;
+    }
+    const auto maximum = physicalProperties_.limits.maxImageDimension2D;
+    requestedViewportExtent_ = {std::min(target.width, maximum), std::min(target.height, maximum)};
+    viewportRequested_ = true;
+    auto& resource = viewportResources_[frameIndex_];
+    if (resource.colorImage != VK_NULL_HANDLE && resource.extent.width == requestedViewportExtent_.width &&
+        resource.extent.height == requestedViewportExtent_.height)
+        return;
+    auto& frame = frames_[frameIndex_];
+    check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait before viewport resize");
+    createViewportResource(resource, requestedViewportExtent_);
+#else
+    static_cast<void>(target);
+#endif
+}
+
+PreviewViewport VulkanDevice::previewViewport() const noexcept {
+#if DAYO_HAS_IMGUI
+    if (!viewportRequested_)
+        return {};
+    const auto& resource = viewportResources_[frameIndex_];
+    if (resource.imguiDescriptor == VK_NULL_HANDLE)
+        return {};
+    return {
+        .textureId = descriptorId(resource.imguiDescriptor),
+        .width = resource.extent.width,
+        .height = resource.extent.height,
+    };
+#else
+    return {};
+#endif
 }
 
 void VulkanDevice::createOffscreenResource(VkExtent2D extent) {
@@ -2125,8 +2370,6 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     synchronizePreviewMorphs(frame);
     synchronizePreviewMaterials(frame);
     synchronizePreviewIndirect(frame);
-    const VkBuffer previewVertexBuffer =
-        previewStaticVertexBuffer_ != VK_NULL_HANDLE ? previewStaticVertexBuffer_ : frame.previewVertexBuffer;
     check(vkResetFences(device_, 1, &frame.inFlight), "reset offscreen fence");
     check(vkResetCommandPool(device_, frame.commandPool, 0), "reset offscreen command pool");
     const VkCommandBufferBeginInfo beginInfo{
@@ -2140,131 +2383,9 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     }
     recordPreviewBackgroundUpload(frame.commandBuffer, frame);
 
-    const VkImageMemoryBarrier2 toColor{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask = offscreen_.colorInitialized ? VK_PIPELINE_STAGE_2_TRANSFER_BIT : VK_PIPELINE_STAGE_2_NONE,
-        .srcAccessMask = offscreen_.colorInitialized ? VK_ACCESS_2_TRANSFER_READ_BIT : 0U,
-        .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-        .oldLayout = offscreen_.colorInitialized ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = offscreen_.colorImage,
-        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
-    };
-    const VkImageMemoryBarrier2 toDepth{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask =
-            offscreen_.depth.initialized ? VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT : VK_PIPELINE_STAGE_2_NONE,
-        .srcAccessMask = offscreen_.depth.initialized ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : 0U,
-        .dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
-        .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-        .oldLayout =
-            offscreen_.depth.initialized ? VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = offscreen_.depth.image,
-        .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
-    };
-    const std::array renderBarriers{toColor, toDepth};
-    const VkDependencyInfo renderDependency{
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .imageMemoryBarrierCount = static_cast<std::uint32_t>(renderBarriers.size()),
-        .pImageMemoryBarriers = renderBarriers.data(),
-    };
-    vkCmdPipelineBarrier2(frame.commandBuffer, &renderDependency);
-
-    VkClearValue clear{};
-    clear.color = !previewGpuScene_.view.backgroundEnabled ||
-                          previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::white
-                      ? VkClearColorValue{{1.0F, 1.0F, 1.0F, 1.0F}}
-                      : VkClearColorValue{{0.025F, 0.035F, 0.055F, 1.0F}};
-    const VkRenderingAttachmentInfo colorAttachment{
-        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        .imageView = offscreen_.colorView,
-        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-        .clearValue = clear,
-    };
-    VkClearValue depthClear{};
-    depthClear.depthStencil = {1.0F, 0};
-    const VkRenderingAttachmentInfo depthAttachment{
-        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        .imageView = offscreen_.depth.view,
-        .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-        .clearValue = depthClear,
-    };
-    const VkRenderingInfo renderingInfo{
-        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-        .renderArea = {{0, 0}, extent},
-        .layerCount = 1,
-        .colorAttachmentCount = 1,
-        .pColorAttachments = &colorAttachment,
-        .pDepthAttachment = &depthAttachment,
-    };
-    vkCmdBeginRendering(frame.commandBuffer, &renderingInfo);
-    offscreen_.depth.initialized = true;
-    const VkViewport viewport{0.0F, 0.0F, static_cast<float>(extent.width), static_cast<float>(extent.height),
-                              0.0F, 1.0F};
-    const VkRect2D scissor{{0, 0}, extent};
-    vkCmdSetViewport(frame.commandBuffer, 0, 1, &viewport);
-    vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
-    vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-    vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 1, 1,
-                            &frame.previewBoneDescriptor, 0, nullptr);
-    if (frame.previewMaterialDescriptor != VK_NULL_HANDLE) {
-        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 2, 1,
-                                &frame.previewMaterialDescriptor, 0, nullptr);
-    }
-    if (previewBindlessDescriptor_ != VK_NULL_HANDLE) {
-        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 3, 1,
-                                &previewBindlessDescriptor_, 0, nullptr);
-    }
-    if (frame.previewMorphDescriptor != VK_NULL_HANDLE) {
-        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 4, 1,
-                                &frame.previewMorphDescriptor, 0, nullptr);
-    }
-    const VkDeviceSize vertexOffset = 0;
-    vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
-    vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
-    PreviewPushConstants constants;
-    std::copy_n(previewGpuScene_.view.cameraRotation, 3, constants.camera.begin());
-    constants.camera[3] = previewGpuScene_.view.cameraDistance;
-    std::copy_n(previewGpuScene_.view.target, 3, constants.target.begin());
-    constants.target[3] = previewGpuScene_.view.perspective ? previewGpuScene_.view.verticalFovRadians
-                                                            : -previewGpuScene_.view.verticalFovRadians;
-    std::copy_n(previewGpuScene_.view.lightDirection, 3, constants.light.begin());
-    constants.light[3] = static_cast<float>(extent.width) / static_cast<float>(extent.height);
-    std::copy_n(previewGpuScene_.view.lightColor, 3, constants.lightColor.begin());
-    constants.debug = {static_cast<float>(previewGpuScene_.view.debugMaterial),
-                       static_cast<float>(previewGpuScene_.view.debugFlags), 0.0F, 0.0F};
-    constants.viewport = {static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0F, 0.0F};
-    const auto plan = buildPreviewRenderPlan(false);
-    if (plan.background) {
-        vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, backgroundPipeline_);
-        const VkDeviceSize backgroundOffset = 0;
-        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewBackgroundVertexBuffer_, &backgroundOffset);
-        vkCmdBindIndexBuffer(frame.commandBuffer, previewBackgroundIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1,
-                                &previewBackgroundTexture_.descriptor, 0, nullptr);
-        vkCmdPushConstants(frame.commandBuffer, pipelineLayout_,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
-        vkCmdDrawIndexed(frame.commandBuffer, previewBackgroundIndexCount_, 1, 0, 0, 0);
-        vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
-        vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
-    }
-    if (!plan.background) {
-        vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &previewVertexBuffer, &vertexOffset);
-        vkCmdBindIndexBuffer(frame.commandBuffer, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
-    }
-    recordPreviewModel(frame.commandBuffer, constants, plan);
-    vkCmdEndRendering(frame.commandBuffer);
+    recordPreviewPass(frame.commandBuffer, frame, offscreen_.colorImage, offscreen_.colorView, offscreen_.depth, extent,
+                      offscreen_.colorInitialized, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, false);
     if (frame.timestampQueryPool != VK_NULL_HANDLE)
         vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timestampQueryPool, 1);
 

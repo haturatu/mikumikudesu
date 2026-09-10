@@ -734,6 +734,21 @@ int main() {
         dayo::core::VmdMotion shortMotion;
         shortMotion.morphs.push_back({"smile", 20, 1.0F});
         scene.attachMotion(std::move(shortMotion), firstModel);
+        const auto originalMotion = *scene.motion(firstModel);
+        const auto originalRevision = scene.motionRevision();
+        dayo::core::CommandHistory motionHistory;
+        auto editedMotion = originalMotion;
+        editedMotion.morphs.push_back({"smile", 21, 0.5F});
+        motionHistory.execute(
+            scene, std::make_unique<dayo::core::EditMotionCommand>(firstModel, false, originalMotion, editedMotion));
+        const auto editedRevision = scene.motionRevision();
+        ok &= check(editedRevision > originalRevision && motionHistory.undo(scene) &&
+                        scene.motionRevision() > editedRevision,
+                    "motion revision invalidates indexed selection across edit and undo");
+        const auto undoRevision = scene.motionRevision();
+        ok &= check(motionHistory.redo(scene) && scene.motionRevision() > undoRevision,
+                    "motion revision invalidates indexed selection on redo");
+        static_cast<void>(motionHistory.undo(scene));
         dayo::core::VmdMotion longMotion;
         longMotion.morphs.push_back({"smile", 100, 1.0F});
         scene.attachMotion(std::move(longMotion), secondModel);
@@ -793,6 +808,52 @@ int main() {
         dayo::core::writeFrame(outputDirectory / "frame.png", pngImage, dayo::core::OutputFormat::png);
         ok &= check(std::filesystem::file_size(outputDirectory / "frame.png") > 8, "PNG frame output");
         ok &= check(queue.written() == 16, "thread-safe output counter");
+        bool overwriteBlocked = false;
+        try {
+            dayo::core::OutputQueue protectedQueue(settings);
+        } catch (const std::runtime_error& error) {
+            overwriteBlocked = std::string_view(error.what()).find("already exists") != std::string_view::npos;
+        }
+        ok &= check(overwriteBlocked, "sequence output rejects existing range before starting worker");
+        settings.overwrite = true;
+        dayo::core::OutputQueue interactiveQueue(settings);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        std::uint32_t nextFrame = 0;
+        while (nextFrame < 100 && std::chrono::steady_clock::now() < deadline) {
+            dayo::core::ImageRgba8 image{1, 1, {255, 64, 32, 255}};
+            if (interactiveQueue.tryPush(nextFrame, std::move(image))) {
+                ++nextFrame;
+            } else {
+                // tryPush only moves on success; this verifies the rejection contract.
+                // NOLINTNEXTLINE(bugprone-use-after-move)
+                ok &= check(image.pixels.size() == 4, "full queue preserves unsubmitted image");
+                std::this_thread::yield();
+            }
+        }
+        interactiveQueue.requestClose();
+        while (!interactiveQueue.finished() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+        ok &= check(nextFrame == 100 && interactiveQueue.finished() && interactiveQueue.written() == 100 &&
+                        !interactiveQueue.canAcceptFrame(),
+                    "nonblocking output drains all accepted frames before completion");
+        interactiveQueue.rethrowIfFailed();
+        dayo::core::OutputSettings protectedSettings;
+        protectedSettings.directory = outputDirectory;
+        protectedSettings.format = dayo::core::OutputFormat::png;
+        protectedSettings.firstFrame = protectedSettings.lastFrame = 101;
+        dayo::core::OutputQueue protectedQueue(protectedSettings);
+        const auto protectedPath = dayo::core::outputPath(protectedSettings, 101);
+        dayo::core::writeFrame(protectedPath, pngImage, dayo::core::OutputFormat::png);
+        protectedQueue.push(101, dayo::core::ImageRgba8{1, 1, {0, 0, 0, 255}});
+        protectedQueue.close();
+        bool lateOverwriteBlocked = false;
+        try {
+            protectedQueue.rethrowIfFailed();
+        } catch (const std::runtime_error&) {
+            lateOverwriteBlocked = true;
+        }
+        ok &= check(lateOverwriteBlocked && dayo::core::loadImageRgba8(protectedPath).pixels == pngImage.pixels,
+                    "sequence output preserves files created after preflight");
         dayo::core::OutputSettings failingSettings;
         failingSettings.directory = outputDirectory;
         failingSettings.format = dayo::core::OutputFormat::exr;

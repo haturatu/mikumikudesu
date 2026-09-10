@@ -38,6 +38,8 @@ class VulkanDevice final : public Device {
     void resize() override;
     void beginUiFrame() override;
     void renderFrame() override;
+    void setPreviewViewportExtent(const RenderTargetDesc& target) override;
+    [[nodiscard]] PreviewViewport previewViewport() const noexcept override;
     [[nodiscard]] std::uint64_t previewGpuNanoseconds() const noexcept override {
         return previewGpuNanoseconds_;
     }
@@ -126,6 +128,18 @@ class VulkanDevice final : public Device {
         bool colorInitialized{};
     };
 
+    struct ViewportResource {
+        VkImage colorImage{};
+        VkDeviceMemory colorMemory{};
+        VkImageView colorView{};
+        DepthResource depth;
+#if DAYO_HAS_IMGUI
+        VkDescriptorSet imguiDescriptor{};
+#endif
+        VkExtent2D extent{};
+        bool colorInitialized{};
+    };
+
     void createInstance(bool validation);
     void createSurface();
     void selectPhysicalDevice();
@@ -145,6 +159,9 @@ class VulkanDevice final : public Device {
     void destroyPreviewTextureResource(PreviewTextureResource& texture);
     void destroyOffscreenResource();
     void createOffscreenResource(VkExtent2D extent);
+    void destroyViewportResource(ViewportResource& resource);
+    void destroyViewportResources();
+    void createViewportResource(ViewportResource& resource, VkExtent2D extent);
     void createPreviewTexture(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> rgba);
     [[nodiscard]] PreviewTextureResource createPreviewTextureResource(std::uint32_t width, std::uint32_t height,
                                                                       std::span<const std::uint8_t> rgba);
@@ -177,6 +194,10 @@ class VulkanDevice final : public Device {
     [[nodiscard]] PreviewRenderPlan buildPreviewRenderPlan(bool includeUi) const noexcept;
     void recordPreviewModel(VkCommandBuffer command, const PreviewPushConstants& constants,
                             const PreviewRenderPlan& plan);
+    void recordPreviewPass(VkCommandBuffer command, Frame& frame, VkImage colorImage, VkImageView colorView,
+                           DepthResource& depth, VkExtent2D extent, bool colorInitialized,
+                           VkImageLayout previousColorLayout, VkPipelineStageFlags2 previousColorStage,
+                           VkAccessFlags2 previousColorAccess, bool preservePreviousFrame);
     void uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer,
                              VkDeviceMemory& memory, VkDeviceSize allocationSize = 0);
     [[nodiscard]] std::uint32_t findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags flags) const;
@@ -275,6 +296,9 @@ class VulkanDevice final : public Device {
     bool previewBackgroundInitialized_{};
     PreviewGpuScene previewGpuScene_;
     OffscreenResource offscreen_;
+    std::array<ViewportResource, 2> viewportResources_{};
+    bool viewportRequested_{};
+    VkExtent2D requestedViewportExtent_{};
 
     std::uint64_t nextResourceHandle_{1};
     std::unordered_map<BufferHandle, VulkanBuffer> buffers_;
