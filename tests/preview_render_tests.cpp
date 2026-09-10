@@ -610,6 +610,20 @@ bool sphereAlphaDoesNotHideMaterial(dayo::graphics::VulkanDevice& device) {
 
 #if DAYO_HAS_IMGUI
 bool rendersInteractiveViewport(dayo::graphics::VulkanDevice& device) {
+    const auto vertices = makeFlatTriangle();
+    const std::array<std::uint32_t, 3> indices{0, 2, 1};
+    const std::array<std::uint8_t, 4> red{255, 0, 0, 255};
+    const std::array<PreviewTexture, 1> textures{{
+        {1, 1, std::span<const std::uint8_t>(red), false},
+    }};
+    std::array<PreviewMaterial, 1> materials{};
+    materials[0].textureSlot = 1;
+    const std::array<PreviewDraw, 1> draws{{{0, 3, 0}}};
+    device.uploadPreviewTextures(textures);
+    device.uploadPreviewMesh(vertices, indices);
+    device.updatePreviewMaterials(materials);
+    device.updatePreviewDraws(draws);
+
     const std::array<dayo::graphics::RenderTargetDesc, 4> extents{{{48, 32}, {48, 32}, {32, 48}, {32, 48}}};
     for (const auto extent : extents) {
         device.beginUiFrame();
@@ -628,7 +642,9 @@ bool rendersInteractiveViewport(dayo::graphics::VulkanDevice& device) {
         ImGui::End();
         device.renderFrame();
     }
-    return true;
+    const auto image = device.renderToImage({48, 32});
+    const auto pixel = centerPixel(image);
+    return pixel[0] > 200U && pixel[1] < 80U && pixel[2] < 80U;
 }
 #endif
 
