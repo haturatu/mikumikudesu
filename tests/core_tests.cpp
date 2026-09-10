@@ -816,6 +816,8 @@ int main() {
             if (interactiveQueue.tryPush(nextFrame, std::move(image))) {
                 ++nextFrame;
             } else {
+                // tryPush only moves on success; this verifies the rejection contract.
+                // NOLINTNEXTLINE(bugprone-use-after-move)
                 ok &= check(image.pixels.size() == 4, "full queue preserves unsubmitted image");
                 std::this_thread::yield();
             }

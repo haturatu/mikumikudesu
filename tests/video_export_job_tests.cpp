@@ -24,6 +24,8 @@ int main() {
             dayo::core::ImageRgba8 image{16, 16, std::vector<std::uint8_t>(16 * 16 * 4, 255)};
             if (job.trySubmitFrame(std::move(image)))
                 ++submitted;
+            // trySubmitFrame only moves on success; rejected frames stay owned by the caller.
+            // NOLINTNEXTLINE(bugprone-use-after-move)
             else if (image.pixels.empty())
                 throw std::runtime_error("full queue consumed the caller's frame");
             else

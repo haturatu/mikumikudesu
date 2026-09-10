@@ -598,7 +598,10 @@ if(BUILD_TESTING)
   add_executable(dayo_video_export_job_tests tests/video_export_job_tests.cpp src/app/video_export_job.cpp)
   target_link_libraries(dayo_video_export_job_tests PRIVATE dayo_core)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(dayo_video_export_job_tests PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+    target_compile_options(
+      dayo_video_export_job_tests
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
     if(DAYO_WARNINGS_AS_ERRORS)
       target_compile_options(dayo_video_export_job_tests PRIVATE -Werror)
     endif()
