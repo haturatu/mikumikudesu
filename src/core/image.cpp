@@ -90,13 +90,15 @@ enum class BlockFormat { bc1, bc2, bc3, bc4, bc5 };
 
 ImageRgba8 decodeBlocks(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> data,
                         BlockFormat format) {
-    ImageRgba8 image{width, height, std::vector<std::uint8_t>(static_cast<std::size_t>(width) * height * 4U)};
     const std::uint32_t blockSize = (format == BlockFormat::bc1 || format == BlockFormat::bc4) ? 8U : 16U;
     const auto blocksWide = (width + 3U) / 4U;
     const auto blocksHigh = (height + 3U) / 4U;
-    if (data.size() < static_cast<std::size_t>(blocksWide) * blocksHigh * blockSize) {
+    if (static_cast<std::size_t>(blocksWide) > std::numeric_limits<std::size_t>::max() / blocksHigh ||
+        static_cast<std::size_t>(blocksWide) * blocksHigh > std::numeric_limits<std::size_t>::max() / blockSize ||
+        data.size() < static_cast<std::size_t>(blocksWide) * blocksHigh * blockSize) {
         throw std::runtime_error("truncated DDS block data");
     }
+    ImageRgba8 image{width, height, std::vector<std::uint8_t>(static_cast<std::size_t>(width) * height * 4U)};
     for (std::uint32_t by = 0; by < blocksHigh; ++by)
         for (std::uint32_t bx = 0; bx < blocksWide; ++bx) {
             const auto* block = data.data() + (static_cast<std::size_t>(by) * blocksWide + bx) * blockSize;
