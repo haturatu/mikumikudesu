@@ -808,6 +808,14 @@ int main() {
         dayo::core::writeFrame(outputDirectory / "frame.png", pngImage, dayo::core::OutputFormat::png);
         ok &= check(std::filesystem::file_size(outputDirectory / "frame.png") > 8, "PNG frame output");
         ok &= check(queue.written() == 16, "thread-safe output counter");
+        bool overwriteBlocked = false;
+        try {
+            dayo::core::OutputQueue protectedQueue(settings);
+        } catch (const std::runtime_error& error) {
+            overwriteBlocked = std::string_view(error.what()).find("already exists") != std::string_view::npos;
+        }
+        ok &= check(overwriteBlocked, "sequence output rejects existing range before starting worker");
+        settings.overwrite = true;
         dayo::core::OutputQueue interactiveQueue(settings);
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
         std::uint32_t nextFrame = 0;
@@ -829,6 +837,23 @@ int main() {
                         !interactiveQueue.canAcceptFrame(),
                     "nonblocking output drains all accepted frames before completion");
         interactiveQueue.rethrowIfFailed();
+        dayo::core::OutputSettings protectedSettings;
+        protectedSettings.directory = outputDirectory;
+        protectedSettings.format = dayo::core::OutputFormat::png;
+        protectedSettings.firstFrame = protectedSettings.lastFrame = 101;
+        dayo::core::OutputQueue protectedQueue(protectedSettings);
+        const auto protectedPath = dayo::core::outputPath(protectedSettings, 101);
+        dayo::core::writeFrame(protectedPath, pngImage, dayo::core::OutputFormat::png);
+        protectedQueue.push(101, dayo::core::ImageRgba8{1, 1, {0, 0, 0, 255}});
+        protectedQueue.close();
+        bool lateOverwriteBlocked = false;
+        try {
+            protectedQueue.rethrowIfFailed();
+        } catch (const std::runtime_error&) {
+            lateOverwriteBlocked = true;
+        }
+        ok &= check(lateOverwriteBlocked && dayo::core::loadImageRgba8(protectedPath).pixels == pngImage.pixels,
+                    "sequence output preserves files created after preflight");
         dayo::core::OutputSettings failingSettings;
         failingSettings.directory = outputDirectory;
         failingSettings.format = dayo::core::OutputFormat::exr;

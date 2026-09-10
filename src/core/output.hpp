@@ -20,6 +20,7 @@ struct OutputSettings {
     std::uint32_t samples{1};
     std::uint32_t maxPendingFrames{4};
     bool motionBlur{};
+    bool overwrite{};
 };
 
 [[nodiscard]] std::filesystem::path outputPath(const OutputSettings& settings, std::uint32_t frame);

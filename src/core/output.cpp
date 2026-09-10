@@ -20,6 +20,16 @@ namespace {
 
 OutputSettings normalizeSettings(OutputSettings settings) {
     settings.maxPendingFrames = std::max(settings.maxPendingFrames, 1U);
+    if (settings.lastFrame < settings.firstFrame)
+        throw std::invalid_argument("output frame range is reversed");
+    if (!settings.overwrite) {
+        for (std::uint64_t frame = settings.firstFrame; frame <= settings.lastFrame; ++frame) {
+            const auto path = outputPath(settings, static_cast<std::uint32_t>(frame));
+            if (std::filesystem::exists(path))
+                throw std::runtime_error(
+                    path.string() + " already exists. Enable Overwrite existing frames or choose another directory.");
+        }
+    }
     return settings;
 }
 
@@ -82,7 +92,10 @@ struct OutputWorker {
                     queue.pop();
                     condition.notify_all();
                 }
-                writeFrame(outputPath(settings, item.frame), item.image, settings.format);
+                const auto path = outputPath(settings, item.frame);
+                if (!settings.overwrite && std::filesystem::exists(path))
+                    throw std::runtime_error(path.string() + " already exists; frame was not overwritten");
+                writeFrame(path, item.image, settings.format);
                 count.fetch_add(1, std::memory_order_relaxed);
             }
         } catch (...) {

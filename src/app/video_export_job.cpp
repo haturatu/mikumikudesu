@@ -80,7 +80,12 @@ void VideoExportJob::start(core::VideoExportRequest request, std::optional<std::
                     error_ = exception.what();
                 }
             }
-            running_ = false;
+            {
+                std::lock_guard lock(queueMutex_);
+                frames_.clear();
+                inputFinished_ = true;
+                running_ = false;
+            }
             queueChanged_.notify_all();
         });
 }
@@ -124,6 +129,7 @@ void VideoExportJob::requestCancel() noexcept {
         {
             std::lock_guard lock(queueMutex_);
             inputFinished_ = true;
+            frames_.clear();
         }
         queueChanged_.notify_all();
     }
