@@ -36,6 +36,7 @@ struct UiState {
     std::array<char, 256> sceneFilter{};
     bool viewportHovered{};
     bool timelineFocused{};
+    bool inspectScene{};
     std::int32_t selectedMaterial{-1};
 };
 

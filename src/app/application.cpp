@@ -1139,7 +1139,10 @@ void Application::refreshPreviewBackground() {
     const auto& background = scene_.background();
     uploadedVideoFrame_ = -1;
     if (background.screenSource == core::ScreenTextureSource::backgroundVideo) {
-        refreshVideoFrame();
+        if (videoMode_ && scene_.media() != nullptr && scene_.media()->info().hasVideo)
+            refreshVideoFrame();
+        else
+            device_->uploadPreviewBackground({});
         return;
     }
     if (background.screenSource != core::ScreenTextureSource::backgroundImage || !background.image.has_value()) {
@@ -1328,6 +1331,8 @@ void Application::buildUi() {
         ImGui::End();
 
     if (uiState_.sceneVisible && ImGui::Begin(workspaceWindowName("Scene", "scene").c_str())) {
+        if (ImGui::Selectable("Scene / Background", uiState_.inspectScene))
+            uiState_.inspectScene = true;
         ImGui::InputTextWithHint("##scene-filter", "Search scene...", uiState_.sceneFilter.data(),
                                  uiState_.sceneFilter.size());
         ImGui::SeparatorText("Models");
@@ -1336,9 +1341,10 @@ void Application::buildUi() {
                 instance.displayName.find(uiState_.sceneFilter.data()) == std::string::npos)
                 continue;
             ImGui::PushID(static_cast<int>(instance.id));
-            bool selected = scene_.selectedModelId() == instance.id;
+            bool selected = !uiState_.inspectScene && scene_.selectedModelId() == instance.id;
             const auto label = std::string(instance.visible ? "[visible]  " : "[hidden]  ") + instance.displayName;
             if (ImGui::Selectable(label.c_str(), selected)) {
+                uiState_.inspectScene = false;
                 scene_.selectModel(instance.id);
                 normalization_ = instance.normalization;
                 refreshAnimatedMesh(true);
@@ -1647,9 +1653,8 @@ void Application::buildInspectorPanel() {
         ImGui::End();
         return;
     }
-    if (model == nullptr || model->model == nullptr) {
-        ImGui::TextUnformatted("No selection");
-        ImGui::TextDisabled("Select an item in Scene to inspect it.");
+    if (uiState_.inspectScene || model == nullptr || model->model == nullptr) {
+        ImGui::TextUnformatted("Scene settings");
         if (ImGui::CollapsingHeader("Scene", ImGuiTreeNodeFlags_DefaultOpen)) {
             auto background = scene_.background();
             int source = static_cast<int>(background.screenSource);
@@ -1787,11 +1792,14 @@ void Application::buildInspectorPanel() {
                 refreshPreviewScene();
         }
     }
-    if (ImGui::CollapsingHeader("Evaluation Order")) {
+    if (uiState_.workspace == ui::Workspace::debug && ImGui::CollapsingHeader("Evaluation Order (experimental)")) {
+        ImGui::TextDisabled("Not applied by the renderer or saved in projects.");
+        ImGui::BeginDisabled();
         ImGui::DragInt("Motion", &model->order.motion, 1.0F, 0, 1024);
         ImGui::DragInt("Deform", &model->order.deform, 1.0F, 0, 1024);
         ImGui::DragInt("Postprocess", &model->order.postprocess, 1.0F, 0, 1024);
         ImGui::DragInt("Raster", &model->order.raster, 1.0F, 0, 1024);
+        ImGui::EndDisabled();
     }
     ImGui::End();
 #endif
@@ -2134,6 +2142,7 @@ void Application::buildImageSequenceExportUi() {
             }
         }
         ImGui::Checkbox("Motion blur", &sequenceOutput_.motionBlur);
+        ImGui::Checkbox("Overwrite existing frames", &sequenceOutput_.overwrite);
         if (sequenceOutput_.format == core::OutputFormat::exr)
             sequenceOutput_.format = core::OutputFormat::ppm;
         int format = std::clamp(static_cast<int>(sequenceOutput_.format), 0, 1);
@@ -2203,9 +2212,19 @@ void Application::buildEditorUi() {
                         tracks.push_back({key.name, {}});
                     tracks[iterator->second].frames.push_back(key.frame);
                 }
+                for (auto& track : tracks)
+                    std::sort(track.frames.begin(), track.frames.end());
             };
             groupTracks(active->bones, timelineTrackCache_.bones);
             groupTracks(active->morphs, timelineTrackCache_.morphs);
+            const auto cacheFrames = [](const auto& keys, std::vector<std::uint32_t>& frames) {
+                frames.reserve(keys.size());
+                for (const auto& key : keys)
+                    frames.push_back(key.frame);
+                std::sort(frames.begin(), frames.end());
+            };
+            cacheFrames(active->cameras, timelineTrackCache_.cameras);
+            cacheFrames(active->lights, timelineTrackCache_.lights);
         }
     }
     const auto execute = [&](core::VmdMotion before, core::MotionDocument document, bool globalMotion,
@@ -2384,30 +2403,37 @@ void Application::buildEditorUi() {
                     };
                     drawTrack("Camera", 0);
                     drawTrack("Light", 1);
+                    const auto drawFrames = [&](const std::vector<std::uint32_t>& frames, int trackRow, ImU32 color) {
+                        const float firstFrame = (timelinePan_ - 8.0F) / pixelsPerFrame;
+                        const float lastFrame = (right - left + timelinePan_ + 8.0F) / pixelsPerFrame;
+                        const auto first = std::lower_bound(
+                            frames.begin(), frames.end(), firstFrame,
+                            [](std::uint32_t frame, float value) { return static_cast<float>(frame) < value; });
+                        const auto last =
+                            std::upper_bound(first, frames.end(), lastFrame, [](float value, std::uint32_t frame) {
+                                return value < static_cast<float>(frame);
+                            });
+                        for (auto it = first; it != last; ++it)
+                            drawDiamond(static_cast<float>(*it), trackRow, color);
+                    };
                     if (global) {
                         if (trackVisible(0))
-                            for (const auto& key : active->cameras)
-                                drawDiamond(static_cast<float>(key.frame), 0, ImGui::GetColorU32(ImGuiCol_CheckMark));
+                            drawFrames(timelineTrackCache_.cameras, 0, ImGui::GetColorU32(ImGuiCol_CheckMark));
                         if (trackVisible(1))
-                            for (const auto& key : active->lights)
-                                drawDiamond(static_cast<float>(key.frame), 1, ImGui::GetColorU32(ImGuiCol_CheckMark));
+                            drawFrames(timelineTrackCache_.lights, 1, ImGui::GetColorU32(ImGuiCol_CheckMark));
                     } else if (model != nullptr) {
                         int trackRow = 2;
                         for (const auto& track : timelineTrackCache_.bones) {
                             if (trackVisible(trackRow)) {
                                 drawTrack(track.name.c_str(), trackRow);
-                                for (const auto frame : track.frames)
-                                    drawDiamond(static_cast<float>(frame), trackRow,
-                                                ImGui::GetColorU32(ImGuiCol_SliderGrab));
+                                drawFrames(track.frames, trackRow, ImGui::GetColorU32(ImGuiCol_SliderGrab));
                             }
                             ++trackRow;
                         }
                         for (const auto& track : timelineTrackCache_.morphs) {
                             if (trackVisible(trackRow)) {
                                 drawTrack(track.name.c_str(), trackRow);
-                                for (const auto frame : track.frames)
-                                    drawDiamond(static_cast<float>(frame), trackRow,
-                                                ImGui::GetColorU32(ImGuiCol_PlotLines));
+                                drawFrames(track.frames, trackRow, ImGui::GetColorU32(ImGuiCol_PlotLines));
                             }
                             ++trackRow;
                         }

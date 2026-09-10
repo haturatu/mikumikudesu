@@ -197,6 +197,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
         bool globalMotion{};
         std::vector<TimelineTrack> bones;
         std::vector<TimelineTrack> morphs;
+        std::vector<std::uint32_t> cameras;
+        std::vector<std::uint32_t> lights;
     };
     TimelineTrackCache timelineTrackCache_;
     bool timelineKeyListVisible_{};
