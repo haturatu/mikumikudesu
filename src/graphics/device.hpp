@@ -220,6 +220,16 @@ struct RenderTargetDesc {
     std::uint32_t height{};
 };
 
+struct PreviewViewport {
+    std::uint64_t textureId{};
+    std::uint32_t width{};
+    std::uint32_t height{};
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return textureId != 0 && width != 0 && height != 0;
+    }
+};
+
 using BufferHandle = std::uint64_t;
 using TextureHandle = std::uint64_t;
 using PipelineHandle = std::uint64_t;
@@ -378,6 +388,10 @@ class Device {
     virtual void resize() = 0;
     virtual void beginUiFrame() = 0;
     virtual void renderFrame() = 0;
+    virtual void setPreviewViewportExtent(const RenderTargetDesc&) {}
+    [[nodiscard]] virtual PreviewViewport previewViewport() const noexcept {
+        return {};
+    }
     // Returns the most recently completed preview GPU interval. The sample may
     // belong to an earlier submitted frame because GPU work is asynchronous.
     // Backends that do not expose timestamp queries report zero.

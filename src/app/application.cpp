@@ -1272,12 +1272,35 @@ void Application::buildUi() {
     buildStatusBar();
     buildDockLayout();
     auto* model = selectedModel();
-    const auto* motion =
-        scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
-    auto* media = scene_.media();
     if (ImGui::Begin(workspaceWindowName("Viewport", "viewport").c_str(), nullptr,
-                     ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar)) {
-        uiState_.viewportHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
+                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+        const ImVec2 available = ImGui::GetContentRegionAvail();
+        if (available.x > 0.0F && available.y > 0.0F) {
+            const auto* imguiViewport = ImGui::GetWindowViewport();
+            const float dpiScale = std::max(imguiViewport->DpiScale, 1.0F);
+            const auto pixelWidth = static_cast<std::uint32_t>(std::max(1.0F, std::round(available.x * dpiScale)));
+            const auto pixelHeight = static_cast<std::uint32_t>(std::max(1.0F, std::round(available.y * dpiScale)));
+            device_->setPreviewViewportExtent({pixelWidth, pixelHeight});
+            const auto preview = device_->previewViewport();
+            if (preview) {
+                const auto imagePosition = ImGui::GetCursorScreenPos();
+                ImGui::Image(ImTextureRef{static_cast<ImTextureID>(preview.textureId)}, available);
+                const bool imageHovered = ImGui::IsItemHovered();
+                bool overlayHovered = false;
+                if (manualCamera_) {
+                    ImGui::SetCursorScreenPos({imagePosition.x + ImGui::GetStyle().ItemSpacing.x,
+                                               imagePosition.y + ImGui::GetStyle().ItemSpacing.y});
+                    if (ImGui::Button("Use VMD camera")) {
+                        manualCamera_ = false;
+                        refreshPreviewScene();
+                    }
+                    overlayHovered = ImGui::IsItemHovered();
+                }
+                uiState_.viewportHovered = imageHovered && !overlayHovered;
+            }
+        } else {
+            device_->setPreviewViewportExtent({});
+        }
         const auto& io = ImGui::GetIO();
         const bool viewportInput = uiState_.viewportHovered && !ImGui::IsAnyItemActive();
         bool cameraChanged = false;
@@ -1294,24 +1317,8 @@ void Application::buildUi() {
             manualCamera_ = true;
             refreshPreviewScene();
         }
-        ImGui::TextUnformatted("Viewport");
-        ImGui::SameLine();
-        ImGui::TextDisabled("Right-drag orbit  ·  Wheel zoom");
-        ImGui::TextWrapped("%s", lastAsset_.c_str());
-        if (motion != nullptr) {
-            ImGui::Text("Frame %.1f / %.1f", animationFrame_, scene_.timeline().duration);
-        }
-        if (media != nullptr) {
-            if (motion == nullptr && ImGui::Checkbox("Play", &playing_) && audioPlayer_.active()) {
-                audioPlayer_.setPaused(!playing_);
-            }
-            ImGui::Text("Media: %.2f / %.2f s%s%s", mediaSeconds_, media->info().durationSeconds,
-                        media->info().hasVideo ? " video" : "", media->info().hasAudio ? " audio" : "");
-        }
-        if (manualCamera_ && ImGui::Button("Use VMD camera")) {
-            manualCamera_ = false;
-            refreshPreviewScene();
-        }
+    } else {
+        device_->setPreviewViewportExtent({});
     }
     ImGui::End();
 
@@ -1587,7 +1594,7 @@ void Application::buildDockLayout() {
     auto* viewport = ImGui::GetMainViewport();
     const char* workspaceId = workspaceSuffix(uiState_.workspace);
     const ImGuiID dockspaceId = ImGui::GetID((std::string("DayoEditorDockSpace.") + workspaceId).c_str());
-    ImGui::DockSpaceOverViewport(dockspaceId, viewport, ImGuiDockNodeFlags_PassthruCentralNode);
+    ImGui::DockSpaceOverViewport(dockspaceId, viewport, ImGuiDockNodeFlags_None);
     const auto* node = ImGui::DockBuilderGetNode(dockspaceId);
     const bool hasLayout = node != nullptr && (node->IsSplitNode() || node->Windows.Size > 0);
     if (hasLayout && !uiState_.resetLayoutRequested)
