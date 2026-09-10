@@ -608,6 +608,30 @@ bool sphereAlphaDoesNotHideMaterial(dayo::graphics::VulkanDevice& device) {
     return imagesMatch(opaque, transparent);
 }
 
+#if DAYO_HAS_IMGUI
+bool rendersInteractiveViewport(dayo::graphics::VulkanDevice& device) {
+    const std::array<dayo::graphics::RenderTargetDesc, 4> extents{{{48, 32}, {48, 32}, {32, 48}, {32, 48}}};
+    for (const auto extent : extents) {
+        device.beginUiFrame();
+        ImGui::SetNextWindowSize({64.0F, 64.0F}, ImGuiCond_Always);
+        ImGui::Begin("interactive viewport test", nullptr,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar);
+        device.setPreviewViewportExtent(extent);
+        const auto preview = device.previewViewport();
+        if (!preview || preview.width != extent.width || preview.height != extent.height) {
+            ImGui::End();
+            ImGui::EndFrame();
+            return false;
+        }
+        ImGui::Image(ImTextureRef{static_cast<ImTextureID>(preview.textureId)},
+                     {static_cast<float>(extent.width), static_cast<float>(extent.height)});
+        ImGui::End();
+        device.renderFrame();
+    }
+    return true;
+}
+#endif
+
 } // namespace
 
 int main() {
@@ -630,11 +654,17 @@ int main() {
 #endif
     try {
         const auto window = dayo::platform::createWindow({"preview shader test", 64, 64, true});
-        dayo::graphics::VulkanDevice device(*window, false);
+        dayo::graphics::VulkanDevice device(*window, true);
         dayo::graphics::PreviewScene scene;
         scene.cameraDistance = 3.0F;
         scene.backgroundEnabled = false;
         device.updatePreviewScene(scene);
+#if DAYO_HAS_IMGUI
+        if (!rendersInteractiveViewport(device)) {
+            std::cerr << "FAIL: interactive preview viewport did not render or resize\n";
+            return 1;
+        }
+#endif
         if (!runCase(device, PreviewSkinningType::sdef)) {
             std::cerr << "FAIL: GPU SDEF output differs from reference rendering\n";
             return 1;
