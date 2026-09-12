@@ -35,6 +35,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -87,6 +88,37 @@ int main() {
         }
         ok &= check(rejectedDdsBudget, "DDS rejects decoded plus payload allocation over budget");
         std::filesystem::remove(ddsPath);
+
+        const auto bgraPath = std::filesystem::temp_directory_path() / "mikumikudesu-bgra-test.dds";
+        std::array<std::uint8_t, 128> bgraHeader{};
+        const auto putBgraLe32 = [&](std::size_t offset, std::uint32_t value) {
+            bgraHeader[offset] = static_cast<std::uint8_t>(value);
+            bgraHeader[offset + 1] = static_cast<std::uint8_t>(value >> 8U);
+            bgraHeader[offset + 2] = static_cast<std::uint8_t>(value >> 16U);
+            bgraHeader[offset + 3] = static_cast<std::uint8_t>(value >> 24U);
+        };
+        std::copy_n("DDS ", 4, bgraHeader.begin());
+        putBgraLe32(4, 124);
+        putBgraLe32(12, 1);
+        putBgraLe32(16, 1);
+        putBgraLe32(76, 32);
+        putBgraLe32(80, 0x40);
+        putBgraLe32(88, 32);
+        putBgraLe32(92, 0x00FF0000);
+        putBgraLe32(96, 0x0000FF00);
+        putBgraLe32(100, 0x000000FF);
+        putBgraLe32(104, 0xFF000000);
+        {
+            std::ofstream output(bgraPath, std::ios::binary | std::ios::trunc);
+            output.write(reinterpret_cast<const char*>(bgraHeader.data()),
+                         static_cast<std::streamsize>(bgraHeader.size()));
+            const std::array<std::uint8_t, 4> pixel{30, 20, 10, 40};
+            output.write(reinterpret_cast<const char*>(pixel.data()), static_cast<std::streamsize>(pixel.size()));
+        }
+        const auto bgra = dayo::core::loadImageRgba8(bgraPath);
+        ok &= check(bgra.width == 1 && bgra.height == 1 && bgra.pixels == std::vector<std::uint8_t>{10, 20, 30, 40},
+                    "uncompressed BGRA DDS reads directly into the output buffer");
+        std::filesystem::remove(bgraPath);
 
         const auto pngPath = std::filesystem::temp_directory_path() / "mikumikudesu-stbi-budget-test.png";
         const auto putBe32 = [](std::ofstream& output, std::uint32_t value) {
