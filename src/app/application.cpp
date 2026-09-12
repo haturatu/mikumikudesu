@@ -1807,9 +1807,8 @@ void Application::buildInspectorPanel() {
                 "Base: %s",
                 selectedMaterial.textureIndex >= 0 &&
                         static_cast<std::size_t>(selectedMaterial.textureIndex) < model->model->textures.size()
-                    ? std::filesystem::path{model->model
-                                                ->textures[static_cast<std::size_t>(selectedMaterial.textureIndex)]
-                                                .storedPath}
+                    ? mmd::pmx::resolveTexturePath(*model->model,
+                                                   static_cast<std::size_t>(selectedMaterial.textureIndex))
                           .filename()
                           .string()
                           .c_str()
@@ -2852,9 +2851,7 @@ void Application::buildEditorUi() {
             const auto textureName = [&](std::int32_t index) {
                 if (index < 0 || static_cast<std::size_t>(index) >= model->model->textures.size())
                     return std::string("none");
-                return std::filesystem::path{model->model->textures[static_cast<std::size_t>(index)].storedPath}
-                    .filename()
-                    .string();
+                return mmd::pmx::resolveTexturePath(*model->model, static_cast<std::size_t>(index)).filename().string();
             };
             ImGui::Text("Base: %s", textureName(material.textureIndex).c_str());
             ImGui::Text("Sphere: %s / mode %u", textureName(material.sphereTextureIndex).c_str(),

@@ -512,7 +512,7 @@ void Scene::refreshModelResources(ModelInstance& instance) {
         }
     };
     for (std::size_t index = 0; index < regularTextureCount; ++index) {
-        instance.textures[index] = loadTexture(std::filesystem::path{instance.model->textures[index].storedPath});
+        instance.textures[index] = loadTexture(mmd::pmx::resolveTexturePath(*instance.model, index));
     }
     for (std::size_t index = 0; index < 10U; ++index) {
         std::ostringstream name;
