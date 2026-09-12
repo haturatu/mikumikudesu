@@ -35,6 +35,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -58,6 +59,99 @@ bool check(bool value, std::string_view message) {
 int main() {
     using dayo::core::AssetKind;
     bool ok = true;
+    {
+        const auto ddsPath = std::filesystem::temp_directory_path() / "mikumikudesu-dds-budget-test.dds";
+        std::array<std::uint8_t, 128> ddsHeader{};
+        const auto putLe32 = [&](std::size_t offset, std::uint32_t value) {
+            ddsHeader[offset] = static_cast<std::uint8_t>(value);
+            ddsHeader[offset + 1] = static_cast<std::uint8_t>(value >> 8U);
+            ddsHeader[offset + 2] = static_cast<std::uint8_t>(value >> 16U);
+            ddsHeader[offset + 3] = static_cast<std::uint8_t>(value >> 24U);
+        };
+        std::copy_n("DDS ", 4, ddsHeader.begin());
+        putLe32(4, 124);
+        putLe32(12, 12'000);
+        putLe32(16, 12'000);
+        putLe32(76, 32);
+        putLe32(80, 0x40);
+        putLe32(88, 32);
+        {
+            std::ofstream output(ddsPath, std::ios::binary | std::ios::trunc);
+            output.write(reinterpret_cast<const char*>(ddsHeader.data()),
+                         static_cast<std::streamsize>(ddsHeader.size()));
+        }
+        bool rejectedDdsBudget = false;
+        try {
+            static_cast<void>(dayo::core::loadImageRgba8(ddsPath));
+        } catch (const std::runtime_error&) {
+            rejectedDdsBudget = true;
+        }
+        ok &= check(rejectedDdsBudget, "DDS rejects decoded plus payload allocation over budget");
+        std::filesystem::remove(ddsPath);
+
+        const auto bgraPath = std::filesystem::temp_directory_path() / "mikumikudesu-bgra-test.dds";
+        std::array<std::uint8_t, 128> bgraHeader{};
+        const auto putBgraLe32 = [&](std::size_t offset, std::uint32_t value) {
+            bgraHeader[offset] = static_cast<std::uint8_t>(value);
+            bgraHeader[offset + 1] = static_cast<std::uint8_t>(value >> 8U);
+            bgraHeader[offset + 2] = static_cast<std::uint8_t>(value >> 16U);
+            bgraHeader[offset + 3] = static_cast<std::uint8_t>(value >> 24U);
+        };
+        std::copy_n("DDS ", 4, bgraHeader.begin());
+        putBgraLe32(4, 124);
+        putBgraLe32(12, 1);
+        putBgraLe32(16, 1);
+        putBgraLe32(76, 32);
+        putBgraLe32(80, 0x40);
+        putBgraLe32(88, 32);
+        putBgraLe32(92, 0x00FF0000);
+        putBgraLe32(96, 0x0000FF00);
+        putBgraLe32(100, 0x000000FF);
+        putBgraLe32(104, 0xFF000000);
+        {
+            std::ofstream output(bgraPath, std::ios::binary | std::ios::trunc);
+            output.write(reinterpret_cast<const char*>(bgraHeader.data()),
+                         static_cast<std::streamsize>(bgraHeader.size()));
+            const std::array<std::uint8_t, 4> pixel{30, 20, 10, 40};
+            output.write(reinterpret_cast<const char*>(pixel.data()), static_cast<std::streamsize>(pixel.size()));
+        }
+        const auto bgra = dayo::core::loadImageRgba8(bgraPath);
+        ok &= check(bgra.width == 1 && bgra.height == 1 && bgra.pixels == std::vector<std::uint8_t>{10, 20, 30, 40},
+                    "uncompressed BGRA DDS reads directly into the output buffer");
+        std::filesystem::remove(bgraPath);
+
+        const auto pngPath = std::filesystem::temp_directory_path() / "mikumikudesu-stbi-budget-test.png";
+        const auto putBe32 = [](std::ofstream& output, std::uint32_t value) {
+            const std::array<std::uint8_t, 4> bytes{
+                static_cast<std::uint8_t>(value >> 24U), static_cast<std::uint8_t>(value >> 16U),
+                static_cast<std::uint8_t>(value >> 8U), static_cast<std::uint8_t>(value)};
+            output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        };
+        {
+            std::ofstream output(pngPath, std::ios::binary | std::ios::trunc);
+            output.write("\x89PNG\r\n\x1a\n", 8);
+            putBe32(output, 13);
+            output.write("IHDR", 4);
+            putBe32(output, 12'000);
+            putBe32(output, 12'000);
+            output.put('\x08');
+            output.put('\x06');
+            output.put('\x00');
+            output.put('\x00');
+            output.put('\x00');
+            putBe32(output, 0);
+            putBe32(output, 0);
+            output.write("IDAT", 4);
+        }
+        bool rejectedStbiBudget = false;
+        try {
+            static_cast<void>(dayo::core::loadImageRgba8(pngPath));
+        } catch (const std::runtime_error&) {
+            rejectedStbiBudget = true;
+        }
+        ok &= check(rejectedStbiBudget, "stb_image rejects decoded allocation over budget before decode");
+        std::filesystem::remove(pngPath);
+    }
     {
         const auto path = std::filesystem::temp_directory_path() / "mikumikudesu-vpd-test.vpd";
         const auto writeVpd = [&](std::string_view source) {
