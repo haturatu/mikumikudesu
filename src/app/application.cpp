@@ -1803,15 +1803,16 @@ void Application::buildInspectorPanel() {
             const auto& selectedMaterial = model->model->materials[static_cast<std::size_t>(material)];
             ImGui::Text("Diffuse %.2f  Specular %.2f  Edge %.3f", selectedMaterial.diffuse[0],
                         selectedMaterial.specular[0], selectedMaterial.edgeSize);
-            ImGui::TextWrapped("Base: %s",
-                               selectedMaterial.textureIndex >= 0 &&
-                                       static_cast<std::size_t>(selectedMaterial.textureIndex) <
-                                           model->model->textures.size()
-                                   ? model->model->textures[static_cast<std::size_t>(selectedMaterial.textureIndex)]
-                                         .filename()
-                                         .string()
-                                         .c_str()
-                                   : "none");
+            ImGui::TextWrapped(
+                "Base: %s",
+                selectedMaterial.textureIndex >= 0 &&
+                        static_cast<std::size_t>(selectedMaterial.textureIndex) < model->model->textures.size()
+                    ? mmd::pmx::resolveTexturePath(*model->model,
+                                                   static_cast<std::size_t>(selectedMaterial.textureIndex))
+                          .filename()
+                          .string()
+                          .c_str()
+                    : "none");
             if (ImGui::Checkbox("Enable PMX outlines (preview)", &previewOutlineEnabled_))
                 refreshPreviewScene();
         }
@@ -2850,7 +2851,7 @@ void Application::buildEditorUi() {
             const auto textureName = [&](std::int32_t index) {
                 if (index < 0 || static_cast<std::size_t>(index) >= model->model->textures.size())
                     return std::string("none");
-                return model->model->textures[static_cast<std::size_t>(index)].filename().string();
+                return mmd::pmx::resolveTexturePath(*model->model, static_cast<std::size_t>(index)).filename().string();
             };
             ImGui::Text("Base: %s", textureName(material.textureIndex).c_str());
             ImGui::Text("Sphere: %s / mode %u", textureName(material.sphereTextureIndex).c_str(),
