@@ -244,16 +244,20 @@ ImageRgba8 decodeDds(const std::filesystem::path& path) {
         expectedPayload =
             checkedMultiply(checkedMultiply(blocksWide, blocksHigh, "DDS blocks"), blockSize, "DDS block payload");
     }
-    checkPeakAllocation(expectedPayload, rgbaBytes, "DDS");
+    if (compressed) {
+        checkPeakAllocation(expectedPayload, rgbaBytes, "DDS");
+        if (expectedPayload > fileSize - dataOffset)
+            throw std::runtime_error("truncated DDS payload");
+        std::vector<std::uint8_t> payload(static_cast<std::size_t>(expectedPayload));
+        input.seekg(static_cast<std::streamoff>(dataOffset));
+        input.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
+        if (!input)
+            throw std::runtime_error("truncated DDS payload");
+        return decodeBlocks(width, height, payload, blockFormat);
+    }
+    checkPeakAllocation(0, rgbaBytes, "DDS");
     if (expectedPayload > fileSize - dataOffset)
         throw std::runtime_error("truncated DDS payload");
-    std::vector<std::uint8_t> payload(static_cast<std::size_t>(expectedPayload));
-    input.seekg(static_cast<std::streamoff>(dataOffset));
-    input.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
-    if (!input)
-        throw std::runtime_error("truncated DDS payload");
-    if (compressed)
-        return decodeBlocks(width, height, payload, blockFormat);
     const bool rgba = code == fourCc('R', 'G', 'B', 'A');
     const bool bgra = code == fourCc('B', 'G', 'R', 'A');
     const auto rMask = rgba ? 0x000000FFU : (bgra ? 0x00FF0000U : u32(header.data() + 92));
@@ -261,8 +265,12 @@ ImageRgba8 decodeDds(const std::filesystem::path& path) {
     const auto bMask = rgba ? 0x00FF0000U : (bgra ? 0x000000FFU : u32(header.data() + 100));
     const auto aMask = (rgba || bgra) ? 0xFF000000U : u32(header.data() + 104);
     ImageRgba8 image{width, height, std::vector<std::uint8_t>(static_cast<std::size_t>(rgbaBytes))};
+    input.seekg(static_cast<std::streamoff>(dataOffset));
+    input.read(reinterpret_cast<char*>(image.pixels.data()), static_cast<std::streamsize>(rgbaBytes));
+    if (!input)
+        throw std::runtime_error("truncated DDS payload");
     for (std::size_t i = 0; i < static_cast<std::size_t>(width) * height; ++i) {
-        const auto value = u32(payload.data() + i * 4U);
+        const auto value = u32(image.pixels.data() + i * 4U);
         image.pixels[i * 4U] = unpackChannel(value, rMask, 0);
         image.pixels[i * 4U + 1] = unpackChannel(value, gMask, 0);
         image.pixels[i * 4U + 2] = unpackChannel(value, bMask, 0);
