@@ -1592,6 +1592,7 @@ void Application::buildMainMenuBar() {
     }
     ImGui::Separator();
     ImGui::TextUnformatted("Workspace");
+    ImGui::PushID("WorkspaceSelector");
     const auto workspaceButton = [&](const char* label, ui::Workspace workspace) {
         ImGui::SameLine();
         if (ImGui::Selectable(label, uiState_.workspace == workspace, ImGuiSelectableFlags_DontClosePopups))
@@ -1602,6 +1603,7 @@ void Application::buildMainMenuBar() {
     workspaceButton("Camera", ui::Workspace::camera);
     workspaceButton("Render", ui::Workspace::render);
     workspaceButton("Debug", ui::Workspace::debug);
+    ImGui::PopID();
     ImGui::EndMainMenuBar();
 #endif
 }
