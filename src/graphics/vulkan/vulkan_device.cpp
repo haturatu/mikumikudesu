@@ -158,6 +158,16 @@ VkBufferUsageFlags toVkUsage(BufferDesc::Usage usage) {
 
 VkFormat toVkFormat(PixelFormat format) {
     switch (format) {
+    case PixelFormat::r8Unorm:
+        return VK_FORMAT_R8_UNORM;
+    case PixelFormat::r16Float:
+        return VK_FORMAT_R16_SFLOAT;
+    case PixelFormat::r16g16Float:
+        return VK_FORMAT_R16G16_SFLOAT;
+    case PixelFormat::r32Float:
+        return VK_FORMAT_R32_SFLOAT;
+    case PixelFormat::r32g32Float:
+        return VK_FORMAT_R32G32_SFLOAT;
     case PixelFormat::rgba8Unorm:
         return VK_FORMAT_R8G8B8A8_UNORM;
     case PixelFormat::rgba8Srgb:
@@ -3759,21 +3769,39 @@ handles::TextureHandle VulkanDevice::createTextureEx(const TextureResourceDesc& 
 }
 
 handles::SamplerHandle VulkanDevice::createSamplerEx() {
+    return createSamplerEx(SamplerResourceDesc{});
+}
+
+handles::SamplerHandle VulkanDevice::createSamplerEx(const SamplerResourceDesc& desc) {
+    const auto filter = desc.filter == SamplerFilter::nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+    const auto addressMode = [](SamplerAddressMode mode) {
+        switch (mode) {
+        case SamplerAddressMode::repeat:
+            return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        case SamplerAddressMode::clampToEdge:
+            return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        case SamplerAddressMode::mirroredRepeat:
+            return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+        case SamplerAddressMode::clampToBorder:
+            return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+        }
+        return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    };
     const VkSamplerCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-        .magFilter = VK_FILTER_LINEAR,
-        .minFilter = VK_FILTER_LINEAR,
+        .magFilter = filter,
+        .minFilter = filter,
         .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
-        .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        .mipLodBias = 0.0F,
+        .addressModeU = addressMode(desc.addressU),
+        .addressModeV = addressMode(desc.addressV),
+        .addressModeW = addressMode(desc.addressW),
+        .mipLodBias = desc.mipLodBias,
         .anisotropyEnable = VK_FALSE,
         .maxAnisotropy = 1.0F,
         .compareEnable = VK_FALSE,
         .compareOp = VK_COMPARE_OP_ALWAYS,
-        .minLod = 0.0F,
-        .maxLod = VK_LOD_CLAMP_NONE,
+        .minLod = desc.minLod,
+        .maxLod = desc.maxLod == std::numeric_limits<float>::max() ? VK_LOD_CLAMP_NONE : desc.maxLod,
         .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK,
         .unnormalizedCoordinates = VK_FALSE,
     };
@@ -3782,6 +3810,16 @@ handles::SamplerHandle VulkanDevice::createSamplerEx() {
     const auto handle = typedSamplerHandles_.create();
     typedSamplers_.emplace(handle, typed);
     return handle;
+}
+
+void VulkanDevice::destroySamplerEx(handles::SamplerHandle handle) {
+    const auto it = typedSamplers_.find(handle);
+    if (it == typedSamplers_.end() || !typedSamplerHandles_.isAlive(handle))
+        throw std::invalid_argument("stale typed sampler handle");
+    if (it->second.sampler != VK_NULL_HANDLE)
+        vkDestroySampler(device_, it->second.sampler, nullptr);
+    typedSamplers_.erase(it);
+    typedSamplerHandles_.destroy(handle);
 }
 
 handles::ShaderHandle VulkanDevice::createShaderEx(const ShaderDesc& desc) {
