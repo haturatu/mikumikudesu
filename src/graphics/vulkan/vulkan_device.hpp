@@ -438,7 +438,8 @@ class VulkanDevice final : public Device {
     };
     struct TypedShader {
         VkShaderModule module{};
-        ShaderDesc desc;
+        ShaderStageMask stage{ShaderStageMask::compute};
+        std::string entryPoint{"main"};
     };
     struct TypedPipelineLayout {
         VkPipelineLayout layout{};

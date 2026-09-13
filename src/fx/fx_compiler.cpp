@@ -95,11 +95,19 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
     if (program.label.empty())
         program.label = graph.category.empty() ? "fx" : graph.category;
     program.generation = 1;
+    program.sourcePath = graph.sourcePath;
+    program.hlsl = graph.hlsl;
+    if (!graph.generatedCode.empty()) {
+        if (!program.hlsl.empty() && program.hlsl.back() != '\n')
+            program.hlsl.push_back('\n');
+        program.hlsl += graph.generatedCode;
+    }
     for (const auto& pass : graph.passes) {
         FxDispatch dispatch;
         dispatch.name = pass.name.empty() ? "pass" : pass.name;
         dispatch.kind = fxOpFromPassType(pass.type);
         dispatch.conditions = pass.conditions;
+        dispatch.macros = pass.macros;
         if (!pass.computeShader.empty())
             dispatch.shader = pass.computeShader;
         else if (!pass.pixelShader.empty())
