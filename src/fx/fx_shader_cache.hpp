@@ -21,9 +21,10 @@ struct FxShaderKey {
     std::string spirvTarget;
     std::string compatProfile;
     std::string macros;
+    std::string includeDirectories;
     [[nodiscard]] std::string combined() const {
         return sourceHash + "|" + hlslHash + "|" + entryPoint + "|" + stage + "|" + dxcVersion + "|" + spirvTarget +
-               "|" + compatProfile + "|" + macros;
+               "|" + compatProfile + "|" + macros + "|" + includeDirectories;
     }
 };
 

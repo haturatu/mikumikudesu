@@ -947,11 +947,27 @@ bool testRealShaderCompilation() {
     dayo::fx::FxShaderCompiler compiler;
     if (!compiler.available())
         return true;
+    namespace fs = std::filesystem;
+    const auto directory =
+        fs::temp_directory_path() /
+        ("dayo-fx-shader-include-" +
+         std::to_string(static_cast<unsigned long long>(
+             std::chrono::steady_clock::now().time_since_epoch().count())));
+    std::error_code error;
+    fs::create_directories(directory, error);
+    if (error)
+        return check(false, "shader compiler include directory created");
+    {
+        std::ofstream include(directory / "constants.hlsli");
+        include << "#define TEST_SHADER_VALUE 1.0\n";
+    }
     dayo::fx::FxShaderCompileRequest request;
-    request.sourcePath = "compiler-test.hlsl";
+    request.sourcePath = directory / "compiler-test.hlsl";
     request.entryPoint = "main";
     request.stage = dayo::fx::FxShaderStage::fragment;
-    request.hlsl = "float4 main() : SV_Target { return float4(1, 0, 0, 1); }\n";
+    request.includeDirectories.push_back(directory);
+    request.hlsl = "#include \"constants.hlsli\"\n"
+                   "float4 main() : SV_Target { return float4(TEST_SHADER_VALUE, 0, 0, 1); }\n";
     const auto artifact = compiler.compile(request);
     bool ok = true;
     ok &=
@@ -968,6 +984,7 @@ bool testRealShaderCompilation() {
     ok &= check(cached.spirv == cachedAgain.spirv, "compiled shader cache reuses SPIR-V");
     const auto handle = cache.find(key);
     ok &= check(handle.has_value() && cache.binary(*handle).has_value(), "compiled shader binary is addressable");
+    fs::remove_all(directory, error);
     return ok;
 }
 
@@ -975,10 +992,25 @@ bool testFxPipelineRuntime() {
     dayo::fx::FxShaderCompiler compiler;
     if (!compiler.available())
         return true;
+    namespace fs = std::filesystem;
+    const auto directory =
+        fs::temp_directory_path() /
+        ("dayo-fx-pipeline-include-" +
+         std::to_string(static_cast<unsigned long long>(
+             std::chrono::steady_clock::now().time_since_epoch().count())));
+    std::error_code error;
+    fs::create_directories(directory, error);
+    if (error)
+        return check(false, "FX pipeline include directory created");
+    {
+        std::ofstream include(directory / "constants.hlsli");
+        include << "#define TEST_PIPELINE_VALUE 1.0\n";
+    }
     MockDevice device;
     dayo::fx::FxProgram program;
-    program.sourcePath = "pipeline-runtime.fxdayo";
-    program.hlsl = "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) {}\n";
+    program.sourcePath = directory / "pipeline-runtime.fxdayo";
+    program.hlsl = "#include \"constants.hlsli\"\n"
+                   "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) {}\n";
     dayo::fx::FxDispatch dispatch;
     dispatch.name = "deform";
     dispatch.kind = dayo::fx::FxOpKind::compute;
@@ -1014,6 +1046,7 @@ bool testFxPipelineRuntime() {
                     },
                     &error) && error.find("fullscreen vertex") != std::string::npos,
                 "FX pipeline runtime rejects postprocess without renderer fullscreen shader");
+    fs::remove_all(directory, error);
     return ok;
 }
 

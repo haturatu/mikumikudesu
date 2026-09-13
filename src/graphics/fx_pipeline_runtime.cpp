@@ -69,6 +69,13 @@ std::string macroKey(std::span<const std::string> macros) {
     return output.str();
 }
 
+std::string includeDirectoryKey(std::span<const std::filesystem::path> directories) {
+    std::ostringstream output;
+    for (const auto& directory : directories)
+        output << directory.lexically_normal().string().size() << ':' << directory.lexically_normal().string() << ';';
+    return output.str();
+}
+
 } // namespace
 
 FxPipelineRuntime::~FxPipelineRuntime() {
@@ -85,6 +92,7 @@ handles::ShaderHandle FxPipelineRuntime::compileShader(Device& device, const fx:
         throw std::invalid_argument("FX program has no HLSL source for pass " + dispatch.name);
 
     fx::FxShaderKey key;
+    fx::FxShaderCompileRequest request;
     key.sourceHash = program.sourcePath.string() + "@" + std::to_string(program.sourceVersion);
     key.hlslHash = std::to_string(std::hash<std::string>{}(program.hlsl));
     key.entryPoint = std::string(entryPoint);
@@ -94,7 +102,16 @@ handles::ShaderHandle FxPipelineRuntime::compileShader(Device& device, const fx:
     key.compatProfile = "fx-native";
     key.macros = macroKey(dispatch.macros);
 
-    fx::FxShaderCompileRequest request;
+    // The compiler writes generated HLSL to a temporary directory. Add the
+    // effect's directory explicitly so relative includes retain the same
+    // resolution they have in the source tree.
+    if (!program.sourcePath.empty()) {
+        const auto sourceDirectory = program.sourcePath.parent_path();
+        request.includeDirectories.push_back(sourceDirectory.empty() ? std::filesystem::path{"."}
+                                                                      : sourceDirectory);
+    }
+    key.includeDirectories = includeDirectoryKey(request.includeDirectories);
+
     request.hlsl = program.hlsl;
     request.sourcePath = program.sourcePath;
     request.entryPoint = std::string(entryPoint);
