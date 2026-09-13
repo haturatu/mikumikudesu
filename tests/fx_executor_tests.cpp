@@ -10,6 +10,7 @@
 #include "graphics/fx_executor.hpp"
 #include "graphics/fx_pipeline_runtime.hpp"
 #include "graphics/fx_resource_runtime.hpp"
+#include "graphics/native_fx_runtime.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -20,6 +21,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -110,6 +112,15 @@ struct MockDevice final : public dayo::graphics::Device {
         if (handle.valid())
             ++destroyedDescriptorSets_;
     }
+    dayo::graphics::handles::PipelineLayoutHandle
+    createPipelineLayoutEx(const dayo::graphics::PipelineLayoutDesc& desc) override {
+        pipelineLayoutDesc_ = desc;
+        return {nextTypedHandle_++, 1};
+    }
+    void destroyPipelineLayoutEx(dayo::graphics::handles::PipelineLayoutHandle handle) override {
+        if (handle.valid())
+            ++destroyedPipelineLayouts_;
+    }
     dayo::graphics::handles::ShaderHandle createShaderEx(const dayo::graphics::ShaderDesc&) override {
         return {nextTypedHandle_++, 1};
     }
@@ -149,11 +160,13 @@ struct MockDevice final : public dayo::graphics::Device {
     std::size_t destroyedSamplers_{};
     std::size_t destroyedDescriptorLayouts_{};
     std::size_t destroyedDescriptorSets_{};
+    std::size_t destroyedPipelineLayouts_{};
     std::vector<dayo::graphics::TextureResourceDesc> textureDescs_;
     std::vector<dayo::graphics::BufferResourceDesc> bufferDescs_;
     std::vector<dayo::graphics::SamplerResourceDesc> samplerDescs_;
     dayo::graphics::DescriptorSetLayoutDesc descriptorLayout_;
     std::vector<dayo::graphics::DescriptorBindingEx> descriptorBindings_;
+    dayo::graphics::PipelineLayoutDesc pipelineLayoutDesc_;
 };
 
 struct MockCommands final : public dayo::graphics::CommandList {
@@ -723,6 +736,54 @@ bool testFxResourceRuntimeMaterializesDeclarations() {
     return ok;
 }
 
+bool testNativeFxRuntimeBindsResourcesAndPipelines() {
+    dayo::fx::FxShaderCompiler compiler;
+    if (!compiler.available())
+        return true;
+
+    dayo::fx::FxProgram program;
+    program.sourcePath = "native-runtime.fxdayo";
+    program.hlsl = "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) {}\n";
+    dayo::core::EffectBuffer lights;
+    lights.name = "Lights";
+    lights.type = "float4";
+    lights.view = "UAV";
+    lights.elementSize = 16;
+    lights.size.absolute = true;
+    lights.size.width = 4;
+    program.buffers.push_back(std::move(lights));
+    dayo::fx::FxDispatch dispatch;
+    dispatch.name = "native-pass";
+    dispatch.kind = dayo::fx::FxOpKind::compute;
+    dispatch.executable = dayo::fx::FxComputeDispatch{"main"};
+    dispatch.resources.push_back({"Lights", true});
+    program.passes.push_back(std::move(dispatch));
+
+    MockDevice device;
+    dayo::graphics::NativeFxRuntime runtime;
+    std::string error;
+    bool ok = check(runtime.initialize(device, std::move(program), compiler, {}, &error),
+                    "native FX runtime initializes resources and pipelines");
+    ok &= check(error.empty() && runtime.ready() && runtime.pipelineLayout().valid() && runtime.resources().ready() &&
+                    runtime.pipelines().size() == 1,
+                "native FX runtime owns the complete program lifetime");
+    if (!ok)
+        return false;
+
+    auto frame = runtime.prepareFrame(testContext());
+    MockCommands commands;
+    const auto stats = runtime.execute(frame, commands);
+    ok &= check(stats.compute == 1, "native FX runtime executes the planned compute pass");
+    ok &= check(commands.trace == std::vector<std::string>{"descriptorEx", "bindEx", "dispatch:8x8x1"},
+                "native FX runtime binds its resource set before dispatch");
+    runtime.reset();
+    ok &= check(device.destroyedPipelines_ == 1 && device.destroyedShaders_ == 1 &&
+                    device.destroyedDescriptorSets_ == 1 && device.destroyedDescriptorLayouts_ == 1 &&
+                    device.destroyedPipelineLayouts_ == 1,
+                "native FX runtime tears down pipeline and resource ownership");
+    return ok;
+}
+
 bool testShaderCacheKeys() {
     dayo::fx::FxShaderCache cache;
     dayo::fx::FxShaderKey base;
@@ -940,6 +1001,7 @@ int main() {
     ok &= testRayTracingPayloadIsLossless();
     ok &= testFxResourceDeclarationsAreLossless();
     ok &= testFxResourceRuntimeMaterializesDeclarations();
+    ok &= testNativeFxRuntimeBindsResourcesAndPipelines();
     ok &= testShaderCacheKeys();
     try {
         ok &= testRealShaderCompilation();
