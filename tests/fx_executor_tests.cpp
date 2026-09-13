@@ -319,6 +319,41 @@ bool testMockTraceMatches() {
     return ok;
 }
 
+bool testTypedBufferResourceExecution() {
+    MockDevice device;
+    dayo::graphics::VulkanFxExecutor executor(device);
+    dayo::fx::FxProgram program;
+    dayo::fx::FxDispatch dispatch;
+    dispatch.name = "buffer-pass";
+    dispatch.kind = dayo::fx::FxOpKind::compute;
+    dispatch.executable = dayo::fx::FxComputeDispatch{"main"};
+    dispatch.resources.push_back({"Lights", true});
+    program.passes.push_back(dispatch);
+
+    dayo::graphics::FxExecutionResources resources;
+    resources.resolveTypedResource = [](std::string_view name) ->
+        std::optional<dayo::graphics::FxExecutionResources::TypedResource> {
+        if (name != "Lights")
+            return std::nullopt;
+        return dayo::graphics::FxExecutionResources::TypedResource{
+            .buffer = {7, 1},
+        };
+    };
+    resources.resolveTypedPipeline = [](const dayo::fx::FxDispatch&) {
+        return std::optional<dayo::graphics::handles::PipelineHandle>{{8, 1}};
+    };
+    resources.resolveDescriptorSet = [](const dayo::fx::FxDispatch&) {
+        return std::optional<dayo::graphics::handles::DescriptorSetHandle>{{9, 1}};
+    };
+    MockCommands commands;
+    const auto plan = dayo::fx::FxCompiler{}.plan(program, testContext());
+    const auto stats = executor.execute(plan, commands, testContext(), resources);
+    bool ok = check(stats.compute == 1, "executor runs a buffer-only typed pass");
+    ok &= check(commands.trace == std::vector<std::string>{"descriptorEx", "bindEx", "dispatch:8x8x1"},
+                "buffer-only typed pass skips image transitions");
+    return ok;
+}
+
 bool testPreviewReferencePath() {
     const auto plan = dayo::fx::buildPreviewReferencePlan(testContext());
     bool ok = true;
@@ -895,6 +930,7 @@ int main() {
         ok &= check(rejected, "legacy command-list defaults reject unsupported work");
     }
     ok &= testMockTraceMatches();
+    ok &= testTypedBufferResourceExecution();
     ok &= testPreviewReferencePath();
     ok &= testSchedulerOrder();
     ok &= testCloneUnification();

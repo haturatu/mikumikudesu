@@ -26,12 +26,19 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
         return *handle;
     };
     const auto resolveTyped = [&](const dayo::fx::FxDispatch::ResourceUse& resource) -> handles::TextureHandle {
-        if (resource.name.empty() || !resources.resolveTypedTexture)
-            throw std::logic_error("VulkanFxExecutor: pass resource has no typed backend binding: " + resource.name);
-        const auto handle = resources.resolveTypedTexture(resource.name);
-        if (!handle.has_value())
-            throw std::logic_error("VulkanFxExecutor: typed pass resource is unavailable: " + resource.name);
-        return *handle;
+        if (resource.name.empty())
+            throw std::logic_error("VulkanFxExecutor: pass resource has an empty typed binding");
+        if (resources.resolveTypedTexture) {
+            const auto handle = resources.resolveTypedTexture(resource.name);
+            if (handle.has_value())
+                return *handle;
+        }
+        if (resources.resolveTypedResource) {
+            const auto binding = resources.resolveTypedResource(resource.name);
+            if (binding.has_value() && binding->texture.valid())
+                return binding->texture;
+        }
+        throw std::logic_error("VulkanFxExecutor: typed pass resource is unavailable: " + resource.name);
     };
     const auto prepareResources = [&](const dayo::fx::FxDispatch& dispatch) {
         std::unordered_set<TextureHandle> transitioned;
@@ -40,7 +47,13 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
         bindings.reserve(dispatch.resources.size());
         for (std::size_t index = 0; index < dispatch.resources.size(); ++index) {
             const auto& resource = dispatch.resources[index];
-            if (resources.resolveTypedTexture) {
+            if (resources.resolveTypedResource) {
+                const auto binding = resources.resolveTypedResource(resource.name);
+                if (!binding.has_value() || !binding->valid())
+                    throw std::logic_error("VulkanFxExecutor: typed pass resource is unavailable: " + resource.name);
+                if (binding->texture.valid() && transitionedTyped.insert(binding->texture).second)
+                    commands.transitionEx(binding->texture);
+            } else if (resources.resolveTypedTexture) {
                 const auto texture = resolveTyped(resource);
                 if (transitionedTyped.insert(texture).second)
                     commands.transitionEx(texture);
@@ -159,7 +172,7 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                 break;
             if (dispatch.resources.size() < 2 || dispatch.resources[0].write || !dispatch.resources[1].write)
                 throw std::logic_error("VulkanFxExecutor: copy pass requires read source and write destination");
-            if (resources.resolveTypedTexture) {
+            if (resources.resolveTypedTexture || resources.resolveTypedResource) {
                 commands.copyTextureEx(resolveTyped(dispatch.resources[0]), resolveTyped(dispatch.resources[1]));
             } else {
                 commands.copyTexture(resolve(dispatch.resources[0]), resolve(dispatch.resources[1]));
@@ -171,7 +184,7 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                 break;
             if (dispatch.resources.size() != 1 || !dispatch.resources[0].write)
                 throw std::logic_error("VulkanFxExecutor: clear pass requires one write target");
-            if (resources.resolveTypedTexture)
+            if (resources.resolveTypedTexture || resources.resolveTypedResource)
                 commands.clearTextureEx(resolveTyped(dispatch.resources[0]));
             else
                 commands.clearTexture(resolve(dispatch.resources[0]));
@@ -182,7 +195,7 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                 break;
             if (dispatch.resources.size() != 1)
                 throw std::logic_error("VulkanFxExecutor: mipmap pass requires one target");
-            if (resources.resolveTypedTexture)
+            if (resources.resolveTypedTexture || resources.resolveTypedResource)
                 commands.generateMipmapsEx(resolveTyped(dispatch.resources[0]));
             else
                 commands.generateMipmaps(resolve(dispatch.resources[0]));
