@@ -1,8 +1,11 @@
 #pragma once
 
+#include "graphics/handles.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 // Forward declaration keeps this header light; the implementation includes
@@ -11,6 +14,10 @@ namespace dayo::core {
 enum class DirtyFlag : std::uint32_t;
 class Scene;
 } // namespace dayo::core
+
+namespace dayo::graphics {
+class Device;
+}
 
 namespace dayo::graphics {
 
@@ -28,10 +35,37 @@ class BdptAccumulation {
         bool valid{false};
     };
 
+    struct GpuResources {
+        handles::TextureHandle accumulation{};
+        handles::BufferHandle spectralLut{};
+        handles::BufferHandle blackbodyLut{};
+        std::array<handles::TextureHandle, kVolumeSlots> volumes{};
+        std::uint32_t width{};
+        std::uint32_t height{};
+        std::uint32_t volumeResolution{};
+
+        [[nodiscard]] bool valid() const noexcept {
+            if (!accumulation.valid() || !spectralLut.valid() || !blackbodyLut.valid())
+                return false;
+            for (const auto volume : volumes) {
+                if (!volume.valid())
+                    return false;
+            }
+            return true;
+        }
+    };
+
     BdptAccumulation() = default;
 
     // Idempotent: first call allocates LUTs + 8 volumes, later calls reuse.
     void ensurePersistent();
+
+    // Allocates the device-owned persistent resources used by progressive
+    // accumulation. CPU LUT generation remains separate so a non-Vulkan test
+    // can still validate the sample/dirty contract.
+    [[nodiscard]] bool ensureGpuResources(Device& device, std::uint32_t width, std::uint32_t height,
+                                          std::uint32_t volumeResolution = 32, std::string* error = nullptr);
+    void releaseGpuResources(Device& device) noexcept;
 
     // DirtyFlag driven step. Returns true when the frame must clear.
     bool beginFrame(core::DirtyFlag dirty) noexcept;
@@ -68,11 +102,21 @@ class BdptAccumulation {
     [[nodiscard]] std::uint64_t generationCount() const noexcept {
         return generations_;
     }
+    [[nodiscard]] const GpuResources& gpuResources() const noexcept {
+        return gpuResources_;
+    }
+    [[nodiscard]] bool gpuReady() const noexcept {
+        return gpuResources_.valid();
+    }
 
   private:
+    void releaseGpuResourcesNoexcept(Device& device) noexcept;
+
     std::vector<float> spectralLut_;
     std::vector<float> blackbodyLut_;
     std::array<VolumeResource, kVolumeSlots> volumes_{};
+    GpuResources gpuResources_;
+    Device* gpuDevice_{nullptr};
     std::uint32_t sampleIndex_{0};
     bool needsClear_{true};
     bool persistentReady_{false};

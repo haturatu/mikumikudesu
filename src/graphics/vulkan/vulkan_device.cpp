@@ -3831,7 +3831,7 @@ handles::PipelineHandle VulkanDevice::createComputePipelineEx(const ComputePipel
         .stage = stage,
         .layout = layoutIt->second.layout,
     };
-    TypedPipeline typed{.layout = desc.layout};
+    TypedPipeline typed{.layout = desc.layout, .bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE};
     check(vkCreateComputePipelines(device_, pipelineCache_, 1, &createInfo, nullptr, &typed.pipeline),
           "create typed compute pipeline");
     const auto handle = typedPipelineHandles_.create();
@@ -3924,7 +3924,7 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
         .pDynamicState = &dynamic,
         .layout = layoutIt->second.layout,
     };
-    TypedPipeline typed{.layout = desc.layout};
+    TypedPipeline typed{.layout = desc.layout, .bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS};
     check(vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &createInfo, nullptr, &typed.pipeline),
           "create typed graphics pipeline");
     const auto handle = typedPipelineHandles_.create();
@@ -4004,8 +4004,10 @@ handles::PipelineHandle VulkanDevice::createRayTracingPipelineEx(const RayTracin
         .maxPipelineRayRecursionDepth = desc.maxRecursionDepth,
         .layout = layoutIt->second.layout,
     };
-    TypedPipeline typed{
-        .layout = desc.layout, .groupCount = static_cast<std::uint32_t>(groups.size()), .rayTracing = true};
+    TypedPipeline typed{.layout = desc.layout,
+                        .groupCount = static_cast<std::uint32_t>(groups.size()),
+                        .rayTracing = true,
+                        .bindPoint = VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR};
     check(create(device_, VK_NULL_HANDLE, pipelineCache_, 1, &createInfo, nullptr, &typed.pipeline),
           "create typed ray-tracing pipeline");
     const auto handle = typedPipelineHandles_.create();
@@ -4180,6 +4182,88 @@ void VulkanDevice::recordTraceRays(VkCommandBuffer commandBuffer, handles::Pipel
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, pipelineIt->second.pipeline);
     trace(commandBuffer, &sbtIt->second.raygen, &sbtIt->second.miss, &sbtIt->second.hit, &sbtIt->second.callable, width,
           height, depth);
+}
+
+void VulkanDevice::recordTransitionTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture) {
+    const auto it = typedTextures_.find(texture);
+    if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(texture))
+        throw std::invalid_argument("typed transition references a stale texture handle");
+    if (commandBuffer == VK_NULL_HANDLE)
+        throw std::invalid_argument("typed transition requires a command buffer");
+
+    const auto bits = toBits(it->second.desc.usage);
+    const auto storageBits = toBits(ResourceUsage::storageRead) | toBits(ResourceUsage::storageWrite) |
+                             toBits(ResourceUsage::storageReadWrite);
+    const VkImageLayout nextLayout =
+        (bits & storageBits) != 0U                          ? VK_IMAGE_LAYOUT_GENERAL
+        : (bits & toBits(ResourceUsage::transferDst)) != 0U ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+        : (bits & toBits(ResourceUsage::transferSrc)) != 0U ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+                                                            : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    if (it->second.layout == nextLayout)
+        return;
+
+    VkImageMemoryBarrier2 barrier{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_PIPELINE_STAGE_2_NONE
+                                                                       : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .srcAccessMask = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED
+                             ? VK_ACCESS_2_NONE
+                             : VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .oldLayout = it->second.layout,
+        .newLayout = nextLayout,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = it->second.resource.image,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, it->second.desc.mipLevels, 0,
+                             it->second.desc.dimension == TextureDimension::cube ? it->second.desc.arrayLayers * 6U
+                                                                                 : it->second.desc.arrayLayers},
+    };
+    if (it->second.desc.format == PixelFormat::depth32Float)
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    const VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &barrier,
+    };
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+    it->second.layout = nextLayout;
+}
+
+void VulkanDevice::recordBindDescriptorSet(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
+                                           handles::DescriptorSetHandle set) {
+    const auto pipelineIt = typedPipelines_.find(pipeline);
+    const auto setIt = typedDescriptorSets_.find(set);
+    if (pipelineIt == typedPipelines_.end() || !typedPipelineHandles_.isAlive(pipeline))
+        throw std::invalid_argument("typed descriptor bind references a stale pipeline handle");
+    if (setIt == typedDescriptorSets_.end() || !typedDescriptorSetHandles_.isAlive(set))
+        throw std::invalid_argument("typed descriptor bind references a stale descriptor set handle");
+    const auto layoutIt = typedPipelineLayouts_.find(pipelineIt->second.layout);
+    if (layoutIt == typedPipelineLayouts_.end() || layoutIt->second.desc.setLayouts.empty() ||
+        layoutIt->second.desc.setLayouts.front() != setIt->second.layout)
+        throw std::invalid_argument("typed descriptor set is incompatible with pipeline layout set 0");
+    vkCmdBindDescriptorSets(commandBuffer, pipelineIt->second.bindPoint, layoutIt->second.layout, 0, 1,
+                            &setIt->second.set, 0, nullptr);
+}
+
+void VulkanDevice::recordPushConstants(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
+                                       std::span<const std::byte> bytes) {
+    const auto pipelineIt = typedPipelines_.find(pipeline);
+    if (pipelineIt == typedPipelines_.end() || !typedPipelineHandles_.isAlive(pipeline))
+        throw std::invalid_argument("typed push constants reference a stale pipeline handle");
+    if (bytes.empty())
+        return;
+    const auto layoutIt = typedPipelineLayouts_.find(pipelineIt->second.layout);
+    if (layoutIt == typedPipelineLayouts_.end())
+        throw std::invalid_argument("typed push constants reference a stale pipeline layout");
+    const auto range = std::find_if(
+        layoutIt->second.desc.pushConstants.begin(), layoutIt->second.desc.pushConstants.end(),
+        [&](const PushConstantRange& candidate) { return candidate.offset == 0 && candidate.size >= bytes.size(); });
+    if (range == layoutIt->second.desc.pushConstants.end())
+        throw std::out_of_range("typed push constants exceed pipeline layout range");
+    vkCmdPushConstants(commandBuffer, layoutIt->second.layout, toVkShaderStages(range->stages), range->offset,
+                       static_cast<std::uint32_t>(bytes.size()), bytes.data());
 }
 
 handles::DescriptorSetLayoutHandle VulkanDevice::createDescriptorSetLayoutEx(const DescriptorSetLayoutDesc& desc) {
@@ -4395,6 +4479,34 @@ void VulkanDevice::destroyBufferEx(handles::BufferHandle handle) {
         vkFreeMemory(device_, it->second.resource.memory, nullptr);
     typedBuffers_.erase(it);
     typedBufferHandles_.destroy(handle);
+}
+
+void VulkanDevice::uploadBufferEx(handles::BufferHandle handle, std::span<const std::byte> bytes, std::size_t offset) {
+    const auto it = typedBuffers_.find(handle);
+    if (it == typedBuffers_.end() || !typedBufferHandles_.isAlive(handle))
+        throw std::invalid_argument("stale typed buffer handle");
+    if (offset > it->second.desc.size || bytes.size() > it->second.desc.size - offset)
+        throw std::out_of_range("typed buffer upload exceeds allocation");
+    if (bytes.empty())
+        return;
+    if (it->second.mapped == nullptr)
+        throw std::logic_error("typed buffer upload requires a CPU-visible buffer");
+    std::memcpy(static_cast<std::byte*>(it->second.mapped) + offset, bytes.data(), bytes.size());
+}
+
+std::vector<std::byte> VulkanDevice::readbackBufferEx(handles::BufferHandle handle, std::size_t offset,
+                                                      std::size_t size) {
+    const auto it = typedBuffers_.find(handle);
+    if (it == typedBuffers_.end() || !typedBufferHandles_.isAlive(handle))
+        throw std::invalid_argument("stale typed buffer handle");
+    if (offset > it->second.desc.size || size > it->second.desc.size - offset)
+        throw std::out_of_range("typed buffer readback exceeds allocation");
+    if (it->second.mapped == nullptr)
+        throw std::logic_error("typed buffer readback requires a CPU-visible buffer");
+    std::vector<std::byte> bytes(size);
+    if (!bytes.empty())
+        std::memcpy(bytes.data(), static_cast<const std::byte*>(it->second.mapped) + offset, size);
+    return bytes;
 }
 
 void VulkanDevice::destroyTextureEx(handles::TextureHandle handle) {
