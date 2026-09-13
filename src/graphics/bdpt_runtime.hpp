@@ -72,6 +72,7 @@ class BdptRuntime {
     [[nodiscard]] BdptFrame prepareFrame(const fx::FxFrameContext& context, core::DirtyFlag dirty);
     [[nodiscard]] VulkanFxExecutor::Stats execute(BdptFrame& frame, CommandList& commands,
                                                   const FxExecutionResources& resources = {}) const;
+    [[nodiscard]] std::optional<NativeFrameOutput> output(const BdptFrame& frame) const;
 
   private:
     Device* device_{nullptr};

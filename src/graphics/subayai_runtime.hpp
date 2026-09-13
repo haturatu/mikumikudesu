@@ -77,6 +77,7 @@ class SubayaiRuntime {
                                             const EnvironmentGpuResult& environment);
     [[nodiscard]] VulkanFxExecutor::Stats execute(SubayaiFrame& frame, CommandList& commands,
                                                   const FxExecutionResources& resources = {}) const;
+    [[nodiscard]] std::optional<NativeFrameOutput> output(const SubayaiFrame& frame) const;
 
   private:
     Device* device_{};

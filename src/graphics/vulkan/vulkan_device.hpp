@@ -45,6 +45,7 @@ class VulkanDevice final : public Device {
     void resize() override;
     void beginUiFrame() override;
     void renderFrame() override;
+    void setNativeFrameRecorder(NativeFrameRecorder recorder) override;
     void setPreviewViewportExtent(const RenderTargetDesc& target) override;
     [[nodiscard]] PreviewViewport previewViewport() const noexcept override;
     [[nodiscard]] std::uint64_t previewGpuNanoseconds() const noexcept override {
@@ -273,6 +274,11 @@ class VulkanDevice final : public Device {
     void recordTraceRays(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
                          handles::ShaderBindingTableHandle sbt, std::uint32_t width, std::uint32_t height,
                          std::uint32_t depth);
+    void recordNativeOutputToImage(VkCommandBuffer commandBuffer, const NativeFrameOutput& output, VkImage target,
+                                   VkImageLayout previousLayout, VkPipelineStageFlags2 previousStage,
+                                   VkAccessFlags2 previousAccess, VkImageLayout finalLayout,
+                                   VkPipelineStageFlags2 finalStage, VkAccessFlags2 finalAccess, bool initialized,
+                                   VkExtent2D extent);
     void recordBindPipeline(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline);
     void recordTransitionTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture);
     void recordTextureTransition(VkCommandBuffer commandBuffer, handles::TextureHandle texture,
@@ -417,6 +423,7 @@ class VulkanDevice final : public Device {
     std::array<ViewportResource, 2> viewportResources_{};
     bool viewportRequested_{};
     VkExtent2D requestedViewportExtent_{};
+    NativeFrameRecorder nativeFrameRecorder_;
 
     std::uint64_t nextResourceHandle_{1};
     std::unordered_map<BufferHandle, VulkanBuffer> buffers_;

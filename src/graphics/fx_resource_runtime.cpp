@@ -271,7 +271,8 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                               .kind = Kind::texture,
                               .descriptorKind = textureDescriptorKind(declaration.view, format),
                               .binding = static_cast<std::uint32_t>(resources_.size()),
-                              .extent = resolved};
+                              .extent = resolved,
+                              .format = format};
             resource.texture = device.createTextureEx(description);
             if (!resource.texture.valid())
                 throw std::runtime_error("FX texture allocation returned an invalid handle: " + name);
@@ -305,7 +306,8 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                               .kind = Kind::texture,
                               .descriptorKind = textureDescriptorKind(declaration.view, format),
                               .binding = static_cast<std::uint32_t>(resources_.size()),
-                              .extent = resolved};
+                              .extent = resolved,
+                              .format = format};
             resource.texture = device.createTextureEx(description);
             if (!resource.texture.valid())
                 throw std::runtime_error("FX 3D texture allocation returned an invalid handle: " + name);
@@ -455,6 +457,26 @@ std::optional<Extent3D> FxResourceRuntime::extent(std::string_view name) const {
     if (found == indices_.end() || resources_[found->second].kind == Kind::sampler)
         return std::nullopt;
     return resources_[found->second].extent;
+}
+
+std::optional<FxResourceRuntime::ResolvedTexture>
+FxResourceRuntime::resolveOutputTexture(std::span<const fx::FxDispatch> ordered) const {
+    for (auto dispatch = ordered.rbegin(); dispatch != ordered.rend(); ++dispatch) {
+        for (auto resource = dispatch->resources.rbegin(); resource != dispatch->resources.rend(); ++resource) {
+            if (!resource->write)
+                continue;
+            const auto found = indices_.find(resource->name);
+            if (found == indices_.end())
+                continue;
+            const auto& candidate = resources_[found->second];
+            if (candidate.kind != Kind::texture)
+                continue;
+            return ResolvedTexture{.handle = candidate.texture,
+                                   .extent = candidate.extent,
+                                   .format = candidate.format};
+        }
+    }
+    return std::nullopt;
 }
 
 } // namespace dayo::graphics
