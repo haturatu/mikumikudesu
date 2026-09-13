@@ -258,6 +258,7 @@ target_link_libraries(dayo_fx PUBLIC dayo_core)
 add_library(
   dayo_graphics
   src/graphics/bdpt_accumulation.cpp
+  src/graphics/bdpt_runtime.cpp
   src/graphics/device.cpp
   src/graphics/sbt.cpp
   src/graphics/subayai_acceleration_structure.cpp
