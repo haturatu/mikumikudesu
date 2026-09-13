@@ -1035,7 +1035,9 @@ bool testFxPipelineRuntime() {
     dayo::fx::FxProgram program;
     program.sourcePath = directory / "pipeline-runtime.fxdayo";
     program.hlsl = "#include \"constants.hlsli\"\n"
-                   "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) {}\n";
+                   "#ifdef YRZ_PASS_deform\n"
+                   "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) {}\n"
+                   "#endif\n";
     dayo::fx::FxDispatch dispatch;
     dispatch.name = "deform";
     dispatch.kind = dayo::fx::FxOpKind::compute;
@@ -1065,7 +1067,9 @@ bool testFxPipelineRuntime() {
     postprocess.executable = dayo::fx::FxPostProcessDispatch{"main"};
     program.passes = {postprocess};
     program.hlsl = "#include \"constants.hlsli\"\n"
-                   "float4 main() : SV_Target { return float4(TEST_PIPELINE_VALUE, 0, 0, 1); }\n";
+                   "#ifdef YRZ_PASS_postprocess\n"
+                   "float4 main() : SV_Target { return float4(TEST_PIPELINE_VALUE, 0, 0, 1); }\n"
+                   "#endif\n";
     ok &= check(runtime.build(
                     device, program, compiler,
                     [](const dayo::fx::FxDispatch&) {

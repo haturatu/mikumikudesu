@@ -72,6 +72,16 @@ std::string macroKey(std::span<const std::string> macros) {
     return output.str();
 }
 
+std::string passMacro(std::string_view name) {
+    std::string result = "YRZ_PASS_";
+    result.reserve(result.size() + name.size());
+    for (const auto character : name) {
+        const auto value = static_cast<unsigned char>(character);
+        result.push_back(std::isalnum(value) || character == '_' ? character : '_');
+    }
+    return result;
+}
+
 std::string includeDirectoryKey(std::span<const std::filesystem::path> directories) {
     std::ostringstream output;
     for (const auto& directory : directories)
@@ -143,6 +153,8 @@ handles::ShaderHandle FxPipelineRuntime::compileShader(Device& device, const fx:
 
     fx::FxShaderKey key;
     fx::FxShaderCompileRequest request;
+    request.macros = dispatch.macros;
+    request.macros.push_back(passMacro(dispatch.name));
     key.sourceHash = program.sourcePath.string() + "@" + std::to_string(program.sourceVersion);
     key.hlslHash = std::to_string(std::hash<std::string>{}(program.hlsl));
     key.entryPoint = std::string(entryPoint);
@@ -150,7 +162,7 @@ handles::ShaderHandle FxPipelineRuntime::compileShader(Device& device, const fx:
     key.dxcVersion = compiler.executable().string();
     key.spirvTarget = "vulkan1.3";
     key.compatProfile = "fx-native";
-    key.macros = macroKey(dispatch.macros);
+    key.macros = macroKey(request.macros);
 
     // The compiler writes generated HLSL to a temporary directory. Add the
     // effect's directory explicitly so relative includes retain the same
@@ -166,7 +178,6 @@ handles::ShaderHandle FxPipelineRuntime::compileShader(Device& device, const fx:
     request.sourcePath = program.sourcePath;
     request.entryPoint = std::string(entryPoint);
     request.stage = stage;
-    request.macros = dispatch.macros;
     const auto artifact = shaderCache_.compileOrGet(key, request, compiler);
     const auto shader = device.createShaderEx({
         .spirv = std::span<const std::uint32_t>(artifact.spirv.data(), artifact.spirv.size()),
