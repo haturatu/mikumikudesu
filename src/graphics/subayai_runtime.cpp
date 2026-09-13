@@ -33,6 +33,7 @@ void SubayaiRuntime::reset() noexcept {
     program_ = {};
     materials_.clear();
     materialRuntime_.reset();
+    lightRuntime_.reset();
     ready_ = false;
 }
 
@@ -54,12 +55,16 @@ SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
         throw std::logic_error("Subayai runtime is not initialized");
     if (!materials.empty() && !syncMaterials(materials))
         throw std::runtime_error("Subayai material GPU upload failed");
+    std::string lightError;
+    if (!lightRuntime_.sync(*device_, lightSampling, &lightError))
+        throw std::runtime_error(lightError.empty() ? "Subayai light sampling GPU upload failed" : lightError);
     SubayaiFrame frame;
     frame.context = context;
     frame.plan = fx::FxCompiler{}.plan(program_, context);
     frame.materials = materials_;
     frame.materialBuffer = materialRuntime_.buffer();
     frame.lightSampling.assign(lightSampling.begin(), lightSampling.end());
+    frame.lightSamplingBuffer = lightRuntime_.buffer();
     frame.environment = environment;
     return frame;
 }

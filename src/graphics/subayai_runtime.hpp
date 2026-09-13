@@ -20,6 +20,7 @@ struct SubayaiFrame {
     std::vector<SubayaiMaterialGpu> materials;
     handles::BufferHandle materialBuffer{};
     std::vector<AliasEntry> lightSampling;
+    handles::BufferHandle lightSamplingBuffer{};
     EnvironmentGpuResult environment;
 };
 
@@ -51,6 +52,7 @@ class SubayaiRuntime {
     fx::FxProgram program_;
     std::vector<SubayaiMaterialGpu> materials_;
     SubayaiMaterialGpuRuntime materialRuntime_;
+    LightSamplingGpuRuntime lightRuntime_;
     bool ready_{};
 };
 

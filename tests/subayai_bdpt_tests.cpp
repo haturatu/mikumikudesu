@@ -308,9 +308,10 @@ int main() {
         parameters.set("Anisotropy", 1.0F);
         ok &= check(runtime.syncMaterials(std::span<const dayo::core::MaterialParameterBlock>(&parameters, 1)),
                     "Subayai runtime links material parameters");
+        const std::array<dayo::graphics::AliasEntry, 2> lightTable{{{0.75F, 0}, {1.0F, 1}}};
         const auto frame =
             runtime.prepareFrame(dayo::fx::makeFxFrameContext(0.0F, 0, 64, 32, 1, 0, 3, 1, 1, 1),
-                                 std::span<const dayo::core::MaterialParameterBlock>(&parameters, 1), {}, {});
+                                 std::span<const dayo::core::MaterialParameterBlock>(&parameters, 1), lightTable, {});
         ok &= check(frame.plan.ordered.size() == 1 && frame.materials.size() == 1,
                     "Subayai runtime prepares graph and material frame state");
         ok &= check(frame.materialBuffer.valid(), "Subayai frame exposes a typed material storage buffer");
@@ -318,6 +319,11 @@ int main() {
             device.readbackBufferEx(frame.materialBuffer, 0, sizeof(dayo::graphics::SubayaiMaterialGpu));
         ok &= check(materialBytes.size() == sizeof(dayo::graphics::SubayaiMaterialGpu),
                     "Subayai material ABI is uploaded to the typed buffer");
+        ok &= check(frame.lightSamplingBuffer.valid(), "Subayai frame exposes a typed light sampling buffer");
+        const auto lightBytes = device.readbackBufferEx(
+            frame.lightSamplingBuffer, 0, lightTable.size() * sizeof(dayo::graphics::AliasEntry));
+        ok &= check(lightBytes.size() == lightTable.size() * sizeof(dayo::graphics::AliasEntry),
+                    "Subayai light sampling table is uploaded to the typed buffer");
         runtime.reset();
         ok &= check(!runtime.ready(), "Subayai runtime reset disables execution");
 
