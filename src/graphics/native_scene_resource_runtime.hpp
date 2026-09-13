@@ -75,6 +75,9 @@ class NativeSceneResourceRuntime {
     [[nodiscard]] std::span<const handles::DescriptorSetLayoutHandle> layouts() const noexcept {
         return bindings_.layouts();
     }
+    [[nodiscard]] std::span<const handles::DescriptorSetHandle> descriptorSets() const noexcept {
+        return bindings_.descriptorSets();
+    }
     [[nodiscard]] handles::DescriptorSetLayoutHandle
     layout(NativeSceneDescriptorSet set) const noexcept {
         return bindings_.layout(set);
