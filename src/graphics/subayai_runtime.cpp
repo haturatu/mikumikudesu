@@ -3,6 +3,8 @@
 #include "graphics/native_renderer_requirements.hpp"
 
 #include <algorithm>
+#include <array>
+#include <utility>
 
 namespace dayo::graphics {
 
@@ -37,11 +39,13 @@ bool SubayaiRuntime::initialize(Device& device, fx::FxProgram program, std::stri
 
 void SubayaiRuntime::reset() noexcept {
     bindings_.reset();
+    nativeFx_.reset();
     materialRuntime_.reset();
     lightRuntime_.reset();
     device_ = nullptr;
     program_ = {};
     materials_.clear();
+    nativeAttempted_ = false;
     ready_ = false;
 }
 
@@ -80,6 +84,18 @@ SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
     frame.lightSamplingBuffer = lightRuntime_.buffer();
     frame.lightSamplingDescriptorSet = bindings_.lightSamplingSet();
     frame.environment = environment;
+    if (!nativeAttempted_ && !program_.hlsl.empty()) {
+        nativeAttempted_ = true;
+        const std::array sharedLayouts{bindings_.layouts().material, bindings_.layouts().lightSampling};
+        std::string nativeError;
+        static_cast<void>(nativeFx_.initializeForFrame(*device_, program_, fx::FxShaderCompiler{}, context,
+                                                       sharedLayouts, &nativeError));
+    } else if (nativeFx_.ready()) {
+        std::string nativeError;
+        static_cast<void>(nativeFx_.refresh(context, &nativeError));
+    }
+    if (nativeFx_.ready())
+        frame.nativeFx = nativeFx_.prepareFrame(context);
     return frame;
 }
 
@@ -87,6 +103,38 @@ VulkanFxExecutor::Stats SubayaiRuntime::execute(SubayaiFrame& frame, CommandList
                                                 const FxExecutionResources& resources) const {
     if (!ready_)
         throw std::logic_error("Subayai runtime is not initialized");
+    if (frame.nativeFx.has_value()) {
+        auto nativeResources = resources;
+        if (frame.materialDescriptorSet.valid() || frame.lightSamplingDescriptorSet.valid()) {
+            const auto existingSets = nativeResources.resolveDescriptorSets;
+            const auto existingSingle = nativeResources.resolveDescriptorSet;
+            const auto materialSet = frame.materialDescriptorSet;
+            const auto lightSet = frame.lightSamplingDescriptorSet;
+            nativeResources.resolveDescriptorSets =
+                [existingSets, existingSingle, materialSet, lightSet](const fx::FxDispatch& dispatch) {
+                    std::vector<FxExecutionResources::TypedDescriptorSetBinding> result;
+                    if (existingSets) {
+                        result = existingSets(dispatch);
+                    } else if (existingSingle) {
+                        const auto shared = existingSingle(dispatch);
+                        if (shared.has_value())
+                            result.push_back({*shared, 0});
+                    }
+                    const auto hasIndex = [&result](std::uint32_t index) {
+                        return std::any_of(result.begin(), result.end(), [index](const auto& binding) {
+                            return binding.setIndex == index;
+                        });
+                    };
+                    if (materialSet.valid() && !hasIndex(0))
+                        result.push_back({materialSet, 0});
+                    if (lightSet.valid() && !hasIndex(1))
+                        result.push_back({lightSet, 1});
+                    return result;
+                };
+            nativeResources.resolveDescriptorSet = {};
+        }
+        return nativeFx_.execute(*frame.nativeFx, commands, nativeResources);
+    }
     auto nativeResources = resources;
     if (!nativeResources.resolveDescriptorSets && !nativeResources.resolveDescriptorSet &&
         (frame.materialDescriptorSet.valid() || frame.lightSamplingDescriptorSet.valid())) {

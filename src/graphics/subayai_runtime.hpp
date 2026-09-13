@@ -8,7 +8,9 @@
 #include "graphics/subayai_light_sampling.hpp"
 #include "graphics/subayai_material_gpu.hpp"
 #include "graphics/subayai_material_runtime.hpp"
+#include "graphics/native_fx_runtime.hpp"
 
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -25,6 +27,7 @@ struct SubayaiFrame {
     handles::BufferHandle lightSamplingBuffer{};
     handles::DescriptorSetHandle lightSamplingDescriptorSet{};
     EnvironmentGpuResult environment;
+    std::optional<NativeFxFrame> nativeFx;
 };
 
 // Native Subayai runtime. It validates compiled effect requirements against
@@ -38,6 +41,9 @@ class SubayaiRuntime {
 
     [[nodiscard]] bool ready() const noexcept {
         return ready_;
+    }
+    [[nodiscard]] bool nativeReady() const noexcept {
+        return nativeFx_.ready();
     }
     [[nodiscard]] const fx::FxProgram* program() const noexcept {
         return ready_ ? &program_ : nullptr;
@@ -60,6 +66,8 @@ class SubayaiRuntime {
     SubayaiMaterialGpuRuntime materialRuntime_;
     LightSamplingGpuRuntime lightRuntime_;
     SubayaiBindingRuntime bindings_;
+    NativeFxRuntime nativeFx_;
+    bool nativeAttempted_{};
     bool ready_{};
 };
 
