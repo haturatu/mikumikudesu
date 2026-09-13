@@ -8,6 +8,7 @@
 #include "fx/fx_texture_cache.hpp"
 #include "fx/fx_watcher.hpp"
 #include "graphics/fx_executor.hpp"
+#include "graphics/fx_pipeline_runtime.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -60,8 +61,40 @@ struct MockDevice final : public dayo::graphics::Device {
     dayo::graphics::TextureHandle createTexture(const dayo::graphics::TextureDesc&) override {
         return 0;
     }
+    dayo::graphics::handles::ShaderHandle createShaderEx(const dayo::graphics::ShaderDesc&) override {
+        return {nextTypedHandle_++, 1};
+    }
+    void destroyShaderEx(dayo::graphics::handles::ShaderHandle) override {
+        ++destroyedShaders_;
+    }
+    dayo::graphics::handles::PipelineHandle
+    createGraphicsPipelineEx(const dayo::graphics::GraphicsPipelineDescEx&) override {
+        return {nextTypedHandle_++, 1};
+    }
+    dayo::graphics::handles::PipelineHandle
+    createComputePipelineEx(const dayo::graphics::ComputePipelineDescEx&) override {
+        return {nextTypedHandle_++, 1};
+    }
+    dayo::graphics::handles::PipelineHandle
+    createRayTracingPipelineEx(const dayo::graphics::RayTracingPipelineDescEx&) override {
+        return {nextTypedHandle_++, 1};
+    }
+    void destroyPipelineEx(dayo::graphics::handles::PipelineHandle) override {
+        ++destroyedPipelines_;
+    }
+    dayo::graphics::handles::ShaderBindingTableHandle
+    createShaderBindingTable(const dayo::graphics::ShaderBindingTableDesc&) override {
+        return {nextTypedHandle_++, 1};
+    }
+    void destroyShaderBindingTable(dayo::graphics::handles::ShaderBindingTableHandle) override {
+        ++destroyedSbt_;
+    }
     dayo::graphics::DeviceCapabilities capabilities_;
     dayo::graphics::GraphicsConvention convention_;
+    std::uint32_t nextTypedHandle_{1};
+    std::size_t destroyedShaders_{};
+    std::size_t destroyedPipelines_{};
+    std::size_t destroyedSbt_{};
 };
 
 struct MockCommands final : public dayo::graphics::CommandList {
@@ -138,11 +171,11 @@ bool testMockTraceMatches() {
     program.label = "trace";
     program.generation = 1;
     program.passes = {
-        {"BG", dayo::fx::FxOpKind::clear, {}, 1, 1, {{"background", true}}, {}},
-        {"MMD", dayo::fx::FxOpKind::raster, {}, 1, 1, {}, {}},
-        {"DENOISE", dayo::fx::FxOpKind::compute, {}, 1, 1, {}, {}},
-        {"Copy", dayo::fx::FxOpKind::copy, {}, 1, 1, {{"source", false}, {"destination", true}}, {}},
-        {"Mip", dayo::fx::FxOpKind::mipmap, {}, 1, 1, {{"destination", true}}, {}},
+        {"BG", dayo::fx::FxOpKind::clear, {}, 1, 1, {{"background", true}}, {}, {}, {}},
+        {"MMD", dayo::fx::FxOpKind::raster, {}, 1, 1, {}, {}, {}, {}},
+        {"DENOISE", dayo::fx::FxOpKind::compute, {}, 1, 1, {}, {}, {}, {}},
+        {"Copy", dayo::fx::FxOpKind::copy, {}, 1, 1, {{"source", false}, {"destination", true}}, {}, {}, {}},
+        {"Mip", dayo::fx::FxOpKind::mipmap, {}, 1, 1, {{"destination", true}}, {}, {}, {}},
     };
     dayo::fx::FxCompiler compiler;
     const auto plan = compiler.plan(program, testContext());
@@ -159,7 +192,7 @@ bool testMockTraceMatches() {
                 "executor stats count each kind");
     // Raytracing must fail explicitly, never silently skip.
     dayo::fx::FxProgram rayProgram = program;
-    rayProgram.passes.push_back({"RT", dayo::fx::FxOpKind::raytracing, {}, 1, 1, {}, {}});
+    rayProgram.passes.push_back({"RT", dayo::fx::FxOpKind::raytracing, {}, 1, 1, {}, {}, {}, {}});
     bool threw = false;
     try {
         const auto rayPlan = compiler.plan(rayProgram, testContext());
@@ -178,7 +211,7 @@ bool testMockTraceMatches() {
         return std::optional<dayo::graphics::handles::ShaderBindingTableHandle>{{1, 1}};
     };
     dayo::fx::FxProgram nativeRayProgram;
-    nativeRayProgram.passes.push_back({"NativeRT", dayo::fx::FxOpKind::raytracing, {}, 1, 1, {}, {}});
+    nativeRayProgram.passes.push_back({"NativeRT", dayo::fx::FxOpKind::raytracing, {}, 1, 1, {}, {}, {}, {}});
     const auto nativePlan = compiler.plan(nativeRayProgram, testContext());
     const auto nativeStats = executor.execute(nativePlan, nativeCommands, testContext(), nativeResources);
     ok &= check(nativeStats.rayTracing == 1 && nativeCommands.trace.size() == 2 &&
@@ -198,10 +231,10 @@ bool testMockTraceMatches() {
     };
     dayo::fx::FxProgram typedProgram;
     typedProgram.passes = {
-        {"typed-compute", dayo::fx::FxOpKind::compute, {}, 1, 1, {{"storage", true}}, {}},
-        {"typed-copy", dayo::fx::FxOpKind::copy, {}, 1, 1, {{"source", false}, {"storage", true}}, {}},
-        {"typed-clear", dayo::fx::FxOpKind::clear, {}, 1, 1, {{"storage", true}}, {}},
-        {"typed-mipmap", dayo::fx::FxOpKind::mipmap, {}, 1, 1, {{"storage", true}}, {}},
+        {"typed-compute", dayo::fx::FxOpKind::compute, {}, 1, 1, {{"storage", true}}, {}, {}, {}},
+        {"typed-copy", dayo::fx::FxOpKind::copy, {}, 1, 1, {{"source", false}, {"storage", true}}, {}, {}, {}},
+        {"typed-clear", dayo::fx::FxOpKind::clear, {}, 1, 1, {{"storage", true}}, {}, {}, {}},
+        {"typed-mipmap", dayo::fx::FxOpKind::mipmap, {}, 1, 1, {{"storage", true}}, {}, {}, {}},
     };
     const auto typedPlan = compiler.plan(typedProgram, testContext());
     const auto typedStats = executor.execute(typedPlan, typedCommands, testContext(), typedResources);
@@ -315,7 +348,7 @@ bool testHotReloadKeepsCurrentOnFailure() {
     dayo::fx::FxProgram initial;
     initial.label = "Preview";
     initial.generation = 7;
-    initial.passes = {{"MMD", dayo::fx::FxOpKind::raster, {}, 1, 1, {}, {}}};
+    initial.passes = {{"MMD", dayo::fx::FxOpKind::raster, {}, 1, 1, {}, {}, {}, {}}};
     dayo::fx::FxInstance instance(initial);
     bool ok = true;
     const auto empty = dayo::fx::makeFxSourceDocument("empty.fxdayo", "", 1);
@@ -537,6 +570,52 @@ bool testRealShaderCompilation() {
     return ok;
 }
 
+bool testFxPipelineRuntime() {
+    dayo::fx::FxShaderCompiler compiler;
+    if (!compiler.available())
+        return true;
+    MockDevice device;
+    dayo::fx::FxProgram program;
+    program.sourcePath = "pipeline-runtime.fxdayo";
+    program.hlsl = "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) {}\n";
+    dayo::fx::FxDispatch dispatch;
+    dispatch.name = "deform";
+    dispatch.kind = dayo::fx::FxOpKind::compute;
+    dispatch.shader = "main";
+    dispatch.executable = dayo::fx::FxComputeDispatch{"main"};
+    dispatch.macros = {"NATIVE=1"};
+    program.passes.push_back(dispatch);
+
+    dayo::graphics::FxPipelineRuntime runtime;
+    std::string error;
+    const bool built = runtime.build(
+        device, program, compiler,
+        [](const dayo::fx::FxDispatch&) {
+            return std::optional<dayo::graphics::handles::PipelineLayoutHandle>{{1, 1}};
+        },
+        &error);
+    bool ok = check(built, "FX pipeline runtime materializes a compute pipeline");
+    ok &= check(error.empty() && runtime.size() == 1 && runtime.resolvePipeline(dispatch).has_value(),
+                "FX pipeline runtime indexes the materialized pipeline");
+    runtime.reset();
+    ok &= check(device.destroyedPipelines_ == 1 && device.destroyedShaders_ == 1,
+                "FX pipeline runtime destroys owned Vulkan objects");
+
+    dayo::fx::FxDispatch postprocess;
+    postprocess.name = "postprocess";
+    postprocess.kind = dayo::fx::FxOpKind::postprocess;
+    postprocess.executable = dayo::fx::FxPostProcessDispatch{"main"};
+    program.passes = {postprocess};
+    ok &= check(!runtime.build(
+                    device, program, compiler,
+                    [](const dayo::fx::FxDispatch&) {
+                        return std::optional<dayo::graphics::handles::PipelineLayoutHandle>{{1, 1}};
+                    },
+                    &error) && error.find("fullscreen vertex") != std::string::npos,
+                "FX pipeline runtime rejects postprocess without renderer fullscreen shader");
+    return ok;
+}
+
 bool testTextureCacheKeys() {
     dayo::fx::FxTextureCache cache;
     dayo::fx::FxTextureKey base;
@@ -614,6 +693,7 @@ int main() {
     ok &= testShaderCacheKeys();
     try {
         ok &= testRealShaderCompilation();
+        ok &= testFxPipelineRuntime();
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: real shader compilation: " << exception.what() << '\n';
         ok = false;

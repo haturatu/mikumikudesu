@@ -228,12 +228,12 @@ int main() {
     // renderer name alone.
     {
         dayo::fx::FxProgram subayaiProgram;
-        subayaiProgram.passes.push_back({"compute", dayo::fx::FxOpKind::compute, "cs", 1, 1, {}, {}, {}});
+        subayaiProgram.passes.push_back({"compute", dayo::fx::FxOpKind::compute, "cs", 1, 1, {}, {}, {}, {}});
         const auto subayaiRequired = dayo::fx::requiredFeatures(subayaiProgram);
         ok &= check(!subayaiRequired.rayTracingPipeline, "compute Subayai graph does not require RT pipeline");
         dayo::fx::FxProgram rtProgram;
         rtProgram.passes.push_back(
-            {"rt", dayo::fx::FxOpKind::raytracing, {}, 1, 1, {}, {}, dayo::fx::FxRayTracingDispatch{}});
+            {"rt", dayo::fx::FxOpKind::raytracing, {}, 1, 1, {}, {}, dayo::fx::FxRayTracingDispatch{}, {}});
         const auto rtRequired = dayo::fx::requiredFeatures(rtProgram);
         ok &= check(rtRequired.accelerationStructure && rtRequired.rayQuery && rtRequired.rayTracingPipeline,
                     "RT graph reports its Vulkan feature requirements");
@@ -246,7 +246,7 @@ int main() {
         dayo::graphics::SubayaiRuntime runtime;
         dayo::fx::FxProgram program;
         program.label = "Subayai";
-        program.passes.push_back({"compute", dayo::fx::FxOpKind::compute, "cs", 1, 1, {}, {}, {}});
+        program.passes.push_back({"compute", dayo::fx::FxOpKind::compute, "cs", 1, 1, {}, {}, {}, {}});
         std::string error;
         ok &= check(runtime.initialize(device, program, &error), "Subayai runtime initializes on supported hardware");
         dayo::core::MaterialParameterBlock parameters;
@@ -269,7 +269,7 @@ int main() {
         dayo::graphics::BdptRuntime runtime;
         dayo::fx::FxProgram program;
         program.label = "BDPT";
-        program.passes.push_back({"path-trace", dayo::fx::FxOpKind::raytracing, {}, 1, 1, {}, {}, {}});
+        program.passes.push_back({"path-trace", dayo::fx::FxOpKind::raytracing, {}, 1, 1, {}, {}, {}, {}});
         std::string error;
         ok &= check(runtime.initialize(device, program, &error), "BDPT runtime initializes on RT hardware");
         ok &= check(runtime.ensureResources(16, 8, &error), "BDPT runtime allocates persistent GPU resources");
