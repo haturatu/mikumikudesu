@@ -4,6 +4,7 @@
 #include "fx/fx_preview_path.hpp"
 #include "fx/fx_scheduler.hpp"
 #include "fx/fx_shader_cache.hpp"
+#include "fx/fx_shader_compiler.hpp"
 #include "fx/fx_texture_cache.hpp"
 #include "fx/fx_watcher.hpp"
 #include "graphics/fx_executor.hpp"
@@ -437,6 +438,34 @@ bool testShaderCacheKeys() {
     return ok;
 }
 
+bool testRealShaderCompilation() {
+    dayo::fx::FxShaderCompiler compiler;
+    if (!compiler.available())
+        return true;
+    dayo::fx::FxShaderCompileRequest request;
+    request.sourcePath = "compiler-test.hlsl";
+    request.entryPoint = "main";
+    request.stage = dayo::fx::FxShaderStage::fragment;
+    request.hlsl = "float4 main() : SV_Target { return float4(1, 0, 0, 1); }\n";
+    const auto artifact = compiler.compile(request);
+    bool ok = true;
+    ok &=
+        check(!artifact.spirv.empty() && artifact.spirv.front() == 0x07230203U, "real shader compiler returns SPIR-V");
+    ok &= check(!artifact.compilerVersion.empty(), "real shader compiler records its version");
+
+    dayo::fx::FxShaderCache cache;
+    dayo::fx::FxShaderKey key;
+    key.hlslHash = "compiler-test";
+    key.entryPoint = request.entryPoint;
+    key.stage = "fragment";
+    const auto cached = cache.compileOrGet(key, request, compiler);
+    const auto cachedAgain = cache.compileOrGet(key, request, compiler);
+    ok &= check(cached.spirv == cachedAgain.spirv, "compiled shader cache reuses SPIR-V");
+    const auto handle = cache.find(key);
+    ok &= check(handle.has_value() && cache.binary(*handle).has_value(), "compiled shader binary is addressable");
+    return ok;
+}
+
 bool testTextureCacheKeys() {
     dayo::fx::FxTextureCache cache;
     dayo::fx::FxTextureKey base;
@@ -512,6 +541,12 @@ int main() {
     ok &= testCompilerUsesRawSourceAndRejectsUnknownPasses();
     ok &= testRayTracingPayloadIsLossless();
     ok &= testShaderCacheKeys();
+    try {
+        ok &= testRealShaderCompilation();
+    } catch (const std::exception& exception) {
+        std::cerr << "FAIL: real shader compilation: " << exception.what() << '\n';
+        ok = false;
+    }
     ok &= testTextureCacheKeys();
     ok &= testWatcherPoll();
     if (ok)
