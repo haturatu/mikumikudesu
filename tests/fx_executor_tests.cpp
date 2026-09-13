@@ -42,6 +42,9 @@ struct MockDevice final : public dayo::graphics::Device {
     dayo::graphics::RendererKind activeRenderer() const noexcept override {
         return dayo::graphics::RendererKind::preview;
     }
+    dayo::graphics::handles::ShaderHandle nativeFullscreenVertexShader() const noexcept override {
+        return {900, 1};
+    }
     void selectRenderer(dayo::graphics::RendererKind) override {}
     void resize() override {}
     void beginUiFrame() override {}
@@ -998,9 +1001,9 @@ bool testFxPipelineRuntime() {
         ("dayo-fx-pipeline-include-" +
          std::to_string(static_cast<unsigned long long>(
              std::chrono::steady_clock::now().time_since_epoch().count())));
-    std::error_code error;
-    fs::create_directories(directory, error);
-    if (error)
+    std::error_code fileError;
+    fs::create_directories(directory, fileError);
+    if (fileError)
         return check(false, "FX pipeline include directory created");
     {
         std::ofstream include(directory / "constants.hlsli");
@@ -1039,14 +1042,17 @@ bool testFxPipelineRuntime() {
     postprocess.kind = dayo::fx::FxOpKind::postprocess;
     postprocess.executable = dayo::fx::FxPostProcessDispatch{"main"};
     program.passes = {postprocess};
-    ok &= check(!runtime.build(
+    program.hlsl = "#include \"constants.hlsli\"\n"
+                   "float4 main() : SV_Target { return float4(TEST_PIPELINE_VALUE, 0, 0, 1); }\n";
+    ok &= check(runtime.build(
                     device, program, compiler,
                     [](const dayo::fx::FxDispatch&) {
                         return std::optional<dayo::graphics::handles::PipelineLayoutHandle>{{1, 1}};
                     },
-                    &error) && error.find("fullscreen vertex") != std::string::npos,
-                "FX pipeline runtime rejects postprocess without renderer fullscreen shader");
-    fs::remove_all(directory, error);
+                    &error) && error.empty() && runtime.resolvePipeline(postprocess).has_value(),
+                "FX pipeline runtime combines renderer fullscreen vertex with postprocess pixel shader");
+    runtime.reset();
+    fs::remove_all(directory, fileError);
     return ok;
 }
 
