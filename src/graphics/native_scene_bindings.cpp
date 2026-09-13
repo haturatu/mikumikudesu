@@ -29,9 +29,11 @@ DescriptorSetLayoutDesc nativeSceneDescriptorLayout(NativeSceneDescriptorSet set
     DescriptorSetLayoutDesc result;
     switch (set) {
     case NativeSceneDescriptorSet::frame:
-        result.bindings.reserve(15);
+        result.bindings.reserve(19);
         for (std::uint32_t index = 0; index < 5; ++index)
             add(result, NativeSceneRegisterClass::uav, index, DescriptorKind::storageImage, 1, stages);
+        add(result, NativeSceneRegisterClass::uniform, 0, DescriptorKind::uniformBuffer, 1, stages);
+        add(result, NativeSceneRegisterClass::uniform, 1, DescriptorKind::uniformBuffer, 1, stages);
         add(result, NativeSceneRegisterClass::sampled, 0, DescriptorKind::accelerationStructure, 1, stages);
         for (std::uint32_t index = 1; index <= 4; ++index)
             add(result, NativeSceneRegisterClass::sampled, index, DescriptorKind::storageBuffer, 1, stages);

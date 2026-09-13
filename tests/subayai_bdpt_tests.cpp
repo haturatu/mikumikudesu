@@ -1074,10 +1074,17 @@ int main() {
                             dayo::graphics::NativeSceneRegisterClass::uniform, 0) == 48,
                     "native scene register classes use disjoint Vulkan binding ranges");
         const auto* rtOutput = binding(layouts[frameIndex], 0);
+        const auto* viewConstants = binding(layouts[frameIndex], 48);
+        const auto* controllerConstants = binding(layouts[frameIndex], 49);
         const auto* tlas = binding(layouts[frameIndex], 16);
         const auto* screenTexture = binding(layouts[frameIndex], 27);
         ok &= check(rtOutput != nullptr && rtOutput->kind == dayo::graphics::DescriptorKind::storageImage,
                     "native frame binds RTOutput as a storage image");
+        ok &= check(viewConstants != nullptr &&
+                        viewConstants->kind == dayo::graphics::DescriptorKind::uniformBuffer &&
+                        controllerConstants != nullptr &&
+                        controllerConstants->kind == dayo::graphics::DescriptorKind::uniformBuffer,
+                    "native frame reserves ViewCB and generated controller constants");
         ok &= check(tlas != nullptr && tlas->kind == dayo::graphics::DescriptorKind::accelerationStructure,
                     "native frame binds TLAS as an acceleration structure");
         ok &= check(screenTexture != nullptr && screenTexture->kind == dayo::graphics::DescriptorKind::sampledImage,
