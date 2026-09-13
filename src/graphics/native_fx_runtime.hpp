@@ -34,6 +34,17 @@ class NativeFxRuntime {
     [[nodiscard]] bool initialize(Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
                                    std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts = {},
                                    std::string* error = nullptr);
+    // Initializes resources against the first real frame context. The
+    // compatibility overload above remains useful for callers that do not
+    // have a frame yet.
+    [[nodiscard]] bool initializeForFrame(
+        Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
+        const fx::FxFrameContext& context,
+        std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts = {}, std::string* error = nullptr);
+    // Rebuilds size-dependent FX resources and their descriptor/pipeline
+    // lifetime when a render/model context changes. Callers should invoke
+    // this at a frame boundary before prepareFrame().
+    [[nodiscard]] bool refresh(const fx::FxFrameContext& context, std::string* error = nullptr);
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
@@ -62,11 +73,18 @@ class NativeFxRuntime {
   private:
     Device* device_{};
     fx::FxProgram program_;
+    fx::FxShaderCompiler compiler_{};
+    std::vector<handles::DescriptorSetLayoutHandle> sharedLayouts_;
     FxResourceRuntime resources_;
     FxPipelineRuntime pipelines_;
     handles::PipelineLayoutHandle pipelineLayout_{};
     std::uint32_t resourceSetIndex_{};
+    std::optional<fx::FxFrameContext> resourceContext_;
+    bool configured_{};
     bool ready_{};
+
+    [[nodiscard]] bool buildForContext(const fx::FxFrameContext& context, std::string* error);
+    void releaseGpuState() noexcept;
 };
 
 } // namespace dayo::graphics

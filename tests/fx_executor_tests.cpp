@@ -91,6 +91,13 @@ struct MockDevice final : public dayo::graphics::Device {
         if (handle.valid())
             ++destroyedSamplers_;
     }
+    void uploadTextureEx(dayo::graphics::handles::TextureHandle, std::span<const std::uint8_t> bytes,
+                         std::uint32_t, std::uint32_t) override {
+        uploadedTextureBytes_ = bytes.size();
+    }
+    void generateMipmapsEx(dayo::graphics::handles::TextureHandle) override {
+        ++generatedMipmaps_;
+    }
     dayo::graphics::handles::DescriptorSetLayoutHandle
     createDescriptorSetLayoutEx(const dayo::graphics::DescriptorSetLayoutDesc& desc) override {
         descriptorLayout_ = desc;
@@ -161,6 +168,8 @@ struct MockDevice final : public dayo::graphics::Device {
     std::size_t destroyedDescriptorLayouts_{};
     std::size_t destroyedDescriptorSets_{};
     std::size_t destroyedPipelineLayouts_{};
+    std::size_t uploadedTextureBytes_{};
+    std::size_t generatedMipmaps_{};
     std::vector<dayo::graphics::TextureResourceDesc> textureDescs_;
     std::vector<dayo::graphics::BufferResourceDesc> bufferDescs_;
     std::vector<dayo::graphics::SamplerResourceDesc> samplerDescs_;
@@ -736,6 +745,102 @@ bool testFxResourceRuntimeMaterializesDeclarations() {
     return ok;
 }
 
+bool testFxExternalTextureMetadataAndUpload() {
+    namespace fs = std::filesystem;
+    const auto directory = fs::temp_directory_path() / "dayo-fx-external-texture-test";
+    std::error_code error;
+    fs::create_directories(directory, error);
+    if (error)
+        return check(false, "external FX texture test directory created");
+    const auto imagePath = directory / "source.ppm";
+    {
+        std::ofstream output(imagePath, std::ios::binary);
+        output << "P6\n2 1\n255\n";
+        output.put(static_cast<char>(255));
+        output.put(static_cast<char>(0));
+        output.put(static_cast<char>(0));
+        output.put(static_cast<char>(0));
+        output.put(static_cast<char>(255));
+        output.put(static_cast<char>(0));
+    }
+
+    dayo::fx::FxProgram program;
+    program.sourcePath = directory / "effect.fxdayo";
+    dayo::core::EffectTexture texture;
+    texture.name = "Input";
+    texture.filename = imagePath.filename().string();
+    texture.mipmap = true;
+    texture.view = "SRV";
+    program.textures.push_back(std::move(texture));
+    MockDevice device;
+    dayo::graphics::FxResourceRuntime runtime;
+    std::string runtimeError;
+    bool ok = check(runtime.initialize(device, program, testContext(), &runtimeError),
+                    "FX external texture initializes from a relative filename");
+    ok &= check(runtimeError.empty() && runtime.extent("Input").has_value() && runtime.extent("Input")->width == 2 &&
+                    runtime.extent("Input")->height == 1,
+                "FX external texture uses decoded dimensions when size is omitted");
+    ok &= check(!device.textureDescs_.empty() && device.textureDescs_.front().mipLevels == 2 &&
+                    device.uploadedTextureBytes_ == 8 && device.generatedMipmaps_ == 1,
+                "FX external texture uploads base mip and generates remaining mips");
+    runtime.reset();
+    fs::remove_all(directory, error);
+    return ok;
+}
+
+bool testNativeFxRuntimeRefreshesFrameResources() {
+    dayo::fx::FxShaderCompiler compiler;
+    if (!compiler.available())
+        return true;
+
+    dayo::fx::FxProgram program;
+    program.sourcePath = "native-refresh.fxdayo";
+    program.hlsl = "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) {}\n";
+    dayo::core::EffectTexture output;
+    output.name = "Output";
+    output.view = "UAV";
+    program.textures.push_back(std::move(output));
+    dayo::fx::FxDispatch dispatch;
+    dispatch.name = "refresh-pass";
+    dispatch.kind = dayo::fx::FxOpKind::compute;
+    dispatch.executable = dayo::fx::FxComputeDispatch{"main"};
+    dispatch.resources.push_back({"Output", true});
+    program.passes.push_back(std::move(dispatch));
+
+    const auto firstContext = dayo::fx::makeFxFrameContext(12.0F, 3, 4, 2, 1, 0, 3, 1, 1, 1);
+    const auto secondContext = dayo::fx::makeFxFrameContext(12.0F, 3, 8, 4, 1, 0, 3, 1, 1, 1);
+    MockDevice device;
+    dayo::graphics::NativeFxRuntime runtime;
+    std::string error;
+    bool ok = check(runtime.initializeForFrame(device, std::move(program), compiler, firstContext, {}, &error),
+                    "native FX runtime initializes against the first frame context");
+    const auto firstExtent = runtime.resources().extent("Output");
+    ok &= check(firstExtent.has_value() && firstExtent->width == 4 && firstExtent->height == 2,
+                "native FX runtime uses the first frame dimensions");
+    ok &= check(runtime.refresh(firstContext, &error), "native FX runtime reuses unchanged frame resources");
+    const auto allocationsBeforeRefresh = device.textureDescs_.size();
+    ok &= check(runtime.refresh(secondContext, &error), "native FX runtime refreshes changed frame resources");
+    const auto secondExtent = runtime.resources().extent("Output");
+    ok &= check(secondExtent.has_value() && secondExtent->width == 8 && secondExtent->height == 4,
+                "native FX runtime rebuilds render-size-dependent resources");
+    ok &= check(device.textureDescs_.size() == allocationsBeforeRefresh + 1,
+                "native FX runtime does not rebuild resources for an unchanged context");
+
+    dayo::graphics::FxExecutionResources resources;
+    resources.resolveDescriptorSets = [](const dayo::fx::FxDispatch&) {
+        return std::vector<dayo::graphics::FxExecutionResources::TypedDescriptorSetBinding>{{{900, 1}, 0}};
+    };
+    auto frame = runtime.prepareFrame(secondContext);
+    MockCommands commands;
+    const auto stats = runtime.execute(frame, commands, resources);
+    ok &= check(stats.compute == 1, "native FX runtime executes after a resource refresh");
+    const auto descriptorCount = static_cast<std::size_t>(
+        std::count(commands.trace.begin(), commands.trace.end(), std::string{"descriptorEx"}));
+    ok &= check(descriptorCount == 2, "native FX runtime appends its resource set to shared descriptor bindings");
+    runtime.reset();
+    return ok;
+}
+
 bool testNativeFxRuntimeBindsResourcesAndPipelines() {
     dayo::fx::FxShaderCompiler compiler;
     if (!compiler.available())
@@ -1001,6 +1106,8 @@ int main() {
     ok &= testRayTracingPayloadIsLossless();
     ok &= testFxResourceDeclarationsAreLossless();
     ok &= testFxResourceRuntimeMaterializesDeclarations();
+    ok &= testFxExternalTextureMetadataAndUpload();
+    ok &= testNativeFxRuntimeRefreshesFrameResources();
     ok &= testNativeFxRuntimeBindsResourcesAndPipelines();
     ok &= testShaderCacheKeys();
     try {
