@@ -41,6 +41,7 @@ struct MockAccelerationBackend : dayo::graphics::IAccelerationBackend {
     std::uint64_t updateTlasCalls{0};
     std::uint64_t destroyBlasCalls{0};
     std::uint64_t destroyTlasCalls{0};
+    bool replaceTlasOnRebuild{false};
     std::size_t lastTlasInstanceCount{};
     std::vector<dayo::graphics::handles::BufferHandle> rebuildVertexBuffers;
     std::vector<dayo::graphics::handles::BufferHandle> refitVertexBuffers;
@@ -72,11 +73,13 @@ struct MockAccelerationBackend : dayo::graphics::IAccelerationBackend {
         lastTlasInstances.assign(instances.begin(), instances.end());
         return {next++, 1};
     }
-    void rebuildTlas(dayo::graphics::handles::AccelerationStructureHandle,
-                     std::span<const dayo::graphics::TlasInstanceDesc> instances) override {
+    dayo::graphics::handles::AccelerationStructureHandle
+    rebuildTlas(dayo::graphics::handles::AccelerationStructureHandle tlas,
+                std::span<const dayo::graphics::TlasInstanceDesc> instances) override {
         ++rebuildTlasCalls;
         lastTlasInstanceCount = instances.size();
         lastTlasInstances.assign(instances.begin(), instances.end());
+        return replaceTlasOnRebuild ? dayo::graphics::handles::AccelerationStructureHandle{next++, 1} : tlas;
     }
     void updateTlas(dayo::graphics::handles::AccelerationStructureHandle,
                     std::span<const dayo::graphics::TlasInstanceDesc> instances) override {
@@ -370,6 +373,20 @@ int main() {
         ok &= check(service.blasCount() == 1 && !service.tlasBuilt(), "mesh removal retires TLAS state");
         ok &= check(backend.destroyBlasCalls == 1 && backend.destroyTlasCalls == 1,
                     "mesh removal destroys BLAS and TLAS resources");
+    }
+    // A topology/count rebuild may replace the TLAS allocation. The service
+    // must retire the old handle and continue tracking the replacement.
+    {
+        MockAccelerationBackend backend;
+        backend.replaceTlasOnRebuild = true;
+        AccelerationStructureService service(&backend);
+        static_cast<void>(service.notifyMesh(0, geometry(11), 1, 1));
+        const std::array<std::uint32_t, 1> initial{1};
+        static_cast<void>(service.notifyWorld(1, initial));
+        const std::array<std::uint32_t, 1> grown{2};
+        ok &= check(service.notifyWorld(1, grown) == TlasAction::rebuild, "TLAS replacement rebuild reports rebuild");
+        ok &= check(backend.rebuildTlasCalls == 1 && backend.destroyTlasCalls == 1,
+                    "TLAS replacement retires the previous allocation");
     }
     // Transform-aware world instances preserve clone placement and metadata.
     {
