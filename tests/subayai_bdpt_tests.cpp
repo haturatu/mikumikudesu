@@ -184,6 +184,20 @@ struct MockNativeDevice final : dayo::graphics::Device {
         if (handle.valid())
             ++destroyedDescriptorLayouts;
     }
+    dayo::graphics::handles::PipelineLayoutHandle
+    createPipelineLayoutEx(const dayo::graphics::PipelineLayoutDesc&) override {
+        return {nextPipelineLayout_++, 1};
+    }
+    void destroyPipelineLayoutEx(dayo::graphics::handles::PipelineLayoutHandle) override {}
+    dayo::graphics::handles::ShaderHandle createShaderEx(const dayo::graphics::ShaderDesc&) override {
+        return {nextShader_++, 1};
+    }
+    void destroyShaderEx(dayo::graphics::handles::ShaderHandle) override {}
+    dayo::graphics::handles::PipelineHandle
+    createComputePipelineEx(const dayo::graphics::ComputePipelineDescEx&) override {
+        return {nextPipeline_++, 1};
+    }
+    void destroyPipelineEx(dayo::graphics::handles::PipelineHandle) override {}
     void uploadTextureEx(dayo::graphics::handles::TextureHandle, std::span<const std::uint8_t>, std::uint32_t,
                          std::uint32_t) override {}
     void uploadBufferEx(dayo::graphics::handles::BufferHandle handle, std::span<const std::byte> bytes,
@@ -220,6 +234,9 @@ struct MockNativeDevice final : dayo::graphics::Device {
     std::uint32_t nextTypedTexture_{1};
     std::uint32_t nextDescriptorLayout_{1};
     std::uint32_t nextDescriptorSet_{1};
+    std::uint32_t nextPipelineLayout_{1};
+    std::uint32_t nextShader_{1};
+    std::uint32_t nextPipeline_{1};
     std::size_t destroyedBuffers{};
     std::size_t destroyedTextures{};
     std::size_t destroyedDescriptorSets{};
@@ -260,6 +277,46 @@ struct MockDeformCommands final : dayo::graphics::CommandList {
     }
 };
 
+bool testSubayaiNativeFxExecution() {
+    dayo::fx::FxShaderCompiler compiler;
+    if (!compiler.available())
+        return true;
+
+    MockNativeDevice device;
+    dayo::graphics::SubayaiRuntime runtime;
+    dayo::fx::FxProgram program;
+    program.label = "Subayai-native";
+    program.sourcePath = "subayai-native.fxdayo";
+    program.hlsl = "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) {}\n";
+    dayo::core::EffectTexture output;
+    output.name = "Output";
+    output.view = "UAV";
+    program.textures.push_back(std::move(output));
+    dayo::fx::FxDispatch dispatch;
+    dispatch.name = "native-compute";
+    dispatch.kind = dayo::fx::FxOpKind::compute;
+    dispatch.executable = dayo::fx::FxComputeDispatch{"main"};
+    dispatch.resources.push_back({"Output", true});
+    program.passes.push_back(std::move(dispatch));
+
+    std::string error;
+    bool ok = check(runtime.initialize(device, std::move(program), &error),
+                    "Subayai runtime accepts a compilable native FX program");
+    const auto context = dayo::fx::makeFxFrameContext(0.0F, 0, 16, 8, 1, 0, 3, 1, 1, 1);
+    auto frame = runtime.prepareFrame(context, {}, {}, {});
+    ok &= check(runtime.nativeReady() && frame.nativeFx.has_value(),
+                "Subayai runtime prepares the native FX frame path");
+    MockDeformCommands commands;
+    const auto stats = runtime.execute(frame, commands);
+    ok &= check(stats.compute == 1 && commands.events ==
+                                         std::vector<std::string>{"transition", "descriptor", "bind", "dispatch:2x1x1"},
+                "Subayai runtime executes typed FX resources through the native path");
+    ok &= check(commands.descriptorSets.size() == 1 && commands.descriptorSets.front().second == 2,
+                "Subayai native FX binds its resource set after shared material and light slots");
+    runtime.reset();
+    return ok;
+}
+
 } // namespace
 
 dayo::graphics::BlasGeometryDesc geometry(std::uint32_t vertexBuffer) {
@@ -282,6 +339,8 @@ int main() {
     using dayo::graphics::ShaderBindingTableBuilder;
     using dayo::graphics::TlasAction;
     bool ok = true;
+
+    ok &= testSubayaiNativeFxExecution();
 
     // Native material linking keeps Subayai hair controls in a dedicated GPU
     // ABI while leaving PreviewMaterialGpu untouched.
