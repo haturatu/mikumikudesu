@@ -12,6 +12,7 @@
 #include "graphics/subayai_material_gpu.hpp"
 #include "graphics/subayai_runtime.hpp"
 #include "graphics/native_scene_bindings.hpp"
+#include "graphics/native_scene_binding_runtime.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1107,6 +1108,40 @@ int main() {
         const auto* emptyTextures = binding(emptyCounts[texturesIndex], 17);
         ok &= check(emptyTextures != nullptr && emptyTextures->count == 1,
                     "empty native arrays retain a legal placeholder descriptor");
+    }
+    // NativeSceneBindingRuntime allocates only complete fixed-space sets.
+    {
+        MockNativeDevice device;
+        dayo::graphics::NativeSceneBindingRuntime runtime;
+        const dayo::graphics::NativeSceneDescriptorCounts counts{.textures = 2};
+        std::string error;
+        ok &= check(runtime.initialize(device, counts, &error) && runtime.ready(),
+                    "native scene binding runtime creates all reserved layouts");
+        ok &= check(runtime.layouts().size() == dayo::graphics::kNativeSceneDescriptorSetCount &&
+                        runtime.layout(dayo::graphics::NativeSceneDescriptorSet::textures).valid(),
+                    "native scene binding runtime exposes indexed layouts");
+        const std::array<dayo::graphics::DescriptorBindingEx, 4> incomplete{
+            dayo::graphics::DescriptorBindingEx{.slot = 16, .arrayElement = 0, .buffer = {1, 1}},
+            dayo::graphics::DescriptorBindingEx{.slot = 17, .arrayElement = 0, .texture = {2, 1}},
+            dayo::graphics::DescriptorBindingEx{.slot = 17, .arrayElement = 1, .texture = {3, 1}},
+            dayo::graphics::DescriptorBindingEx{.slot = 48, .arrayElement = 0, .buffer = {4, 1}},
+        };
+        ok &= check(runtime.bind(dayo::graphics::NativeSceneDescriptorSet::textures, incomplete, &error) &&
+                        runtime.descriptorSet(dayo::graphics::NativeSceneDescriptorSet::textures).valid(),
+                    "native scene binding runtime binds complete array sets");
+        const std::array<dayo::graphics::DescriptorBindingEx, 3> partial{
+            dayo::graphics::DescriptorBindingEx{.slot = 16, .arrayElement = 0, .buffer = {1, 1}},
+            dayo::graphics::DescriptorBindingEx{.slot = 17, .arrayElement = 0, .texture = {2, 1}},
+            dayo::graphics::DescriptorBindingEx{.slot = 48, .arrayElement = 0, .buffer = {4, 1}},
+        };
+        ok &= check(!runtime.bind(dayo::graphics::NativeSceneDescriptorSet::textures, partial, &error) &&
+                        !error.empty(),
+                    "native scene binding runtime rejects partial arrays before allocation");
+        const auto destroyedLayouts = device.destroyedDescriptorLayouts;
+        runtime.reset();
+        ok &= check(device.destroyedDescriptorLayouts == destroyedLayouts +
+                        dayo::graphics::kNativeSceneDescriptorSetCount,
+                    "native scene binding runtime releases reserved layouts");
     }
     // DenoiserRuntime fallback: staging/readback -> CPU -> upload copy without CUDA.
     {
