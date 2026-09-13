@@ -245,6 +245,50 @@ VkImageViewType toVkImageViewType(TextureDimension dimension, std::uint32_t arra
     return VK_IMAGE_VIEW_TYPE_2D;
 }
 
+std::uint32_t imageLayerCount(const TextureResourceDesc& desc) noexcept {
+    return desc.dimension == TextureDimension::cube ? desc.arrayLayers * 6U : desc.arrayLayers;
+}
+
+VkImageAspectFlags imageAspect(PixelFormat format) noexcept {
+    return format == PixelFormat::depth32Float ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+}
+
+VkExtent3D mipExtent(const TextureResourceDesc& desc, std::uint32_t mipLevel) noexcept {
+    VkExtent3D extent{desc.extent.width, desc.extent.height, desc.extent.depth};
+    for (std::uint32_t level = 0; level < mipLevel; ++level) {
+        extent.width = extent.width > 1U ? extent.width / 2U : 1U;
+        extent.height = extent.height > 1U ? extent.height / 2U : 1U;
+        extent.depth = extent.depth > 1U ? extent.depth / 2U : 1U;
+    }
+    return extent;
+}
+
+std::size_t mipBytes(const TextureResourceDesc& desc, std::uint32_t mipLevel) {
+    const auto extent = mipExtent(desc, mipLevel);
+    auto bytes = checkedResourceMul(static_cast<std::size_t>(extent.width), static_cast<std::size_t>(extent.height));
+    bytes = checkedResourceMul(bytes, static_cast<std::size_t>(extent.depth));
+    return checkedResourceMul(bytes, pixelFormatByteSize(desc.format));
+}
+
+VkImageLayout layoutForUsage(ResourceUsage usage) noexcept {
+    const auto bits = toBits(usage);
+    const auto storageBits = toBits(ResourceUsage::storageRead) | toBits(ResourceUsage::storageWrite) |
+                             toBits(ResourceUsage::storageReadWrite);
+    if ((bits & storageBits) != 0U)
+        return VK_IMAGE_LAYOUT_GENERAL;
+    if ((bits & toBits(ResourceUsage::sampledRead)) != 0U)
+        return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    if ((bits & toBits(ResourceUsage::colorAttachment)) != 0U)
+        return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    if ((bits & (toBits(ResourceUsage::depthRead) | toBits(ResourceUsage::depthWrite))) != 0U)
+        return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    if ((bits & toBits(ResourceUsage::transferDst)) != 0U)
+        return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    if ((bits & toBits(ResourceUsage::transferSrc)) != 0U)
+        return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+}
+
 VkShaderStageFlags toVkShaderStages(ShaderStageMask stages) {
     const auto bits = static_cast<std::uint32_t>(stages);
     VkShaderStageFlags flags = 0;
@@ -4149,6 +4193,201 @@ void VulkanDevice::destroyShaderBindingTable(handles::ShaderBindingTableHandle h
     typedShaderBindingTableHandles_.destroy(handle);
 }
 
+void VulkanDevice::submitImmediate(const std::function<void(VkCommandBuffer)>& record) {
+    if (uploadContext_ == nullptr)
+        throw std::logic_error("Vulkan upload context is unavailable");
+    try {
+        uploadContext_->begin();
+        record(uploadContext_->commandBuffer());
+        const auto signal = uploadContext_->submit();
+        uploadContext_->wait(signal);
+    } catch (...) {
+        uploadContext_->abort();
+        throw;
+    }
+}
+
+void VulkanDevice::copyBufferEx(handles::BufferHandle source, handles::BufferHandle destination) {
+    const auto sourceIt = typedBuffers_.find(source);
+    const auto destinationIt = typedBuffers_.find(destination);
+    if (sourceIt == typedBuffers_.end() || !typedBufferHandles_.isAlive(source) ||
+        destinationIt == typedBuffers_.end() || !typedBufferHandles_.isAlive(destination))
+        throw std::invalid_argument("typed buffer copy references a stale buffer handle");
+    if ((toBits(sourceIt->second.desc.usage) & toBits(ResourceUsage::transferSrc)) == 0U ||
+        (toBits(destinationIt->second.desc.usage) & toBits(ResourceUsage::transferDst)) == 0U)
+        throw std::invalid_argument("typed buffer copy requires transfer usage");
+    if (sourceIt->second.desc.size > destinationIt->second.desc.size)
+        throw std::out_of_range("typed buffer copy destination is too small");
+    const VkBufferCopy region{0, 0, sourceIt->second.resource.size};
+    submitImmediate([&](VkCommandBuffer commandBuffer) {
+        vkCmdCopyBuffer(commandBuffer, sourceIt->second.resource.buffer, destinationIt->second.resource.buffer, 1,
+                        &region);
+    });
+}
+
+void VulkanDevice::copyBufferToTextureEx(handles::BufferHandle source, handles::TextureHandle destination) {
+    const auto sourceIt = typedBuffers_.find(source);
+    const auto destinationIt = typedTextures_.find(destination);
+    if (sourceIt == typedBuffers_.end() || !typedBufferHandles_.isAlive(source) ||
+        destinationIt == typedTextures_.end() || !typedTextureHandles_.isAlive(destination))
+        throw std::invalid_argument("typed buffer-to-texture copy references a stale handle");
+    const auto& texture = destinationIt->second;
+    if ((toBits(sourceIt->second.desc.usage) & toBits(ResourceUsage::transferSrc)) == 0U ||
+        (toBits(texture.desc.usage) & toBits(ResourceUsage::transferDst)) == 0U)
+        throw std::invalid_argument("typed buffer-to-texture copy requires transfer usage");
+    const auto bytes = checkedResourceMul(mipBytes(texture.desc, 0), imageLayerCount(texture.desc));
+    if (bytes > sourceIt->second.desc.size)
+        throw std::out_of_range("typed buffer-to-texture source is too small");
+    submitImmediate([&](VkCommandBuffer commandBuffer) {
+        recordTextureTransition(commandBuffer, destination, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        const VkBufferImageCopy region{
+            .bufferOffset = 0,
+            .bufferRowLength = 0,
+            .bufferImageHeight = 0,
+            .imageSubresource = {imageAspect(texture.desc.format), 0, 0, imageLayerCount(texture.desc)},
+            .imageOffset = {0, 0, 0},
+            .imageExtent = mipExtent(texture.desc, 0),
+        };
+        vkCmdCopyBufferToImage(commandBuffer, sourceIt->second.resource.buffer, texture.resource.image,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        recordTextureTransition(commandBuffer, destination, typedTextureFinalLayout(texture));
+    });
+}
+
+void VulkanDevice::copyTextureToBufferEx(handles::TextureHandle source, handles::BufferHandle destination) {
+    const auto sourceIt = typedTextures_.find(source);
+    const auto destinationIt = typedBuffers_.find(destination);
+    if (sourceIt == typedTextures_.end() || !typedTextureHandles_.isAlive(source) ||
+        destinationIt == typedBuffers_.end() || !typedBufferHandles_.isAlive(destination))
+        throw std::invalid_argument("typed texture-to-buffer copy references a stale handle");
+    const auto& texture = sourceIt->second;
+    if ((toBits(texture.desc.usage) & toBits(ResourceUsage::transferSrc)) == 0U ||
+        (toBits(destinationIt->second.desc.usage) & toBits(ResourceUsage::transferDst)) == 0U)
+        throw std::invalid_argument("typed texture-to-buffer copy requires transfer usage");
+    const auto bytes = checkedResourceMul(mipBytes(texture.desc, 0), imageLayerCount(texture.desc));
+    if (bytes > destinationIt->second.desc.size)
+        throw std::out_of_range("typed texture-to-buffer destination is too small");
+    submitImmediate([&](VkCommandBuffer commandBuffer) {
+        recordTextureTransition(commandBuffer, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        const VkBufferImageCopy region{
+            .bufferOffset = 0,
+            .bufferRowLength = 0,
+            .bufferImageHeight = 0,
+            .imageSubresource = {imageAspect(texture.desc.format), 0, 0, imageLayerCount(texture.desc)},
+            .imageOffset = {0, 0, 0},
+            .imageExtent = mipExtent(texture.desc, 0),
+        };
+        vkCmdCopyImageToBuffer(commandBuffer, texture.resource.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               destinationIt->second.resource.buffer, 1, &region);
+        recordTextureTransition(commandBuffer, source, typedTextureFinalLayout(texture));
+    });
+}
+
+void VulkanDevice::copyTextureEx(handles::TextureHandle source, handles::TextureHandle destination) {
+    submitImmediate([&](VkCommandBuffer commandBuffer) { recordCopyTexture(commandBuffer, source, destination); });
+}
+
+void VulkanDevice::clearTextureEx(handles::TextureHandle texture, const std::array<float, 4>& value) {
+    submitImmediate([&](VkCommandBuffer commandBuffer) { recordClearTexture(commandBuffer, texture, value); });
+}
+
+void VulkanDevice::clearBufferEx(handles::BufferHandle buffer, std::uint32_t value) {
+    const auto it = typedBuffers_.find(buffer);
+    if (it == typedBuffers_.end() || !typedBufferHandles_.isAlive(buffer))
+        throw std::invalid_argument("typed buffer clear references a stale buffer handle");
+    if ((toBits(it->second.desc.usage) & toBits(ResourceUsage::transferDst)) == 0U)
+        throw std::invalid_argument("typed buffer clear requires transfer-destination usage");
+    if (it->second.resource.size % 4U != 0U)
+        throw std::invalid_argument("typed buffer clear requires a four-byte-aligned buffer");
+    submitImmediate([&](VkCommandBuffer commandBuffer) {
+        vkCmdFillBuffer(commandBuffer, it->second.resource.buffer, 0, it->second.resource.size, value);
+    });
+}
+
+void VulkanDevice::generateMipmapsEx(handles::TextureHandle texture) {
+    submitImmediate([&](VkCommandBuffer commandBuffer) { recordGenerateMipmaps(commandBuffer, texture); });
+}
+
+void VulkanDevice::uploadTextureEx(handles::TextureHandle texture, std::span<const std::uint8_t> bytes,
+                                   std::uint32_t mipLevel, std::uint32_t arrayLayer) {
+    const auto it = typedTextures_.find(texture);
+    if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(texture))
+        throw std::invalid_argument("typed texture upload references a stale texture handle");
+    const auto& typed = it->second;
+    if (mipLevel >= typed.desc.mipLevels || arrayLayer >= imageLayerCount(typed.desc))
+        throw std::out_of_range("typed texture upload subresource is out of range");
+    if ((toBits(typed.desc.usage) & toBits(ResourceUsage::transferDst)) == 0U)
+        throw std::invalid_argument("typed texture upload requires transfer-destination usage");
+    const auto expected = mipBytes(typed.desc, mipLevel);
+    if (bytes.size() != expected)
+        throw std::invalid_argument("typed texture upload byte count does not match its mip extent");
+    if (uploadContext_ == nullptr)
+        throw std::logic_error("Vulkan upload context is unavailable");
+    try {
+        uploadContext_->begin();
+        const auto staging = uploadContext_->allocate(bytes.size(), 4);
+        std::memcpy(staging.mapped, bytes.data(), bytes.size());
+        const auto commandBuffer = uploadContext_->commandBuffer();
+        recordTextureTransition(commandBuffer, texture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        const VkBufferImageCopy region{
+            .bufferOffset = staging.offset,
+            .bufferRowLength = 0,
+            .bufferImageHeight = 0,
+            .imageSubresource = {imageAspect(typed.desc.format), mipLevel, arrayLayer, 1},
+            .imageOffset = {0, 0, 0},
+            .imageExtent = mipExtent(typed.desc, mipLevel),
+        };
+        vkCmdCopyBufferToImage(commandBuffer, staging.buffer, typed.resource.image,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        recordTextureTransition(commandBuffer, texture, typedTextureFinalLayout(typed));
+        const auto signal = uploadContext_->submit();
+        uploadContext_->wait(signal);
+    } catch (...) {
+        uploadContext_->abort();
+        throw;
+    }
+}
+
+std::vector<std::uint8_t> VulkanDevice::readbackTextureEx(handles::TextureHandle texture, std::uint32_t mipLevel,
+                                                          std::uint32_t arrayLayer) {
+    const auto it = typedTextures_.find(texture);
+    if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(texture))
+        throw std::invalid_argument("typed texture readback references a stale texture handle");
+    const auto& typed = it->second;
+    if (mipLevel >= typed.desc.mipLevels || arrayLayer >= imageLayerCount(typed.desc))
+        throw std::out_of_range("typed texture readback subresource is out of range");
+    if ((toBits(typed.desc.usage) & toBits(ResourceUsage::transferSrc)) == 0U)
+        throw std::invalid_argument("typed texture readback requires transfer-source usage");
+    const auto expected = mipBytes(typed.desc, mipLevel);
+    if (uploadContext_ == nullptr)
+        throw std::logic_error("Vulkan upload context is unavailable");
+    try {
+        uploadContext_->begin();
+        const auto staging = uploadContext_->allocate(expected, 4);
+        const auto commandBuffer = uploadContext_->commandBuffer();
+        recordTextureTransition(commandBuffer, texture, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        const VkBufferImageCopy region{
+            .bufferOffset = staging.offset,
+            .bufferRowLength = 0,
+            .bufferImageHeight = 0,
+            .imageSubresource = {imageAspect(typed.desc.format), mipLevel, arrayLayer, 1},
+            .imageOffset = {0, 0, 0},
+            .imageExtent = mipExtent(typed.desc, mipLevel),
+        };
+        vkCmdCopyImageToBuffer(commandBuffer, typed.resource.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               staging.buffer, 1, &region);
+        recordTextureTransition(commandBuffer, texture, typedTextureFinalLayout(typed));
+        const auto signal = uploadContext_->submit();
+        uploadContext_->wait(signal);
+        std::vector<std::uint8_t> result(expected);
+        std::memcpy(result.data(), staging.mapped, expected);
+        return result;
+    } catch (...) {
+        uploadContext_->abort();
+        throw;
+    }
+}
+
 VkDeviceAddress VulkanDevice::bufferDeviceAddress(VkBuffer buffer) const {
     if (!capabilities_.bufferDeviceAddress)
         throw std::runtime_error("buffer device address is unsupported");
@@ -4193,21 +4432,18 @@ void VulkanDevice::recordBindPipeline(VkCommandBuffer commandBuffer, handles::Pi
     vkCmdBindPipeline(commandBuffer, it->second.bindPoint, it->second.pipeline);
 }
 
-void VulkanDevice::recordTransitionTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture) {
+VkImageLayout VulkanDevice::typedTextureFinalLayout(const TypedTexture& texture) noexcept {
+    return layoutForUsage(texture.desc.usage);
+}
+
+void VulkanDevice::recordTextureTransition(VkCommandBuffer commandBuffer, handles::TextureHandle texture,
+                                           VkImageLayout nextLayout) {
     const auto it = typedTextures_.find(texture);
     if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(texture))
         throw std::invalid_argument("typed transition references a stale texture handle");
     if (commandBuffer == VK_NULL_HANDLE)
         throw std::invalid_argument("typed transition requires a command buffer");
 
-    const auto bits = toBits(it->second.desc.usage);
-    const auto storageBits = toBits(ResourceUsage::storageRead) | toBits(ResourceUsage::storageWrite) |
-                             toBits(ResourceUsage::storageReadWrite);
-    const VkImageLayout nextLayout =
-        (bits & storageBits) != 0U                          ? VK_IMAGE_LAYOUT_GENERAL
-        : (bits & toBits(ResourceUsage::transferDst)) != 0U ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
-        : (bits & toBits(ResourceUsage::transferSrc)) != 0U ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
-                                                            : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     if (it->second.layout == nextLayout)
         return;
 
@@ -4225,12 +4461,9 @@ void VulkanDevice::recordTransitionTexture(VkCommandBuffer commandBuffer, handle
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image = it->second.resource.image,
-        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, it->second.desc.mipLevels, 0,
-                             it->second.desc.dimension == TextureDimension::cube ? it->second.desc.arrayLayers * 6U
-                                                                                 : it->second.desc.arrayLayers},
+        .subresourceRange = {imageAspect(it->second.desc.format), 0, it->second.desc.mipLevels, 0,
+                             imageLayerCount(it->second.desc)},
     };
-    if (it->second.desc.format == PixelFormat::depth32Float)
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     const VkDependencyInfo dependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
         .imageMemoryBarrierCount = 1,
@@ -4238,6 +4471,141 @@ void VulkanDevice::recordTransitionTexture(VkCommandBuffer commandBuffer, handle
     };
     vkCmdPipelineBarrier2(commandBuffer, &dependency);
     it->second.layout = nextLayout;
+}
+
+void VulkanDevice::recordTransitionTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture) {
+    const auto it = typedTextures_.find(texture);
+    if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(texture))
+        throw std::invalid_argument("typed transition references a stale texture handle");
+    recordTextureTransition(commandBuffer, texture, typedTextureFinalLayout(it->second));
+}
+
+void VulkanDevice::recordCopyTexture(VkCommandBuffer commandBuffer, handles::TextureHandle source,
+                                     handles::TextureHandle destination) {
+    const auto sourceIt = typedTextures_.find(source);
+    const auto destinationIt = typedTextures_.find(destination);
+    if (sourceIt == typedTextures_.end() || !typedTextureHandles_.isAlive(source) ||
+        destinationIt == typedTextures_.end() || !typedTextureHandles_.isAlive(destination))
+        throw std::invalid_argument("typed texture copy references a stale texture handle");
+    const auto& sourceDesc = sourceIt->second.desc;
+    const auto& destinationDesc = destinationIt->second.desc;
+    if (sourceDesc.dimension != destinationDesc.dimension || sourceDesc.extent.width != destinationDesc.extent.width ||
+        sourceDesc.extent.height != destinationDesc.extent.height ||
+        sourceDesc.extent.depth != destinationDesc.extent.depth || sourceDesc.mipLevels != destinationDesc.mipLevels ||
+        sourceDesc.arrayLayers != destinationDesc.arrayLayers || sourceDesc.format != destinationDesc.format)
+        throw std::invalid_argument("typed texture copy requires matching resources");
+    if ((toBits(sourceDesc.usage) & toBits(ResourceUsage::transferSrc)) == 0U ||
+        (toBits(destinationDesc.usage) & toBits(ResourceUsage::transferDst)) == 0U)
+        throw std::invalid_argument("typed texture copy requires transfer usage");
+    recordTextureTransition(commandBuffer, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    recordTextureTransition(commandBuffer, destination, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    std::vector<VkImageCopy> regions;
+    regions.reserve(sourceDesc.mipLevels);
+    for (std::uint32_t mip = 0; mip < sourceDesc.mipLevels; ++mip) {
+        regions.push_back({
+            .srcSubresource = {imageAspect(sourceDesc.format), mip, 0, imageLayerCount(sourceDesc)},
+            .srcOffset = {0, 0, 0},
+            .dstSubresource = {imageAspect(destinationDesc.format), mip, 0, imageLayerCount(destinationDesc)},
+            .dstOffset = {0, 0, 0},
+            .extent = mipExtent(sourceDesc, mip),
+        });
+    }
+    vkCmdCopyImage(commandBuffer, sourceIt->second.resource.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   destinationIt->second.resource.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   static_cast<std::uint32_t>(regions.size()), regions.data());
+    recordTextureTransition(commandBuffer, source, typedTextureFinalLayout(sourceIt->second));
+    recordTextureTransition(commandBuffer, destination, typedTextureFinalLayout(destinationIt->second));
+}
+
+void VulkanDevice::recordClearTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture,
+                                      const std::array<float, 4>& value) {
+    const auto it = typedTextures_.find(texture);
+    if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(texture))
+        throw std::invalid_argument("typed texture clear references a stale texture handle");
+    if ((toBits(it->second.desc.usage) & toBits(ResourceUsage::transferDst)) == 0U)
+        throw std::invalid_argument("typed texture clear requires transfer-destination usage");
+    recordTextureTransition(commandBuffer, texture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    const VkImageSubresourceRange range{imageAspect(it->second.desc.format), 0, it->second.desc.mipLevels, 0,
+                                        imageLayerCount(it->second.desc)};
+    if (it->second.desc.format == PixelFormat::depth32Float) {
+        const VkClearDepthStencilValue clear{value[0], 0};
+        vkCmdClearDepthStencilImage(commandBuffer, it->second.resource.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    &clear, 1, &range);
+    } else {
+        const VkClearColorValue clear{{value[0], value[1], value[2], value[3]}};
+        vkCmdClearColorImage(commandBuffer, it->second.resource.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1,
+                             &range);
+    }
+    recordTextureTransition(commandBuffer, texture, typedTextureFinalLayout(it->second));
+}
+
+void VulkanDevice::recordGenerateMipmaps(VkCommandBuffer commandBuffer, handles::TextureHandle texture) {
+    const auto it = typedTextures_.find(texture);
+    if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(texture))
+        throw std::invalid_argument("typed mipmap generation references a stale texture handle");
+    if (it->second.desc.mipLevels < 2 || it->second.desc.format == PixelFormat::depth32Float ||
+        (toBits(it->second.desc.usage) & toBits(ResourceUsage::transferSrc)) == 0U ||
+        (toBits(it->second.desc.usage) & toBits(ResourceUsage::transferDst)) == 0U)
+        throw std::invalid_argument("typed mipmap generation requires color transfer source/destination usage");
+    recordTextureTransition(commandBuffer, texture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    const auto aspect = imageAspect(it->second.desc.format);
+    for (std::uint32_t mip = 1; mip < it->second.desc.mipLevels; ++mip) {
+        const VkImageMemoryBarrier2 sourceBarrier{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = it->second.resource.image,
+            .subresourceRange = {aspect, mip - 1U, 1, 0, imageLayerCount(it->second.desc)},
+        };
+        const VkDependencyInfo sourceDependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &sourceBarrier,
+        };
+        vkCmdPipelineBarrier2(commandBuffer, &sourceDependency);
+        const auto sourceExtent = mipExtent(it->second.desc, mip - 1U);
+        const auto destinationExtent = mipExtent(it->second.desc, mip);
+        const VkImageBlit blit{
+            .srcSubresource = {aspect, mip - 1U, 0, imageLayerCount(it->second.desc)},
+            .srcOffsets = {{0, 0, 0},
+                           {static_cast<std::int32_t>(sourceExtent.width),
+                            static_cast<std::int32_t>(sourceExtent.height),
+                            static_cast<std::int32_t>(sourceExtent.depth)}},
+            .dstSubresource = {aspect, mip, 0, imageLayerCount(it->second.desc)},
+            .dstOffsets = {{0, 0, 0},
+                           {static_cast<std::int32_t>(destinationExtent.width),
+                            static_cast<std::int32_t>(destinationExtent.height),
+                            static_cast<std::int32_t>(destinationExtent.depth)}},
+        };
+        vkCmdBlitImage(commandBuffer, it->second.resource.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       it->second.resource.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+        const VkImageMemoryBarrier2 restoreBarrier{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = it->second.resource.image,
+            .subresourceRange = {aspect, mip - 1U, 1, 0, imageLayerCount(it->second.desc)},
+        };
+        const VkDependencyInfo restoreDependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &restoreBarrier,
+        };
+        vkCmdPipelineBarrier2(commandBuffer, &restoreDependency);
+    }
+    recordTextureTransition(commandBuffer, texture, typedTextureFinalLayout(it->second));
 }
 
 void VulkanDevice::recordBindDescriptorSet(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
