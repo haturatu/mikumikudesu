@@ -91,6 +91,13 @@ struct MockDevice final : public dayo::graphics::Device {
         if (handle.valid())
             ++destroyedSamplers_;
     }
+    void uploadTextureEx(dayo::graphics::handles::TextureHandle, std::span<const std::uint8_t> bytes,
+                         std::uint32_t, std::uint32_t) override {
+        uploadedTextureBytes_ = bytes.size();
+    }
+    void generateMipmapsEx(dayo::graphics::handles::TextureHandle) override {
+        ++generatedMipmaps_;
+    }
     dayo::graphics::handles::DescriptorSetLayoutHandle
     createDescriptorSetLayoutEx(const dayo::graphics::DescriptorSetLayoutDesc& desc) override {
         descriptorLayout_ = desc;
@@ -161,6 +168,8 @@ struct MockDevice final : public dayo::graphics::Device {
     std::size_t destroyedDescriptorLayouts_{};
     std::size_t destroyedDescriptorSets_{};
     std::size_t destroyedPipelineLayouts_{};
+    std::size_t uploadedTextureBytes_{};
+    std::size_t generatedMipmaps_{};
     std::vector<dayo::graphics::TextureResourceDesc> textureDescs_;
     std::vector<dayo::graphics::BufferResourceDesc> bufferDescs_;
     std::vector<dayo::graphics::SamplerResourceDesc> samplerDescs_;
@@ -736,6 +745,49 @@ bool testFxResourceRuntimeMaterializesDeclarations() {
     return ok;
 }
 
+bool testFxExternalTextureMetadataAndUpload() {
+    namespace fs = std::filesystem;
+    const auto directory = fs::temp_directory_path() / "dayo-fx-external-texture-test";
+    std::error_code error;
+    fs::create_directories(directory, error);
+    if (error)
+        return check(false, "external FX texture test directory created");
+    const auto imagePath = directory / "source.ppm";
+    {
+        std::ofstream output(imagePath, std::ios::binary);
+        output << "P6\n2 1\n255\n";
+        output.put(static_cast<char>(255));
+        output.put(static_cast<char>(0));
+        output.put(static_cast<char>(0));
+        output.put(static_cast<char>(0));
+        output.put(static_cast<char>(255));
+        output.put(static_cast<char>(0));
+    }
+
+    dayo::fx::FxProgram program;
+    program.sourcePath = directory / "effect.fxdayo";
+    dayo::core::EffectTexture texture;
+    texture.name = "Input";
+    texture.filename = imagePath.filename().string();
+    texture.mipmap = true;
+    texture.view = "SRV";
+    program.textures.push_back(std::move(texture));
+    MockDevice device;
+    dayo::graphics::FxResourceRuntime runtime;
+    std::string runtimeError;
+    bool ok = check(runtime.initialize(device, program, testContext(), &runtimeError),
+                    "FX external texture initializes from a relative filename");
+    ok &= check(runtimeError.empty() && runtime.extent("Input").has_value() && runtime.extent("Input")->width == 2 &&
+                    runtime.extent("Input")->height == 1,
+                "FX external texture uses decoded dimensions when size is omitted");
+    ok &= check(!device.textureDescs_.empty() && device.textureDescs_.front().mipLevels == 2 &&
+                    device.uploadedTextureBytes_ == 8 && device.generatedMipmaps_ == 1,
+                "FX external texture uploads base mip and generates remaining mips");
+    runtime.reset();
+    fs::remove_all(directory, error);
+    return ok;
+}
+
 bool testNativeFxRuntimeBindsResourcesAndPipelines() {
     dayo::fx::FxShaderCompiler compiler;
     if (!compiler.available())
@@ -1001,6 +1053,7 @@ int main() {
     ok &= testRayTracingPayloadIsLossless();
     ok &= testFxResourceDeclarationsAreLossless();
     ok &= testFxResourceRuntimeMaterializesDeclarations();
+    ok &= testFxExternalTextureMetadataAndUpload();
     ok &= testNativeFxRuntimeBindsResourcesAndPipelines();
     ok &= testShaderCacheKeys();
     try {
