@@ -1,5 +1,6 @@
 #include "graphics/fx_resource_runtime.hpp"
 
+#include "core/image.hpp"
 #include "core/fx/fx_size.hpp"
 
 #include <algorithm>
@@ -175,6 +176,27 @@ class ExtentTable final : public core::fx::FxResourceTable {
     return static_cast<std::size_t>(value);
 }
 
+[[nodiscard]] bool hasExplicitSize(const core::EffectSize& size) noexcept {
+    return size.absolute || !size.base.empty() || size.width != 0 || size.height != 0 || size.depth != 0;
+}
+
+[[nodiscard]] std::uint32_t mipLevels(Extent3D extent, bool enabled) noexcept {
+    if (!enabled)
+        return 1;
+    std::uint32_t levels = 1;
+    auto largest = std::max({extent.width, extent.height, extent.depth});
+    while (largest > 1) {
+        largest /= 2;
+        ++levels;
+    }
+    return levels;
+}
+
+[[nodiscard]] std::filesystem::path externalPath(const fx::FxProgram& program, std::string_view filename) {
+    const std::filesystem::path path(filename);
+    return path.is_absolute() ? path : program.sourcePath.parent_path() / path;
+}
+
 [[nodiscard]] ShaderStageMask allFxStages() noexcept {
     return ShaderStageMask::vertex | ShaderStageMask::fragment | ShaderStageMask::compute |
            ShaderStageMask::rayGeneration | ShaderStageMask::miss | ShaderStageMask::closestHit |
@@ -222,20 +244,29 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
         for (const auto& declaration : program.textures) {
             const auto name = addName(declaration.name);
             const auto format = pixelFormat(declaration.format);
-            const auto resolved = resolveExtent(declaration.size, 2, true, context, table);
+            std::optional<core::ImageRgba8> external;
+            if (!declaration.filename.empty()) {
+                if (format != PixelFormat::rgba8Unorm)
+                    throw std::invalid_argument("FX external texture format must be RGBA8_UNORM: " + name);
+                external = core::loadImageRgba8(externalPath(program, declaration.filename));
+            }
+            const auto resolved = external.has_value() && !hasExplicitSize(declaration.size)
+                                      ? Extent3D{external->width, external->height, 1}
+                                      : resolveExtent(declaration.size, 2, true, context, table);
+            if (external.has_value() &&
+                (resolved.width != external->width || resolved.height != external->height || resolved.depth != 1))
+                throw std::invalid_argument("FX external texture extent does not match its declaration: " + name);
+            const auto levels = mipLevels(resolved, declaration.mipmap);
             TextureResourceDesc description{
                 .dimension = TextureDimension::d2,
                 .extent = resolved,
                 .format = format,
-                .mipLevels = 1,
+                .mipLevels = levels,
                 .arrayLayers = 1,
                 .usage = textureUsage(declaration.view, format),
                 .lifetime = ResourceLifetime::persistent,
             };
-            reserveBytes(core::fx::FxSizeResolver::textureBytes(
-                             {.x = resolved.width, .y = resolved.height, .z = resolved.depth, .dimension = 2},
-                             pixelFormatByteSize(format)),
-                         name);
+            reserveBytes(static_cast<std::uint64_t>(estimateTextureBytes(description)), name);
             Resource resource{.name = name,
                               .kind = Kind::texture,
                               .descriptorKind = textureDescriptorKind(declaration.view, format),
@@ -244,27 +275,32 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             resource.texture = device.createTextureEx(description);
             if (!resource.texture.valid())
                 throw std::runtime_error("FX texture allocation returned an invalid handle: " + name);
+            if (external.has_value()) {
+                device.uploadTextureEx(resource.texture, external->pixels, 0, 0);
+                if (levels > 1)
+                    device.generateMipmapsEx(resource.texture);
+            }
             resources_.push_back(resource);
             table.add(name, {.x = resolved.width, .y = resolved.height, .z = resolved.depth, .dimension = 2});
             addBinding(resource.binding, resource.descriptorKind);
         }
         for (const auto& declaration : program.textures3D) {
             const auto name = addName(declaration.name);
+            if (!declaration.filename.empty())
+                throw std::invalid_argument("FX external 3D textures are not supported by this loader: " + name);
             const auto format = pixelFormat(declaration.format);
             const auto resolved = resolveExtent(declaration.size, 3, false, context, table);
+            const auto levels = mipLevels(resolved, declaration.mipmap);
             TextureResourceDesc description{
                 .dimension = TextureDimension::d3,
                 .extent = resolved,
                 .format = format,
-                .mipLevels = 1,
+                .mipLevels = levels,
                 .arrayLayers = 1,
                 .usage = textureUsage(declaration.view, format),
                 .lifetime = ResourceLifetime::persistent,
             };
-            reserveBytes(core::fx::FxSizeResolver::textureBytes(
-                             {.x = resolved.width, .y = resolved.height, .z = resolved.depth, .dimension = 3},
-                             pixelFormatByteSize(format)),
-                         name);
+            reserveBytes(static_cast<std::uint64_t>(estimateTextureBytes(description)), name);
             Resource resource{.name = name,
                               .kind = Kind::texture,
                               .descriptorKind = textureDescriptorKind(declaration.view, format),

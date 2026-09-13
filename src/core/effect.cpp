@@ -113,6 +113,9 @@ std::vector<EffectTexture> textures(const nlohmann::json& parent, std::string_vi
         texture.name = value.value("name", "");
         texture.format = value.value("format", "");
         texture.view = value.value("view", "");
+        texture.filename = value.value("filename", "");
+        texture.shared = value.value("shared", "");
+        texture.mipmap = value.value("mipmap", false);
         texture.conditions = strings(value, "conditions");
         if (const auto size = value.find("size"); size != value.end()) {
             texture.size = effectSize(*size);
