@@ -274,6 +274,7 @@ add_library(
   src/graphics/subayai_runtime.cpp
   src/graphics/fx_pipeline_runtime.cpp
   src/graphics/fx_resource_runtime.cpp
+  src/graphics/native_fx_runtime.cpp
   src/graphics/vulkan/vulkan_device.cpp
   src/graphics/vulkan/vulkan_acceleration_structure.cpp
   src/graphics/vulkan/vulkan_acceleration_resources.cpp
