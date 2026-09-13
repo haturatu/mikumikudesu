@@ -2831,9 +2831,6 @@ void VulkanDevice::createOffscreenResource(VkExtent2D extent) {
 }
 
 core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
-    if (activeRenderer_ != RendererKind::preview) {
-        throw std::runtime_error("video export currently supports the Preview renderer only");
-    }
     if (target.width == 0 || target.height == 0)
         throw std::invalid_argument("video dimensions must be non-zero");
     const VkExtent2D extent{target.width, target.height};
@@ -2870,9 +2867,24 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     }
     recordPreviewBackgroundUpload(frame.commandBuffer, frame);
 
-    recordPreviewPass(frame.commandBuffer, frame, offscreen_.colorImage, offscreen_.colorView, offscreen_.depth, extent,
-                      offscreen_.colorInitialized, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, false);
+    std::optional<NativeFrameOutput> nativeOutput;
+    if (nativeFrameRecorder_ && activeRenderer_ != RendererKind::preview) {
+        VulkanCommandList commands(*this, frame.commandBuffer);
+        nativeOutput = nativeFrameRecorder_(commands, target);
+        if (nativeOutput.has_value() && !nativeOutput->valid())
+            throw std::invalid_argument("native frame recorder returned an invalid output");
+    }
+    if (nativeOutput.has_value()) {
+        recordNativeOutputToImage(
+            frame.commandBuffer, *nativeOutput, offscreen_.colorImage, offscreen_.colorView,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, offscreen_.colorInitialized, extent);
+    } else {
+        recordPreviewPass(frame.commandBuffer, frame, offscreen_.colorImage, offscreen_.colorView, offscreen_.depth,
+                          extent, offscreen_.colorInitialized, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                          VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, false);
+    }
     if (frame.timestampQueryPool != VK_NULL_HANDLE)
         vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timestampQueryPool, 1);
 
