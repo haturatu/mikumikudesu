@@ -63,4 +63,34 @@ void VulkanCommandList::buildAccelerationStructure(AccelerationStructureHandle) 
     throw std::logic_error("VulkanCommandList legacy acceleration structures are not implemented");
 }
 
+void VulkanCommandList::bindPipelineEx(handles::PipelineHandle pipeline) {
+    if (!pipeline.valid())
+        throw std::invalid_argument("typed pipeline handle is invalid");
+    pipeline_ = pipeline;
+}
+
+void VulkanCommandList::bindDescriptorSetEx(handles::DescriptorSetHandle set) {
+    if (device_ == nullptr || !pipeline_.valid())
+        throw std::logic_error("typed descriptor set requires a bound pipeline");
+    device_->recordBindDescriptorSet(commandBuffer_, pipeline_, set);
+}
+
+void VulkanCommandList::pushConstantsEx(std::span<const std::byte> bytes) {
+    if (device_ == nullptr || !pipeline_.valid())
+        throw std::logic_error("typed push constants require a bound pipeline");
+    device_->recordPushConstants(commandBuffer_, pipeline_, bytes);
+}
+
+void VulkanCommandList::transitionEx(handles::TextureHandle texture) {
+    if (device_ == nullptr)
+        throw std::logic_error("typed transition requires a Vulkan device");
+    device_->recordTransitionTexture(commandBuffer_, texture);
+}
+
+void VulkanCommandList::traceRaysEx(handles::PipelineHandle pipeline, handles::ShaderBindingTableHandle sbt,
+                                    std::uint32_t width, std::uint32_t height, std::uint32_t depth) {
+    bindPipelineEx(pipeline);
+    traceRays(sbt, width, height, depth);
+}
+
 } // namespace dayo::graphics

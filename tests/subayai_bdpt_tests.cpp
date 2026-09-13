@@ -1,6 +1,7 @@
 #include "core/denoiser.hpp"
 #include "core/scene.hpp"
 #include "graphics/bdpt_accumulation.hpp"
+#include "graphics/bdpt_runtime.hpp"
 #include "graphics/device.hpp"
 #include "graphics/sbt.hpp"
 #include "graphics/subayai_acceleration_structure.hpp"
@@ -10,6 +11,7 @@
 #include "graphics/subayai_material_gpu.hpp"
 #include "graphics/subayai_runtime.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -17,6 +19,7 @@
 #include <span>
 #include <stdexcept>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -97,6 +100,10 @@ struct MockEnvironmentBackend : dayo::graphics::IEnvironmentBackend {
 };
 
 struct MockNativeDevice final : dayo::graphics::Device {
+    struct Buffer {
+        std::vector<std::byte> bytes;
+    };
+
     const dayo::graphics::DeviceCapabilities& capabilities() const noexcept override {
         return capabilities_;
     }
@@ -128,6 +135,34 @@ struct MockNativeDevice final : dayo::graphics::Device {
     dayo::graphics::TextureHandle createTexture(const dayo::graphics::TextureDesc&) override {
         return nextHandle_++;
     }
+    dayo::graphics::handles::TextureHandle createTextureEx(const dayo::graphics::TextureResourceDesc&) override {
+        return {nextTypedTexture_++, 1};
+    }
+    dayo::graphics::handles::BufferHandle createBufferEx(const dayo::graphics::BufferResourceDesc& desc) override {
+        const auto handle = dayo::graphics::handles::BufferHandle{nextTypedBuffer_++, 1};
+        typedBuffers_.emplace(handle, Buffer{std::vector<std::byte>(desc.size)});
+        return handle;
+    }
+    void destroyTextureEx(dayo::graphics::handles::TextureHandle) override {}
+    void destroyBufferEx(dayo::graphics::handles::BufferHandle handle) override {
+        typedBuffers_.erase(handle);
+    }
+    void uploadBufferEx(dayo::graphics::handles::BufferHandle handle, std::span<const std::byte> bytes,
+                        std::size_t offset) override {
+        auto it = typedBuffers_.find(handle);
+        if (it == typedBuffers_.end() || offset > it->second.bytes.size() ||
+            bytes.size() > it->second.bytes.size() - offset)
+            throw std::out_of_range("mock typed buffer upload exceeds allocation");
+        std::copy(bytes.begin(), bytes.end(), it->second.bytes.begin() + static_cast<std::ptrdiff_t>(offset));
+    }
+    std::vector<std::byte> readbackBufferEx(dayo::graphics::handles::BufferHandle handle, std::size_t offset,
+                                            std::size_t size) override {
+        const auto it = typedBuffers_.find(handle);
+        if (it == typedBuffers_.end() || offset > it->second.bytes.size() || size > it->second.bytes.size() - offset)
+            throw std::out_of_range("mock typed buffer readback exceeds allocation");
+        return {it->second.bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                it->second.bytes.begin() + static_cast<std::ptrdiff_t>(offset + size)};
+    }
 
     dayo::graphics::DeviceCapabilities capabilities_{
         .gpuName = "mock",
@@ -136,11 +171,15 @@ struct MockNativeDevice final : dayo::graphics::Device {
         .bufferDeviceAddress = true,
         .descriptorIndexing = true,
         .accelerationStructure = true,
+        .rayTracingPipeline = true,
         .rayQuery = true,
         .fragmentShaderBarycentric = true,
     };
     dayo::graphics::GraphicsConvention convention_;
     dayo::graphics::BufferHandle nextHandle_{1};
+    std::uint32_t nextTypedBuffer_{1};
+    std::uint32_t nextTypedTexture_{1};
+    std::unordered_map<dayo::graphics::handles::BufferHandle, Buffer> typedBuffers_;
 };
 
 } // namespace
@@ -218,6 +257,35 @@ int main() {
                     "Subayai runtime prepares graph and material frame state");
         runtime.reset();
         ok &= check(!runtime.ready(), "Subayai runtime reset disables execution");
+    }
+
+    // BDPT persistent resources are real typed allocations, while the host
+    // LUTs remain deterministic and inspectable in a backend-neutral test.
+    {
+        MockNativeDevice device;
+        dayo::graphics::BdptRuntime runtime;
+        dayo::fx::FxProgram program;
+        program.label = "BDPT";
+        program.passes.push_back({"path-trace", dayo::fx::FxOpKind::raytracing, {}, 1, 1, {}, {}, {}});
+        std::string error;
+        ok &= check(runtime.initialize(device, program, &error), "BDPT runtime initializes on RT hardware");
+        ok &= check(runtime.ensureResources(16, 8, &error), "BDPT runtime allocates persistent GPU resources");
+        const auto gpu = runtime.accumulation().gpuResources();
+        ok &= check(gpu.valid() && gpu.width == 16 && gpu.height == 8, "BDPT persistent handles are complete");
+        ok &= check(runtime.accumulation().spectralLut().front() != runtime.accumulation().spectralLut().back(),
+                    "BDPT spectral LUT contains generated data");
+        const auto lutBytes =
+            device.readbackBufferEx(gpu.spectralLut, 0, runtime.accumulation().spectralLut().size() * sizeof(float));
+        ok &= check(lutBytes.size() == runtime.accumulation().spectralLut().size() * sizeof(float),
+                    "BDPT spectral LUT is uploaded to its typed buffer");
+        const auto context = dayo::fx::makeFxFrameContext(0.0F, 0, 16, 8, 1, 0, 3, 1, 1, 1);
+        auto first = runtime.prepareFrame(context, dayo::core::DirtyFlag::geometry);
+        ok &= check(first.clearAccumulation && first.sampleIndex == 0, "BDPT dirty frame clears accumulation");
+        auto second = runtime.prepareFrame(context, dayo::core::DirtyFlag::none);
+        ok &= check(!second.clearAccumulation && second.sampleIndex == 1, "BDPT clean frame advances sample index");
+        ok &= check(first.gpu.accumulation == second.gpu.accumulation, "BDPT accumulation texture persists per extent");
+        runtime.reset();
+        ok &= check(!runtime.ready() && !runtime.accumulation().gpuReady(), "BDPT reset releases typed resources");
     }
 
     // Native deformation writes actual positions into a buffer that is valid

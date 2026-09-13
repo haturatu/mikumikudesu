@@ -89,6 +89,10 @@ class VulkanDevice final : public Device {
     void updateDescriptorSetEx(handles::DescriptorSetHandle set,
                                std::span<const DescriptorBindingEx> bindings) override;
     void destroyDescriptorSetEx(handles::DescriptorSetHandle set) override;
+    void uploadBufferEx(handles::BufferHandle handle, std::span<const std::byte> bytes,
+                        std::size_t offset = 0) override;
+    [[nodiscard]] std::vector<std::byte> readbackBufferEx(handles::BufferHandle handle, std::size_t offset,
+                                                          std::size_t size) override;
 
   private:
     friend class VulkanCommandList;
@@ -238,6 +242,11 @@ class VulkanDevice final : public Device {
     void recordTraceRays(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
                          handles::ShaderBindingTableHandle sbt, std::uint32_t width, std::uint32_t height,
                          std::uint32_t depth);
+    void recordTransitionTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture);
+    void recordBindDescriptorSet(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
+                                 handles::DescriptorSetHandle set);
+    void recordPushConstants(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
+                             std::span<const std::byte> bytes);
 
     platform::Window& window_;
     DeviceCapabilities capabilities_;
@@ -351,6 +360,7 @@ class VulkanDevice final : public Device {
         VulkanImage resource;
         TextureResourceDesc desc;
         VkImageView view{};
+        VkImageLayout layout{VK_IMAGE_LAYOUT_UNDEFINED};
     };
     struct TypedSampler {
         VkSampler sampler{};
@@ -376,6 +386,7 @@ class VulkanDevice final : public Device {
         handles::PipelineLayoutHandle layout{};
         std::uint32_t groupCount{};
         bool rayTracing{};
+        VkPipelineBindPoint bindPoint{VK_PIPELINE_BIND_POINT_GRAPHICS};
     };
     struct TypedShaderBindingTable {
         VkBuffer buffer{};

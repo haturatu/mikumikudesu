@@ -31,6 +31,12 @@ class VulkanCommandList final : public CommandList {
     void clearTexture(TextureHandle) override;
     void generateMipmaps(TextureHandle) override;
     void buildAccelerationStructure(AccelerationStructureHandle) override;
+    void bindPipelineEx(handles::PipelineHandle pipeline) override;
+    void bindDescriptorSetEx(handles::DescriptorSetHandle set) override;
+    void pushConstantsEx(std::span<const std::byte> bytes) override;
+    void transitionEx(handles::TextureHandle texture) override;
+    void traceRaysEx(handles::PipelineHandle pipeline, handles::ShaderBindingTableHandle sbt, std::uint32_t width,
+                     std::uint32_t height, std::uint32_t depth = 1) override;
 
     void bindRayTracingPipeline(handles::PipelineHandle pipeline) noexcept {
         pipeline_ = pipeline;

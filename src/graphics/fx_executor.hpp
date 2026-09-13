@@ -18,6 +18,12 @@ namespace dayo::graphics {
 struct FxExecutionResources {
     using TextureResolver = std::function<std::optional<TextureHandle>(std::string_view)>;
     using PipelineResolver = std::function<std::optional<PipelineHandle>(const dayo::fx::FxDispatch&)>;
+    using TypedPipelineResolver = std::function<std::optional<handles::PipelineHandle>(const dayo::fx::FxDispatch&)>;
+    using TypedTextureResolver = std::function<std::optional<handles::TextureHandle>(std::string_view)>;
+    using ShaderBindingTableResolver =
+        std::function<std::optional<handles::ShaderBindingTableHandle>(const dayo::fx::FxDispatch&)>;
+    using DescriptorSetResolver =
+        std::function<std::optional<handles::DescriptorSetHandle>(const dayo::fx::FxDispatch&)>;
     using ResourceBindingResolver =
         std::function<std::optional<DescriptorBinding>(std::string_view, bool, std::uint32_t)>;
     using PushConstantResolver =
@@ -27,6 +33,12 @@ struct FxExecutionResources {
     // Generic resource providers keep shader compilation and descriptor
     // allocation backend-specific while making the command contract explicit.
     PipelineResolver resolvePipeline;
+    // Native FX/RT paths use generation-checked pipeline/SBT handles. The
+    // legacy resolver remains available for Preview and existing callers.
+    TypedPipelineResolver resolveTypedPipeline;
+    TypedTextureResolver resolveTypedTexture;
+    ShaderBindingTableResolver resolveShaderBindingTable;
+    DescriptorSetResolver resolveDescriptorSet;
     ResourceBindingResolver resolveBinding;
     PushConstantResolver makePushConstants;
     ConditionEvaluator evaluateConditions;
@@ -47,6 +59,7 @@ class VulkanFxExecutor {
         std::size_t copy{};
         std::size_t clear{};
         std::size_t mipmap{};
+        std::size_t rayTracing{};
     };
 
     explicit VulkanFxExecutor(Device& device) noexcept : device_(&device) {}

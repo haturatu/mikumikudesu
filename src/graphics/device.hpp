@@ -421,6 +421,22 @@ class CommandList {
     virtual void generateMipmapsEx(handles::TextureHandle) {
         throw std::logic_error("Typed command-list mipmap generation is not implemented by this backend");
     }
+    virtual void bindPipelineEx(handles::PipelineHandle) {
+        throw std::logic_error("Typed command-list pipelines are not implemented by this backend");
+    }
+    virtual void bindDescriptorSetEx(handles::DescriptorSetHandle) {
+        throw std::logic_error("Typed command-list descriptor sets are not implemented by this backend");
+    }
+    virtual void pushConstantsEx(std::span<const std::byte>) {
+        throw std::logic_error("Typed command-list push constants are not implemented by this backend");
+    }
+    virtual void transitionEx(handles::TextureHandle) {
+        throw std::logic_error("Typed command-list texture transitions are not implemented by this backend");
+    }
+    virtual void traceRaysEx(handles::PipelineHandle, handles::ShaderBindingTableHandle, std::uint32_t, std::uint32_t,
+                             std::uint32_t = 1) {
+        throw std::logic_error("Typed command-list ray tracing is not implemented by this backend");
+    }
 };
 
 class Device {

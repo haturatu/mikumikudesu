@@ -1,0 +1,59 @@
+#pragma once
+
+#include "core/scene.hpp"
+#include "fx/fx_compiler.hpp"
+#include "graphics/bdpt_accumulation.hpp"
+#include "graphics/fx_executor.hpp"
+
+#include <string>
+
+namespace dayo::graphics {
+
+struct BdptFrame {
+    fx::FxFrameContext context;
+    fx::FxFramePlan plan;
+    BdptAccumulation::GpuResources gpu;
+    std::uint32_t sampleIndex{};
+    bool clearAccumulation{};
+};
+
+// Progressive native BDPT runtime. The runtime owns frame-independent
+// accumulation resources and only exposes execution after the compiled graph
+// and the device capabilities agree on the full ray-tracing contract.
+class BdptRuntime {
+  public:
+    BdptRuntime() = default;
+
+    bool initialize(Device& device, fx::FxProgram program, std::string* error = nullptr);
+    void reset() noexcept;
+    [[nodiscard]] bool ready() const noexcept {
+        return ready_;
+    }
+    [[nodiscard]] const fx::FxProgram* program() const noexcept {
+        return ready_ ? &program_ : nullptr;
+    }
+    [[nodiscard]] BdptAccumulation& accumulation() noexcept {
+        return accumulation_;
+    }
+    [[nodiscard]] const BdptAccumulation& accumulation() const noexcept {
+        return accumulation_;
+    }
+
+    // Allocates persistent accumulation, LUT and volume resources for the
+    // requested frame extent. Repeated calls with the same extent reuse them.
+    [[nodiscard]] bool ensureResources(std::uint32_t width, std::uint32_t height, std::string* error = nullptr);
+
+    // Scene dirty state controls whether the progressive target is cleared or
+    // the next sample is accumulated.
+    [[nodiscard]] BdptFrame prepareFrame(const fx::FxFrameContext& context, core::DirtyFlag dirty);
+    [[nodiscard]] VulkanFxExecutor::Stats execute(BdptFrame& frame, CommandList& commands,
+                                                  const FxExecutionResources& resources = {}) const;
+
+  private:
+    Device* device_{nullptr};
+    fx::FxProgram program_;
+    BdptAccumulation accumulation_;
+    bool ready_{false};
+};
+
+} // namespace dayo::graphics
