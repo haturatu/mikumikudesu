@@ -121,6 +121,17 @@ void NativeGeometryRuntime::recordDeform(CommandList& commands) const {
     commands.memoryBarrierEx();
 }
 
+void NativeGeometryRuntime::recordAcceleration(CommandList& commands) const {
+    if (!ready())
+        throw std::logic_error("native geometry runtime is not initialized");
+    acceleration_.recordBlasUpdates(commands);
+    // BLAS writes must be visible to the TLAS build, and the completed TLAS
+    // must be visible to the following ray-query or ray-tracing pass.
+    commands.memoryBarrierEx();
+    acceleration_.recordTlasUpdate(commands);
+    commands.memoryBarrierEx();
+}
+
 bool NativeGeometryRuntime::synchronizeAcceleration(std::string* error) {
     if (error != nullptr)
         error->clear();

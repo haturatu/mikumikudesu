@@ -134,6 +134,7 @@ class VulkanDevice final : public Device {
 
   private:
     friend class VulkanCommandList;
+    friend class VulkanAccelerationBackend;
 
     struct Frame {
         VkCommandPool commandPool{};
@@ -305,6 +306,10 @@ class VulkanDevice final : public Device {
     void recordPushConstants(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
                              std::span<const std::byte> bytes);
     void recordMemoryBarrier(VkCommandBuffer commandBuffer);
+    void recordBlasUpdate(VkCommandBuffer commandBuffer, handles::AccelerationStructureHandle blas,
+                          const BlasGeometryDesc& geometry);
+    void recordTlasUpdate(VkCommandBuffer commandBuffer, handles::AccelerationStructureHandle tlas,
+                          std::span<const AccelerationInstanceDesc> instances);
     struct TypedAccelerationStructure {
         VkAccelerationStructureKHR structure{};
         VkBuffer storageBuffer{};
@@ -331,8 +336,21 @@ class VulkanDevice final : public Device {
     makeTlasInstances(std::span<const AccelerationInstanceDesc> instances) const;
     void recordAccelerationBuild(const TypedAccelerationStructure& destination, const BlasGeometryDesc& geometry,
                                  bool update);
+    void recordAccelerationBuildOnCommand(VkCommandBuffer commandBuffer,
+                                          const TypedAccelerationStructure& destination,
+                                          const BlasGeometryDesc& geometry, bool update);
     void recordTopLevelBuild(const TypedAccelerationStructure& destination,
                              std::span<const AccelerationInstanceDesc> instances, bool update);
+    void recordTopLevelBuildOnCommand(VkCommandBuffer commandBuffer,
+                                      const TypedAccelerationStructure& destination,
+                                      std::span<const AccelerationInstanceDesc> instances, bool update);
+    struct PendingAccelerationScratch {
+        VkBuffer buffer{};
+        VkDeviceMemory memory{};
+    };
+    void reclaimAccelerationScratch(std::size_t frameIndex) noexcept;
+    void reclaimAllAccelerationScratch() noexcept;
+    [[nodiscard]] VkBuffer allocateRecordedAccelerationScratch(VkDeviceSize size);
     void submitImmediate(const std::function<void(VkCommandBuffer)>& record);
     [[nodiscard]] static VkImageLayout typedTextureFinalLayout(const TypedTexture& texture) noexcept;
 
@@ -400,6 +418,7 @@ class VulkanDevice final : public Device {
     bool uiInitialized_{};
 #endif
     std::array<Frame, 2> frames_{};
+    std::array<std::vector<PendingAccelerationScratch>, 2> pendingAccelerationScratch_;
     std::size_t frameIndex_{};
     std::uint64_t previewGpuNanoseconds_{};
     VkBuffer previewStaticVertexBuffer_{};

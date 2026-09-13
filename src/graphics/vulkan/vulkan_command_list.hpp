@@ -38,12 +38,19 @@ class VulkanCommandList final : public CommandList {
     void transitionEx(handles::TextureHandle texture) override;
     void traceRaysEx(handles::PipelineHandle pipeline, handles::ShaderBindingTableHandle sbt, std::uint32_t width,
                      std::uint32_t height, std::uint32_t depth = 1) override;
+    void buildBlasEx(handles::AccelerationStructureHandle blas, const BlasGeometryDesc& geometry,
+                     bool update) override;
+    void buildTlasEx(handles::AccelerationStructureHandle tlas, std::span<const AccelerationInstanceDesc> instances,
+                     bool update) override;
     void copyTextureEx(handles::TextureHandle source, handles::TextureHandle destination) override;
     void clearTextureEx(handles::TextureHandle texture) override;
     void generateMipmapsEx(handles::TextureHandle texture) override;
 
     void bindRayTracingPipeline(handles::PipelineHandle pipeline) noexcept {
         pipeline_ = pipeline;
+    }
+    [[nodiscard]] VkCommandBuffer commandBuffer() const noexcept {
+        return commandBuffer_;
     }
 
   private:

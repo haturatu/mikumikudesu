@@ -23,6 +23,10 @@ class VulkanAccelerationBackend final : public IAccelerationBackend {
     void updateTlas(handles::AccelerationStructureHandle tlas, std::span<const TlasInstanceDesc> instances) override;
     void destroyBlas(handles::AccelerationStructureHandle blas) override;
     void destroyTlas(handles::AccelerationStructureHandle tlas) override;
+    void recordBlasUpdate(CommandList& commands, handles::AccelerationStructureHandle blas,
+                          const BlasGeometryDesc& geometry) override;
+    void recordTlasUpdate(CommandList& commands, handles::AccelerationStructureHandle tlas,
+                          std::span<const TlasInstanceDesc> instances) override;
 
   private:
     VulkanDevice* device_{};

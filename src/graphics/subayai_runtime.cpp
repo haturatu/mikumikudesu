@@ -101,6 +101,11 @@ void SubayaiRuntime::recordGeometry(CommandList& commands) const {
         geometry_.recordDeform(commands);
 }
 
+void SubayaiRuntime::recordAcceleration(CommandList& commands) const {
+    if (geometry_.ready())
+        geometry_.recordAcceleration(commands);
+}
+
 bool SubayaiRuntime::synchronizeAcceleration(std::string* error) {
     if (!geometry_.ready()) {
         if (error != nullptr)

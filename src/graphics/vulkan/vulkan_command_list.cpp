@@ -102,6 +102,24 @@ void VulkanCommandList::traceRaysEx(handles::PipelineHandle pipeline, handles::S
     traceRays(sbt, width, height, depth);
 }
 
+void VulkanCommandList::buildBlasEx(handles::AccelerationStructureHandle blas, const BlasGeometryDesc& geometry,
+                                    bool update) {
+    if (device_ == nullptr)
+        throw std::logic_error("typed BLAS build requires a Vulkan device");
+    if (!update)
+        throw std::invalid_argument("Vulkan command-list BLAS recording only supports updates");
+    device_->recordBlasUpdate(commandBuffer_, blas, geometry);
+}
+
+void VulkanCommandList::buildTlasEx(handles::AccelerationStructureHandle tlas,
+                                    std::span<const AccelerationInstanceDesc> instances, bool update) {
+    if (device_ == nullptr)
+        throw std::logic_error("typed TLAS build requires a Vulkan device");
+    if (!update)
+        throw std::invalid_argument("Vulkan command-list TLAS recording only supports updates");
+    device_->recordTlasUpdate(commandBuffer_, tlas, instances);
+}
+
 void VulkanCommandList::copyTextureEx(handles::TextureHandle source, handles::TextureHandle destination) {
     if (device_ == nullptr)
         throw std::logic_error("typed texture copy requires a Vulkan device");

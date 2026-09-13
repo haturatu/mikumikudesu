@@ -139,6 +139,11 @@ void BdptRuntime::recordGeometry(CommandList& commands) const {
         geometry_.recordDeform(commands);
 }
 
+void BdptRuntime::recordAcceleration(CommandList& commands) const {
+    if (geometry_.ready())
+        geometry_.recordAcceleration(commands);
+}
+
 bool BdptRuntime::synchronizeAcceleration(std::string* error) {
     if (!geometry_.ready()) {
         setError(error, "BDPT geometry is not initialized");

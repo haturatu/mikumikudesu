@@ -401,8 +401,10 @@ VulkanDevice::VulkanDevice(platform::Window& window, bool validation)
 }
 
 VulkanDevice::~VulkanDevice() {
-    if (device_ != VK_NULL_HANDLE)
+    if (device_ != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device_);
+        reclaimAllAccelerationScratch();
+    }
     uploadContext_.reset();
     destroyNativeDeformPipeline();
     destroyTypedResources();
@@ -2329,6 +2331,7 @@ void VulkanDevice::renderFrame() {
 #endif
     auto& frame = frames_[frameIndex_];
     check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for frame");
+    reclaimAccelerationScratch(frameIndex_);
     resolveTimestampQuery(frame);
     synchronizePreviewVertices(frame);
     synchronizePreviewBones(frame);
@@ -2825,6 +2828,7 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     const VkExtent2D extent{target.width, target.height};
     auto& frame = frames_[frameIndex_];
     check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for offscreen frame slot");
+    reclaimAccelerationScratch(frameIndex_);
     const auto uploadWaitValue = uploadContext_->lastSubmittedValue();
     if (uploadWaitValue != 0)
         uploadContext_->wait(uploadWaitValue);
@@ -2931,6 +2935,7 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
 void VulkanDevice::waitIdle() {
     if (device_ != VK_NULL_HANDLE) {
         check(vkDeviceWaitIdle(device_), "wait for Vulkan device");
+        reclaimAllAccelerationScratch();
         if (!frames_.empty()) {
             const auto previousFrame = (frameIndex_ + frames_.size() - 1U) % frames_.size();
             resolveTimestampQuery(frames_[previousFrame]);
@@ -5061,10 +5066,15 @@ void VulkanDevice::recordMemoryBarrier(VkCommandBuffer commandBuffer) {
         throw std::invalid_argument("typed memory barrier requires a command buffer");
     const VkMemoryBarrier2 barrier{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                        VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                        VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+                        VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                         VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                         VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
     };
     const VkDependencyInfo dependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -5072,6 +5082,24 @@ void VulkanDevice::recordMemoryBarrier(VkCommandBuffer commandBuffer) {
         .pMemoryBarriers = &barrier,
     };
     vkCmdPipelineBarrier2(commandBuffer, &dependency);
+}
+
+void VulkanDevice::recordBlasUpdate(VkCommandBuffer commandBuffer, handles::AccelerationStructureHandle blas,
+                                    const BlasGeometryDesc& geometry) {
+    const auto it = typedAccelerationStructures_.find(blas);
+    if (it == typedAccelerationStructures_.end() || !typedAccelerationStructureHandles_.isAlive(blas) ||
+        it->second.topLevel)
+        throw std::invalid_argument("record BLAS update references a stale handle");
+    recordAccelerationBuildOnCommand(commandBuffer, it->second, geometry, true);
+}
+
+void VulkanDevice::recordTlasUpdate(VkCommandBuffer commandBuffer, handles::AccelerationStructureHandle tlas,
+                                    std::span<const AccelerationInstanceDesc> instances) {
+    const auto it = typedAccelerationStructures_.find(tlas);
+    if (it == typedAccelerationStructures_.end() || !typedAccelerationStructureHandles_.isAlive(tlas) ||
+        !it->second.topLevel)
+        throw std::invalid_argument("record TLAS update references a stale handle");
+    recordTopLevelBuildOnCommand(commandBuffer, it->second, instances, true);
 }
 
 handles::DescriptorSetLayoutHandle VulkanDevice::createDescriptorSetLayoutEx(const DescriptorSetLayoutDesc& desc) {

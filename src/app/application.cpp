@@ -240,6 +240,7 @@ Application::recordNativeFrame(graphics::CommandList& commands, const graphics::
                                                                  : geometryError);
             static_cast<void>(runtime->synchronizeWorld(nativeDeformVersion_, worldInstances));
             runtime->recordGeometry(commands);
+            runtime->recordAcceleration(commands);
         };
         if (auto* runtime = nativeRenderer_.subayai())
             synchronizeGeometry(runtime);

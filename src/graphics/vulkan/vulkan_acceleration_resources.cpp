@@ -109,6 +109,33 @@ void VulkanDevice::destroyAccelerationBuffer(VkBuffer buffer, VkDeviceMemory mem
         vkDestroyBuffer(device_, buffer, nullptr);
 }
 
+VkBuffer VulkanDevice::allocateRecordedAccelerationScratch(VkDeviceSize size) {
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* unusedMapped = nullptr;
+    const auto buffer =
+        createAccelerationBuffer(size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, memory, false, &unusedMapped);
+    try {
+        pendingAccelerationScratch_[frameIndex_].push_back({.buffer = buffer, .memory = memory});
+    } catch (...) {
+        destroyAccelerationBuffer(buffer, memory, unusedMapped);
+        throw;
+    }
+    return buffer;
+}
+
+void VulkanDevice::reclaimAccelerationScratch(std::size_t frameIndex) noexcept {
+    if (frameIndex >= pendingAccelerationScratch_.size())
+        return;
+    for (const auto scratch : pendingAccelerationScratch_[frameIndex])
+        destroyAccelerationBuffer(scratch.buffer, scratch.memory, nullptr);
+    pendingAccelerationScratch_[frameIndex].clear();
+}
+
+void VulkanDevice::reclaimAllAccelerationScratch() noexcept {
+    for (std::size_t index = 0; index < pendingAccelerationScratch_.size(); ++index)
+        reclaimAccelerationScratch(index);
+}
+
 VulkanDevice::BlasBuildInput VulkanDevice::makeBlasBuildInput(const BlasGeometryDesc& geometry) const {
     if (geometry.triangles.empty())
         throw std::invalid_argument("BLAS geometry must contain at least one triangle description");
@@ -223,6 +250,47 @@ void VulkanDevice::recordAccelerationBuild(const TypedAccelerationStructure& des
         throw;
     }
     destroyAccelerationBuffer(scratch, scratchMemory, unusedMapped);
+}
+
+void VulkanDevice::recordAccelerationBuildOnCommand(VkCommandBuffer commandBuffer,
+                                                    const TypedAccelerationStructure& destination,
+                                                    const BlasGeometryDesc& geometry, bool update) {
+    if (commandBuffer == VK_NULL_HANDLE)
+        throw std::invalid_argument("BLAS command recording requires a command buffer");
+    const auto input = makeBlasBuildInput(geometry);
+    if (update && !destination.allowUpdate)
+        throw std::logic_error("BLAS was not created with update support");
+    const auto getSizes = reinterpret_cast<PFN_vkGetAccelerationStructureBuildSizesKHR>(
+        vkGetDeviceProcAddr(device_, "vkGetAccelerationStructureBuildSizesKHR"));
+    const auto build = reinterpret_cast<PFN_vkCmdBuildAccelerationStructuresKHR>(
+        vkGetDeviceProcAddr(device_, "vkCmdBuildAccelerationStructuresKHR"));
+    if (getSizes == nullptr || build == nullptr)
+        throw std::runtime_error("Vulkan acceleration-structure build functions are unavailable");
+    VkAccelerationStructureBuildGeometryInfoKHR sizeInfo{};
+    sizeInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    sizeInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    sizeInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                     (input.allowUpdate ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR : 0);
+    sizeInfo.geometryCount = static_cast<std::uint32_t>(input.geometries.size());
+    sizeInfo.pGeometries = input.geometries.data();
+    VkAccelerationStructureBuildSizesInfoKHR sizes{.sType =
+                                                       VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+    getSizes(device_, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &sizeInfo, input.primitiveCounts.data(), &sizes);
+    const auto scratchSize = update ? sizes.updateScratchSize : sizes.buildScratchSize;
+    const auto scratch = allocateRecordedAccelerationScratch(scratchSize);
+    VkAccelerationStructureBuildGeometryInfoKHR buildInfo{};
+    buildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    buildInfo.flags = sizeInfo.flags;
+    buildInfo.mode = update ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR
+                            : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    buildInfo.srcAccelerationStructure = update ? destination.structure : VK_NULL_HANDLE;
+    buildInfo.dstAccelerationStructure = destination.structure;
+    buildInfo.scratchData.deviceAddress = bufferDeviceAddress(scratch);
+    buildInfo.geometryCount = static_cast<std::uint32_t>(input.geometries.size());
+    buildInfo.pGeometries = input.geometries.data();
+    const VkAccelerationStructureBuildRangeInfoKHR* ranges = input.ranges.data();
+    build(commandBuffer, 1, &buildInfo, &ranges);
 }
 
 handles::AccelerationStructureHandle VulkanDevice::createBlasEx(const BlasGeometryDesc& geometry) {
@@ -396,6 +464,66 @@ void VulkanDevice::recordTopLevelBuild(const TypedAccelerationStructure& destina
         throw;
     }
     destroyAccelerationBuffer(scratch, scratchMemory, unusedMapped);
+}
+
+void VulkanDevice::recordTopLevelBuildOnCommand(VkCommandBuffer commandBuffer,
+                                                const TypedAccelerationStructure& destination,
+                                                std::span<const AccelerationInstanceDesc> instances, bool update) {
+    if (commandBuffer == VK_NULL_HANDLE)
+        throw std::invalid_argument("TLAS command recording requires a command buffer");
+    if (!destination.topLevel || destination.instanceBuffer == VK_NULL_HANDLE ||
+        destination.mappedInstances == nullptr)
+        throw std::logic_error("TLAS has no instance buffer");
+    const auto encoded = makeTlasInstances(instances);
+    const auto bytes = checkedMultiply(encoded.size(), sizeof(VkAccelerationStructureInstanceKHR),
+                                       "TLAS instance buffer size overflow");
+    if (bytes > destination.instanceSize)
+        throw std::out_of_range("TLAS instance buffer is too small for the update");
+    std::memcpy(destination.mappedInstances, encoded.data(), static_cast<std::size_t>(bytes));
+
+    const VkAccelerationStructureGeometryInstancesDataKHR instanceData{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR,
+        .arrayOfPointers = VK_FALSE,
+        .data = {.deviceAddress = bufferDeviceAddress(destination.instanceBuffer)},
+    };
+    VkAccelerationStructureGeometryKHR geometry{};
+    geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+    geometry.geometry.instances = instanceData;
+    const std::uint32_t primitiveCount = static_cast<std::uint32_t>(encoded.size());
+    const VkAccelerationStructureBuildGeometryInfoKHR sizeInfo{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
+        .type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+        .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                 VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR,
+        .geometryCount = 1,
+        .pGeometries = &geometry,
+    };
+    const auto getSizes = reinterpret_cast<PFN_vkGetAccelerationStructureBuildSizesKHR>(
+        vkGetDeviceProcAddr(device_, "vkGetAccelerationStructureBuildSizesKHR"));
+    const auto build = reinterpret_cast<PFN_vkCmdBuildAccelerationStructuresKHR>(
+        vkGetDeviceProcAddr(device_, "vkCmdBuildAccelerationStructuresKHR"));
+    if (getSizes == nullptr || build == nullptr)
+        throw std::runtime_error("Vulkan TLAS build functions are unavailable");
+    VkAccelerationStructureBuildSizesInfoKHR sizes{.sType =
+                                                       VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+    getSizes(device_, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &sizeInfo, &primitiveCount, &sizes);
+    const auto scratchSize = update ? sizes.updateScratchSize : sizes.buildScratchSize;
+    const auto scratch = allocateRecordedAccelerationScratch(scratchSize);
+    VkAccelerationStructureBuildGeometryInfoKHR buildInfo{};
+    buildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    buildInfo.flags = sizeInfo.flags;
+    buildInfo.mode = update ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR
+                            : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    buildInfo.srcAccelerationStructure = update ? destination.structure : VK_NULL_HANDLE;
+    buildInfo.dstAccelerationStructure = destination.structure;
+    buildInfo.scratchData.deviceAddress = bufferDeviceAddress(scratch);
+    buildInfo.geometryCount = 1;
+    buildInfo.pGeometries = &geometry;
+    const VkAccelerationStructureBuildRangeInfoKHR range{primitiveCount, 0, 0, 0};
+    const VkAccelerationStructureBuildRangeInfoKHR* ranges = &range;
+    build(commandBuffer, 1, &buildInfo, &ranges);
 }
 
 handles::AccelerationStructureHandle VulkanDevice::createTlasEx(std::span<const AccelerationInstanceDesc> instances) {
