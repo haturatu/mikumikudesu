@@ -417,6 +417,8 @@ int main() {
         ok &= check((dayo::graphics::toBits(plan.deformedVertices.usage) &
                      dayo::graphics::toBits(dayo::graphics::ResourceUsage::asBuildRead)) != 0U,
                     "deformed output is BLAS build-readable");
+        ok &= check(plan.deformedVertices.lifetime == dayo::graphics::ResourceLifetime::persistent,
+                    "deformed output persists across BLAS updates");
         ok &= check(plan.workgroupCount == 3, "native deform rounds dispatch groups up");
         const auto blas = plan.makeBlasGeometry({17, 1}, {18, 1});
         ok &= check(blas.triangles.size() == 1 && blas.triangles.front().vertexCount == 130 &&
@@ -476,6 +478,25 @@ int main() {
         ok &= check(constants.vertexCount == vertices.size() && constants.boneCount == bones.size() &&
                         constants.morphCount == morphWeights.size(),
                     "native deform push constants carry source counts");
+        const auto baseVertexBuffer = runtime.resources().baseVertices;
+        auto updatedVertices = vertices;
+        updatedVertices[0].position[0] = 2.0F;
+        const dayo::graphics::NativeDeformUpload updatedUpload{
+            .baseVertices = updatedVertices,
+            .bones = bones,
+            .morphDeltas = morphDeltas,
+            .morphWeights = morphWeights,
+            .indices = indices,
+        };
+        ok &= check(runtime.update(device, updatedUpload, &error) && error.empty(),
+                    "native deform refreshes inputs without changing mesh resources");
+        ok &= check(runtime.resources().baseVertices == baseVertexBuffer && device.destroyedBuffers == 0,
+                    "native deform refresh keeps stable source buffer ownership");
+        const auto refreshed = device.readbackBufferEx(runtime.resources().baseVertices, 0, vertexBytes);
+        dayo::graphics::PreviewVertex refreshedVertex{};
+        std::memcpy(&refreshedVertex, refreshed.data(), sizeof(refreshedVertex));
+        ok &= check(refreshedVertex.position[0] == 2.0F,
+                    "native deform refresh uploads the current animated vertex data");
         const auto blas = runtime.blasGeometry();
         ok &= check(blas.triangles.front().vertexBuffer == runtime.resources().deformedVertices &&
                         blas.triangles.front().indexBuffer == runtime.resources().indices,
