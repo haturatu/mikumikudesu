@@ -653,6 +653,7 @@ int main() {
         ok &= check(runtime.initialize(device, std::span<const dayo::graphics::NativeGeometryMeshUpload>(&mesh, 1),
                                        &error),
                     "native geometry runtime initializes deform and acceleration state");
+        ok &= check(runtime.descriptorLayout().valid(), "native geometry creates an acceleration descriptor layout");
         MockDeformCommands commands;
         runtime.recordDeform(commands);
         ok &= check(commands.events == std::vector<std::string>{"bind", "descriptor", "push", "dispatch:1x1x1",
@@ -666,6 +667,9 @@ int main() {
         ok &= check(runtime.synchronizeWorld(1, instances) == dayo::graphics::TlasAction::rebuild &&
                         runtime.tlas().valid(),
                     "native geometry creates a TLAS from registered world instances");
+        ok &= check(runtime.descriptorSet().valid() && device.lastDescriptorBindings.size() == 1 &&
+                        device.lastDescriptorBindings.front().accelerationStructure == runtime.tlas(),
+                    "native geometry publishes the current TLAS through a typed descriptor set");
 
         auto updatedVertices = vertices;
         updatedVertices[0].position[0] = 1.0F;
