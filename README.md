@@ -9,38 +9,6 @@ Linux側を`SDL3 + Vulkan 1.3 + HLSL/SPIR-V`で構成しています。
 1.30のassetを基準にしていますが、全FX・solverの完全互換を意味しません。
 対応段階と残件は[1.30互換性](docs/upstream-1.30.md)を参照してください。
 
-## 実装済み
-
-- SDL3ウィンドウ、HiDPI/resize、ファイルD&D、右ドラッグカメラ、ホイールズーム
-- Vulkan 1.3 swapchain、dynamic rendering、同期、深度、opaque/transparent pass、材質別両面描画
-- Dear ImGuiのSDL3/Vulkan backend
-- PMX 2.0/2.1の全セクション（頂点、材質、ボーン/IK、全モーフ、表示枠、剛体、
-  ジョイント、soft-bodyデータ）の検証付き読み込み
-- BDEF1/2/4、SDEF、QDEF、VMDベジェ補間、VPD、ボーン継承、CCD IK、全PMXモーフ
-- Bullet剛体/6DoF spring、collision group、固定step、物理ボーンへの往復反映
-- PNG/JPEG/BMP/TGA/HDRとDDS（RGBA/BGRA、BC1～BC5）の読込、Vulkan sRGB texture upload
-- PMX材質範囲、diffuse/ambient/specular/power、Toon/Sphere map、texture乗算/加算モーフ、VMDカメラ/照明
-- Original Preview parity: BDEF1/2/4、SDEF、QDEF/DQSのGPUスキニング、VMD LightColor、α=0 discard、
-  α>=0.98のopaque化、PMX材質順描画、共有Toon/Sphere map
-- Preview debug tools: PMX材質インスペクタ、材質単体表示、texture/sphere/toon無効化、UV/normal可視化、
-  オプションのscreen-space PMX outline
-- FFmpegによるWAV/MP3/M4A等の音声再生とMP4/AVI/MKV/MOV/WebM動画デコード
-- FFmpegを使ったストリーミングAAC/M4A音声書き出し（CLI / 非同期ImGui UI）
-- Vulkan Previewのオフスクリーンreadbackと、決定論的なタイムラインでのMP4動画書き出し（H.264/H.265/AV1 + AAC）
-- Jsonnetを実行した`.fxdayo`のtexture/sampler/pass/raster/compute/raytracing graph解析
-- 複数PMXを保持できるScene（モデル別VMD/VPD/物理、表示切替、clone、背景画像/動画/音声の共存）
-- `.dayo` v1/v2互換読込、Dayo 1.30 `.dayo` v3の複数subset読込/原子的保存、公式VMdayo v3の双方向変換と未知payload保持
-- VMD Bézier/Linear/Catmull-Rom、外部親リンクの検証（循環参照検出）、重力key評価
-- PMX 2.1 soft-bodyの決定論的フォールバックシミュレーション
-- Undo/Redo CommandHistory、dirty flag/runtime mode、非同期連番フレーム出力（PPM/PNG）
-- MaterialParameterBlock、effect render-graph compile、失敗時に旧状態を保持するFX hot reload
-- Subayaiの`_template.txt`/材質注釈パーサと、髪材質のAnisotropy/IOR/AutoNormalデータ契約
-- screen.bmpのPreviousFrame/BackgroundVideo/BackgroundImage/White semanticsを持つrenderer契約
-- `.dayo` v2の相対パス保存と原子的置換、旧版assetとbinary keyframeの復元
-- Vulkan feature単位のPreview/Subayai/BDPT判定と、安全なPreviewフォールバック
-- OIDNのHIP→CPU runtime選択（OIDNは任意依存）
-- `DEBUG/INFO → stdout`、`WARN/ERROR → stderr`のログ規約
-
 ## 制約
 
 PreviewはLinux/AMDで実動します。SubayaiとBDPTについては、`.fxdayo`グラフと必要featureの
@@ -142,11 +110,11 @@ make sanitize
 make system
 ```
 
-`make`/`make build`はMikuMikuDayoを取得しません。`make setup`、`make test`、`make install`、
+依存関係としてMikuMikuDayoが必要ですが、`make`/`make build`はMikuMikuDayoを取得しません。MikuMikuDayoは`git`管理されていないのでリリースから取得するようになっています。`make setup`、`make test`、`make install`、
 `make package`でだけ、`deps/mikumikudayo.lock`に固定したGitHub Release ZIPを取得または
-`.cache/mikumikudayo/`から再利用します。ZIPはSHA-256を検証してから展開します。
+`.cache/mikumikudayo/`から再利用します。
 
-全ターゲットと変数は`make help`で確認できます。CMakeを直接実行する正式な手順も引き続き利用できます。
+`Makefile` の全ターゲットと変数は`make help`で確認できます。CMakeを直接実行する場合は以下です。
 
 ```bash
 cmake --preset linux-debug
