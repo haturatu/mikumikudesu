@@ -7,6 +7,7 @@
 #include "graphics/subayai_acceleration_structure.hpp"
 #include "graphics/subayai_deform.hpp"
 #include "graphics/subayai_environment.hpp"
+#include "graphics/subayai_geometry.hpp"
 #include "graphics/subayai_light_sampling.hpp"
 #include "graphics/subayai_material_gpu.hpp"
 #include "graphics/subayai_runtime.hpp"
@@ -504,6 +505,73 @@ int main() {
         runtime.reset();
         ok &= check(device.destroyedBuffers == 6 && device.destroyedDescriptorSets == 1,
                     "native deform reset releases descriptor and six buffers");
+    }
+
+    // Native geometry coordinates deform dispatches with BLAS/TLAS policy.
+    // The persistent deformed output is synchronized only after the caller
+    // has submitted the recorded compute work.
+    {
+        const std::array<dayo::graphics::PreviewVertex, 3> vertices{};
+        const std::array<dayo::graphics::PreviewBoneTransform, 1> bones{};
+        const std::array<dayo::graphics::PreviewMorphDelta, 1> morphDeltas{};
+        const std::array<float, 1> morphWeights{0.25F};
+        const std::array<std::uint32_t, 3> indices{0, 1, 2};
+        const dayo::graphics::NativeGeometryMeshUpload mesh{
+            .meshId = 7,
+            .deform = {.baseVertices = vertices,
+                       .bones = bones,
+                       .morphDeltas = morphDeltas,
+                       .morphWeights = morphWeights,
+                       .indices = indices},
+            .deformPipeline = {10, 1},
+            .deformDescriptorLayout = {11, 1},
+            .topologyGeneration = 3,
+            .deformVersion = 1,
+        };
+        MockNativeDevice device;
+        MockAccelerationBackend backend;
+        dayo::graphics::NativeGeometryRuntime runtime(&backend);
+        std::string error;
+        ok &= check(runtime.initialize(device, std::span<const dayo::graphics::NativeGeometryMeshUpload>(&mesh, 1),
+                                       &error),
+                    "native geometry runtime initializes deform and acceleration state");
+        MockDeformCommands commands;
+        runtime.recordDeform(commands);
+        ok &= check(commands.events == std::vector<std::string>{"bind", "descriptor", "push", "dispatch:1x1x1",
+                                                                  "barrier"},
+                    "native geometry records deform work before acceleration synchronization");
+        ok &= check(runtime.synchronizeAcceleration(&error) && error.empty() && backend.createBlasCalls == 1,
+                    "native geometry creates BLAS from the deformed output");
+        ok &= check(runtime.blas(7).valid() && runtime.deform(7) != nullptr,
+                    "native geometry exposes the mesh BLAS and deform runtime");
+        const std::array<dayo::graphics::WorldInstance, 1> instances{{{.meshId = 7}}};
+        ok &= check(runtime.synchronizeWorld(1, instances) == dayo::graphics::TlasAction::rebuild &&
+                        runtime.tlas().valid(),
+                    "native geometry creates a TLAS from registered world instances");
+
+        auto updatedVertices = vertices;
+        updatedVertices[0].position[0] = 1.0F;
+        const dayo::graphics::NativeGeometryMeshUpload updatedMesh{
+            .meshId = 7,
+            .deform = {.baseVertices = updatedVertices,
+                       .bones = bones,
+                       .morphDeltas = morphDeltas,
+                       .morphWeights = morphWeights,
+                       .indices = indices},
+            .deformPipeline = mesh.deformPipeline,
+            .deformDescriptorLayout = mesh.deformDescriptorLayout,
+            .topologyGeneration = 3,
+            .deformVersion = 2,
+        };
+        ok &= check(runtime.updateMesh(updatedMesh, &error) && runtime.synchronizeAcceleration(&error) &&
+                        backend.refitBlasCalls == 1,
+                    "native geometry refreshes deform data and refits the existing BLAS");
+        ok &= check(runtime.synchronizeWorld(2, instances) == dayo::graphics::TlasAction::update &&
+                        backend.updateTlasCalls == 1,
+                    "native geometry updates world-only TLAS transforms");
+        runtime.reset();
+        ok &= check(backend.destroyBlasCalls == 1 && backend.destroyTlasCalls == 1 && device.destroyedBuffers == 6,
+                    "native geometry reset releases AS and deform resources in dependency order");
     }
 
     // BLAS branching: rebuild on topology, refit on deform-only, none otherwise.

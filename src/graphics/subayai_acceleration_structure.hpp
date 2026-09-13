@@ -89,6 +89,10 @@ class AccelerationStructureService {
     [[nodiscard]] std::size_t blasCount() const noexcept {
         return meshes_.size();
     }
+    [[nodiscard]] handles::AccelerationStructureHandle blas(std::uint32_t meshId) const noexcept;
+    [[nodiscard]] handles::AccelerationStructureHandle tlas() const noexcept {
+        return tlas_;
+    }
     [[nodiscard]] std::size_t tlasInstanceCount() const noexcept {
         return tlasInstanceCount_;
     }
