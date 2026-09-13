@@ -4,7 +4,10 @@
 #include "fx/fx_compiler.hpp"
 #include "graphics/bdpt_accumulation.hpp"
 #include "graphics/fx_executor.hpp"
+#include "graphics/native_fx_runtime.hpp"
 
+#include <array>
+#include <optional>
 #include <string>
 
 namespace dayo::graphics {
@@ -15,7 +18,14 @@ struct BdptFrame {
     BdptAccumulation::GpuResources gpu;
     std::uint32_t sampleIndex{};
     bool clearAccumulation{};
+    handles::DescriptorSetHandle descriptorSet{};
+    std::optional<NativeFxFrame> nativeFx;
 };
+
+// Stable BDPT resource ABI. Binding 0 is the progressive output, bindings 1
+// and 2 are lookup buffers, and bindings 3..10 are the persistent volume
+// slots. The native FX set is appended after this set in the pipeline layout.
+[[nodiscard]] DescriptorSetLayoutDesc bdptResourceBindingLayout() noexcept;
 
 // Progressive native BDPT runtime. The runtime owns frame-independent
 // accumulation resources and only exposes execution after the compiled graph
@@ -28,6 +38,9 @@ class BdptRuntime {
     void reset() noexcept;
     [[nodiscard]] bool ready() const noexcept {
         return ready_;
+    }
+    [[nodiscard]] bool nativeReady() const noexcept {
+        return nativeFx_.ready();
     }
     [[nodiscard]] const fx::FxProgram* program() const noexcept {
         return ready_ ? &program_ : nullptr;
@@ -53,6 +66,10 @@ class BdptRuntime {
     Device* device_{nullptr};
     fx::FxProgram program_;
     BdptAccumulation accumulation_;
+    handles::DescriptorSetLayoutHandle descriptorLayout_{};
+    handles::DescriptorSetHandle descriptorSet_{};
+    NativeFxRuntime nativeFx_;
+    bool nativeAttempted_{};
     bool ready_{false};
 };
 

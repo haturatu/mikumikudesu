@@ -198,6 +198,15 @@ struct MockNativeDevice final : dayo::graphics::Device {
         return {nextPipeline_++, 1};
     }
     void destroyPipelineEx(dayo::graphics::handles::PipelineHandle) override {}
+    dayo::graphics::handles::PipelineHandle
+    createRayTracingPipelineEx(const dayo::graphics::RayTracingPipelineDescEx&) override {
+        return {nextPipeline_++, 1};
+    }
+    dayo::graphics::handles::ShaderBindingTableHandle
+    createShaderBindingTable(const dayo::graphics::ShaderBindingTableDesc&) override {
+        return {nextSbt_++, 1};
+    }
+    void destroyShaderBindingTable(dayo::graphics::handles::ShaderBindingTableHandle) override {}
     void uploadTextureEx(dayo::graphics::handles::TextureHandle, std::span<const std::uint8_t>, std::uint32_t,
                          std::uint32_t) override {}
     void uploadBufferEx(dayo::graphics::handles::BufferHandle handle, std::span<const std::byte> bytes,
@@ -237,6 +246,7 @@ struct MockNativeDevice final : dayo::graphics::Device {
     std::uint32_t nextPipelineLayout_{1};
     std::uint32_t nextShader_{1};
     std::uint32_t nextPipeline_{1};
+    std::uint32_t nextSbt_{1};
     std::size_t destroyedBuffers{};
     std::size_t destroyedTextures{};
     std::size_t destroyedDescriptorSets{};
@@ -258,8 +268,15 @@ struct MockDeformCommands final : dayo::graphics::CommandList {
         events.push_back("dispatch:" + std::to_string(x) + "x" + std::to_string(y) + "x" + std::to_string(z));
     }
     void traceRays(std::uint32_t, std::uint32_t) override {}
+    void traceRaysEx(dayo::graphics::handles::PipelineHandle, dayo::graphics::handles::ShaderBindingTableHandle,
+                     std::uint32_t, std::uint32_t, std::uint32_t) override {
+        events.emplace_back("traceEx");
+    }
     void transitionEx(dayo::graphics::handles::TextureHandle) override {
         events.emplace_back("transition");
+    }
+    void clearTextureEx(dayo::graphics::handles::TextureHandle) override {
+        events.emplace_back("clear");
     }
     void bindPipelineEx(dayo::graphics::handles::PipelineHandle) override {
         events.emplace_back("bind");
@@ -317,6 +334,47 @@ bool testSubayaiNativeFxExecution() {
     return ok;
 }
 
+bool testBdptNativeFxExecution() {
+    dayo::fx::FxShaderCompiler compiler;
+    if (!compiler.available())
+        return true;
+
+    MockNativeDevice device;
+    dayo::graphics::BdptRuntime runtime;
+    dayo::fx::FxProgram program;
+    program.label = "BDPT-native";
+    program.sourcePath = "bdpt-native.fxdayo";
+    program.hlsl = "[shader(\"raygeneration\")] void main() {}\n";
+    dayo::fx::FxDispatch dispatch;
+    dispatch.name = "native-raytrace";
+    dispatch.kind = dayo::fx::FxOpKind::raytracing;
+    dayo::fx::FxRayTracingDispatch ray;
+    ray.rayGenerationShader = "main";
+    ray.maxPayloadSize = 32;
+    ray.maxAttributeSize = 8;
+    ray.maxRecursionDepth = 1;
+    dispatch.executable = std::move(ray);
+    program.passes.push_back(std::move(dispatch));
+
+    std::string error;
+    bool ok = check(runtime.initialize(device, std::move(program), &error),
+                    "BDPT runtime accepts a compilable native RT program");
+    const auto context = dayo::fx::makeFxFrameContext(0.0F, 0, 16, 8, 1, 0, 3, 1, 1, 1);
+    auto frame = runtime.prepareFrame(context, dayo::core::DirtyFlag::geometry);
+    ok &= check(runtime.nativeReady() && frame.nativeFx.has_value(),
+                "BDPT runtime prepares the native FX frame path");
+    MockDeformCommands commands;
+    const auto stats = runtime.execute(frame, commands);
+    ok &= check(stats.rayTracing == 1 && commands.events ==
+                                         std::vector<std::string>{"transition", "clear", "barrier", "descriptor", "bind",
+                                                                  "traceEx"},
+                "BDPT runtime clears accumulation and executes the native RT pass");
+    ok &= check(commands.descriptorSets.size() == 1 && commands.descriptorSets.front().second == 0,
+                "BDPT native FX binds the persistent resource set before tracing");
+    runtime.reset();
+    return ok;
+}
+
 } // namespace
 
 dayo::graphics::BlasGeometryDesc geometry(std::uint32_t vertexBuffer) {
@@ -341,6 +399,7 @@ int main() {
     bool ok = true;
 
     ok &= testSubayaiNativeFxExecution();
+    ok &= testBdptNativeFxExecution();
 
     // Native material linking keeps Subayai hair controls in a dedicated GPU
     // ABI while leaving PreviewMaterialGpu untouched.
