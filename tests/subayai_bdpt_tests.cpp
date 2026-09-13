@@ -179,6 +179,9 @@ struct MockNativeDevice final : dayo::graphics::Device {
         if (handle.valid())
             ++destroyedTextures;
     }
+    void clearTextureEx(dayo::graphics::handles::TextureHandle, const std::array<float, 4>&) override {
+        ++clearedTextures;
+    }
     void destroyBufferEx(dayo::graphics::handles::BufferHandle handle) override {
         ++destroyedBuffers;
         typedBuffers_.erase(handle);
@@ -268,6 +271,7 @@ struct MockNativeDevice final : dayo::graphics::Device {
     std::uint32_t nextSbt_{1};
     std::size_t destroyedBuffers{};
     std::size_t destroyedTextures{};
+    std::size_t clearedTextures{};
     std::size_t destroyedDescriptorSets{};
     std::size_t destroyedDescriptorLayouts{};
     dayo::graphics::DescriptorSetLayoutDesc lastDescriptorLayout;
@@ -547,6 +551,8 @@ int main() {
         ok &= check(runtime.ensureResources(16, 8, &error), "BDPT runtime allocates persistent GPU resources");
         const auto gpu = runtime.accumulation().gpuResources();
         ok &= check(gpu.valid() && gpu.width == 16 && gpu.height == 8, "BDPT persistent handles are complete");
+        ok &= check(device.clearedTextures == 1U + BdptAccumulation::kVolumeSlots,
+                    "BDPT accumulation and volume resources start cleared");
         ok &= check(runtime.accumulation().spectralLut().front() != runtime.accumulation().spectralLut().back(),
                     "BDPT spectral LUT contains generated data");
         const auto lutBytes =

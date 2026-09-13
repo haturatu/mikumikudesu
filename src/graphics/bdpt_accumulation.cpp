@@ -172,6 +172,9 @@ bool BdptAccumulation::ensureGpuResources(Device& device, std::uint32_t width, s
                 .lifetime = ResourceLifetime::persistent,
             });
         }
+        device.clearTextureEx(created.accumulation, {0.0F, 0.0F, 0.0F, 0.0F});
+        for (const auto volume : created.volumes)
+            device.clearTextureEx(volume, {0.0F, 0.0F, 0.0F, 0.0F});
     } catch (const std::exception& exception) {
         destroyCreated();
         setError(error, std::string("BDPT GPU resource creation failed: ") + exception.what());
