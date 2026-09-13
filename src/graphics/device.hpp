@@ -413,12 +413,24 @@ class CommandList {
         static_cast<void>(depth);
         traceRays(width, height);
     }
-    virtual void bindResources(std::span<const DescriptorBinding>) {}
-    virtual void pushConstants(std::span<const std::byte>) {}
-    virtual void copyTexture(TextureHandle, TextureHandle) {}
-    virtual void clearTexture(TextureHandle) {}
-    virtual void generateMipmaps(TextureHandle) {}
-    virtual void buildAccelerationStructure(AccelerationStructureHandle) {}
+    virtual void bindResources(std::span<const DescriptorBinding>) {
+        throw std::logic_error("legacy command-list descriptor bindings are not implemented by this backend");
+    }
+    virtual void pushConstants(std::span<const std::byte>) {
+        throw std::logic_error("legacy command-list push constants are not implemented by this backend");
+    }
+    virtual void copyTexture(TextureHandle, TextureHandle) {
+        throw std::logic_error("legacy command-list texture copy is not implemented by this backend");
+    }
+    virtual void clearTexture(TextureHandle) {
+        throw std::logic_error("legacy command-list texture clear is not implemented by this backend");
+    }
+    virtual void generateMipmaps(TextureHandle) {
+        throw std::logic_error("legacy command-list mipmap generation is not implemented by this backend");
+    }
+    virtual void buildAccelerationStructure(AccelerationStructureHandle) {
+        throw std::logic_error("legacy command-list acceleration structures are not implemented by this backend");
+    }
     // Typed (generation-checked) recording. Preview command lists that do not
     // implement the typed path fail explicitly instead of dropping commands.
     virtual void copyTextureEx(handles::TextureHandle, handles::TextureHandle) {
