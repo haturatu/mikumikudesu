@@ -13,6 +13,7 @@
 #include "graphics/subayai_runtime.hpp"
 #include "graphics/native_scene_bindings.hpp"
 #include "graphics/native_scene_binding_runtime.hpp"
+#include "graphics/native_frame_constants.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1142,6 +1143,37 @@ int main() {
         ok &= check(device.destroyedDescriptorLayouts == destroyedLayouts +
                         dayo::graphics::kNativeSceneDescriptorSetCount,
                     "native scene binding runtime releases reserved layouts");
+    }
+    // Native frame constants: CPU ABI and typed uniform uploads remain stable
+    // independently of the native scene descriptor-set population.
+    {
+        MockNativeDevice device;
+        const auto context = dayo::fx::makeFxFrameContext(
+            30.0F, 7, 640, 360, 11, 2, 12, 4, 1, 1);
+        const auto view = dayo::graphics::makeNativeViewConstants(context, 3, 4);
+        const dayo::graphics::NativeScenePassConstants pass{
+            .modelIndex = 2, .rasterizeOrder = 1, .deformIndex = 2, .deformOrder = 0};
+        dayo::graphics::NativeFrameConstantsRuntime runtime;
+        std::string error;
+        ok &= check(runtime.sync(device, view, pass, &error) && runtime.ready(),
+                    "native frame constants upload creates typed uniform buffers");
+        const auto viewBytes = device.readbackBufferEx(runtime.viewBuffer(), 0, sizeof(view));
+        const auto passBytes = device.readbackBufferEx(runtime.passBuffer(), 0, sizeof(pass));
+        dayo::graphics::NativeViewConstants uploadedView{};
+        dayo::graphics::NativeScenePassConstants uploadedPass{};
+        std::memcpy(&uploadedView, viewBytes.data(), sizeof(uploadedView));
+        std::memcpy(&uploadedPass, passBytes.data(), sizeof(uploadedPass));
+        ok &= check(uploadedView.output == std::array<std::uint32_t, 4>{640, 360, 7, 1} &&
+                        uploadedView.modelCounts == std::array<std::uint32_t, 2>{3, 4} &&
+                        uploadedView.cameraFlags[0] == (context.camera.perspective ? 1 : 0),
+                    "native ViewCB preserves frame dimensions, sample, and scene counts");
+        ok &= check(uploadedPass.modelIndex == pass.modelIndex &&
+                        uploadedPass.deformIndex == pass.deformIndex,
+                    "native CBuff1 preserves model and deform selection");
+        const auto destroyedBeforeReset = device.destroyedBuffers;
+        runtime.reset();
+        ok &= check(device.destroyedBuffers == destroyedBeforeReset + 2,
+                    "native frame constants reset releases both uniform buffers");
     }
     // DenoiserRuntime fallback: staging/readback -> CPU -> upload copy without CUDA.
     {
