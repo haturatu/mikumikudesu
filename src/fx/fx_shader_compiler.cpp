@@ -112,6 +112,14 @@ class TemporaryDirectory {
     std::ostringstream command;
     command << quoteShellArgument(executable.string())
             << " -x hlsl --target-env=" << quoteShellArgument(request.targetEnvironment)
+            // glslc's HLSL frontend otherwise gives t/u/s/b register class
+            // zero the same Vulkan binding. Keep each class in a disjoint
+            // range so the generated descriptor layout remains valid.
+            << " -fhlsl-iomap -fpreserve-bindings"
+            << " -fuav-binding-base " << FxShaderCompiler::glslcStage(request.stage) << " 0"
+            << " -ftexture-binding-base " << FxShaderCompiler::glslcStage(request.stage) << " 16"
+            << " -fsampler-binding-base " << FxShaderCompiler::glslcStage(request.stage) << " 32"
+            << " -fubo-binding-base " << FxShaderCompiler::glslcStage(request.stage) << " 48"
             << " -fshader-stage=" << FxShaderCompiler::glslcStage(request.stage)
             << " -fentry-point=" << quoteShellArgument(request.entryPoint) << " -o "
             << quoteShellArgument(output.string());
