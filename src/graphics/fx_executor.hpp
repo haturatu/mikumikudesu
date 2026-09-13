@@ -24,6 +24,16 @@ struct FxExecutionResources {
     using PipelineResolver = std::function<std::optional<PipelineHandle>(const dayo::fx::FxDispatch&)>;
     using TypedPipelineResolver = std::function<std::optional<handles::PipelineHandle>(const dayo::fx::FxDispatch&)>;
     using TypedTextureResolver = std::function<std::optional<handles::TextureHandle>(std::string_view)>;
+    struct TypedResource {
+        handles::TextureHandle texture{};
+        handles::BufferHandle buffer{};
+        handles::SamplerHandle sampler{};
+
+        [[nodiscard]] bool valid() const noexcept {
+            return texture.valid() || buffer.valid() || sampler.valid();
+        }
+    };
+    using TypedResourceResolver = std::function<std::optional<TypedResource>(std::string_view)>;
     using ShaderBindingTableResolver =
         std::function<std::optional<handles::ShaderBindingTableHandle>(const dayo::fx::FxDispatch&)>;
     using DescriptorSetResolver =
@@ -43,6 +53,10 @@ struct FxExecutionResources {
     // legacy resolver remains available for Preview and existing callers.
     TypedPipelineResolver resolveTypedPipeline;
     TypedTextureResolver resolveTypedTexture;
+    // Native FX declarations can be images, buffers, or samplers. A generic
+    // resolver lets the executor transition only image resources while still
+    // validating and binding buffer/sampler-only passes.
+    TypedResourceResolver resolveTypedResource;
     ShaderBindingTableResolver resolveShaderBindingTable;
     DescriptorSetResolver resolveDescriptorSet;
     DescriptorSetsResolver resolveDescriptorSets;
