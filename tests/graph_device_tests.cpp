@@ -643,6 +643,13 @@ int main() {
             samplerThrew = true;
         }
         ok &= check(samplerThrew, "mock typed sampler reports unimplemented");
+        bool shaderThrew = false;
+        try {
+            static_cast<void>(device.createShaderEx(dayo::graphics::ShaderDesc{}));
+        } catch (const std::logic_error&) {
+            shaderThrew = true;
+        }
+        ok &= check(shaderThrew, "mock typed shader reports unimplemented");
         bool pipelineLayoutThrew = false;
         try {
             static_cast<void>(device.createPipelineLayoutEx(dayo::graphics::PipelineLayoutDesc{}));
