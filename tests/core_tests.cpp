@@ -70,11 +70,11 @@ int main() {
         };
         std::copy_n("DDS ", 4, ddsHeader.begin());
         putLe32(4, 124);
-        putLe32(12, 12'000);
-        putLe32(16, 12'000);
+        putLe32(12, 11'000);
+        putLe32(16, 11'000);
         putLe32(76, 32);
-        putLe32(80, 0x40);
-        putLe32(88, 32);
+        putLe32(80, 0x4);
+        putLe32(84, 0x35545844); // DXT5: each allocation fits, but their sum exceeds the budget.
         {
             std::ofstream output(ddsPath, std::ios::binary | std::ios::trunc);
             output.write(reinterpret_cast<const char*>(ddsHeader.data()),
@@ -132,8 +132,8 @@ int main() {
             output.write("\x89PNG\r\n\x1a\n", 8);
             putBe32(output, 13);
             output.write("IHDR", 4);
-            putBe32(output, 12'000);
-            putBe32(output, 12'000);
+            putBe32(output, 9'000);
+            putBe32(output, 9'000);
             output.put('\x08');
             output.put('\x06');
             output.put('\x00');
