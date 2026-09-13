@@ -250,6 +250,7 @@ add_library(
   src/fx/fx_scheduler.cpp
   src/fx/fx_shader_compiler.cpp
   src/fx/fx_shader_cache.cpp
+  src/fx/fx_shader_source.cpp
   src/fx/fx_texture_cache.cpp
   src/fx/fx_watcher.cpp
 )
