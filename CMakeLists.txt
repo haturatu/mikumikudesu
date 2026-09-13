@@ -332,10 +332,13 @@ include(cmake/CompileHlsl.cmake)
 dayo_compile_hlsl(DAYO_PREVIEW_VERTEX_SPV SOURCE shaders/preview.hlsl ENTRY VS PROFILE vs_6_6 STAGE vert)
 dayo_compile_hlsl(DAYO_PREVIEW_EDGE_VERTEX_SPV SOURCE shaders/preview.hlsl ENTRY EdgeVS PROFILE vs_6_6 STAGE vert)
 dayo_compile_hlsl(DAYO_PREVIEW_FRAGMENT_SPV SOURCE shaders/preview.hlsl ENTRY PS PROFILE ps_6_6 STAGE frag)
+dayo_compile_hlsl(DAYO_NATIVE_OUTPUT_VERTEX_SPV SOURCE shaders/native_output.hlsl ENTRY VS PROFILE vs_6_6 STAGE vert)
+dayo_compile_hlsl(DAYO_NATIVE_OUTPUT_FRAGMENT_SPV SOURCE shaders/native_output.hlsl ENTRY PS PROFILE ps_6_6 STAGE frag)
 add_custom_target(
   dayo_shaders
   ALL
   DEPENDS ${DAYO_PREVIEW_VERTEX_SPV} ${DAYO_PREVIEW_EDGE_VERTEX_SPV} ${DAYO_PREVIEW_FRAGMENT_SPV}
+          ${DAYO_NATIVE_OUTPUT_VERTEX_SPV} ${DAYO_NATIVE_OUTPUT_FRAGMENT_SPV}
 )
 add_dependencies(dayo_graphics dayo_shaders)
 target_compile_definitions(
@@ -344,6 +347,8 @@ target_compile_definitions(
     DAYO_PREVIEW_VERTEX_SPV="${DAYO_PREVIEW_VERTEX_SPV}"
     DAYO_PREVIEW_EDGE_VERTEX_SPV="${DAYO_PREVIEW_EDGE_VERTEX_SPV}"
     DAYO_PREVIEW_FRAGMENT_SPV="${DAYO_PREVIEW_FRAGMENT_SPV}"
+    DAYO_NATIVE_OUTPUT_VERTEX_SPV="${DAYO_NATIVE_OUTPUT_VERTEX_SPV}"
+    DAYO_NATIVE_OUTPUT_FRAGMENT_SPV="${DAYO_NATIVE_OUTPUT_FRAGMENT_SPV}"
 )
 
 if(DAYO_ENABLE_IMGUI)
