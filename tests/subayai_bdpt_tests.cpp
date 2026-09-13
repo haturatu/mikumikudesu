@@ -320,16 +320,23 @@ bool testSubayaiNativeFxExecution() {
     bool ok = check(runtime.initialize(device, std::move(program), &error),
                     "Subayai runtime accepts a compilable native FX program");
     const auto context = dayo::fx::makeFxFrameContext(0.0F, 0, 16, 8, 1, 0, 3, 1, 1, 1);
-    auto frame = runtime.prepareFrame(context, {}, {}, {});
+    dayo::graphics::EnvironmentGpuResult environment;
+    environment.cubemap = {40, 1};
+    environment.prefiltered = {41, 1};
+    environment.sphericalHarmonics[0] = 1.0F;
+    auto frame = runtime.prepareFrame(context, {}, {}, environment);
     ok &= check(runtime.nativeReady() && frame.nativeFx.has_value(),
                 "Subayai runtime prepares the native FX frame path");
+    ok &= check(frame.environmentDescriptorSet.valid(), "Subayai frame exposes an environment descriptor set");
     MockDeformCommands commands;
     const auto stats = runtime.execute(frame, commands);
     ok &= check(stats.compute == 1 && commands.events ==
-                                         std::vector<std::string>{"transition", "descriptor", "bind", "dispatch:2x1x1"},
+                                         std::vector<std::string>{"transition", "descriptor", "descriptor", "bind",
+                                                                  "dispatch:2x1x1"},
                 "Subayai runtime executes typed FX resources through the native path");
-    ok &= check(commands.descriptorSets.size() == 1 && commands.descriptorSets.front().second == 2,
-                "Subayai native FX binds its resource set after shared material and light slots");
+    ok &= check(commands.descriptorSets.size() == 2 && commands.descriptorSets[0].second == 2 &&
+                    commands.descriptorSets[1].second == 3,
+                "Subayai native FX binds environment before its resource set");
     runtime.reset();
     return ok;
 }

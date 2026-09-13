@@ -267,6 +267,7 @@ add_library(
   src/graphics/subayai_deform.cpp
   src/graphics/subayai_geometry.cpp
   src/graphics/subayai_environment.cpp
+  src/graphics/subayai_environment_runtime.cpp
   src/graphics/subayai_bindings.cpp
   src/graphics/subayai_light_sampling.cpp
   src/graphics/subayai_material_gpu.cpp

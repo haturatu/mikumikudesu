@@ -33,6 +33,12 @@ bool SubayaiRuntime::initialize(Device& device, fx::FxProgram program, std::stri
         reset();
         return false;
     }
+    if (!environmentRuntime_.initialize(device, &bindingError)) {
+        if (error != nullptr)
+            *error = bindingError.empty() ? "Subayai environment bindings are unavailable" : bindingError;
+        reset();
+        return false;
+    }
     ready_ = true;
     return true;
 }
@@ -40,6 +46,7 @@ bool SubayaiRuntime::initialize(Device& device, fx::FxProgram program, std::stri
 void SubayaiRuntime::reset() noexcept {
     nativeFx_.reset();
     geometry_.reset();
+    environmentRuntime_.reset();
     bindings_.reset();
     materialRuntime_.reset();
     lightRuntime_.reset();
@@ -48,6 +55,12 @@ void SubayaiRuntime::reset() noexcept {
     materials_.clear();
     nativeAttempted_ = false;
     ready_ = false;
+}
+
+bool SubayaiRuntime::updateEnvironment(const EnvironmentDesc& description) {
+    if (!ready_)
+        return false;
+    return environmentService_.update(description);
 }
 
 bool SubayaiRuntime::syncGeometry(std::span<const NativeGeometryMeshUpload> meshes, std::string* error) {
@@ -113,6 +126,12 @@ SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
         throw std::runtime_error(lightError.empty() ? "Subayai light sampling GPU upload failed" : lightError);
     if (!bindings_.bindLightSampling(lightRuntime_.buffer(), &lightError))
         throw std::runtime_error(lightError.empty() ? "Subayai light sampling descriptor binding failed" : lightError);
+    const auto selectedEnvironment = environment.cubemap.valid() || environment.prefiltered.valid()
+                                         ? environment
+                                         : environmentService_.gpuResult();
+    std::string environmentError;
+    if (!environmentRuntime_.sync(*device_, selectedEnvironment, &environmentError))
+        throw std::runtime_error(environmentError.empty() ? "Subayai environment binding failed" : environmentError);
     SubayaiFrame frame;
     frame.context = context;
     frame.plan = fx::FxCompiler{}.plan(program_, context);
@@ -123,11 +142,13 @@ SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
     frame.lightSamplingBuffer = lightRuntime_.buffer();
     frame.lightSamplingDescriptorSet = bindings_.lightSamplingSet();
     frame.geometryDescriptorSet = geometry_.descriptorSet();
-    frame.environment = environment;
+    frame.environment = selectedEnvironment;
+    frame.environmentDescriptorSet = environmentRuntime_.descriptorSet();
     if (!nativeAttempted_ && !program_.hlsl.empty()) {
         nativeAttempted_ = true;
         std::vector<handles::DescriptorSetLayoutHandle> sharedLayouts{bindings_.layouts().material,
-                                                                       bindings_.layouts().lightSampling};
+                                                                       bindings_.layouts().lightSampling,
+                                                                       environmentRuntime_.layout()};
         if (geometry_.descriptorLayout().valid())
             sharedLayouts.push_back(geometry_.descriptorLayout());
         std::string nativeError;
@@ -149,14 +170,17 @@ VulkanFxExecutor::Stats SubayaiRuntime::execute(SubayaiFrame& frame, CommandList
     if (frame.nativeFx.has_value()) {
         auto nativeResources = resources;
         if (frame.materialDescriptorSet.valid() || frame.lightSamplingDescriptorSet.valid() ||
-            frame.geometryDescriptorSet.valid()) {
+            frame.geometryDescriptorSet.valid() || frame.environmentDescriptorSet.valid()) {
             const auto existingSets = nativeResources.resolveDescriptorSets;
             const auto existingSingle = nativeResources.resolveDescriptorSet;
             const auto materialSet = frame.materialDescriptorSet;
             const auto lightSet = frame.lightSamplingDescriptorSet;
             const auto geometrySet = frame.geometryDescriptorSet;
+            const auto environmentSet = frame.environmentDescriptorSet;
+            const auto environmentSetIndex = geometry_.descriptorLayout().valid() ? 3U : 2U;
             nativeResources.resolveDescriptorSets =
-                [existingSets, existingSingle, materialSet, lightSet, geometrySet](const fx::FxDispatch& dispatch) {
+                [existingSets, existingSingle, materialSet, lightSet, geometrySet,
+                 environmentSet, environmentSetIndex](const fx::FxDispatch& dispatch) {
                     std::vector<FxExecutionResources::TypedDescriptorSetBinding> result;
                     if (existingSets) {
                         result = existingSets(dispatch);
@@ -176,6 +200,8 @@ VulkanFxExecutor::Stats SubayaiRuntime::execute(SubayaiFrame& frame, CommandList
                         result.push_back({lightSet, 1});
                     if (geometrySet.valid() && !hasIndex(2))
                         result.push_back({geometrySet, 2});
+                    if (environmentSet.valid() && !hasIndex(environmentSetIndex))
+                        result.push_back({environmentSet, environmentSetIndex});
                     return result;
                 };
             nativeResources.resolveDescriptorSet = {};
@@ -185,12 +211,14 @@ VulkanFxExecutor::Stats SubayaiRuntime::execute(SubayaiFrame& frame, CommandList
     auto nativeResources = resources;
     if (!nativeResources.resolveDescriptorSets && !nativeResources.resolveDescriptorSet &&
         (frame.materialDescriptorSet.valid() || frame.lightSamplingDescriptorSet.valid() ||
-         frame.geometryDescriptorSet.valid())) {
+         frame.geometryDescriptorSet.valid() || frame.environmentDescriptorSet.valid())) {
         const auto materialSet = frame.materialDescriptorSet;
         const auto lightSet = frame.lightSamplingDescriptorSet;
         const auto geometrySet = frame.geometryDescriptorSet;
+        const auto environmentSet = frame.environmentDescriptorSet;
+        const auto environmentSetIndex = geometry_.descriptorLayout().valid() ? 3U : 2U;
         nativeResources.resolveDescriptorSets =
-            [materialSet, lightSet, geometrySet](const fx::FxDispatch&) {
+            [materialSet, lightSet, geometrySet, environmentSet, environmentSetIndex](const fx::FxDispatch&) {
                 std::vector<FxExecutionResources::TypedDescriptorSetBinding> result;
                 if (materialSet.valid())
                     result.push_back({materialSet, 0});
@@ -198,6 +226,8 @@ VulkanFxExecutor::Stats SubayaiRuntime::execute(SubayaiFrame& frame, CommandList
                     result.push_back({lightSet, 1});
                 if (geometrySet.valid())
                     result.push_back({geometrySet, 2});
+                if (environmentSet.valid())
+                    result.push_back({environmentSet, environmentSetIndex});
                 return result;
             };
     }
