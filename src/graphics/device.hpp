@@ -7,7 +7,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -465,6 +467,22 @@ class CommandList {
     }
 };
 
+// A native renderer returns the last typed color resource it wrote. The
+// presentation backend owns the conversion into its swapchain/viewport
+// target, so native runtimes never need to know about SDL or Vulkan images.
+struct NativeFrameOutput {
+    handles::TextureHandle texture{};
+    Extent3D extent{};
+    PixelFormat format{PixelFormat::rgba8Unorm};
+
+    [[nodiscard]] bool valid() const noexcept {
+        return texture.valid() && extent.width != 0 && extent.height != 0 && extent.depth == 1;
+    }
+};
+
+using NativeFrameRecorder =
+    std::function<std::optional<NativeFrameOutput>(CommandList&, const RenderTargetDesc&)>;
+
 class Device {
   public:
     virtual ~Device() = default;
@@ -483,6 +501,14 @@ class Device {
     virtual void resize() = 0;
     virtual void beginUiFrame() = 0;
     virtual void renderFrame() = 0;
+    // The callback is invoked while the backend's frame command buffer is
+    // recording. An empty result keeps the existing Preview recording path;
+    // a valid result is composited into the viewport/swapchain by the
+    // backend. Preview and mock devices accept only an empty callback.
+    virtual void setNativeFrameRecorder(NativeFrameRecorder recorder) {
+        if (recorder)
+            throw std::logic_error("native frame recording is not implemented by this backend");
+    }
     virtual void setPreviewViewportExtent(const RenderTargetDesc&) {}
     [[nodiscard]] virtual PreviewViewport previewViewport() const noexcept {
         return {};

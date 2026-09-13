@@ -257,4 +257,10 @@ VulkanFxExecutor::Stats BdptRuntime::execute(BdptFrame& frame, CommandList& comm
     return VulkanFxExecutor{*device_}.execute(frame.plan, commands, frame.context, nativeResources);
 }
 
+std::optional<NativeFrameOutput> BdptRuntime::output(const BdptFrame& frame) const {
+    if (!frame.nativeFx.has_value() || !nativeFx_.ready())
+        return std::nullopt;
+    return nativeFx_.output(*frame.nativeFx);
+}
+
 } // namespace dayo::graphics

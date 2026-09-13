@@ -1,4 +1,5 @@
 #include "graphics/vulkan/vulkan_device.hpp"
+#include "graphics/vulkan/vulkan_command_list.hpp"
 #include "graphics/vulkan/vulkan_upload_context.hpp"
 
 #include "core/log.hpp"
@@ -32,6 +33,7 @@
 #include <string>
 #include <type_traits>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace dayo::graphics {
@@ -1824,6 +1826,10 @@ void VulkanDevice::selectRenderer(RendererKind requested) {
               ". Falling back to Preview.");
 }
 
+void VulkanDevice::setNativeFrameRecorder(NativeFrameRecorder recorder) {
+    nativeFrameRecorder_ = std::move(recorder);
+}
+
 void VulkanDevice::resize() {
     swapchainDirty_ = true;
 }
@@ -2136,33 +2142,63 @@ void VulkanDevice::renderFrame() {
     }
     recordPreviewBackgroundUpload(frame.commandBuffer, frame);
 
+    std::optional<NativeFrameOutput> nativeOutput;
+    if (nativeFrameRecorder_ && activeRenderer_ != RendererKind::preview) {
 #if DAYO_HAS_IMGUI
+        const auto& viewport = viewportResources_[frameIndex_];
+        if (viewportRequested_ && viewport.colorImage != VK_NULL_HANDLE) {
+            const RenderTargetDesc target{viewport.extent.width, viewport.extent.height};
+            VulkanCommandList commands(*this, frame.commandBuffer);
+            nativeOutput = nativeFrameRecorder_(commands, target);
+        }
+#else
+        const RenderTargetDesc target{swapchainExtent_.width, swapchainExtent_.height};
+        VulkanCommandList commands(*this, frame.commandBuffer);
+        nativeOutput = nativeFrameRecorder_(commands, target);
+#endif
+        if (nativeOutput.has_value() && !nativeOutput->valid())
+            throw std::invalid_argument("native frame recorder returned an invalid output");
+    }
+
+#if DAYO_HAS_IMGUI
+    bool nativeViewportRendered = false;
     if (viewportRequested_) {
         auto& viewport = viewportResources_[frameIndex_];
         if (viewport.colorImage != VK_NULL_HANDLE) {
-            recordPreviewPass(frame.commandBuffer, frame, viewport.colorImage, viewport.colorView, viewport.depth,
-                              viewport.extent, viewport.colorInitialized, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                              VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, true);
-            const VkImageMemoryBarrier2 toSample{
-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = viewport.colorImage,
-                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
-            };
-            const VkDependencyInfo toSampleDependency{
-                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                .imageMemoryBarrierCount = 1,
-                .pImageMemoryBarriers = &toSample,
-            };
-            vkCmdPipelineBarrier2(frame.commandBuffer, &toSampleDependency);
-            viewport.colorInitialized = true;
+            if (nativeOutput.has_value()) {
+                recordNativeOutputToImage(
+                    frame.commandBuffer, *nativeOutput, viewport.colorImage,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    viewport.colorInitialized, viewport.extent);
+                viewport.colorInitialized = true;
+                nativeViewportRendered = true;
+            } else {
+                recordPreviewPass(frame.commandBuffer, frame, viewport.colorImage, viewport.colorView, viewport.depth,
+                                  viewport.extent, viewport.colorInitialized, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, true);
+                const VkImageMemoryBarrier2 toSample{
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                    .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = viewport.colorImage,
+                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+                };
+                const VkDependencyInfo toSampleDependency{
+                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                    .imageMemoryBarrierCount = 1,
+                    .pImageMemoryBarriers = &toSample,
+                };
+                vkCmdPipelineBarrier2(frame.commandBuffer, &toSampleDependency);
+                viewport.colorInitialized = true;
+            }
         }
     }
     if (frame.timestampQueryPool != VK_NULL_HANDLE)
@@ -2210,9 +2246,16 @@ void VulkanDevice::renderFrame() {
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.commandBuffer);
     vkCmdEndRendering(frame.commandBuffer);
 #else
-    recordPreviewPass(frame.commandBuffer, frame, swapchainImages_[imageIndex], swapchainViews_[imageIndex],
-                      swapchainDepth_[imageIndex], swapchainExtent_, swapchainInitialized_[imageIndex],
-                      VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0U, true);
+    if (nativeOutput.has_value()) {
+        recordNativeOutputToImage(frame.commandBuffer, *nativeOutput, swapchainImages_[imageIndex],
+                                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0U,
+                                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+                                  swapchainInitialized_[imageIndex], swapchainExtent_);
+    } else {
+        recordPreviewPass(frame.commandBuffer, frame, swapchainImages_[imageIndex], swapchainViews_[imageIndex],
+                          swapchainDepth_[imageIndex], swapchainExtent_, swapchainInitialized_[imageIndex],
+                          VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0U, true);
+    }
     if (frame.timestampQueryPool != VK_NULL_HANDLE)
         vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timestampQueryPool, 1);
 #endif
@@ -2349,7 +2392,8 @@ void VulkanDevice::createViewportResource(ViewportResource& resource, VkExtent2D
             .arrayLayers = 1,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                     VK_IMAGE_USAGE_TRANSFER_DST_BIT,
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
         };
@@ -4460,6 +4504,81 @@ void VulkanDevice::recordTraceRays(VkCommandBuffer commandBuffer, handles::Pipel
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, pipelineIt->second.pipeline);
     trace(commandBuffer, &sbtIt->second.raygen, &sbtIt->second.miss, &sbtIt->second.hit, &sbtIt->second.callable, width,
           height, depth);
+}
+
+void VulkanDevice::recordNativeOutputToImage(VkCommandBuffer commandBuffer, const NativeFrameOutput& output,
+                                             VkImage target, VkImageLayout previousLayout,
+                                             VkPipelineStageFlags2 previousStage, VkAccessFlags2 previousAccess,
+                                             VkImageLayout finalLayout, VkPipelineStageFlags2 finalStage,
+                                             VkAccessFlags2 finalAccess, bool initialized, VkExtent2D extent) {
+    if (!output.valid())
+        throw std::invalid_argument("native frame output is invalid");
+    if (target == VK_NULL_HANDLE)
+        throw std::invalid_argument("native frame output target is unavailable");
+    if (commandBuffer == VK_NULL_HANDLE)
+        throw std::invalid_argument("native frame output requires a command buffer");
+
+    const auto sourceIt = typedTextures_.find(output.texture);
+    if (sourceIt == typedTextures_.end() || !typedTextureHandles_.isAlive(output.texture))
+        throw std::invalid_argument("native frame output references a stale texture handle");
+    const auto& source = sourceIt->second;
+    if (source.desc.dimension != TextureDimension::d2 || source.desc.extent.width != extent.width ||
+        source.desc.extent.height != extent.height || source.desc.extent.depth != 1 || source.desc.mipLevels != 1 ||
+        source.desc.arrayLayers != 1 || source.desc.format != output.format ||
+        (toBits(source.desc.usage) & toBits(ResourceUsage::transferSrc)) == 0U)
+        throw std::invalid_argument("native frame output does not match the presentation target");
+    if (toVkFormat(output.format) != swapchainFormat_)
+        throw std::invalid_argument("native frame output format cannot be copied to the swapchain");
+
+    recordTextureTransition(commandBuffer, output.texture, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    const VkImageMemoryBarrier2 toTransfer{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = initialized ? previousStage : VK_PIPELINE_STAGE_2_NONE,
+        .srcAccessMask = initialized ? previousAccess : VK_ACCESS_2_NONE,
+        .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .oldLayout = initialized ? previousLayout : VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = target,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    const VkDependencyInfo toTransferDependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &toTransfer,
+    };
+    vkCmdPipelineBarrier2(commandBuffer, &toTransferDependency);
+    const VkImageCopy copy{
+        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .srcOffset = {0, 0, 0},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstOffset = {0, 0, 0},
+        .extent = {extent.width, extent.height, 1},
+    };
+    vkCmdCopyImage(commandBuffer, source.resource.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    const VkImageMemoryBarrier2 toFinal{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = finalStage,
+        .dstAccessMask = finalAccess,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = finalLayout,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = target,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    const VkDependencyInfo toFinalDependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &toFinal,
+    };
+    vkCmdPipelineBarrier2(commandBuffer, &toFinalDependency);
+    recordTextureTransition(commandBuffer, output.texture, typedTextureFinalLayout(source));
 }
 
 void VulkanDevice::recordBindPipeline(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline) {

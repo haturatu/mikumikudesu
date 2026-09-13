@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -18,6 +19,16 @@ namespace dayo::graphics {
 // previous program's allocation.
 class FxResourceRuntime {
   public:
+    struct ResolvedTexture {
+        handles::TextureHandle handle{};
+        Extent3D extent{};
+        PixelFormat format{PixelFormat::rgba8Unorm};
+
+        [[nodiscard]] bool valid() const noexcept {
+            return handle.valid() && extent.width != 0 && extent.height != 0 && extent.depth == 1;
+        }
+    };
+
     FxResourceRuntime() = default;
     ~FxResourceRuntime();
 
@@ -46,6 +57,11 @@ class FxResourceRuntime {
         return descriptorLayoutDesc_;
     }
     [[nodiscard]] std::optional<Extent3D> extent(std::string_view name) const;
+    // Resolves the last texture written by a frame plan. Native presentation
+    // uses this explicit final-write rule instead of guessing a resource name
+    // such as "screen" or "output" from an effect authoring convention.
+    [[nodiscard]] std::optional<ResolvedTexture>
+    resolveOutputTexture(std::span<const fx::FxDispatch> ordered) const;
     [[nodiscard]] std::size_t resourceCount() const noexcept {
         return resources_.size();
     }
@@ -62,6 +78,7 @@ class FxResourceRuntime {
         handles::BufferHandle buffer{};
         handles::SamplerHandle sampler{};
         Extent3D extent{};
+        PixelFormat format{PixelFormat::rgba8Unorm};
     };
 
     Device* device_{};

@@ -234,4 +234,10 @@ VulkanFxExecutor::Stats SubayaiRuntime::execute(SubayaiFrame& frame, CommandList
     return VulkanFxExecutor{*device_}.execute(frame.plan, commands, frame.context, nativeResources);
 }
 
+std::optional<NativeFrameOutput> SubayaiRuntime::output(const SubayaiFrame& frame) const {
+    if (!frame.nativeFx.has_value() || !nativeFx_.ready())
+        return std::nullopt;
+    return nativeFx_.output(*frame.nativeFx);
+}
+
 } // namespace dayo::graphics

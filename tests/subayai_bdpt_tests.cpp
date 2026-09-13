@@ -327,6 +327,11 @@ bool testSubayaiNativeFxExecution() {
     auto frame = runtime.prepareFrame(context, {}, {}, environment);
     ok &= check(runtime.nativeReady() && frame.nativeFx.has_value(),
                 "Subayai runtime prepares the native FX frame path");
+    const auto frameOutput = runtime.output(frame);
+    ok &= check(frameOutput.has_value() && frameOutput->valid() && frameOutput->extent.width == context.renderWidth &&
+                    frameOutput->extent.height == context.renderHeight &&
+                    frameOutput->format == dayo::graphics::PixelFormat::rgba8Unorm,
+                "Subayai runtime exposes the last typed texture as its frame output");
     ok &= check(frame.environmentDescriptorSet.valid(), "Subayai frame exposes an environment descriptor set");
     MockDeformCommands commands;
     const auto stats = runtime.execute(frame, commands);
@@ -370,6 +375,8 @@ bool testBdptNativeFxExecution() {
     auto frame = runtime.prepareFrame(context, dayo::core::DirtyFlag::geometry);
     ok &= check(runtime.nativeReady() && frame.nativeFx.has_value(),
                 "BDPT runtime prepares the native FX frame path");
+    ok &= check(!runtime.output(frame).has_value(),
+                "BDPT runtime does not invent an output when the graph writes no texture");
     MockDeformCommands commands;
     const auto stats = runtime.execute(frame, commands);
     ok &= check(stats.rayTracing == 1 && commands.events ==

@@ -149,6 +149,13 @@ void NativeFxRuntime::reset() noexcept {
     ready_ = false;
 }
 
+std::optional<NativeFrameOutput> NativeFxRuntime::output(const NativeFxFrame& frame) const {
+    const auto resolved = resources_.resolveOutputTexture(frame.plan.ordered);
+    if (!resolved.has_value() || !resolved->valid())
+        return std::nullopt;
+    return NativeFrameOutput{.texture = resolved->handle, .extent = resolved->extent, .format = resolved->format};
+}
+
 NativeFxFrame NativeFxRuntime::prepareFrame(const fx::FxFrameContext& context) const {
     if (!ready_)
         throw std::logic_error("native FX runtime is not initialized");

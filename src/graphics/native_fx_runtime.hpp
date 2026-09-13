@@ -59,6 +59,10 @@ class NativeFxRuntime {
     [[nodiscard]] const FxPipelineRuntime& pipelines() const noexcept {
         return pipelines_;
     }
+    // Returns the last texture written by the planned native passes. The
+    // presentation backend uses the metadata to validate the output without
+    // coupling the FX runtime to a swapchain image.
+    [[nodiscard]] std::optional<NativeFrameOutput> output(const NativeFxFrame& frame) const;
     [[nodiscard]] handles::PipelineLayoutHandle pipelineLayout() const noexcept {
         return pipelineLayout_;
     }
