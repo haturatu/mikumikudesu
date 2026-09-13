@@ -37,6 +37,9 @@ struct NativeDeformUpload {
     std::span<const PreviewMorphDelta> morphDeltas;
     std::span<const float> morphWeights;
     std::span<const std::uint32_t> indices;
+    // Optional host-evaluated positions used to seed the first BLAS build.
+    // The GPU deform pass replaces these values once it is recorded.
+    std::span<const NativeDeformedVertex> deformedVertices;
 };
 
 struct NativeDeformPlan {

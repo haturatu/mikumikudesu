@@ -493,6 +493,15 @@ class Device {
     [[nodiscard]] virtual const DeviceCapabilities& capabilities() const noexcept = 0;
     [[nodiscard]] virtual const GraphicsConvention& convention() const noexcept = 0;
     [[nodiscard]] virtual RendererKind activeRenderer() const noexcept = 0;
+    // The built-in deform pass is optional for non-Vulkan/Preview backends.
+    // Native geometry uses these handles only when the backend exposes the
+    // typed compute pipeline required to populate its BLAS input buffer.
+    [[nodiscard]] virtual handles::PipelineHandle nativeDeformPipeline() const noexcept {
+        return {};
+    }
+    [[nodiscard]] virtual handles::DescriptorSetLayoutHandle nativeDeformDescriptorLayout() const noexcept {
+        return {};
+    }
     // Native RT runtimes can use the backend-neutral rebuild/refit policy
     // without downcasting the device. Preview/mock devices return nullptr.
     [[nodiscard]] virtual IAccelerationBackend* nativeAccelerationBackend() noexcept {

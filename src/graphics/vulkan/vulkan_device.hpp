@@ -38,6 +38,12 @@ class VulkanDevice final : public Device {
     [[nodiscard]] RendererKind activeRenderer() const noexcept override {
         return activeRenderer_;
     }
+    [[nodiscard]] handles::PipelineHandle nativeDeformPipeline() const noexcept override {
+        return nativeDeformPipeline_;
+    }
+    [[nodiscard]] handles::DescriptorSetLayoutHandle nativeDeformDescriptorLayout() const noexcept override {
+        return nativeDeformDescriptorLayout_;
+    }
     [[nodiscard]] IAccelerationBackend* nativeAccelerationBackend() noexcept override {
         return &accelerationBackend_;
     }
@@ -222,6 +228,8 @@ class VulkanDevice final : public Device {
     void destroyPipeline();
     void createNativeOutputPipeline();
     void destroyNativeOutputPipeline() noexcept;
+    void createNativeDeformPipeline();
+    void destroyNativeDeformPipeline() noexcept;
     void createPreviewDescriptors();
     void destroyPreviewDescriptors();
     void destroyPreviewTextures();
@@ -372,6 +380,10 @@ class VulkanDevice final : public Device {
     VkDescriptorSetLayout nativeOutputDescriptorSetLayout_{};
     VkDescriptorPool nativeOutputDescriptorPool_{};
     std::array<VkDescriptorSet, 2> nativeOutputDescriptors_{};
+    handles::DescriptorSetLayoutHandle nativeDeformDescriptorLayout_{};
+    handles::PipelineLayoutHandle nativeDeformPipelineLayout_{};
+    handles::ShaderHandle nativeDeformShader_{};
+    handles::PipelineHandle nativeDeformPipeline_{};
     VkDescriptorSetLayout previewDescriptorSetLayout_{};
     VkDescriptorSetLayout previewSkinningDescriptorSetLayout_{};
     VkDescriptorSetLayout previewMorphDescriptorSetLayout_{};

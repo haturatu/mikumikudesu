@@ -110,8 +110,24 @@ bool BdptRuntime::syncGeometry(std::span<const NativeGeometryMeshUpload> meshes,
         return false;
     }
     geometry_.setBackend(device_->nativeAccelerationBackend());
-    if (!geometry_.ready())
+    if (meshes.empty()) {
+        geometry_.reset();
+        return true;
+    }
+    bool replaceGeometry = !geometry_.ready() || geometry_.meshCount() != meshes.size();
+    if (!replaceGeometry) {
+        for (const auto& mesh : meshes) {
+            if (geometry_.deform(mesh.meshId) == nullptr) {
+                replaceGeometry = true;
+                break;
+            }
+        }
+    }
+    if (replaceGeometry) {
+        geometry_.reset();
+        geometry_.setBackend(device_->nativeAccelerationBackend());
         return geometry_.initialize(*device_, meshes, error);
+    }
     for (const auto& mesh : meshes)
         if (!geometry_.updateMesh(mesh, error))
             return false;
