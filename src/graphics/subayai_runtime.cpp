@@ -51,6 +51,7 @@ void SubayaiRuntime::reset() noexcept {
     materialRuntime_.reset();
     lightRuntime_.reset();
     device_ = nullptr;
+    environmentService_ = EnvironmentService(nullptr);
     program_ = {};
     materials_.clear();
     nativeAttempted_ = false;
