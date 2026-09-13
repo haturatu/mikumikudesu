@@ -552,6 +552,10 @@ class Device {
     [[nodiscard]] virtual handles::SamplerHandle createSamplerEx() {
         throw std::logic_error("Typed samplers are not implemented by this backend");
     }
+    [[nodiscard]] virtual handles::SamplerHandle createSamplerEx(const SamplerResourceDesc& desc) {
+        static_cast<void>(desc);
+        return createSamplerEx();
+    }
     [[nodiscard]] virtual handles::ShaderHandle createShaderEx(const ShaderDesc&) {
         throw std::logic_error("Typed shaders are not implemented by this backend");
     }
@@ -587,6 +591,9 @@ class Device {
     }
     virtual void destroyBufferEx(handles::BufferHandle) {
         throw std::logic_error("Typed buffer destroy is not implemented by this backend");
+    }
+    virtual void destroySamplerEx(handles::SamplerHandle) {
+        throw std::logic_error("Typed sampler destroy is not implemented by this backend");
     }
     virtual void retireTextureEx(handles::TextureHandle, std::uint64_t /*frameIndex*/) {
         throw std::logic_error("Typed texture retirement is not implemented by this backend");

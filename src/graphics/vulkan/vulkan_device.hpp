@@ -67,9 +67,11 @@ class VulkanDevice final : public Device {
     [[nodiscard]] handles::BufferHandle createBufferEx(const BufferResourceDesc& desc) override;
     void destroyTextureEx(handles::TextureHandle handle) override;
     void destroyBufferEx(handles::BufferHandle handle) override;
+    void destroySamplerEx(handles::SamplerHandle handle) override;
     void retireTextureEx(handles::TextureHandle handle, std::uint64_t frameIndex) override;
     void retireBufferEx(handles::BufferHandle handle, std::uint64_t frameIndex) override;
     [[nodiscard]] handles::SamplerHandle createSamplerEx() override;
+    [[nodiscard]] handles::SamplerHandle createSamplerEx(const SamplerResourceDesc& desc) override;
     [[nodiscard]] handles::ShaderHandle createShaderEx(const ShaderDesc& desc) override;
     void destroyShaderEx(handles::ShaderHandle handle) override;
     [[nodiscard]] handles::PipelineLayoutHandle createPipelineLayoutEx(const PipelineLayoutDesc& desc) override;
