@@ -81,17 +81,29 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                     std::span<const std::string>(dispatch.conditions.data(), dispatch.conditions.size()), context))
                 return false;
         }
-        if (!resources.resolvePipeline)
-            throw std::logic_error("VulkanFxExecutor: shader pass has no pipeline resolver: " + dispatch.name);
-        const auto pipeline = resources.resolvePipeline(dispatch);
-        if (!pipeline.has_value())
-            throw std::logic_error("VulkanFxExecutor: pipeline is unavailable: " + dispatch.name);
         prepareResources(dispatch);
-        commands.bindPipeline(*pipeline);
-        if (resources.makePushConstants) {
-            const auto constants = resources.makePushConstants(dispatch, context);
-            if (!constants.empty())
-                commands.pushConstants(std::span<const std::byte>(constants.data(), constants.size()));
+        if (resources.resolveTypedPipeline) {
+            const auto pipeline = resources.resolveTypedPipeline(dispatch);
+            if (!pipeline.has_value())
+                throw std::logic_error("VulkanFxExecutor: typed pipeline is unavailable: " + dispatch.name);
+            commands.bindPipelineEx(*pipeline);
+            if (resources.makePushConstants) {
+                const auto constants = resources.makePushConstants(dispatch, context);
+                if (!constants.empty())
+                    commands.pushConstantsEx(std::span<const std::byte>(constants.data(), constants.size()));
+            }
+        } else {
+            if (!resources.resolvePipeline)
+                throw std::logic_error("VulkanFxExecutor: shader pass has no pipeline resolver: " + dispatch.name);
+            const auto pipeline = resources.resolvePipeline(dispatch);
+            if (!pipeline.has_value())
+                throw std::logic_error("VulkanFxExecutor: pipeline is unavailable: " + dispatch.name);
+            commands.bindPipeline(*pipeline);
+            if (resources.makePushConstants) {
+                const auto constants = resources.makePushConstants(dispatch, context);
+                if (!constants.empty())
+                    commands.pushConstants(std::span<const std::byte>(constants.data(), constants.size()));
+            }
         }
         return true;
     };
@@ -140,7 +152,11 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                 break;
             if (dispatch.resources.size() < 2 || dispatch.resources[0].write || !dispatch.resources[1].write)
                 throw std::logic_error("VulkanFxExecutor: copy pass requires read source and write destination");
-            commands.copyTexture(resolve(dispatch.resources[0]), resolve(dispatch.resources[1]));
+            if (resources.resolveTypedTexture) {
+                commands.copyTextureEx(resolveTyped(dispatch.resources[0]), resolveTyped(dispatch.resources[1]));
+            } else {
+                commands.copyTexture(resolve(dispatch.resources[0]), resolve(dispatch.resources[1]));
+            }
             ++stats.copy;
             break;
         case dayo::fx::FxOpKind::clear:
@@ -148,7 +164,10 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                 break;
             if (dispatch.resources.size() != 1 || !dispatch.resources[0].write)
                 throw std::logic_error("VulkanFxExecutor: clear pass requires one write target");
-            commands.clearTexture(resolve(dispatch.resources[0]));
+            if (resources.resolveTypedTexture)
+                commands.clearTextureEx(resolveTyped(dispatch.resources[0]));
+            else
+                commands.clearTexture(resolve(dispatch.resources[0]));
             ++stats.clear;
             break;
         case dayo::fx::FxOpKind::mipmap:
@@ -156,7 +175,10 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                 break;
             if (dispatch.resources.size() != 1)
                 throw std::logic_error("VulkanFxExecutor: mipmap pass requires one target");
-            commands.generateMipmaps(resolve(dispatch.resources[0]));
+            if (resources.resolveTypedTexture)
+                commands.generateMipmapsEx(resolveTyped(dispatch.resources[0]));
+            else
+                commands.generateMipmaps(resolve(dispatch.resources[0]));
             ++stats.mipmap;
             break;
         case dayo::fx::FxOpKind::raytracing:

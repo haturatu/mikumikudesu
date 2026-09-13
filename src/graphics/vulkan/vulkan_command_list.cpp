@@ -66,6 +66,9 @@ void VulkanCommandList::buildAccelerationStructure(AccelerationStructureHandle) 
 void VulkanCommandList::bindPipelineEx(handles::PipelineHandle pipeline) {
     if (!pipeline.valid())
         throw std::invalid_argument("typed pipeline handle is invalid");
+    if (device_ == nullptr)
+        throw std::logic_error("typed pipeline bind requires a Vulkan device");
+    device_->recordBindPipeline(commandBuffer_, pipeline);
     pipeline_ = pipeline;
 }
 

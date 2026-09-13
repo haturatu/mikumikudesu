@@ -254,6 +254,7 @@ class VulkanDevice final : public Device {
     void recordTraceRays(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
                          handles::ShaderBindingTableHandle sbt, std::uint32_t width, std::uint32_t height,
                          std::uint32_t depth);
+    void recordBindPipeline(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline);
     void recordTransitionTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture);
     void recordBindDescriptorSet(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
                                  handles::DescriptorSetHandle set);
