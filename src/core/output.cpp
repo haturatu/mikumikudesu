@@ -3,12 +3,19 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
+#if DAYO_HAS_OPENEXR
+#include <OpenEXR/ImfArray.h>
+#include <OpenEXR/ImfRgbaFile.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <fstream>
+#include <limits>
 #include <mutex>
 #include <queue>
 #include <stdexcept>
@@ -54,7 +61,18 @@ void writeFrame(const std::filesystem::path& path, const ImageRgba8& image, Outp
         return;
     }
     if (format == OutputFormat::exr) {
-        throw std::runtime_error("EXR encoding requires an OpenEXR-enabled build; use PNG or PPM");
+        if (image.width == 0 || image.height == 0 || image.pixels.empty())
+            throw std::invalid_argument("cannot encode an empty EXR frame");
+        ImageData source{
+            .width = image.width,
+            .height = image.height,
+            .channels = 4,
+            .type = PixelType::unorm8,
+            .space = ColorSpace::srgb,
+            .bytes = image.pixels,
+        };
+        writeFrame(path, convertImage(source, PixelType::half16, ColorSpace::linear));
+        return;
     }
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     if (!output)
@@ -65,6 +83,43 @@ void writeFrame(const std::filesystem::path& path, const ImageRgba8& image, Outp
         output.put(static_cast<char>(image.pixels[index + 1]));
         output.put(static_cast<char>(image.pixels[index + 2]));
     }
+}
+
+void writeFrame(const std::filesystem::path& path, const ImageData& image) {
+    if (image.width == 0 || image.height == 0 || image.channels != 4 || image.bytes.empty())
+        throw std::invalid_argument("EXR input must be a non-empty RGBA image");
+    if (image.width > static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
+        image.height > static_cast<std::uint32_t>(std::numeric_limits<int>::max()))
+        throw std::invalid_argument("EXR dimensions exceed the encoder limit");
+#if DAYO_HAS_OPENEXR
+    const ImageData linear = image.type == PixelType::half16 && image.space == ColorSpace::linear
+                                 ? image
+                                 : convertImage(image, PixelType::half16, ColorSpace::linear);
+    const auto pixels = static_cast<std::size_t>(linear.width) * linear.height;
+    if (linear.bytes.size() < pixels * 4U * sizeof(std::uint16_t))
+        throw std::invalid_argument("truncated RGBA half image for EXR");
+    Imf::Array2D<Imf::Rgba> outputPixels;
+    outputPixels.resizeErase(static_cast<int>(linear.height), static_cast<int>(linear.width));
+    for (std::uint32_t y = 0; y < linear.height; ++y) {
+        for (std::uint32_t x = 0; x < linear.width; ++x) {
+            Imf::Rgba pixel;
+            std::memcpy(&pixel,
+                        linear.bytes.data() +
+                            (static_cast<std::size_t>(y) * linear.width + x) * 4U * sizeof(std::uint16_t),
+                        sizeof(pixel));
+            outputPixels[static_cast<int>(y)][static_cast<int>(x)] = pixel;
+        }
+    }
+    std::filesystem::create_directories(path.parent_path());
+    Imf::RgbaOutputFile output(path.string().c_str(), static_cast<int>(linear.width), static_cast<int>(linear.height),
+                               Imf::WRITE_RGBA);
+    output.setFrameBuffer(&outputPixels[0][0], 1, static_cast<std::size_t>(linear.width));
+    output.writePixels(static_cast<int>(linear.height));
+#else
+    static_cast<void>(path);
+    static_cast<void>(image);
+    throw std::runtime_error("EXR encoding requires an OpenEXR-enabled build; use PNG or PPM");
+#endif
 }
 
 struct OutputWorker {

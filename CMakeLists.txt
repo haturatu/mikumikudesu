@@ -173,6 +173,7 @@ add_library(
   src/core/fx/fx_size.cpp
   src/core/fx/fx_symbol.cpp
   src/core/image.cpp
+  src/core/image_hdr.cpp
   src/core/audio_export.cpp
   src/core/video_export.cpp
   src/core/media.cpp
@@ -487,6 +488,17 @@ if(DAYO_HAS_MEDIA)
   target_link_libraries(dayo_core PUBLIC PkgConfig::FFMPEG)
 endif()
 
+set(DAYO_HAS_OPENEXR 0)
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(OPENEXR QUIET IMPORTED_TARGET OpenEXR)
+  if(OPENEXR_FOUND)
+    set(DAYO_HAS_OPENEXR 1)
+    target_link_libraries(dayo_core PUBLIC PkgConfig::OPENEXR)
+  endif()
+endif()
+target_compile_definitions(dayo_core PUBLIC DAYO_HAS_OPENEXR=${DAYO_HAS_OPENEXR})
+
 add_executable(
   mikumikudesu
   src/app/application.cpp
@@ -601,6 +613,8 @@ if(BUILD_TESTING)
   target_link_libraries(dayo_cli_tests PRIVATE dayo_cli)
   add_executable(dayo_core_tests tests/core_tests.cpp)
   target_link_libraries(dayo_core_tests PRIVATE dayo_core)
+  add_executable(dayo_output_tests tests/output_tests.cpp)
+  target_link_libraries(dayo_output_tests PRIVATE dayo_core)
   add_executable(dayo_video_export_job_tests tests/video_export_job_tests.cpp src/app/video_export_job.cpp)
   target_link_libraries(dayo_video_export_job_tests PRIVATE dayo_core)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
@@ -651,6 +665,12 @@ if(BUILD_TESTING)
       if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         target_compile_options(dayo_core_tests PRIVATE -Wno-error=deprecated-literal-operator)
       endif()
+    endif()
+  endif()
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(dayo_output_tests PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_output_tests PRIVATE -Werror)
     endif()
   endif()
 
@@ -760,6 +780,7 @@ if(BUILD_TESTING)
   endif()
 
   add_test(NAME core COMMAND dayo_core_tests)
+  add_test(NAME output COMMAND dayo_output_tests)
   add_test(NAME video_export_job COMMAND dayo_video_export_job_tests)
   set_tests_properties(video_export_job PROPERTIES TIMEOUT 20)
   add_test(NAME cli COMMAND dayo_cli_tests)
@@ -806,6 +827,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_graphics
     mikumikudesu
     dayo_core_tests
+    dayo_output_tests
     dayo_video_export_job_tests
     dayo_cli_tests
     dayo_fx_executor_tests
@@ -827,6 +849,9 @@ if(DAYO_ENABLE_SANITIZERS)
   endif()
   if(TARGET dayo_core_tests)
     target_link_options(dayo_core_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+  if(TARGET dayo_output_tests)
+    target_link_options(dayo_output_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
   if(TARGET dayo_video_export_job_tests)
     target_link_options(dayo_video_export_job_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
