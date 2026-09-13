@@ -861,16 +861,16 @@ int main() {
         EnvironmentService service(&backend);
         const EnvironmentDesc first{.source = "sky.hdr", .exposure = 1.0F, .version = 7};
         ok &= check(service.update(first), "environment first update regenerates");
+        MockDeformCommands commands;
+        service.record(commands);
+        service.record(commands);
+        ok &= check(backend.recordings == 1, "environment records pending GPU work only once");
         service.setHandles(11, 12, 7);
         ok &= check(!service.update(first), "environment unchanged reuses cache");
         ok &= check(backend.regenerations == 1 && service.generationCount() == 1, "environment regen counted once");
         ok &= check(service.cubemap() == 11 && service.prefilteredMips() == 12 && service.skywalkerVersion() == 7,
                     "environment keeps cubemap/prefiltered/Skywalker");
         ok &= check(service.sphericalHarmonics().size() == 27, "environment keeps SH coefficients");
-        MockDeformCommands commands;
-        service.record(commands);
-        service.record(commands);
-        ok &= check(backend.recordings == 1, "environment records pending GPU work only once");
         const EnvironmentDesc changed{.source = "sky.hdr", .exposure = 2.0F, .version = 7};
         ok &= check(service.update(changed), "environment exposure change regenerates");
         ok &= check(backend.regenerations == 2, "environment regen on change");
