@@ -14,6 +14,7 @@
 #include "graphics/native_scene_bindings.hpp"
 #include "graphics/native_scene_binding_runtime.hpp"
 #include "graphics/native_frame_constants.hpp"
+#include "graphics/native_scene_resource_runtime.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1174,6 +1175,79 @@ int main() {
         runtime.reset();
         ok &= check(device.destroyedBuffers == destroyedBeforeReset + 2,
                     "native frame constants reset releases both uniform buffers");
+    }
+    // Native scene resources: fixed frame bindings and all runtime arrays are
+    // materialized into the upstream descriptor spaces in one operation.
+    {
+        MockNativeDevice device;
+        dayo::graphics::NativeSceneResourceRuntime runtime;
+        const dayo::graphics::NativeSceneDescriptorCounts counts{
+            .textures = 2,
+            .vertexBuffers = 1,
+            .indexBuffers = 1,
+            .materials = 1,
+            .faces = 1,
+            .materialFaces = 1,
+            .faceWalkers = 1,
+            .previousVertices = 1,
+            .rawVertices = 1,
+        };
+        std::string error;
+        ok &= check(runtime.initialize(device, counts, &error),
+                    "native scene resource runtime creates canonical layouts");
+        std::uint32_t nextHandle = 1;
+        const auto buffer = [&nextHandle]() {
+            return dayo::graphics::handles::BufferHandle{nextHandle++, 1};
+        };
+        const auto texture = [&nextHandle]() {
+            return dayo::graphics::handles::TextureHandle{nextHandle++, 1};
+        };
+        const auto acceleration = [&nextHandle]() {
+            return dayo::graphics::handles::AccelerationStructureHandle{nextHandle++, 1};
+        };
+        const std::array<dayo::graphics::handles::TextureHandle, 2> textures{texture(), texture()};
+        const std::array<dayo::graphics::handles::BufferHandle, 1> buffers{buffer()};
+        dayo::graphics::NativeSceneResourceBindings resources;
+        resources.rtOutput = texture();
+        resources.oidnBuffer = buffer();
+        resources.normalDepth = texture();
+        resources.gbuffer1 = texture();
+        resources.gbuffer2 = texture();
+        resources.tlas = acceleration();
+        resources.modelToMaterial = buffer();
+        resources.materialToModel = buffer();
+        resources.peekaboo = buffer();
+        resources.materialSelected = buffer();
+        resources.skybox = texture();
+        resources.skywalker = buffer();
+        resources.skywalkerRow = buffer();
+        resources.skyboxSh = buffer();
+        resources.screenBmp = texture();
+        resources.cloneCount = buffer();
+        resources.screenTexture = texture();
+        resources.viewConstants = buffer();
+        resources.controllerConstants = buffer();
+        resources.textureTable = buffer();
+        resources.textures = textures;
+        resources.passConstants = buffer();
+        resources.vertexBuffers = buffers;
+        resources.indexBuffers = buffers;
+        resources.materials = buffers;
+        resources.faces = buffers;
+        resources.materialFaces = buffers;
+        resources.faceWalkers = buffers;
+        resources.previousVertices = buffers;
+        resources.rawVertices = buffers;
+        ok &= check(runtime.sync(resources, &error),
+                    "native scene resource runtime binds every canonical descriptor space");
+        ok &= check(runtime.descriptorSet(dayo::graphics::NativeSceneDescriptorSet::frame).valid() &&
+                        runtime.descriptorSet(dayo::graphics::NativeSceneDescriptorSet::textures).valid() &&
+                        runtime.descriptorSet(dayo::graphics::NativeSceneDescriptorSet::rawVertices).valid(),
+                    "native scene resource runtime exposes bound frame and array sets");
+        auto incomplete = resources;
+        incomplete.textures = std::span<const dayo::graphics::handles::TextureHandle>(textures.data(), 1);
+        ok &= check(!runtime.sync(incomplete, &error) && !error.empty(),
+                    "native scene resource runtime rejects an array count mismatch");
     }
     // DenoiserRuntime fallback: staging/readback -> CPU -> upload copy without CUDA.
     {
