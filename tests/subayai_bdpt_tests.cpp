@@ -141,6 +141,11 @@ struct MockNativeDevice final : dayo::graphics::Device {
     dayo::graphics::TextureHandle createTexture(const dayo::graphics::TextureDesc&) override {
         return nextHandle_++;
     }
+    dayo::graphics::handles::DescriptorSetLayoutHandle
+    createDescriptorSetLayoutEx(const dayo::graphics::DescriptorSetLayoutDesc& desc) override {
+        lastDescriptorLayout = desc;
+        return {nextDescriptorLayout_++, 1};
+    }
     dayo::graphics::handles::TextureHandle createTextureEx(const dayo::graphics::TextureResourceDesc&) override {
         return {nextTypedTexture_++, 1};
     }
@@ -165,9 +170,17 @@ struct MockNativeDevice final : dayo::graphics::Device {
         lastDescriptorBindings.assign(bindings.begin(), bindings.end());
         return {nextDescriptorSet_++, 1};
     }
+    void updateDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle,
+                               std::span<const dayo::graphics::DescriptorBindingEx> bindings) override {
+        lastDescriptorBindings.assign(bindings.begin(), bindings.end());
+    }
     void destroyDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle handle) override {
         if (handle.valid())
             ++destroyedDescriptorSets;
+    }
+    void destroyDescriptorSetLayoutEx(dayo::graphics::handles::DescriptorSetLayoutHandle handle) override {
+        if (handle.valid())
+            ++destroyedDescriptorLayouts;
     }
     void uploadTextureEx(dayo::graphics::handles::TextureHandle, std::span<const std::uint8_t>, std::uint32_t,
                          std::uint32_t) override {}
@@ -203,10 +216,13 @@ struct MockNativeDevice final : dayo::graphics::Device {
     dayo::graphics::BufferHandle nextHandle_{1};
     std::uint32_t nextTypedBuffer_{1};
     std::uint32_t nextTypedTexture_{1};
+    std::uint32_t nextDescriptorLayout_{1};
     std::uint32_t nextDescriptorSet_{1};
     std::size_t destroyedBuffers{};
     std::size_t destroyedTextures{};
     std::size_t destroyedDescriptorSets{};
+    std::size_t destroyedDescriptorLayouts{};
+    dayo::graphics::DescriptorSetLayoutDesc lastDescriptorLayout;
     std::vector<dayo::graphics::DescriptorBindingEx> lastDescriptorBindings;
     std::unordered_map<dayo::graphics::handles::BufferHandle, Buffer> typedBuffers_;
 };
@@ -315,15 +331,20 @@ int main() {
         ok &= check(frame.plan.ordered.size() == 1 && frame.materials.size() == 1,
                     "Subayai runtime prepares graph and material frame state");
         ok &= check(frame.materialBuffer.valid(), "Subayai frame exposes a typed material storage buffer");
+        ok &= check(frame.materialDescriptorSet.valid(), "Subayai frame exposes a material descriptor set");
         const auto materialBytes =
             device.readbackBufferEx(frame.materialBuffer, 0, sizeof(dayo::graphics::SubayaiMaterialGpu));
         ok &= check(materialBytes.size() == sizeof(dayo::graphics::SubayaiMaterialGpu),
                     "Subayai material ABI is uploaded to the typed buffer");
         ok &= check(frame.lightSamplingBuffer.valid(), "Subayai frame exposes a typed light sampling buffer");
+        ok &= check(frame.lightSamplingDescriptorSet.valid(), "Subayai frame exposes a light descriptor set");
         const auto lightBytes = device.readbackBufferEx(
             frame.lightSamplingBuffer, 0, lightTable.size() * sizeof(dayo::graphics::AliasEntry));
         ok &= check(lightBytes.size() == lightTable.size() * sizeof(dayo::graphics::AliasEntry),
                     "Subayai light sampling table is uploaded to the typed buffer");
+        ok &= check(device.lastDescriptorBindings.size() == 1 &&
+                        device.lastDescriptorBindings.front().buffer == frame.lightSamplingBuffer,
+                    "Subayai light descriptor points at the uploaded buffer");
         runtime.reset();
         ok &= check(!runtime.ready(), "Subayai runtime reset disables execution");
 
