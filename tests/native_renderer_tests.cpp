@@ -60,6 +60,12 @@ int main() {
                     disabledDecision.reason.find("native Subayai pass implementation") != std::string::npos,
                 "native implementation gate keeps Preview as the safe fallback");
 
+    const auto initializationDecision = dayo::graphics::decideNativeRendererForInitialization(
+        disabled, dayo::graphics::RendererKind::subayai, compute);
+    ok &= check(initializationDecision.active == dayo::graphics::RendererKind::subayai &&
+                    !initializationDecision.fellBack() && initializationDecision.reason.empty(),
+                "runtime initialization is not blocked by its own not-yet-published implementation gate");
+
     const auto previewDecision =
         dayo::graphics::decideNativeRenderer(disabled, dayo::graphics::RendererKind::preview, rayTracing);
     ok &= check(previewDecision.active == dayo::graphics::RendererKind::preview &&
