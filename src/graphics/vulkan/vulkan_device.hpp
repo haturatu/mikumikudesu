@@ -47,6 +47,18 @@ class VulkanDevice final : public Device {
     [[nodiscard]] handles::ShaderHandle nativeFullscreenVertexShader() const noexcept override {
         return nativeFullscreenVertexShader_;
     }
+    [[nodiscard]] handles::PipelineHandle nativeEnvironmentEquirectPipeline() const noexcept override {
+        return nativeEnvironmentEquirectPipeline_;
+    }
+    [[nodiscard]] handles::DescriptorSetLayoutHandle nativeEnvironmentEquirectLayout() const noexcept override {
+        return nativeEnvironmentEquirectLayout_;
+    }
+    [[nodiscard]] handles::PipelineHandle nativeEnvironmentPrefilterPipeline() const noexcept override {
+        return nativeEnvironmentPrefilterPipeline_;
+    }
+    [[nodiscard]] handles::DescriptorSetLayoutHandle nativeEnvironmentPrefilterLayout() const noexcept override {
+        return nativeEnvironmentPrefilterLayout_;
+    }
     [[nodiscard]] IAccelerationBackend* nativeAccelerationBackend() noexcept override {
         return &accelerationBackend_;
     }
@@ -234,6 +246,8 @@ class VulkanDevice final : public Device {
     void destroyNativeOutputPipeline() noexcept;
     void createNativeDeformPipeline();
     void destroyNativeDeformPipeline() noexcept;
+    void createNativeEnvironmentPipelines();
+    void destroyNativeEnvironmentPipelines() noexcept;
     void createPreviewDescriptors();
     void destroyPreviewDescriptors();
     void destroyPreviewTextures();
@@ -409,6 +423,14 @@ class VulkanDevice final : public Device {
     handles::ShaderHandle nativeDeformShader_{};
     handles::PipelineHandle nativeDeformPipeline_{};
     handles::ShaderHandle nativeFullscreenVertexShader_{};
+    handles::DescriptorSetLayoutHandle nativeEnvironmentEquirectLayout_{};
+    handles::PipelineLayoutHandle nativeEnvironmentEquirectPipelineLayout_{};
+    handles::ShaderHandle nativeEnvironmentEquirectShader_{};
+    handles::PipelineHandle nativeEnvironmentEquirectPipeline_{};
+    handles::DescriptorSetLayoutHandle nativeEnvironmentPrefilterLayout_{};
+    handles::PipelineLayoutHandle nativeEnvironmentPrefilterPipelineLayout_{};
+    handles::ShaderHandle nativeEnvironmentPrefilterShader_{};
+    handles::PipelineHandle nativeEnvironmentPrefilterPipeline_{};
     VkDescriptorSetLayout previewDescriptorSetLayout_{};
     VkDescriptorSetLayout previewSkinningDescriptorSetLayout_{};
     VkDescriptorSetLayout previewMorphDescriptorSetLayout_{};

@@ -523,6 +523,18 @@ class Device {
     [[nodiscard]] virtual handles::ShaderHandle nativeFullscreenVertexShader() const noexcept {
         return {};
     }
+    [[nodiscard]] virtual handles::PipelineHandle nativeEnvironmentEquirectPipeline() const noexcept {
+        return {};
+    }
+    [[nodiscard]] virtual handles::DescriptorSetLayoutHandle nativeEnvironmentEquirectLayout() const noexcept {
+        return {};
+    }
+    [[nodiscard]] virtual handles::PipelineHandle nativeEnvironmentPrefilterPipeline() const noexcept {
+        return {};
+    }
+    [[nodiscard]] virtual handles::DescriptorSetLayoutHandle nativeEnvironmentPrefilterLayout() const noexcept {
+        return {};
+    }
     // Native RT runtimes can use the backend-neutral rebuild/refit policy
     // without downcasting the device. Preview/mock devices return nullptr.
     [[nodiscard]] virtual IAccelerationBackend* nativeAccelerationBackend() noexcept {

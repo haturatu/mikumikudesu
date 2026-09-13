@@ -110,6 +110,7 @@ bool EnvironmentService::update(const EnvironmentDesc& desc) {
     if (typedResult_.skywalkerVersion == 0)
         typedResult_.skywalkerVersion = desc.version;
     sphericalHarmonics_ = typedResult_.sphericalHarmonics;
+    recordPending_ = true;
     log::info("Environment regenerated: ", desc.source, " exposure ", desc.exposure);
     return true;
 }
@@ -123,6 +124,7 @@ void EnvironmentService::setHandles(TextureHandle cubemap, TextureHandle prefilt
     typedResult_.prefiltered = {};
     typedResult_.sphericalHarmonics = sphericalHarmonics_;
     typedResult_.skywalkerVersion = skywalkerVersion;
+    recordPending_ = false;
 }
 
 void EnvironmentService::setGpuResult(EnvironmentGpuResult result) noexcept {
@@ -131,10 +133,24 @@ void EnvironmentService::setGpuResult(EnvironmentGpuResult result) noexcept {
     typedResult_ = result;
     sphericalHarmonics_ = result.sphericalHarmonics;
     skywalkerVersion_ = result.skywalkerVersion;
+    recordPending_ = false;
+}
+
+void EnvironmentService::record(CommandList& commands) const {
+    if (!recordPending_)
+        return;
+    if (backend_ != nullptr)
+        backend_->record(commands);
+    recordPending_ = false;
 }
 
 DescriptorSetLayoutDesc nativeEnvironmentPassLayout() noexcept {
     return {.bindings = {{0, DescriptorKind::sampledImage, 1, ShaderStageMask::compute},
+                         {1, DescriptorKind::storageImage, 1, ShaderStageMask::compute}}};
+}
+
+DescriptorSetLayoutDesc nativeEnvironmentPrefilterLayout() noexcept {
+    return {.bindings = {{0, DescriptorKind::storageImage, 1, ShaderStageMask::compute},
                          {1, DescriptorKind::storageImage, 1, ShaderStageMask::compute}}};
 }
 
@@ -210,7 +226,8 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const Environmen
             .format = PixelFormat::rgba16Float,
             .mipLevels = mipLevels_,
             .arrayLayers = 1,
-            .usage = ResourceUsage::storageReadWrite | ResourceUsage::sampledRead,
+            .usage = ResourceUsage::storageReadWrite | ResourceUsage::sampledRead | ResourceUsage::transferSrc |
+                     ResourceUsage::transferDst,
             .lifetime = ResourceLifetime::persistent,
         });
         device_->uploadTextureEx(resources_.source, image.bytes, 0, 0);
@@ -252,6 +269,8 @@ void NativeEnvironmentBackend::record(CommandList& commands) const {
     commands.pushConstantsEx(std::as_bytes(std::span<const NativeEnvironmentPushConstants>(&constants, 1)));
     commands.dispatch(groups, groups, 6);
     commands.memoryBarrierEx();
+    if (mipLevels_ > 1)
+        commands.generateMipmapsEx(resources_.prefiltered);
 }
 
 void NativeEnvironmentBackend::reset() noexcept {

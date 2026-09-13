@@ -57,6 +57,9 @@ class SubayaiRuntime {
         environmentService_ = EnvironmentService(backend);
     }
     [[nodiscard]] bool updateEnvironment(const EnvironmentDesc& description);
+    void recordEnvironment(CommandList& commands) const {
+        environmentService_.record(commands);
+    }
     [[nodiscard]] const EnvironmentGpuResult& environment() const noexcept {
         return environmentService_.gpuResult();
     }

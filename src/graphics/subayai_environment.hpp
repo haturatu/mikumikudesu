@@ -52,6 +52,7 @@ struct NativeEnvironmentPushConstants {
 static_assert(sizeof(NativeEnvironmentPushConstants) == 16);
 
 [[nodiscard]] DescriptorSetLayoutDesc nativeEnvironmentPassLayout() noexcept;
+[[nodiscard]] DescriptorSetLayoutDesc nativeEnvironmentPrefilterLayout() noexcept;
 
 class IEnvironmentBackend {
   public:
@@ -61,6 +62,7 @@ class IEnvironmentBackend {
         regenerate(desc);
         return {};
     }
+    virtual void record(CommandList&) const {}
 };
 
 class EnvironmentService {
@@ -96,6 +98,7 @@ class EnvironmentService {
     // Test/host hook: publish the GPU handles produced by regeneration.
     void setHandles(TextureHandle cubemap, TextureHandle prefiltered, std::uint64_t skywalkerVersion) noexcept;
     void setGpuResult(EnvironmentGpuResult result) noexcept;
+    void record(CommandList& commands) const;
     [[nodiscard]] const EnvironmentGpuResult& gpuResult() const noexcept {
         return typedResult_;
     }
@@ -110,6 +113,7 @@ class EnvironmentService {
     std::array<float, 27> sphericalHarmonics_{};
     std::uint64_t skywalkerVersion_{0};
     EnvironmentGpuResult typedResult_;
+    mutable bool recordPending_{};
 };
 
 // Typed environment backend. It owns the source/equirectangular texture and
@@ -124,7 +128,7 @@ class NativeEnvironmentBackend final : public IEnvironmentBackend {
     void regenerate(const EnvironmentDesc& desc) override;
     [[nodiscard]] EnvironmentGpuResult regenerateEx(const EnvironmentDesc& desc) override;
     [[nodiscard]] EnvironmentGpuResult regenerateImage(const EnvironmentDesc& desc, const core::ImageData& image);
-    void record(CommandList& commands) const;
+    void record(CommandList& commands) const override;
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {

@@ -27,6 +27,8 @@ class NativeRendererCoordinator {
     [[nodiscard]] NativeRendererStatus prepare(Device& device, RendererKind requested,
                                                 const core::EffectGraph& graph);
     [[nodiscard]] NativeRendererStatus prepare(Device& device, RendererKind requested, fx::FxProgram program);
+    void setEnvironmentBackend(IEnvironmentBackend* backend) noexcept;
+    [[nodiscard]] bool updateEnvironment(const EnvironmentDesc& description);
     void reset() noexcept;
 
     [[nodiscard]] const NativeRendererStatus& status() const noexcept {
@@ -48,6 +50,7 @@ class NativeRendererCoordinator {
     NativeRendererStatus status_{};
     SubayaiRuntime subayai_;
     BdptRuntime bdpt_;
+    IEnvironmentBackend* environmentBackend_{};
 };
 
 } // namespace dayo::graphics

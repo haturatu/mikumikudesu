@@ -721,6 +721,13 @@ int main() {
         scene.cameraDistance = 3.0F;
         scene.backgroundEnabled = false;
         device.updatePreviewScene(scene);
+        if (!device.nativeEnvironmentEquirectPipeline().valid() ||
+            !device.nativeEnvironmentEquirectLayout().valid() ||
+            !device.nativeEnvironmentPrefilterPipeline().valid() ||
+            !device.nativeEnvironmentPrefilterLayout().valid()) {
+            std::cerr << "FAIL: native environment compute pipelines were not initialized\n";
+            return 1;
+        }
         if (!recordsNativeOffscreenOutput(device)) {
             std::cerr << "FAIL: native renderer was not recorded for offscreen output\n";
             return 1;

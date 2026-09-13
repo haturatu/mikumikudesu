@@ -117,8 +117,12 @@ struct MockAccelerationBackend : dayo::graphics::IAccelerationBackend {
 
 struct MockEnvironmentBackend : dayo::graphics::IEnvironmentBackend {
     std::uint64_t regenerations{0};
+    mutable std::uint64_t recordings{0};
     void regenerate(const dayo::graphics::EnvironmentDesc&) override {
         ++regenerations;
+    }
+    void record(dayo::graphics::CommandList&) const override {
+        ++recordings;
     }
 };
 
@@ -306,6 +310,9 @@ struct MockDeformCommands final : dayo::graphics::CommandList {
     }
     void memoryBarrierEx() override {
         events.emplace_back("barrier");
+    }
+    void generateMipmapsEx(dayo::graphics::handles::TextureHandle) override {
+        events.emplace_back("mipmap");
     }
     void accelerationStructureBarrierEx() override {
         events.emplace_back("as-barrier");
@@ -857,6 +864,10 @@ int main() {
         EnvironmentService service(&backend);
         const EnvironmentDesc first{.source = "sky.hdr", .exposure = 1.0F, .version = 7};
         ok &= check(service.update(first), "environment first update regenerates");
+        MockDeformCommands commands;
+        service.record(commands);
+        service.record(commands);
+        ok &= check(backend.recordings == 1, "environment records pending GPU work only once");
         service.setHandles(11, 12, 7);
         ok &= check(!service.update(first), "environment unchanged reuses cache");
         ok &= check(backend.regenerations == 1 && service.generationCount() == 1, "environment regen counted once");
@@ -883,13 +894,18 @@ int main() {
                         layout.bindings[0].kind == dayo::graphics::DescriptorKind::sampledImage &&
                         layout.bindings[1].kind == dayo::graphics::DescriptorKind::storageImage,
                     "native environment pass layout separates sampled input and storage output");
+        const auto prefilterLayout = dayo::graphics::nativeEnvironmentPrefilterLayout();
+        ok &= check(prefilterLayout.bindings.size() == 2 &&
+                        prefilterLayout.bindings[0].kind == dayo::graphics::DescriptorKind::storageImage &&
+                        prefilterLayout.bindings[1].kind == dayo::graphics::DescriptorKind::storageImage,
+                    "native environment prefilter layout uses storage images");
         dayo::graphics::NativeEnvironmentBackend backend(device, bindings);
-        const dayo::core::ImageData image{.width = 4,
-                                          .height = 2,
+        const dayo::core::ImageData image{.width = 8,
+                                          .height = 4,
                                           .channels = 4,
                                           .type = dayo::core::PixelType::unorm8,
                                           .space = dayo::core::ColorSpace::srgb,
-                                          .bytes = std::vector<std::uint8_t>(32, 128)};
+                                          .bytes = std::vector<std::uint8_t>(128, 128)};
         const auto result = backend.regenerateImage({.source = "memory", .exposure = 1.0F, .version = 9}, image);
         ok &= check(backend.ready() && result.cubemap.valid() && result.prefiltered.valid() &&
                         result.skywalkerVersion == 9 && result.sphericalHarmonics[0] > 0.0F,
@@ -899,7 +915,7 @@ int main() {
         ok &= check(commands.events == std::vector<std::string>{"transition", "transition", "transition", "bind",
                                                                   "descriptor", "push", "dispatch:1x1x6", "barrier",
                                                                   "bind", "descriptor", "push", "dispatch:1x1x6",
-                                                                  "barrier"},
+                                                                  "barrier", "mipmap"},
                     "native environment records conversion and prefilter stages with barriers");
         backend.reset();
         ok &= check(device.destroyedTextures == 3 && device.destroyedDescriptorSets == 2,

@@ -191,6 +191,12 @@ std::optional<graphics::NativeFrameOutput>
 Application::recordNativeFrame(graphics::CommandList& commands, const graphics::RenderTargetDesc& target) {
     if (device_ == nullptr || device_->activeRenderer() == graphics::RendererKind::preview)
         return std::nullopt;
+    const auto& background = scene_.background();
+    if (background.image && background.imagePath &&
+        static_cast<std::uint64_t>(background.image->height) * 2U == background.image->width) {
+        static_cast<void>(nativeRenderer_.updateEnvironment(
+            {.source = background.imagePath->string(), .exposure = 1.0F, .version = 1}));
+    }
     std::vector<core::MaterialParameterBlock> materials;
     for (const auto& instance : scene_.models()) {
         if (!instance.visible || instance.model == nullptr)
@@ -332,9 +338,26 @@ int Application::run() {
     auto window = platform::createWindow(windowOptions);
     auto device = graphics::createVulkanDevice(*window, options_.validation);
     device_ = device.get();
+    std::unique_ptr<graphics::NativeEnvironmentBackend> environmentBackend;
+    const graphics::EnvironmentPassBindings environmentBindings{
+        .equirectToCubePipeline = device_->nativeEnvironmentEquirectPipeline(),
+        .equirectToCubeLayout = device_->nativeEnvironmentEquirectLayout(),
+        .prefilterPipeline = device_->nativeEnvironmentPrefilterPipeline(),
+        .prefilterLayout = device_->nativeEnvironmentPrefilterLayout(),
+    };
+    if (environmentBindings.valid()) {
+        environmentBackend = std::make_unique<graphics::NativeEnvironmentBackend>(*device_, environmentBindings);
+        nativeRenderer_.setEnvironmentBackend(environmentBackend.get());
+    }
     device_->setNativeFrameRecorder([this](graphics::CommandList& commands, const graphics::RenderTargetDesc& target) {
         return recordNativeFrame(commands, target);
     });
+    const auto cleanupGraphicsRuntime = [this](void*) noexcept {
+        nativeRenderer_.reset();
+        nativeRenderer_.setEnvironmentBackend(nullptr);
+        device_ = nullptr;
+    };
+    std::unique_ptr<void, decltype(cleanupGraphicsRuntime)> runtimeCleanup(this, cleanupGraphicsRuntime);
     requestRenderer(options_.renderer);
     log::info("Graphics convention: depth [0,1], Vulkan framebuffer Y handled in backend");
     const auto denoiser = core::selectDenoiser();

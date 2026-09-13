@@ -82,6 +82,8 @@ NativeRendererStatus NativeRendererCoordinator::prepare(Device& device, Renderer
     switch (requested) {
     case RendererKind::subayai:
         initialized = subayai_.initialize(device, std::move(program), &error);
+        if (initialized)
+            subayai_.setEnvironmentBackend(environmentBackend_);
         break;
     case RendererKind::bdpt:
         initialized = bdpt_.initialize(device, std::move(program), &error);
@@ -98,6 +100,17 @@ NativeRendererStatus NativeRendererCoordinator::prepare(Device& device, Renderer
     return status_;
 }
 
+void NativeRendererCoordinator::setEnvironmentBackend(IEnvironmentBackend* backend) noexcept {
+    environmentBackend_ = backend;
+    subayai_.setEnvironmentBackend(backend);
+}
+
+bool NativeRendererCoordinator::updateEnvironment(const EnvironmentDesc& description) {
+    if (auto* runtime = subayai())
+        return runtime->updateEnvironment(description);
+    return false;
+}
+
 std::optional<NativeFrameOutput>
 NativeRendererCoordinator::recordFrame(CommandList& commands, const fx::FxFrameContext& context,
                                        core::DirtyFlag dirty,
@@ -109,6 +122,7 @@ NativeRendererCoordinator::recordFrame(CommandList& commands, const fx::FxFrameC
     switch (status_.active) {
     case RendererKind::subayai: {
         auto frame = subayai_.prepareFrame(context, materials, lightSampling, environment);
+        subayai_.recordEnvironment(commands);
         const auto stats = subayai_.execute(frame, commands);
         static_cast<void>(stats);
         return subayai_.output(frame);
