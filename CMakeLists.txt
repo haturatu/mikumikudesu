@@ -264,6 +264,7 @@ add_library(
   src/graphics/device.cpp
   src/graphics/native_renderer.cpp
   src/graphics/native_controller_runtime.cpp
+  src/graphics/native_scene_frame_runtime.cpp
   src/graphics/native_frame_constants.cpp
   src/graphics/native_scene_bindings.cpp
   src/graphics/native_scene_binding_runtime.cpp
