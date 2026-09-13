@@ -2,7 +2,11 @@
 
 #include "core/log.hpp"
 
+#include <limits>
 #include <numeric>
+#include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace dayo::graphics {
@@ -83,6 +87,76 @@ void LightSamplingService::update(std::span<const float> lightPowers, bool light
 
 void LightSamplingService::clear() noexcept {
     table_.clear();
+}
+
+LightSamplingGpuRuntime::~LightSamplingGpuRuntime() {
+    reset();
+}
+
+bool LightSamplingGpuRuntime::sync(Device& device, std::span<const AliasEntry> table, std::string* error) {
+    if (error != nullptr)
+        error->clear();
+    if (table.empty()) {
+        if (device_ == &device)
+            reset();
+        else if (device_ != nullptr) {
+            if (error != nullptr)
+                *error = "light sampling buffer belongs to a different device";
+            return false;
+        }
+        return true;
+    }
+    if (table.size() > std::numeric_limits<std::size_t>::max() / sizeof(AliasEntry)) {
+        if (error != nullptr)
+            *error = "light sampling table size overflow";
+        return false;
+    }
+    if (device_ != nullptr && device_ != &device) {
+        if (error != nullptr)
+            *error = "light sampling buffer belongs to a different device";
+        return false;
+    }
+    try {
+        if (device_ == &device && count_ == table.size() && buffer_.valid()) {
+            device.uploadBufferEx(buffer_, std::as_bytes(table), 0);
+            return true;
+        }
+        reset();
+        device_ = &device;
+        buffer_ = device.createBufferEx({
+            .size = table.size() * sizeof(AliasEntry),
+            .usage = ResourceUsage::storageRead | ResourceUsage::transferDst | ResourceUsage::hostRead,
+            .cpuVisible = true,
+            .lifetime = ResourceLifetime::persistent,
+        });
+        device.uploadBufferEx(buffer_, std::as_bytes(table), 0);
+        count_ = table.size();
+    } catch (const std::exception& exception) {
+        if (error != nullptr)
+            *error = std::string("light sampling GPU upload failed: ") + exception.what();
+        reset();
+        return false;
+    } catch (...) {
+        if (error != nullptr)
+            *error = "light sampling GPU upload failed";
+        reset();
+        return false;
+    }
+    return true;
+}
+
+void LightSamplingGpuRuntime::reset() noexcept {
+    Device* device = device_;
+    if (device != nullptr && buffer_.valid()) {
+        try {
+            device->waitIdle();
+            device->destroyBufferEx(buffer_);
+        } catch (...) {
+        }
+    }
+    device_ = nullptr;
+    buffer_ = {};
+    count_ = 0;
 }
 
 } // namespace dayo::graphics

@@ -1,8 +1,11 @@
 #pragma once
 
+#include "graphics/device.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace dayo::graphics {
@@ -36,6 +39,36 @@ class LightSamplingService {
   private:
     std::vector<AliasEntry> table_;
     std::uint64_t builds_{0};
+};
+
+// Device-side alias table mirror. The CPU service remains authoritative and
+// only dirty tables are uploaded, so native lighting can bind a stable storage
+// buffer without rebuilding it every frame.
+class LightSamplingGpuRuntime {
+  public:
+    LightSamplingGpuRuntime() = default;
+    ~LightSamplingGpuRuntime();
+
+    LightSamplingGpuRuntime(const LightSamplingGpuRuntime&) = delete;
+    LightSamplingGpuRuntime& operator=(const LightSamplingGpuRuntime&) = delete;
+
+    [[nodiscard]] bool sync(Device& device, std::span<const AliasEntry> table, std::string* error = nullptr);
+    void reset() noexcept;
+
+    [[nodiscard]] bool ready() const noexcept {
+        return device_ != nullptr && buffer_.valid() && count_ != 0;
+    }
+    [[nodiscard]] handles::BufferHandle buffer() const noexcept {
+        return buffer_;
+    }
+    [[nodiscard]] std::size_t count() const noexcept {
+        return count_;
+    }
+
+  private:
+    Device* device_{};
+    handles::BufferHandle buffer_{};
+    std::size_t count_{};
 };
 
 } // namespace dayo::graphics

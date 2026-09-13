@@ -84,6 +84,12 @@ void VulkanCommandList::pushConstantsEx(std::span<const std::byte> bytes) {
     device_->recordPushConstants(commandBuffer_, pipeline_, bytes);
 }
 
+void VulkanCommandList::memoryBarrierEx() {
+    if (device_ == nullptr)
+        throw std::logic_error("typed memory barrier requires a Vulkan device");
+    device_->recordMemoryBarrier(commandBuffer_);
+}
+
 void VulkanCommandList::transitionEx(handles::TextureHandle texture) {
     if (device_ == nullptr)
         throw std::logic_error("typed transition requires a Vulkan device");

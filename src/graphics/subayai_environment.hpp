@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/image_hdr.hpp"
 #include "graphics/device.hpp"
 
 #include <array>
@@ -30,6 +31,27 @@ struct EnvironmentGpuResult {
     std::array<float, 27> sphericalHarmonics{};
     std::uint64_t skywalkerVersion{};
 };
+
+struct EnvironmentPassBindings {
+    handles::PipelineHandle equirectToCubePipeline{};
+    handles::DescriptorSetLayoutHandle equirectToCubeLayout{};
+    handles::PipelineHandle prefilterPipeline{};
+    handles::DescriptorSetLayoutHandle prefilterLayout{};
+
+    [[nodiscard]] bool valid() const noexcept {
+        return equirectToCubePipeline.valid() && equirectToCubeLayout.valid() && prefilterPipeline.valid() &&
+               prefilterLayout.valid();
+    }
+};
+
+struct NativeEnvironmentPushConstants {
+    std::uint32_t faceSize{};
+    std::uint32_t mipLevels{};
+    std::uint32_t reserved[2]{};
+};
+static_assert(sizeof(NativeEnvironmentPushConstants) == 16);
+
+[[nodiscard]] DescriptorSetLayoutDesc nativeEnvironmentPassLayout() noexcept;
 
 class IEnvironmentBackend {
   public:
@@ -88,6 +110,54 @@ class EnvironmentService {
     std::array<float, 27> sphericalHarmonics_{};
     std::uint64_t skywalkerVersion_{0};
     EnvironmentGpuResult typedResult_;
+};
+
+// Typed environment backend. It owns the source/equirectangular texture and
+// the generated cubemap resources; compute pipelines and their layouts remain
+// renderer-owned and are supplied through EnvironmentPassBindings.
+class NativeEnvironmentBackend final : public IEnvironmentBackend {
+  public:
+    NativeEnvironmentBackend(Device& device, EnvironmentPassBindings bindings)
+        : device_(&device), bindings_(bindings) {}
+    ~NativeEnvironmentBackend() override;
+
+    void regenerate(const EnvironmentDesc& desc) override;
+    [[nodiscard]] EnvironmentGpuResult regenerateEx(const EnvironmentDesc& desc) override;
+    [[nodiscard]] EnvironmentGpuResult regenerateImage(const EnvironmentDesc& desc, const core::ImageData& image);
+    void record(CommandList& commands) const;
+    void reset() noexcept;
+
+    [[nodiscard]] bool ready() const noexcept {
+        return device_ != nullptr && resources_.cubemap.valid() && resources_.prefiltered.valid() &&
+               resources_.source.valid();
+    }
+    [[nodiscard]] const EnvironmentGpuResult& result() const noexcept {
+        return result_;
+    }
+    [[nodiscard]] handles::TextureHandle sourceTexture() const noexcept {
+        return resources_.source;
+    }
+    [[nodiscard]] std::uint32_t faceSize() const noexcept {
+        return faceSize_;
+    }
+
+  private:
+    struct Resources {
+        handles::TextureHandle source{};
+        handles::TextureHandle cubemap{};
+        handles::TextureHandle prefiltered{};
+        handles::DescriptorSetHandle equirectToCubeSet{};
+        handles::DescriptorSetHandle prefilterSet{};
+    };
+
+    [[nodiscard]] EnvironmentGpuResult regenerateLinear(const EnvironmentDesc& desc,
+                                                        const core::ImageData& image);
+    Device* device_{};
+    EnvironmentPassBindings bindings_;
+    Resources resources_;
+    EnvironmentGpuResult result_;
+    std::uint32_t faceSize_{};
+    std::uint32_t mipLevels_{};
 };
 
 } // namespace dayo::graphics
