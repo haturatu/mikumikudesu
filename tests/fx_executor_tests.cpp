@@ -9,6 +9,7 @@
 #include "fx/fx_watcher.hpp"
 #include "graphics/fx_executor.hpp"
 #include "graphics/fx_pipeline_runtime.hpp"
+#include "graphics/fx_resource_runtime.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -61,6 +62,54 @@ struct MockDevice final : public dayo::graphics::Device {
     dayo::graphics::TextureHandle createTexture(const dayo::graphics::TextureDesc&) override {
         return 0;
     }
+    dayo::graphics::handles::TextureHandle
+    createTextureEx(const dayo::graphics::TextureResourceDesc& desc) override {
+        textureDescs_.push_back(desc);
+        return {nextTypedHandle_++, 1};
+    }
+    dayo::graphics::handles::BufferHandle
+    createBufferEx(const dayo::graphics::BufferResourceDesc& desc) override {
+        bufferDescs_.push_back(desc);
+        return {nextTypedHandle_++, 1};
+    }
+    dayo::graphics::handles::SamplerHandle
+    createSamplerEx(const dayo::graphics::SamplerResourceDesc& desc) override {
+        samplerDescs_.push_back(desc);
+        return {nextTypedHandle_++, 1};
+    }
+    void destroyTextureEx(dayo::graphics::handles::TextureHandle handle) override {
+        if (handle.valid())
+            ++destroyedTextures_;
+    }
+    void destroyBufferEx(dayo::graphics::handles::BufferHandle handle) override {
+        if (handle.valid())
+            ++destroyedBuffers_;
+    }
+    void destroySamplerEx(dayo::graphics::handles::SamplerHandle handle) override {
+        if (handle.valid())
+            ++destroyedSamplers_;
+    }
+    dayo::graphics::handles::DescriptorSetLayoutHandle
+    createDescriptorSetLayoutEx(const dayo::graphics::DescriptorSetLayoutDesc& desc) override {
+        descriptorLayout_ = desc;
+        return {nextTypedHandle_++, 1};
+    }
+    void destroyDescriptorSetLayoutEx(dayo::graphics::handles::DescriptorSetLayoutHandle handle) override {
+        if (handle.valid())
+            ++destroyedDescriptorLayouts_;
+    }
+    dayo::graphics::handles::DescriptorSetHandle
+    allocateDescriptorSetEx(dayo::graphics::handles::DescriptorSetLayoutHandle layout,
+                            std::span<const dayo::graphics::DescriptorBindingEx> bindings) override {
+        if (!layout.valid())
+            throw std::invalid_argument("mock FX resource layout is invalid");
+        descriptorBindings_.assign(bindings.begin(), bindings.end());
+        return {nextTypedHandle_++, 1};
+    }
+    void destroyDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle handle) override {
+        if (handle.valid())
+            ++destroyedDescriptorSets_;
+    }
     dayo::graphics::handles::ShaderHandle createShaderEx(const dayo::graphics::ShaderDesc&) override {
         return {nextTypedHandle_++, 1};
     }
@@ -95,6 +144,16 @@ struct MockDevice final : public dayo::graphics::Device {
     std::size_t destroyedShaders_{};
     std::size_t destroyedPipelines_{};
     std::size_t destroyedSbt_{};
+    std::size_t destroyedTextures_{};
+    std::size_t destroyedBuffers_{};
+    std::size_t destroyedSamplers_{};
+    std::size_t destroyedDescriptorLayouts_{};
+    std::size_t destroyedDescriptorSets_{};
+    std::vector<dayo::graphics::TextureResourceDesc> textureDescs_;
+    std::vector<dayo::graphics::BufferResourceDesc> bufferDescs_;
+    std::vector<dayo::graphics::SamplerResourceDesc> samplerDescs_;
+    dayo::graphics::DescriptorSetLayoutDesc descriptorLayout_;
+    std::vector<dayo::graphics::DescriptorBindingEx> descriptorBindings_;
 };
 
 struct MockCommands final : public dayo::graphics::CommandList {
@@ -553,6 +612,82 @@ bool testFxResourceDeclarationsAreLossless() {
     return ok;
 }
 
+bool testFxResourceRuntimeMaterializesDeclarations() {
+    dayo::fx::FxProgram program;
+    dayo::core::EffectTexture color;
+    color.name = "Color";
+    color.format = "R16G16B16A16_FLOAT";
+    color.view = "RTV";
+    color.size.absolute = true;
+    color.size.width = 64;
+    color.size.height = 32;
+    program.textures.push_back(std::move(color));
+    dayo::core::EffectTexture volume;
+    volume.name = "Volume";
+    volume.format = "R32_FLOAT";
+    volume.view = "UAV";
+    volume.size.absolute = true;
+    volume.size.width = 8;
+    volume.size.height = 4;
+    volume.size.depth = 2;
+    program.textures3D.push_back(std::move(volume));
+    dayo::core::EffectBuffer lights;
+    lights.name = "Lights";
+    lights.type = "float4";
+    lights.view = "UAV";
+    lights.elementSize = 16;
+    lights.size.absolute = true;
+    lights.size.width = 4;
+    program.buffers.push_back(std::move(lights));
+    dayo::core::EffectSampler linear;
+    linear.name = "Linear";
+    linear.filter = "LINEAR";
+    linear.addressU = "CLAMP";
+    linear.addressV = "CLAMP";
+    program.samplers.push_back(std::move(linear));
+
+    MockDevice device;
+    dayo::graphics::FxResourceRuntime runtime;
+    std::string error;
+    const auto context = testContext();
+    bool ok = check(runtime.initialize(device, program, context, &error),
+                    "FX resource runtime materializes declarations");
+    ok &= check(error.empty(), "FX resource runtime has no initialization error");
+    ok &= check(runtime.ready() && runtime.resourceCount() == 4, "FX resource runtime owns every declaration");
+    const auto colorTexture = runtime.resolveTexture("Color");
+    const auto volumeTexture = runtime.resolveTexture("Volume");
+    const auto lightBuffer = runtime.resolveBuffer("Lights");
+    const auto linearSampler = runtime.resolveSampler("Linear");
+    ok &= check(colorTexture.has_value() && colorTexture->valid() && volumeTexture.has_value() &&
+                    volumeTexture->valid(),
+                "FX resource runtime resolves 2D and 3D textures");
+    ok &= check(lightBuffer.has_value() && lightBuffer->valid() && linearSampler.has_value() &&
+                    linearSampler->valid(),
+                "FX resource runtime resolves buffers and samplers");
+    const auto colorExtent = runtime.extent("Color");
+    const auto volumeExtent = runtime.extent("Volume");
+    ok &= check(colorExtent.has_value() && colorExtent->width == 64 && colorExtent->height == 32,
+                "FX resource runtime resolves absolute 2D extents");
+    ok &= check(volumeExtent.has_value() && volumeExtent->width == 8 && volumeExtent->height == 4 &&
+                    volumeExtent->depth == 2,
+                "FX resource runtime resolves absolute 3D extents");
+    ok &= check(runtime.descriptorLayout().valid() && runtime.descriptorSet().valid() &&
+                    runtime.descriptorLayoutDesc().bindings.size() == 4 && device.descriptorBindings_.size() == 4,
+                "FX resource runtime allocates one typed descriptor set");
+    ok &= check(device.descriptorLayout_.bindings[0].kind == dayo::graphics::DescriptorKind::sampledImage &&
+                    device.descriptorLayout_.bindings[1].kind == dayo::graphics::DescriptorKind::storageImage &&
+                    device.descriptorLayout_.bindings[2].kind == dayo::graphics::DescriptorKind::storageBuffer &&
+                    device.descriptorLayout_.bindings[3].kind == dayo::graphics::DescriptorKind::sampler,
+                "FX resource runtime derives descriptor kinds from views");
+    dayo::fx::FxDispatch dispatch;
+    ok &= check(runtime.resolveDescriptorSet(dispatch).has_value(), "FX resource runtime resolves pass descriptor set");
+    runtime.reset();
+    ok &= check(device.destroyedTextures_ == 2 && device.destroyedBuffers_ == 1 && device.destroyedSamplers_ == 1 &&
+                    device.destroyedDescriptorLayouts_ == 1 && device.destroyedDescriptorSets_ == 1,
+                "FX resource runtime releases all typed allocations");
+    return ok;
+}
+
 bool testShaderCacheKeys() {
     dayo::fx::FxShaderCache cache;
     dayo::fx::FxShaderKey base;
@@ -768,6 +903,7 @@ int main() {
     ok &= testCompilerUsesRawSourceAndRejectsUnknownPasses();
     ok &= testRayTracingPayloadIsLossless();
     ok &= testFxResourceDeclarationsAreLossless();
+    ok &= testFxResourceRuntimeMaterializesDeclarations();
     ok &= testShaderCacheKeys();
     try {
         ok &= testRealShaderCompilation();
