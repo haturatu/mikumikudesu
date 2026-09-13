@@ -11,13 +11,17 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace dayo::core {
 namespace {
+
+constexpr std::uint64_t kImageAllocationBudget = 512ULL * 1024ULL * 1024ULL;
 
 std::uint32_t u32(const std::uint8_t* value) {
     return static_cast<std::uint32_t>(value[0]) | (static_cast<std::uint32_t>(value[1]) << 8U) |
@@ -86,19 +90,41 @@ std::uint8_t alphaIndex(const std::uint8_t* block, std::uint32_t pixel) {
     return static_cast<std::uint8_t>((bits >> (pixel * 3U)) & 7U);
 }
 
+std::uint64_t checkedMultiply(std::uint64_t left, std::uint64_t right, std::string_view field) {
+    if (left != 0 && right > std::numeric_limits<std::uint64_t>::max() / left)
+        throw std::runtime_error("image size overflow for " + std::string(field));
+    return left * right;
+}
+
+std::uint64_t checkedRgbaBytes(std::uint32_t width, std::uint32_t height, std::string_view field) {
+    if (width == 0 || height == 0)
+        throw std::runtime_error("invalid " + std::string(field) + " dimensions");
+    const auto pixels = checkedMultiply(width, height, field);
+    const auto bytes = checkedMultiply(pixels, 4U, field);
+    if (bytes > std::numeric_limits<std::size_t>::max())
+        throw std::runtime_error("image size exceeds addressable memory for " + std::string(field));
+    return bytes;
+}
+
+void checkPeakAllocation(std::uint64_t inputBytes, std::uint64_t outputBytes, std::string_view field) {
+    if (inputBytes > kImageAllocationBudget || outputBytes > kImageAllocationBudget - inputBytes)
+        throw std::runtime_error("image allocation budget exceeded for " + std::string(field));
+}
+
 enum class BlockFormat { bc1, bc2, bc3, bc4, bc5 };
 
 ImageRgba8 decodeBlocks(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> data,
                         BlockFormat format) {
-    const std::uint32_t blockSize = (format == BlockFormat::bc1 || format == BlockFormat::bc4) ? 8U : 16U;
-    const auto blocksWide = (width + 3U) / 4U;
-    const auto blocksHigh = (height + 3U) / 4U;
-    if (static_cast<std::size_t>(blocksWide) > std::numeric_limits<std::size_t>::max() / blocksHigh ||
-        static_cast<std::size_t>(blocksWide) * blocksHigh > std::numeric_limits<std::size_t>::max() / blockSize ||
-        data.size() < static_cast<std::size_t>(blocksWide) * blocksHigh * blockSize) {
+    const auto blockSize = (format == BlockFormat::bc1 || format == BlockFormat::bc4) ? 8U : 16U;
+    const auto blocksWide = (static_cast<std::uint64_t>(width) + 3U) / 4U;
+    const auto blocksHigh = (static_cast<std::uint64_t>(height) + 3U) / 4U;
+    const auto expectedBytes =
+        checkedMultiply(checkedMultiply(blocksWide, blocksHigh, "DDS blocks"), blockSize, "DDS block payload");
+    if (expectedBytes > data.size())
         throw std::runtime_error("truncated DDS block data");
-    }
-    ImageRgba8 image{width, height, std::vector<std::uint8_t>(static_cast<std::size_t>(width) * height * 4U)};
+    const auto rgbaBytes = checkedRgbaBytes(width, height, "DDS");
+    checkPeakAllocation(expectedBytes, rgbaBytes, "DDS");
+    ImageRgba8 image{width, height, std::vector<std::uint8_t>(static_cast<std::size_t>(rgbaBytes))};
     for (std::uint32_t by = 0; by < blocksHigh; ++by)
         for (std::uint32_t bx = 0; bx < blocksWide; ++bx) {
             const auto* block = data.data() + (static_cast<std::size_t>(by) * blocksWide + bx) * blockSize;
@@ -146,24 +172,27 @@ ImageRgba8 decodeDds(const std::filesystem::path& path) {
     const auto end = input.tellg();
     if (end < 128)
         throw std::runtime_error("invalid DDS header: " + path.string());
-    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(end));
+    const auto fileSize = static_cast<std::uint64_t>(end);
+    std::array<std::uint8_t, 128> header{};
     input.seekg(0);
-    input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-    if (!input || std::memcmp(bytes.data(), "DDS ", 4) != 0 || u32(bytes.data() + 4) != 124U ||
-        u32(bytes.data() + 76) != 32U)
+    input.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()));
+    if (!input || std::memcmp(header.data(), "DDS ", 4) != 0 || u32(header.data() + 4) != 124U ||
+        u32(header.data() + 76) != 32U)
         throw std::runtime_error("invalid DDS file: " + path.string());
-    const auto height = u32(bytes.data() + 12);
-    const auto width = u32(bytes.data() + 16);
-    if (width == 0 || height == 0 || static_cast<std::uint64_t>(width) * height > 268'435'456ULL) {
-        throw std::runtime_error("invalid DDS dimensions");
-    }
-    const auto flags = u32(bytes.data() + 80);
-    auto code = u32(bytes.data() + 84);
-    std::size_t dataOffset = 128;
+    const auto height = u32(header.data() + 12);
+    const auto width = u32(header.data() + 16);
+    const auto rgbaBytes = checkedRgbaBytes(width, height, "DDS");
+    const auto flags = u32(header.data() + 80);
+    auto code = u32(header.data() + 84);
+    std::uint64_t dataOffset = 128;
     if (code == fourCc('D', 'X', '1', '0')) {
-        if (bytes.size() < 148)
+        if (fileSize < 148)
             throw std::runtime_error("truncated DDS DX10 header");
-        const auto dxgi = u32(bytes.data() + 128);
+        std::array<std::uint8_t, 20> dx10Header{};
+        input.read(reinterpret_cast<char*>(dx10Header.data()), static_cast<std::streamsize>(dx10Header.size()));
+        if (!input)
+            throw std::runtime_error("truncated DDS DX10 header");
+        const auto dxgi = u32(dx10Header.data());
         dataOffset = 148;
         if (dxgi == 71 || dxgi == 72)
             code = fourCc('D', 'X', 'T', '1');
@@ -182,35 +211,66 @@ ImageRgba8 decodeDds(const std::filesystem::path& path) {
         else
             throw std::runtime_error("unsupported DDS DXGI format " + std::to_string(dxgi));
     }
-    const auto payload = std::span<const std::uint8_t>(bytes).subspan(dataOffset);
-    if (code == fourCc('D', 'X', 'T', '1'))
-        return decodeBlocks(width, height, payload, BlockFormat::bc1);
-    if (code == fourCc('D', 'X', 'T', '3'))
-        return decodeBlocks(width, height, payload, BlockFormat::bc2);
-    if (code == fourCc('D', 'X', 'T', '5'))
-        return decodeBlocks(width, height, payload, BlockFormat::bc3);
-    if (code == fourCc('A', 'T', 'I', '1') || code == fourCc('B', 'C', '4', 'U'))
-        return decodeBlocks(width, height, payload, BlockFormat::bc4);
-    if (code == fourCc('A', 'T', 'I', '2') || code == fourCc('B', 'C', '5', 'U'))
-        return decodeBlocks(width, height, payload, BlockFormat::bc5);
-    const auto bits = u32(bytes.data() + 88);
-    if ((flags & 0x40U) == 0 && code != fourCc('R', 'G', 'B', 'A') && code != fourCc('B', 'G', 'R', 'A')) {
+    if (fileSize < dataOffset)
+        throw std::runtime_error("truncated DDS payload");
+    BlockFormat blockFormat{};
+    bool compressed = false;
+    if (code == fourCc('D', 'X', 'T', '1')) {
+        blockFormat = BlockFormat::bc1;
+        compressed = true;
+    } else if (code == fourCc('D', 'X', 'T', '3')) {
+        blockFormat = BlockFormat::bc2;
+        compressed = true;
+    } else if (code == fourCc('D', 'X', 'T', '5')) {
+        blockFormat = BlockFormat::bc3;
+        compressed = true;
+    } else if (code == fourCc('A', 'T', 'I', '1') || code == fourCc('B', 'C', '4', 'U')) {
+        blockFormat = BlockFormat::bc4;
+        compressed = true;
+    } else if (code == fourCc('A', 'T', 'I', '2') || code == fourCc('B', 'C', '5', 'U')) {
+        blockFormat = BlockFormat::bc5;
+        compressed = true;
+    }
+    const auto bits = u32(header.data() + 88);
+    if (!compressed && (flags & 0x40U) == 0 && code != fourCc('R', 'G', 'B', 'A') && code != fourCc('B', 'G', 'R', 'A'))
         throw std::runtime_error("unsupported DDS FourCC");
-    }
-    if (bits != 32 && code != fourCc('R', 'G', 'B', 'A') && code != fourCc('B', 'G', 'R', 'A')) {
+    if (!compressed && bits != 32 && code != fourCc('R', 'G', 'B', 'A') && code != fourCc('B', 'G', 'R', 'A'))
         throw std::runtime_error("unsupported DDS pixel depth");
+    auto expectedPayload = rgbaBytes;
+    if (compressed) {
+        const auto blockSize = (blockFormat == BlockFormat::bc1 || blockFormat == BlockFormat::bc4) ? 8U : 16U;
+        const auto blocksWide = (static_cast<std::uint64_t>(width) + 3U) / 4U;
+        const auto blocksHigh = (static_cast<std::uint64_t>(height) + 3U) / 4U;
+        expectedPayload =
+            checkedMultiply(checkedMultiply(blocksWide, blocksHigh, "DDS blocks"), blockSize, "DDS block payload");
     }
-    if (payload.size() < static_cast<std::size_t>(width) * height * 4U)
-        throw std::runtime_error("truncated DDS pixels");
+    if (compressed) {
+        checkPeakAllocation(expectedPayload, rgbaBytes, "DDS");
+        if (expectedPayload > fileSize - dataOffset)
+            throw std::runtime_error("truncated DDS payload");
+        std::vector<std::uint8_t> payload(static_cast<std::size_t>(expectedPayload));
+        input.seekg(static_cast<std::streamoff>(dataOffset));
+        input.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
+        if (!input)
+            throw std::runtime_error("truncated DDS payload");
+        return decodeBlocks(width, height, payload, blockFormat);
+    }
+    checkPeakAllocation(0, rgbaBytes, "DDS");
+    if (expectedPayload > fileSize - dataOffset)
+        throw std::runtime_error("truncated DDS payload");
     const bool rgba = code == fourCc('R', 'G', 'B', 'A');
     const bool bgra = code == fourCc('B', 'G', 'R', 'A');
-    const auto rMask = rgba ? 0x000000FFU : (bgra ? 0x00FF0000U : u32(bytes.data() + 92));
-    const auto gMask = (rgba || bgra) ? 0x0000FF00U : u32(bytes.data() + 96);
-    const auto bMask = rgba ? 0x00FF0000U : (bgra ? 0x000000FFU : u32(bytes.data() + 100));
-    const auto aMask = (rgba || bgra) ? 0xFF000000U : u32(bytes.data() + 104);
-    ImageRgba8 image{width, height, std::vector<std::uint8_t>(static_cast<std::size_t>(width) * height * 4U)};
+    const auto rMask = rgba ? 0x000000FFU : (bgra ? 0x00FF0000U : u32(header.data() + 92));
+    const auto gMask = (rgba || bgra) ? 0x0000FF00U : u32(header.data() + 96);
+    const auto bMask = rgba ? 0x00FF0000U : (bgra ? 0x000000FFU : u32(header.data() + 100));
+    const auto aMask = (rgba || bgra) ? 0xFF000000U : u32(header.data() + 104);
+    ImageRgba8 image{width, height, std::vector<std::uint8_t>(static_cast<std::size_t>(rgbaBytes))};
+    input.seekg(static_cast<std::streamoff>(dataOffset));
+    input.read(reinterpret_cast<char*>(image.pixels.data()), static_cast<std::streamsize>(rgbaBytes));
+    if (!input)
+        throw std::runtime_error("truncated DDS payload");
     for (std::size_t i = 0; i < static_cast<std::size_t>(width) * height; ++i) {
-        const auto value = u32(payload.data() + i * 4U);
+        const auto value = u32(image.pixels.data() + i * 4U);
         image.pixels[i * 4U] = unpackChannel(value, rMask, 0);
         image.pixels[i * 4U + 1] = unpackChannel(value, gMask, 0);
         image.pixels[i * 4U + 2] = unpackChannel(value, bMask, 0);
@@ -227,25 +287,33 @@ ImageRgba8 loadImageRgba8(const std::filesystem::path& path) {
                            [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
     if (extension == ".dds")
         return decodeDds(path);
+    int infoWidth = 0;
+    int infoHeight = 0;
+    int infoChannels = 0;
+    if (!stbi_info(path.c_str(), &infoWidth, &infoHeight, &infoChannels))
+        throw std::runtime_error("cannot inspect image " + path.string() + ": " + stbi_failure_reason());
+    if (infoWidth <= 0 || infoHeight <= 0)
+        throw std::runtime_error("invalid image dimensions: " + path.string());
+    const auto expectedBytes =
+        checkedRgbaBytes(static_cast<std::uint32_t>(infoWidth), static_cast<std::uint32_t>(infoHeight), "image");
+    checkPeakAllocation(expectedBytes, expectedBytes, "image");
     int width = 0;
     int height = 0;
     int channels = 0;
-    stbi_uc* decoded = stbi_load(path.c_str(), &width, &height, &channels, STBI_rgb_alpha);
+    std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> decoded(
+        stbi_load(path.c_str(), &width, &height, &channels, STBI_rgb_alpha), &stbi_image_free);
     if (decoded == nullptr) {
         throw std::runtime_error("cannot decode image " + path.string() + ": " + stbi_failure_reason());
     }
-    if (width <= 0 || height <= 0 ||
-        static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) >
-            std::numeric_limits<std::size_t>::max() / 4U) {
-        stbi_image_free(decoded);
+    if (width <= 0 || height <= 0)
         throw std::runtime_error("invalid image dimensions: " + path.string());
-    }
-    ImageRgba8 image;
-    image.width = static_cast<std::uint32_t>(width);
-    image.height = static_cast<std::uint32_t>(height);
-    const auto size = static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4U;
-    image.pixels.assign(decoded, decoded + size);
-    stbi_image_free(decoded);
+    const auto actualBytes =
+        checkedRgbaBytes(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), "image");
+    if (actualBytes != expectedBytes)
+        throw std::runtime_error("image dimensions changed during decode: " + path.string());
+    checkPeakAllocation(actualBytes, actualBytes, "image");
+    ImageRgba8 image{static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
+                     std::vector<std::uint8_t>(decoded.get(), decoded.get() + static_cast<std::size_t>(actualBytes))};
     return image;
 }
 
