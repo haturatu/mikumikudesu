@@ -117,8 +117,12 @@ struct MockAccelerationBackend : dayo::graphics::IAccelerationBackend {
 
 struct MockEnvironmentBackend : dayo::graphics::IEnvironmentBackend {
     std::uint64_t regenerations{0};
+    mutable std::uint64_t recordings{0};
     void regenerate(const dayo::graphics::EnvironmentDesc&) override {
         ++regenerations;
+    }
+    void record(dayo::graphics::CommandList&) const override {
+        ++recordings;
     }
 };
 
@@ -863,6 +867,10 @@ int main() {
         ok &= check(service.cubemap() == 11 && service.prefilteredMips() == 12 && service.skywalkerVersion() == 7,
                     "environment keeps cubemap/prefiltered/Skywalker");
         ok &= check(service.sphericalHarmonics().size() == 27, "environment keeps SH coefficients");
+        MockDeformCommands commands;
+        service.record(commands);
+        service.record(commands);
+        ok &= check(backend.recordings == 1, "environment records pending GPU work only once");
         const EnvironmentDesc changed{.source = "sky.hdr", .exposure = 2.0F, .version = 7};
         ok &= check(service.update(changed), "environment exposure change regenerates");
         ok &= check(backend.regenerations == 2, "environment regen on change");
