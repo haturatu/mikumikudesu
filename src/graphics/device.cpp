@@ -19,6 +19,20 @@ bool DeviceCapabilities::supports(RendererKind renderer) const noexcept {
 }
 
 std::string DeviceCapabilities::missingFeatures(RendererKind renderer) const {
+    auto output = missingHardwareFeatures(renderer);
+    auto add = [&output](std::string_view feature) {
+        if (!output.empty())
+            output += ", ";
+        output += feature;
+    };
+    if (renderer == RendererKind::subayai && !nativeSubayai)
+        add("native Subayai pass implementation");
+    if (renderer == RendererKind::bdpt && !nativeBdpt)
+        add("native BDPT pass implementation");
+    return output;
+}
+
+std::string DeviceCapabilities::missingHardwareFeatures(RendererKind renderer) const {
     std::ostringstream output;
     auto add = [&output](std::string_view feature) {
         if (output.tellp() > 0)
@@ -42,10 +56,6 @@ std::string DeviceCapabilities::missingFeatures(RendererKind renderer) const {
     if (renderer == RendererKind::bdpt && !rayTracingPipeline) {
         add("VK_KHR_ray_tracing_pipeline");
     }
-    if (renderer == RendererKind::subayai && !nativeSubayai)
-        add("native Subayai pass implementation");
-    if (renderer == RendererKind::bdpt && !nativeBdpt)
-        add("native BDPT pass implementation");
     return output.str();
 }
 
