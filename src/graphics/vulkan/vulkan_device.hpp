@@ -13,6 +13,7 @@ VK_DEFINE_HANDLE(VmaAllocator)
 #include "graphics/vulkan/vulkan_resources.hpp"
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -92,6 +93,17 @@ class VulkanDevice final : public Device {
     [[nodiscard]] handles::ShaderBindingTableHandle
     createShaderBindingTable(const ShaderBindingTableDesc& desc) override;
     void destroyShaderBindingTable(handles::ShaderBindingTableHandle handle) override;
+    void copyBufferEx(handles::BufferHandle source, handles::BufferHandle destination) override;
+    void copyBufferToTextureEx(handles::BufferHandle source, handles::TextureHandle destination) override;
+    void copyTextureToBufferEx(handles::TextureHandle source, handles::BufferHandle destination) override;
+    void copyTextureEx(handles::TextureHandle source, handles::TextureHandle destination) override;
+    void clearTextureEx(handles::TextureHandle texture, const std::array<float, 4>& value) override;
+    void clearBufferEx(handles::BufferHandle buffer, std::uint32_t value) override;
+    void generateMipmapsEx(handles::TextureHandle texture) override;
+    void uploadTextureEx(handles::TextureHandle texture, std::span<const std::uint8_t> bytes, std::uint32_t mipLevel,
+                         std::uint32_t arrayLayer) override;
+    [[nodiscard]] std::vector<std::uint8_t> readbackTextureEx(handles::TextureHandle texture, std::uint32_t mipLevel,
+                                                              std::uint32_t arrayLayer) override;
     [[nodiscard]] handles::DescriptorSetLayoutHandle
     createDescriptorSetLayoutEx(const DescriptorSetLayoutDesc& desc) override;
     void destroyDescriptorSetLayoutEx(handles::DescriptorSetLayoutHandle handle) override;
@@ -226,6 +238,7 @@ class VulkanDevice final : public Device {
     void recreateSwapchain();
     void destroyPreviewMesh();
     void destroyTypedResources() noexcept;
+    struct TypedTexture;
     void synchronizePreviewVertices(Frame& frame);
     void destroyPreviewBones();
     void synchronizePreviewBones(Frame& frame);
@@ -256,6 +269,13 @@ class VulkanDevice final : public Device {
                          std::uint32_t depth);
     void recordBindPipeline(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline);
     void recordTransitionTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture);
+    void recordTextureTransition(VkCommandBuffer commandBuffer, handles::TextureHandle texture,
+                                 VkImageLayout nextLayout);
+    void recordCopyTexture(VkCommandBuffer commandBuffer, handles::TextureHandle source,
+                           handles::TextureHandle destination);
+    void recordClearTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture,
+                            const std::array<float, 4>& value);
+    void recordGenerateMipmaps(VkCommandBuffer commandBuffer, handles::TextureHandle texture);
     void recordBindDescriptorSet(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
                                  handles::DescriptorSetHandle set);
     void recordPushConstants(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
@@ -288,6 +308,8 @@ class VulkanDevice final : public Device {
                                  bool update);
     void recordTopLevelBuild(const TypedAccelerationStructure& destination,
                              std::span<const AccelerationInstanceDesc> instances, bool update);
+    void submitImmediate(const std::function<void(VkCommandBuffer)>& record);
+    [[nodiscard]] static VkImageLayout typedTextureFinalLayout(const TypedTexture& texture) noexcept;
 
     platform::Window& window_;
     DeviceCapabilities capabilities_;

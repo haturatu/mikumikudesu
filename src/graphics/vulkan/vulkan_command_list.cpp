@@ -96,4 +96,22 @@ void VulkanCommandList::traceRaysEx(handles::PipelineHandle pipeline, handles::S
     traceRays(sbt, width, height, depth);
 }
 
+void VulkanCommandList::copyTextureEx(handles::TextureHandle source, handles::TextureHandle destination) {
+    if (device_ == nullptr)
+        throw std::logic_error("typed texture copy requires a Vulkan device");
+    device_->recordCopyTexture(commandBuffer_, source, destination);
+}
+
+void VulkanCommandList::clearTextureEx(handles::TextureHandle texture) {
+    if (device_ == nullptr)
+        throw std::logic_error("typed texture clear requires a Vulkan device");
+    device_->recordClearTexture(commandBuffer_, texture, {0.0F, 0.0F, 0.0F, 0.0F});
+}
+
+void VulkanCommandList::generateMipmapsEx(handles::TextureHandle texture) {
+    if (device_ == nullptr)
+        throw std::logic_error("typed mipmap generation requires a Vulkan device");
+    device_->recordGenerateMipmaps(commandBuffer_, texture);
+}
+
 } // namespace dayo::graphics
