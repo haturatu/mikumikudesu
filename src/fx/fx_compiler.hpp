@@ -95,6 +95,16 @@ struct FxProgram {
     std::uint64_t sourceVersion{};
 };
 
+struct FxRequiredFeatures {
+    bool descriptorIndexing{};
+    bool accelerationStructure{};
+    bool rayQuery{};
+    bool rayTracingPipeline{};
+    bool fragmentShaderBarycentric{};
+};
+
+[[nodiscard]] FxRequiredFeatures requiredFeatures(const FxProgram& program) noexcept;
+
 struct FxFramePlan {
     std::vector<FxDispatch> ordered;
     std::uint64_t programGeneration{};

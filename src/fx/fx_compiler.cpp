@@ -232,6 +232,26 @@ FxFramePlan FxCompiler::plan(const FxProgram& program, const FxFrameContext& con
     return framePlan;
 }
 
+FxRequiredFeatures requiredFeatures(const FxProgram& program) noexcept {
+    FxRequiredFeatures required;
+    for (const auto& dispatch : program.passes) {
+        if (dispatch.kind == FxOpKind::raster || dispatch.kind == FxOpKind::postprocess)
+            required.descriptorIndexing = true;
+        if (dispatch.kind != FxOpKind::raytracing)
+            continue;
+        required.accelerationStructure = true;
+        required.rayTracingPipeline = true;
+        required.rayQuery = true;
+        if (const auto* ray = std::get_if<FxRayTracingDispatch>(&dispatch.executable); ray != nullptr) {
+            for (const auto& group : ray->hitGroups) {
+                if (group.type == core::fx::FxRayTracingHitGroupType::procedural)
+                    required.fragmentShaderBarycentric = true;
+            }
+        }
+    }
+    return required;
+}
+
 bool FxCompiler::buildPipelines(const FxProgram& program, std::string* error) const {
     const auto empty = std::ranges::find_if(program.passes, [](const FxDispatch& pass) { return pass.name.empty(); });
     if (empty == program.passes.end())

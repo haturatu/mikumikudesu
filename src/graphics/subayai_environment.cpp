@@ -9,13 +9,15 @@ bool EnvironmentService::update(const EnvironmentDesc& desc) {
         log::debug("Environment unchanged; reusing cubemap/prefiltered/SH/Skywalker");
         return false;
     }
-    if (backend_ != nullptr) {
-        backend_->regenerate(desc);
-    }
+    const auto result = backend_ == nullptr ? EnvironmentGpuResult{} : backend_->regenerateEx(desc);
     cached_ = desc;
     ready_ = true;
     ++generations_;
     skywalkerVersion_ = desc.version;
+    typedResult_ = result;
+    if (typedResult_.skywalkerVersion == 0)
+        typedResult_.skywalkerVersion = desc.version;
+    sphericalHarmonics_ = typedResult_.sphericalHarmonics;
     log::info("Environment regenerated: ", desc.source, " exposure ", desc.exposure);
     return true;
 }
@@ -25,6 +27,18 @@ void EnvironmentService::setHandles(TextureHandle cubemap, TextureHandle prefilt
     cubemap_ = cubemap;
     prefiltered_ = prefiltered;
     skywalkerVersion_ = skywalkerVersion;
+    typedResult_.cubemap = {};
+    typedResult_.prefiltered = {};
+    typedResult_.sphericalHarmonics = sphericalHarmonics_;
+    typedResult_.skywalkerVersion = skywalkerVersion;
+}
+
+void EnvironmentService::setGpuResult(EnvironmentGpuResult result) noexcept {
+    cubemap_ = {};
+    prefiltered_ = {};
+    typedResult_ = result;
+    sphericalHarmonics_ = result.sphericalHarmonics;
+    skywalkerVersion_ = result.skywalkerVersion;
 }
 
 } // namespace dayo::graphics
