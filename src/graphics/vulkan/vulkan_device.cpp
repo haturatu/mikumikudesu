@@ -379,6 +379,7 @@ VulkanDevice::VulkanDevice(platform::Window& window, bool validation)
     createSwapchain();
     createPreviewDescriptors();
     createPipeline();
+    createNativeOutputPipeline();
     createFrames();
     createUi();
     const std::array<PreviewVertex, 3> fallbackVertices{{
@@ -437,6 +438,7 @@ VulkanDevice::~VulkanDevice() {
             vkFreeMemory(device_, resource.memory, nullptr);
     }
     destroyFrames();
+    destroyNativeOutputPipeline();
     destroyPipeline();
     savePipelineCache();
     destroyPipelineCache();
@@ -1155,6 +1157,160 @@ void VulkanDevice::destroyPipeline() {
     transparentPipeline_ = VK_NULL_HANDLE;
     pipeline_ = VK_NULL_HANDLE;
     pipelineLayout_ = VK_NULL_HANDLE;
+}
+
+void VulkanDevice::createNativeOutputPipeline() {
+    const auto vertexCode = readBinary(DAYO_NATIVE_OUTPUT_VERTEX_SPV);
+    const auto fragmentCode = readBinary(DAYO_NATIVE_OUTPUT_FRAGMENT_SPV);
+    const auto createShader = [this](const std::vector<std::byte>& code, VkShaderModule& module) {
+        const VkShaderModuleCreateInfo info{
+            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            .codeSize = code.size(),
+            .pCode = reinterpret_cast<const std::uint32_t*>(code.data()),
+        };
+        check(vkCreateShaderModule(device_, &info, nullptr, &module), "create native output shader");
+    };
+
+    VkShaderModule vertex{};
+    VkShaderModule fragment{};
+    try {
+        createShader(vertexCode, vertex);
+        createShader(fragmentCode, fragment);
+
+        const std::array descriptorBindings{
+            VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        };
+        const VkDescriptorSetLayoutCreateInfo descriptorLayoutInfo{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = static_cast<std::uint32_t>(descriptorBindings.size()),
+            .pBindings = descriptorBindings.data(),
+        };
+        check(vkCreateDescriptorSetLayout(device_, &descriptorLayoutInfo, nullptr, &nativeOutputDescriptorSetLayout_),
+              "create native output descriptor set layout");
+
+        const std::array descriptorPoolSizes{
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 2},
+        };
+        const VkDescriptorPoolCreateInfo descriptorPoolInfo{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+            .maxSets = static_cast<std::uint32_t>(nativeOutputDescriptors_.size()),
+            .poolSizeCount = static_cast<std::uint32_t>(descriptorPoolSizes.size()),
+            .pPoolSizes = descriptorPoolSizes.data(),
+        };
+        check(vkCreateDescriptorPool(device_, &descriptorPoolInfo, nullptr, &nativeOutputDescriptorPool_),
+              "create native output descriptor pool");
+        const std::array layouts{nativeOutputDescriptorSetLayout_, nativeOutputDescriptorSetLayout_};
+        const VkDescriptorSetAllocateInfo allocateInfo{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = nativeOutputDescriptorPool_,
+            .descriptorSetCount = static_cast<std::uint32_t>(layouts.size()),
+            .pSetLayouts = layouts.data(),
+        };
+        check(vkAllocateDescriptorSets(device_, &allocateInfo, nativeOutputDescriptors_.data()),
+              "allocate native output descriptor sets");
+
+        const std::array stages{
+            VkPipelineShaderStageCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+                                            VK_SHADER_STAGE_VERTEX_BIT, vertex, "VS", nullptr},
+            VkPipelineShaderStageCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+                                            VK_SHADER_STAGE_FRAGMENT_BIT, fragment, "PS", nullptr},
+        };
+        const VkPipelineVertexInputStateCreateInfo vertexInput{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        };
+        const VkPipelineInputAssemblyStateCreateInfo assembly{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        };
+        const VkPipelineViewportStateCreateInfo viewport{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            .viewportCount = 1,
+            .scissorCount = 1,
+        };
+        const VkPipelineRasterizationStateCreateInfo rasterization{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            .polygonMode = VK_POLYGON_MODE_FILL,
+            .cullMode = VK_CULL_MODE_NONE,
+            .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+            .lineWidth = 1.0F,
+        };
+        const VkPipelineMultisampleStateCreateInfo multisample{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        };
+        const VkPipelineColorBlendAttachmentState blendAttachment{
+            .blendEnable = VK_FALSE,
+            .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+                              VK_COLOR_COMPONENT_A_BIT,
+        };
+        const VkPipelineColorBlendStateCreateInfo blend{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            .attachmentCount = 1,
+            .pAttachments = &blendAttachment,
+        };
+        const std::array dynamicStates{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        const VkPipelineDynamicStateCreateInfo dynamic{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            .dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size()),
+            .pDynamicStates = dynamicStates.data(),
+        };
+        const VkPipelineLayoutCreateInfo layoutInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 1,
+            .pSetLayouts = &nativeOutputDescriptorSetLayout_,
+        };
+        check(vkCreatePipelineLayout(device_, &layoutInfo, nullptr, &nativeOutputPipelineLayout_),
+              "create native output pipeline layout");
+        const VkPipelineRenderingCreateInfo rendering{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+            .colorAttachmentCount = 1,
+            .pColorAttachmentFormats = &swapchainFormat_,
+        };
+        const VkGraphicsPipelineCreateInfo createInfo{
+            .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            .pNext = &rendering,
+            .stageCount = static_cast<std::uint32_t>(stages.size()),
+            .pStages = stages.data(),
+            .pVertexInputState = &vertexInput,
+            .pInputAssemblyState = &assembly,
+            .pViewportState = &viewport,
+            .pRasterizationState = &rasterization,
+            .pMultisampleState = &multisample,
+            .pColorBlendState = &blend,
+            .pDynamicState = &dynamic,
+            .layout = nativeOutputPipelineLayout_,
+        };
+        check(vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &createInfo, nullptr, &nativeOutputPipeline_),
+              "create native output pipeline");
+    } catch (...) {
+        if (fragment != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device_, fragment, nullptr);
+        if (vertex != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device_, vertex, nullptr);
+        destroyNativeOutputPipeline();
+        throw;
+    }
+    vkDestroyShaderModule(device_, fragment, nullptr);
+    vkDestroyShaderModule(device_, vertex, nullptr);
+}
+
+void VulkanDevice::destroyNativeOutputPipeline() noexcept {
+    if (nativeOutputPipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device_, nativeOutputPipeline_, nullptr);
+    if (nativeOutputPipelineLayout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device_, nativeOutputPipelineLayout_, nullptr);
+    if (nativeOutputDescriptorPool_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorPool(device_, nativeOutputDescriptorPool_, nullptr);
+    if (nativeOutputDescriptorSetLayout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device_, nativeOutputDescriptorSetLayout_, nullptr);
+    nativeOutputPipeline_ = VK_NULL_HANDLE;
+    nativeOutputPipelineLayout_ = VK_NULL_HANDLE;
+    nativeOutputDescriptorPool_ = VK_NULL_HANDLE;
+    nativeOutputDescriptorSetLayout_ = VK_NULL_HANDLE;
+    nativeOutputDescriptors_.fill(VK_NULL_HANDLE);
 }
 
 void VulkanDevice::createPreviewDescriptors() {
@@ -2167,7 +2323,7 @@ void VulkanDevice::renderFrame() {
         if (viewport.colorImage != VK_NULL_HANDLE) {
             if (nativeOutput.has_value()) {
                 recordNativeOutputToImage(
-                    frame.commandBuffer, *nativeOutput, viewport.colorImage,
+                    frame.commandBuffer, *nativeOutput, viewport.colorImage, viewport.colorView,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
@@ -2248,8 +2404,11 @@ void VulkanDevice::renderFrame() {
 #else
     if (nativeOutput.has_value()) {
         recordNativeOutputToImage(frame.commandBuffer, *nativeOutput, swapchainImages_[imageIndex],
+                                  swapchainViews_[imageIndex],
                                   VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0U,
-                                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+                                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                                   swapchainInitialized_[imageIndex], swapchainExtent_);
     } else {
         recordPreviewPass(frame.commandBuffer, frame, swapchainImages_[imageIndex], swapchainViews_[imageIndex],
@@ -4507,7 +4666,7 @@ void VulkanDevice::recordTraceRays(VkCommandBuffer commandBuffer, handles::Pipel
 }
 
 void VulkanDevice::recordNativeOutputToImage(VkCommandBuffer commandBuffer, const NativeFrameOutput& output,
-                                             VkImage target, VkImageLayout previousLayout,
+                                             VkImage target, VkImageView targetView, VkImageLayout previousLayout,
                                              VkPipelineStageFlags2 previousStage, VkAccessFlags2 previousAccess,
                                              VkImageLayout finalLayout, VkPipelineStageFlags2 finalStage,
                                              VkAccessFlags2 finalAccess, bool initialized, VkExtent2D extent) {
@@ -4515,8 +4674,12 @@ void VulkanDevice::recordNativeOutputToImage(VkCommandBuffer commandBuffer, cons
         throw std::invalid_argument("native frame output is invalid");
     if (target == VK_NULL_HANDLE)
         throw std::invalid_argument("native frame output target is unavailable");
+    if (targetView == VK_NULL_HANDLE)
+        throw std::invalid_argument("native frame output target view is unavailable");
     if (commandBuffer == VK_NULL_HANDLE)
         throw std::invalid_argument("native frame output requires a command buffer");
+    if (nativeOutputPipeline_ == VK_NULL_HANDLE || nativeOutputPipelineLayout_ == VK_NULL_HANDLE)
+        throw std::logic_error("native frame output pipeline is unavailable");
 
     const auto sourceIt = typedTextures_.find(output.texture);
     if (sourceIt == typedTextures_.end() || !typedTextureHandles_.isAlive(output.texture))
@@ -4525,47 +4688,82 @@ void VulkanDevice::recordNativeOutputToImage(VkCommandBuffer commandBuffer, cons
     if (source.desc.dimension != TextureDimension::d2 || source.desc.extent.width != extent.width ||
         source.desc.extent.height != extent.height || source.desc.extent.depth != 1 || source.desc.mipLevels != 1 ||
         source.desc.arrayLayers != 1 || source.desc.format != output.format ||
-        (toBits(source.desc.usage) & toBits(ResourceUsage::transferSrc)) == 0U)
+        (toBits(source.desc.usage) & toBits(ResourceUsage::sampledRead)) == 0U)
         throw std::invalid_argument("native frame output does not match the presentation target");
-    if (toVkFormat(output.format) != swapchainFormat_)
-        throw std::invalid_argument("native frame output format cannot be copied to the swapchain");
 
-    recordTextureTransition(commandBuffer, output.texture, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    const VkImageMemoryBarrier2 toTransfer{
+    const VkDescriptorSet descriptor = nativeOutputDescriptors_[frameIndex_];
+    if (descriptor == VK_NULL_HANDLE || previewClampSampler_ == VK_NULL_HANDLE)
+        throw std::logic_error("native frame output descriptors are unavailable");
+    const VkDescriptorImageInfo imageInfo{
+        .sampler = VK_NULL_HANDLE,
+        .imageView = source.view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    const VkDescriptorImageInfo samplerInfo{
+        .sampler = previewClampSampler_,
+        .imageView = VK_NULL_HANDLE,
+        .imageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    const std::array writes{
+        VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptor, 0, 0, 1,
+                             VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &imageInfo, nullptr, nullptr},
+        VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptor, 1, 0, 1,
+                             VK_DESCRIPTOR_TYPE_SAMPLER, &samplerInfo, nullptr, nullptr},
+    };
+    vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+    recordTextureTransition(commandBuffer, output.texture, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    const VkImageMemoryBarrier2 toColor{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .srcStageMask = initialized ? previousStage : VK_PIPELINE_STAGE_2_NONE,
         .srcAccessMask = initialized ? previousAccess : VK_ACCESS_2_NONE,
-        .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-        .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
         .oldLayout = initialized ? previousLayout : VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image = target,
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
     };
-    const VkDependencyInfo toTransferDependency{
+    const VkDependencyInfo toColorDependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
         .imageMemoryBarrierCount = 1,
-        .pImageMemoryBarriers = &toTransfer,
+        .pImageMemoryBarriers = &toColor,
     };
-    vkCmdPipelineBarrier2(commandBuffer, &toTransferDependency);
-    const VkImageCopy copy{
-        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-        .srcOffset = {0, 0, 0},
-        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-        .dstOffset = {0, 0, 0},
-        .extent = {extent.width, extent.height, 1},
+    vkCmdPipelineBarrier2(commandBuffer, &toColorDependency);
+    const VkRenderingAttachmentInfo attachment{
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = targetView,
+        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
     };
-    vkCmdCopyImage(commandBuffer, source.resource.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    const VkRenderingInfo rendering{
+        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+        .renderArea = {{0, 0}, extent},
+        .layerCount = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &attachment,
+    };
+    vkCmdBeginRendering(commandBuffer, &rendering);
+    const VkViewport viewport{0.0F, 0.0F, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0F,
+                              1.0F};
+    const VkRect2D scissor{{0, 0}, extent};
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, nativeOutputPipeline_);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, nativeOutputPipelineLayout_, 0, 1,
+                            &descriptor, 0, nullptr);
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    vkCmdEndRendering(commandBuffer);
     const VkImageMemoryBarrier2 toFinal{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
         .dstStageMask = finalStage,
         .dstAccessMask = finalAccess,
-        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .newLayout = finalLayout,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,

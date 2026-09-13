@@ -219,6 +219,8 @@ class VulkanDevice final : public Device {
     void destroyPipelineCache();
     void createPipeline();
     void destroyPipeline();
+    void createNativeOutputPipeline();
+    void destroyNativeOutputPipeline() noexcept;
     void createPreviewDescriptors();
     void destroyPreviewDescriptors();
     void destroyPreviewTextures();
@@ -275,7 +277,8 @@ class VulkanDevice final : public Device {
                          handles::ShaderBindingTableHandle sbt, std::uint32_t width, std::uint32_t height,
                          std::uint32_t depth);
     void recordNativeOutputToImage(VkCommandBuffer commandBuffer, const NativeFrameOutput& output, VkImage target,
-                                   VkImageLayout previousLayout, VkPipelineStageFlags2 previousStage,
+                                   VkImageView targetView, VkImageLayout previousLayout,
+                                   VkPipelineStageFlags2 previousStage,
                                    VkAccessFlags2 previousAccess, VkImageLayout finalLayout,
                                    VkPipelineStageFlags2 finalStage, VkAccessFlags2 finalAccess, bool initialized,
                                    VkExtent2D extent);
@@ -363,6 +366,11 @@ class VulkanDevice final : public Device {
     VkPipeline transparentPipeline_{};
     VkPipeline edgePipeline_{};
     VkPipeline backgroundPipeline_{};
+    VkPipeline nativeOutputPipeline_{};
+    VkPipelineLayout nativeOutputPipelineLayout_{};
+    VkDescriptorSetLayout nativeOutputDescriptorSetLayout_{};
+    VkDescriptorPool nativeOutputDescriptorPool_{};
+    std::array<VkDescriptorSet, 2> nativeOutputDescriptors_{};
     VkDescriptorSetLayout previewDescriptorSetLayout_{};
     VkDescriptorSetLayout previewSkinningDescriptorSetLayout_{};
     VkDescriptorSetLayout previewMorphDescriptorSetLayout_{};
