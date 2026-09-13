@@ -97,6 +97,10 @@ class NativeDeformRuntime {
                                   handles::PipelineHandle pipeline,
                                   handles::DescriptorSetLayoutHandle descriptorLayout,
                                   std::string* error = nullptr);
+    // Refreshes the CPU-visible deform inputs without replacing resources when
+    // the mesh shape is unchanged. A shape change recreates the resource set
+    // so descriptor bindings and BLAS geometry remain valid.
+    [[nodiscard]] bool update(Device& device, const NativeDeformUpload& upload, std::string* error = nullptr);
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
@@ -124,6 +128,7 @@ class NativeDeformRuntime {
     NativeDeformResources resources_;
     NativeDeformPushConstants constants_;
     handles::PipelineHandle pipeline_{};
+    handles::DescriptorSetLayoutHandle descriptorLayout_{};
     std::uint32_t workgroupCount_{};
 };
 

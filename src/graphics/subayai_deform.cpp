@@ -26,6 +26,20 @@ namespace {
     return static_cast<std::uint32_t>(count);
 }
 
+[[nodiscard]] NativeDeformInput makeInput(const NativeDeformUpload& upload) {
+    if (upload.baseVertices.empty())
+        throw std::invalid_argument("native deform requires base vertices");
+    if (upload.indices.empty())
+        throw std::invalid_argument("native deform requires triangle indices");
+    return NativeDeformInput{
+        .vertexCount = checkedSpanCount(upload.baseVertices.size(), "base vertex"),
+        .indexCount = checkedSpanCount(upload.indices.size(), "index"),
+        .boneCount = checkedSpanCount(upload.bones.size(), "bone"),
+        .morphDeltaCount = checkedSpanCount(upload.morphDeltas.size(), "morph delta"),
+        .morphCount = checkedSpanCount(upload.morphWeights.size(), "morph weight"),
+    };
+}
+
 [[nodiscard]] BufferResourceDesc uploadable(BufferResourceDesc desc, std::size_t minimumBytes) {
     desc.size = std::max(desc.size, minimumBytes);
     desc.cpuVisible = true;
@@ -52,7 +66,7 @@ NativeDeformPlan makeNativeDeformPlan(const NativeDeformInput& input) {
                          false, ResourceLifetime::persistent};
     plan.deformedVertices = {checkedCountBytes(input.vertexCount, sizeof(NativeDeformedVertex), "deformed vertex"),
                              ResourceUsage::storageWrite | ResourceUsage::vertexRead | ResourceUsage::asBuildRead,
-                             false, ResourceLifetime::transient};
+                             false, ResourceLifetime::persistent};
     plan.indices = {checkedCountBytes(input.indexCount, sizeof(std::uint32_t), "index"),
                     ResourceUsage::indexRead | ResourceUsage::asBuildRead, false, ResourceLifetime::persistent};
     if (input.vertexCount > std::numeric_limits<std::uint32_t>::max() - (plan.workgroupSize - 1U))
@@ -108,20 +122,11 @@ bool NativeDeformRuntime::initialize(Device& device, const NativeDeformUpload& u
             throw std::invalid_argument("native deform requires a valid compute pipeline");
         if (!descriptorLayout.valid())
             throw std::invalid_argument("native deform requires a valid descriptor-set layout");
-        if (upload.baseVertices.empty())
-            throw std::invalid_argument("native deform requires base vertices");
-        if (upload.indices.empty())
-            throw std::invalid_argument("native deform requires triangle indices");
-        const NativeDeformInput input{
-            .vertexCount = checkedSpanCount(upload.baseVertices.size(), "base vertex"),
-            .indexCount = checkedSpanCount(upload.indices.size(), "index"),
-            .boneCount = checkedSpanCount(upload.bones.size(), "bone"),
-            .morphDeltaCount = checkedSpanCount(upload.morphDeltas.size(), "morph delta"),
-            .morphCount = checkedSpanCount(upload.morphWeights.size(), "morph weight"),
-        };
+        const NativeDeformInput input = makeInput(upload);
         plan_ = makeNativeDeformPlan(input);
         device_ = &device;
         pipeline_ = pipeline;
+        descriptorLayout_ = descriptorLayout;
         constants_ = {.vertexCount = input.vertexCount,
                       .boneCount = input.boneCount,
                       .morphDeltaCount = input.morphDeltaCount,
@@ -165,6 +170,37 @@ bool NativeDeformRuntime::initialize(Device& device, const NativeDeformUpload& u
     return true;
 }
 
+bool NativeDeformRuntime::update(Device& device, const NativeDeformUpload& upload, std::string* error) {
+    if (error != nullptr)
+        error->clear();
+    try {
+        if (!ready() || device_ != &device)
+            throw std::logic_error("native deform runtime is not initialized for this device");
+        const NativeDeformInput input = makeInput(upload);
+        const bool shapeChanged =
+            constants_.vertexCount != input.vertexCount || constants_.boneCount != input.boneCount ||
+            constants_.morphDeltaCount != input.morphDeltaCount || constants_.morphCount != input.morphCount ||
+            plan_.indices.size != checkedCountBytes(input.indexCount, sizeof(std::uint32_t), "index");
+        if (shapeChanged)
+            return initialize(device, upload, pipeline_, descriptorLayout_, error);
+
+        device.uploadBufferEx(resources_.baseVertices, std::as_bytes(upload.baseVertices), 0);
+        device.uploadBufferEx(resources_.bones, std::as_bytes(upload.bones), 0);
+        device.uploadBufferEx(resources_.morphDeltas, std::as_bytes(upload.morphDeltas), 0);
+        device.uploadBufferEx(resources_.morphWeights, std::as_bytes(upload.morphWeights), 0);
+        device.uploadBufferEx(resources_.indices, std::as_bytes(upload.indices), 0);
+    } catch (const std::exception& exception) {
+        if (error != nullptr)
+            *error = exception.what();
+        return false;
+    } catch (...) {
+        if (error != nullptr)
+            *error = "native deform update failed";
+        return false;
+    }
+    return true;
+}
+
 void NativeDeformRuntime::reset() noexcept {
     Device* device = device_;
     if (device != nullptr) {
@@ -195,6 +231,7 @@ void NativeDeformRuntime::reset() noexcept {
     resources_ = {};
     constants_ = {};
     pipeline_ = {};
+    descriptorLayout_ = {};
     workgroupCount_ = 0;
 }
 
