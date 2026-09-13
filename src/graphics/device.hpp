@@ -508,6 +508,9 @@ class Device {
     [[nodiscard]] virtual handles::BufferHandle createBufferEx(const BufferResourceDesc&) {
         throw std::logic_error("Typed buffers are not implemented by this backend");
     }
+    [[nodiscard]] virtual handles::SamplerHandle createSamplerEx() {
+        throw std::logic_error("Typed samplers are not implemented by this backend");
+    }
     [[nodiscard]] virtual handles::AccelerationStructureHandle createBlasEx(const BlasGeometryDesc&) {
         throw std::logic_error("Typed BLAS is not implemented by this backend");
     }
