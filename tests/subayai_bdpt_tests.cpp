@@ -4,6 +4,7 @@
 #include "graphics/device.hpp"
 #include "graphics/sbt.hpp"
 #include "graphics/subayai_acceleration_structure.hpp"
+#include "graphics/subayai_deform.hpp"
 #include "graphics/subayai_environment.hpp"
 #include "graphics/subayai_light_sampling.hpp"
 
@@ -12,6 +13,7 @@
 #include <cstdint>
 #include <iostream>
 #include <span>
+#include <stdexcept>
 #include <string_view>
 #include <vector>
 
@@ -35,25 +37,28 @@ struct MockAccelerationBackend : dayo::graphics::IAccelerationBackend {
     std::uint64_t destroyBlasCalls{0};
     std::uint64_t destroyTlasCalls{0};
     std::size_t lastTlasInstanceCount{};
-    std::vector<dayo::graphics::BufferHandle> rebuildVertexBuffers;
-    std::vector<dayo::graphics::BufferHandle> refitVertexBuffers;
+    std::vector<dayo::graphics::handles::BufferHandle> rebuildVertexBuffers;
+    std::vector<dayo::graphics::handles::BufferHandle> refitVertexBuffers;
     std::vector<dayo::graphics::TlasInstanceDesc> lastTlasInstances;
 
-    dayo::graphics::handles::AccelerationStructureHandle createBlas(dayo::graphics::BufferHandle) override {
+    dayo::graphics::handles::AccelerationStructureHandle
+    createBlas(const dayo::graphics::BlasGeometryDesc& geometry) override {
         ++createBlasCalls;
+        if (geometry.triangles.empty())
+            return {};
         return {next++, 1};
     }
     dayo::graphics::handles::AccelerationStructureHandle
     rebuildBlas(dayo::graphics::handles::AccelerationStructureHandle blas,
-                dayo::graphics::BufferHandle vertexBuffer) override {
+                const dayo::graphics::BlasGeometryDesc& geometry) override {
         ++rebuildBlasCalls;
-        rebuildVertexBuffers.push_back(vertexBuffer);
+        rebuildVertexBuffers.push_back(geometry.triangles.front().vertexBuffer);
         return blas;
     }
     void refitBlas(dayo::graphics::handles::AccelerationStructureHandle,
-                   dayo::graphics::BufferHandle vertexBuffer) override {
+                   const dayo::graphics::BlasGeometryDesc& geometry) override {
         ++refitBlasCalls;
-        refitVertexBuffers.push_back(vertexBuffer);
+        refitVertexBuffers.push_back(geometry.triangles.front().vertexBuffer);
     }
     dayo::graphics::handles::AccelerationStructureHandle
     createTlas(std::span<const dayo::graphics::TlasInstanceDesc> instances) override {
@@ -91,6 +96,15 @@ struct MockEnvironmentBackend : dayo::graphics::IEnvironmentBackend {
 
 } // namespace
 
+dayo::graphics::BlasGeometryDesc geometry(std::uint32_t vertexBuffer) {
+    return {.triangles = {{.vertexBuffer = {vertexBuffer, 1},
+                           .vertexStride = sizeof(dayo::graphics::NativeDeformedVertex),
+                           .vertexCount = 3,
+                           .indexBuffer = {99, 1},
+                           .indexType = dayo::graphics::IndexType::uint32,
+                           .indexCount = 3}}};
+}
+
 int main() {
     using dayo::graphics::AccelerationStructureService;
     using dayo::graphics::AliasEntry;
@@ -103,20 +117,47 @@ int main() {
     using dayo::graphics::TlasAction;
     bool ok = true;
 
+    // Native deformation writes actual positions into a buffer that is valid
+    // for both vertex reads and BLAS build input. Preview's source skinning
+    // attributes never appear as an AS vertex buffer.
+    {
+        const dayo::graphics::NativeDeformInput input{
+            .vertexCount = 130, .indexCount = 192, .boneCount = 8, .morphDeltaCount = 24, .morphCount = 6};
+        const auto plan = dayo::graphics::makeNativeDeformPlan(input);
+        ok &= check(plan.deformedVertices.size == 130U * sizeof(dayo::graphics::NativeDeformedVertex),
+                    "native deform allocates deformed vertex output");
+        ok &= check((dayo::graphics::toBits(plan.deformedVertices.usage) &
+                     dayo::graphics::toBits(dayo::graphics::ResourceUsage::asBuildRead)) != 0U,
+                    "deformed output is BLAS build-readable");
+        ok &= check(plan.workgroupCount == 3, "native deform rounds dispatch groups up");
+        const auto blas = plan.makeBlasGeometry({17, 1}, {18, 1});
+        ok &= check(blas.triangles.size() == 1 && blas.triangles.front().vertexCount == 130 &&
+                        blas.triangles.front().indexCount == 192 &&
+                        blas.triangles.front().vertexStride == sizeof(dayo::graphics::NativeDeformedVertex),
+                    "native deform plan creates complete typed BLAS geometry");
+        bool invalidThrew = false;
+        try {
+            static_cast<void>(dayo::graphics::makeNativeDeformPlan({.vertexCount = 3, .indexCount = 4}));
+        } catch (const std::invalid_argument&) {
+            invalidThrew = true;
+        }
+        ok &= check(invalidThrew, "native deform rejects non-triangle index counts");
+    }
+
     // BLAS branching: rebuild on topology, refit on deform-only, none otherwise.
     {
         MockAccelerationBackend backend;
         AccelerationStructureService service(&backend);
-        ok &= check(service.notifyMesh(0, 11, 1, 1) == BlasAction::rebuild, "BLAS first build is rebuild");
+        ok &= check(service.notifyMesh(0, geometry(11), 1, 1) == BlasAction::rebuild, "BLAS first build is rebuild");
         ok &= check(backend.createBlasCalls == 1, "BLAS create called once");
-        ok &= check(service.notifyMesh(0, 11, 1, 1) == BlasAction::none, "BLAS unchanged reports none");
-        ok &= check(service.notifyMesh(0, 11, 1, 2) == BlasAction::refit, "BLAS deform-only refits");
+        ok &= check(service.notifyMesh(0, geometry(11), 1, 1) == BlasAction::none, "BLAS unchanged reports none");
+        ok &= check(service.notifyMesh(0, geometry(11), 1, 2) == BlasAction::refit, "BLAS deform-only refits");
         ok &= check(backend.refitBlasCalls == 1, "BLAS refit called once");
-        ok &= check(backend.refitVertexBuffers.size() == 1 && backend.refitVertexBuffers.front() == 11,
+        ok &= check(backend.refitVertexBuffers.size() == 1 && backend.refitVertexBuffers.front().index == 11,
                     "BLAS refit receives the current vertex buffer");
-        ok &= check(service.notifyMesh(0, 11, 2, 2) == BlasAction::rebuild, "BLAS topology change rebuilds");
+        ok &= check(service.notifyMesh(0, geometry(11), 2, 2) == BlasAction::rebuild, "BLAS topology change rebuilds");
         ok &= check(backend.rebuildBlasCalls == 1, "BLAS rebuild called once");
-        ok &= check(backend.rebuildVertexBuffers.size() == 1 && backend.rebuildVertexBuffers.front() == 11,
+        ok &= check(backend.rebuildVertexBuffers.size() == 1 && backend.rebuildVertexBuffers.front().index == 11,
                     "BLAS rebuild receives the current vertex buffer");
         ok &= check(service.blasCount() == 1, "BLAS count tracks meshes");
     }
@@ -126,13 +167,13 @@ int main() {
         MockAccelerationBackend backend;
         {
             AccelerationStructureService service(&backend);
-            static_cast<void>(service.notifyMesh(0, 11, 1, 1));
-            static_cast<void>(service.notifyMesh(0, 22, 1, 2));
-            static_cast<void>(service.notifyMesh(0, 33, 2, 3));
+            static_cast<void>(service.notifyMesh(0, geometry(11), 1, 1));
+            static_cast<void>(service.notifyMesh(0, geometry(22), 1, 2));
+            static_cast<void>(service.notifyMesh(0, geometry(33), 2, 3));
         }
-        ok &= check(backend.refitVertexBuffers.size() == 1 && backend.refitVertexBuffers.front() == 22,
+        ok &= check(backend.refitVertexBuffers.size() == 1 && backend.refitVertexBuffers.front().index == 22,
                     "deform update forwards a replaced vertex buffer");
-        ok &= check(backend.rebuildVertexBuffers.size() == 1 && backend.rebuildVertexBuffers.front() == 33,
+        ok &= check(backend.rebuildVertexBuffers.size() == 1 && backend.rebuildVertexBuffers.front().index == 33,
                     "topology update forwards a replaced vertex buffer");
         ok &= check(backend.destroyBlasCalls == 1, "service destructor releases remaining BLAS");
     }
@@ -140,8 +181,8 @@ int main() {
     {
         MockAccelerationBackend backend;
         AccelerationStructureService service(&backend);
-        static_cast<void>(service.notifyMesh(0, 11, 1, 1));
-        static_cast<void>(service.notifyMesh(1, 12, 1, 1));
+        static_cast<void>(service.notifyMesh(0, geometry(11), 1, 1));
+        static_cast<void>(service.notifyMesh(1, geometry(12), 1, 1));
         const std::array<std::uint32_t, 2> clones{2, 3};
         ok &= check(service.notifyWorld(10, clones) == TlasAction::rebuild, "TLAS first build rebuilds");
         ok &= check(service.tlasInstanceCount() == 5, "TLAS instance count sums CloneCount");
@@ -152,7 +193,7 @@ int main() {
         const std::array<std::uint32_t, 2> grown{2, 4};
         ok &= check(service.notifyWorld(11, grown) == TlasAction::rebuild, "TLAS clone growth rebuilds");
         ok &= check(service.tlasInstanceCount() == 6, "TLAS instance count follows CloneCount");
-        static_cast<void>(service.notifyMesh(0, 11, 1, 9));
+        static_cast<void>(service.notifyMesh(0, geometry(11), 1, 9));
         ok &= check(service.notifyWorld(11, grown) == TlasAction::none, "BLAS refit keeps stable TLAS addresses");
         ok &= check(service.removeMesh(1), "removing a mesh succeeds");
         ok &= check(service.blasCount() == 1 && !service.tlasBuilt(), "mesh removal retires TLAS state");
@@ -163,8 +204,8 @@ int main() {
     {
         MockAccelerationBackend backend;
         AccelerationStructureService service(&backend);
-        static_cast<void>(service.notifyMesh(10, 11, 1, 1));
-        static_cast<void>(service.notifyMesh(20, 12, 1, 1));
+        static_cast<void>(service.notifyMesh(10, geometry(11), 1, 1));
+        static_cast<void>(service.notifyMesh(20, geometry(12), 1, 1));
         std::array<dayo::graphics::WorldInstance, 3> world{};
         world[0].meshId = 20;
         world[0].transform.values[3] = 4.0F;
