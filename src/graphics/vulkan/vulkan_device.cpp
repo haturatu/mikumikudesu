@@ -4184,6 +4184,15 @@ void VulkanDevice::recordTraceRays(VkCommandBuffer commandBuffer, handles::Pipel
           height, depth);
 }
 
+void VulkanDevice::recordBindPipeline(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline) {
+    const auto it = typedPipelines_.find(pipeline);
+    if (it == typedPipelines_.end() || !typedPipelineHandles_.isAlive(pipeline))
+        throw std::invalid_argument("typed pipeline bind references a stale pipeline handle");
+    if (commandBuffer == VK_NULL_HANDLE)
+        throw std::invalid_argument("typed pipeline bind requires a command buffer");
+    vkCmdBindPipeline(commandBuffer, it->second.bindPoint, it->second.pipeline);
+}
+
 void VulkanDevice::recordTransitionTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture) {
     const auto it = typedTextures_.find(texture);
     if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(texture))
