@@ -12,6 +12,7 @@
 #include "graphics/fx_pipeline_runtime.hpp"
 #include "graphics/fx_resource_runtime.hpp"
 #include "graphics/native_fx_runtime.hpp"
+#include "graphics/native_scene_bindings.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -953,6 +954,53 @@ bool testNativeFxRuntimeBindsResourcesAndPipelines() {
     return ok;
 }
 
+bool testNativeFxRuntimeBindsFixedSceneSets() {
+    dayo::fx::FxShaderCompiler compiler;
+    if (!compiler.available())
+        return true;
+
+    dayo::fx::FxProgram program;
+    program.sourcePath = "native-scene-runtime.fxdayo";
+    program.hlsl = "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) {}\n";
+    dayo::core::EffectTexture output;
+    output.name = "Output";
+    output.view = "UAV";
+    program.textures.push_back(std::move(output));
+    dayo::fx::FxDispatch dispatch;
+    dispatch.name = "native-scene-pass";
+    dispatch.kind = dayo::fx::FxOpKind::compute;
+    dispatch.executable = dayo::fx::FxComputeDispatch{"main"};
+    dispatch.resources.push_back({"Output", true});
+    program.passes.push_back(std::move(dispatch));
+
+    std::array<dayo::graphics::handles::DescriptorSetLayoutHandle, 10> layouts{};
+    std::array<dayo::graphics::handles::DescriptorSetHandle, 10> sets{};
+    for (std::size_t index = 0; index < layouts.size(); ++index) {
+        layouts[index] = {static_cast<std::uint32_t>(index + 1), 1};
+        sets[index] = {static_cast<std::uint32_t>(index + 101), 1};
+    }
+    MockDevice device;
+    dayo::graphics::NativeFxRuntime runtime;
+    std::string error;
+    const auto context = testContext();
+    bool ok = check(runtime.initializeForFrame(device, std::move(program), compiler, context, layouts, &error, sets),
+                    "native FX runtime accepts fixed native scene layouts and sets");
+    ok &= check(error.empty() && runtime.resourceSetIndex() == dayo::graphics::kNativeFxResourceSet &&
+                    runtime.sharedDescriptorSetCount() == dayo::graphics::kNativeSceneDescriptorSetCount,
+                "native FX runtime places FX resources after all native scene spaces");
+    if (!ok)
+        return false;
+    auto frame = runtime.prepareFrame(context);
+    MockCommands commands;
+    const auto stats = runtime.execute(frame, commands);
+    const auto descriptorCount = static_cast<std::size_t>(
+        std::count(commands.trace.begin(), commands.trace.end(), std::string{"descriptorEx"}));
+    ok &= check(stats.compute == 1 && descriptorCount == dayo::graphics::kNativeSceneDescriptorSetCount + 1,
+                "native FX runtime binds every native scene set before FX resources");
+    runtime.reset();
+    return ok;
+}
+
 bool testShaderCacheKeys() {
     dayo::fx::FxShaderCache cache;
     dayo::fx::FxShaderKey base;
@@ -1267,6 +1315,7 @@ int main() {
     ok &= testFxExternalTextureMetadataAndUpload();
     ok &= testNativeFxRuntimeRefreshesFrameResources();
     ok &= testNativeFxRuntimeBindsResourcesAndPipelines();
+    ok &= testNativeFxRuntimeBindsFixedSceneSets();
     ok &= testShaderCacheKeys();
     try {
         ok &= testRealShaderCompilation();
