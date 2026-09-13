@@ -1729,10 +1729,14 @@ void Application::buildInspectorPanel() {
         const auto& bones = model->model->bones;
         if (!bones.empty()) {
             selectedBone_ = std::clamp(selectedBone_, 0, static_cast<int>(bones.size() - 1));
-            if (ImGui::BeginCombo("Bone", bones[static_cast<std::size_t>(selectedBone_)].name.c_str())) {
-                for (std::size_t index = 0; index < bones.size(); ++index)
+            if (ImGui::BeginCombo("Bone##InspectorBoneSelector",
+                                  bones[static_cast<std::size_t>(selectedBone_)].name.c_str())) {
+                for (std::size_t index = 0; index < bones.size(); ++index) {
+                    ImGui::PushID(static_cast<int>(index));
                     if (ImGui::Selectable(bones[index].name.c_str(), selectedBone_ == static_cast<int>(index)))
                         selectedBone_ = static_cast<int>(index);
+                    ImGui::PopID();
+                }
                 ImGui::EndCombo();
             }
             ImGui::DragFloat3("Position", editedBoneTranslation_.data(), 0.01F);
@@ -1759,10 +1763,14 @@ void Application::buildInspectorPanel() {
         const auto& morphs = model->model->morphs;
         if (!morphs.empty()) {
             selectedMorph_ = std::clamp(selectedMorph_, 0, static_cast<int>(morphs.size() - 1));
-            if (ImGui::BeginCombo("Morph", morphs[static_cast<std::size_t>(selectedMorph_)].name.c_str())) {
-                for (std::size_t index = 0; index < morphs.size(); ++index)
+            if (ImGui::BeginCombo("Morph##InspectorMorphSelector",
+                                  morphs[static_cast<std::size_t>(selectedMorph_)].name.c_str())) {
+                for (std::size_t index = 0; index < morphs.size(); ++index) {
+                    ImGui::PushID(static_cast<int>(index));
                     if (ImGui::Selectable(morphs[index].name.c_str(), selectedMorph_ == static_cast<int>(index)))
                         selectedMorph_ = static_cast<int>(index);
+                    ImGui::PopID();
+                }
                 ImGui::EndCombo();
             }
             ImGui::SliderFloat("Weight", &editedMorphWeight_, 0.0F, 1.0F);
@@ -1792,14 +1800,17 @@ void Application::buildInspectorPanel() {
                                    uiState_.selectedMaterial < static_cast<std::int32_t>(model->model->materials.size())
                                ? uiState_.selectedMaterial
                                : 0;
-            if (ImGui::BeginCombo("Material",
+            if (ImGui::BeginCombo("Material##InspectorMaterialSelector",
                                   model->model->materials[static_cast<std::size_t>(material)].name.c_str())) {
-                for (std::size_t index = 0; index < model->model->materials.size(); ++index)
+                for (std::size_t index = 0; index < model->model->materials.size(); ++index) {
+                    ImGui::PushID(static_cast<int>(index));
                     if (ImGui::Selectable(model->model->materials[index].name.c_str(),
                                           material == static_cast<int>(index))) {
                         uiState_.selectedMaterial = static_cast<std::int32_t>(index);
                         material = static_cast<int>(index);
                     }
+                    ImGui::PopID();
+                }
                 ImGui::EndCombo();
             }
             const auto& selectedMaterial = model->model->materials[static_cast<std::size_t>(material)];
@@ -2583,10 +2594,14 @@ void Application::buildEditorUi() {
             const auto& bones = model->model->bones;
             if (!bones.empty()) {
                 selectedBone_ = std::clamp(selectedBone_, 0, static_cast<int>(bones.size() - 1));
-                if (ImGui::BeginCombo("Bone", bones[static_cast<std::size_t>(selectedBone_)].name.c_str())) {
-                    for (std::size_t i = 0; i < bones.size(); ++i)
+                if (ImGui::BeginCombo("Bone##LegacyBoneSelector",
+                                      bones[static_cast<std::size_t>(selectedBone_)].name.c_str())) {
+                    for (std::size_t i = 0; i < bones.size(); ++i) {
+                        ImGui::PushID(static_cast<int>(i));
                         if (ImGui::Selectable(bones[i].name.c_str(), selectedBone_ == static_cast<int>(i)))
                             selectedBone_ = static_cast<int>(i);
+                        ImGui::PopID();
+                    }
                     ImGui::EndCombo();
                 }
                 ImGui::DragFloat3("Translation", editedBoneTranslation_.data(), 0.01F);
@@ -2608,10 +2623,14 @@ void Application::buildEditorUi() {
             const auto& morphs = model->model->morphs;
             if (!morphs.empty()) {
                 selectedMorph_ = std::clamp(selectedMorph_, 0, static_cast<int>(morphs.size() - 1));
-                if (ImGui::BeginCombo("Morph", morphs[static_cast<std::size_t>(selectedMorph_)].name.c_str())) {
-                    for (std::size_t i = 0; i < morphs.size(); ++i)
+                if (ImGui::BeginCombo("Morph##LegacyMorphSelector",
+                                      morphs[static_cast<std::size_t>(selectedMorph_)].name.c_str())) {
+                    for (std::size_t i = 0; i < morphs.size(); ++i) {
+                        ImGui::PushID(static_cast<int>(i));
                         if (ImGui::Selectable(morphs[i].name.c_str(), selectedMorph_ == static_cast<int>(i)))
                             selectedMorph_ = static_cast<int>(i);
+                        ImGui::PopID();
+                    }
                     ImGui::EndCombo();
                 }
                 ImGui::SliderFloat("Weight", &editedMorphWeight_, 0.0F, 1.0F);
@@ -2734,10 +2753,13 @@ void Application::buildEditorUi() {
                 materialIndex = std::clamp(materialIndex, 0, static_cast<int>(model->materialSettings.size() - 1));
                 const auto& materials = model->model->materials;
                 const char* preview = materials[static_cast<std::size_t>(materialIndex)].name.c_str();
-                if (ImGui::BeginCombo("Material", preview)) {
-                    for (std::size_t i = 0; i < materials.size(); ++i)
+                if (ImGui::BeginCombo("Material##MaterialAnnotationSelector", preview)) {
+                    for (std::size_t i = 0; i < materials.size(); ++i) {
+                        ImGui::PushID(static_cast<int>(i));
                         if (ImGui::Selectable(materials[i].name.c_str(), materialIndex == static_cast<int>(i)))
                             materialIndex = static_cast<int>(i);
+                        ImGui::PopID();
+                    }
                     ImGui::EndCombo();
                 }
                 static std::array<char, 1024> annotation{};
@@ -2753,12 +2775,14 @@ void Application::buildEditorUi() {
                 static std::array<char, 256> parentBone{};
                 static std::array<char, 256> childBone{};
                 parentIndex = std::clamp(parentIndex, 0, static_cast<int>(scene_.models().size() - 1));
-                if (ImGui::BeginCombo("Parent model",
+                if (ImGui::BeginCombo("Parent model##ExternalParentModelSelector",
                                       scene_.models()[static_cast<std::size_t>(parentIndex)].displayName.c_str())) {
                     for (std::size_t i = 0; i < scene_.models().size(); ++i) {
+                        ImGui::PushID(static_cast<int>(scene_.models()[i].id));
                         if (ImGui::Selectable(scene_.models()[i].displayName.c_str(),
                                               parentIndex == static_cast<int>(i)))
                             parentIndex = static_cast<int>(i);
+                        ImGui::PopID();
                     }
                     ImGui::EndCombo();
                 }
@@ -2834,14 +2858,16 @@ void Application::buildEditorUi() {
                     ? previewDebugMaterial_ - materialBase
                     : 0;
             const auto& selectedMaterial = model->model->materials[static_cast<std::size_t>(localMaterial)];
-            if (ImGui::BeginCombo("Material", selectedMaterial.name.c_str())) {
+            if (ImGui::BeginCombo("Material##PreviewMaterialSelector", selectedMaterial.name.c_str())) {
                 for (std::size_t index = 0; index < model->model->materials.size(); ++index) {
+                    ImGui::PushID(static_cast<int>(index));
                     if (ImGui::Selectable(model->model->materials[index].name.c_str(),
                                           localMaterial == static_cast<int>(index))) {
                         localMaterial = static_cast<int>(index);
                         previewDebugMaterial_ = materialBase + localMaterial;
                         previewChanged = true;
                     }
+                    ImGui::PopID();
                 }
                 ImGui::EndCombo();
             }
@@ -2891,7 +2917,9 @@ void Application::buildEditorUi() {
             for (const auto& texture : effect->textures)
                 ImGui::BulletText("%s (%s)", texture.name.c_str(), texture.format.c_str());
             ImGui::SeparatorText("Passes");
-            for (const auto& pass : compiled.passes) {
+            for (std::size_t index = 0; index < compiled.passes.size(); ++index) {
+                const auto& pass = compiled.passes[index];
+                ImGui::PushID(static_cast<int>(index));
                 if (ImGui::TreeNode(pass.name.c_str())) {
                     ImGui::Text("Type: %s", core::toString(pass.type));
                     for (const auto& barrier : pass.barriers)
@@ -2900,6 +2928,7 @@ void Application::buildEditorUi() {
                         ImGui::BulletText("%s %s", resource.write ? "Write" : "Read", resource.resource.c_str());
                     ImGui::TreePop();
                 }
+                ImGui::PopID();
             }
         } else
             ImGui::TextUnformatted("Load an .fxdayo file to inspect resources and passes.");
