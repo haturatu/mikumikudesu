@@ -5,9 +5,11 @@
 #include "graphics/bdpt_accumulation.hpp"
 #include "graphics/fx_executor.hpp"
 #include "graphics/native_fx_runtime.hpp"
+#include "graphics/subayai_geometry.hpp"
 
 #include <array>
 #include <optional>
+#include <span>
 #include <string>
 
 namespace dayo::graphics {
@@ -19,6 +21,7 @@ struct BdptFrame {
     std::uint32_t sampleIndex{};
     bool clearAccumulation{};
     handles::DescriptorSetHandle descriptorSet{};
+    handles::DescriptorSetHandle geometryDescriptorSet{};
     std::optional<NativeFxFrame> nativeFx;
 };
 
@@ -55,6 +58,14 @@ class BdptRuntime {
     // Allocates persistent accumulation, LUT and volume resources for the
     // requested frame extent. Repeated calls with the same extent reuse them.
     [[nodiscard]] bool ensureResources(std::uint32_t width, std::uint32_t height, std::string* error = nullptr);
+    [[nodiscard]] bool syncGeometry(std::span<const NativeGeometryMeshUpload> meshes, std::string* error = nullptr);
+    void recordGeometry(CommandList& commands) const;
+    [[nodiscard]] bool synchronizeAcceleration(std::string* error = nullptr);
+    [[nodiscard]] TlasAction synchronizeWorld(std::uint64_t worldGeneration,
+                                               std::span<const WorldInstance> instances);
+    [[nodiscard]] const NativeGeometryRuntime& geometry() const noexcept {
+        return geometry_;
+    }
 
     // Scene dirty state controls whether the progressive target is cleared or
     // the next sample is accumulated.
@@ -66,6 +77,7 @@ class BdptRuntime {
     Device* device_{nullptr};
     fx::FxProgram program_;
     BdptAccumulation accumulation_;
+    NativeGeometryRuntime geometry_;
     handles::DescriptorSetLayoutHandle descriptorLayout_{};
     handles::DescriptorSetHandle descriptorSet_{};
     NativeFxRuntime nativeFx_;

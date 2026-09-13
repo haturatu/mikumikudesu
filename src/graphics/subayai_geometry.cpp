@@ -1,12 +1,35 @@
 #include "graphics/subayai_geometry.hpp"
 
+#include <array>
 #include <stdexcept>
 #include <utility>
 
 namespace dayo::graphics {
 
+namespace {
+
+[[nodiscard]] ShaderStageMask nativeGeometryStages() noexcept {
+    return ShaderStageMask::compute | ShaderStageMask::fragment | ShaderStageMask::rayGeneration |
+           ShaderStageMask::miss | ShaderStageMask::closestHit | ShaderStageMask::anyHit |
+           ShaderStageMask::intersection | ShaderStageMask::callable;
+}
+
+} // namespace
+
+DescriptorSetLayoutDesc nativeGeometryDescriptorLayout() noexcept {
+    return {.bindings = {{0, DescriptorKind::accelerationStructure, 1, nativeGeometryStages()}}};
+}
+
 NativeGeometryRuntime::~NativeGeometryRuntime() {
     reset();
+}
+
+void NativeGeometryRuntime::setBackend(IAccelerationBackend* backend) noexcept {
+    if (backend_ == backend)
+        return;
+    reset();
+    backend_ = backend;
+    acceleration_.setBackend(backend);
 }
 
 bool NativeGeometryRuntime::initialize(Device& device, std::span<const NativeGeometryMeshUpload> meshes,
@@ -21,6 +44,9 @@ bool NativeGeometryRuntime::initialize(Device& device, std::span<const NativeGeo
             !device.capabilities().bufferDeviceAddress)
             throw std::runtime_error("native geometry requires acceleration-structure device support");
         device_ = &device;
+        descriptorLayout_ = device.createDescriptorSetLayoutEx(nativeGeometryDescriptorLayout());
+        if (!descriptorLayout_.valid())
+            throw std::runtime_error("native geometry descriptor layout is invalid");
         for (const auto& mesh : meshes) {
             if (!meshes_.try_emplace(mesh.meshId).second)
                 throw std::invalid_argument("native geometry contains a duplicate mesh id");
@@ -120,7 +146,20 @@ TlasAction NativeGeometryRuntime::synchronizeWorld(std::uint64_t worldGeneration
                                                     std::span<const WorldInstance> instances) {
     if (!ready())
         throw std::logic_error("native geometry runtime is not initialized");
-    return acceleration_.notifyWorld(worldGeneration, instances);
+    const auto action = acceleration_.notifyWorld(worldGeneration, instances);
+    const auto tlas = acceleration_.tlas();
+    if (!tlas.valid())
+        throw std::runtime_error("native geometry did not produce a TLAS");
+    const std::array<DescriptorBindingEx, 1> bindings{
+        DescriptorBindingEx{.slot = 0, .arrayElement = 0, .accelerationStructure = tlas}};
+    if (descriptorSet_.valid()) {
+        device_->updateDescriptorSetEx(descriptorSet_, bindings);
+    } else {
+        descriptorSet_ = device_->allocateDescriptorSetEx(descriptorLayout_, bindings);
+        if (!descriptorSet_.valid())
+            throw std::runtime_error("native geometry acceleration descriptor set is invalid");
+    }
+    return action;
 }
 
 const NativeDeformRuntime* NativeGeometryRuntime::deform(std::uint32_t meshId) const noexcept {
@@ -129,9 +168,30 @@ const NativeDeformRuntime* NativeGeometryRuntime::deform(std::uint32_t meshId) c
 }
 
 void NativeGeometryRuntime::reset() noexcept {
+    Device* device = device_;
+    if (device != nullptr) {
+        try {
+            device->waitIdle();
+        } catch (...) {
+        }
+        if (descriptorSet_.valid()) {
+            try {
+                device->destroyDescriptorSetEx(descriptorSet_);
+            } catch (...) {
+            }
+        }
+        if (descriptorLayout_.valid()) {
+            try {
+                device->destroyDescriptorSetLayoutEx(descriptorLayout_);
+            } catch (...) {
+            }
+        }
+    }
     acceleration_.reset();
     meshes_.clear();
     device_ = nullptr;
+    descriptorLayout_ = {};
+    descriptorSet_ = {};
 }
 
 } // namespace dayo::graphics

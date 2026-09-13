@@ -3,6 +3,7 @@
 #include "graphics/device.hpp"
 #include "graphics/preview_gpu_scene.hpp"
 #include "graphics/preview_render_plan.hpp"
+#include "graphics/vulkan/vulkan_acceleration_structure.hpp"
 
 #include <vulkan/vulkan.h>
 
@@ -36,6 +37,9 @@ class VulkanDevice final : public Device {
     }
     [[nodiscard]] RendererKind activeRenderer() const noexcept override {
         return activeRenderer_;
+    }
+    [[nodiscard]] IAccelerationBackend* nativeAccelerationBackend() noexcept override {
+        return &accelerationBackend_;
     }
     void selectRenderer(RendererKind requested) override;
     void resize() override;
@@ -320,6 +324,7 @@ class VulkanDevice final : public Device {
     RendererKind activeRenderer_{RendererKind::preview};
     bool validation_{};
     bool swapchainDirty_{};
+    VulkanAccelerationBackend accelerationBackend_;
 
     VkInstance instance_{};
     VkDebugUtilsMessengerEXT debugMessenger_{};

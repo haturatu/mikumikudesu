@@ -363,7 +363,8 @@ VkDeviceSize alignDeviceAddress(VkDeviceSize value, VkDeviceSize alignment) {
 
 } // namespace
 
-VulkanDevice::VulkanDevice(platform::Window& window, bool validation) : window_(window), validation_(validation) {
+VulkanDevice::VulkanDevice(platform::Window& window, bool validation)
+    : window_(window), validation_(validation), accelerationBackend_(*this) {
     createInstance(validation);
     createSurface();
     selectPhysicalDevice();
