@@ -109,7 +109,7 @@ bool NativeFxRuntime::buildForContext(const fx::FxFrameContext& context, std::st
                               [layout](const fx::FxDispatch&) -> std::optional<handles::PipelineLayoutHandle> {
                                   return layout;
                               },
-                              error))
+                              error, resourceSetIndex_))
             throw std::runtime_error(error != nullptr && !error->empty() ? *error
                                                                             : "FX pipeline initialization failed");
     } catch (const std::exception& exception) {

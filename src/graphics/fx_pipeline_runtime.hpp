@@ -28,7 +28,8 @@ class FxPipelineRuntime {
     FxPipelineRuntime& operator=(const FxPipelineRuntime&) = delete;
 
     [[nodiscard]] bool build(Device& device, const fx::FxProgram& program, const fx::FxShaderCompiler& compiler,
-                              const LayoutResolver& resolveLayout, std::string* error = nullptr);
+                              const LayoutResolver& resolveLayout, std::string* error = nullptr,
+                              std::uint32_t resourceSet = 0);
     void reset() noexcept;
 
     [[nodiscard]] std::optional<handles::PipelineHandle> resolvePipeline(const fx::FxDispatch& dispatch) const;
@@ -48,7 +49,7 @@ class FxPipelineRuntime {
     [[nodiscard]] handles::ShaderHandle compileShader(Device& device, const fx::FxProgram& program,
                                                       const fx::FxDispatch& dispatch, std::string_view entryPoint,
                                                       fx::FxShaderStage stage, const fx::FxShaderCompiler& compiler,
-                                                      Entry& entry);
+                                                      Entry& entry, std::uint32_t resourceSet);
     void destroyEntry(const Entry& entry) noexcept;
 
     Device* device_{nullptr};
