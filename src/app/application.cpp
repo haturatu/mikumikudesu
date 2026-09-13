@@ -122,6 +122,28 @@ const char* workspaceSuffix(ui::Workspace workspace) noexcept {
 
 Application::Application(Options options) : options_(std::move(options)) {}
 
+void Application::requestRenderer(graphics::RendererKind renderer) {
+    requestedRenderer_ = renderer;
+    if (device_ == nullptr)
+        return;
+    if (scene_.effect() == nullptr) {
+        nativeRenderer_.reset();
+        device_->selectRenderer(renderer);
+        return;
+    }
+    try {
+        const auto status = nativeRenderer_.prepare(*device_, renderer, *scene_.effect());
+        device_->selectRenderer(status.active);
+        if (status.fellBack())
+            log::warn("Native ", graphics::toString(renderer), " unavailable; using Preview: ", status.reason);
+    } catch (const std::exception& exception) {
+        nativeRenderer_.reset();
+        device_->selectRenderer(graphics::RendererKind::preview);
+        log::warn("Native ", graphics::toString(renderer), " effect preparation failed; using Preview: ",
+                  exception.what());
+    }
+}
+
 std::string Application::workspaceWindowName(const char* title, const char* id) const {
 #if DAYO_HAS_IMGUI
     return std::string(title) + "##" + id + "." + workspaceSuffix(uiState_.workspace);
@@ -148,6 +170,7 @@ void Application::resetProjectRuntimeState() {
     activeVideoExport_.reset();
     videoRangeInitialized_ = false;
     scene_.clearProjectState();
+    nativeRenderer_.reset();
     if (device_ != nullptr)
         device_->clearPreviewResources();
     effectReloader_.reset();
@@ -189,7 +212,7 @@ int Application::run() {
     auto window = platform::createWindow(windowOptions);
     auto device = graphics::createVulkanDevice(*window, options_.validation);
     device_ = device.get();
-    device->selectRenderer(options_.renderer);
+    requestRenderer(options_.renderer);
     log::info("Graphics convention: depth [0,1], Vulkan framebuffer Y handled in backend");
     const auto denoiser = core::selectDenoiser();
     log::info("Denoiser: ", denoiser.detail);
@@ -331,6 +354,7 @@ int Application::run() {
             std::string reloadError;
             if (effectReloader_->poll(&reloadError) && effectReloader_->current() != nullptr) {
                 scene_.setEffect(*effectReloader_->current());
+                requestRenderer(requestedRenderer_);
                 log::info("Hot reloaded effect graph");
             } else if (!reloadError.empty()) {
                 log::warn("FX hot reload deferred: ", reloadError);
@@ -385,7 +409,7 @@ int Application::run() {
 
 core::DayoProject Application::currentProject() const {
     core::DayoProject project;
-    project.renderer = device_ == nullptr ? "preview" : std::string(graphics::toString(device_->activeRenderer()));
+    project.renderer = std::string(graphics::toString(requestedRenderer_));
     project.frame = animationFrame_;
     project.playing = playing_;
     project.assets = projectAssets_;
@@ -560,11 +584,11 @@ void Application::handleAsset(const std::filesystem::path& path) {
 #endif
             resetProjectRuntimeState();
             if (project.renderer == "subayai")
-                device_->selectRenderer(graphics::RendererKind::subayai);
+                requestRenderer(graphics::RendererKind::subayai);
             else if (project.renderer == "bdpt")
-                device_->selectRenderer(graphics::RendererKind::bdpt);
+                requestRenderer(graphics::RendererKind::bdpt);
             else
-                device_->selectRenderer(graphics::RendererKind::preview);
+                requestRenderer(graphics::RendererKind::preview);
             for (const auto& asset : project.assets)
                 handleAsset(asset.path);
             if (project.embeddedMotions.size() > 1U) {
@@ -802,10 +826,11 @@ void Application::handleAsset(const std::filesystem::path& path) {
             std::ranges::transform(filename, filename.begin(),
                                    [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
             if (device_ != nullptr && filename.find("subayai") != std::string::npos) {
-                device_->selectRenderer(graphics::RendererKind::subayai);
+                requestedRenderer_ = graphics::RendererKind::subayai;
             } else if (device_ != nullptr && filename.find("bdpt") != std::string::npos) {
-                device_->selectRenderer(graphics::RendererKind::bdpt);
+                requestedRenderer_ = graphics::RendererKind::bdpt;
             }
+            requestRenderer(requestedRenderer_);
             lastAsset_ = "Effect " + path.filename().string() + " — " + std::to_string(scene_.effect()->passes.size()) +
                          " passes, " + std::to_string(scene_.effect()->textures.size()) + " textures";
             log::info("Loaded effect graph: ", lastAsset_);

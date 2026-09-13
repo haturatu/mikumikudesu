@@ -22,6 +22,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -314,6 +315,17 @@ int main() {
                     "Subayai runtime prepares graph and material frame state");
         runtime.reset();
         ok &= check(!runtime.ready(), "Subayai runtime reset disables execution");
+
+        dayo::graphics::SubayaiRuntime rtRuntime;
+        dayo::fx::FxProgram rtProgram;
+        dayo::fx::FxDispatch rtDispatch;
+        rtDispatch.name = "effect-declared-rt";
+        rtDispatch.kind = dayo::fx::FxOpKind::raytracing;
+        rtDispatch.executable = dayo::fx::FxRayTracingDispatch{};
+        rtProgram.passes.push_back(std::move(rtDispatch));
+        ok &= check(rtRuntime.initialize(device, std::move(rtProgram), &error),
+                    "Subayai runtime accepts an effect-declared RT contract when the device supports it");
+        rtRuntime.reset();
     }
 
     // BDPT persistent resources are real typed allocations, while the host

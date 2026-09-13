@@ -12,6 +12,7 @@
 #include "core/task_scheduler.hpp"
 #include "core/video_export.hpp"
 #include "graphics/device.hpp"
+#include "graphics/native_renderer.hpp"
 #include "ui/ui_state.hpp"
 
 #include <array>
@@ -58,6 +59,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void finishImageSequenceExport(std::string status);
     void restoreImageSequenceState();
     void setWorkspace(ui::Workspace workspace);
+    void requestRenderer(graphics::RendererKind renderer);
     void setAudioExportDestinationForSource(const std::filesystem::path& source);
     void buildAudioExportUi();
     void buildVideoExportUi();
@@ -75,6 +77,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
 
     Options options_;
     graphics::Device* device_{};
+    graphics::RendererKind requestedRenderer_{graphics::RendererKind::preview};
+    graphics::NativeRendererCoordinator nativeRenderer_;
     core::Scene scene_;
     core::TaskScheduler taskScheduler_;
     core::FrameScratch frameScratch_;

@@ -1,5 +1,7 @@
 #include "graphics/subayai_runtime.hpp"
 
+#include "graphics/native_renderer_requirements.hpp"
+
 #include <algorithm>
 
 namespace dayo::graphics {
@@ -14,14 +16,10 @@ bool SubayaiRuntime::initialize(Device& device, fx::FxProgram program, std::stri
         return false;
     }
     const auto required = fx::requiredFeatures(program);
-    if (required.rayTracingPipeline) {
+    const auto missing = missingEffectFeatures(device.capabilities(), required);
+    if (!missing.empty()) {
         if (error != nullptr)
-            *error = "Subayai graph requires a ray-tracing pipeline; use the BDPT runtime";
-        return false;
-    }
-    if (required.accelerationStructure && !device.capabilities().accelerationStructure) {
-        if (error != nullptr)
-            *error = "Subayai graph requires acceleration structures";
+            *error = "Subayai graph requires unavailable features: " + missing;
         return false;
     }
     device_ = &device;
