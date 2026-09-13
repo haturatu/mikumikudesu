@@ -209,6 +209,9 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
             pass.computeShader = value.value("computeShader", "");
             pass.rayGenerationShader = value.value("raygenShader", "");
             pass.missShaders = strings(value, "missShader");
+            pass.callableShaders = strings(value, "callableShader");
+            if (pass.callableShaders.empty())
+                pass.callableShaders = strings(value, "callableShaders");
             if (const auto groups = value.find("hitGroup"); groups != value.end() && groups->is_array()) {
                 for (const auto& group : *groups)
                     if (group.is_object())
@@ -270,6 +273,7 @@ CompiledEffect compileEffectGraph(const EffectGraph& graph) {
             .rayGenerationShader = pass.rayGenerationShader,
             .missShaders = pass.missShaders,
             .hitGroups = pass.hitGroups,
+            .callableShaders = pass.callableShaders,
             .conditions = pass.conditions,
             .outputWidthRatio = pass.outputWidthRatio,
             .outputHeightRatio = pass.outputHeightRatio,

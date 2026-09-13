@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/effect.hpp"
+#include "core/fx/fx_pass.hpp"
 #include "fx/fx_document.hpp"
 #include "fx/fx_frame.hpp"
 
@@ -10,6 +11,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace dayo::fx {
@@ -37,6 +39,34 @@ struct FxCompilerOptions {
     bool allowSyntheticProgramForTests{false};
 };
 
+struct FxRasterDispatch {
+    std::string vertexShader;
+    std::string pixelShader;
+};
+
+struct FxPostProcessDispatch {
+    std::string pixelShader;
+};
+
+struct FxComputeDispatch {
+    std::string computeShader;
+};
+
+struct FxRayTracingDispatch {
+    std::string rayGenerationShader;
+    std::vector<std::string> missShaders;
+    std::vector<core::fx::FxRayTracingHitGroup> hitGroups;
+    std::vector<std::string> callableShaders;
+    std::uint32_t maxPayloadSize{};
+    std::uint32_t maxAttributeSize{};
+    std::uint32_t maxRecursionDepth{1};
+};
+
+struct FxUtilityDispatch {};
+
+using FxExecutable =
+    std::variant<FxRasterDispatch, FxPostProcessDispatch, FxComputeDispatch, FxRayTracingDispatch, FxUtilityDispatch>;
+
 struct FxDispatch {
     std::string name;
     FxOpKind kind{FxOpKind::raster};
@@ -52,6 +82,10 @@ struct FxDispatch {
     // evaluates them; compiling them away would make conditional passes run
     // unconditionally when the plan is shared with another scheduler.
     std::vector<std::string> conditions;
+    // Typed executable payload. The legacy fields above remain source
+    // compatible for Preview callers, while native backends consume this
+    // lossless variant.
+    FxExecutable executable{FxRasterDispatch{}};
 };
 
 struct FxProgram {

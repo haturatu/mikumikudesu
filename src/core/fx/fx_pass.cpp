@@ -34,7 +34,20 @@ std::string categoryKey(std::string_view value) {
     return out;
 }
 
+FxRayTracingHitGroupType parseHitGroupType(std::string_view value) {
+    const auto key = categoryKey(value);
+    if (key.empty() || key == "triangles" || key == "triangle")
+        return FxRayTracingHitGroupType::triangles;
+    if (key == "procedural" || key == "aabbs" || key == "aabb")
+        return FxRayTracingHitGroupType::procedural;
+    throw std::runtime_error("unknown ray-tracing hit-group type: " + std::string(value));
+}
+
 } // namespace
+
+FxRayTracingHitGroupType rayTracingHitGroupType(std::string_view value) {
+    return parseHitGroupType(value);
+}
 
 const char* toString(FxCategory category) noexcept {
     switch (category) {
@@ -214,6 +227,10 @@ FxPass fxPassFromEffectPass(const EffectPass& pass, FxCategory category) {
         FxRayTracingOp op;
         op.rayGenerationShader = pass.rayGenerationShader;
         op.missShaders = pass.missShaders;
+        for (const auto& group : pass.hitGroups)
+            op.hitGroups.push_back(
+                {rayTracingHitGroupType(group.type), group.closestHit, group.anyHit, group.intersection});
+        op.callableShaders = pass.callableShaders;
         op.maxPayloadSize = pass.maxPayloadSize;
         op.maxAttributeSize = pass.maxAttributeSize;
         op.maxRecursionDepth = pass.maxRecursionDepth;
@@ -294,6 +311,15 @@ EffectPass effectPassFromFxPass(const FxPass& pass) {
             } else if constexpr (std::is_same_v<T, FxRayTracingOp>) {
                 out.rayGenerationShader = concrete.rayGenerationShader;
                 out.missShaders = concrete.missShaders;
+                for (const auto& group : concrete.hitGroups) {
+                    out.hitGroups.push_back({
+                        .type = group.type == FxRayTracingHitGroupType::procedural ? "PROCEDURAL" : "TRIANGLES",
+                        .closestHit = group.closestHit,
+                        .anyHit = group.anyHit,
+                        .intersection = group.intersection,
+                    });
+                }
+                out.callableShaders = concrete.callableShaders;
                 out.maxPayloadSize = concrete.maxPayloadSize;
                 out.maxAttributeSize = concrete.maxAttributeSize;
                 out.maxRecursionDepth = concrete.maxRecursionDepth;

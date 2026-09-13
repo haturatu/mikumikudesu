@@ -342,6 +342,47 @@ raw_cs
     return ok;
 }
 
+bool testRayTracingPayloadIsLossless() {
+    dayo::core::EffectGraph graph;
+    graph.sourcePath = "lossless.fxdayo";
+    dayo::core::EffectPass pass;
+    pass.name = "native-rt";
+    pass.type = dayo::core::EffectPassType::raytracing;
+    pass.rayGenerationShader = "raygen_main";
+    pass.missShaders = {"miss_primary", "miss_shadow"};
+    pass.hitGroups = {
+        {.type = "TRIANGLES", .closestHit = "closest_primary", .anyHit = "any_alpha", .intersection = ""},
+        {.type = "PROCEDURAL", .closestHit = "closest_volume", .anyHit = "", .intersection = "intersect_volume"}};
+    pass.callableShaders = {"sample_bsdf"};
+    pass.maxPayloadSize = 128;
+    pass.maxAttributeSize = 8;
+    pass.maxRecursionDepth = 4;
+    graph.passes.push_back(pass);
+
+    dayo::fx::FxCompiler compiler;
+    const auto program = compiler.compile(graph);
+    bool ok = true;
+    ok &= check(program.passes.size() == 1, "RT graph compiles one dispatch");
+    if (program.passes.size() != 1)
+        return false;
+    const auto* ray = std::get_if<dayo::fx::FxRayTracingDispatch>(&program.passes.front().executable);
+    ok &= check(ray != nullptr, "RT dispatch uses typed executable variant");
+    if (ray == nullptr)
+        return false;
+    ok &= check(ray->rayGenerationShader == "raygen_main" && ray->missShaders.size() == 2,
+                "RT raygen and miss shaders survive compilation");
+    ok &= check(ray->hitGroups.size() == 2 &&
+                    ray->hitGroups[0].type == dayo::core::fx::FxRayTracingHitGroupType::triangles &&
+                    ray->hitGroups[0].anyHit == "any_alpha" &&
+                    ray->hitGroups[1].type == dayo::core::fx::FxRayTracingHitGroupType::procedural &&
+                    ray->hitGroups[1].intersection == "intersect_volume",
+                "RT hit-group type and shader stages survive compilation");
+    ok &= check(ray->callableShaders.size() == 1 && ray->callableShaders.front() == "sample_bsdf" &&
+                    ray->maxPayloadSize == 128 && ray->maxAttributeSize == 8 && ray->maxRecursionDepth == 4,
+                "RT callable shaders and limits survive compilation");
+    return ok;
+}
+
 bool testShaderCacheKeys() {
     dayo::fx::FxShaderCache cache;
     dayo::fx::FxShaderKey base;
@@ -469,6 +510,7 @@ int main() {
     ok &= testWatcherReverseDeps();
     ok &= testHotReloadKeepsCurrentOnFailure();
     ok &= testCompilerUsesRawSourceAndRejectsUnknownPasses();
+    ok &= testRayTracingPayloadIsLossless();
     ok &= testShaderCacheKeys();
     ok &= testTextureCacheKeys();
     ok &= testWatcherPoll();
