@@ -498,6 +498,61 @@ bool testRayTracingPayloadIsLossless() {
     return ok;
 }
 
+bool testFxResourceDeclarationsAreLossless() {
+    dayo::core::EffectGraph graph;
+    graph.sourcePath = "resources.fxdayo";
+    graph.meshCloneCount = 4;
+    dayo::core::EffectTexture color;
+    color.name = "Color";
+    color.format = "R16G16B16A16_FLOAT";
+    color.view = "RTV";
+    graph.textures.push_back(std::move(color));
+    dayo::core::EffectTexture volume;
+    volume.name = "Volume";
+    volume.format = "R32_FLOAT";
+    volume.view = "UAV";
+    graph.textures3D.push_back(std::move(volume));
+    dayo::core::EffectBuffer lights;
+    lights.name = "Lights";
+    lights.type = "float4";
+    lights.view = "UAV";
+    lights.elementSize = 16;
+    graph.buffers.push_back(std::move(lights));
+    dayo::core::EffectSampler linear;
+    linear.name = "Linear";
+    linear.filter = "LINEAR";
+    linear.addressU = "CLAMP";
+    linear.addressV = "CLAMP";
+    graph.samplers.push_back(std::move(linear));
+    dayo::core::EffectController exposure;
+    exposure.name = "Exposure";
+    exposure.controllerName = "controller.pmx";
+    exposure.item = "Exposure";
+    exposure.type = "float";
+    graph.controllers.push_back(std::move(exposure));
+    dayo::core::EffectPass pass;
+    pass.name = "resource-pass";
+    pass.type = dayo::core::EffectPassType::compute;
+    pass.computeShader = "CS";
+    pass.unorderedAccess.push_back({"Color", true});
+    graph.passes.push_back(std::move(pass));
+
+    const auto program = dayo::fx::FxCompiler{}.compile(graph);
+    bool ok = true;
+    ok &= check(program.textures.size() == 1 && program.textures.front().name == "Color" &&
+                    program.textures.front().format == "R16G16B16A16_FLOAT",
+                "compiled FX keeps 2D texture declarations");
+    ok &= check(program.textures3D.size() == 1 && program.textures3D.front().name == "Volume",
+                "compiled FX keeps 3D texture declarations");
+    ok &= check(program.buffers.size() == 1 && program.buffers.front().elementSize == 16,
+                "compiled FX keeps buffer declarations");
+    ok &= check(program.samplers.size() == 1 && program.samplers.front().addressU == "CLAMP",
+                "compiled FX keeps sampler declarations");
+    ok &= check(program.controllers.size() == 1 && program.meshCloneCount == 4,
+                "compiled FX keeps controller and cloning metadata");
+    return ok;
+}
+
 bool testShaderCacheKeys() {
     dayo::fx::FxShaderCache cache;
     dayo::fx::FxShaderKey base;
@@ -712,6 +767,7 @@ int main() {
     ok &= testHotReloadKeepsCurrentOnFailure();
     ok &= testCompilerUsesRawSourceAndRejectsUnknownPasses();
     ok &= testRayTracingPayloadIsLossless();
+    ok &= testFxResourceDeclarationsAreLossless();
     ok &= testShaderCacheKeys();
     try {
         ok &= testRealShaderCompilation();

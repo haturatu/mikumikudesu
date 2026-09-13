@@ -93,6 +93,16 @@ struct FxDispatch {
 struct FxProgram {
     std::string label;
     std::vector<FxDispatch> passes;
+    // Resource declarations are part of the compiled program. Keeping them
+    // here prevents native backends from having to reconstruct typed image,
+    // buffer, and sampler metadata from a source graph that may already have
+    // been replaced by hot reload.
+    std::vector<core::EffectTexture> textures;
+    std::vector<core::EffectTexture> textures3D;
+    std::vector<core::EffectBuffer> buffers;
+    std::vector<core::EffectSampler> samplers;
+    std::vector<core::EffectController> controllers;
+    std::uint32_t meshCloneCount{1};
     std::uint64_t generation{};
     std::uint64_t sourceVersion{};
     std::filesystem::path sourcePath;

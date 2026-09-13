@@ -97,6 +97,12 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
     program.generation = 1;
     program.sourcePath = graph.sourcePath;
     program.hlsl = graph.hlsl;
+    program.textures = graph.textures;
+    program.textures3D = graph.textures3D;
+    program.buffers = graph.buffers;
+    program.samplers = graph.samplers;
+    program.controllers = graph.controllers;
+    program.meshCloneCount = graph.meshCloneCount;
     if (!graph.generatedCode.empty()) {
         if (!program.hlsl.empty() && program.hlsl.back() != '\n')
             program.hlsl.push_back('\n');
