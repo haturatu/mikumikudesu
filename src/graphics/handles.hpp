@@ -371,6 +371,11 @@ template <> struct hash<dayo::graphics::handles::PipelineLayoutHandle> {
         return (static_cast<std::size_t>(handle.index) << 32U) | handle.generation;
     }
 };
+template <> struct hash<dayo::graphics::handles::AccelerationStructureHandle> {
+    std::size_t operator()(dayo::graphics::handles::AccelerationStructureHandle handle) const noexcept {
+        return (static_cast<std::size_t>(handle.index) << 32U) | handle.generation;
+    }
+};
 template <> struct hash<dayo::graphics::handles::ShaderBindingTableHandle> {
     std::size_t operator()(dayo::graphics::handles::ShaderBindingTableHandle handle) const noexcept {
         return (static_cast<std::size_t>(handle.index) << 32U) | handle.generation;

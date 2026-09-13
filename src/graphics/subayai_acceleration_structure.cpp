@@ -152,7 +152,14 @@ TlasAction AccelerationStructureService::notifyWorld(std::uint64_t worldGenerati
     if (countChanged || blasChanged) {
         rebuildInstances();
         if (backend_ != nullptr) {
-            backend_->rebuildTlas(tlas_, std::span<const TlasInstanceDesc>(tlasScratch_.data(), tlasScratch_.size()));
+            const auto previousTlas = tlas_;
+            const auto replacement = backend_->rebuildTlas(
+                tlas_, std::span<const TlasInstanceDesc>(tlasScratch_.data(), tlasScratch_.size()));
+            if (replacement != previousTlas) {
+                if (previousTlas.valid())
+                    backend_->destroyTlas(previousTlas);
+                tlas_ = replacement;
+            }
         }
         tlasInstanceCount_ = instanceCount;
         cachedWorldGeneration_ = worldGeneration;

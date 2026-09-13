@@ -77,6 +77,18 @@ class VulkanDevice final : public Device {
     [[nodiscard]] handles::PipelineHandle createComputePipelineEx(const ComputePipelineDescEx& desc) override;
     [[nodiscard]] handles::PipelineHandle createRayTracingPipelineEx(const RayTracingPipelineDescEx& desc) override;
     void destroyPipelineEx(handles::PipelineHandle handle) override;
+    [[nodiscard]] handles::AccelerationStructureHandle createBlasEx(const BlasGeometryDesc& desc) override;
+    [[nodiscard]] handles::AccelerationStructureHandle rebuildBlasEx(handles::AccelerationStructureHandle blas,
+                                                                     const BlasGeometryDesc& desc) override;
+    void refitBlasEx(handles::AccelerationStructureHandle blas, const BlasGeometryDesc& desc) override;
+    [[nodiscard]] handles::AccelerationStructureHandle
+    createTlasEx(std::span<const AccelerationInstanceDesc> instances) override;
+    [[nodiscard]] handles::AccelerationStructureHandle
+    rebuildTlasEx(handles::AccelerationStructureHandle tlas,
+                  std::span<const AccelerationInstanceDesc> instances) override;
+    void updateTlasEx(handles::AccelerationStructureHandle tlas,
+                      std::span<const AccelerationInstanceDesc> instances) override;
+    void destroyAccelerationStructureEx(handles::AccelerationStructureHandle handle) override;
     [[nodiscard]] handles::ShaderBindingTableHandle
     createShaderBindingTable(const ShaderBindingTableDesc& desc) override;
     void destroyShaderBindingTable(handles::ShaderBindingTableHandle handle) override;
@@ -247,6 +259,34 @@ class VulkanDevice final : public Device {
                                  handles::DescriptorSetHandle set);
     void recordPushConstants(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
                              std::span<const std::byte> bytes);
+    struct TypedAccelerationStructure {
+        VkAccelerationStructureKHR structure{};
+        VkBuffer storageBuffer{};
+        VkDeviceMemory storageMemory{};
+        VkDeviceSize storageSize{};
+        VkBuffer instanceBuffer{};
+        VkDeviceMemory instanceMemory{};
+        void* mappedInstances{};
+        VkDeviceSize instanceSize{};
+        bool topLevel{};
+        bool allowUpdate{};
+    };
+    [[nodiscard]] VkBuffer createAccelerationBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkDeviceMemory& memory,
+                                                    bool hostVisible, void** mapped);
+    void destroyAccelerationBuffer(VkBuffer buffer, VkDeviceMemory memory, void* mapped) noexcept;
+    struct BlasBuildInput {
+        std::vector<VkAccelerationStructureGeometryKHR> geometries;
+        std::vector<VkAccelerationStructureBuildRangeInfoKHR> ranges;
+        std::vector<std::uint32_t> primitiveCounts;
+        bool allowUpdate{};
+    };
+    [[nodiscard]] BlasBuildInput makeBlasBuildInput(const BlasGeometryDesc& geometry) const;
+    [[nodiscard]] std::vector<VkAccelerationStructureInstanceKHR>
+    makeTlasInstances(std::span<const AccelerationInstanceDesc> instances) const;
+    void recordAccelerationBuild(const TypedAccelerationStructure& destination, const BlasGeometryDesc& geometry,
+                                 bool update);
+    void recordTopLevelBuild(const TypedAccelerationStructure& destination,
+                             std::span<const AccelerationInstanceDesc> instances, bool update);
 
     platform::Window& window_;
     DeviceCapabilities capabilities_;
@@ -407,6 +447,7 @@ class VulkanDevice final : public Device {
     handles::PipelineLayoutPool typedPipelineLayoutHandles_;
     handles::PipelinePool typedPipelineHandles_;
     handles::ShaderBindingTablePool typedShaderBindingTableHandles_;
+    handles::AccelerationStructurePool typedAccelerationStructureHandles_;
     std::unordered_map<handles::BufferHandle, TypedBuffer> typedBuffers_;
     std::unordered_map<handles::TextureHandle, TypedTexture> typedTextures_;
     std::unordered_map<handles::SamplerHandle, TypedSampler> typedSamplers_;
@@ -416,6 +457,7 @@ class VulkanDevice final : public Device {
     std::unordered_map<handles::PipelineLayoutHandle, TypedPipelineLayout> typedPipelineLayouts_;
     std::unordered_map<handles::PipelineHandle, TypedPipeline> typedPipelines_;
     std::unordered_map<handles::ShaderBindingTableHandle, TypedShaderBindingTable> typedShaderBindingTables_;
+    std::unordered_map<handles::AccelerationStructureHandle, TypedAccelerationStructure> typedAccelerationStructures_;
     VkDescriptorPool typedDescriptorPool_{};
 };
 

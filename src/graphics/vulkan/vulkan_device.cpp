@@ -4534,6 +4534,25 @@ void VulkanDevice::retireTextureEx(handles::TextureHandle handle, std::uint64_t)
 }
 
 void VulkanDevice::destroyTypedResources() noexcept {
+    const auto destroyAccelerationStructure = reinterpret_cast<PFN_vkDestroyAccelerationStructureKHR>(
+        vkGetDeviceProcAddr(device_, "vkDestroyAccelerationStructureKHR"));
+    for (const auto& [handle, resource] : typedAccelerationStructures_) {
+        static_cast<void>(handle);
+        if (destroyAccelerationStructure != nullptr && resource.structure != VK_NULL_HANDLE)
+            destroyAccelerationStructure(device_, resource.structure, nullptr);
+        if (resource.mappedInstances != nullptr)
+            vkUnmapMemory(device_, resource.instanceMemory);
+        if (resource.instanceMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, resource.instanceMemory, nullptr);
+        if (resource.instanceBuffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, resource.instanceBuffer, nullptr);
+        if (resource.storageMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, resource.storageMemory, nullptr);
+        if (resource.storageBuffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, resource.storageBuffer, nullptr);
+    }
+    typedAccelerationStructures_.clear();
+    typedAccelerationStructureHandles_.clear();
     for (const auto& [handle, resource] : typedShaderBindingTables_) {
         static_cast<void>(handle);
         if (resource.buffer != VK_NULL_HANDLE)
