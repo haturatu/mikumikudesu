@@ -24,10 +24,21 @@ struct EnvironmentDesc {
     }
 };
 
+struct EnvironmentGpuResult {
+    handles::TextureHandle cubemap{};
+    handles::TextureHandle prefiltered{};
+    std::array<float, 27> sphericalHarmonics{};
+    std::uint64_t skywalkerVersion{};
+};
+
 class IEnvironmentBackend {
   public:
     virtual ~IEnvironmentBackend() = default;
     virtual void regenerate(const EnvironmentDesc& desc) = 0;
+    virtual EnvironmentGpuResult regenerateEx(const EnvironmentDesc& desc) {
+        regenerate(desc);
+        return {};
+    }
 };
 
 class EnvironmentService {
@@ -57,11 +68,15 @@ class EnvironmentService {
         return sphericalHarmonics_;
     }
     [[nodiscard]] std::uint64_t skywalkerVersion() const noexcept {
-        return skywalkerVersion_;
+        return typedResult_.skywalkerVersion == 0 ? skywalkerVersion_ : typedResult_.skywalkerVersion;
     }
 
     // Test/host hook: publish the GPU handles produced by regeneration.
     void setHandles(TextureHandle cubemap, TextureHandle prefiltered, std::uint64_t skywalkerVersion) noexcept;
+    void setGpuResult(EnvironmentGpuResult result) noexcept;
+    [[nodiscard]] const EnvironmentGpuResult& gpuResult() const noexcept {
+        return typedResult_;
+    }
 
   private:
     IEnvironmentBackend* backend_{nullptr};
@@ -72,6 +87,7 @@ class EnvironmentService {
     TextureHandle prefiltered_{0};
     std::array<float, 27> sphericalHarmonics_{};
     std::uint64_t skywalkerVersion_{0};
+    EnvironmentGpuResult typedResult_;
 };
 
 } // namespace dayo::graphics
