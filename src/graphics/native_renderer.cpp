@@ -49,6 +49,23 @@ NativeRendererStatus decideNativeRenderer(const DeviceCapabilities& capabilities
     return result;
 }
 
+NativeRendererStatus decideNativeRendererForInitialization(const DeviceCapabilities& capabilities,
+                                                            RendererKind requested,
+                                                            const fx::FxRequiredFeatures& required) {
+    NativeRendererStatus result{.requested = requested, .active = requested};
+    if (requested == RendererKind::preview)
+        return result;
+
+    std::ostringstream reason;
+    appendReason(reason, capabilities.missingHardwareFeatures(requested));
+    appendReason(reason, missingEffectFeatures(capabilities, required));
+    if (reason.tellp() > 0) {
+        result.active = RendererKind::preview;
+        result.reason = reason.str();
+    }
+    return result;
+}
+
 NativeRendererStatus NativeRendererCoordinator::prepare(Device& device, RendererKind requested,
                                                          const core::EffectGraph& graph) {
     return prepare(device, requested, fx::FxCompiler{}.compile(graph));
@@ -56,7 +73,7 @@ NativeRendererStatus NativeRendererCoordinator::prepare(Device& device, Renderer
 
 NativeRendererStatus NativeRendererCoordinator::prepare(Device& device, RendererKind requested, fx::FxProgram program) {
     reset();
-    status_ = decideNativeRenderer(device.capabilities(), requested, fx::requiredFeatures(program));
+    status_ = decideNativeRendererForInitialization(device.capabilities(), requested, fx::requiredFeatures(program));
     if (status_.fellBack() || requested == RendererKind::preview)
         return status_;
 
@@ -79,6 +96,33 @@ NativeRendererStatus NativeRendererCoordinator::prepare(Device& device, Renderer
     }
     status_.nativeReady = true;
     return status_;
+}
+
+std::optional<NativeFrameOutput>
+NativeRendererCoordinator::recordFrame(CommandList& commands, const fx::FxFrameContext& context,
+                                       core::DirtyFlag dirty,
+                                       std::span<const core::MaterialParameterBlock> materials,
+                                       std::span<const AliasEntry> lightSampling,
+                                       const EnvironmentGpuResult& environment) {
+    if (!status_.nativeReady)
+        return std::nullopt;
+    switch (status_.active) {
+    case RendererKind::subayai: {
+        auto frame = subayai_.prepareFrame(context, materials, lightSampling, environment);
+        const auto stats = subayai_.execute(frame, commands);
+        static_cast<void>(stats);
+        return subayai_.output(frame);
+    }
+    case RendererKind::bdpt: {
+        auto frame = bdpt_.prepareFrame(context, dirty);
+        const auto stats = bdpt_.execute(frame, commands);
+        static_cast<void>(stats);
+        return bdpt_.output(frame);
+    }
+    case RendererKind::preview:
+        return std::nullopt;
+    }
+    return std::nullopt;
 }
 
 void NativeRendererCoordinator::reset() noexcept {

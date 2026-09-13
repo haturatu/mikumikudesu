@@ -66,6 +66,7 @@ struct DeviceCapabilities {
         return nativeBdpt && hardwareSupportsBdpt();
     }
     [[nodiscard]] bool supports(RendererKind renderer) const noexcept;
+    [[nodiscard]] std::string missingHardwareFeatures(RendererKind renderer) const;
     [[nodiscard]] std::string missingFeatures(RendererKind renderer) const;
     [[nodiscard]] std::string json() const;
 };
@@ -509,6 +510,10 @@ class Device {
         if (recorder)
             throw std::logic_error("native frame recording is not implemented by this backend");
     }
+    // Native implementation gates are published only after the coordinator
+    // has successfully initialized the requested runtime. Hardware feature
+    // discovery remains independent from this application/runtime state.
+    virtual void setNativeRendererAvailability(bool, bool) {}
     virtual void setPreviewViewportExtent(const RenderTargetDesc&) {}
     [[nodiscard]] virtual PreviewViewport previewViewport() const noexcept {
         return {};

@@ -128,19 +128,93 @@ void Application::requestRenderer(graphics::RendererKind renderer) {
         return;
     if (scene_.effect() == nullptr) {
         nativeRenderer_.reset();
+        device_->setNativeRendererAvailability(false, false);
         device_->selectRenderer(renderer);
         return;
     }
     try {
         const auto status = nativeRenderer_.prepare(*device_, renderer, *scene_.effect());
+        device_->setNativeRendererAvailability(status.nativeReady && status.active == graphics::RendererKind::subayai,
+                                               status.nativeReady && status.active == graphics::RendererKind::bdpt);
         device_->selectRenderer(status.active);
         if (status.fellBack())
             log::warn("Native ", graphics::toString(renderer), " unavailable; using Preview: ", status.reason);
     } catch (const std::exception& exception) {
         nativeRenderer_.reset();
+        device_->setNativeRendererAvailability(false, false);
         device_->selectRenderer(graphics::RendererKind::preview);
         log::warn("Native ", graphics::toString(renderer), " effect preparation failed; using Preview: ",
                   exception.what());
+    }
+}
+
+fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTargetDesc& target) const {
+    const auto* model = selectedModel();
+    const auto* motion = scene_.cameraMotion() != nullptr
+                             ? scene_.cameraMotion()
+                             : (model != nullptr ? model->motion.get() : nullptr);
+    fx::FxCameraState camera;
+    camera.rotation = {cameraPitch_, cameraYaw_, 0.0F};
+    camera.distance = cameraDistance_;
+    fx::FxLightingState lighting;
+    std::uint32_t modelIndex = 0;
+    std::size_t totalMaterials = 0;
+    for (std::size_t index = 0; index < scene_.models().size(); ++index) {
+        const auto& instance = scene_.models()[index];
+        if (instance.id == scene_.selectedModelId())
+            modelIndex = static_cast<std::uint32_t>(index);
+        if (instance.visible && instance.model != nullptr)
+            totalMaterials += instance.model->materials.size();
+    }
+    if (!manualCamera_ && motion != nullptr && !motion->cameras.empty()) {
+        const auto evaluated = core::evaluateCamera(*motion, animationFrame_);
+        camera.position = evaluated.position;
+        camera.rotation = evaluated.rotation;
+        camera.distance = evaluated.distance;
+        camera.verticalFovRadians = std::clamp(evaluated.viewAngle, 1.0F, 179.0F) * 0.01745329252F;
+        camera.perspective = evaluated.perspective;
+    }
+    if (motion != nullptr && !motion->lights.empty()) {
+        const auto evaluated = core::evaluateLight(*motion, animationFrame_);
+        lighting.direction = evaluated.position;
+        lighting.color = evaluated.color;
+    }
+    const auto* program = nativeRenderer_.program();
+    const auto sceneCloneCount = model == nullptr ? 1U : model->cloneCount;
+    const auto effectCloneCount = program == nullptr ? 1U : program->meshCloneCount;
+    return fx::makeFxFrameContext(animationFrame_, scene_.accumulatedSamples(), target.width, target.height,
+                                  model == nullptr ? 0U : model->id, modelIndex, animatedVertexCount_, totalMaterials,
+                                  sceneCloneCount, effectCloneCount, camera, lighting);
+}
+
+std::optional<graphics::NativeFrameOutput>
+Application::recordNativeFrame(graphics::CommandList& commands, const graphics::RenderTargetDesc& target) {
+    if (device_ == nullptr || device_->activeRenderer() == graphics::RendererKind::preview)
+        return std::nullopt;
+    std::vector<core::MaterialParameterBlock> materials;
+    for (const auto& instance : scene_.models()) {
+        if (!instance.visible || instance.model == nullptr)
+            continue;
+        for (std::size_t index = 0; index < instance.model->materials.size(); ++index) {
+            if (index < instance.materialSettings.size())
+                materials.push_back(instance.materialSettings[index].parameters);
+            else
+                materials.emplace_back();
+        }
+    }
+    const std::array lightSampling{graphics::AliasEntry{1.0F, 0}};
+    try {
+        return nativeRenderer_.recordFrame(commands, makeNativeFrameContext(target), scene_.dirtyFlags(), materials,
+                                           lightSampling, {});
+    } catch (const std::exception& exception) {
+        // Keep the command buffer usable for the Preview fallback. Native
+        // resources remain owned until the next renderer request, so a
+        // failure cannot destroy objects referenced by commands already
+        // recorded in this frame.
+        log::warn("Native renderer frame failed; using Preview: ", exception.what());
+        device_->setNativeRendererAvailability(false, false);
+        device_->selectRenderer(graphics::RendererKind::preview);
+        return std::nullopt;
     }
 }
 
@@ -171,8 +245,10 @@ void Application::resetProjectRuntimeState() {
     videoRangeInitialized_ = false;
     scene_.clearProjectState();
     nativeRenderer_.reset();
-    if (device_ != nullptr)
+    if (device_ != nullptr) {
+        device_->setNativeRendererAvailability(false, false);
         device_->clearPreviewResources();
+    }
     effectReloader_.reset();
     audioPlayer_.stop();
     audioSource_.clear();
@@ -212,6 +288,9 @@ int Application::run() {
     auto window = platform::createWindow(windowOptions);
     auto device = graphics::createVulkanDevice(*window, options_.validation);
     device_ = device.get();
+    device_->setNativeFrameRecorder([this](graphics::CommandList& commands, const graphics::RenderTargetDesc& target) {
+        return recordNativeFrame(commands, target);
+    });
     requestRenderer(options_.renderer);
     log::info("Graphics convention: depth [0,1], Vulkan framebuffer Y handled in backend");
     const auto denoiser = core::selectDenoiser();

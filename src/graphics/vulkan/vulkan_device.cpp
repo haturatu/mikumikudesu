@@ -1986,6 +1986,11 @@ void VulkanDevice::setNativeFrameRecorder(NativeFrameRecorder recorder) {
     nativeFrameRecorder_ = std::move(recorder);
 }
 
+void VulkanDevice::setNativeRendererAvailability(bool subayai, bool bdpt) {
+    capabilities_.nativeSubayai = subayai;
+    capabilities_.nativeBdpt = bdpt;
+}
+
 void VulkanDevice::resize() {
     swapchainDirty_ = true;
 }

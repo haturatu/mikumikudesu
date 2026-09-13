@@ -11,6 +11,7 @@
 #include "core/scene.hpp"
 #include "core/task_scheduler.hpp"
 #include "core/video_export.hpp"
+#include "fx/fx_frame.hpp"
 #include "graphics/device.hpp"
 #include "graphics/native_renderer.hpp"
 #include "ui/ui_state.hpp"
@@ -60,6 +61,9 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void restoreImageSequenceState();
     void setWorkspace(ui::Workspace workspace);
     void requestRenderer(graphics::RendererKind renderer);
+    [[nodiscard]] fx::FxFrameContext makeNativeFrameContext(const graphics::RenderTargetDesc& target) const;
+    [[nodiscard]] std::optional<graphics::NativeFrameOutput>
+    recordNativeFrame(graphics::CommandList& commands, const graphics::RenderTargetDesc& target);
     void setAudioExportDestinationForSource(const std::filesystem::path& source);
     void buildAudioExportUi();
     void buildVideoExportUi();

@@ -29,5 +29,7 @@ struct NativeRendererStatus {
 [[nodiscard]] NativeRendererStatus decideNativeRenderer(const DeviceCapabilities& capabilities,
                                                          RendererKind requested,
                                                          const fx::FxRequiredFeatures& required);
+[[nodiscard]] NativeRendererStatus decideNativeRendererForInitialization(
+    const DeviceCapabilities& capabilities, RendererKind requested, const fx::FxRequiredFeatures& required);
 
 } // namespace dayo::graphics

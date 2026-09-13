@@ -46,6 +46,7 @@ class VulkanDevice final : public Device {
     void beginUiFrame() override;
     void renderFrame() override;
     void setNativeFrameRecorder(NativeFrameRecorder recorder) override;
+    void setNativeRendererAvailability(bool subayai, bool bdpt) override;
     void setPreviewViewportExtent(const RenderTargetDesc& target) override;
     [[nodiscard]] PreviewViewport previewViewport() const noexcept override;
     [[nodiscard]] std::uint64_t previewGpuNanoseconds() const noexcept override {
