@@ -1300,6 +1300,17 @@ void VulkanDevice::createNativeOutputPipeline() {
     }
     vkDestroyShaderModule(device_, fragment, nullptr);
     vkDestroyShaderModule(device_, vertex, nullptr);
+
+    const auto words = std::span<const std::uint32_t>(reinterpret_cast<const std::uint32_t*>(vertexCode.data()),
+                                                       vertexCode.size() / sizeof(std::uint32_t));
+    try {
+        nativeFullscreenVertexShader_ = createShaderEx({.spirv = words,
+                                                        .entryPoint = "VS",
+                                                        .stage = ShaderStageMask::vertex});
+    } catch (...) {
+        destroyNativeOutputPipeline();
+        throw;
+    }
 }
 
 void VulkanDevice::destroyNativeOutputPipeline() noexcept {
@@ -5449,6 +5460,7 @@ void VulkanDevice::destroyTypedResources() noexcept {
     }
     typedShaders_.clear();
     typedShaderHandles_.clear();
+    nativeFullscreenVertexShader_ = {};
     typedDescriptorSets_.clear();
     typedDescriptorSetHandles_.clear();
     if (typedDescriptorPool_ != VK_NULL_HANDLE) {

@@ -163,9 +163,20 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                 entry.pipeline = device.createGraphicsPipelineEx({.layout = *layout, .shaders = {vertex, pixel}});
                 break;
             }
-            case fx::FxOpKind::postprocess:
-                throw std::invalid_argument("postprocess FX pipeline needs a renderer-owned fullscreen vertex shader: " +
-                                            dispatch.name);
+            case fx::FxOpKind::postprocess: {
+                const auto* postprocess = std::get_if<fx::FxPostProcessDispatch>(&dispatch.executable);
+                if (postprocess == nullptr || postprocess->pixelShader.empty())
+                    throw std::invalid_argument("postprocess FX pass requires a pixel shader: " + dispatch.name);
+                const auto fullscreenVertex = device.nativeFullscreenVertexShader();
+                if (!fullscreenVertex.valid())
+                    throw std::invalid_argument(
+                        "postprocess FX pipeline needs a renderer-owned fullscreen vertex shader: " + dispatch.name);
+                const auto pixel = compileShader(device, program, dispatch, postprocess->pixelShader,
+                                                 fx::FxShaderStage::fragment, compiler, entry);
+                entry.pipeline = device.createGraphicsPipelineEx({.layout = *layout,
+                                                                    .shaders = {fullscreenVertex, pixel}});
+                break;
+            }
             case fx::FxOpKind::compute: {
                 const auto* compute = std::get_if<fx::FxComputeDispatch>(&dispatch.executable);
                 if (compute == nullptr || compute->computeShader.empty())
