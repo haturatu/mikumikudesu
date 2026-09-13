@@ -1,6 +1,7 @@
 #include "graphics/native_renderer.hpp"
 
 #include <sstream>
+#include <string_view>
 #include <utility>
 
 namespace dayo::graphics {
