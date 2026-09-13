@@ -84,12 +84,6 @@ namespace {
     return name.find("UAV") != std::string::npos || name.find("STORAGE") != std::string::npos;
 }
 
-[[nodiscard]] bool writesResource(const FxDispatch& dispatch, std::string_view name) {
-    return std::ranges::any_of(dispatch.resources, [name](const FxDispatch::ResourceUse& use) {
-        return use.name == name && use.write;
-    });
-}
-
 void appendControllerBlock(std::ostringstream& output, const FxProgram& program) {
     if (program.controllers.empty())
         return;
@@ -109,30 +103,32 @@ void appendControllerBlock(std::ostringstream& output, const FxProgram& program)
     output << "};\n";
 }
 
-void appendTextureDeclarations(std::ostringstream& output, const FxProgram& program, const FxDispatch& dispatch,
-                               std::uint32_t resourceSet, std::uint32_t& binding) {
+void appendTextureDeclarations(std::ostringstream& output, const FxProgram& program, std::uint32_t resourceSet,
+                               std::uint32_t& sampledBinding,
+                               std::uint32_t& uavBinding) {
     for (const auto& texture : program.textures) {
-        const auto write = writesResource(dispatch, texture.name) && isUav(texture.view);
+        const auto write = isUav(texture.view);
+        const auto binding = write ? uavBinding++ : sampledBinding++;
         output << (write ? "RWTexture2D<" : "Texture2D<") << elementType(texture.format) << "> " << identifier(texture.name)
                << " : register(" << (write ? 'u' : 't') << binding << resourceSetSuffix(resourceSet) << ");\n";
-        ++binding;
     }
     for (const auto& texture : program.textures3D) {
-        const auto write = writesResource(dispatch, texture.name) && isUav(texture.view);
+        const auto write = isUav(texture.view);
+        const auto binding = write ? uavBinding++ : sampledBinding++;
         output << (write ? "RWTexture3D<" : "Texture3D<") << elementType(texture.format) << "> " << identifier(texture.name)
                << " : register(" << (write ? 'u' : 't') << binding << resourceSetSuffix(resourceSet) << ");\n";
-        ++binding;
     }
 }
 
-void appendBufferDeclarations(std::ostringstream& output, const FxProgram& program, const FxDispatch& dispatch,
-                              std::uint32_t resourceSet, std::uint32_t& binding) {
+void appendBufferDeclarations(std::ostringstream& output, const FxProgram& program, std::uint32_t resourceSet,
+                              std::uint32_t& sampledBinding,
+                              std::uint32_t& uavBinding) {
     for (const auto& buffer : program.buffers) {
-        const auto write = writesResource(dispatch, buffer.name) && isUav(buffer.view);
+        const auto write = isUav(buffer.view);
+        const auto binding = write ? uavBinding++ : sampledBinding++;
         const auto type = buffer.type.empty() ? std::string_view{"uint"} : std::string_view{buffer.type};
         output << (write ? "RWStructuredBuffer<" : "StructuredBuffer<") << type << "> " << identifier(buffer.name)
                << " : register(" << (write ? 'u' : 't') << binding << resourceSetSuffix(resourceSet) << ");\n";
-        ++binding;
     }
 }
 
@@ -153,10 +149,12 @@ std::string makeNativeFxShaderSource(const FxProgram& program, const FxDispatch&
     output << "// generated native FX declarations\n";
     appendControllerBlock(output, program);
     output << "#ifdef " << passMacro(dispatch.name) << "\n";
-    std::uint32_t binding = 0;
-    appendTextureDeclarations(output, program, dispatch, resourceSet, binding);
-    appendBufferDeclarations(output, program, dispatch, resourceSet, binding);
-    appendSamplerDeclarations(output, program, resourceSet, binding);
+    std::uint32_t sampledBinding = 0;
+    std::uint32_t uavBinding = 0;
+    std::uint32_t samplerBinding = 0;
+    appendTextureDeclarations(output, program, resourceSet, sampledBinding, uavBinding);
+    appendBufferDeclarations(output, program, resourceSet, sampledBinding, uavBinding);
+    appendSamplerDeclarations(output, program, resourceSet, samplerBinding);
     output << "#endif\n";
     output << program.hlsl;
     return output.str();

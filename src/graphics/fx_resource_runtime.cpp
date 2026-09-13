@@ -2,6 +2,7 @@
 
 #include "core/image.hpp"
 #include "core/fx/fx_size.hpp"
+#include "graphics/native_scene_bindings.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -237,6 +238,21 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                 throw std::invalid_argument("FX resource declaration is duplicated: " + name);
             return name;
         };
+        std::uint32_t uavBinding = 0;
+        std::uint32_t sampledBinding = 0;
+        std::uint32_t samplerBinding = 0;
+        const auto nextBinding = [&](NativeSceneRegisterClass registerClass) {
+            const auto index = registerClass == NativeSceneRegisterClass::uav
+                                   ? uavBinding++
+                                   : registerClass == NativeSceneRegisterClass::sampled
+                                         ? sampledBinding++
+                                         : samplerBinding++;
+            return nativeSceneBinding(registerClass, index);
+        };
+        const auto registerClass = [](std::string_view view) {
+            return contains(view, "UAV") || contains(view, "STORAGE") ? NativeSceneRegisterClass::uav
+                                                                        : NativeSceneRegisterClass::sampled;
+        };
         const auto addBinding = [&](std::uint32_t binding, DescriptorKind kind) {
             descriptorLayoutDesc_.bindings.push_back({binding, kind, 1, stages});
         };
@@ -257,6 +273,7 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                 (resolved.width != external->width || resolved.height != external->height || resolved.depth != 1))
                 throw std::invalid_argument("FX external texture extent does not match its declaration: " + name);
             const auto levels = mipLevels(resolved, declaration.mipmap);
+            const auto binding = nextBinding(registerClass(declaration.view));
             TextureResourceDesc description{
                 .dimension = TextureDimension::d2,
                 .extent = resolved,
@@ -270,7 +287,7 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             Resource resource{.name = name,
                               .kind = Kind::texture,
                               .descriptorKind = textureDescriptorKind(declaration.view, format),
-                              .binding = static_cast<std::uint32_t>(resources_.size()),
+                              .binding = binding,
                               .extent = resolved,
                               .format = format};
             resource.texture = device.createTextureEx(description);
@@ -292,6 +309,7 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             const auto format = pixelFormat(declaration.format);
             const auto resolved = resolveExtent(declaration.size, 3, false, context, table);
             const auto levels = mipLevels(resolved, declaration.mipmap);
+            const auto binding = nextBinding(registerClass(declaration.view));
             TextureResourceDesc description{
                 .dimension = TextureDimension::d3,
                 .extent = resolved,
@@ -305,7 +323,7 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             Resource resource{.name = name,
                               .kind = Kind::texture,
                               .descriptorKind = textureDescriptorKind(declaration.view, format),
-                              .binding = static_cast<std::uint32_t>(resources_.size()),
+                              .binding = binding,
                               .extent = resolved,
                               .format = format};
             resource.texture = device.createTextureEx(description);
@@ -323,6 +341,7 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             const auto bytes = core::fx::FxSizeResolver::bufferBytes(
                 {.x = resolved.width, .y = 1, .z = 1, .dimension = 1}, declaration.elementSize);
             reserveBytes(bytes, name);
+            const auto binding = nextBinding(registerClass(declaration.view));
             BufferResourceDesc description{
                 .size = checkedSize(bytes, name),
                 .usage = bufferUsage(declaration.view),
@@ -332,7 +351,7 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             Resource resource{.name = name,
                               .kind = Kind::buffer,
                               .descriptorKind = bufferDescriptorKind(declaration.view),
-                              .binding = static_cast<std::uint32_t>(resources_.size()),
+                              .binding = binding,
                               .extent = resolved};
             resource.buffer = device.createBufferEx(description);
             if (!resource.buffer.valid())
@@ -343,10 +362,11 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
         }
         for (const auto& declaration : program.samplers) {
             const auto name = addName(declaration.name);
+            const auto binding = nextBinding(NativeSceneRegisterClass::sampler);
             Resource resource{.name = name,
                               .kind = Kind::sampler,
                               .descriptorKind = DescriptorKind::sampler,
-                              .binding = static_cast<std::uint32_t>(resources_.size())};
+                              .binding = binding};
             resource.sampler = device.createSamplerEx(samplerDesc(declaration));
             if (!resource.sampler.valid())
                 throw std::runtime_error("FX sampler allocation returned an invalid handle: " + name);

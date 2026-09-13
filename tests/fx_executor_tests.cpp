@@ -12,6 +12,7 @@
 #include "graphics/fx_pipeline_runtime.hpp"
 #include "graphics/fx_resource_runtime.hpp"
 #include "graphics/native_fx_runtime.hpp"
+#include "graphics/native_scene_bindings.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -795,6 +796,11 @@ bool testFxResourceRuntimeMaterializesDeclarations() {
                     device.descriptorLayout_.bindings[2].kind == dayo::graphics::DescriptorKind::storageBuffer &&
                     device.descriptorLayout_.bindings[3].kind == dayo::graphics::DescriptorKind::sampler,
                 "FX resource runtime derives descriptor kinds from views");
+    ok &= check(device.descriptorLayout_.bindings[0].binding == 16 &&
+                    device.descriptorLayout_.bindings[1].binding == 0 &&
+                    device.descriptorLayout_.bindings[2].binding == 1 &&
+                    device.descriptorLayout_.bindings[3].binding == 32,
+                "FX resource runtime aligns descriptor slots with HLSL register classes");
     dayo::fx::FxDispatch dispatch;
     ok &= check(runtime.resolveDescriptorSet(dispatch).has_value(), "FX resource runtime resolves pass descriptor set");
     runtime.reset();
@@ -948,6 +954,53 @@ bool testNativeFxRuntimeBindsResourcesAndPipelines() {
     return ok;
 }
 
+bool testNativeFxRuntimeBindsFixedSceneSets() {
+    dayo::fx::FxShaderCompiler compiler;
+    if (!compiler.available())
+        return true;
+
+    dayo::fx::FxProgram program;
+    program.sourcePath = "native-scene-runtime.fxdayo";
+    program.hlsl = "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) {}\n";
+    dayo::core::EffectTexture output;
+    output.name = "Output";
+    output.view = "UAV";
+    program.textures.push_back(std::move(output));
+    dayo::fx::FxDispatch dispatch;
+    dispatch.name = "native-scene-pass";
+    dispatch.kind = dayo::fx::FxOpKind::compute;
+    dispatch.executable = dayo::fx::FxComputeDispatch{"main"};
+    dispatch.resources.push_back({"Output", true});
+    program.passes.push_back(std::move(dispatch));
+
+    std::array<dayo::graphics::handles::DescriptorSetLayoutHandle, 10> layouts{};
+    std::array<dayo::graphics::handles::DescriptorSetHandle, 10> sets{};
+    for (std::size_t index = 0; index < layouts.size(); ++index) {
+        layouts[index] = {static_cast<std::uint32_t>(index + 1), 1};
+        sets[index] = {static_cast<std::uint32_t>(index + 101), 1};
+    }
+    MockDevice device;
+    dayo::graphics::NativeFxRuntime runtime;
+    std::string error;
+    const auto context = testContext();
+    bool ok = check(runtime.initializeForFrame(device, std::move(program), compiler, context, layouts, &error, sets),
+                    "native FX runtime accepts fixed native scene layouts and sets");
+    ok &= check(error.empty() && runtime.resourceSetIndex() == dayo::graphics::kNativeFxResourceSet &&
+                    runtime.sharedDescriptorSetCount() == dayo::graphics::kNativeSceneDescriptorSetCount,
+                "native FX runtime places FX resources after all native scene spaces");
+    if (!ok)
+        return false;
+    auto frame = runtime.prepareFrame(context);
+    MockCommands commands;
+    const auto stats = runtime.execute(frame, commands);
+    const auto descriptorCount = static_cast<std::size_t>(
+        std::count(commands.trace.begin(), commands.trace.end(), std::string{"descriptorEx"}));
+    ok &= check(stats.compute == 1 && descriptorCount == dayo::graphics::kNativeSceneDescriptorSetCount + 1,
+                "native FX runtime binds every native scene set before FX resources");
+    runtime.reset();
+    return ok;
+}
+
 bool testShaderCacheKeys() {
     dayo::fx::FxShaderCache cache;
     dayo::fx::FxShaderKey base;
@@ -1095,6 +1148,22 @@ bool testFxPipelineRuntime() {
     outputTexture.format = "R8G8B8A8_UNORM";
     outputTexture.view = "UAV";
     program.textures.push_back(std::move(outputTexture));
+    dayo::core::EffectTexture inputTexture;
+    inputTexture.name = "NativeInput";
+    inputTexture.format = "R8G8B8A8_UNORM";
+    inputTexture.view = "SRV";
+    program.textures.push_back(std::move(inputTexture));
+    dayo::core::EffectBuffer nativeData;
+    nativeData.name = "NativeData";
+    nativeData.type = "float4";
+    nativeData.view = "UAV";
+    nativeData.elementSize = 16;
+    nativeData.size.absolute = true;
+    nativeData.size.width = 1;
+    program.buffers.push_back(std::move(nativeData));
+    dayo::core::EffectSampler nativeSampler;
+    nativeSampler.name = "NativeSampler";
+    program.samplers.push_back(std::move(nativeSampler));
     program.sourcePath = directory / "pipeline-runtime.fxdayo";
     program.hlsl = "#include \"constants.hlsli\"\n"
                    "#include \"subayai/hlsl/casesensitive.hlsli\"\n"
@@ -1112,8 +1181,11 @@ bool testFxPipelineRuntime() {
 
     const auto generated = dayo::fx::makeNativeFxShaderSource(program, dispatch, 7);
     bool ok = check(generated.find("YRZFX_ControllerCB") != std::string::npos &&
-                        generated.find("NativeOutput : register(u0, space7)") != std::string::npos,
-                    "native FX source emits controller and typed resource declarations");
+                        generated.find("NativeOutput : register(u0, space7)") != std::string::npos &&
+                        generated.find("NativeInput : register(t0, space7)") != std::string::npos &&
+                        generated.find("NativeData : register(u1, space7)") != std::string::npos &&
+                        generated.find("NativeSampler : register(s0, space7)") != std::string::npos,
+                    "native FX source emits disjoint typed register classes");
 
     dayo::graphics::FxPipelineRuntime runtime;
     std::string error;
@@ -1243,6 +1315,7 @@ int main() {
     ok &= testFxExternalTextureMetadataAndUpload();
     ok &= testNativeFxRuntimeRefreshesFrameResources();
     ok &= testNativeFxRuntimeBindsResourcesAndPipelines();
+    ok &= testNativeFxRuntimeBindsFixedSceneSets();
     ok &= testShaderCacheKeys();
     try {
         ok &= testRealShaderCompilation();
