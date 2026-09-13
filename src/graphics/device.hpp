@@ -238,66 +238,6 @@ using SamplerHandle = std::uint64_t;
 using ShaderHandle = std::uint64_t;
 using AccelerationStructureHandle = std::uint64_t;
 
-struct ShaderDesc {
-    std::span<const std::uint32_t> spirv;
-    std::string entryPoint{"main"};
-};
-struct PipelineDesc {
-    std::vector<ShaderHandle> shaders;
-    bool compute{};
-};
-struct GraphicsPipelineDescEx {
-    handles::PipelineLayoutHandle layout{};
-    std::vector<ShaderHandle> shaders;
-};
-struct ComputePipelineDescEx {
-    handles::PipelineLayoutHandle layout{};
-    std::vector<ShaderHandle> shaders;
-};
-
-enum class RayTracingHitGroupType : std::uint8_t { triangles, procedural };
-
-struct RayTracingHitGroupDesc {
-    RayTracingHitGroupType type{RayTracingHitGroupType::triangles};
-    handles::ShaderHandle closestHit{};
-    handles::ShaderHandle anyHit{};
-    handles::ShaderHandle intersection{};
-};
-
-struct RayTracingPipelineDesc {
-    std::vector<ShaderHandle> rayGeneration;
-    std::vector<ShaderHandle> miss;
-    std::vector<ShaderHandle> closestHit;
-    std::vector<ShaderHandle> callable;
-};
-struct RayTracingPipelineDescEx {
-    handles::PipelineLayoutHandle layout{};
-    std::vector<ShaderHandle> rayGeneration;
-    std::vector<ShaderHandle> miss;
-    std::vector<ShaderHandle> closestHit;
-    std::vector<RayTracingHitGroupDesc> hitGroups;
-    std::vector<ShaderHandle> callable;
-    std::uint32_t maxPayloadSize{};
-    std::uint32_t maxAttributeSize{};
-    std::uint32_t maxRecursionDepth{1};
-};
-struct DescriptorBinding {
-    std::uint32_t slot{};
-    BufferHandle buffer{};
-    TextureViewHandle texture{};
-    SamplerHandle sampler{};
-};
-
-enum class DescriptorKind : std::uint8_t {
-    sampler,
-    sampledImage,
-    combinedImageSampler,
-    storageImage,
-    uniformBuffer,
-    storageBuffer,
-    accelerationStructure,
-};
-
 enum class ShaderStageMask : std::uint32_t {
     none = 0,
     vertex = 1U << 0U,
@@ -319,6 +259,67 @@ constexpr ShaderStageMask& operator|=(ShaderStageMask& left, ShaderStageMask rig
     left = left | right;
     return left;
 }
+
+struct ShaderDesc {
+    std::span<const std::uint32_t> spirv;
+    std::string entryPoint{"main"};
+    ShaderStageMask stage{ShaderStageMask::compute};
+};
+struct PipelineDesc {
+    std::vector<ShaderHandle> shaders;
+    bool compute{};
+};
+struct GraphicsPipelineDescEx {
+    handles::PipelineLayoutHandle layout{};
+    std::vector<handles::ShaderHandle> shaders;
+};
+struct ComputePipelineDescEx {
+    handles::PipelineLayoutHandle layout{};
+    std::vector<handles::ShaderHandle> shaders;
+};
+
+enum class RayTracingHitGroupType : std::uint8_t { triangles, procedural };
+
+struct RayTracingHitGroupDesc {
+    RayTracingHitGroupType type{RayTracingHitGroupType::triangles};
+    handles::ShaderHandle closestHit{};
+    handles::ShaderHandle anyHit{};
+    handles::ShaderHandle intersection{};
+};
+
+struct RayTracingPipelineDesc {
+    std::vector<ShaderHandle> rayGeneration;
+    std::vector<ShaderHandle> miss;
+    std::vector<ShaderHandle> closestHit;
+    std::vector<ShaderHandle> callable;
+};
+struct RayTracingPipelineDescEx {
+    handles::PipelineLayoutHandle layout{};
+    std::vector<handles::ShaderHandle> rayGeneration;
+    std::vector<handles::ShaderHandle> miss;
+    std::vector<handles::ShaderHandle> closestHit;
+    std::vector<RayTracingHitGroupDesc> hitGroups;
+    std::vector<handles::ShaderHandle> callable;
+    std::uint32_t maxPayloadSize{};
+    std::uint32_t maxAttributeSize{};
+    std::uint32_t maxRecursionDepth{1};
+};
+struct DescriptorBinding {
+    std::uint32_t slot{};
+    BufferHandle buffer{};
+    TextureViewHandle texture{};
+    SamplerHandle sampler{};
+};
+
+enum class DescriptorKind : std::uint8_t {
+    sampler,
+    sampledImage,
+    combinedImageSampler,
+    storageImage,
+    uniformBuffer,
+    storageBuffer,
+    accelerationStructure,
+};
 
 struct DescriptorSetLayoutBinding {
     std::uint32_t binding{};
@@ -510,6 +511,12 @@ class Device {
     }
     [[nodiscard]] virtual handles::SamplerHandle createSamplerEx() {
         throw std::logic_error("Typed samplers are not implemented by this backend");
+    }
+    [[nodiscard]] virtual handles::ShaderHandle createShaderEx(const ShaderDesc&) {
+        throw std::logic_error("Typed shaders are not implemented by this backend");
+    }
+    virtual void destroyShaderEx(handles::ShaderHandle) {
+        throw std::logic_error("Typed shader destroy is not implemented by this backend");
     }
     [[nodiscard]] virtual handles::AccelerationStructureHandle createBlasEx(const BlasGeometryDesc&) {
         throw std::logic_error("Typed BLAS is not implemented by this backend");

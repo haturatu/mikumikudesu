@@ -20,6 +20,7 @@ VK_DEFINE_HANDLE(VmaAllocator)
 namespace dayo::graphics {
 
 class VulkanUploadContext;
+class VulkanCommandList;
 
 class VulkanDevice final : public Device {
   public:
@@ -68,6 +69,17 @@ class VulkanDevice final : public Device {
     void retireTextureEx(handles::TextureHandle handle, std::uint64_t frameIndex) override;
     void retireBufferEx(handles::BufferHandle handle, std::uint64_t frameIndex) override;
     [[nodiscard]] handles::SamplerHandle createSamplerEx() override;
+    [[nodiscard]] handles::ShaderHandle createShaderEx(const ShaderDesc& desc) override;
+    void destroyShaderEx(handles::ShaderHandle handle) override;
+    [[nodiscard]] handles::PipelineLayoutHandle createPipelineLayoutEx(const PipelineLayoutDesc& desc) override;
+    void destroyPipelineLayoutEx(handles::PipelineLayoutHandle handle) override;
+    [[nodiscard]] handles::PipelineHandle createGraphicsPipelineEx(const GraphicsPipelineDescEx& desc) override;
+    [[nodiscard]] handles::PipelineHandle createComputePipelineEx(const ComputePipelineDescEx& desc) override;
+    [[nodiscard]] handles::PipelineHandle createRayTracingPipelineEx(const RayTracingPipelineDescEx& desc) override;
+    void destroyPipelineEx(handles::PipelineHandle handle) override;
+    [[nodiscard]] handles::ShaderBindingTableHandle
+    createShaderBindingTable(const ShaderBindingTableDesc& desc) override;
+    void destroyShaderBindingTable(handles::ShaderBindingTableHandle handle) override;
     [[nodiscard]] handles::DescriptorSetLayoutHandle
     createDescriptorSetLayoutEx(const DescriptorSetLayoutDesc& desc) override;
     void destroyDescriptorSetLayoutEx(handles::DescriptorSetLayoutHandle handle) override;
@@ -79,6 +91,8 @@ class VulkanDevice final : public Device {
     void destroyDescriptorSetEx(handles::DescriptorSetHandle set) override;
 
   private:
+    friend class VulkanCommandList;
+
     struct Frame {
         VkCommandPool commandPool{};
         VkCommandBuffer commandBuffer{};
@@ -220,6 +234,10 @@ class VulkanDevice final : public Device {
     void uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer,
                              VkDeviceMemory& memory, VkDeviceSize allocationSize = 0);
     [[nodiscard]] std::uint32_t findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags flags) const;
+    [[nodiscard]] VkDeviceAddress bufferDeviceAddress(VkBuffer buffer) const;
+    void recordTraceRays(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
+                         handles::ShaderBindingTableHandle sbt, std::uint32_t width, std::uint32_t height,
+                         std::uint32_t depth);
 
     platform::Window& window_;
     DeviceCapabilities capabilities_;
@@ -233,6 +251,7 @@ class VulkanDevice final : public Device {
     VkSurfaceKHR surface_{};
     VkPhysicalDevice physicalDevice_{};
     VkPhysicalDeviceProperties physicalProperties_{};
+    VkPhysicalDeviceRayTracingPipelinePropertiesKHR rayTracingPipelineProperties_{};
     VkDevice device_{};
 #if DAYO_ENABLE_VMA
     VmaAllocator allocator_{};
@@ -344,17 +363,48 @@ class VulkanDevice final : public Device {
         VkDescriptorSet set{};
         handles::DescriptorSetLayoutHandle layout{};
     };
+    struct TypedShader {
+        VkShaderModule module{};
+        ShaderDesc desc;
+    };
+    struct TypedPipelineLayout {
+        VkPipelineLayout layout{};
+        PipelineLayoutDesc desc;
+    };
+    struct TypedPipeline {
+        VkPipeline pipeline{};
+        handles::PipelineLayoutHandle layout{};
+        std::uint32_t groupCount{};
+        bool rayTracing{};
+    };
+    struct TypedShaderBindingTable {
+        VkBuffer buffer{};
+        VkDeviceMemory memory{};
+        VkDeviceSize size{};
+        VkStridedDeviceAddressRegionKHR raygen{};
+        VkStridedDeviceAddressRegionKHR miss{};
+        VkStridedDeviceAddressRegionKHR hit{};
+        VkStridedDeviceAddressRegionKHR callable{};
+    };
 
     handles::BufferPool typedBufferHandles_;
     handles::TexturePool typedTextureHandles_;
     handles::SamplerPool typedSamplerHandles_;
+    handles::ShaderPool typedShaderHandles_;
     handles::DescriptorSetLayoutPool typedDescriptorSetLayoutHandles_;
     handles::DescriptorSetPool typedDescriptorSetHandles_;
+    handles::PipelineLayoutPool typedPipelineLayoutHandles_;
+    handles::PipelinePool typedPipelineHandles_;
+    handles::ShaderBindingTablePool typedShaderBindingTableHandles_;
     std::unordered_map<handles::BufferHandle, TypedBuffer> typedBuffers_;
     std::unordered_map<handles::TextureHandle, TypedTexture> typedTextures_;
     std::unordered_map<handles::SamplerHandle, TypedSampler> typedSamplers_;
+    std::unordered_map<handles::ShaderHandle, TypedShader> typedShaders_;
     std::unordered_map<handles::DescriptorSetLayoutHandle, TypedDescriptorSetLayout> typedDescriptorSetLayouts_;
     std::unordered_map<handles::DescriptorSetHandle, TypedDescriptorSet> typedDescriptorSets_;
+    std::unordered_map<handles::PipelineLayoutHandle, TypedPipelineLayout> typedPipelineLayouts_;
+    std::unordered_map<handles::PipelineHandle, TypedPipeline> typedPipelines_;
+    std::unordered_map<handles::ShaderBindingTableHandle, TypedShaderBindingTable> typedShaderBindingTables_;
     VkDescriptorPool typedDescriptorPool_{};
 };
 

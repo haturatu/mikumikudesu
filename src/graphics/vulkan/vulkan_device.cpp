@@ -269,6 +269,44 @@ VkShaderStageFlags toVkShaderStages(ShaderStageMask stages) {
     return flags;
 }
 
+VkShaderStageFlagBits toVkShaderStage(ShaderStageMask stage) {
+    switch (stage) {
+    case ShaderStageMask::vertex:
+        return VK_SHADER_STAGE_VERTEX_BIT;
+    case ShaderStageMask::fragment:
+        return VK_SHADER_STAGE_FRAGMENT_BIT;
+    case ShaderStageMask::compute:
+        return VK_SHADER_STAGE_COMPUTE_BIT;
+    case ShaderStageMask::rayGeneration:
+        return VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+    case ShaderStageMask::miss:
+        return VK_SHADER_STAGE_MISS_BIT_KHR;
+    case ShaderStageMask::closestHit:
+        return VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+    case ShaderStageMask::anyHit:
+        return VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+    case ShaderStageMask::intersection:
+        return VK_SHADER_STAGE_INTERSECTION_BIT_KHR;
+    case ShaderStageMask::callable:
+        return VK_SHADER_STAGE_CALLABLE_BIT_KHR;
+    case ShaderStageMask::none:
+        break;
+    }
+    throw std::invalid_argument("shader descriptor has no single shader stage");
+}
+
+VkDeviceSize alignDeviceAddress(VkDeviceSize value, VkDeviceSize alignment) {
+    if (alignment <= 1)
+        return value;
+    const VkDeviceSize remainder = value % alignment;
+    if (remainder == 0)
+        return value;
+    const VkDeviceSize delta = alignment - remainder;
+    if (value > std::numeric_limits<VkDeviceSize>::max() - delta)
+        throw std::overflow_error("Vulkan address alignment overflow");
+    return value + delta;
+}
+
 } // namespace
 
 VulkanDevice::VulkanDevice(platform::Window& window, bool validation) : window_(window), validation_(validation) {
@@ -505,9 +543,13 @@ void VulkanDevice::queryCapabilities() {
     };
     vkGetPhysicalDeviceFeatures2(physicalDevice_, &features);
 
+    rayTracingPipelineProperties_ = {};
+    rayTracingPipelineProperties_.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
     VkPhysicalDeviceDriverProperties driver{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
+        .pNext = &rayTracingPipelineProperties_,
     };
+    rayTracingPipelineProperties_.pNext = nullptr;
     VkPhysicalDeviceProperties2 properties{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
         .pNext = &driver,
@@ -3698,6 +3740,448 @@ handles::SamplerHandle VulkanDevice::createSamplerEx() {
     return handle;
 }
 
+handles::ShaderHandle VulkanDevice::createShaderEx(const ShaderDesc& desc) {
+    if (desc.spirv.empty())
+        throw std::invalid_argument("typed shader SPIR-V must be non-empty");
+    if (desc.entryPoint.empty())
+        throw std::invalid_argument("typed shader entry point must be non-empty");
+    static_cast<void>(toVkShaderStage(desc.stage));
+
+    const VkShaderModuleCreateInfo createInfo{
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = desc.spirv.size_bytes(),
+        .pCode = desc.spirv.data(),
+    };
+    TypedShader typed{.desc = desc};
+    check(vkCreateShaderModule(device_, &createInfo, nullptr, &typed.module), "create typed shader module");
+    const auto handle = typedShaderHandles_.create();
+    typedShaders_.emplace(handle, std::move(typed));
+    return handle;
+}
+
+void VulkanDevice::destroyShaderEx(handles::ShaderHandle handle) {
+    const auto it = typedShaders_.find(handle);
+    if (it == typedShaders_.end() || !typedShaderHandles_.isAlive(handle))
+        throw std::invalid_argument("stale typed shader handle");
+    if (it->second.module != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device_, it->second.module, nullptr);
+    typedShaders_.erase(it);
+    typedShaderHandles_.destroy(handle);
+}
+
+handles::PipelineLayoutHandle VulkanDevice::createPipelineLayoutEx(const PipelineLayoutDesc& desc) {
+    std::vector<VkDescriptorSetLayout> setLayouts;
+    setLayouts.reserve(desc.setLayouts.size());
+    for (const auto handle : desc.setLayouts) {
+        const auto it = typedDescriptorSetLayouts_.find(handle);
+        if (it == typedDescriptorSetLayouts_.end() || !typedDescriptorSetLayoutHandles_.isAlive(handle))
+            throw std::invalid_argument("pipeline layout references a stale descriptor set layout");
+        setLayouts.push_back(it->second.layout);
+    }
+    std::vector<VkPushConstantRange> pushConstants;
+    pushConstants.reserve(desc.pushConstants.size());
+    for (const auto& range : desc.pushConstants) {
+        if (range.size == 0 || range.stages == ShaderStageMask::none ||
+            range.offset > std::numeric_limits<std::uint32_t>::max() - range.size)
+            throw std::invalid_argument("invalid typed push-constant range");
+        pushConstants.push_back({toVkShaderStages(range.stages), range.offset, range.size});
+    }
+    const VkPipelineLayoutCreateInfo createInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = static_cast<std::uint32_t>(setLayouts.size()),
+        .pSetLayouts = setLayouts.data(),
+        .pushConstantRangeCount = static_cast<std::uint32_t>(pushConstants.size()),
+        .pPushConstantRanges = pushConstants.data(),
+    };
+    TypedPipelineLayout typed{.desc = desc};
+    check(vkCreatePipelineLayout(device_, &createInfo, nullptr, &typed.layout), "create typed pipeline layout");
+    const auto handle = typedPipelineLayoutHandles_.create();
+    typedPipelineLayouts_.emplace(handle, std::move(typed));
+    return handle;
+}
+
+void VulkanDevice::destroyPipelineLayoutEx(handles::PipelineLayoutHandle handle) {
+    const auto it = typedPipelineLayouts_.find(handle);
+    if (it == typedPipelineLayouts_.end() || !typedPipelineLayoutHandles_.isAlive(handle))
+        throw std::invalid_argument("stale typed pipeline layout handle");
+    if (it->second.layout != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device_, it->second.layout, nullptr);
+    typedPipelineLayouts_.erase(it);
+    typedPipelineLayoutHandles_.destroy(handle);
+}
+
+handles::PipelineHandle VulkanDevice::createComputePipelineEx(const ComputePipelineDescEx& desc) {
+    const auto layoutIt = typedPipelineLayouts_.find(desc.layout);
+    if (layoutIt == typedPipelineLayouts_.end() || !typedPipelineLayoutHandles_.isAlive(desc.layout))
+        throw std::invalid_argument("compute pipeline references a stale pipeline layout");
+    if (desc.shaders.size() != 1)
+        throw std::invalid_argument("compute pipeline requires exactly one shader");
+    const auto shaderIt = typedShaders_.find(desc.shaders.front());
+    if (shaderIt == typedShaders_.end() || !typedShaderHandles_.isAlive(desc.shaders.front()) ||
+        shaderIt->second.desc.stage != ShaderStageMask::compute)
+        throw std::invalid_argument("compute pipeline references a non-compute shader");
+    const VkPipelineShaderStageCreateInfo stage{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+        .module = shaderIt->second.module,
+        .pName = shaderIt->second.desc.entryPoint.c_str(),
+    };
+    const VkComputePipelineCreateInfo createInfo{
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .stage = stage,
+        .layout = layoutIt->second.layout,
+    };
+    TypedPipeline typed{.layout = desc.layout};
+    check(vkCreateComputePipelines(device_, pipelineCache_, 1, &createInfo, nullptr, &typed.pipeline),
+          "create typed compute pipeline");
+    const auto handle = typedPipelineHandles_.create();
+    typedPipelines_.emplace(handle, std::move(typed));
+    return handle;
+}
+
+handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPipelineDescEx& desc) {
+    const auto layoutIt = typedPipelineLayouts_.find(desc.layout);
+    if (layoutIt == typedPipelineLayouts_.end() || !typedPipelineLayoutHandles_.isAlive(desc.layout))
+        throw std::invalid_argument("graphics pipeline references a stale pipeline layout");
+    if (desc.shaders.size() != 2)
+        throw std::invalid_argument("native graphics pipeline requires vertex and fragment shaders");
+    std::vector<VkPipelineShaderStageCreateInfo> stages;
+    stages.reserve(desc.shaders.size());
+    bool hasVertex = false;
+    bool hasFragment = false;
+    for (const auto handle : desc.shaders) {
+        const auto shaderIt = typedShaders_.find(handle);
+        if (shaderIt == typedShaders_.end() || !typedShaderHandles_.isAlive(handle))
+            throw std::invalid_argument("graphics pipeline references a stale shader");
+        if (shaderIt->second.desc.stage == ShaderStageMask::vertex)
+            hasVertex = true;
+        else if (shaderIt->second.desc.stage == ShaderStageMask::fragment)
+            hasFragment = true;
+        else
+            throw std::invalid_argument("graphics pipeline accepts only vertex and fragment shaders");
+        stages.push_back({VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+                          toVkShaderStage(shaderIt->second.desc.stage), shaderIt->second.module,
+                          shaderIt->second.desc.entryPoint.c_str(), nullptr});
+    }
+    if (!hasVertex || !hasFragment)
+        throw std::invalid_argument("graphics pipeline requires vertex and fragment shaders");
+    const VkPipelineVertexInputStateCreateInfo vertexInput{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+    };
+    const VkPipelineInputAssemblyStateCreateInfo inputAssembly{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+    };
+    const VkPipelineViewportStateCreateInfo viewport{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .scissorCount = 1,
+    };
+    const VkPipelineRasterizationStateCreateInfo rasterization{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .cullMode = VK_CULL_MODE_NONE,
+        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .lineWidth = 1.0F,
+    };
+    const VkPipelineMultisampleStateCreateInfo multisample{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+    };
+    const VkPipelineColorBlendAttachmentState blendAttachment{
+        .blendEnable = VK_FALSE,
+        .colorWriteMask =
+            VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+    };
+    const VkPipelineColorBlendStateCreateInfo blend{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &blendAttachment,
+    };
+    const std::array dynamicStates{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    const VkPipelineDynamicStateCreateInfo dynamic{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size()),
+        .pDynamicStates = dynamicStates.data(),
+    };
+    const VkFormat colorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+    const VkPipelineRenderingCreateInfo rendering{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        .colorAttachmentCount = 1,
+        .pColorAttachmentFormats = &colorFormat,
+    };
+    const VkGraphicsPipelineCreateInfo createInfo{
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .pNext = &rendering,
+        .stageCount = static_cast<std::uint32_t>(stages.size()),
+        .pStages = stages.data(),
+        .pVertexInputState = &vertexInput,
+        .pInputAssemblyState = &inputAssembly,
+        .pViewportState = &viewport,
+        .pRasterizationState = &rasterization,
+        .pMultisampleState = &multisample,
+        .pColorBlendState = &blend,
+        .pDynamicState = &dynamic,
+        .layout = layoutIt->second.layout,
+    };
+    TypedPipeline typed{.layout = desc.layout};
+    check(vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &createInfo, nullptr, &typed.pipeline),
+          "create typed graphics pipeline");
+    const auto handle = typedPipelineHandles_.create();
+    typedPipelines_.emplace(handle, std::move(typed));
+    return handle;
+}
+
+handles::PipelineHandle VulkanDevice::createRayTracingPipelineEx(const RayTracingPipelineDescEx& desc) {
+    if (!capabilities_.rayTracingPipeline)
+        throw std::runtime_error("ray-tracing pipeline is unsupported by this Vulkan device");
+    const auto layoutIt = typedPipelineLayouts_.find(desc.layout);
+    if (layoutIt == typedPipelineLayouts_.end() || !typedPipelineLayoutHandles_.isAlive(desc.layout))
+        throw std::invalid_argument("ray-tracing pipeline references a stale pipeline layout");
+    if (desc.rayGeneration.empty() || desc.maxRecursionDepth == 0 ||
+        desc.maxRecursionDepth > rayTracingPipelineProperties_.maxRayRecursionDepth)
+        throw std::invalid_argument("invalid ray-tracing pipeline shader or recursion depth");
+    if (!desc.hitGroups.empty() && !desc.closestHit.empty())
+        throw std::invalid_argument("ray-tracing pipeline cannot mix legacy closest-hit and hit-group lists");
+
+    std::vector<VkPipelineShaderStageCreateInfo> stages;
+    std::vector<VkRayTracingShaderGroupCreateInfoKHR> groups;
+    stages.reserve(desc.rayGeneration.size() + desc.miss.size() + desc.callable.size() + desc.hitGroups.size() * 3U);
+    groups.reserve(desc.rayGeneration.size() + desc.miss.size() + desc.callable.size() + desc.hitGroups.size());
+    const auto addStage = [&](handles::ShaderHandle handle, ShaderStageMask expected) -> std::uint32_t {
+        const auto shaderIt = typedShaders_.find(handle);
+        if (shaderIt == typedShaders_.end() || !typedShaderHandles_.isAlive(handle) ||
+            shaderIt->second.desc.stage != expected)
+            throw std::invalid_argument("ray-tracing shader stage does not match its group");
+        stages.push_back({VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, toVkShaderStage(expected),
+                          shaderIt->second.module, shaderIt->second.desc.entryPoint.c_str(), nullptr});
+        return static_cast<std::uint32_t>(stages.size() - 1U);
+    };
+    const auto addGeneral = [&](handles::ShaderHandle handle, ShaderStageMask expected) {
+        const auto shader = addStage(handle, expected);
+        groups.push_back({VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR, nullptr,
+                          VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR, shader, VK_SHADER_UNUSED_KHR,
+                          VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR});
+    };
+    for (const auto handle : desc.rayGeneration)
+        addGeneral(handle, ShaderStageMask::rayGeneration);
+    for (const auto handle : desc.miss)
+        addGeneral(handle, ShaderStageMask::miss);
+    for (const auto handle : desc.callable)
+        addGeneral(handle, ShaderStageMask::callable);
+    std::vector<RayTracingHitGroupDesc> hitGroups = desc.hitGroups;
+    if (hitGroups.empty()) {
+        hitGroups.reserve(desc.closestHit.size());
+        for (const auto handle : desc.closestHit)
+            hitGroups.push_back({RayTracingHitGroupType::triangles, handle, {}, {}});
+    }
+    for (const auto& hit : hitGroups) {
+        const auto type = hit.type == RayTracingHitGroupType::procedural
+                              ? VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR
+                              : VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+        const auto closest =
+            hit.closestHit.valid() ? addStage(hit.closestHit, ShaderStageMask::closestHit) : VK_SHADER_UNUSED_KHR;
+        const auto any = hit.anyHit.valid() ? addStage(hit.anyHit, ShaderStageMask::anyHit) : VK_SHADER_UNUSED_KHR;
+        const auto intersection =
+            hit.intersection.valid() ? addStage(hit.intersection, ShaderStageMask::intersection) : VK_SHADER_UNUSED_KHR;
+        if (type == VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR && intersection != VK_SHADER_UNUSED_KHR)
+            throw std::invalid_argument("triangle hit groups cannot contain an intersection shader");
+        if (type == VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR && intersection == VK_SHADER_UNUSED_KHR)
+            throw std::invalid_argument("procedural hit groups require an intersection shader");
+        groups.push_back({VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR, nullptr, type,
+                          VK_SHADER_UNUSED_KHR, closest, any, intersection});
+    }
+    const auto create = reinterpret_cast<PFN_vkCreateRayTracingPipelinesKHR>(
+        vkGetDeviceProcAddr(device_, "vkCreateRayTracingPipelinesKHR"));
+    if (create == nullptr)
+        throw std::runtime_error("vkCreateRayTracingPipelinesKHR is unavailable");
+    const VkRayTracingPipelineCreateInfoKHR createInfo{
+        .sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
+        .stageCount = static_cast<std::uint32_t>(stages.size()),
+        .pStages = stages.data(),
+        .groupCount = static_cast<std::uint32_t>(groups.size()),
+        .pGroups = groups.data(),
+        .maxPipelineRayRecursionDepth = desc.maxRecursionDepth,
+        .layout = layoutIt->second.layout,
+    };
+    TypedPipeline typed{
+        .layout = desc.layout, .groupCount = static_cast<std::uint32_t>(groups.size()), .rayTracing = true};
+    check(create(device_, VK_NULL_HANDLE, pipelineCache_, 1, &createInfo, nullptr, &typed.pipeline),
+          "create typed ray-tracing pipeline");
+    const auto handle = typedPipelineHandles_.create();
+    typedPipelines_.emplace(handle, std::move(typed));
+    return handle;
+}
+
+void VulkanDevice::destroyPipelineEx(handles::PipelineHandle handle) {
+    const auto it = typedPipelines_.find(handle);
+    if (it == typedPipelines_.end() || !typedPipelineHandles_.isAlive(handle))
+        throw std::invalid_argument("stale typed pipeline handle");
+    if (it->second.pipeline != VK_NULL_HANDLE)
+        vkDestroyPipeline(device_, it->second.pipeline, nullptr);
+    typedPipelines_.erase(it);
+    typedPipelineHandles_.destroy(handle);
+}
+
+handles::ShaderBindingTableHandle VulkanDevice::createShaderBindingTable(const ShaderBindingTableDesc& desc) {
+    if (!capabilities_.rayTracingPipeline || !capabilities_.bufferDeviceAddress)
+        throw std::runtime_error("shader binding tables require Vulkan ray-tracing pipeline and device address");
+    const auto pipelineIt = typedPipelines_.find(desc.pipeline);
+    if (pipelineIt == typedPipelines_.end() || !typedPipelineHandles_.isAlive(desc.pipeline) ||
+        !pipelineIt->second.rayTracing)
+        throw std::invalid_argument("SBT references a non-ray-tracing pipeline");
+    if (desc.raygenCount == 0)
+        throw std::invalid_argument("SBT requires at least one raygen group");
+    const std::uint64_t totalGroups =
+        static_cast<std::uint64_t>(desc.raygenCount) + desc.missCount + desc.hitCount + desc.callableCount;
+    if (totalGroups != pipelineIt->second.groupCount)
+        throw std::invalid_argument("SBT group counts do not match its ray-tracing pipeline");
+    const VkDeviceSize handleSize = rayTracingPipelineProperties_.shaderGroupHandleSize;
+    const VkDeviceSize handleAlignment = rayTracingPipelineProperties_.shaderGroupHandleAlignment;
+    const VkDeviceSize baseAlignment = rayTracingPipelineProperties_.shaderGroupBaseAlignment;
+    const VkDeviceSize stride = alignDeviceAddress(handleSize, handleAlignment);
+    if (handleSize == 0 || stride == 0 || stride > rayTracingPipelineProperties_.maxShaderGroupStride)
+        throw std::runtime_error("Vulkan ray-tracing properties cannot represent an SBT record");
+    const auto regionSize = [stride](std::uint32_t count) {
+        if (count != 0 && static_cast<VkDeviceSize>(count) > std::numeric_limits<VkDeviceSize>::max() / stride)
+            throw std::overflow_error("SBT region size overflow");
+        return stride * static_cast<VkDeviceSize>(count);
+    };
+    const VkDeviceSize raygenSize = regionSize(desc.raygenCount);
+    const VkDeviceSize missSize = regionSize(desc.missCount);
+    const VkDeviceSize hitSize = regionSize(desc.hitCount);
+    const VkDeviceSize callableSize = regionSize(desc.callableCount);
+    if (raygenSize > std::numeric_limits<VkDeviceSize>::max() - missSize ||
+        raygenSize + missSize > std::numeric_limits<VkDeviceSize>::max() - hitSize ||
+        raygenSize + missSize + hitSize > std::numeric_limits<VkDeviceSize>::max() - callableSize)
+        throw std::overflow_error("SBT allocation size overflow");
+    const VkDeviceSize reserveSize = raygenSize + missSize + hitSize + callableSize + baseAlignment * 4U;
+    TypedShaderBindingTable typed{};
+    const VkBufferCreateInfo bufferInfo{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = reserveSize,
+        .usage = VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                 VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    check(vkCreateBuffer(device_, &bufferInfo, nullptr, &typed.buffer), "create shader binding table buffer");
+    try {
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(device_, typed.buffer, &requirements);
+        const VkMemoryAllocateFlagsInfo allocationFlags{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+            .flags = static_cast<VkMemoryAllocateFlags>(VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT),
+        };
+        const VkMemoryAllocateInfo allocationInfo{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .pNext = &allocationFlags,
+            .allocationSize = requirements.size,
+            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+        };
+        check(vkAllocateMemory(device_, &allocationInfo, nullptr, &typed.memory), "allocate SBT memory");
+        check(vkBindBufferMemory(device_, typed.buffer, typed.memory, 0), "bind SBT memory");
+        const VkDeviceAddress baseAddress = bufferDeviceAddress(typed.buffer);
+        const VkDeviceSize raygenOffset = alignDeviceAddress(baseAddress, baseAlignment) - baseAddress;
+        const VkDeviceSize missOffset =
+            alignDeviceAddress(baseAddress + raygenOffset + raygenSize, baseAlignment) - baseAddress;
+        const VkDeviceSize hitOffset =
+            alignDeviceAddress(baseAddress + missOffset + missSize, baseAlignment) - baseAddress;
+        const VkDeviceSize callableOffset =
+            alignDeviceAddress(baseAddress + hitOffset + hitSize, baseAlignment) - baseAddress;
+        const VkDeviceSize endOffset = callableOffset + callableSize;
+        if (endOffset < callableOffset || endOffset > reserveSize)
+            throw std::overflow_error("SBT region offsets exceed allocation");
+        typed.size = endOffset;
+        typed.raygen = {baseAddress + raygenOffset, raygenSize, stride};
+        if (desc.missCount != 0)
+            typed.miss = {baseAddress + missOffset, missSize, stride};
+        if (desc.hitCount != 0)
+            typed.hit = {baseAddress + hitOffset, hitSize, stride};
+        if (desc.callableCount != 0)
+            typed.callable = {baseAddress + callableOffset, callableSize, stride};
+        const auto getHandles = reinterpret_cast<PFN_vkGetRayTracingShaderGroupHandlesKHR>(
+            vkGetDeviceProcAddr(device_, "vkGetRayTracingShaderGroupHandlesKHR"));
+        if (getHandles == nullptr)
+            throw std::runtime_error("vkGetRayTracingShaderGroupHandlesKHR is unavailable");
+        std::vector<std::uint8_t> groupHandles(static_cast<std::size_t>(totalGroups * handleSize));
+        check(getHandles(device_, pipelineIt->second.pipeline, 0, static_cast<std::uint32_t>(totalGroups),
+                         groupHandles.size(), groupHandles.data()),
+              "get shader group handles");
+        void* mapped = nullptr;
+        check(vkMapMemory(device_, typed.memory, 0, typed.size, 0, &mapped), "map SBT memory");
+        const auto copyRegion = [&](VkDeviceSize offset, std::uint32_t count, std::uint32_t firstGroup) {
+            auto* destination = static_cast<std::uint8_t*>(mapped) + offset;
+            for (std::uint32_t index = 0; index < count; ++index) {
+                const auto sourceOffset = static_cast<std::size_t>(firstGroup + index) * handleSize;
+                std::memcpy(destination + static_cast<VkDeviceSize>(index) * stride, groupHandles.data() + sourceOffset,
+                            static_cast<std::size_t>(handleSize));
+            }
+        };
+        copyRegion(raygenOffset, desc.raygenCount, 0);
+        copyRegion(missOffset, desc.missCount, desc.raygenCount);
+        copyRegion(hitOffset, desc.hitCount, desc.raygenCount + desc.missCount);
+        copyRegion(callableOffset, desc.callableCount, desc.raygenCount + desc.missCount + desc.hitCount);
+        vkUnmapMemory(device_, typed.memory);
+    } catch (...) {
+        if (typed.memory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, typed.memory, nullptr);
+        if (typed.buffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, typed.buffer, nullptr);
+        throw;
+    }
+    const auto handle = typedShaderBindingTableHandles_.create();
+    typedShaderBindingTables_.emplace(handle, std::move(typed));
+    return handle;
+}
+
+void VulkanDevice::destroyShaderBindingTable(handles::ShaderBindingTableHandle handle) {
+    const auto it = typedShaderBindingTables_.find(handle);
+    if (it == typedShaderBindingTables_.end() || !typedShaderBindingTableHandles_.isAlive(handle))
+        throw std::invalid_argument("stale shader binding table handle");
+    if (it->second.buffer != VK_NULL_HANDLE)
+        vkDestroyBuffer(device_, it->second.buffer, nullptr);
+    if (it->second.memory != VK_NULL_HANDLE)
+        vkFreeMemory(device_, it->second.memory, nullptr);
+    typedShaderBindingTables_.erase(it);
+    typedShaderBindingTableHandles_.destroy(handle);
+}
+
+VkDeviceAddress VulkanDevice::bufferDeviceAddress(VkBuffer buffer) const {
+    if (!capabilities_.bufferDeviceAddress)
+        throw std::runtime_error("buffer device address is unsupported");
+    const VkBufferDeviceAddressInfo info{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = buffer,
+    };
+    const VkDeviceAddress address = vkGetBufferDeviceAddress(device_, &info);
+    if (address == 0)
+        throw std::runtime_error("Vulkan returned a null buffer device address");
+    return address;
+}
+
+void VulkanDevice::recordTraceRays(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
+                                   handles::ShaderBindingTableHandle sbt, std::uint32_t width, std::uint32_t height,
+                                   std::uint32_t depth) {
+    const auto pipelineIt = typedPipelines_.find(pipeline);
+    const auto sbtIt = typedShaderBindingTables_.find(sbt);
+    if (pipelineIt == typedPipelines_.end() || !typedPipelineHandles_.isAlive(pipeline) ||
+        !pipelineIt->second.rayTracing)
+        throw std::invalid_argument("traceRays references a non-ray-tracing pipeline");
+    if (sbtIt == typedShaderBindingTables_.end() || !typedShaderBindingTableHandles_.isAlive(sbt))
+        throw std::invalid_argument("traceRays references a stale shader binding table");
+    if (width == 0 || height == 0 || depth == 0)
+        throw std::invalid_argument("traceRays extent must be non-zero");
+    const auto trace = reinterpret_cast<PFN_vkCmdTraceRaysKHR>(vkGetDeviceProcAddr(device_, "vkCmdTraceRaysKHR"));
+    if (trace == nullptr)
+        throw std::runtime_error("vkCmdTraceRaysKHR is unavailable");
+    if (commandBuffer == VK_NULL_HANDLE)
+        throw std::invalid_argument("traceRays requires a command buffer");
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, pipelineIt->second.pipeline);
+    trace(commandBuffer, &sbtIt->second.raygen, &sbtIt->second.miss, &sbtIt->second.hit, &sbtIt->second.callable, width,
+          height, depth);
+}
+
 handles::DescriptorSetLayoutHandle VulkanDevice::createDescriptorSetLayoutEx(const DescriptorSetLayoutDesc& desc) {
     if (desc.bindings.empty())
         throw std::invalid_argument("typed descriptor set layout must contain a binding");
@@ -3938,10 +4422,36 @@ void VulkanDevice::retireTextureEx(handles::TextureHandle handle, std::uint64_t)
 }
 
 void VulkanDevice::destroyTypedResources() noexcept {
-    for (const auto& [handle, resource] : typedDescriptorSets_) {
+    for (const auto& [handle, resource] : typedShaderBindingTables_) {
         static_cast<void>(handle);
-        static_cast<void>(resource);
+        if (resource.buffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, resource.buffer, nullptr);
+        if (resource.memory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, resource.memory, nullptr);
     }
+    typedShaderBindingTables_.clear();
+    typedShaderBindingTableHandles_.clear();
+    for (const auto& [handle, resource] : typedPipelines_) {
+        static_cast<void>(handle);
+        if (resource.pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(device_, resource.pipeline, nullptr);
+    }
+    typedPipelines_.clear();
+    typedPipelineHandles_.clear();
+    for (const auto& [handle, resource] : typedPipelineLayouts_) {
+        static_cast<void>(handle);
+        if (resource.layout != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(device_, resource.layout, nullptr);
+    }
+    typedPipelineLayouts_.clear();
+    typedPipelineLayoutHandles_.clear();
+    for (const auto& [handle, resource] : typedShaders_) {
+        static_cast<void>(handle);
+        if (resource.module != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device_, resource.module, nullptr);
+    }
+    typedShaders_.clear();
+    typedShaderHandles_.clear();
     typedDescriptorSets_.clear();
     typedDescriptorSetHandles_.clear();
     if (typedDescriptorPool_ != VK_NULL_HANDLE) {
