@@ -4263,7 +4263,9 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
         .dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size()),
         .pDynamicStates = dynamicStates.data(),
     };
-    const VkFormat colorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+    const VkFormat colorFormat = toVkFormat(desc.colorFormat);
+    if (colorFormat == VK_FORMAT_UNDEFINED || desc.colorFormat == PixelFormat::depth32Float)
+        throw std::invalid_argument("native graphics pipeline requires a color attachment format");
     const VkPipelineRenderingCreateInfo rendering{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
         .colorAttachmentCount = 1,
@@ -5070,6 +5072,58 @@ void VulkanDevice::recordPushConstants(VkCommandBuffer commandBuffer, handles::P
         throw std::out_of_range("typed push constants exceed pipeline layout range");
     vkCmdPushConstants(commandBuffer, layoutIt->second.layout, toVkShaderStages(range->stages), range->offset,
                        static_cast<std::uint32_t>(bytes.size()), bytes.data());
+}
+
+void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, handles::TextureHandle target, bool clear) {
+    const auto it = typedTextures_.find(target);
+    if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(target))
+        throw std::invalid_argument("typed rendering target references a stale texture handle");
+    if (commandBuffer == VK_NULL_HANDLE)
+        throw std::invalid_argument("typed rendering requires a command buffer");
+    const auto& description = it->second.desc;
+    if (description.dimension != TextureDimension::d2 || description.extent.width == 0 ||
+        description.extent.height == 0 || description.extent.depth != 1 || description.mipLevels != 1 ||
+        description.arrayLayers != 1 || description.format == PixelFormat::depth32Float ||
+        (toBits(description.usage) & toBits(ResourceUsage::colorAttachment)) == 0U)
+        throw std::invalid_argument("typed rendering target must be a single 2D color attachment");
+
+    const bool undefined = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED;
+    recordTextureTransition(commandBuffer, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    const VkClearValue clearValue{.color = {{0.0F, 0.0F, 0.0F, 0.0F}}};
+    const VkRenderingAttachmentInfo attachment{
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = it->second.view,
+        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .loadOp = clear || undefined ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue = clearValue,
+    };
+    const VkExtent2D extent{description.extent.width, description.extent.height};
+    const VkRenderingInfo rendering{
+        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+        .renderArea = {{0, 0}, extent},
+        .layerCount = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &attachment,
+    };
+    vkCmdBeginRendering(commandBuffer, &rendering);
+    const VkViewport viewport{0.0F, 0.0F, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0F,
+                              1.0F};
+    const VkRect2D scissor{{0, 0}, extent};
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+}
+
+void VulkanDevice::recordEndRendering(VkCommandBuffer commandBuffer, handles::TextureHandle target) {
+    const auto it = typedTextures_.find(target);
+    if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(target))
+        throw std::invalid_argument("typed rendering target references a stale texture handle");
+    if (commandBuffer == VK_NULL_HANDLE)
+        throw std::invalid_argument("typed rendering requires a command buffer");
+    if (it->second.layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+        throw std::logic_error("typed rendering target is not in color-attachment layout");
+    vkCmdEndRendering(commandBuffer);
+    recordTextureTransition(commandBuffer, target, typedTextureFinalLayout(it->second));
 }
 
 void VulkanDevice::recordMemoryBarrier(VkCommandBuffer commandBuffer) {

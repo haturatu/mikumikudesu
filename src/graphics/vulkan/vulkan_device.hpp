@@ -308,6 +308,8 @@ class VulkanDevice final : public Device {
                                  handles::DescriptorSetHandle set, std::uint32_t setIndex);
     void recordPushConstants(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
                              std::span<const std::byte> bytes);
+    void recordBeginRendering(VkCommandBuffer commandBuffer, handles::TextureHandle target, bool clear);
+    void recordEndRendering(VkCommandBuffer commandBuffer, handles::TextureHandle target);
     void recordMemoryBarrier(VkCommandBuffer commandBuffer);
     void recordAccelerationStructureBarrier(VkCommandBuffer commandBuffer);
     void recordBlasUpdate(VkCommandBuffer commandBuffer, handles::AccelerationStructureHandle blas,

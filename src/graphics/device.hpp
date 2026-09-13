@@ -277,6 +277,7 @@ struct PipelineDesc {
 struct GraphicsPipelineDescEx {
     handles::PipelineLayoutHandle layout{};
     std::vector<handles::ShaderHandle> shaders;
+    PixelFormat colorFormat{PixelFormat::rgba16Float};
 };
 struct ComputePipelineDescEx {
     handles::PipelineLayoutHandle layout{};
@@ -455,6 +456,12 @@ class CommandList {
     }
     virtual void pushConstantsEx(std::span<const std::byte>) {
         throw std::logic_error("Typed command-list push constants are not implemented by this backend");
+    }
+    virtual void beginRenderingEx(handles::TextureHandle, bool = false) {
+        throw std::logic_error("Typed command-list rendering is not implemented by this backend");
+    }
+    virtual void endRenderingEx() {
+        throw std::logic_error("Typed command-list rendering is not implemented by this backend");
     }
     virtual void memoryBarrierEx() {
         throw std::logic_error("Typed command-list memory barriers are not implemented by this backend");
