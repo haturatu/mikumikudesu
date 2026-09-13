@@ -1027,16 +1027,24 @@ bool testFxPipelineRuntime() {
     fs::create_directories(directory, fileError);
     if (fileError)
         return check(false, "FX pipeline include directory created");
+    fs::create_directories(directory / "Subayai" / "hlsl", fileError);
+    if (fileError)
+        return check(false, "FX pipeline case-sensitive include directory created");
     {
         std::ofstream include(directory / "constants.hlsli");
         include << "#define TEST_PIPELINE_VALUE 1.0\n";
+    }
+    {
+        std::ofstream include(directory / "Subayai" / "hlsl" / "CaseSensitive.hlsli");
+        include << "#define TEST_CASE_SENSITIVE_VALUE 1.0\n";
     }
     MockDevice device;
     dayo::fx::FxProgram program;
     program.sourcePath = directory / "pipeline-runtime.fxdayo";
     program.hlsl = "#include \"constants.hlsli\"\n"
+                   "#include \"subayai/hlsl/casesensitive.hlsli\"\n"
                    "#ifdef YRZ_PASS_deform\n"
-                   "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) {}\n"
+                   "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) { uint value = TEST_CASE_SENSITIVE_VALUE; }\n"
                    "#endif\n";
     dayo::fx::FxDispatch dispatch;
     dispatch.name = "deform";
