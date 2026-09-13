@@ -307,6 +307,9 @@ struct MockDeformCommands final : dayo::graphics::CommandList {
     void memoryBarrierEx() override {
         events.emplace_back("barrier");
     }
+    void accelerationStructureBarrierEx() override {
+        events.emplace_back("as-barrier");
+    }
 };
 
 bool testSubayaiNativeFxExecution() {
@@ -718,7 +721,8 @@ int main() {
                     "native geometry publishes the current TLAS through a typed descriptor set");
         runtime.recordAcceleration(commands);
         ok &= check(commands.events == std::vector<std::string>{"bind", "descriptor", "push", "dispatch:1x1x1",
-                                                                  "barrier", "blas", "barrier", "tlas", "barrier"} &&
+                                                                  "barrier", "as-barrier", "blas", "as-barrier", "tlas",
+                                                                  "as-barrier"} &&
                         backend.recordBlasCalls == 1 && backend.recordTlasCalls == 1,
                     "native geometry records BLAS then TLAS updates after deform work");
 

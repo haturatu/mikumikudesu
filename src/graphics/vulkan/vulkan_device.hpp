@@ -306,6 +306,7 @@ class VulkanDevice final : public Device {
     void recordPushConstants(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
                              std::span<const std::byte> bytes);
     void recordMemoryBarrier(VkCommandBuffer commandBuffer);
+    void recordAccelerationStructureBarrier(VkCommandBuffer commandBuffer);
     void recordBlasUpdate(VkCommandBuffer commandBuffer, handles::AccelerationStructureHandle blas,
                           const BlasGeometryDesc& geometry);
     void recordTlasUpdate(VkCommandBuffer commandBuffer, handles::AccelerationStructureHandle tlas,

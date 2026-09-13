@@ -35,6 +35,7 @@ class VulkanCommandList final : public CommandList {
     void bindDescriptorSetEx(handles::DescriptorSetHandle set, std::uint32_t setIndex = 0) override;
     void pushConstantsEx(std::span<const std::byte> bytes) override;
     void memoryBarrierEx() override;
+    void accelerationStructureBarrierEx() override;
     void transitionEx(handles::TextureHandle texture) override;
     void traceRaysEx(handles::PipelineHandle pipeline, handles::ShaderBindingTableHandle sbt, std::uint32_t width,
                      std::uint32_t height, std::uint32_t depth = 1) override;

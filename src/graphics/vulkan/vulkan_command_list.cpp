@@ -90,6 +90,12 @@ void VulkanCommandList::memoryBarrierEx() {
     device_->recordMemoryBarrier(commandBuffer_);
 }
 
+void VulkanCommandList::accelerationStructureBarrierEx() {
+    if (device_ == nullptr)
+        throw std::logic_error("acceleration barrier requires a Vulkan device");
+    device_->recordAccelerationStructureBarrier(commandBuffer_);
+}
+
 void VulkanCommandList::transitionEx(handles::TextureHandle texture) {
     if (device_ == nullptr)
         throw std::logic_error("typed transition requires a Vulkan device");

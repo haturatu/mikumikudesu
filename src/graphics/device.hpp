@@ -459,6 +459,9 @@ class CommandList {
     virtual void memoryBarrierEx() {
         throw std::logic_error("Typed command-list memory barriers are not implemented by this backend");
     }
+    virtual void accelerationStructureBarrierEx() {
+        throw std::logic_error("Typed acceleration barriers are not implemented by this backend");
+    }
     virtual void buildBlasEx(handles::AccelerationStructureHandle, const BlasGeometryDesc&, bool) {
         throw std::logic_error("Typed BLAS command recording is not implemented by this backend");
     }
