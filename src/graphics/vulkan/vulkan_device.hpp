@@ -44,6 +44,9 @@ class VulkanDevice final : public Device {
     [[nodiscard]] handles::DescriptorSetLayoutHandle nativeDeformDescriptorLayout() const noexcept override {
         return nativeDeformDescriptorLayout_;
     }
+    [[nodiscard]] handles::ShaderHandle nativeFullscreenVertexShader() const noexcept override {
+        return nativeFullscreenVertexShader_;
+    }
     [[nodiscard]] IAccelerationBackend* nativeAccelerationBackend() noexcept override {
         return &accelerationBackend_;
     }
@@ -403,6 +406,7 @@ class VulkanDevice final : public Device {
     handles::PipelineLayoutHandle nativeDeformPipelineLayout_{};
     handles::ShaderHandle nativeDeformShader_{};
     handles::PipelineHandle nativeDeformPipeline_{};
+    handles::ShaderHandle nativeFullscreenVertexShader_{};
     VkDescriptorSetLayout previewDescriptorSetLayout_{};
     VkDescriptorSetLayout previewSkinningDescriptorSetLayout_{};
     VkDescriptorSetLayout previewMorphDescriptorSetLayout_{};

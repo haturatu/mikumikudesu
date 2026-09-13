@@ -511,6 +511,11 @@ class Device {
     [[nodiscard]] virtual handles::DescriptorSetLayoutHandle nativeDeformDescriptorLayout() const noexcept {
         return {};
     }
+    // Native postprocess FX passes use the renderer-owned fullscreen triangle
+    // vertex shader while retaining their effect-authored fragment shader.
+    [[nodiscard]] virtual handles::ShaderHandle nativeFullscreenVertexShader() const noexcept {
+        return {};
+    }
     // Native RT runtimes can use the backend-neutral rebuild/refit policy
     // without downcasting the device. Preview/mock devices return nullptr.
     [[nodiscard]] virtual IAccelerationBackend* nativeAccelerationBackend() noexcept {
