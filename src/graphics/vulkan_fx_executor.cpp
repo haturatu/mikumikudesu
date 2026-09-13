@@ -19,33 +19,59 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                     context.renderHeight, ")");
     const auto resolve = [&](const dayo::fx::FxDispatch::ResourceUse& resource) -> TextureHandle {
         if (resource.name.empty() || !resources.resolveTexture)
-            throw std::logic_error("VulkanFxExecutor: pass resource has no backend binding: " + resource.name);
+            throw std::logic_error("VulkanFxExecutor: pass resource has no legacy backend binding: " + resource.name);
         const auto handle = resources.resolveTexture(resource.name);
         if (!handle.has_value())
             throw std::logic_error("VulkanFxExecutor: pass resource is unavailable: " + resource.name);
         return *handle;
     };
+    const auto resolveTyped = [&](const dayo::fx::FxDispatch::ResourceUse& resource) -> handles::TextureHandle {
+        if (resource.name.empty() || !resources.resolveTypedTexture)
+            throw std::logic_error("VulkanFxExecutor: pass resource has no typed backend binding: " + resource.name);
+        const auto handle = resources.resolveTypedTexture(resource.name);
+        if (!handle.has_value())
+            throw std::logic_error("VulkanFxExecutor: typed pass resource is unavailable: " + resource.name);
+        return *handle;
+    };
     const auto prepareResources = [&](const dayo::fx::FxDispatch& dispatch) {
         std::unordered_set<TextureHandle> transitioned;
+        std::unordered_set<handles::TextureHandle> transitionedTyped;
         std::vector<DescriptorBinding> bindings;
         bindings.reserve(dispatch.resources.size());
         for (std::size_t index = 0; index < dispatch.resources.size(); ++index) {
             const auto& resource = dispatch.resources[index];
-            const auto texture = resolve(resource);
-            if (transitioned.insert(texture).second)
-                commands.transition(texture);
-            if (resources.resolveBinding) {
-                const auto binding =
-                    resources.resolveBinding(resource.name, resource.write, static_cast<std::uint32_t>(index));
-                if (!binding.has_value())
-                    throw std::logic_error("VulkanFxExecutor: descriptor binding is unavailable: " + resource.name);
-                bindings.push_back(*binding);
-            } else {
-                bindings.push_back(DescriptorBinding{static_cast<std::uint32_t>(index), 0, texture, 0});
+            if (resources.resolveTypedTexture) {
+                const auto texture = resolveTyped(resource);
+                if (transitionedTyped.insert(texture).second)
+                    commands.transitionEx(texture);
+            } else if (resources.resolveTexture) {
+                const auto texture = resolve(resource);
+                if (transitioned.insert(texture).second)
+                    commands.transition(texture);
+                if (!resources.resolveDescriptorSet) {
+                    if (resources.resolveBinding) {
+                        const auto binding =
+                            resources.resolveBinding(resource.name, resource.write, static_cast<std::uint32_t>(index));
+                        if (!binding.has_value())
+                            throw std::logic_error("VulkanFxExecutor: descriptor binding is unavailable: " +
+                                                   resource.name);
+                        bindings.push_back(*binding);
+                    } else {
+                        bindings.push_back(DescriptorBinding{static_cast<std::uint32_t>(index), 0, texture, 0});
+                    }
+                }
+            } else if (!resources.resolveDescriptorSet) {
+                throw std::logic_error("VulkanFxExecutor: pass resource has no backend binding: " + resource.name);
             }
         }
-        if (!bindings.empty())
+        if (!bindings.empty() && !resources.resolveDescriptorSet)
             commands.bindResources(std::span<const DescriptorBinding>(bindings.data(), bindings.size()));
+        if (resources.resolveDescriptorSet) {
+            const auto descriptorSet = resources.resolveDescriptorSet(dispatch);
+            if (!descriptorSet.has_value())
+                throw std::logic_error("VulkanFxExecutor: typed descriptor set is unavailable: " + dispatch.name);
+            commands.bindDescriptorSetEx(*descriptorSet);
+        }
     };
     const auto prepareShaderPass = [&](const dayo::fx::FxDispatch& dispatch) {
         if (!dispatch.conditions.empty()) {
@@ -79,6 +105,14 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
         }
         prepareResources(dispatch);
         return true;
+    };
+    const auto evaluateConditions = [&](const dayo::fx::FxDispatch& dispatch) {
+        if (dispatch.conditions.empty())
+            return true;
+        if (!resources.evaluateConditions)
+            throw std::logic_error("VulkanFxExecutor: pass conditions have no evaluator: " + dispatch.name);
+        return resources.evaluateConditions(
+            std::span<const std::string>(dispatch.conditions.data(), dispatch.conditions.size()), context);
     };
     for (const auto& dispatch : plan.ordered) {
         dayo::log::debug("VulkanFxExecutor pass ", dispatch.name, " kind ", dayo::fx::toString(dispatch.kind));
@@ -126,10 +160,28 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             ++stats.mipmap;
             break;
         case dayo::fx::FxOpKind::raytracing:
-            if (!prepareShaderPass(dispatch))
+            if (!evaluateConditions(dispatch))
                 break;
-            dayo::log::error("VulkanFxExecutor raytracing unsupported in pass ", dispatch.name);
-            throw FxRaytracingUnsupported(dispatch.name);
+            if (!resources.resolveTypedPipeline || !resources.resolveShaderBindingTable)
+                throw FxRaytracingUnsupported(dispatch.name);
+            {
+                const auto pipeline = resources.resolveTypedPipeline(dispatch);
+                if (!pipeline.has_value())
+                    throw std::logic_error("VulkanFxExecutor: typed RT pipeline is unavailable: " + dispatch.name);
+                const auto sbt = resources.resolveShaderBindingTable(dispatch);
+                if (!sbt.has_value())
+                    throw std::logic_error("VulkanFxExecutor: shader binding table is unavailable: " + dispatch.name);
+                prepareResources(dispatch);
+                commands.bindPipelineEx(*pipeline);
+                if (resources.makePushConstants) {
+                    const auto constants = resources.makePushConstants(dispatch, context);
+                    if (!constants.empty())
+                        commands.pushConstantsEx(std::span<const std::byte>(constants.data(), constants.size()));
+                }
+                commands.traceRaysEx(*pipeline, *sbt, context.renderWidth, context.renderHeight, 1);
+                ++stats.rayTracing;
+            }
+            break;
         }
     }
     return stats;
