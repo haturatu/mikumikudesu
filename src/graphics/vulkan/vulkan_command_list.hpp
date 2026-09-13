@@ -34,6 +34,8 @@ class VulkanCommandList final : public CommandList {
     void bindPipelineEx(handles::PipelineHandle pipeline) override;
     void bindDescriptorSetEx(handles::DescriptorSetHandle set, std::uint32_t setIndex = 0) override;
     void pushConstantsEx(std::span<const std::byte> bytes) override;
+    void beginRenderingEx(handles::TextureHandle target, bool clear = false) override;
+    void endRenderingEx() override;
     void memoryBarrierEx() override;
     void accelerationStructureBarrierEx() override;
     void transitionEx(handles::TextureHandle texture) override;
@@ -58,6 +60,7 @@ class VulkanCommandList final : public CommandList {
     VulkanDevice* device_{};
     VkCommandBuffer commandBuffer_{};
     handles::PipelineHandle pipeline_{};
+    handles::TextureHandle renderingTarget_{};
 };
 
 } // namespace dayo::graphics

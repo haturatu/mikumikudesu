@@ -40,6 +40,13 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
         }
         throw std::logic_error("VulkanFxExecutor: typed pass resource is unavailable: " + resource.name);
     };
+    const auto resolveTypedWriteTarget = [&](const dayo::fx::FxDispatch& dispatch) -> handles::TextureHandle {
+        for (const auto& resource : dispatch.resources) {
+            if (resource.write)
+                return resolveTyped(resource);
+        }
+        throw std::logic_error("VulkanFxExecutor: graphics pass has no writable color target: " + dispatch.name);
+    };
     const auto prepareResources = [&](const dayo::fx::FxDispatch& dispatch) {
         std::unordered_set<TextureHandle> transitioned;
         std::unordered_set<handles::TextureHandle> transitionedTyped;
@@ -93,7 +100,7 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             commands.bindDescriptorSetEx(*descriptorSet);
         }
     };
-    const auto prepareShaderPass = [&](const dayo::fx::FxDispatch& dispatch) {
+    const auto prepareShaderPass = [&](const dayo::fx::FxDispatch& dispatch, bool beginRendering) {
         if (!dispatch.conditions.empty()) {
             if (!resources.evaluateConditions)
                 throw std::logic_error("VulkanFxExecutor: pass conditions have no evaluator: " + dispatch.name);
@@ -103,6 +110,8 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
         }
         prepareResources(dispatch);
         if (resources.resolveTypedPipeline) {
+            if (beginRendering)
+                commands.beginRenderingEx(resolveTypedWriteTarget(dispatch));
             const auto pipeline = resources.resolveTypedPipeline(dispatch);
             if (!pipeline.has_value())
                 throw std::logic_error("VulkanFxExecutor: typed pipeline is unavailable: " + dispatch.name);
@@ -150,19 +159,23 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
         dayo::log::debug("VulkanFxExecutor pass ", dispatch.name, " kind ", dayo::fx::toString(dispatch.kind));
         switch (dispatch.kind) {
         case dayo::fx::FxOpKind::raster:
-            if (!prepareShaderPass(dispatch))
+            if (!prepareShaderPass(dispatch, true))
                 break;
             commands.draw(static_cast<std::uint32_t>(context.clonedVertexCount), context.cloneCount);
+            if (resources.resolveTypedPipeline)
+                commands.endRenderingEx();
             ++stats.raster;
             break;
         case dayo::fx::FxOpKind::postprocess:
-            if (!prepareShaderPass(dispatch))
+            if (!prepareShaderPass(dispatch, true))
                 break;
             commands.draw(3, 1);
+            if (resources.resolveTypedPipeline)
+                commands.endRenderingEx();
             ++stats.postprocess;
             break;
         case dayo::fx::FxOpKind::compute:
-            if (!prepareShaderPass(dispatch))
+            if (!prepareShaderPass(dispatch, false))
                 break;
             commands.dispatch((context.renderWidth + 7U) / 8U, (context.renderHeight + 7U) / 8U, 1);
             ++stats.compute;

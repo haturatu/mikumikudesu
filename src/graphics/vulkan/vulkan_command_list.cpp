@@ -84,6 +84,22 @@ void VulkanCommandList::pushConstantsEx(std::span<const std::byte> bytes) {
     device_->recordPushConstants(commandBuffer_, pipeline_, bytes);
 }
 
+void VulkanCommandList::beginRenderingEx(handles::TextureHandle target, bool clear) {
+    if (device_ == nullptr)
+        throw std::logic_error("typed rendering requires a Vulkan device");
+    if (renderingTarget_.valid())
+        throw std::logic_error("typed rendering is already active on this command list");
+    device_->recordBeginRendering(commandBuffer_, target, clear);
+    renderingTarget_ = target;
+}
+
+void VulkanCommandList::endRenderingEx() {
+    if (device_ == nullptr || !renderingTarget_.valid())
+        throw std::logic_error("typed rendering is not active on this command list");
+    device_->recordEndRendering(commandBuffer_, renderingTarget_);
+    renderingTarget_ = {};
+}
+
 void VulkanCommandList::memoryBarrierEx() {
     if (device_ == nullptr)
         throw std::logic_error("typed memory barrier requires a Vulkan device");

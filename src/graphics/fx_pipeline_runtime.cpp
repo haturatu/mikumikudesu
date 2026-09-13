@@ -1,6 +1,9 @@
 #include "graphics/fx_pipeline_runtime.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <functional>
+#include <optional>
 #include <sstream>
 #include <span>
 #include <stdexcept>
@@ -74,6 +77,53 @@ std::string includeDirectoryKey(std::span<const std::filesystem::path> directori
     for (const auto& directory : directories)
         output << directory.lexically_normal().string().size() << ':' << directory.lexically_normal().string() << ';';
     return output.str();
+}
+
+std::string upper(std::string_view value) {
+    std::string result;
+    result.reserve(value.size());
+    for (const auto character : value)
+        result.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(character))));
+    return result;
+}
+
+PixelFormat textureFormat(std::string_view value) {
+    const auto name = upper(value);
+    if (name.empty() || name == "R8G8B8A8_UNORM")
+        return PixelFormat::rgba8Unorm;
+    if (name == "R8G8B8A8_SRGB")
+        return PixelFormat::rgba8Srgb;
+    if (name == "R16G16B16A16_FLOAT")
+        return PixelFormat::rgba16Float;
+    if (name == "R32G32B32A32_FLOAT")
+        return PixelFormat::rgba32Float;
+    if (name == "R8_UNORM")
+        return PixelFormat::r8Unorm;
+    if (name == "R16_FLOAT")
+        return PixelFormat::r16Float;
+    if (name == "R16G16_FLOAT")
+        return PixelFormat::r16g16Float;
+    if (name == "R32_FLOAT")
+        return PixelFormat::r32Float;
+    if (name == "R32G32_FLOAT")
+        return PixelFormat::r32g32Float;
+    if (name == "D32_FLOAT")
+        return PixelFormat::depth32Float;
+    throw std::invalid_argument("FX graphics target format is unsupported: " + std::string(value));
+}
+
+PixelFormat graphicsTargetFormat(const fx::FxProgram& program, const fx::FxDispatch& dispatch) {
+    for (const auto& resource : dispatch.resources) {
+        if (!resource.write)
+            continue;
+        const auto texture = std::find_if(program.textures.begin(), program.textures.end(),
+                                          [&resource](const auto& declaration) {
+                                              return declaration.name == resource.name;
+                                          });
+        if (texture != program.textures.end())
+            return textureFormat(texture->format);
+    }
+    return PixelFormat::rgba16Float;
 }
 
 } // namespace
@@ -160,7 +210,10 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                                                   fx::FxShaderStage::vertex, compiler, entry);
                 const auto pixel = compileShader(device, program, dispatch, raster->pixelShader,
                                                  fx::FxShaderStage::fragment, compiler, entry);
-                entry.pipeline = device.createGraphicsPipelineEx({.layout = *layout, .shaders = {vertex, pixel}});
+                entry.pipeline = device.createGraphicsPipelineEx({.layout = *layout,
+                                                                   .shaders = {vertex, pixel},
+                                                                   .colorFormat = graphicsTargetFormat(program,
+                                                                                                       dispatch)});
                 break;
             }
             case fx::FxOpKind::postprocess: {
@@ -174,7 +227,9 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                 const auto pixel = compileShader(device, program, dispatch, postprocess->pixelShader,
                                                  fx::FxShaderStage::fragment, compiler, entry);
                 entry.pipeline = device.createGraphicsPipelineEx({.layout = *layout,
-                                                                    .shaders = {fullscreenVertex, pixel}});
+                                                                    .shaders = {fullscreenVertex, pixel},
+                                                                    .colorFormat = graphicsTargetFormat(program,
+                                                                                                        dispatch)});
                 break;
             }
             case fx::FxOpKind::compute: {
