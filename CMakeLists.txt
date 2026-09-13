@@ -261,6 +261,7 @@ add_library(
   src/graphics/bdpt_accumulation.cpp
   src/graphics/bdpt_runtime.cpp
   src/graphics/device.cpp
+  src/graphics/native_renderer.cpp
   src/graphics/sbt.cpp
   src/graphics/subayai_acceleration_structure.cpp
   src/graphics/subayai_deform.cpp
@@ -782,6 +783,22 @@ if(BUILD_TESTING)
     endif()
   endif()
 
+  add_executable(dayo_native_renderer_tests tests/native_renderer_tests.cpp)
+  target_include_directories(dayo_native_renderer_tests PRIVATE src)
+  target_link_libraries(dayo_native_renderer_tests PRIVATE dayo_graphics)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      dayo_native_renderer_tests
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_native_renderer_tests PRIVATE -Werror)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(dayo_native_renderer_tests PRIVATE -Wno-error=deprecated-literal-operator)
+      endif()
+    endif()
+  endif()
+
   add_test(NAME core COMMAND dayo_core_tests)
   add_test(NAME output COMMAND dayo_output_tests)
   add_test(NAME video_export_job COMMAND dayo_video_export_job_tests)
@@ -796,6 +813,7 @@ if(BUILD_TESTING)
   add_test(NAME graph_device COMMAND dayo_graph_device_tests)
   set_tests_properties(graph_device PROPERTIES TIMEOUT 20)
   add_test(NAME subayai_bdpt COMMAND dayo_subayai_bdpt_tests)
+  add_test(NAME native_renderer COMMAND dayo_native_renderer_tests)
   add_test(NAME upstream_compat COMMAND dayo_upstream_compat_tests)
   set_tests_properties(upstream_compat PROPERTIES LABELS "upstream" TIMEOUT 60)
   add_test(NAME vulkan_probe COMMAND mikumikudesu --probe --hidden)
