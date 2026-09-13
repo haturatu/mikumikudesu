@@ -1386,7 +1386,8 @@ void VulkanDevice::createNativeEnvironmentPipelines() {
     const auto prefilterCode = readBinary(DAYO_NATIVE_ENVIRONMENT_PREFILTER_SPV);
     try {
         nativeEnvironmentEquirectLayout_ = createDescriptorSetLayoutEx(nativeEnvironmentPassLayout());
-        nativeEnvironmentPrefilterLayout_ = createDescriptorSetLayoutEx(nativeEnvironmentPrefilterLayout());
+        nativeEnvironmentPrefilterLayout_ =
+            createDescriptorSetLayoutEx(::dayo::graphics::nativeEnvironmentPrefilterLayout());
         const PipelineLayoutDesc equirectPipelineLayout{
             .setLayouts = {nativeEnvironmentEquirectLayout_},
             .pushConstants = {{ShaderStageMask::compute, 0, sizeof(NativeEnvironmentPushConstants)}},
