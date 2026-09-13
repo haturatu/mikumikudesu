@@ -114,6 +114,8 @@ struct MockCommands final : public dayo::graphics::CommandList {
     void traceRays(std::uint32_t, std::uint32_t) override {
         trace.emplace_back("traceRays");
     }
+    void bindResources(std::span<const dayo::graphics::DescriptorBinding>) override {}
+    void pushConstants(std::span<const std::byte>) override {}
     void copyTexture(dayo::graphics::TextureHandle, dayo::graphics::TextureHandle) override {
         trace.emplace_back("copy");
     }
@@ -148,6 +150,14 @@ struct MockCommands final : public dayo::graphics::CommandList {
                      std::uint32_t, std::uint32_t, std::uint32_t) override {
         trace.emplace_back("traceEx");
     }
+};
+
+struct MinimalCommands final : public dayo::graphics::CommandList {
+    void transition(dayo::graphics::TextureHandle) override {}
+    void bindPipeline(dayo::graphics::PipelineHandle) override {}
+    void draw(std::uint32_t, std::uint32_t) override {}
+    void dispatch(std::uint32_t, std::uint32_t, std::uint32_t) override {}
+    void traceRays(std::uint32_t, std::uint32_t) override {}
 };
 
 dayo::fx::FxFrameContext testContext() {
@@ -682,6 +692,18 @@ bool testWatcherPoll() {
 
 int main() {
     bool ok = true;
+    // An omitted legacy implementation must fail explicitly instead of
+    // silently dropping a native command.
+    {
+        MinimalCommands commands;
+        bool rejected = false;
+        try {
+            commands.clearTexture(1);
+        } catch (const std::logic_error&) {
+            rejected = true;
+        }
+        ok &= check(rejected, "legacy command-list defaults reject unsupported work");
+    }
     ok &= testMockTraceMatches();
     ok &= testPreviewReferencePath();
     ok &= testSchedulerOrder();
