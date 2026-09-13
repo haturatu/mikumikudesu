@@ -15,6 +15,7 @@
 #include "graphics/native_scene_binding_runtime.hpp"
 #include "graphics/native_frame_constants.hpp"
 #include "graphics/native_scene_resource_runtime.hpp"
+#include "graphics/native_controller_runtime.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1144,6 +1145,59 @@ int main() {
         ok &= check(device.destroyedDescriptorLayouts == destroyedLayouts +
                         dayo::graphics::kNativeSceneDescriptorSetCount,
                     "native scene binding runtime releases reserved layouts");
+    }
+    // Native frame constants: CPU ABI and typed uniform uploads remain stable
+    // independently of the native scene descriptor-set population.
+    {
+        const std::array<dayo::core::EffectController, 6> controllers{{
+            {.name = "Exposure", .controllerName = {}, .item = {}, .type = "float"},
+            {.name = "Tint", .controllerName = {}, .item = {}, .type = "float3"},
+            {.name = "Enabled", .controllerName = {}, .item = {}, .type = "bool"},
+            {.name = "Transform", .controllerName = {}, .item = {}, .type = "float4x4"},
+            {.name = "Samples[2]", .controllerName = {}, .item = {}, .type = "float"},
+            {.name = "Mode", .controllerName = {}, .item = {}, .type = "int"},
+        }};
+        const auto layout = dayo::graphics::makeNativeControllerLayout(controllers);
+        const auto* exposure = layout.find("Exposure");
+        const auto* tint = layout.find("Tint");
+        const auto* enabled = layout.find("Enabled");
+        const auto* transform = layout.find("Transform");
+        const auto* samples = layout.find("Samples");
+        const auto* mode = layout.find("Mode");
+        ok &= check(exposure != nullptr && exposure->offset == 0 && tint != nullptr && tint->offset == 4 &&
+                        enabled != nullptr && enabled->offset == 16 && transform != nullptr && transform->offset == 32 &&
+                        samples != nullptr && samples->offset == 96 && samples->elementStride == 16 &&
+                        mode != nullptr && mode->offset == 128 && layout.byteSize == 144,
+                    "native controller layout follows HLSL register packing");
+        dayo::graphics::NativeControllerBlock block(layout);
+        const std::array<float, 3> tintValue{0.1F, 0.2F, 0.3F};
+        const std::array<float, 16> transformValue{
+            1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
+            0.0F, 0.0F, 1.0F, 0.0F, 4.0F, 5.0F, 6.0F, 1.0F};
+        ok &= check(block.setFloat("Exposure", 1.25F) && block.setFloat3("Tint", tintValue) &&
+                        block.setBool("Enabled", true) && block.setMatrix4x4("Transform", transformValue) &&
+                        block.setFloat("Samples", 2.0F, 1) && block.setInt("Mode", 7) &&
+                        !block.setFloat("Mode", 1.0F),
+                    "native controller block writes typed scalar, vector, matrix, and array values");
+        MockNativeDevice device;
+        dayo::graphics::NativeControllerRuntime runtime;
+        std::string error;
+        ok &= check(runtime.initialize(device, controllers, &error) && runtime.ready() &&
+                        runtime.layout().byteSize == layout.byteSize && runtime.sync(device, block.bytes(), &error),
+                    "native controller runtime uploads the generated cbuffer");
+        const auto uploaded = device.readbackBufferEx(runtime.buffer(), 0, layout.byteSize);
+        float exposureValue{};
+        float sampleValue{};
+        std::int32_t enabledValue{};
+        std::memcpy(&exposureValue, uploaded.data() + exposure->offset, sizeof(exposureValue));
+        std::memcpy(&sampleValue, uploaded.data() + samples->offset + samples->elementStride, sizeof(sampleValue));
+        std::memcpy(&enabledValue, uploaded.data() + enabled->offset, sizeof(enabledValue));
+        ok &= check(std::abs(exposureValue - 1.25F) < 1e-6F && std::abs(sampleValue - 2.0F) < 1e-6F &&
+                        enabledValue == 1,
+                    "native controller upload preserves packed values");
+        ok &= check(!runtime.sync(device, std::span<const std::byte>(uploaded.data(), uploaded.size() - 1), &error) &&
+                        !error.empty(),
+                    "native controller runtime rejects a mismatched cbuffer size");
     }
     // Native frame constants: CPU ABI and typed uniform uploads remain stable
     // independently of the native scene descriptor-set population.
