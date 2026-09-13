@@ -9,6 +9,7 @@
 #include "graphics/subayai_material_gpu.hpp"
 #include "graphics/subayai_material_runtime.hpp"
 #include "graphics/subayai_geometry.hpp"
+#include "graphics/subayai_environment_runtime.hpp"
 #include "graphics/native_fx_runtime.hpp"
 
 #include <optional>
@@ -28,6 +29,7 @@ struct SubayaiFrame {
     handles::BufferHandle lightSamplingBuffer{};
     handles::DescriptorSetHandle lightSamplingDescriptorSet{};
     handles::DescriptorSetHandle geometryDescriptorSet{};
+    handles::DescriptorSetHandle environmentDescriptorSet{};
     EnvironmentGpuResult environment;
     std::optional<NativeFxFrame> nativeFx;
 };
@@ -51,6 +53,13 @@ class SubayaiRuntime {
         return ready_ ? &program_ : nullptr;
     }
     [[nodiscard]] bool syncMaterials(std::span<const core::MaterialParameterBlock> materials);
+    void setEnvironmentBackend(IEnvironmentBackend* backend) noexcept {
+        environmentService_ = EnvironmentService(backend);
+    }
+    [[nodiscard]] bool updateEnvironment(const EnvironmentDesc& description);
+    [[nodiscard]] const EnvironmentGpuResult& environment() const noexcept {
+        return environmentService_.gpuResult();
+    }
     [[nodiscard]] bool syncGeometry(std::span<const NativeGeometryMeshUpload> meshes, std::string* error = nullptr);
     void recordGeometry(CommandList& commands) const;
     [[nodiscard]] bool synchronizeAcceleration(std::string* error = nullptr);
@@ -77,6 +86,8 @@ class SubayaiRuntime {
     LightSamplingGpuRuntime lightRuntime_;
     SubayaiBindingRuntime bindings_;
     NativeGeometryRuntime geometry_;
+    SubayaiEnvironmentRuntime environmentRuntime_;
+    EnvironmentService environmentService_{nullptr};
     NativeFxRuntime nativeFx_;
     bool nativeAttempted_{};
     bool ready_{};
