@@ -636,6 +636,13 @@ int main() {
             setLayoutThrew = true;
         }
         ok &= check(setLayoutThrew, "mock descriptor set layout reports unimplemented");
+        bool samplerThrew = false;
+        try {
+            static_cast<void>(device.createSamplerEx());
+        } catch (const std::logic_error&) {
+            samplerThrew = true;
+        }
+        ok &= check(samplerThrew, "mock typed sampler reports unimplemented");
         bool pipelineLayoutThrew = false;
         try {
             static_cast<void>(device.createPipelineLayoutEx(dayo::graphics::PipelineLayoutDesc{}));
