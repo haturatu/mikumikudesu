@@ -795,6 +795,11 @@ bool testFxResourceRuntimeMaterializesDeclarations() {
                     device.descriptorLayout_.bindings[2].kind == dayo::graphics::DescriptorKind::storageBuffer &&
                     device.descriptorLayout_.bindings[3].kind == dayo::graphics::DescriptorKind::sampler,
                 "FX resource runtime derives descriptor kinds from views");
+    ok &= check(device.descriptorLayout_.bindings[0].binding == 16 &&
+                    device.descriptorLayout_.bindings[1].binding == 0 &&
+                    device.descriptorLayout_.bindings[2].binding == 1 &&
+                    device.descriptorLayout_.bindings[3].binding == 32,
+                "FX resource runtime aligns descriptor slots with HLSL register classes");
     dayo::fx::FxDispatch dispatch;
     ok &= check(runtime.resolveDescriptorSet(dispatch).has_value(), "FX resource runtime resolves pass descriptor set");
     runtime.reset();
@@ -1095,6 +1100,22 @@ bool testFxPipelineRuntime() {
     outputTexture.format = "R8G8B8A8_UNORM";
     outputTexture.view = "UAV";
     program.textures.push_back(std::move(outputTexture));
+    dayo::core::EffectTexture inputTexture;
+    inputTexture.name = "NativeInput";
+    inputTexture.format = "R8G8B8A8_UNORM";
+    inputTexture.view = "SRV";
+    program.textures.push_back(std::move(inputTexture));
+    dayo::core::EffectBuffer nativeData;
+    nativeData.name = "NativeData";
+    nativeData.type = "float4";
+    nativeData.view = "UAV";
+    nativeData.elementSize = 16;
+    nativeData.size.absolute = true;
+    nativeData.size.width = 1;
+    program.buffers.push_back(std::move(nativeData));
+    dayo::core::EffectSampler nativeSampler;
+    nativeSampler.name = "NativeSampler";
+    program.samplers.push_back(std::move(nativeSampler));
     program.sourcePath = directory / "pipeline-runtime.fxdayo";
     program.hlsl = "#include \"constants.hlsli\"\n"
                    "#include \"subayai/hlsl/casesensitive.hlsli\"\n"
@@ -1112,8 +1133,11 @@ bool testFxPipelineRuntime() {
 
     const auto generated = dayo::fx::makeNativeFxShaderSource(program, dispatch, 7);
     bool ok = check(generated.find("YRZFX_ControllerCB") != std::string::npos &&
-                        generated.find("NativeOutput : register(u0, space7)") != std::string::npos,
-                    "native FX source emits controller and typed resource declarations");
+                        generated.find("NativeOutput : register(u0, space7)") != std::string::npos &&
+                        generated.find("NativeInput : register(t0, space7)") != std::string::npos &&
+                        generated.find("NativeData : register(u1, space7)") != std::string::npos &&
+                        generated.find("NativeSampler : register(s0, space7)") != std::string::npos,
+                    "native FX source emits disjoint typed register classes");
 
     dayo::graphics::FxPipelineRuntime runtime;
     std::string error;
