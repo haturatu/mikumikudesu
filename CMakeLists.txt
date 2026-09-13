@@ -265,6 +265,7 @@ add_library(
   src/graphics/subayai_environment.cpp
   src/graphics/subayai_light_sampling.cpp
   src/graphics/vulkan/vulkan_device.cpp
+  src/graphics/vulkan/vulkan_command_list.cpp
   src/graphics/vulkan/vulkan_upload_context.cpp
   src/graphics/vulkan_fx_executor.cpp
   src/ui/fonts.cpp

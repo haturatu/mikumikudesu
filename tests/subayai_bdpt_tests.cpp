@@ -312,16 +312,17 @@ int main() {
         builder.addHitGroup("hit0");
         builder.addHitGroup("hit1");
         builder.addHitGroup("hit2");
-        ok &= check(builder.totalGroups() == 6, "SBT tracks raygen/miss/hit groups");
+        builder.addCallable("callable0");
+        ok &= check(builder.totalGroups() == 7, "SBT tracks raygen/miss/hit/callable groups");
         const auto layout = builder.build(0x1000, 32, 32);
         ok &= check(layout.raygenAddress == 0x1000, "SBT raygen base address");
         ok &= check(layout.missAddress == 0x1000 + 32, "SBT miss follows raygen");
         ok &= check(layout.hitAddress == 0x1000 + 32 + 2 * 32, "SBT hit follows miss");
-        ok &= check(layout.totalSize == 6 * 32, "SBT total size covers shared groups");
+        ok &= check(layout.totalSize == 7 * 32, "SBT total size covers shared groups");
         ok &= check(layout.raygenStride == 32 && layout.missStride == 32 && layout.hitStride == 32,
                     "SBT shares stride across groups");
         const auto aligned = builder.build(0x2000, 20, 32);
-        ok &= check(aligned.raygenStride == 32 && aligned.totalSize == 6 * 32, "SBT aligns handles");
+        ok &= check(aligned.raygenStride == 32 && aligned.totalSize == 7 * 32, "SBT aligns handles");
         const ShaderBindingTableBuilder::Properties properties{20, 32, 64, 64};
         const auto vulkanValid = builder.build(0x2001, properties);
         ok &= check(vulkanValid.raygenAddress % 64 == 0 && vulkanValid.missAddress % 64 == 0 &&
