@@ -4609,7 +4609,7 @@ void VulkanDevice::recordGenerateMipmaps(VkCommandBuffer commandBuffer, handles:
 }
 
 void VulkanDevice::recordBindDescriptorSet(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
-                                           handles::DescriptorSetHandle set) {
+                                           handles::DescriptorSetHandle set, std::uint32_t setIndex) {
     const auto pipelineIt = typedPipelines_.find(pipeline);
     const auto setIt = typedDescriptorSets_.find(set);
     if (pipelineIt == typedPipelines_.end() || !typedPipelineHandles_.isAlive(pipeline))
@@ -4617,10 +4617,10 @@ void VulkanDevice::recordBindDescriptorSet(VkCommandBuffer commandBuffer, handle
     if (setIt == typedDescriptorSets_.end() || !typedDescriptorSetHandles_.isAlive(set))
         throw std::invalid_argument("typed descriptor bind references a stale descriptor set handle");
     const auto layoutIt = typedPipelineLayouts_.find(pipelineIt->second.layout);
-    if (layoutIt == typedPipelineLayouts_.end() || layoutIt->second.desc.setLayouts.empty() ||
-        layoutIt->second.desc.setLayouts.front() != setIt->second.layout)
-        throw std::invalid_argument("typed descriptor set is incompatible with pipeline layout set 0");
-    vkCmdBindDescriptorSets(commandBuffer, pipelineIt->second.bindPoint, layoutIt->second.layout, 0, 1,
+    if (layoutIt == typedPipelineLayouts_.end() || setIndex >= layoutIt->second.desc.setLayouts.size() ||
+        layoutIt->second.desc.setLayouts[setIndex] != setIt->second.layout)
+        throw std::invalid_argument("typed descriptor set is incompatible with pipeline layout set index");
+    vkCmdBindDescriptorSets(commandBuffer, pipelineIt->second.bindPoint, layoutIt->second.layout, setIndex, 1,
                             &setIt->second.set, 0, nullptr);
 }
 

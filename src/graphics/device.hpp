@@ -445,7 +445,7 @@ class CommandList {
     virtual void bindPipelineEx(handles::PipelineHandle) {
         throw std::logic_error("Typed command-list pipelines are not implemented by this backend");
     }
-    virtual void bindDescriptorSetEx(handles::DescriptorSetHandle) {
+    virtual void bindDescriptorSetEx(handles::DescriptorSetHandle, std::uint32_t = 0) {
         throw std::logic_error("Typed command-list descriptor sets are not implemented by this backend");
     }
     virtual void pushConstantsEx(std::span<const std::byte>) {

@@ -87,7 +87,22 @@ VulkanFxExecutor::Stats SubayaiRuntime::execute(SubayaiFrame& frame, CommandList
                                                 const FxExecutionResources& resources) const {
     if (!ready_)
         throw std::logic_error("Subayai runtime is not initialized");
-    return VulkanFxExecutor{*device_}.execute(frame.plan, commands, frame.context, resources);
+    auto nativeResources = resources;
+    if (!nativeResources.resolveDescriptorSets && !nativeResources.resolveDescriptorSet &&
+        (frame.materialDescriptorSet.valid() || frame.lightSamplingDescriptorSet.valid())) {
+        const auto materialSet = frame.materialDescriptorSet;
+        const auto lightSet = frame.lightSamplingDescriptorSet;
+        nativeResources.resolveDescriptorSets =
+            [materialSet, lightSet](const fx::FxDispatch&) {
+                std::vector<FxExecutionResources::TypedDescriptorSetBinding> result;
+                if (materialSet.valid())
+                    result.push_back({materialSet, 0});
+                if (lightSet.valid())
+                    result.push_back({lightSet, 1});
+                return result;
+            };
+    }
+    return VulkanFxExecutor{*device_}.execute(frame.plan, commands, frame.context, nativeResources);
 }
 
 } // namespace dayo::graphics

@@ -72,10 +72,10 @@ void VulkanCommandList::bindPipelineEx(handles::PipelineHandle pipeline) {
     pipeline_ = pipeline;
 }
 
-void VulkanCommandList::bindDescriptorSetEx(handles::DescriptorSetHandle set) {
+void VulkanCommandList::bindDescriptorSetEx(handles::DescriptorSetHandle set, std::uint32_t setIndex) {
     if (device_ == nullptr || !pipeline_.valid())
         throw std::logic_error("typed descriptor set requires a bound pipeline");
-    device_->recordBindDescriptorSet(commandBuffer_, pipeline_, set);
+    device_->recordBindDescriptorSet(commandBuffer_, pipeline_, set, setIndex);
 }
 
 void VulkanCommandList::pushConstantsEx(std::span<const std::byte> bytes) {

@@ -66,7 +66,14 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
         }
         if (!bindings.empty() && !resources.resolveDescriptorSet)
             commands.bindResources(std::span<const DescriptorBinding>(bindings.data(), bindings.size()));
-        if (resources.resolveDescriptorSet) {
+        if (resources.resolveDescriptorSets) {
+            const auto descriptorSets = resources.resolveDescriptorSets(dispatch);
+            for (const auto& descriptor : descriptorSets) {
+                if (!descriptor.set.valid())
+                    throw std::logic_error("VulkanFxExecutor: typed descriptor set is unavailable: " + dispatch.name);
+                commands.bindDescriptorSetEx(descriptor.set, descriptor.setIndex);
+            }
+        } else if (resources.resolveDescriptorSet) {
             const auto descriptorSet = resources.resolveDescriptorSet(dispatch);
             if (!descriptorSet.has_value())
                 throw std::logic_error("VulkanFxExecutor: typed descriptor set is unavailable: " + dispatch.name);
