@@ -16,6 +16,7 @@
 #include "graphics/native_frame_constants.hpp"
 #include "graphics/native_scene_resource_runtime.hpp"
 #include "graphics/native_controller_runtime.hpp"
+#include "graphics/native_scene_frame_runtime.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1198,6 +1199,83 @@ int main() {
         ok &= check(!runtime.sync(device, std::span<const std::byte>(uploaded.data(), uploaded.size() - 1), &error) &&
                         !error.empty(),
                     "native controller runtime rejects a mismatched cbuffer size");
+    }
+    // Native scene frame runtime keeps controller, frame, and descriptor-set
+    // state synchronized at one frame boundary.
+    {
+        MockNativeDevice device;
+        const std::array<dayo::core::EffectController, 1> controllers{{
+            {.name = "Gain", .controllerName = {}, .item = {}, .type = "float"},
+        }};
+        dayo::graphics::NativeSceneFrameRuntime runtime;
+        std::string error;
+        ok &= check(runtime.initialize(device, controllers, {}, &error) && runtime.ready() &&
+                        runtime.layouts().size() == dayo::graphics::kNativeSceneDescriptorSetCount,
+                    "native scene frame runtime initializes canonical layouts and constants");
+        ok &= check(runtime.controllerBlock() != nullptr && runtime.controllerBlock()->setFloat("Gain", 3.5F),
+                    "native scene frame runtime exposes typed controller values");
+
+        std::uint32_t nextHandle = 1;
+        const auto buffer = [&nextHandle]() {
+            return dayo::graphics::handles::BufferHandle{nextHandle++, 1};
+        };
+        const auto texture = [&nextHandle]() {
+            return dayo::graphics::handles::TextureHandle{nextHandle++, 1};
+        };
+        const auto acceleration = [&nextHandle]() {
+            return dayo::graphics::handles::AccelerationStructureHandle{nextHandle++, 1};
+        };
+        const auto textureValue = texture();
+        const auto bufferValue = buffer();
+        const std::array<dayo::graphics::handles::TextureHandle, 1> textures{textureValue};
+        const std::array<dayo::graphics::handles::BufferHandle, 1> buffers{bufferValue};
+        dayo::graphics::NativeSceneResourceBindings resources;
+        resources.rtOutput = texture();
+        resources.oidnBuffer = buffer();
+        resources.normalDepth = texture();
+        resources.gbuffer1 = texture();
+        resources.gbuffer2 = texture();
+        resources.tlas = acceleration();
+        resources.modelToMaterial = buffer();
+        resources.materialToModel = buffer();
+        resources.peekaboo = buffer();
+        resources.materialSelected = buffer();
+        resources.skybox = texture();
+        resources.skywalker = buffer();
+        resources.skywalkerRow = buffer();
+        resources.skyboxSh = buffer();
+        resources.screenBmp = texture();
+        resources.cloneCount = buffer();
+        resources.screenTexture = texture();
+        resources.textureTable = buffer();
+        resources.textures = textures;
+        resources.vertexBuffers = buffers;
+        resources.indexBuffers = buffers;
+        resources.materials = buffers;
+        resources.faces = buffers;
+        resources.materialFaces = buffers;
+        resources.faceWalkers = buffers;
+        resources.previousVertices = buffers;
+        resources.rawVertices = buffers;
+        const auto context = dayo::fx::makeFxFrameContext(12.0F, 4, 320, 200, 1, 0, 8, 2, 1, 1);
+        const dayo::graphics::NativeScenePassConstants pass{
+            .modelIndex = 1, .rasterizeOrder = 2, .deformIndex = 3, .deformOrder = 4};
+        ok &= check(runtime.sync(context, resources, pass, &error),
+                    "native scene frame runtime synchronizes constants and canonical resources");
+        const auto controllerField = runtime.controllerBlock()->layout().find("Gain");
+        float gain{};
+        if (controllerField != nullptr) {
+            const auto controllerBytes = device.readbackBufferEx(runtime.controllers().buffer(), 0,
+                                                                  runtime.controllerBlock()->layout().byteSize);
+            std::memcpy(&gain, controllerBytes.data() + controllerField->offset, sizeof(gain));
+        }
+        const auto viewBytes = device.readbackBufferEx(runtime.constants().viewBuffer(), 0,
+                                                       sizeof(dayo::graphics::NativeViewConstants));
+        dayo::graphics::NativeViewConstants view{};
+        std::memcpy(&view, viewBytes.data(), sizeof(view));
+        ok &= check(std::abs(gain - 3.5F) < 1e-6F && view.output[0] == 320 && view.output[1] == 200 &&
+                        view.output[2] == 4,
+                    "native scene frame runtime uploads controller and frame values together");
     }
     // Native frame constants: CPU ABI and typed uniform uploads remain stable
     // independently of the native scene descriptor-set population.
