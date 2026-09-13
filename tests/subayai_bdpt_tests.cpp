@@ -11,6 +11,7 @@
 #include "graphics/subayai_light_sampling.hpp"
 #include "graphics/subayai_material_gpu.hpp"
 #include "graphics/subayai_runtime.hpp"
+#include "graphics/native_scene_bindings.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1030,6 +1031,75 @@ int main() {
                     "SBT properties enforce aligned stride and padded allocation");
         ok &= check(builder.build(0x2000, ShaderBindingTableBuilder::Properties{65, 32, 64, 64}).totalSize == 0,
                     "SBT rejects maxShaderGroupStride overflow");
+    }
+    // Native scene descriptor ABI: fixed spaces and disjoint HLSL register
+    // class bindings match the upstream resources.hlsli contract.
+    {
+        const dayo::graphics::NativeSceneDescriptorCounts counts{
+            .textures = 7,
+            .vertexBuffers = 3,
+            .indexBuffers = 4,
+            .materials = 5,
+            .faces = 6,
+            .materialFaces = 7,
+            .faceWalkers = 8,
+            .previousVertices = 9,
+            .rawVertices = 10,
+        };
+        const auto layouts = dayo::graphics::nativeSceneDescriptorLayouts(counts);
+        const auto binding = [](const dayo::graphics::DescriptorSetLayoutDesc& layout,
+                                std::uint32_t slot) -> const dayo::graphics::DescriptorSetLayoutBinding* {
+            const auto found = std::find_if(layout.bindings.begin(), layout.bindings.end(),
+                                            [slot](const auto& value) { return value.binding == slot; });
+            return found == layout.bindings.end() ? nullptr : &*found;
+        };
+        const auto frameIndex = static_cast<std::size_t>(
+            dayo::graphics::NativeSceneDescriptorSet::frame);
+        const auto texturesIndex = static_cast<std::size_t>(
+            dayo::graphics::NativeSceneDescriptorSet::textures);
+        const auto rawVerticesIndex = static_cast<std::size_t>(
+            dayo::graphics::NativeSceneDescriptorSet::rawVertices);
+        ok &= check(layouts.size() == dayo::graphics::kNativeSceneDescriptorSetCount,
+                    "native scene reserves ten descriptor spaces");
+        ok &= check(dayo::graphics::nativeFxResourceSet() ==
+                        dayo::graphics::kNativeSceneDescriptorSetCount,
+                    "FX-local resources follow native scene descriptor spaces");
+        ok &= check(dayo::graphics::nativeSceneBinding(
+                        dayo::graphics::NativeSceneRegisterClass::uav, 0) == 0 &&
+                        dayo::graphics::nativeSceneBinding(
+                            dayo::graphics::NativeSceneRegisterClass::sampled, 0) == 16 &&
+                        dayo::graphics::nativeSceneBinding(
+                            dayo::graphics::NativeSceneRegisterClass::sampler, 0) == 32 &&
+                        dayo::graphics::nativeSceneBinding(
+                            dayo::graphics::NativeSceneRegisterClass::uniform, 0) == 48,
+                    "native scene register classes use disjoint Vulkan binding ranges");
+        const auto* rtOutput = binding(layouts[frameIndex], 0);
+        const auto* tlas = binding(layouts[frameIndex], 16);
+        const auto* screenTexture = binding(layouts[frameIndex], 27);
+        ok &= check(rtOutput != nullptr && rtOutput->kind == dayo::graphics::DescriptorKind::storageImage,
+                    "native frame binds RTOutput as a storage image");
+        ok &= check(tlas != nullptr && tlas->kind == dayo::graphics::DescriptorKind::accelerationStructure,
+                    "native frame binds TLAS as an acceleration structure");
+        ok &= check(screenTexture != nullptr && screenTexture->kind == dayo::graphics::DescriptorKind::sampledImage,
+                    "native frame reserves ScreenTexture at t11");
+        const auto* textureTable = binding(layouts[texturesIndex], 16);
+        const auto* textures = binding(layouts[texturesIndex], 17);
+        const auto* frameConstants = binding(layouts[texturesIndex], 48);
+        ok &= check(textureTable != nullptr && textureTable->kind == dayo::graphics::DescriptorKind::storageBuffer &&
+                        textures != nullptr && textures->count == counts.textures &&
+                        textures->kind == dayo::graphics::DescriptorKind::sampledImage &&
+                        frameConstants != nullptr &&
+                        frameConstants->kind == dayo::graphics::DescriptorKind::uniformBuffer,
+                    "native texture space preserves table, texture array, and CBuff1");
+        const auto* rawVertices = binding(layouts[rawVerticesIndex], 16);
+        ok &= check(rawVertices != nullptr && rawVertices->count == counts.rawVertices &&
+                        rawVertices->kind == dayo::graphics::DescriptorKind::storageBuffer,
+                    "native raw vertex space preserves runtime array count");
+        const auto emptyCounts = dayo::graphics::nativeSceneDescriptorLayouts(
+            dayo::graphics::NativeSceneDescriptorCounts{.textures = 0});
+        const auto* emptyTextures = binding(emptyCounts[texturesIndex], 17);
+        ok &= check(emptyTextures != nullptr && emptyTextures->count == 1,
+                    "empty native arrays retain a legal placeholder descriptor");
     }
     // DenoiserRuntime fallback: staging/readback -> CPU -> upload copy without CUDA.
     {
