@@ -313,6 +313,11 @@ int main() {
                                  std::span<const dayo::core::MaterialParameterBlock>(&parameters, 1), {}, {});
         ok &= check(frame.plan.ordered.size() == 1 && frame.materials.size() == 1,
                     "Subayai runtime prepares graph and material frame state");
+        ok &= check(frame.materialBuffer.valid(), "Subayai frame exposes a typed material storage buffer");
+        const auto materialBytes =
+            device.readbackBufferEx(frame.materialBuffer, 0, sizeof(dayo::graphics::SubayaiMaterialGpu));
+        ok &= check(materialBytes.size() == sizeof(dayo::graphics::SubayaiMaterialGpu),
+                    "Subayai material ABI is uploaded to the typed buffer");
         runtime.reset();
         ok &= check(!runtime.ready(), "Subayai runtime reset disables execution");
 
