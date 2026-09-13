@@ -106,6 +106,39 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
             dispatch.shader = pass.pixelShader;
         else
             dispatch.shader = pass.vertexShader;
+        switch (pass.type) {
+        case core::EffectPassType::rasterizer:
+            dispatch.executable = FxRasterDispatch{pass.vertexShader, pass.pixelShader};
+            break;
+        case core::EffectPassType::postprocess:
+            dispatch.executable = FxPostProcessDispatch{pass.pixelShader};
+            break;
+        case core::EffectPassType::compute:
+            dispatch.executable = FxComputeDispatch{pass.computeShader};
+            break;
+        case core::EffectPassType::raytracing: {
+            FxRayTracingDispatch ray;
+            ray.rayGenerationShader = pass.rayGenerationShader;
+            ray.missShaders = pass.missShaders;
+            ray.callableShaders = pass.callableShaders;
+            for (const auto& group : pass.hitGroups) {
+                ray.hitGroups.push_back(
+                    {core::fx::rayTracingHitGroupType(group.type), group.closestHit, group.anyHit, group.intersection});
+            }
+            ray.maxPayloadSize = pass.maxPayloadSize;
+            ray.maxAttributeSize = pass.maxAttributeSize;
+            ray.maxRecursionDepth = pass.maxRecursionDepth;
+            dispatch.executable = std::move(ray);
+            break;
+        }
+        case core::EffectPassType::copy:
+        case core::EffectPassType::clear:
+        case core::EffectPassType::mipmap:
+            dispatch.executable = FxUtilityDispatch{};
+            break;
+        case core::EffectPassType::unknown:
+            break;
+        }
         const auto appendInput = [&](const core::EffectAttachment& attachment) {
             if (!attachment.name.empty())
                 dispatch.resources.push_back({attachment.name, false});

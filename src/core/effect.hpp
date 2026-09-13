@@ -75,6 +75,7 @@ struct EffectPass {
     std::string rayGenerationShader;
     std::vector<std::string> missShaders;
     std::vector<EffectHitGroup> hitGroups;
+    std::vector<std::string> callableShaders;
     std::vector<std::string> macros;
     std::vector<std::string> conditions;
     std::vector<EffectAttachment> inputs;
@@ -148,6 +149,7 @@ struct CompiledPass {
     std::string rayGenerationShader;
     std::vector<std::string> missShaders;
     std::vector<EffectHitGroup> hitGroups;
+    std::vector<std::string> callableShaders;
     std::vector<std::string> conditions;
     float outputWidthRatio{1.0F};
     float outputHeightRatio{1.0F};

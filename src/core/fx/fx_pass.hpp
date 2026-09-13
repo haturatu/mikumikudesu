@@ -38,9 +38,22 @@ struct FxComputeOp {
     std::vector<std::string> resources;
 };
 
+enum class FxRayTracingHitGroupType { triangles, procedural };
+
+struct FxRayTracingHitGroup {
+    FxRayTracingHitGroupType type{FxRayTracingHitGroupType::triangles};
+    std::string closestHit;
+    std::string anyHit;
+    std::string intersection;
+};
+
+[[nodiscard]] FxRayTracingHitGroupType rayTracingHitGroupType(std::string_view value);
+
 struct FxRayTracingOp {
     std::string rayGenerationShader;
     std::vector<std::string> missShaders;
+    std::vector<FxRayTracingHitGroup> hitGroups;
+    std::vector<std::string> callableShaders;
     std::uint32_t maxPayloadSize{};
     std::uint32_t maxAttributeSize{};
     std::uint32_t maxRecursionDepth{1};
