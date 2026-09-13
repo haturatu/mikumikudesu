@@ -3,6 +3,7 @@
 #include "core/effect.hpp"
 #include "fx/fx_compiler.hpp"
 #include "graphics/fx_executor.hpp"
+#include "graphics/subayai_bindings.hpp"
 #include "graphics/subayai_environment.hpp"
 #include "graphics/subayai_light_sampling.hpp"
 #include "graphics/subayai_material_gpu.hpp"
@@ -19,8 +20,10 @@ struct SubayaiFrame {
     fx::FxFramePlan plan;
     std::vector<SubayaiMaterialGpu> materials;
     handles::BufferHandle materialBuffer{};
+    handles::DescriptorSetHandle materialDescriptorSet{};
     std::vector<AliasEntry> lightSampling;
     handles::BufferHandle lightSamplingBuffer{};
+    handles::DescriptorSetHandle lightSamplingDescriptorSet{};
     EnvironmentGpuResult environment;
 };
 
@@ -40,6 +43,9 @@ class SubayaiRuntime {
         return ready_ ? &program_ : nullptr;
     }
     [[nodiscard]] bool syncMaterials(std::span<const core::MaterialParameterBlock> materials);
+    [[nodiscard]] const SubayaiBindingLayouts& bindingLayouts() const noexcept {
+        return bindings_.layouts();
+    }
     [[nodiscard]] SubayaiFrame prepareFrame(const fx::FxFrameContext& context,
                                             std::span<const core::MaterialParameterBlock> materials,
                                             std::span<const AliasEntry> lightSampling,
@@ -53,6 +59,7 @@ class SubayaiRuntime {
     std::vector<SubayaiMaterialGpu> materials_;
     SubayaiMaterialGpuRuntime materialRuntime_;
     LightSamplingGpuRuntime lightRuntime_;
+    SubayaiBindingRuntime bindings_;
     bool ready_{};
 };
 

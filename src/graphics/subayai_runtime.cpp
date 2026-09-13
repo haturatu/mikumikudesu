@@ -24,23 +24,33 @@ bool SubayaiRuntime::initialize(Device& device, fx::FxProgram program, std::stri
     }
     device_ = &device;
     program_ = std::move(program);
+    std::string bindingError;
+    if (!bindings_.initialize(device, &bindingError)) {
+        if (error != nullptr)
+            *error = bindingError.empty() ? "Subayai descriptor bindings are unavailable" : bindingError;
+        reset();
+        return false;
+    }
     ready_ = true;
     return true;
 }
 
 void SubayaiRuntime::reset() noexcept {
+    bindings_.reset();
+    materialRuntime_.reset();
+    lightRuntime_.reset();
     device_ = nullptr;
     program_ = {};
     materials_.clear();
-    materialRuntime_.reset();
-    lightRuntime_.reset();
     ready_ = false;
 }
 
 bool SubayaiRuntime::syncMaterials(std::span<const core::MaterialParameterBlock> materials) {
     if (!ready_)
         return false;
-    if (!materialRuntime_.sync(*device_, materials))
+    std::string error;
+    if (!materialRuntime_.sync(*device_, materials, &error) ||
+        !bindings_.bindMaterial(materialRuntime_.buffer(), &error))
         return false;
     const auto linked = materialRuntime_.materials();
     materials_.assign(linked.begin(), linked.end());
@@ -58,13 +68,17 @@ SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
     std::string lightError;
     if (!lightRuntime_.sync(*device_, lightSampling, &lightError))
         throw std::runtime_error(lightError.empty() ? "Subayai light sampling GPU upload failed" : lightError);
+    if (!bindings_.bindLightSampling(lightRuntime_.buffer(), &lightError))
+        throw std::runtime_error(lightError.empty() ? "Subayai light sampling descriptor binding failed" : lightError);
     SubayaiFrame frame;
     frame.context = context;
     frame.plan = fx::FxCompiler{}.plan(program_, context);
     frame.materials = materials_;
     frame.materialBuffer = materialRuntime_.buffer();
+    frame.materialDescriptorSet = bindings_.materialSet();
     frame.lightSampling.assign(lightSampling.begin(), lightSampling.end());
     frame.lightSamplingBuffer = lightRuntime_.buffer();
+    frame.lightSamplingDescriptorSet = bindings_.lightSamplingSet();
     frame.environment = environment;
     return frame;
 }
