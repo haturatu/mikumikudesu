@@ -36,6 +36,8 @@ class NativeGeometryRuntime {
     NativeGeometryRuntime(const NativeGeometryRuntime&) = delete;
     NativeGeometryRuntime& operator=(const NativeGeometryRuntime&) = delete;
 
+    void setBackend(IAccelerationBackend* backend) noexcept;
+
     [[nodiscard]] bool initialize(Device& device, std::span<const NativeGeometryMeshUpload> meshes,
                                   std::string* error = nullptr);
     [[nodiscard]] bool updateMesh(const NativeGeometryMeshUpload& mesh, std::string* error = nullptr);
@@ -58,6 +60,12 @@ class NativeGeometryRuntime {
     [[nodiscard]] handles::AccelerationStructureHandle tlas() const noexcept {
         return acceleration_.tlas();
     }
+    [[nodiscard]] handles::DescriptorSetLayoutHandle descriptorLayout() const noexcept {
+        return descriptorLayout_;
+    }
+    [[nodiscard]] handles::DescriptorSetHandle descriptorSet() const noexcept {
+        return descriptorSet_;
+    }
     [[nodiscard]] const AccelerationStructureService& acceleration() const noexcept {
         return acceleration_;
     }
@@ -76,6 +84,10 @@ class NativeGeometryRuntime {
     IAccelerationBackend* backend_{};
     AccelerationStructureService acceleration_;
     std::map<std::uint32_t, MeshState> meshes_;
+    handles::DescriptorSetLayoutHandle descriptorLayout_{};
+    handles::DescriptorSetHandle descriptorSet_{};
 };
+
+[[nodiscard]] DescriptorSetLayoutDesc nativeGeometryDescriptorLayout() noexcept;
 
 } // namespace dayo::graphics

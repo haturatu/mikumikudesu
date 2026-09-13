@@ -241,6 +241,13 @@ void AccelerationStructureService::reset() noexcept {
     tlasScratch_.clear();
 }
 
+void AccelerationStructureService::setBackend(IAccelerationBackend* backend) noexcept {
+    if (backend_ == backend)
+        return;
+    reset();
+    backend_ = backend;
+}
+
 const char* toString(BlasAction action) noexcept {
     switch (action) {
     case BlasAction::none:

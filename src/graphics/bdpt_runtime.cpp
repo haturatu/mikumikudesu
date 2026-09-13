@@ -56,6 +56,7 @@ bool BdptRuntime::initialize(Device& device, fx::FxProgram program, std::string*
     }
     device_ = &device;
     program_ = std::move(program);
+    geometry_.setBackend(device.nativeAccelerationBackend());
     try {
         descriptorLayout_ = device.createDescriptorSetLayoutEx(bdptResourceBindingLayout());
         if (!descriptorLayout_.valid())
@@ -75,6 +76,7 @@ bool BdptRuntime::initialize(Device& device, fx::FxProgram program, std::string*
 
 void BdptRuntime::reset() noexcept {
     nativeFx_.reset();
+    geometry_.reset();
     if (device_ != nullptr) {
         if (descriptorSet_.valid()) {
             try {
@@ -98,6 +100,42 @@ void BdptRuntime::reset() noexcept {
     descriptorSet_ = {};
     nativeAttempted_ = false;
     ready_ = false;
+}
+
+bool BdptRuntime::syncGeometry(std::span<const NativeGeometryMeshUpload> meshes, std::string* error) {
+    if (error != nullptr)
+        error->clear();
+    if (!ready_ || device_ == nullptr) {
+        setError(error, "BDPT runtime is not initialized");
+        return false;
+    }
+    geometry_.setBackend(device_->nativeAccelerationBackend());
+    if (!geometry_.ready())
+        return geometry_.initialize(*device_, meshes, error);
+    for (const auto& mesh : meshes)
+        if (!geometry_.updateMesh(mesh, error))
+            return false;
+    return true;
+}
+
+void BdptRuntime::recordGeometry(CommandList& commands) const {
+    if (geometry_.ready())
+        geometry_.recordDeform(commands);
+}
+
+bool BdptRuntime::synchronizeAcceleration(std::string* error) {
+    if (!geometry_.ready()) {
+        setError(error, "BDPT geometry is not initialized");
+        return false;
+    }
+    return geometry_.synchronizeAcceleration(error);
+}
+
+TlasAction BdptRuntime::synchronizeWorld(std::uint64_t worldGeneration,
+                                         std::span<const WorldInstance> instances) {
+    if (!geometry_.ready())
+        throw std::logic_error("BDPT geometry is not initialized");
+    return geometry_.synchronizeWorld(worldGeneration, instances);
 }
 
 bool BdptRuntime::ensureResources(std::uint32_t width, std::uint32_t height, std::string* error) {
@@ -145,9 +183,12 @@ BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::Dir
     frame.sampleIndex = accumulation_.sampleIndex();
     frame.gpu = accumulation_.gpuResources();
     frame.descriptorSet = descriptorSet_;
+    frame.geometryDescriptorSet = geometry_.descriptorSet();
     if (!nativeAttempted_ && !program_.hlsl.empty()) {
         nativeAttempted_ = true;
-        const std::array sharedLayouts{descriptorLayout_};
+        std::vector<handles::DescriptorSetLayoutHandle> sharedLayouts{descriptorLayout_};
+        if (geometry_.descriptorLayout().valid())
+            sharedLayouts.push_back(geometry_.descriptorLayout());
         std::string nativeError;
         static_cast<void>(nativeFx_.initializeForFrame(*device_, program_, fx::FxShaderCompiler{}, context,
                                                        sharedLayouts, &nativeError));
@@ -174,8 +215,9 @@ VulkanFxExecutor::Stats BdptRuntime::execute(BdptFrame& frame, CommandList& comm
         const auto existingSets = nativeResources.resolveDescriptorSets;
         const auto existingSingle = nativeResources.resolveDescriptorSet;
         const auto accumulationSet = frame.descriptorSet;
+        const auto geometrySet = frame.geometryDescriptorSet;
         nativeResources.resolveDescriptorSets =
-            [existingSets, existingSingle, accumulationSet](const fx::FxDispatch& dispatch) {
+            [existingSets, existingSingle, accumulationSet, geometrySet](const fx::FxDispatch& dispatch) {
                 std::vector<FxExecutionResources::TypedDescriptorSetBinding> result;
                 if (existingSets) {
                     result = existingSets(dispatch);
@@ -191,16 +233,25 @@ VulkanFxExecutor::Stats BdptRuntime::execute(BdptFrame& frame, CommandList& comm
                 };
                 if (accumulationSet.valid() && !hasIndex(0))
                     result.push_back({accumulationSet, 0});
+                if (geometrySet.valid() && !hasIndex(1))
+                    result.push_back({geometrySet, 1});
                 return result;
             };
         nativeResources.resolveDescriptorSet = {};
         return nativeFx_.execute(*frame.nativeFx, commands, nativeResources);
     }
     auto nativeResources = resources;
-    if (frame.descriptorSet.valid() && !nativeResources.resolveDescriptorSets && !nativeResources.resolveDescriptorSet) {
+    if ((frame.descriptorSet.valid() || frame.geometryDescriptorSet.valid()) &&
+        !nativeResources.resolveDescriptorSets && !nativeResources.resolveDescriptorSet) {
         const auto descriptorSet = frame.descriptorSet;
-        nativeResources.resolveDescriptorSets = [descriptorSet](const fx::FxDispatch&) {
-            return std::vector<FxExecutionResources::TypedDescriptorSetBinding>{{descriptorSet, 0}};
+        const auto geometrySet = frame.geometryDescriptorSet;
+        nativeResources.resolveDescriptorSets = [descriptorSet, geometrySet](const fx::FxDispatch&) {
+            std::vector<FxExecutionResources::TypedDescriptorSetBinding> result;
+            if (descriptorSet.valid())
+                result.push_back({descriptorSet, 0});
+            if (geometrySet.valid())
+                result.push_back({geometrySet, 1});
+            return result;
         };
     }
     return VulkanFxExecutor{*device_}.execute(frame.plan, commands, frame.context, nativeResources);

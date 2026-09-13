@@ -20,6 +20,8 @@ class Window;
 
 namespace dayo::graphics {
 
+class IAccelerationBackend;
+
 enum class RendererKind { preview, subayai, bdpt };
 
 struct GraphicsConvention {
@@ -472,6 +474,11 @@ class Device {
     [[nodiscard]] virtual const DeviceCapabilities& capabilities() const noexcept = 0;
     [[nodiscard]] virtual const GraphicsConvention& convention() const noexcept = 0;
     [[nodiscard]] virtual RendererKind activeRenderer() const noexcept = 0;
+    // Native RT runtimes can use the backend-neutral rebuild/refit policy
+    // without downcasting the device. Preview/mock devices return nullptr.
+    [[nodiscard]] virtual IAccelerationBackend* nativeAccelerationBackend() noexcept {
+        return nullptr;
+    }
     virtual void selectRenderer(RendererKind requested) = 0;
     virtual void resize() = 0;
     virtual void beginUiFrame() = 0;

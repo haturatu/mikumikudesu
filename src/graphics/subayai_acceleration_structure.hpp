@@ -85,6 +85,7 @@ class AccelerationStructureService {
     // Releases all backend-owned acceleration structures. Safe to call more
     // than once and used by the destructor for service lifetime cleanup.
     void reset() noexcept;
+    void setBackend(IAccelerationBackend* backend) noexcept;
 
     [[nodiscard]] std::size_t blasCount() const noexcept {
         return meshes_.size();

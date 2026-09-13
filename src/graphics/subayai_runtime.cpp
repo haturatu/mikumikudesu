@@ -3,7 +3,6 @@
 #include "graphics/native_renderer_requirements.hpp"
 
 #include <algorithm>
-#include <array>
 #include <utility>
 
 namespace dayo::graphics {
@@ -26,6 +25,7 @@ bool SubayaiRuntime::initialize(Device& device, fx::FxProgram program, std::stri
     }
     device_ = &device;
     program_ = std::move(program);
+    geometry_.setBackend(device.nativeAccelerationBackend());
     std::string bindingError;
     if (!bindings_.initialize(device, &bindingError)) {
         if (error != nullptr)
@@ -38,8 +38,9 @@ bool SubayaiRuntime::initialize(Device& device, fx::FxProgram program, std::stri
 }
 
 void SubayaiRuntime::reset() noexcept {
-    bindings_.reset();
     nativeFx_.reset();
+    geometry_.reset();
+    bindings_.reset();
     materialRuntime_.reset();
     lightRuntime_.reset();
     device_ = nullptr;
@@ -47,6 +48,44 @@ void SubayaiRuntime::reset() noexcept {
     materials_.clear();
     nativeAttempted_ = false;
     ready_ = false;
+}
+
+bool SubayaiRuntime::syncGeometry(std::span<const NativeGeometryMeshUpload> meshes, std::string* error) {
+    if (error != nullptr)
+        error->clear();
+    if (!ready_ || device_ == nullptr) {
+        if (error != nullptr)
+            *error = "Subayai runtime is not initialized";
+        return false;
+    }
+    geometry_.setBackend(device_->nativeAccelerationBackend());
+    if (!geometry_.ready())
+        return geometry_.initialize(*device_, meshes, error);
+    for (const auto& mesh : meshes)
+        if (!geometry_.updateMesh(mesh, error))
+            return false;
+    return true;
+}
+
+void SubayaiRuntime::recordGeometry(CommandList& commands) const {
+    if (geometry_.ready())
+        geometry_.recordDeform(commands);
+}
+
+bool SubayaiRuntime::synchronizeAcceleration(std::string* error) {
+    if (!geometry_.ready()) {
+        if (error != nullptr)
+            *error = "Subayai geometry is not initialized";
+        return false;
+    }
+    return geometry_.synchronizeAcceleration(error);
+}
+
+TlasAction SubayaiRuntime::synchronizeWorld(std::uint64_t worldGeneration,
+                                             std::span<const WorldInstance> instances) {
+    if (!geometry_.ready())
+        throw std::logic_error("Subayai geometry is not initialized");
+    return geometry_.synchronizeWorld(worldGeneration, instances);
 }
 
 bool SubayaiRuntime::syncMaterials(std::span<const core::MaterialParameterBlock> materials) {
@@ -83,10 +122,14 @@ SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
     frame.lightSampling.assign(lightSampling.begin(), lightSampling.end());
     frame.lightSamplingBuffer = lightRuntime_.buffer();
     frame.lightSamplingDescriptorSet = bindings_.lightSamplingSet();
+    frame.geometryDescriptorSet = geometry_.descriptorSet();
     frame.environment = environment;
     if (!nativeAttempted_ && !program_.hlsl.empty()) {
         nativeAttempted_ = true;
-        const std::array sharedLayouts{bindings_.layouts().material, bindings_.layouts().lightSampling};
+        std::vector<handles::DescriptorSetLayoutHandle> sharedLayouts{bindings_.layouts().material,
+                                                                       bindings_.layouts().lightSampling};
+        if (geometry_.descriptorLayout().valid())
+            sharedLayouts.push_back(geometry_.descriptorLayout());
         std::string nativeError;
         static_cast<void>(nativeFx_.initializeForFrame(*device_, program_, fx::FxShaderCompiler{}, context,
                                                        sharedLayouts, &nativeError));
@@ -105,13 +148,15 @@ VulkanFxExecutor::Stats SubayaiRuntime::execute(SubayaiFrame& frame, CommandList
         throw std::logic_error("Subayai runtime is not initialized");
     if (frame.nativeFx.has_value()) {
         auto nativeResources = resources;
-        if (frame.materialDescriptorSet.valid() || frame.lightSamplingDescriptorSet.valid()) {
+        if (frame.materialDescriptorSet.valid() || frame.lightSamplingDescriptorSet.valid() ||
+            frame.geometryDescriptorSet.valid()) {
             const auto existingSets = nativeResources.resolveDescriptorSets;
             const auto existingSingle = nativeResources.resolveDescriptorSet;
             const auto materialSet = frame.materialDescriptorSet;
             const auto lightSet = frame.lightSamplingDescriptorSet;
+            const auto geometrySet = frame.geometryDescriptorSet;
             nativeResources.resolveDescriptorSets =
-                [existingSets, existingSingle, materialSet, lightSet](const fx::FxDispatch& dispatch) {
+                [existingSets, existingSingle, materialSet, lightSet, geometrySet](const fx::FxDispatch& dispatch) {
                     std::vector<FxExecutionResources::TypedDescriptorSetBinding> result;
                     if (existingSets) {
                         result = existingSets(dispatch);
@@ -129,6 +174,8 @@ VulkanFxExecutor::Stats SubayaiRuntime::execute(SubayaiFrame& frame, CommandList
                         result.push_back({materialSet, 0});
                     if (lightSet.valid() && !hasIndex(1))
                         result.push_back({lightSet, 1});
+                    if (geometrySet.valid() && !hasIndex(2))
+                        result.push_back({geometrySet, 2});
                     return result;
                 };
             nativeResources.resolveDescriptorSet = {};
@@ -137,16 +184,20 @@ VulkanFxExecutor::Stats SubayaiRuntime::execute(SubayaiFrame& frame, CommandList
     }
     auto nativeResources = resources;
     if (!nativeResources.resolveDescriptorSets && !nativeResources.resolveDescriptorSet &&
-        (frame.materialDescriptorSet.valid() || frame.lightSamplingDescriptorSet.valid())) {
+        (frame.materialDescriptorSet.valid() || frame.lightSamplingDescriptorSet.valid() ||
+         frame.geometryDescriptorSet.valid())) {
         const auto materialSet = frame.materialDescriptorSet;
         const auto lightSet = frame.lightSamplingDescriptorSet;
+        const auto geometrySet = frame.geometryDescriptorSet;
         nativeResources.resolveDescriptorSets =
-            [materialSet, lightSet](const fx::FxDispatch&) {
+            [materialSet, lightSet, geometrySet](const fx::FxDispatch&) {
                 std::vector<FxExecutionResources::TypedDescriptorSetBinding> result;
                 if (materialSet.valid())
                     result.push_back({materialSet, 0});
                 if (lightSet.valid())
                     result.push_back({lightSet, 1});
+                if (geometrySet.valid())
+                    result.push_back({geometrySet, 2});
                 return result;
             };
     }
