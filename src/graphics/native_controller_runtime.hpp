@@ -13,6 +13,8 @@
 
 namespace dayo::graphics {
 
+inline constexpr std::size_t kMaxNativeControllerBytes = 64U * 1024U;
+
 // HLSL constant-buffer types supported by the generated YRZFX controller
 // block. The enum is deliberately independent from MaterialValue: controller
 // values are packed according to cbuffer register rules, not C++ object layout.

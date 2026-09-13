@@ -185,6 +185,8 @@ NativeControllerLayout makeNativeControllerLayout(std::span<const core::EffectCo
             field.offset = cursor;
             cursor = checkedAdd(cursor, elementSize);
         }
+        if (cursor > kMaxNativeControllerBytes)
+            throw std::length_error("native controller cbuffer exceeds the 64 KiB limit");
         result.fields.push_back(std::move(field));
     }
     result.byteSize = std::max<std::size_t>(16, align16(cursor));
@@ -195,11 +197,14 @@ NativeControllerBlock::NativeControllerBlock(NativeControllerLayout layout)
     : layout_(std::move(layout)), bytes_(layout_.byteSize, std::byte{0}) {}
 
 std::byte* NativeControllerBlock::element(const NativeControllerField& field, std::size_t arrayIndex) noexcept {
-    if (arrayIndex >= field.arrayCount || field.elementStride > bytes_.size() ||
-        field.offset > bytes_.size() - field.elementStride * arrayIndex ||
-        field.elementSize > bytes_.size() - field.offset - field.elementStride * arrayIndex)
+    if (arrayIndex >= field.arrayCount ||
+        (field.elementStride != 0 &&
+         arrayIndex > (std::numeric_limits<std::size_t>::max() - field.offset) / field.elementStride))
         return nullptr;
-    return bytes_.data() + field.offset + field.elementStride * arrayIndex;
+    const auto offset = field.offset + field.elementStride * arrayIndex;
+    if (offset > bytes_.size() || field.elementSize > bytes_.size() - offset)
+        return nullptr;
+    return bytes_.data() + offset;
 }
 
 bool NativeControllerBlock::setBool(std::string_view name, bool value, std::size_t arrayIndex) noexcept {
