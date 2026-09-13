@@ -581,6 +581,9 @@ int main() {
         ok &= check((dayo::graphics::toBits(plan.deformedVertices.usage) &
                      dayo::graphics::toBits(dayo::graphics::ResourceUsage::asBuildRead)) != 0U,
                     "deformed output is BLAS build-readable");
+        ok &= check((dayo::graphics::toBits(plan.deformedVertices.usage) &
+                     dayo::graphics::toBits(dayo::graphics::ResourceUsage::transferDst)) != 0U,
+                    "deformed output accepts its initial device-local seed upload");
         ok &= check(plan.deformedVertices.lifetime == dayo::graphics::ResourceLifetime::persistent,
                     "deformed output persists across BLAS updates");
         ok &= check(plan.workgroupCount == 3, "native deform rounds dispatch groups up");
