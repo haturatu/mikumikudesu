@@ -134,7 +134,7 @@ struct MockCommands final : public dayo::graphics::CommandList {
     void generateMipmapsEx(dayo::graphics::handles::TextureHandle) override {
         trace.emplace_back("mipmapEx");
     }
-    void bindDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle) override {
+    void bindDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle, std::uint32_t) override {
         trace.emplace_back("descriptorEx");
     }
     void bindPipelineEx(dayo::graphics::handles::PipelineHandle) override {

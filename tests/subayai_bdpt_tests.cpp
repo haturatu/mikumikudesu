@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -230,6 +231,7 @@ struct MockNativeDevice final : dayo::graphics::Device {
 struct MockDeformCommands final : dayo::graphics::CommandList {
     std::vector<std::string> events;
     std::vector<std::byte> constants;
+    std::vector<std::pair<dayo::graphics::handles::DescriptorSetHandle, std::uint32_t>> descriptorSets;
 
     void transition(dayo::graphics::TextureHandle) override {}
     void bindPipeline(dayo::graphics::PipelineHandle) override {}
@@ -244,7 +246,8 @@ struct MockDeformCommands final : dayo::graphics::CommandList {
     void bindPipelineEx(dayo::graphics::handles::PipelineHandle) override {
         events.emplace_back("bind");
     }
-    void bindDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle) override {
+    void bindDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle set, std::uint32_t setIndex) override {
+        descriptorSets.emplace_back(set, setIndex);
         events.emplace_back("descriptor");
     }
     void pushConstantsEx(std::span<const std::byte> bytes) override {
@@ -325,7 +328,7 @@ int main() {
         ok &= check(runtime.syncMaterials(std::span<const dayo::core::MaterialParameterBlock>(&parameters, 1)),
                     "Subayai runtime links material parameters");
         const std::array<dayo::graphics::AliasEntry, 2> lightTable{{{0.75F, 0}, {1.0F, 1}}};
-        const auto frame =
+        auto frame =
             runtime.prepareFrame(dayo::fx::makeFxFrameContext(0.0F, 0, 64, 32, 1, 0, 3, 1, 1, 1),
                                  std::span<const dayo::core::MaterialParameterBlock>(&parameters, 1), lightTable, {});
         ok &= check(frame.plan.ordered.size() == 1 && frame.materials.size() == 1,
@@ -345,6 +348,19 @@ int main() {
         ok &= check(device.lastDescriptorBindings.size() == 1 &&
                         device.lastDescriptorBindings.front().buffer == frame.lightSamplingBuffer,
                     "Subayai light descriptor points at the uploaded buffer");
+        dayo::graphics::FxExecutionResources execution;
+        execution.resolveTypedPipeline = [](const dayo::fx::FxDispatch&) ->
+            std::optional<dayo::graphics::handles::PipelineHandle> { return dayo::graphics::handles::PipelineHandle{7, 1}; };
+        MockDeformCommands commands;
+        const auto stats = runtime.execute(frame, commands, execution);
+        ok &= check(stats.compute == 1 && commands.events ==
+                                             std::vector<std::string>{"descriptor", "descriptor", "bind", "dispatch:8x4x1"},
+                    "Subayai execution binds both native resource descriptor sets");
+        ok &= check(commands.descriptorSets.size() == 2 && commands.descriptorSets[0].second == 0 &&
+                        commands.descriptorSets[1].second == 1 &&
+                        commands.descriptorSets[0].first == frame.materialDescriptorSet &&
+                        commands.descriptorSets[1].first == frame.lightSamplingDescriptorSet,
+                    "Subayai descriptor bindings preserve pipeline set indices");
         runtime.reset();
         ok &= check(!runtime.ready(), "Subayai runtime reset disables execution");
 

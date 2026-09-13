@@ -32,7 +32,7 @@ class VulkanCommandList final : public CommandList {
     void generateMipmaps(TextureHandle) override;
     void buildAccelerationStructure(AccelerationStructureHandle) override;
     void bindPipelineEx(handles::PipelineHandle pipeline) override;
-    void bindDescriptorSetEx(handles::DescriptorSetHandle set) override;
+    void bindDescriptorSetEx(handles::DescriptorSetHandle set, std::uint32_t setIndex = 0) override;
     void pushConstantsEx(std::span<const std::byte> bytes) override;
     void memoryBarrierEx() override;
     void transitionEx(handles::TextureHandle texture) override;

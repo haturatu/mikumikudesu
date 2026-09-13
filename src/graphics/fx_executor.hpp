@@ -16,6 +16,10 @@
 namespace dayo::graphics {
 
 struct FxExecutionResources {
+    struct TypedDescriptorSetBinding {
+        handles::DescriptorSetHandle set{};
+        std::uint32_t setIndex{};
+    };
     using TextureResolver = std::function<std::optional<TextureHandle>(std::string_view)>;
     using PipelineResolver = std::function<std::optional<PipelineHandle>(const dayo::fx::FxDispatch&)>;
     using TypedPipelineResolver = std::function<std::optional<handles::PipelineHandle>(const dayo::fx::FxDispatch&)>;
@@ -24,6 +28,8 @@ struct FxExecutionResources {
         std::function<std::optional<handles::ShaderBindingTableHandle>(const dayo::fx::FxDispatch&)>;
     using DescriptorSetResolver =
         std::function<std::optional<handles::DescriptorSetHandle>(const dayo::fx::FxDispatch&)>;
+    using DescriptorSetsResolver =
+        std::function<std::vector<TypedDescriptorSetBinding>(const dayo::fx::FxDispatch&)>;
     using ResourceBindingResolver =
         std::function<std::optional<DescriptorBinding>(std::string_view, bool, std::uint32_t)>;
     using PushConstantResolver =
@@ -39,6 +45,7 @@ struct FxExecutionResources {
     TypedTextureResolver resolveTypedTexture;
     ShaderBindingTableResolver resolveShaderBindingTable;
     DescriptorSetResolver resolveDescriptorSet;
+    DescriptorSetsResolver resolveDescriptorSets;
     ResourceBindingResolver resolveBinding;
     PushConstantResolver makePushConstants;
     ConditionEvaluator evaluateConditions;
