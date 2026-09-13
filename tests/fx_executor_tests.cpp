@@ -90,6 +90,18 @@ struct MockCommands final : public dayo::graphics::CommandList {
     void generateMipmaps(dayo::graphics::TextureHandle) override {
         trace.emplace_back("mipmap");
     }
+    void copyTextureEx(dayo::graphics::handles::TextureHandle, dayo::graphics::handles::TextureHandle) override {
+        trace.emplace_back("copyEx");
+    }
+    void clearTextureEx(dayo::graphics::handles::TextureHandle) override {
+        trace.emplace_back("clearEx");
+    }
+    void generateMipmapsEx(dayo::graphics::handles::TextureHandle) override {
+        trace.emplace_back("mipmapEx");
+    }
+    void bindDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle) override {
+        trace.emplace_back("descriptorEx");
+    }
     void bindPipelineEx(dayo::graphics::handles::PipelineHandle) override {
         trace.emplace_back("bindEx");
     }
@@ -172,6 +184,36 @@ bool testMockTraceMatches() {
     ok &= check(nativeStats.rayTracing == 1 && nativeCommands.trace.size() == 2 &&
                     nativeCommands.trace[0] == "bindEx" && nativeCommands.trace[1] == "traceEx",
                 "native RT executor forwards typed pipeline and SBT");
+
+    MockCommands typedCommands;
+    dayo::graphics::FxExecutionResources typedResources;
+    typedResources.resolveTypedPipeline = [](const dayo::fx::FxDispatch&) {
+        return std::optional<dayo::graphics::handles::PipelineHandle>{{2, 1}};
+    };
+    typedResources.resolveTypedTexture = [](std::string_view) {
+        return std::optional<dayo::graphics::handles::TextureHandle>{{3, 1}};
+    };
+    typedResources.resolveDescriptorSet = [](const dayo::fx::FxDispatch&) {
+        return std::optional<dayo::graphics::handles::DescriptorSetHandle>{{4, 1}};
+    };
+    dayo::fx::FxProgram typedProgram;
+    typedProgram.passes = {
+        {"typed-compute", dayo::fx::FxOpKind::compute, {}, 1, 1, {{"storage", true}}, {}},
+        {"typed-copy", dayo::fx::FxOpKind::copy, {}, 1, 1, {{"source", false}, {"storage", true}}, {}},
+        {"typed-clear", dayo::fx::FxOpKind::clear, {}, 1, 1, {{"storage", true}}, {}},
+        {"typed-mipmap", dayo::fx::FxOpKind::mipmap, {}, 1, 1, {{"storage", true}}, {}},
+    };
+    const auto typedPlan = compiler.plan(typedProgram, testContext());
+    const auto typedStats = executor.execute(typedPlan, typedCommands, testContext(), typedResources);
+    ok &= check(typedStats.compute == 1 && typedStats.copy == 1 && typedStats.clear == 1 && typedStats.mipmap == 1,
+                "typed executor counts compute and utility passes");
+    ok &= check(std::count(typedCommands.trace.begin(), typedCommands.trace.end(), "bindEx") == 1 &&
+                    std::count(typedCommands.trace.begin(), typedCommands.trace.end(), "descriptorEx") == 4 &&
+                    std::count(typedCommands.trace.begin(), typedCommands.trace.end(), "transitionEx") == 4 &&
+                    std::count(typedCommands.trace.begin(), typedCommands.trace.end(), "copyEx") == 1 &&
+                    std::count(typedCommands.trace.begin(), typedCommands.trace.end(), "clearEx") == 1 &&
+                    std::count(typedCommands.trace.begin(), typedCommands.trace.end(), "mipmapEx") == 1,
+                "typed executor records pipeline, descriptor, transition, and utility commands");
     return ok;
 }
 
