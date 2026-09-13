@@ -149,6 +149,11 @@ DescriptorSetLayoutDesc nativeEnvironmentPassLayout() noexcept {
                          {1, DescriptorKind::storageImage, 1, ShaderStageMask::compute}}};
 }
 
+DescriptorSetLayoutDesc nativeEnvironmentPrefilterLayout() noexcept {
+    return {.bindings = {{0, DescriptorKind::storageImage, 1, ShaderStageMask::compute},
+                         {1, DescriptorKind::storageImage, 1, ShaderStageMask::compute}}};
+}
+
 NativeEnvironmentBackend::~NativeEnvironmentBackend() {
     reset();
 }
@@ -221,7 +226,8 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const Environmen
             .format = PixelFormat::rgba16Float,
             .mipLevels = mipLevels_,
             .arrayLayers = 1,
-            .usage = ResourceUsage::storageReadWrite | ResourceUsage::sampledRead,
+            .usage = ResourceUsage::storageReadWrite | ResourceUsage::sampledRead | ResourceUsage::transferSrc |
+                     ResourceUsage::transferDst,
             .lifetime = ResourceLifetime::persistent,
         });
         device_->uploadTextureEx(resources_.source, image.bytes, 0, 0);
@@ -263,6 +269,8 @@ void NativeEnvironmentBackend::record(CommandList& commands) const {
     commands.pushConstantsEx(std::as_bytes(std::span<const NativeEnvironmentPushConstants>(&constants, 1)));
     commands.dispatch(groups, groups, 6);
     commands.memoryBarrierEx();
+    if (mipLevels_ > 1)
+        commands.generateMipmapsEx(resources_.prefiltered);
 }
 
 void NativeEnvironmentBackend::reset() noexcept {

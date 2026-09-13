@@ -52,6 +52,7 @@ struct NativeEnvironmentPushConstants {
 static_assert(sizeof(NativeEnvironmentPushConstants) == 16);
 
 [[nodiscard]] DescriptorSetLayoutDesc nativeEnvironmentPassLayout() noexcept;
+[[nodiscard]] DescriptorSetLayoutDesc nativeEnvironmentPrefilterLayout() noexcept;
 
 class IEnvironmentBackend {
   public:

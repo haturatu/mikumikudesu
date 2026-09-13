@@ -5,6 +5,7 @@
 #include "core/log.hpp"
 #include "graphics/timestamp.hpp"
 #include "graphics/subayai_deform.hpp"
+#include "graphics/subayai_environment.hpp"
 #include "platform/window.hpp"
 #include "ui/fonts.hpp"
 #include "ui/theme.hpp"
@@ -382,6 +383,7 @@ VulkanDevice::VulkanDevice(platform::Window& window, bool validation)
     createPipeline();
     createNativeOutputPipeline();
     createNativeDeformPipeline();
+    createNativeEnvironmentPipelines();
     createFrames();
     createUi();
     const std::array<PreviewVertex, 3> fallbackVertices{{
@@ -406,6 +408,7 @@ VulkanDevice::~VulkanDevice() {
         reclaimAllAccelerationScratch();
     }
     uploadContext_.reset();
+    destroyNativeEnvironmentPipelines();
     destroyNativeDeformPipeline();
     destroyTypedResources();
     destroyViewportResources();
@@ -1376,6 +1379,101 @@ void VulkanDevice::destroyNativeDeformPipeline() noexcept {
     nativeDeformShader_ = {};
     nativeDeformPipelineLayout_ = {};
     nativeDeformDescriptorLayout_ = {};
+}
+
+void VulkanDevice::createNativeEnvironmentPipelines() {
+    const auto equirectCode = readBinary(DAYO_NATIVE_ENVIRONMENT_EQUIRECT_SPV);
+    const auto prefilterCode = readBinary(DAYO_NATIVE_ENVIRONMENT_PREFILTER_SPV);
+    try {
+        nativeEnvironmentEquirectLayout_ = createDescriptorSetLayoutEx(nativeEnvironmentPassLayout());
+        nativeEnvironmentPrefilterLayout_ = createDescriptorSetLayoutEx(nativeEnvironmentPrefilterLayout());
+        const PipelineLayoutDesc equirectPipelineLayout{
+            .setLayouts = {nativeEnvironmentEquirectLayout_},
+            .pushConstants = {{ShaderStageMask::compute, 0, sizeof(NativeEnvironmentPushConstants)}},
+        };
+        const PipelineLayoutDesc prefilterPipelineLayout{
+            .setLayouts = {nativeEnvironmentPrefilterLayout_},
+            .pushConstants = {{ShaderStageMask::compute, 0, sizeof(NativeEnvironmentPushConstants)}},
+        };
+        nativeEnvironmentEquirectPipelineLayout_ = createPipelineLayoutEx(equirectPipelineLayout);
+        nativeEnvironmentPrefilterPipelineLayout_ = createPipelineLayoutEx(prefilterPipelineLayout);
+        const auto equirectWords = std::span<const std::uint32_t>(
+            reinterpret_cast<const std::uint32_t*>(equirectCode.data()), equirectCode.size() / sizeof(std::uint32_t));
+        const auto prefilterWords = std::span<const std::uint32_t>(
+            reinterpret_cast<const std::uint32_t*>(prefilterCode.data()), prefilterCode.size() / sizeof(std::uint32_t));
+        nativeEnvironmentEquirectShader_ = createShaderEx({.spirv = equirectWords,
+                                                            .entryPoint = "EquirectToCube",
+                                                            .stage = ShaderStageMask::compute});
+        nativeEnvironmentPrefilterShader_ = createShaderEx({.spirv = prefilterWords,
+                                                              .entryPoint = "PrefilterCube",
+                                                              .stage = ShaderStageMask::compute});
+        nativeEnvironmentEquirectPipeline_ = createComputePipelineEx(
+            {.layout = nativeEnvironmentEquirectPipelineLayout_, .shaders = {nativeEnvironmentEquirectShader_}});
+        nativeEnvironmentPrefilterPipeline_ = createComputePipelineEx(
+            {.layout = nativeEnvironmentPrefilterPipelineLayout_, .shaders = {nativeEnvironmentPrefilterShader_}});
+    } catch (...) {
+        destroyNativeEnvironmentPipelines();
+        throw;
+    }
+}
+
+void VulkanDevice::destroyNativeEnvironmentPipelines() noexcept {
+    if (nativeEnvironmentPrefilterPipeline_.valid()) {
+        try {
+            destroyPipelineEx(nativeEnvironmentPrefilterPipeline_);
+        } catch (...) {
+        }
+    }
+    if (nativeEnvironmentEquirectPipeline_.valid()) {
+        try {
+            destroyPipelineEx(nativeEnvironmentEquirectPipeline_);
+        } catch (...) {
+        }
+    }
+    if (nativeEnvironmentPrefilterShader_.valid()) {
+        try {
+            destroyShaderEx(nativeEnvironmentPrefilterShader_);
+        } catch (...) {
+        }
+    }
+    if (nativeEnvironmentEquirectShader_.valid()) {
+        try {
+            destroyShaderEx(nativeEnvironmentEquirectShader_);
+        } catch (...) {
+        }
+    }
+    if (nativeEnvironmentPrefilterPipelineLayout_.valid()) {
+        try {
+            destroyPipelineLayoutEx(nativeEnvironmentPrefilterPipelineLayout_);
+        } catch (...) {
+        }
+    }
+    if (nativeEnvironmentEquirectPipelineLayout_.valid()) {
+        try {
+            destroyPipelineLayoutEx(nativeEnvironmentEquirectPipelineLayout_);
+        } catch (...) {
+        }
+    }
+    if (nativeEnvironmentPrefilterLayout_.valid()) {
+        try {
+            destroyDescriptorSetLayoutEx(nativeEnvironmentPrefilterLayout_);
+        } catch (...) {
+        }
+    }
+    if (nativeEnvironmentEquirectLayout_.valid()) {
+        try {
+            destroyDescriptorSetLayoutEx(nativeEnvironmentEquirectLayout_);
+        } catch (...) {
+        }
+    }
+    nativeEnvironmentPrefilterPipeline_ = {};
+    nativeEnvironmentEquirectPipeline_ = {};
+    nativeEnvironmentPrefilterShader_ = {};
+    nativeEnvironmentEquirectShader_ = {};
+    nativeEnvironmentPrefilterPipelineLayout_ = {};
+    nativeEnvironmentEquirectPipelineLayout_ = {};
+    nativeEnvironmentPrefilterLayout_ = {};
+    nativeEnvironmentEquirectLayout_ = {};
 }
 
 void VulkanDevice::createPreviewDescriptors() {
