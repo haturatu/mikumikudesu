@@ -364,6 +364,15 @@ struct BlasGeometryDesc {
     std::vector<BlasTriangleGeometryDesc> triangles;
 };
 
+struct AccelerationInstanceDesc {
+    handles::AccelerationStructureHandle blas{};
+    std::array<float, 12> transform{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F};
+    std::uint32_t instanceId{};
+    std::uint32_t mask{0xFFU};
+    std::uint32_t sbtRecordOffset{};
+    std::uint32_t flags{};
+};
+
 // Typed (generation-checked) descriptors. The legacy uint64_t handles above
 // are preserved for the Preview backend; new FX/RT paths use handles:: types.
 struct DescriptorBindingEx {
@@ -537,11 +546,25 @@ class Device {
     [[nodiscard]] virtual handles::AccelerationStructureHandle createBlasEx(const BlasGeometryDesc&) {
         throw std::logic_error("Typed BLAS is not implemented by this backend");
     }
-    virtual void rebuildBlasEx(handles::AccelerationStructureHandle, const BlasGeometryDesc&) {
+    [[nodiscard]] virtual handles::AccelerationStructureHandle rebuildBlasEx(handles::AccelerationStructureHandle,
+                                                                             const BlasGeometryDesc&) {
         throw std::logic_error("Typed BLAS rebuild is not implemented by this backend");
     }
     virtual void refitBlasEx(handles::AccelerationStructureHandle, const BlasGeometryDesc&) {
         throw std::logic_error("Typed BLAS refit is not implemented by this backend");
+    }
+    [[nodiscard]] virtual handles::AccelerationStructureHandle createTlasEx(std::span<const AccelerationInstanceDesc>) {
+        throw std::logic_error("Typed TLAS is not implemented by this backend");
+    }
+    [[nodiscard]] virtual handles::AccelerationStructureHandle
+    rebuildTlasEx(handles::AccelerationStructureHandle, std::span<const AccelerationInstanceDesc>) {
+        throw std::logic_error("Typed TLAS rebuild is not implemented by this backend");
+    }
+    virtual void updateTlasEx(handles::AccelerationStructureHandle, std::span<const AccelerationInstanceDesc>) {
+        throw std::logic_error("Typed TLAS update is not implemented by this backend");
+    }
+    virtual void destroyAccelerationStructureEx(handles::AccelerationStructureHandle) {
+        throw std::logic_error("Typed acceleration-structure destroy is not implemented by this backend");
     }
     // ---- destroy / retirement ----
     virtual void destroyTextureEx(handles::TextureHandle) {

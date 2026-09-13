@@ -52,8 +52,8 @@ class IAccelerationBackend {
                                                              const BlasGeometryDesc& geometry) = 0;
     virtual void refitBlas(handles::AccelerationStructureHandle blas, const BlasGeometryDesc& geometry) = 0;
     virtual handles::AccelerationStructureHandle createTlas(std::span<const TlasInstanceDesc> instances) = 0;
-    virtual void rebuildTlas(handles::AccelerationStructureHandle tlas,
-                             std::span<const TlasInstanceDesc> instances) = 0;
+    [[nodiscard]] virtual handles::AccelerationStructureHandle
+    rebuildTlas(handles::AccelerationStructureHandle tlas, std::span<const TlasInstanceDesc> instances) = 0;
     virtual void updateTlas(handles::AccelerationStructureHandle tlas, std::span<const TlasInstanceDesc> instances) = 0;
     virtual void destroyBlas(handles::AccelerationStructureHandle) {}
     virtual void destroyTlas(handles::AccelerationStructureHandle) {}

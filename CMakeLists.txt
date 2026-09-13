@@ -269,6 +269,8 @@ add_library(
   src/graphics/subayai_material_gpu.cpp
   src/graphics/subayai_runtime.cpp
   src/graphics/vulkan/vulkan_device.cpp
+  src/graphics/vulkan/vulkan_acceleration_structure.cpp
+  src/graphics/vulkan/vulkan_acceleration_resources.cpp
   src/graphics/vulkan/vulkan_command_list.cpp
   src/graphics/vulkan/vulkan_upload_context.cpp
   src/graphics/vulkan_fx_executor.cpp
