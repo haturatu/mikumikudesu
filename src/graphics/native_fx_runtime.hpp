@@ -33,14 +33,16 @@ class NativeFxRuntime {
 
     [[nodiscard]] bool initialize(Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
                                    std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts = {},
-                                   std::string* error = nullptr);
+                                   std::string* error = nullptr,
+                                   std::span<const handles::DescriptorSetHandle> sharedDescriptorSets = {});
     // Initializes resources against the first real frame context. The
     // compatibility overload above remains useful for callers that do not
     // have a frame yet.
     [[nodiscard]] bool initializeForFrame(
         Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
         const fx::FxFrameContext& context,
-        std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts = {}, std::string* error = nullptr);
+        std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts = {}, std::string* error = nullptr,
+        std::span<const handles::DescriptorSetHandle> sharedDescriptorSets = {});
     // Rebuilds size-dependent FX resources and their descriptor/pipeline
     // lifetime when a render/model context changes. Callers should invoke
     // this at a frame boundary before prepareFrame().
@@ -69,6 +71,9 @@ class NativeFxRuntime {
     [[nodiscard]] std::uint32_t resourceSetIndex() const noexcept {
         return resourceSetIndex_;
     }
+    [[nodiscard]] std::size_t sharedDescriptorSetCount() const noexcept {
+        return sharedDescriptorSets_.size();
+    }
 
     [[nodiscard]] NativeFxFrame prepareFrame(const fx::FxFrameContext& context) const;
     [[nodiscard]] VulkanFxExecutor::Stats execute(NativeFxFrame& frame, CommandList& commands,
@@ -79,6 +84,7 @@ class NativeFxRuntime {
     fx::FxProgram program_;
     fx::FxShaderCompiler compiler_{};
     std::vector<handles::DescriptorSetLayoutHandle> sharedLayouts_;
+    std::vector<handles::DescriptorSetHandle> sharedDescriptorSets_;
     FxResourceRuntime resources_;
     FxPipelineRuntime pipelines_;
     handles::PipelineLayoutHandle pipelineLayout_{};
