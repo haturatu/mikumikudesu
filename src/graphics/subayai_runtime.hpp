@@ -6,6 +6,7 @@
 #include "graphics/subayai_environment.hpp"
 #include "graphics/subayai_light_sampling.hpp"
 #include "graphics/subayai_material_gpu.hpp"
+#include "graphics/subayai_material_runtime.hpp"
 
 #include <span>
 #include <string>
@@ -17,6 +18,7 @@ struct SubayaiFrame {
     fx::FxFrameContext context;
     fx::FxFramePlan plan;
     std::vector<SubayaiMaterialGpu> materials;
+    handles::BufferHandle materialBuffer{};
     std::vector<AliasEntry> lightSampling;
     EnvironmentGpuResult environment;
 };
@@ -40,7 +42,7 @@ class SubayaiRuntime {
     [[nodiscard]] SubayaiFrame prepareFrame(const fx::FxFrameContext& context,
                                             std::span<const core::MaterialParameterBlock> materials,
                                             std::span<const AliasEntry> lightSampling,
-                                            const EnvironmentGpuResult& environment) const;
+                                            const EnvironmentGpuResult& environment);
     [[nodiscard]] VulkanFxExecutor::Stats execute(SubayaiFrame& frame, CommandList& commands,
                                                   const FxExecutionResources& resources = {}) const;
 
@@ -48,6 +50,7 @@ class SubayaiRuntime {
     Device* device_{};
     fx::FxProgram program_;
     std::vector<SubayaiMaterialGpu> materials_;
+    SubayaiMaterialGpuRuntime materialRuntime_;
     bool ready_{};
 };
 

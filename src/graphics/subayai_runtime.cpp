@@ -32,35 +32,33 @@ void SubayaiRuntime::reset() noexcept {
     device_ = nullptr;
     program_ = {};
     materials_.clear();
+    materialRuntime_.reset();
     ready_ = false;
 }
 
 bool SubayaiRuntime::syncMaterials(std::span<const core::MaterialParameterBlock> materials) {
     if (!ready_)
         return false;
-    materials_.clear();
-    materials_.reserve(materials.size());
-    for (const auto& material : materials)
-        materials_.push_back(linkSubayaiMaterial(material));
+    if (!materialRuntime_.sync(*device_, materials))
+        return false;
+    const auto linked = materialRuntime_.materials();
+    materials_.assign(linked.begin(), linked.end());
     return true;
 }
 
 SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
                                           std::span<const core::MaterialParameterBlock> materials,
                                           std::span<const AliasEntry> lightSampling,
-                                          const EnvironmentGpuResult& environment) const {
+                                          const EnvironmentGpuResult& environment) {
     if (!ready_ || device_ == nullptr)
         throw std::logic_error("Subayai runtime is not initialized");
+    if (!materials.empty() && !syncMaterials(materials))
+        throw std::runtime_error("Subayai material GPU upload failed");
     SubayaiFrame frame;
     frame.context = context;
     frame.plan = fx::FxCompiler{}.plan(program_, context);
-    frame.materials = materials_.empty() ? std::vector<SubayaiMaterialGpu>{} : materials_;
-    if (!materials.empty()) {
-        frame.materials.clear();
-        frame.materials.reserve(materials.size());
-        for (const auto& material : materials)
-            frame.materials.push_back(linkSubayaiMaterial(material));
-    }
+    frame.materials = materials_;
+    frame.materialBuffer = materialRuntime_.buffer();
     frame.lightSampling.assign(lightSampling.begin(), lightSampling.end());
     frame.environment = environment;
     return frame;
