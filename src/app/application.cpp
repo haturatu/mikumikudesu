@@ -204,6 +204,47 @@ Application::recordNativeFrame(graphics::CommandList& commands, const graphics::
     }
     const std::array lightSampling{graphics::AliasEntry{1.0F, 0}};
     try {
+        std::vector<graphics::NativeGeometryMeshUpload> geometryUploads;
+        std::vector<graphics::WorldInstance> worldInstances;
+        geometryUploads.reserve(nativeGeometry_.size());
+        for (const auto& mesh : nativeGeometry_) {
+            geometryUploads.push_back({
+                .meshId = mesh.meshId,
+                .deform = {.baseVertices = mesh.baseVertices,
+                           .bones = mesh.bones,
+                           .morphDeltas = mesh.morphDeltas,
+                           .morphWeights = mesh.morphWeights,
+                           .indices = mesh.indices,
+                           .deformedVertices = mesh.deformedVertices},
+                .deformPipeline = device_->nativeDeformPipeline(),
+                .deformDescriptorLayout = device_->nativeDeformDescriptorLayout(),
+                .topologyGeneration = scene_.topologyGeneration(),
+                .deformVersion = nativeDeformVersion_,
+            });
+            const auto cloneCenter = (static_cast<float>(mesh.cloneCount) - 1.0F) * 0.5F;
+            for (std::uint32_t clone = 0; clone < mesh.cloneCount; ++clone) {
+                graphics::Matrix3x4 transform;
+                transform.values[3] = (static_cast<float>(clone) - cloneCenter) * 2.2F;
+                worldInstances.push_back({.meshId = mesh.meshId, .transform = transform});
+            }
+        }
+        const auto synchronizeGeometry = [&](auto* runtime) {
+            std::string geometryError;
+            if (!runtime->syncGeometry(geometryUploads, &geometryError))
+                throw std::runtime_error(geometryError.empty() ? "native geometry synchronization failed"
+                                                                 : geometryError);
+            if (geometryUploads.empty())
+                return;
+            if (!runtime->synchronizeAcceleration(&geometryError))
+                throw std::runtime_error(geometryError.empty() ? "native acceleration synchronization failed"
+                                                                 : geometryError);
+            static_cast<void>(runtime->synchronizeWorld(nativeDeformVersion_, worldInstances));
+            runtime->recordGeometry(commands);
+        };
+        if (auto* runtime = nativeRenderer_.subayai())
+            synchronizeGeometry(runtime);
+        else if (auto* bdptRuntime = nativeRenderer_.bdpt())
+            synchronizeGeometry(bdptRuntime);
         return nativeRenderer_.recordFrame(commands, makeNativeFrameContext(target), scene_.dirtyFlags(), materials,
                                            lightSampling, {});
     } catch (const std::exception& exception) {
@@ -262,6 +303,8 @@ void Application::resetProjectRuntimeState() {
     animatedVertexCount_ = 0;
     animatedMaterialTemplates_.clear();
     animatedTopologyGeneration_ = 0;
+    nativeGeometry_.clear();
+    nativeDeformVersion_ = 0;
     mediaSeconds_ = 0.0;
     uploadedVideoFrame_ = -1;
     videoMode_ = false;
@@ -1006,6 +1049,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     std::size_t materialCursor = 0;
     std::uint32_t indexCursor = 0;
     std::pmr::vector<graphics::PreviewBoneTransform> bones(scratch);
+    std::vector<NativeModelGeometry> nativeGeometry;
+    nativeGeometry.reserve(evaluated.size());
     for (const auto& evaluatedModel : evaluated) {
         const auto& instance = *evaluatedModel.instance;
         const auto& frame = evaluatedModel.frame;
@@ -1086,6 +1131,69 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         const auto cloneCount = std::max(instance.cloneCount, 1U);
         const auto baseVertex = static_cast<std::uint32_t>(vertices.size());
         const auto firstModelIndex = indexCursor;
+        NativeModelGeometry native;
+        native.meshId = static_cast<std::uint32_t>(nativeGeometry.size() + 1U);
+        native.cloneCount = cloneCount;
+        native.indices.assign(instance.model->indices.begin(), instance.model->indices.end());
+        native.morphWeights.resize(instance.model->morphs.size(), 0.0F);
+        for (std::size_t morphIndex = 0; morphIndex < native.morphWeights.size(); ++morphIndex) {
+            if (morphIndex < frame.morphWeights.size())
+                native.morphWeights[morphIndex] = frame.morphWeights[morphIndex];
+        }
+        std::vector<std::array<std::uint32_t, 2>> nativeMorphRanges(instance.model->vertices.size());
+        std::vector<std::uint32_t> nativeMorphCounts(instance.model->vertices.size(), 0U);
+        for (const auto& morph : instance.model->morphs) {
+            if (morph.type != 1)
+                continue;
+            for (const auto& offset : morph.offsets) {
+                if (offset.index < 0 || static_cast<std::size_t>(offset.index) >= nativeMorphCounts.size())
+                    continue;
+                ++nativeMorphCounts[static_cast<std::size_t>(offset.index)];
+            }
+        }
+        std::size_t nativeMorphOffset = 0;
+        for (std::size_t vertexIndex = 0; vertexIndex < nativeMorphRanges.size(); ++vertexIndex) {
+            if (nativeMorphOffset > std::numeric_limits<std::uint32_t>::max())
+                throw std::overflow_error("native morph delta count exceeds the native deform ABI");
+            nativeMorphRanges[vertexIndex] = {static_cast<std::uint32_t>(nativeMorphOffset),
+                                              nativeMorphCounts[vertexIndex]};
+            nativeMorphOffset += nativeMorphCounts[vertexIndex];
+        }
+        native.morphDeltas.resize(nativeMorphOffset);
+        std::vector<std::uint32_t> nativeMorphCursors;
+        nativeMorphCursors.reserve(nativeMorphRanges.size());
+        for (const auto range : nativeMorphRanges)
+            nativeMorphCursors.push_back(range[0]);
+        for (std::size_t morphIndex = 0; morphIndex < instance.model->morphs.size(); ++morphIndex) {
+            const auto& morph = instance.model->morphs[morphIndex];
+            if (morph.type != 1)
+                continue;
+            for (const auto& offset : morph.offsets) {
+                if (offset.index < 0 || static_cast<std::size_t>(offset.index) >= nativeMorphCursors.size())
+                    continue;
+                graphics::PreviewMorphDelta delta;
+                for (std::size_t axis = 0; axis < 3; ++axis)
+                    delta.delta[axis] = offset.vector3[axis] * instance.normalization.scale;
+                delta.morphIndex = static_cast<std::uint32_t>(morphIndex);
+                native.morphDeltas[nativeMorphCursors[static_cast<std::size_t>(offset.index)]++] = delta;
+            }
+        }
+        if (gpuSkinning) {
+            native.bones.reserve(frame.bones.size());
+            for (const auto& source : frame.bones) {
+                graphics::PreviewBoneTransform bone;
+                std::copy(source.rotation.begin(), source.rotation.end(), bone.rotation);
+                const auto rotatedCenter = rotateQuaternion(source.rotation, instance.normalization.center);
+                for (std::size_t axis = 0; axis < 3; ++axis) {
+                    bone.translation[axis] =
+                        (rotatedCenter[axis] + source.translation[axis] - instance.normalization.center[axis]) *
+                        instance.normalization.scale;
+                }
+                native.bones.push_back(bone);
+            }
+        }
+        native.baseVertices.reserve(frame.vertices.size());
+        native.deformedVertices.reserve(frame.vertices.size());
         if (rebuildVertices) {
             auto conversion = frameProfiler_.measure(core::ProfileSection::vertexConvert);
             for (std::size_t sourceIndex = 0; sourceIndex < frame.vertices.size(); ++sourceIndex) {
@@ -1124,6 +1232,46 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             }
             conversion.finish();
         }
+        for (std::size_t sourceIndex = 0; sourceIndex < frame.vertices.size(); ++sourceIndex) {
+            const auto& source = frame.vertices[sourceIndex];
+            graphics::PreviewVertex vertex;
+            std::memcpy(vertex.position, source.position.data(), sizeof(vertex.position));
+            std::memcpy(vertex.normal, source.normal.data(), sizeof(vertex.normal));
+            std::memcpy(vertex.uv, source.uv.data(), sizeof(vertex.uv));
+            if (gpuSkinning) {
+                for (std::size_t influence = 0; influence < 4; ++influence) {
+                    vertex.bones[influence] =
+                        source.bones[influence] < 0 ||
+                                static_cast<std::size_t>(source.bones[influence]) >= frame.bones.size()
+                            ? -1
+                            : source.bones[influence];
+                    vertex.weights[influence] = source.weights[influence];
+                }
+                const auto normalizedC = normalizePreviewPoint(source.sdefC, instance.normalization);
+                const auto normalizedR0 = normalizePreviewPoint(source.sdefR0, instance.normalization);
+                const auto normalizedR1 = normalizePreviewPoint(source.sdefR1, instance.normalization);
+                std::copy(normalizedC.begin(), normalizedC.end(), vertex.sdefC);
+                for (std::size_t axis = 0; axis < 3; ++axis)
+                    vertex.sdefHalfDelta[axis] = (normalizedR0[axis] - normalizedR1[axis]) * 0.5F;
+                vertex.skinningType = static_cast<std::uint32_t>(source.weightType);
+                vertex.gpuSkinning = 1;
+            }
+            vertex.edgeScale = source.edgeScale;
+            const auto morphRange = nativeMorphRanges[sourceIndex];
+            vertex.morphStart = morphRange[0];
+            vertex.morphCount = gpuSkinning ? morphRange[1] : 0U;
+            native.baseVertices.push_back(vertex);
+
+            graphics::NativeDeformedVertex seed;
+            std::copy(std::begin(vertex.position), std::end(vertex.position), seed.position);
+            seed.position[3] = 1.0F;
+            std::copy(std::begin(vertex.normal), std::end(vertex.normal), seed.normal);
+            seed.normal[3] = 0.0F;
+            std::copy(std::begin(vertex.uv), std::end(vertex.uv), seed.uv);
+            native.deformedVertices.push_back(seed);
+        }
+        if (!native.baseVertices.empty() && !native.indices.empty())
+            nativeGeometry.push_back(std::move(native));
         if (rebuildTopology) {
             for (const auto index : instance.model->indices)
                 animatedIndices_.push_back(baseVertex + index);
@@ -1177,6 +1325,10 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             firstIndex += instance.model->materials[materialIndex].indexCount;
         }
     }
+    nativeGeometry_ = std::move(nativeGeometry);
+    nativeDeformVersion_ = nativeDeformVersion_ == std::numeric_limits<std::uint64_t>::max()
+                               ? 1U
+                               : nativeDeformVersion_ + 1U;
     if ((rebuildVertices && vertices.empty()) || animatedIndices_.empty())
         return;
     if (rebuildTopology) {

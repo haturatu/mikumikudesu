@@ -140,11 +140,35 @@ bool NativeDeformRuntime::initialize(Device& device, const NativeDeformUpload& u
         resources_.deformedVertices = device.createBufferEx(plan_.deformedVertices);
         resources_.indices = device.createBufferEx(uploadable(plan_.indices, sizeof(std::uint32_t)));
 
+        std::vector<NativeDeformedVertex> initialDeformed;
+        if (upload.deformedVertices.empty()) {
+            // A valid finite seed lets the first BLAS build complete before
+            // the first recorded deform dispatch. The command-list path
+            // overwrites it with the animated result in the same frame.
+            initialDeformed.resize(input.vertexCount);
+            for (std::size_t index = 0; index < initialDeformed.size(); ++index) {
+                std::copy(std::begin(upload.baseVertices[index].position), std::end(upload.baseVertices[index].position),
+                          initialDeformed[index].position);
+                initialDeformed[index].position[3] = 1.0F;
+                std::copy(std::begin(upload.baseVertices[index].normal), std::end(upload.baseVertices[index].normal),
+                          initialDeformed[index].normal);
+                initialDeformed[index].normal[3] = 0.0F;
+                std::copy(std::begin(upload.baseVertices[index].uv), std::end(upload.baseVertices[index].uv),
+                          initialDeformed[index].uv);
+            }
+            device.uploadBufferEx(resources_.deformedVertices, std::as_bytes(std::span(initialDeformed)), 0);
+        }
+
         device.uploadBufferEx(resources_.baseVertices, std::as_bytes(upload.baseVertices), 0);
         device.uploadBufferEx(resources_.bones, std::as_bytes(upload.bones), 0);
         device.uploadBufferEx(resources_.morphDeltas, std::as_bytes(upload.morphDeltas), 0);
         device.uploadBufferEx(resources_.morphWeights, std::as_bytes(upload.morphWeights), 0);
         device.uploadBufferEx(resources_.indices, std::as_bytes(upload.indices), 0);
+        if (!upload.deformedVertices.empty()) {
+            if (upload.deformedVertices.size() != input.vertexCount)
+                throw std::invalid_argument("native deform seed vertex count does not match base vertices");
+            device.uploadBufferEx(resources_.deformedVertices, std::as_bytes(upload.deformedVertices), 0);
+        }
 
         const std::array<DescriptorBindingEx, 5> bindings{
             DescriptorBindingEx{0, 0, resources_.baseVertices},
@@ -189,6 +213,11 @@ bool NativeDeformRuntime::update(Device& device, const NativeDeformUpload& uploa
         device.uploadBufferEx(resources_.morphDeltas, std::as_bytes(upload.morphDeltas), 0);
         device.uploadBufferEx(resources_.morphWeights, std::as_bytes(upload.morphWeights), 0);
         device.uploadBufferEx(resources_.indices, std::as_bytes(upload.indices), 0);
+        if (!upload.deformedVertices.empty()) {
+            if (upload.deformedVertices.size() != input.vertexCount)
+                throw std::invalid_argument("native deform seed vertex count does not match base vertices");
+            device.uploadBufferEx(resources_.deformedVertices, std::as_bytes(upload.deformedVertices), 0);
+        }
     } catch (const std::exception& exception) {
         if (error != nullptr)
             *error = exception.what();

@@ -4,6 +4,7 @@
 
 #include "core/log.hpp"
 #include "graphics/timestamp.hpp"
+#include "graphics/subayai_deform.hpp"
 #include "platform/window.hpp"
 #include "ui/fonts.hpp"
 #include "ui/theme.hpp"
@@ -380,6 +381,7 @@ VulkanDevice::VulkanDevice(platform::Window& window, bool validation)
     createPreviewDescriptors();
     createPipeline();
     createNativeOutputPipeline();
+    createNativeDeformPipeline();
     createFrames();
     createUi();
     const std::array<PreviewVertex, 3> fallbackVertices{{
@@ -402,6 +404,7 @@ VulkanDevice::~VulkanDevice() {
     if (device_ != VK_NULL_HANDLE)
         vkDeviceWaitIdle(device_);
     uploadContext_.reset();
+    destroyNativeDeformPipeline();
     destroyTypedResources();
     destroyViewportResources();
     destroyUi();
@@ -1311,6 +1314,55 @@ void VulkanDevice::destroyNativeOutputPipeline() noexcept {
     nativeOutputDescriptorPool_ = VK_NULL_HANDLE;
     nativeOutputDescriptorSetLayout_ = VK_NULL_HANDLE;
     nativeOutputDescriptors_.fill(VK_NULL_HANDLE);
+}
+
+void VulkanDevice::createNativeDeformPipeline() {
+    const auto code = readBinary(DAYO_NATIVE_DEFORM_SPV);
+    try {
+        nativeDeformDescriptorLayout_ = createDescriptorSetLayoutEx(graphics::nativeDeformDescriptorLayout());
+        nativeDeformPipelineLayout_ = createPipelineLayoutEx(
+            nativeDeformPipelineLayout(nativeDeformDescriptorLayout_));
+        const auto words = std::span<const std::uint32_t>(reinterpret_cast<const std::uint32_t*>(code.data()),
+                                                           code.size() / sizeof(std::uint32_t));
+        nativeDeformShader_ = createShaderEx({.spirv = words, .entryPoint = "NativeDeform",
+                                              .stage = ShaderStageMask::compute});
+        nativeDeformPipeline_ = createComputePipelineEx(
+            {.layout = nativeDeformPipelineLayout_, .shaders = {nativeDeformShader_}});
+    } catch (...) {
+        destroyNativeDeformPipeline();
+        throw;
+    }
+}
+
+void VulkanDevice::destroyNativeDeformPipeline() noexcept {
+    if (nativeDeformPipeline_.valid()) {
+        try {
+            destroyPipelineEx(nativeDeformPipeline_);
+        } catch (...) {
+        }
+    }
+    if (nativeDeformShader_.valid()) {
+        try {
+            destroyShaderEx(nativeDeformShader_);
+        } catch (...) {
+        }
+    }
+    if (nativeDeformPipelineLayout_.valid()) {
+        try {
+            destroyPipelineLayoutEx(nativeDeformPipelineLayout_);
+        } catch (...) {
+        }
+    }
+    if (nativeDeformDescriptorLayout_.valid()) {
+        try {
+            destroyDescriptorSetLayoutEx(nativeDeformDescriptorLayout_);
+        } catch (...) {
+        }
+    }
+    nativeDeformPipeline_ = {};
+    nativeDeformShader_ = {};
+    nativeDeformPipelineLayout_ = {};
+    nativeDeformDescriptorLayout_ = {};
 }
 
 void VulkanDevice::createPreviewDescriptors() {

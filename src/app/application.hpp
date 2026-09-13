@@ -98,6 +98,18 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::uint64_t animatedVertexCount_{};
     std::vector<graphics::PreviewMaterial> animatedMaterialTemplates_;
     std::vector<graphics::PreviewDraw> animatedDraws_;
+    struct NativeModelGeometry {
+        std::uint32_t meshId{};
+        std::uint32_t cloneCount{1};
+        std::vector<graphics::PreviewVertex> baseVertices;
+        std::vector<graphics::PreviewBoneTransform> bones;
+        std::vector<graphics::PreviewMorphDelta> morphDeltas;
+        std::vector<float> morphWeights;
+        std::vector<std::uint32_t> indices;
+        std::vector<graphics::NativeDeformedVertex> deformedVertices;
+    };
+    std::vector<NativeModelGeometry> nativeGeometry_;
+    std::uint64_t nativeDeformVersion_{};
     std::uint64_t animatedTopologyGeneration_{};
     float animationFrame_{};
     int uploadedAnimationFrame_{-1};

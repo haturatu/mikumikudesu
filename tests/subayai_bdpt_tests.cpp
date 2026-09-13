@@ -576,12 +576,15 @@ int main() {
         const std::array<dayo::graphics::PreviewMorphDelta, 1> morphDeltas{};
         const std::array<float, 1> morphWeights{0.5F};
         const std::array<std::uint32_t, 3> indices{0, 1, 0};
+        std::array<dayo::graphics::NativeDeformedVertex, 2> deformedVertices{};
+        deformedVertices[0].position[0] = 3.0F;
         const dayo::graphics::NativeDeformUpload upload{
             .baseVertices = vertices,
             .bones = bones,
             .morphDeltas = morphDeltas,
             .morphWeights = morphWeights,
             .indices = indices,
+            .deformedVertices = deformedVertices,
         };
         const auto layout = dayo::graphics::nativeDeformDescriptorLayout();
         ok &= check(layout.bindings.size() == 5 && layout.bindings.front().binding == 0 &&
@@ -600,6 +603,11 @@ int main() {
         const auto vertexBytes = vertices.size() * sizeof(vertices.front());
         const auto uploaded = device.readbackBufferEx(runtime.resources().baseVertices, 0, vertexBytes);
         ok &= check(uploaded.size() == vertexBytes, "native deform uploads base vertex data");
+        const auto uploadedSeed = device.readbackBufferEx(
+            runtime.resources().deformedVertices, 0, deformedVertices.size() * sizeof(deformedVertices.front()));
+        dayo::graphics::NativeDeformedVertex seed{};
+        std::memcpy(&seed, uploadedSeed.data(), sizeof(seed));
+        ok &= check(seed.position[0] == 3.0F, "native deform uploads the host seed for the initial BLAS");
         MockDeformCommands commands;
         runtime.record(commands);
         ok &= check(commands.events == std::vector<std::string>{"bind", "descriptor", "push", "dispatch:1x1x1"},
@@ -614,12 +622,15 @@ int main() {
         const auto baseVertexBuffer = runtime.resources().baseVertices;
         auto updatedVertices = vertices;
         updatedVertices[0].position[0] = 2.0F;
+        auto updatedDeformedVertices = deformedVertices;
+        updatedDeformedVertices[0].position[0] = 4.0F;
         const dayo::graphics::NativeDeformUpload updatedUpload{
             .baseVertices = updatedVertices,
             .bones = bones,
             .morphDeltas = morphDeltas,
             .morphWeights = morphWeights,
             .indices = indices,
+            .deformedVertices = updatedDeformedVertices,
         };
         ok &= check(runtime.update(device, updatedUpload, &error) && error.empty(),
                     "native deform refreshes inputs without changing mesh resources");
@@ -630,6 +641,10 @@ int main() {
         std::memcpy(&refreshedVertex, refreshed.data(), sizeof(refreshedVertex));
         ok &= check(refreshedVertex.position[0] == 2.0F,
                     "native deform refresh uploads the current animated vertex data");
+        const auto refreshedSeed = device.readbackBufferEx(
+            runtime.resources().deformedVertices, 0, updatedDeformedVertices.size() * sizeof(updatedDeformedVertices.front()));
+        std::memcpy(&seed, refreshedSeed.data(), sizeof(seed));
+        ok &= check(seed.position[0] == 4.0F, "native deform refresh uploads the current BLAS seed");
         const auto blas = runtime.blasGeometry();
         ok &= check(blas.triangles.front().vertexBuffer == runtime.resources().deformedVertices &&
                         blas.triangles.front().indexBuffer == runtime.resources().indices,
@@ -654,7 +669,8 @@ int main() {
                        .bones = bones,
                        .morphDeltas = morphDeltas,
                        .morphWeights = morphWeights,
-                       .indices = indices},
+                       .indices = indices,
+                       .deformedVertices = {}},
             .deformPipeline = {10, 1},
             .deformDescriptorLayout = {11, 1},
             .topologyGeneration = 3,
@@ -693,7 +709,8 @@ int main() {
                        .bones = bones,
                        .morphDeltas = morphDeltas,
                        .morphWeights = morphWeights,
-                       .indices = indices},
+                       .indices = indices,
+                       .deformedVertices = {}},
             .deformPipeline = mesh.deformPipeline,
             .deformDescriptorLayout = mesh.deformDescriptorLayout,
             .topologyGeneration = 3,
