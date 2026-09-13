@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -86,6 +87,7 @@ struct FxDispatch {
     // compatible for Preview callers, while native backends consume this
     // lossless variant.
     FxExecutable executable{FxRasterDispatch{}};
+    std::vector<std::string> macros;
 };
 
 struct FxProgram {
@@ -93,6 +95,8 @@ struct FxProgram {
     std::vector<FxDispatch> passes;
     std::uint64_t generation{};
     std::uint64_t sourceVersion{};
+    std::filesystem::path sourcePath;
+    std::string hlsl;
 };
 
 struct FxRequiredFeatures {

@@ -3796,7 +3796,7 @@ handles::ShaderHandle VulkanDevice::createShaderEx(const ShaderDesc& desc) {
         .codeSize = desc.spirv.size_bytes(),
         .pCode = desc.spirv.data(),
     };
-    TypedShader typed{.desc = desc};
+    TypedShader typed{.stage = desc.stage, .entryPoint = desc.entryPoint};
     check(vkCreateShaderModule(device_, &createInfo, nullptr, &typed.module), "create typed shader module");
     const auto handle = typedShaderHandles_.create();
     typedShaders_.emplace(handle, std::move(typed));
@@ -3862,13 +3862,13 @@ handles::PipelineHandle VulkanDevice::createComputePipelineEx(const ComputePipel
         throw std::invalid_argument("compute pipeline requires exactly one shader");
     const auto shaderIt = typedShaders_.find(desc.shaders.front());
     if (shaderIt == typedShaders_.end() || !typedShaderHandles_.isAlive(desc.shaders.front()) ||
-        shaderIt->second.desc.stage != ShaderStageMask::compute)
+        shaderIt->second.stage != ShaderStageMask::compute)
         throw std::invalid_argument("compute pipeline references a non-compute shader");
     const VkPipelineShaderStageCreateInfo stage{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
         .stage = VK_SHADER_STAGE_COMPUTE_BIT,
         .module = shaderIt->second.module,
-        .pName = shaderIt->second.desc.entryPoint.c_str(),
+        .pName = shaderIt->second.entryPoint.c_str(),
     };
     const VkComputePipelineCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
@@ -3897,15 +3897,15 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
         const auto shaderIt = typedShaders_.find(handle);
         if (shaderIt == typedShaders_.end() || !typedShaderHandles_.isAlive(handle))
             throw std::invalid_argument("graphics pipeline references a stale shader");
-        if (shaderIt->second.desc.stage == ShaderStageMask::vertex)
+        if (shaderIt->second.stage == ShaderStageMask::vertex)
             hasVertex = true;
-        else if (shaderIt->second.desc.stage == ShaderStageMask::fragment)
+        else if (shaderIt->second.stage == ShaderStageMask::fragment)
             hasFragment = true;
         else
             throw std::invalid_argument("graphics pipeline accepts only vertex and fragment shaders");
         stages.push_back({VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
-                          toVkShaderStage(shaderIt->second.desc.stage), shaderIt->second.module,
-                          shaderIt->second.desc.entryPoint.c_str(), nullptr});
+                          toVkShaderStage(shaderIt->second.stage), shaderIt->second.module,
+                          shaderIt->second.entryPoint.c_str(), nullptr});
     }
     if (!hasVertex || !hasFragment)
         throw std::invalid_argument("graphics pipeline requires vertex and fragment shaders");
@@ -3995,10 +3995,10 @@ handles::PipelineHandle VulkanDevice::createRayTracingPipelineEx(const RayTracin
     const auto addStage = [&](handles::ShaderHandle handle, ShaderStageMask expected) -> std::uint32_t {
         const auto shaderIt = typedShaders_.find(handle);
         if (shaderIt == typedShaders_.end() || !typedShaderHandles_.isAlive(handle) ||
-            shaderIt->second.desc.stage != expected)
+            shaderIt->second.stage != expected)
             throw std::invalid_argument("ray-tracing shader stage does not match its group");
         stages.push_back({VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, toVkShaderStage(expected),
-                          shaderIt->second.module, shaderIt->second.desc.entryPoint.c_str(), nullptr});
+                          shaderIt->second.module, shaderIt->second.entryPoint.c_str(), nullptr});
         return static_cast<std::uint32_t>(stages.size() - 1U);
     };
     const auto addGeneral = [&](handles::ShaderHandle handle, ShaderStageMask expected) {
