@@ -7,6 +7,8 @@
 #include "graphics/subayai_deform.hpp"
 #include "graphics/subayai_environment.hpp"
 #include "graphics/subayai_light_sampling.hpp"
+#include "graphics/subayai_material_gpu.hpp"
+#include "graphics/subayai_runtime.hpp"
 
 #include <array>
 #include <cmath>
@@ -94,6 +96,53 @@ struct MockEnvironmentBackend : dayo::graphics::IEnvironmentBackend {
     }
 };
 
+struct MockNativeDevice final : dayo::graphics::Device {
+    const dayo::graphics::DeviceCapabilities& capabilities() const noexcept override {
+        return capabilities_;
+    }
+    const dayo::graphics::GraphicsConvention& convention() const noexcept override {
+        return convention_;
+    }
+    dayo::graphics::RendererKind activeRenderer() const noexcept override {
+        return dayo::graphics::RendererKind::subayai;
+    }
+    void selectRenderer(dayo::graphics::RendererKind) override {}
+    void resize() override {}
+    void beginUiFrame() override {}
+    void renderFrame() override {}
+    void waitIdle() override {}
+    void uploadPreviewMesh(std::span<const dayo::graphics::PreviewVertex>, std::span<const std::uint32_t>) override {}
+    void updatePreviewVertices(std::span<const dayo::graphics::PreviewVertex>) override {}
+    void updatePreviewBones(std::span<const dayo::graphics::PreviewBoneTransform>) override {}
+    void uploadPreviewMorphDeltas(std::span<const dayo::graphics::PreviewMorphDelta>) override {}
+    void updatePreviewMorphWeights(std::span<const float>) override {}
+    void updatePreviewMaterials(std::span<const dayo::graphics::PreviewMaterial>) override {}
+    void updatePreviewDraws(std::span<const dayo::graphics::PreviewDraw>) override {}
+    void uploadPreviewTextures(std::span<const dayo::graphics::PreviewTexture>) override {}
+    void uploadPreviewBackground(std::span<const dayo::graphics::PreviewTexture>) override {}
+    void clearPreviewResources() override {}
+    void updatePreviewScene(const dayo::graphics::PreviewScene&) override {}
+    dayo::graphics::BufferHandle createBuffer(const dayo::graphics::BufferDesc&) override {
+        return nextHandle_++;
+    }
+    dayo::graphics::TextureHandle createTexture(const dayo::graphics::TextureDesc&) override {
+        return nextHandle_++;
+    }
+
+    dayo::graphics::DeviceCapabilities capabilities_{
+        .gpuName = "mock",
+        .driverName = "mock",
+        .swapchain = true,
+        .bufferDeviceAddress = true,
+        .descriptorIndexing = true,
+        .accelerationStructure = true,
+        .rayQuery = true,
+        .fragmentShaderBarycentric = true,
+    };
+    dayo::graphics::GraphicsConvention convention_;
+    dayo::graphics::BufferHandle nextHandle_{1};
+};
+
 } // namespace
 
 dayo::graphics::BlasGeometryDesc geometry(std::uint32_t vertexBuffer) {
@@ -116,6 +165,60 @@ int main() {
     using dayo::graphics::ShaderBindingTableBuilder;
     using dayo::graphics::TlasAction;
     bool ok = true;
+
+    // Native material linking keeps Subayai hair controls in a dedicated GPU
+    // ABI while leaving PreviewMaterialGpu untouched.
+    {
+        dayo::core::MaterialParameterBlock parameters;
+        parameters.set("BaseColor", std::array<float, 4>{0.2F, 0.3F, 0.4F, 1.0F});
+        parameters.set("Anisotropy", 0.75F);
+        parameters.set("IOR", std::array<float, 2>{1.45F, 0.12F});
+        parameters.set("AutoNormal", 1.0F);
+        parameters.set("Roughness", 0.25F);
+        const auto gpu = dayo::graphics::linkSubayaiMaterial(parameters);
+        ok &= check(gpu.baseColor[0] == 0.2F && gpu.baseColor[3] == 1.0F, "Subayai base color links to GPU ABI");
+        ok &= check(gpu.hair[0] == 0.75F && gpu.hair[1] == 1.45F && gpu.hair[2] == 0.12F && gpu.hair[3] == 1.0F,
+                    "Subayai hair anisotropy IOR and AutoNormal link to GPU ABI");
+        ok &= check(gpu.surface[0] == 0.25F, "Subayai roughness links to native material ABI");
+    }
+
+    // Feature requirements are derived from the compiled graph, not from a
+    // renderer name alone.
+    {
+        dayo::fx::FxProgram subayaiProgram;
+        subayaiProgram.passes.push_back({"compute", dayo::fx::FxOpKind::compute, "cs", 1, 1, {}, {}, {}});
+        const auto subayaiRequired = dayo::fx::requiredFeatures(subayaiProgram);
+        ok &= check(!subayaiRequired.rayTracingPipeline, "compute Subayai graph does not require RT pipeline");
+        dayo::fx::FxProgram rtProgram;
+        rtProgram.passes.push_back(
+            {"rt", dayo::fx::FxOpKind::raytracing, {}, 1, 1, {}, {}, dayo::fx::FxRayTracingDispatch{}});
+        const auto rtRequired = dayo::fx::requiredFeatures(rtProgram);
+        ok &= check(rtRequired.accelerationStructure && rtRequired.rayQuery && rtRequired.rayTracingPipeline,
+                    "RT graph reports its Vulkan feature requirements");
+    }
+
+    // A graph with only compute work can be prepared on RT-capable hardware
+    // even while DeviceCapabilities native flags remain owned by the runtime.
+    {
+        MockNativeDevice device;
+        dayo::graphics::SubayaiRuntime runtime;
+        dayo::fx::FxProgram program;
+        program.label = "Subayai";
+        program.passes.push_back({"compute", dayo::fx::FxOpKind::compute, "cs", 1, 1, {}, {}, {}});
+        std::string error;
+        ok &= check(runtime.initialize(device, program, &error), "Subayai runtime initializes on supported hardware");
+        dayo::core::MaterialParameterBlock parameters;
+        parameters.set("Anisotropy", 1.0F);
+        ok &= check(runtime.syncMaterials(std::span<const dayo::core::MaterialParameterBlock>(&parameters, 1)),
+                    "Subayai runtime links material parameters");
+        const auto frame =
+            runtime.prepareFrame(dayo::fx::makeFxFrameContext(0.0F, 0, 64, 32, 1, 0, 3, 1, 1, 1),
+                                 std::span<const dayo::core::MaterialParameterBlock>(&parameters, 1), {}, {});
+        ok &= check(frame.plan.ordered.size() == 1 && frame.materials.size() == 1,
+                    "Subayai runtime prepares graph and material frame state");
+        runtime.reset();
+        ok &= check(!runtime.ready(), "Subayai runtime reset disables execution");
+    }
 
     // Native deformation writes actual positions into a buffer that is valid
     // for both vertex reads and BLAS build input. Preview's source skinning
