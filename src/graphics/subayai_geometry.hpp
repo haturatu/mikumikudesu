@@ -24,10 +24,9 @@ struct NativeGeometryMeshUpload {
     std::uint64_t deformVersion{};
 };
 
-// Connects the native deform pass to BLAS/TLAS policy. Deform commands must be
-// recorded and submitted before synchronizeAcceleration() is called: Vulkan
-// acceleration builds consume the persistent deformed vertex buffer produced
-// by that dispatch.
+// Connects the native deform pass to BLAS/TLAS policy. synchronizeAcceleration()
+// creates or updates the persistent AS resources, while recordAcceleration()
+// records the current-frame BLAS/TLAS updates after the deform dispatch.
 class NativeGeometryRuntime {
   public:
     explicit NativeGeometryRuntime(IAccelerationBackend* backend = nullptr) : backend_(backend), acceleration_(backend) {}
@@ -45,6 +44,7 @@ class NativeGeometryRuntime {
     [[nodiscard]] bool synchronizeAcceleration(std::string* error = nullptr);
     [[nodiscard]] TlasAction synchronizeWorld(std::uint64_t worldGeneration,
                                                std::span<const WorldInstance> instances);
+    void recordAcceleration(CommandList& commands) const;
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {

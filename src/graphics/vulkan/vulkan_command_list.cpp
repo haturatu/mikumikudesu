@@ -90,6 +90,12 @@ void VulkanCommandList::memoryBarrierEx() {
     device_->recordMemoryBarrier(commandBuffer_);
 }
 
+void VulkanCommandList::accelerationStructureBarrierEx() {
+    if (device_ == nullptr)
+        throw std::logic_error("acceleration barrier requires a Vulkan device");
+    device_->recordAccelerationStructureBarrier(commandBuffer_);
+}
+
 void VulkanCommandList::transitionEx(handles::TextureHandle texture) {
     if (device_ == nullptr)
         throw std::logic_error("typed transition requires a Vulkan device");
@@ -100,6 +106,24 @@ void VulkanCommandList::traceRaysEx(handles::PipelineHandle pipeline, handles::S
                                     std::uint32_t width, std::uint32_t height, std::uint32_t depth) {
     bindPipelineEx(pipeline);
     traceRays(sbt, width, height, depth);
+}
+
+void VulkanCommandList::buildBlasEx(handles::AccelerationStructureHandle blas, const BlasGeometryDesc& geometry,
+                                    bool update) {
+    if (device_ == nullptr)
+        throw std::logic_error("typed BLAS build requires a Vulkan device");
+    if (!update)
+        throw std::invalid_argument("Vulkan command-list BLAS recording only supports updates");
+    device_->recordBlasUpdate(commandBuffer_, blas, geometry);
+}
+
+void VulkanCommandList::buildTlasEx(handles::AccelerationStructureHandle tlas,
+                                    std::span<const AccelerationInstanceDesc> instances, bool update) {
+    if (device_ == nullptr)
+        throw std::logic_error("typed TLAS build requires a Vulkan device");
+    if (!update)
+        throw std::invalid_argument("Vulkan command-list TLAS recording only supports updates");
+    device_->recordTlasUpdate(commandBuffer_, tlas, instances);
 }
 
 void VulkanCommandList::copyTextureEx(handles::TextureHandle source, handles::TextureHandle destination) {

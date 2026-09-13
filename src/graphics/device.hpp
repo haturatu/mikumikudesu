@@ -459,6 +459,15 @@ class CommandList {
     virtual void memoryBarrierEx() {
         throw std::logic_error("Typed command-list memory barriers are not implemented by this backend");
     }
+    virtual void accelerationStructureBarrierEx() {
+        throw std::logic_error("Typed acceleration barriers are not implemented by this backend");
+    }
+    virtual void buildBlasEx(handles::AccelerationStructureHandle, const BlasGeometryDesc&, bool) {
+        throw std::logic_error("Typed BLAS command recording is not implemented by this backend");
+    }
+    virtual void buildTlasEx(handles::AccelerationStructureHandle, std::span<const AccelerationInstanceDesc>, bool) {
+        throw std::logic_error("Typed TLAS command recording is not implemented by this backend");
+    }
     virtual void transitionEx(handles::TextureHandle) {
         throw std::logic_error("Typed command-list texture transitions are not implemented by this backend");
     }

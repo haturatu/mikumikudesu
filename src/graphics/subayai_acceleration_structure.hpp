@@ -57,6 +57,17 @@ class IAccelerationBackend {
     virtual void updateTlas(handles::AccelerationStructureHandle tlas, std::span<const TlasInstanceDesc> instances) = 0;
     virtual void destroyBlas(handles::AccelerationStructureHandle) {}
     virtual void destroyTlas(handles::AccelerationStructureHandle) {}
+    // Records an update after the current frame's deform dispatch. The
+    // immediate methods above remain the resource-creation and policy path;
+    // native Vulkan callers use these methods to avoid consuming stale vertex
+    // data before the command buffer has executed.
+    virtual void recordBlasUpdate(CommandList&, handles::AccelerationStructureHandle, const BlasGeometryDesc&) {
+        throw std::logic_error("recorded BLAS updates are not implemented by this backend");
+    }
+    virtual void recordTlasUpdate(CommandList&, handles::AccelerationStructureHandle,
+                                  std::span<const TlasInstanceDesc>) {
+        throw std::logic_error("recorded TLAS updates are not implemented by this backend");
+    }
 };
 
 class AccelerationStructureService {
@@ -80,6 +91,9 @@ class AccelerationStructureService {
     [[nodiscard]] TlasAction notifyWorld(std::uint64_t worldGeneration,
                                          std::span<const std::uint32_t> cloneCountsPerMesh);
     [[nodiscard]] TlasAction notifyWorld(std::uint64_t worldGeneration, std::span<const WorldInstance> instances);
+
+    void recordBlasUpdates(CommandList& commands) const;
+    void recordTlasUpdate(CommandList& commands) const;
 
     [[nodiscard]] bool removeMesh(std::uint32_t meshId);
     // Releases all backend-owned acceleration structures. Safe to call more

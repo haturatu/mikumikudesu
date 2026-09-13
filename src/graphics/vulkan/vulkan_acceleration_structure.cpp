@@ -1,7 +1,9 @@
 #include "graphics/vulkan/vulkan_acceleration_structure.hpp"
 
+#include "graphics/vulkan/vulkan_command_list.hpp"
 #include "graphics/vulkan/vulkan_device.hpp"
 
+#include <stdexcept>
 #include <vector>
 
 namespace dayo::graphics {
@@ -64,6 +66,24 @@ void VulkanAccelerationBackend::destroyBlas(handles::AccelerationStructureHandle
 
 void VulkanAccelerationBackend::destroyTlas(handles::AccelerationStructureHandle tlas) {
     device_->destroyAccelerationStructureEx(tlas);
+}
+
+void VulkanAccelerationBackend::recordBlasUpdate(CommandList& commands,
+                                                 handles::AccelerationStructureHandle blas,
+                                                 const BlasGeometryDesc& geometry) {
+    auto* vulkanCommands = dynamic_cast<VulkanCommandList*>(&commands);
+    if (vulkanCommands == nullptr)
+        throw std::invalid_argument("Vulkan acceleration updates require a Vulkan command list");
+    device_->recordBlasUpdate(vulkanCommands->commandBuffer(), blas, geometry);
+}
+
+void VulkanAccelerationBackend::recordTlasUpdate(CommandList& commands,
+                                                 handles::AccelerationStructureHandle tlas,
+                                                 std::span<const TlasInstanceDesc> instances) {
+    auto* vulkanCommands = dynamic_cast<VulkanCommandList*>(&commands);
+    if (vulkanCommands == nullptr)
+        throw std::invalid_argument("Vulkan acceleration updates require a Vulkan command list");
+    device_->recordTlasUpdate(vulkanCommands->commandBuffer(), tlas, convert(instances));
 }
 
 } // namespace dayo::graphics

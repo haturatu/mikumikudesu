@@ -188,6 +188,24 @@ TlasAction AccelerationStructureService::notifyWorld(std::uint64_t worldGenerati
     return TlasAction::none;
 }
 
+void AccelerationStructureService::recordBlasUpdates(CommandList& commands) const {
+    if (backend_ == nullptr)
+        throw std::logic_error("recorded BLAS updates require an acceleration backend");
+    for (const auto& [meshId, state] : meshes_) {
+        static_cast<void>(meshId);
+        if (state.built && state.blas.valid())
+            backend_->recordBlasUpdate(commands, state.blas, state.geometry);
+    }
+}
+
+void AccelerationStructureService::recordTlasUpdate(CommandList& commands) const {
+    if (backend_ == nullptr)
+        throw std::logic_error("recorded TLAS updates require an acceleration backend");
+    if (!tlasBuilt_ || !tlas_.valid())
+        throw std::logic_error("recorded TLAS update requires a built TLAS");
+    backend_->recordTlasUpdate(commands, tlas_, tlasScratch_);
+}
+
 bool AccelerationStructureService::removeMesh(std::uint32_t meshId) {
     const auto found = meshes_.find(meshId);
     if (found == meshes_.end())
