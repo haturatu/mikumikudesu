@@ -26,16 +26,18 @@ bool AccelerationStructureService::canBuildNative(const DeviceCapabilities& capa
     return false;
 }
 
-BlasAction AccelerationStructureService::notifyMesh(std::uint32_t meshId, BufferHandle vertexBuffer,
+BlasAction AccelerationStructureService::notifyMesh(std::uint32_t meshId, const BlasGeometryDesc& geometry,
                                                     std::uint64_t topologyGeneration, std::uint64_t deformVersion) {
+    if (geometry.triangles.empty())
+        throw std::invalid_argument("BLAS geometry must contain at least one triangle description");
     auto found = meshes_.find(meshId);
     if (found == meshes_.end()) {
         MeshState state;
         state.topologyGeneration = topologyGeneration;
         state.deformVersion = deformVersion;
-        state.vertexBuffer = vertexBuffer;
+        state.geometry = geometry;
         if (backend_ != nullptr) {
-            state.blas = backend_->createBlas(vertexBuffer);
+            state.blas = backend_->createBlas(geometry);
         }
         state.built = true;
         meshes_.emplace(meshId, state);
@@ -48,10 +50,10 @@ BlasAction AccelerationStructureService::notifyMesh(std::uint32_t meshId, Buffer
     if (state.topologyGeneration != topologyGeneration) {
         state.topologyGeneration = topologyGeneration;
         state.deformVersion = deformVersion;
-        state.vertexBuffer = vertexBuffer;
+        state.geometry = geometry;
         if (backend_ != nullptr) {
             const auto previousBlas = state.blas;
-            const auto replacement = backend_->rebuildBlas(state.blas, vertexBuffer);
+            const auto replacement = backend_->rebuildBlas(state.blas, geometry);
             if (replacement != previousBlas) {
                 if (previousBlas.valid())
                     backend_->destroyBlas(previousBlas);
@@ -65,9 +67,9 @@ BlasAction AccelerationStructureService::notifyMesh(std::uint32_t meshId, Buffer
     }
     if (state.deformVersion != deformVersion) {
         state.deformVersion = deformVersion;
-        state.vertexBuffer = vertexBuffer;
+        state.geometry = geometry;
         if (backend_ != nullptr) {
-            backend_->refitBlas(state.blas, vertexBuffer);
+            backend_->refitBlas(state.blas, geometry);
         }
         ++blasRefits_;
         log::debug("BLAS refit: mesh ", meshId, " deform ", deformVersion);

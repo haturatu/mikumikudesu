@@ -261,6 +261,7 @@ add_library(
   src/graphics/device.cpp
   src/graphics/sbt.cpp
   src/graphics/subayai_acceleration_structure.cpp
+  src/graphics/subayai_deform.cpp
   src/graphics/subayai_environment.cpp
   src/graphics/subayai_light_sampling.cpp
   src/graphics/vulkan/vulkan_device.cpp

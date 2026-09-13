@@ -45,12 +45,12 @@ struct WorldInstance {
 class IAccelerationBackend {
   public:
     virtual ~IAccelerationBackend() = default;
-    virtual handles::AccelerationStructureHandle createBlas(BufferHandle vertexBuffer) = 0;
+    virtual handles::AccelerationStructureHandle createBlas(const BlasGeometryDesc& geometry) = 0;
     // A topology rebuild may reallocate the BLAS, so it returns the current
     // handle and receives the buffer that contains the new geometry.
     virtual handles::AccelerationStructureHandle rebuildBlas(handles::AccelerationStructureHandle blas,
-                                                             BufferHandle vertexBuffer) = 0;
-    virtual void refitBlas(handles::AccelerationStructureHandle blas, BufferHandle vertexBuffer) = 0;
+                                                             const BlasGeometryDesc& geometry) = 0;
+    virtual void refitBlas(handles::AccelerationStructureHandle blas, const BlasGeometryDesc& geometry) = 0;
     virtual handles::AccelerationStructureHandle createTlas(std::span<const TlasInstanceDesc> instances) = 0;
     virtual void rebuildTlas(handles::AccelerationStructureHandle tlas,
                              std::span<const TlasInstanceDesc> instances) = 0;
@@ -71,7 +71,7 @@ class AccelerationStructureService {
     // RT-incapable GPUs keep running Preview; this never enables native passes.
     [[nodiscard]] static bool canBuildNative(const DeviceCapabilities& capabilities, RendererKind renderer) noexcept;
 
-    [[nodiscard]] BlasAction notifyMesh(std::uint32_t meshId, BufferHandle vertexBuffer,
+    [[nodiscard]] BlasAction notifyMesh(std::uint32_t meshId, const BlasGeometryDesc& geometry,
                                         std::uint64_t topologyGeneration, std::uint64_t deformVersion);
     // cloneCountsPerMesh holds visible-model clone counts only; the TLAS
     // instance count is their sum so CloneCount is reflected directly. Meshes
@@ -112,7 +112,7 @@ class AccelerationStructureService {
     struct MeshState {
         std::uint64_t topologyGeneration{};
         std::uint64_t deformVersion{};
-        BufferHandle vertexBuffer{};
+        BlasGeometryDesc geometry;
         handles::AccelerationStructureHandle blas{};
         bool built{false};
     };
