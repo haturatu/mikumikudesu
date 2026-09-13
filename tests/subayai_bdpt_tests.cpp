@@ -15,9 +15,11 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -148,7 +150,20 @@ struct MockNativeDevice final : dayo::graphics::Device {
     }
     void destroyTextureEx(dayo::graphics::handles::TextureHandle) override {}
     void destroyBufferEx(dayo::graphics::handles::BufferHandle handle) override {
+        ++destroyedBuffers;
         typedBuffers_.erase(handle);
+    }
+    dayo::graphics::handles::DescriptorSetHandle
+    allocateDescriptorSetEx(dayo::graphics::handles::DescriptorSetLayoutHandle layout,
+                            std::span<const dayo::graphics::DescriptorBindingEx> bindings) override {
+        if (!layout.valid())
+            throw std::invalid_argument("mock descriptor layout is invalid");
+        lastDescriptorBindings.assign(bindings.begin(), bindings.end());
+        return {nextDescriptorSet_++, 1};
+    }
+    void destroyDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle handle) override {
+        if (handle.valid())
+            ++destroyedDescriptorSets;
     }
     void uploadBufferEx(dayo::graphics::handles::BufferHandle handle, std::span<const std::byte> bytes,
                         std::size_t offset) override {
@@ -182,7 +197,34 @@ struct MockNativeDevice final : dayo::graphics::Device {
     dayo::graphics::BufferHandle nextHandle_{1};
     std::uint32_t nextTypedBuffer_{1};
     std::uint32_t nextTypedTexture_{1};
+    std::uint32_t nextDescriptorSet_{1};
+    std::size_t destroyedBuffers{};
+    std::size_t destroyedDescriptorSets{};
+    std::vector<dayo::graphics::DescriptorBindingEx> lastDescriptorBindings;
     std::unordered_map<dayo::graphics::handles::BufferHandle, Buffer> typedBuffers_;
+};
+
+struct MockDeformCommands final : dayo::graphics::CommandList {
+    std::vector<std::string> events;
+    std::vector<std::byte> constants;
+
+    void transition(dayo::graphics::TextureHandle) override {}
+    void bindPipeline(dayo::graphics::PipelineHandle) override {}
+    void draw(std::uint32_t, std::uint32_t) override {}
+    void dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) override {
+        events.push_back("dispatch:" + std::to_string(x) + "x" + std::to_string(y) + "x" + std::to_string(z));
+    }
+    void traceRays(std::uint32_t, std::uint32_t) override {}
+    void bindPipelineEx(dayo::graphics::handles::PipelineHandle) override {
+        events.emplace_back("bind");
+    }
+    void bindDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle) override {
+        events.emplace_back("descriptor");
+    }
+    void pushConstantsEx(std::span<const std::byte> bytes) override {
+        constants.assign(bytes.begin(), bytes.end());
+        events.emplace_back("push");
+    }
 };
 
 } // namespace
@@ -316,6 +358,59 @@ int main() {
             invalidThrew = true;
         }
         ok &= check(invalidThrew, "native deform rejects non-triangle index counts");
+    }
+
+    // The native deform runtime owns uploadable source buffers and a device
+    // local output buffer, then records the exact ordering required before
+    // handing the output to BLAS build/refit.
+    {
+        const std::array<dayo::graphics::PreviewVertex, 2> vertices{};
+        const std::array<dayo::graphics::PreviewBoneTransform, 1> bones{};
+        const std::array<dayo::graphics::PreviewMorphDelta, 1> morphDeltas{};
+        const std::array<float, 1> morphWeights{0.5F};
+        const std::array<std::uint32_t, 3> indices{0, 1, 0};
+        const dayo::graphics::NativeDeformUpload upload{
+            .baseVertices = vertices,
+            .bones = bones,
+            .morphDeltas = morphDeltas,
+            .morphWeights = morphWeights,
+            .indices = indices,
+        };
+        const auto layout = dayo::graphics::nativeDeformDescriptorLayout();
+        ok &= check(layout.bindings.size() == 5 && layout.bindings.front().binding == 0 &&
+                        layout.bindings.back().binding == 4,
+                    "native deform descriptor ABI has five stable bindings");
+        MockNativeDevice device;
+        dayo::graphics::NativeDeformRuntime runtime;
+        std::string error;
+        ok &= check(runtime.initialize(device, upload, {10, 1}, {11, 1}, &error),
+                    "native deform runtime allocates and uploads its resources");
+        ok &= check(error.empty() && runtime.ready() && runtime.resources().valid(),
+                    "native deform runtime exposes complete resource ownership");
+        ok &= check(device.lastDescriptorBindings.size() == 5 && device.lastDescriptorBindings[4].buffer ==
+                        runtime.resources().deformedVertices,
+                    "native deform descriptor set binds the deformed output");
+        const auto vertexBytes = vertices.size() * sizeof(vertices.front());
+        const auto uploaded = device.readbackBufferEx(runtime.resources().baseVertices, 0, vertexBytes);
+        ok &= check(uploaded.size() == vertexBytes, "native deform uploads base vertex data");
+        MockDeformCommands commands;
+        runtime.record(commands);
+        ok &= check(commands.events == std::vector<std::string>{"bind", "descriptor", "push", "dispatch:1x1x1"},
+                    "native deform records bind descriptor constants and dispatch in order");
+        ok &= check(commands.constants.size() == sizeof(dayo::graphics::NativeDeformPushConstants),
+                    "native deform records its ABI-sized push constants");
+        dayo::graphics::NativeDeformPushConstants constants{};
+        std::memcpy(&constants, commands.constants.data(), commands.constants.size());
+        ok &= check(constants.vertexCount == vertices.size() && constants.boneCount == bones.size() &&
+                        constants.morphCount == morphWeights.size(),
+                    "native deform push constants carry source counts");
+        const auto blas = runtime.blasGeometry();
+        ok &= check(blas.triangles.front().vertexBuffer == runtime.resources().deformedVertices &&
+                        blas.triangles.front().indexBuffer == runtime.resources().indices,
+                    "native deform exposes output and index buffers for BLAS");
+        runtime.reset();
+        ok &= check(device.destroyedBuffers == 6 && device.destroyedDescriptorSets == 1,
+                    "native deform reset releases descriptor and six buffers");
     }
 
     // BLAS branching: rebuild on topology, refit on deform-only, none otherwise.
