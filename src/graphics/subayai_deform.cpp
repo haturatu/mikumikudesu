@@ -65,7 +65,8 @@ NativeDeformPlan makeNativeDeformPlan(const NativeDeformInput& input) {
     plan.morphWeights = {checkedCountBytes(input.morphCount, sizeof(float), "morph weight"), ResourceUsage::storageRead,
                          false, ResourceLifetime::persistent};
     plan.deformedVertices = {checkedCountBytes(input.vertexCount, sizeof(NativeDeformedVertex), "deformed vertex"),
-                             ResourceUsage::storageWrite | ResourceUsage::vertexRead | ResourceUsage::asBuildRead,
+                             ResourceUsage::storageWrite | ResourceUsage::vertexRead | ResourceUsage::asBuildRead |
+                                 ResourceUsage::transferDst,
                              false, ResourceLifetime::persistent};
     plan.indices = {checkedCountBytes(input.indexCount, sizeof(std::uint32_t), "index"),
                     ResourceUsage::indexRead | ResourceUsage::asBuildRead, false, ResourceLifetime::persistent};

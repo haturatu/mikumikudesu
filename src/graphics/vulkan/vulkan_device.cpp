@@ -5531,9 +5531,44 @@ void VulkanDevice::uploadBufferEx(handles::BufferHandle handle, std::span<const 
         throw std::out_of_range("typed buffer upload exceeds allocation");
     if (bytes.empty())
         return;
-    if (it->second.mapped == nullptr)
-        throw std::logic_error("typed buffer upload requires a CPU-visible buffer");
-    std::memcpy(static_cast<std::byte*>(it->second.mapped) + offset, bytes.data(), bytes.size());
+    if (it->second.mapped != nullptr) {
+        std::memcpy(static_cast<std::byte*>(it->second.mapped) + offset, bytes.data(), bytes.size());
+        return;
+    }
+    if ((toBits(it->second.desc.usage) & toBits(ResourceUsage::transferDst)) == 0U)
+        throw std::logic_error("device-local typed buffer upload requires transfer-destination usage");
+    if (uploadContext_ == nullptr)
+        throw std::logic_error("Vulkan upload context is unavailable");
+    try {
+        uploadContext_->begin();
+        const auto staging = uploadContext_->allocate(bytes.size(), 4);
+        std::memcpy(staging.mapped, bytes.data(), bytes.size());
+        const VkBufferCopy copy{.srcOffset = staging.offset, .dstOffset = offset, .size = bytes.size()};
+        vkCmdCopyBuffer(uploadContext_->commandBuffer(), staging.buffer, it->second.resource.buffer, 1, &copy);
+        const VkBufferMemoryBarrier2 visible{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = it->second.resource.buffer,
+            .offset = offset,
+            .size = bytes.size(),
+        };
+        const VkDependencyInfo dependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .bufferMemoryBarrierCount = 1,
+            .pBufferMemoryBarriers = &visible,
+        };
+        vkCmdPipelineBarrier2(uploadContext_->commandBuffer(), &dependency);
+        const auto signal = uploadContext_->submit();
+        uploadContext_->wait(signal);
+    } catch (...) {
+        uploadContext_->abort();
+        throw;
+    }
 }
 
 std::vector<std::byte> VulkanDevice::readbackBufferEx(handles::BufferHandle handle, std::size_t offset,
