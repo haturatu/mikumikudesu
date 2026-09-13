@@ -26,6 +26,11 @@ bool AccelerationStructureService::canBuildNative(const DeviceCapabilities& capa
     return false;
 }
 
+handles::AccelerationStructureHandle AccelerationStructureService::blas(std::uint32_t meshId) const noexcept {
+    const auto found = meshes_.find(meshId);
+    return found == meshes_.end() ? handles::AccelerationStructureHandle{} : found->second.blas;
+}
+
 BlasAction AccelerationStructureService::notifyMesh(std::uint32_t meshId, const BlasGeometryDesc& geometry,
                                                     std::uint64_t topologyGeneration, std::uint64_t deformVersion) {
     if (geometry.triangles.empty())
