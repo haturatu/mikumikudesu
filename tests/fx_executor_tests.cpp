@@ -230,6 +230,12 @@ struct MockCommands final : public dayo::graphics::CommandList {
     void pushConstantsEx(std::span<const std::byte>) override {
         trace.emplace_back("pushEx");
     }
+    void beginRenderingEx(dayo::graphics::handles::TextureHandle, bool) override {
+        trace.emplace_back("beginRenderingEx");
+    }
+    void endRenderingEx() override {
+        trace.emplace_back("endRenderingEx");
+    }
     void traceRaysEx(dayo::graphics::handles::PipelineHandle, dayo::graphics::handles::ShaderBindingTableHandle,
                      std::uint32_t, std::uint32_t, std::uint32_t) override {
         trace.emplace_back("traceEx");
@@ -341,6 +347,22 @@ bool testMockTraceMatches() {
                     std::count(typedCommands.trace.begin(), typedCommands.trace.end(), "clearEx") == 1 &&
                     std::count(typedCommands.trace.begin(), typedCommands.trace.end(), "mipmapEx") == 1,
                 "typed executor records pipeline, descriptor, transition, and utility commands");
+
+    MockCommands graphicsCommands;
+    dayo::fx::FxProgram graphicsProgram;
+    dayo::fx::FxDispatch postprocess;
+    postprocess.name = "typed-postprocess";
+    postprocess.kind = dayo::fx::FxOpKind::postprocess;
+    postprocess.executable = dayo::fx::FxPostProcessDispatch{"main"};
+    postprocess.resources = {{"source", false}, {"target", true}};
+    graphicsProgram.passes.push_back(postprocess);
+    const auto graphicsPlan = dayo::fx::FxCompiler{}.plan(graphicsProgram, testContext());
+    const auto graphicsStats = executor.execute(graphicsPlan, graphicsCommands, testContext(), typedResources);
+    ok &= check(graphicsStats.postprocess == 1 &&
+                    graphicsCommands.trace == std::vector<std::string>{"transitionEx", "descriptorEx",
+                                                                         "beginRenderingEx", "bindEx", "draw:3x1",
+                                                                         "endRenderingEx"},
+                "typed graphics executor brackets postprocess draws with a render target");
     return ok;
 }
 
