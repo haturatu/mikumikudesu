@@ -18,7 +18,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -31,6 +33,37 @@ bool check(bool value, std::string_view message) {
     if (!value)
         std::cerr << "FAIL: " << message << '\n';
     return value;
+}
+
+bool hasUniqueDescriptorBindings(std::span<const std::uint32_t> words) {
+    constexpr std::uint16_t opDecorate = 71;
+    constexpr std::uint32_t bindingDecoration = 33;
+    constexpr std::uint32_t descriptorSetDecoration = 34;
+    std::map<std::uint32_t, std::uint32_t> bindings;
+    std::map<std::uint32_t, std::uint32_t> sets;
+    std::size_t offset = 5;
+    while (offset < words.size()) {
+        const auto instruction = words[offset];
+        const auto wordCount = static_cast<std::size_t>(instruction >> 16U);
+        if (wordCount == 0 || offset + wordCount > words.size())
+            return false;
+        if ((instruction & 0xFFFFU) == opDecorate && wordCount >= 4) {
+            const auto target = words[offset + 1U];
+            const auto decoration = words[offset + 2U];
+            if (decoration == bindingDecoration)
+                bindings[target] = words[offset + 3U];
+            else if (decoration == descriptorSetDecoration)
+                sets[target] = words[offset + 3U];
+        }
+        offset += wordCount;
+    }
+    std::set<std::pair<std::uint32_t, std::uint32_t>> locations;
+    for (const auto& [target, binding] : bindings) {
+        const auto set = sets.find(target);
+        if (set != sets.end())
+            locations.emplace(set->second, binding);
+    }
+    return locations.size() == bindings.size();
 }
 
 struct MockDevice final : public dayo::graphics::Device {
@@ -999,6 +1032,21 @@ bool testRealShaderCompilation() {
     ok &=
         check(!artifact.spirv.empty() && artifact.spirv.front() == 0x07230203U, "real shader compiler returns SPIR-V");
     ok &= check(!artifact.compilerVersion.empty(), "real shader compiler records its version");
+
+    dayo::fx::FxShaderCompileRequest resourceRequest;
+    resourceRequest.sourcePath = directory / "resource-registers.hlsl";
+    resourceRequest.entryPoint = "main";
+    resourceRequest.stage = dayo::fx::FxShaderStage::compute;
+    resourceRequest.hlsl =
+        "RWTexture2D<float4> U : register(u0);\n"
+        "Texture2D<float4> T : register(t0);\n"
+        "SamplerState S : register(s0);\n"
+        "cbuffer B : register(b0) { float4 x; }\n"
+        "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) "
+        "{ U[id.xy] = T.SampleLevel(S, float2(0, 0), 0) + x; }\n";
+    const auto resourceArtifact = compiler.compile(resourceRequest);
+    ok &= check(hasUniqueDescriptorBindings(resourceArtifact.spirv),
+                "glslc keeps HLSL register classes in distinct bindings");
 
     dayo::fx::FxShaderCache cache;
     dayo::fx::FxShaderKey key;
