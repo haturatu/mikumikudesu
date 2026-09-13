@@ -4759,9 +4759,11 @@ void VulkanDevice::updateDescriptorSetEx(handles::DescriptorSetHandle set,
     std::vector<VkWriteDescriptorSet> writes;
     std::vector<VkDescriptorBufferInfo> bufferInfos;
     std::vector<VkDescriptorImageInfo> imageInfos;
+    std::vector<VkWriteDescriptorSetAccelerationStructureKHR> accelerationInfos;
     writes.reserve(bindings.size());
     bufferInfos.reserve(bindings.size());
     imageInfos.reserve(bindings.size());
+    accelerationInfos.reserve(bindings.size());
     std::unordered_set<std::uint64_t> seen;
     for (const auto& binding : bindings) {
         const auto* layoutBinding = findLayoutBinding(binding.slot);
@@ -4818,8 +4820,20 @@ void VulkanDevice::updateDescriptorSetEx(handles::DescriptorSetHandle set,
             write.pBufferInfo = &bufferInfos.back();
             break;
         }
-        case DescriptorKind::accelerationStructure:
-            throw std::logic_error("typed acceleration-structure descriptors are implemented in the AS backend");
+        case DescriptorKind::accelerationStructure: {
+            const auto accelerationIt = typedAccelerationStructures_.find(binding.accelerationStructure);
+            if (accelerationIt == typedAccelerationStructures_.end() ||
+                !typedAccelerationStructureHandles_.isAlive(binding.accelerationStructure) ||
+                accelerationIt->second.structure == VK_NULL_HANDLE)
+                throw std::invalid_argument("stale typed acceleration-structure handle");
+            accelerationInfos.push_back({
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
+                .accelerationStructureCount = 1,
+                .pAccelerationStructures = &accelerationIt->second.structure,
+            });
+            write.pNext = &accelerationInfos.back();
+            break;
+        }
         }
         writes.push_back(write);
     }
