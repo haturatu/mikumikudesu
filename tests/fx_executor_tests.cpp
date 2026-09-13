@@ -5,6 +5,7 @@
 #include "fx/fx_scheduler.hpp"
 #include "fx/fx_shader_cache.hpp"
 #include "fx/fx_shader_compiler.hpp"
+#include "fx/fx_shader_source.hpp"
 #include "fx/fx_texture_cache.hpp"
 #include "fx/fx_watcher.hpp"
 #include "graphics/fx_executor.hpp"
@@ -1040,11 +1041,17 @@ bool testFxPipelineRuntime() {
     }
     MockDevice device;
     dayo::fx::FxProgram program;
+    program.controllers = {{"Gain", "controller.pmx", "Gain", "float"}};
+    dayo::core::EffectTexture outputTexture;
+    outputTexture.name = "NativeOutput";
+    outputTexture.format = "R8G8B8A8_UNORM";
+    outputTexture.view = "UAV";
+    program.textures.push_back(std::move(outputTexture));
     program.sourcePath = directory / "pipeline-runtime.fxdayo";
     program.hlsl = "#include \"constants.hlsli\"\n"
                    "#include \"subayai/hlsl/casesensitive.hlsli\"\n"
                    "#ifdef YRZ_PASS_deform\n"
-                   "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) { uint value = TEST_CASE_SENSITIVE_VALUE; }\n"
+                   "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) { NativeOutput[id.xy] = float4(Gain + TEST_CASE_SENSITIVE_VALUE, 0, 0, 1); }\n"
                    "#endif\n";
     dayo::fx::FxDispatch dispatch;
     dispatch.name = "deform";
@@ -1052,7 +1059,13 @@ bool testFxPipelineRuntime() {
     dispatch.shader = "main";
     dispatch.executable = dayo::fx::FxComputeDispatch{"main"};
     dispatch.macros = {"NATIVE=1"};
+    dispatch.resources = {{"NativeOutput", true}};
     program.passes.push_back(dispatch);
+
+    const auto generated = dayo::fx::makeNativeFxShaderSource(program, dispatch, 7);
+    bool ok = check(generated.find("YRZFX_ControllerCB") != std::string::npos &&
+                        generated.find("NativeOutput : register(u0, space7)") != std::string::npos,
+                    "native FX source emits controller and typed resource declarations");
 
     dayo::graphics::FxPipelineRuntime runtime;
     std::string error;
@@ -1062,7 +1075,7 @@ bool testFxPipelineRuntime() {
             return std::optional<dayo::graphics::handles::PipelineLayoutHandle>{{1, 1}};
         },
         &error);
-    bool ok = check(built, "FX pipeline runtime materializes a compute pipeline");
+    ok &= check(built, "FX pipeline runtime materializes a compute pipeline");
     ok &= check(error.empty() && runtime.size() == 1 && runtime.resolvePipeline(dispatch).has_value(),
                 "FX pipeline runtime indexes the materialized pipeline");
     runtime.reset();
