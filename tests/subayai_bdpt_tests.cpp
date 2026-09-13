@@ -148,7 +148,10 @@ struct MockNativeDevice final : dayo::graphics::Device {
         typedBuffers_.emplace(handle, Buffer{std::vector<std::byte>(desc.size)});
         return handle;
     }
-    void destroyTextureEx(dayo::graphics::handles::TextureHandle) override {}
+    void destroyTextureEx(dayo::graphics::handles::TextureHandle handle) override {
+        if (handle.valid())
+            ++destroyedTextures;
+    }
     void destroyBufferEx(dayo::graphics::handles::BufferHandle handle) override {
         ++destroyedBuffers;
         typedBuffers_.erase(handle);
@@ -165,6 +168,8 @@ struct MockNativeDevice final : dayo::graphics::Device {
         if (handle.valid())
             ++destroyedDescriptorSets;
     }
+    void uploadTextureEx(dayo::graphics::handles::TextureHandle, std::span<const std::uint8_t>, std::uint32_t,
+                         std::uint32_t) override {}
     void uploadBufferEx(dayo::graphics::handles::BufferHandle handle, std::span<const std::byte> bytes,
                         std::size_t offset) override {
         auto it = typedBuffers_.find(handle);
@@ -199,6 +204,7 @@ struct MockNativeDevice final : dayo::graphics::Device {
     std::uint32_t nextTypedTexture_{1};
     std::uint32_t nextDescriptorSet_{1};
     std::size_t destroyedBuffers{};
+    std::size_t destroyedTextures{};
     std::size_t destroyedDescriptorSets{};
     std::vector<dayo::graphics::DescriptorBindingEx> lastDescriptorBindings;
     std::unordered_map<dayo::graphics::handles::BufferHandle, Buffer> typedBuffers_;
@@ -215,6 +221,9 @@ struct MockDeformCommands final : dayo::graphics::CommandList {
         events.push_back("dispatch:" + std::to_string(x) + "x" + std::to_string(y) + "x" + std::to_string(z));
     }
     void traceRays(std::uint32_t, std::uint32_t) override {}
+    void transitionEx(dayo::graphics::handles::TextureHandle) override {
+        events.emplace_back("transition");
+    }
     void bindPipelineEx(dayo::graphics::handles::PipelineHandle) override {
         events.emplace_back("bind");
     }
@@ -224,6 +233,9 @@ struct MockDeformCommands final : dayo::graphics::CommandList {
     void pushConstantsEx(std::span<const std::byte> bytes) override {
         constants.assign(bytes.begin(), bytes.end());
         events.emplace_back("push");
+    }
+    void memoryBarrierEx() override {
+        events.emplace_back("barrier");
     }
 };
 
@@ -528,6 +540,44 @@ int main() {
         ok &= check(service.update(changed), "environment exposure change regenerates");
         ok &= check(backend.regenerations == 2, "environment regen on change");
     }
+    // Native environment regeneration owns the source/equirectangular image,
+    // cubemap and prefiltered cubemap, while command recording performs the
+    // two compute stages with an explicit inter-stage memory barrier.
+    {
+        MockNativeDevice device;
+        const dayo::graphics::EnvironmentPassBindings bindings{
+            .equirectToCubePipeline = {20, 1},
+            .equirectToCubeLayout = {21, 1},
+            .prefilterPipeline = {22, 1},
+            .prefilterLayout = {23, 1},
+        };
+        const auto layout = dayo::graphics::nativeEnvironmentPassLayout();
+        ok &= check(layout.bindings.size() == 2 &&
+                        layout.bindings[0].kind == dayo::graphics::DescriptorKind::sampledImage &&
+                        layout.bindings[1].kind == dayo::graphics::DescriptorKind::storageImage,
+                    "native environment pass layout separates sampled input and storage output");
+        dayo::graphics::NativeEnvironmentBackend backend(device, bindings);
+        const dayo::core::ImageData image{.width = 4,
+                                          .height = 2,
+                                          .channels = 4,
+                                          .type = dayo::core::PixelType::unorm8,
+                                          .space = dayo::core::ColorSpace::srgb,
+                                          .bytes = std::vector<std::uint8_t>(32, 128)};
+        const auto result = backend.regenerateImage({.source = "memory", .exposure = 1.0F, .version = 9}, image);
+        ok &= check(backend.ready() && result.cubemap.valid() && result.prefiltered.valid() &&
+                        result.skywalkerVersion == 9 && result.sphericalHarmonics[0] > 0.0F,
+                    "native environment creates typed outputs and SH coefficients");
+        MockDeformCommands commands;
+        backend.record(commands);
+        ok &= check(commands.events == std::vector<std::string>{"transition", "transition", "transition", "bind",
+                                                                  "descriptor", "push", "dispatch:1x1x6", "barrier",
+                                                                  "bind", "descriptor", "push", "dispatch:1x1x6",
+                                                                  "barrier"},
+                    "native environment records conversion and prefilter stages with barriers");
+        backend.reset();
+        ok &= check(device.destroyedTextures == 3 && device.destroyedDescriptorSets == 2,
+                    "native environment reset releases textures and descriptor sets");
+    }
     // LightSamplingService updates only on lighting dirty; light count from caller.
     {
         LightSamplingService service;
@@ -551,6 +601,19 @@ int main() {
         const std::array<float, 5> moreLights{1.0F, 1.0F, 1.0F, 1.0F, 4.0F};
         service.update(moreLights, true);
         ok &= check(service.lightCount() == 5 && service.buildCount() == 2, "alias light count is caller-driven");
+
+        MockNativeDevice device;
+        dayo::graphics::LightSamplingGpuRuntime gpu;
+        std::string error;
+        ok &= check(gpu.sync(device, table, &error) && gpu.ready() && gpu.count() == table.size(),
+                    "light alias table uploads to a persistent typed buffer");
+        const auto uploaded = device.readbackBufferEx(gpu.buffer(), 0, table.size() * sizeof(AliasEntry));
+        ok &= check(uploaded.size() == table.size() * sizeof(AliasEntry),
+                    "light alias GPU buffer contains the complete table");
+        ok &= check(gpu.sync(device, table, &error) && device.destroyedBuffers == 0,
+                    "unchanged light alias count reuses its buffer");
+        ok &= check(gpu.sync(device, {}, &error) && !gpu.ready() && device.destroyedBuffers == 1,
+                    "clearing lights releases the alias buffer");
     }
     // BDPT accumulation: dirty resets to 0+clear, otherwise increments.
     {

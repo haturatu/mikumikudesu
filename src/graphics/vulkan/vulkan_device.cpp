@@ -4643,6 +4643,24 @@ void VulkanDevice::recordPushConstants(VkCommandBuffer commandBuffer, handles::P
                        static_cast<std::uint32_t>(bytes.size()), bytes.data());
 }
 
+void VulkanDevice::recordMemoryBarrier(VkCommandBuffer commandBuffer) {
+    if (commandBuffer == VK_NULL_HANDLE)
+        throw std::invalid_argument("typed memory barrier requires a command buffer");
+    const VkMemoryBarrier2 barrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+    };
+    const VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &barrier,
+    };
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+}
+
 handles::DescriptorSetLayoutHandle VulkanDevice::createDescriptorSetLayoutEx(const DescriptorSetLayoutDesc& desc) {
     if (desc.bindings.empty())
         throw std::invalid_argument("typed descriptor set layout must contain a binding");

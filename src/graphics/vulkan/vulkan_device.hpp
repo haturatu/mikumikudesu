@@ -280,6 +280,7 @@ class VulkanDevice final : public Device {
                                  handles::DescriptorSetHandle set);
     void recordPushConstants(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
                              std::span<const std::byte> bytes);
+    void recordMemoryBarrier(VkCommandBuffer commandBuffer);
     struct TypedAccelerationStructure {
         VkAccelerationStructureKHR structure{};
         VkBuffer storageBuffer{};

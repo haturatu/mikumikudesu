@@ -439,6 +439,9 @@ class CommandList {
     virtual void pushConstantsEx(std::span<const std::byte>) {
         throw std::logic_error("Typed command-list push constants are not implemented by this backend");
     }
+    virtual void memoryBarrierEx() {
+        throw std::logic_error("Typed command-list memory barriers are not implemented by this backend");
+    }
     virtual void transitionEx(handles::TextureHandle) {
         throw std::logic_error("Typed command-list texture transitions are not implemented by this backend");
     }
