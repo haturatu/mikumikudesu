@@ -788,6 +788,59 @@ bool testFxExternalTextureMetadataAndUpload() {
     return ok;
 }
 
+bool testNativeFxRuntimeRefreshesFrameResources() {
+    dayo::fx::FxShaderCompiler compiler;
+    if (!compiler.available())
+        return true;
+
+    dayo::fx::FxProgram program;
+    program.sourcePath = "native-refresh.fxdayo";
+    program.hlsl = "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) {}\n";
+    dayo::core::EffectTexture output;
+    output.name = "Output";
+    output.view = "UAV";
+    program.textures.push_back(std::move(output));
+    dayo::fx::FxDispatch dispatch;
+    dispatch.name = "refresh-pass";
+    dispatch.kind = dayo::fx::FxOpKind::compute;
+    dispatch.executable = dayo::fx::FxComputeDispatch{"main"};
+    dispatch.resources.push_back({"Output", true});
+    program.passes.push_back(std::move(dispatch));
+
+    const auto firstContext = dayo::fx::makeFxFrameContext(12.0F, 3, 4, 2, 1, 0, 3, 1, 1, 1);
+    const auto secondContext = dayo::fx::makeFxFrameContext(12.0F, 3, 8, 4, 1, 0, 3, 1, 1, 1);
+    MockDevice device;
+    dayo::graphics::NativeFxRuntime runtime;
+    std::string error;
+    bool ok = check(runtime.initializeForFrame(device, std::move(program), compiler, firstContext, {}, &error),
+                    "native FX runtime initializes against the first frame context");
+    const auto firstExtent = runtime.resources().extent("Output");
+    ok &= check(firstExtent.has_value() && firstExtent->width == 4 && firstExtent->height == 2,
+                "native FX runtime uses the first frame dimensions");
+    ok &= check(runtime.refresh(firstContext, &error), "native FX runtime reuses unchanged frame resources");
+    const auto allocationsBeforeRefresh = device.textureDescs_.size();
+    ok &= check(runtime.refresh(secondContext, &error), "native FX runtime refreshes changed frame resources");
+    const auto secondExtent = runtime.resources().extent("Output");
+    ok &= check(secondExtent.has_value() && secondExtent->width == 8 && secondExtent->height == 4,
+                "native FX runtime rebuilds render-size-dependent resources");
+    ok &= check(device.textureDescs_.size() == allocationsBeforeRefresh + 1,
+                "native FX runtime does not rebuild resources for an unchanged context");
+
+    dayo::graphics::FxExecutionResources resources;
+    resources.resolveDescriptorSets = [](const dayo::fx::FxDispatch&) {
+        return std::vector<dayo::graphics::FxExecutionResources::TypedDescriptorSetBinding>{{{900, 1}, 0}};
+    };
+    auto frame = runtime.prepareFrame(secondContext);
+    MockCommands commands;
+    const auto stats = runtime.execute(frame, commands, resources);
+    ok &= check(stats.compute == 1, "native FX runtime executes after a resource refresh");
+    const auto descriptorCount = static_cast<std::size_t>(
+        std::count(commands.trace.begin(), commands.trace.end(), std::string{"descriptorEx"}));
+    ok &= check(descriptorCount == 2, "native FX runtime appends its resource set to shared descriptor bindings");
+    runtime.reset();
+    return ok;
+}
+
 bool testNativeFxRuntimeBindsResourcesAndPipelines() {
     dayo::fx::FxShaderCompiler compiler;
     if (!compiler.available())
@@ -1054,6 +1107,7 @@ int main() {
     ok &= testFxResourceDeclarationsAreLossless();
     ok &= testFxResourceRuntimeMaterializesDeclarations();
     ok &= testFxExternalTextureMetadataAndUpload();
+    ok &= testNativeFxRuntimeRefreshesFrameResources();
     ok &= testNativeFxRuntimeBindsResourcesAndPipelines();
     ok &= testShaderCacheKeys();
     try {
