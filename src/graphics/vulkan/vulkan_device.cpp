@@ -156,6 +156,119 @@ VkBufferUsageFlags toVkUsage(BufferDesc::Usage usage) {
     return 0;
 }
 
+VkFormat toVkFormat(PixelFormat format) {
+    switch (format) {
+    case PixelFormat::rgba8Unorm:
+        return VK_FORMAT_R8G8B8A8_UNORM;
+    case PixelFormat::rgba8Srgb:
+        return VK_FORMAT_R8G8B8A8_SRGB;
+    case PixelFormat::rgba16Float:
+        return VK_FORMAT_R16G16B16A16_SFLOAT;
+    case PixelFormat::rgba32Float:
+        return VK_FORMAT_R32G32B32A32_SFLOAT;
+    case PixelFormat::depth32Float:
+        return VK_FORMAT_D32_SFLOAT;
+    }
+    return VK_FORMAT_UNDEFINED;
+}
+
+VkImageUsageFlags toVkUsage(ResourceUsage usage) {
+    VkImageUsageFlags flags = 0;
+    const auto bits = toBits(usage);
+    if ((bits & toBits(ResourceUsage::sampledRead)) != 0U)
+        flags |= VK_IMAGE_USAGE_SAMPLED_BIT;
+    if ((bits & (toBits(ResourceUsage::storageRead) | toBits(ResourceUsage::storageWrite) |
+                 toBits(ResourceUsage::storageReadWrite))) != 0U)
+        flags |= VK_IMAGE_USAGE_STORAGE_BIT;
+    if ((bits & toBits(ResourceUsage::colorAttachment)) != 0U)
+        flags |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if ((bits & (toBits(ResourceUsage::depthRead) | toBits(ResourceUsage::depthWrite))) != 0U)
+        flags |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    if ((bits & toBits(ResourceUsage::transferSrc)) != 0U)
+        flags |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if ((bits & toBits(ResourceUsage::transferDst)) != 0U)
+        flags |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    return flags;
+}
+
+VkBufferUsageFlags toVkUsage(ResourceUsage usage, bool bufferDeviceAddress) {
+    VkBufferUsageFlags flags = 0;
+    const auto bits = toBits(usage);
+    if ((bits & toBits(ResourceUsage::uniformRead)) != 0U)
+        flags |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    if ((bits & (toBits(ResourceUsage::storageRead) | toBits(ResourceUsage::storageWrite) |
+                 toBits(ResourceUsage::storageReadWrite))) != 0U)
+        flags |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    if ((bits & toBits(ResourceUsage::vertexRead)) != 0U)
+        flags |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    if ((bits & toBits(ResourceUsage::indexRead)) != 0U)
+        flags |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    if ((bits & toBits(ResourceUsage::indirectRead)) != 0U)
+        flags |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+    if ((bits & toBits(ResourceUsage::transferSrc)) != 0U)
+        flags |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    if ((bits & toBits(ResourceUsage::transferDst)) != 0U)
+        flags |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    if ((bits & toBits(ResourceUsage::asBuildRead)) != 0U)
+        flags |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+    if ((bits & toBits(ResourceUsage::asBuildWrite)) != 0U)
+        flags |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR;
+    if (bufferDeviceAddress)
+        flags |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    return flags;
+}
+
+VkImageType toVkImageType(TextureDimension dimension) {
+    switch (dimension) {
+    case TextureDimension::d1:
+        return VK_IMAGE_TYPE_1D;
+    case TextureDimension::d2:
+    case TextureDimension::cube:
+        return VK_IMAGE_TYPE_2D;
+    case TextureDimension::d3:
+        return VK_IMAGE_TYPE_3D;
+    }
+    return VK_IMAGE_TYPE_2D;
+}
+
+VkImageViewType toVkImageViewType(TextureDimension dimension, std::uint32_t arrayLayers) {
+    switch (dimension) {
+    case TextureDimension::d1:
+        return arrayLayers > 1 ? VK_IMAGE_VIEW_TYPE_1D_ARRAY : VK_IMAGE_VIEW_TYPE_1D;
+    case TextureDimension::d2:
+        return arrayLayers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+    case TextureDimension::d3:
+        return VK_IMAGE_VIEW_TYPE_3D;
+    case TextureDimension::cube:
+        return arrayLayers > 1 ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY : VK_IMAGE_VIEW_TYPE_CUBE;
+    }
+    return VK_IMAGE_VIEW_TYPE_2D;
+}
+
+VkShaderStageFlags toVkShaderStages(ShaderStageMask stages) {
+    const auto bits = static_cast<std::uint32_t>(stages);
+    VkShaderStageFlags flags = 0;
+    if ((bits & static_cast<std::uint32_t>(ShaderStageMask::vertex)) != 0U)
+        flags |= VK_SHADER_STAGE_VERTEX_BIT;
+    if ((bits & static_cast<std::uint32_t>(ShaderStageMask::fragment)) != 0U)
+        flags |= VK_SHADER_STAGE_FRAGMENT_BIT;
+    if ((bits & static_cast<std::uint32_t>(ShaderStageMask::compute)) != 0U)
+        flags |= VK_SHADER_STAGE_COMPUTE_BIT;
+    if ((bits & static_cast<std::uint32_t>(ShaderStageMask::rayGeneration)) != 0U)
+        flags |= VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+    if ((bits & static_cast<std::uint32_t>(ShaderStageMask::miss)) != 0U)
+        flags |= VK_SHADER_STAGE_MISS_BIT_KHR;
+    if ((bits & static_cast<std::uint32_t>(ShaderStageMask::closestHit)) != 0U)
+        flags |= VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+    if ((bits & static_cast<std::uint32_t>(ShaderStageMask::anyHit)) != 0U)
+        flags |= VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+    if ((bits & static_cast<std::uint32_t>(ShaderStageMask::intersection)) != 0U)
+        flags |= VK_SHADER_STAGE_INTERSECTION_BIT_KHR;
+    if ((bits & static_cast<std::uint32_t>(ShaderStageMask::callable)) != 0U)
+        flags |= VK_SHADER_STAGE_CALLABLE_BIT_KHR;
+    return flags;
+}
+
 } // namespace
 
 VulkanDevice::VulkanDevice(platform::Window& window, bool validation) : window_(window), validation_(validation) {
@@ -164,6 +277,7 @@ VulkanDevice::VulkanDevice(platform::Window& window, bool validation) : window_(
     selectPhysicalDevice();
     queryCapabilities();
     createLogicalDevice();
+    createTypedDescriptorPool();
     createPipelineCache();
     uploadContext_ = std::make_unique<VulkanUploadContext>(device_, physicalDevice_, queue_, queueFamily_,
                                                            timelineSemaphore_, nextTimelineValue_);
@@ -192,6 +306,7 @@ VulkanDevice::~VulkanDevice() {
     if (device_ != VK_NULL_HANDLE)
         vkDeviceWaitIdle(device_);
     uploadContext_.reset();
+    destroyTypedResources();
     destroyViewportResources();
     destroyUi();
     destroyOffscreenResource();
@@ -3401,6 +3516,474 @@ void VulkanDevice::clearPreviewResources() {
     previewGpuScene_.view.screenSource = PreviewScene::ScreenSource::white;
     std::fill(swapchainInitialized_.begin(), swapchainInitialized_.end(), false);
     log::info("Cleared preview GPU resources");
+}
+
+void VulkanDevice::createTypedDescriptorPool() {
+    std::vector<VkDescriptorPoolSize> sizes{
+        {VK_DESCRIPTOR_TYPE_SAMPLER, 4096},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4096},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4096},
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4096},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4096},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4096},
+    };
+    if (capabilities_.accelerationStructure)
+        sizes.push_back({VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1024});
+
+    const VkDescriptorPoolCreateInfo createInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+        .maxSets = 4096,
+        .poolSizeCount = static_cast<std::uint32_t>(sizes.size()),
+        .pPoolSizes = sizes.data(),
+    };
+    check(vkCreateDescriptorPool(device_, &createInfo, nullptr, &typedDescriptorPool_), "create typed descriptor pool");
+}
+
+handles::BufferHandle VulkanDevice::createBufferEx(const BufferResourceDesc& desc) {
+    if (desc.size == 0)
+        throw std::invalid_argument("typed buffer size must be non-zero");
+    if (toBits(desc.usage) == 0)
+        throw std::invalid_argument("typed buffer usage must be non-zero");
+    constexpr auto kAccelerationUsage = toBits(ResourceUsage::asBuildRead) | toBits(ResourceUsage::asBuildWrite);
+    if ((toBits(desc.usage) & kAccelerationUsage) != 0U && !capabilities_.accelerationStructure)
+        throw std::runtime_error("typed buffer requests acceleration-structure usage on unsupported Vulkan device");
+
+    TypedBuffer typed{};
+    typed.desc = desc;
+    typed.resource.size = static_cast<VkDeviceSize>(desc.size);
+    const VkBufferUsageFlags usage = toVkUsage(desc.usage, capabilities_.bufferDeviceAddress);
+    if (usage == 0)
+        throw std::invalid_argument("typed buffer usage has no Vulkan mapping");
+    const VkBufferCreateInfo createInfo{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = typed.resource.size,
+        .usage = usage,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+
+    check(vkCreateBuffer(device_, &createInfo, nullptr, &typed.resource.buffer), "create typed buffer");
+    try {
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(device_, typed.resource.buffer, &requirements);
+        const VkMemoryPropertyFlags memoryFlags =
+            desc.cpuVisible ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+                            : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        VkMemoryAllocateFlagsInfo allocationFlags{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+            .flags = capabilities_.bufferDeviceAddress
+                         ? static_cast<VkMemoryAllocateFlags>(VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT)
+                         : static_cast<VkMemoryAllocateFlags>(0),
+        };
+        const VkMemoryAllocateInfo allocationInfo{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .pNext = capabilities_.bufferDeviceAddress ? &allocationFlags : nullptr,
+            .allocationSize = requirements.size,
+            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits, memoryFlags),
+        };
+        check(vkAllocateMemory(device_, &allocationInfo, nullptr, &typed.resource.memory),
+              "allocate typed buffer memory");
+        check(vkBindBufferMemory(device_, typed.resource.buffer, typed.resource.memory, 0), "bind typed buffer memory");
+        if (desc.cpuVisible)
+            check(vkMapMemory(device_, typed.resource.memory, 0, typed.resource.size, 0, &typed.mapped),
+                  "map typed buffer");
+    } catch (...) {
+        if (typed.mapped != nullptr)
+            vkUnmapMemory(device_, typed.resource.memory);
+        if (typed.resource.memory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, typed.resource.memory, nullptr);
+        if (typed.resource.buffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, typed.resource.buffer, nullptr);
+        throw;
+    }
+
+    const auto handle = typedBufferHandles_.create();
+    typedBuffers_.emplace(handle, std::move(typed));
+    return handle;
+}
+
+handles::TextureHandle VulkanDevice::createTextureEx(const TextureResourceDesc& desc) {
+    if (!isValidTextureDesc(desc))
+        throw std::invalid_argument("invalid typed texture description");
+    const VkFormat format = toVkFormat(desc.format);
+    if (format == VK_FORMAT_UNDEFINED)
+        throw std::invalid_argument("typed texture format has no Vulkan mapping");
+    const VkImageUsageFlags usage = toVkUsage(desc.usage);
+    if (usage == 0)
+        throw std::invalid_argument("typed texture usage has no Vulkan mapping");
+
+    TypedTexture typed{};
+    typed.desc = desc;
+    const std::uint32_t layerMultiplier = desc.dimension == TextureDimension::cube ? 6U : 1U;
+    const std::uint32_t imageLayers = desc.arrayLayers * layerMultiplier;
+    const VkImageCreateFlags imageFlags = desc.dimension == TextureDimension::cube
+                                              ? static_cast<VkImageCreateFlags>(VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT)
+                                              : static_cast<VkImageCreateFlags>(0);
+    const VkImageCreateInfo createInfo{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .flags = imageFlags,
+        .imageType = toVkImageType(desc.dimension),
+        .format = format,
+        .extent = {desc.extent.width, desc.extent.height, desc.extent.depth},
+        .mipLevels = desc.mipLevels,
+        .arrayLayers = imageLayers,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = usage,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+
+    check(vkCreateImage(device_, &createInfo, nullptr, &typed.resource.image), "create typed texture");
+    try {
+        VkMemoryRequirements requirements{};
+        vkGetImageMemoryRequirements(device_, typed.resource.image, &requirements);
+        const VkMemoryAllocateInfo allocationInfo{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = requirements.size,
+            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+        };
+        check(vkAllocateMemory(device_, &allocationInfo, nullptr, &typed.resource.memory),
+              "allocate typed texture memory");
+        check(vkBindImageMemory(device_, typed.resource.image, typed.resource.memory, 0), "bind typed texture memory");
+
+        const VkImageAspectFlags aspect =
+            desc.format == PixelFormat::depth32Float ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+        const VkImageViewCreateInfo viewInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = typed.resource.image,
+            .viewType = toVkImageViewType(desc.dimension, desc.arrayLayers),
+            .format = format,
+            .subresourceRange = {aspect, 0, desc.mipLevels, 0, imageLayers},
+        };
+        check(vkCreateImageView(device_, &viewInfo, nullptr, &typed.view), "create typed texture view");
+    } catch (...) {
+        if (typed.view != VK_NULL_HANDLE)
+            vkDestroyImageView(device_, typed.view, nullptr);
+        if (typed.resource.memory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, typed.resource.memory, nullptr);
+        if (typed.resource.image != VK_NULL_HANDLE)
+            vkDestroyImage(device_, typed.resource.image, nullptr);
+        throw;
+    }
+
+    const auto handle = typedTextureHandles_.create();
+    typedTextures_.emplace(handle, std::move(typed));
+    return handle;
+}
+
+handles::SamplerHandle VulkanDevice::createSamplerEx() {
+    const VkSamplerCreateInfo createInfo{
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = VK_FILTER_LINEAR,
+        .minFilter = VK_FILTER_LINEAR,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .mipLodBias = 0.0F,
+        .anisotropyEnable = VK_FALSE,
+        .maxAnisotropy = 1.0F,
+        .compareEnable = VK_FALSE,
+        .compareOp = VK_COMPARE_OP_ALWAYS,
+        .minLod = 0.0F,
+        .maxLod = VK_LOD_CLAMP_NONE,
+        .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK,
+        .unnormalizedCoordinates = VK_FALSE,
+    };
+    TypedSampler typed{};
+    check(vkCreateSampler(device_, &createInfo, nullptr, &typed.sampler), "create typed sampler");
+    const auto handle = typedSamplerHandles_.create();
+    typedSamplers_.emplace(handle, typed);
+    return handle;
+}
+
+handles::DescriptorSetLayoutHandle VulkanDevice::createDescriptorSetLayoutEx(const DescriptorSetLayoutDesc& desc) {
+    if (desc.bindings.empty())
+        throw std::invalid_argument("typed descriptor set layout must contain a binding");
+
+    const auto descriptorType = [](DescriptorKind kind) {
+        switch (kind) {
+        case DescriptorKind::sampler:
+            return VK_DESCRIPTOR_TYPE_SAMPLER;
+        case DescriptorKind::sampledImage:
+            return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        case DescriptorKind::combinedImageSampler:
+            return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        case DescriptorKind::storageImage:
+            return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        case DescriptorKind::uniformBuffer:
+            return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        case DescriptorKind::storageBuffer:
+            return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        case DescriptorKind::accelerationStructure:
+            return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        }
+        return VK_DESCRIPTOR_TYPE_MAX_ENUM;
+    };
+
+    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    bindings.reserve(desc.bindings.size());
+    std::unordered_set<std::uint32_t> seen;
+    for (const auto& binding : desc.bindings) {
+        if (binding.count == 0 || binding.stages == ShaderStageMask::none || !seen.insert(binding.binding).second)
+            throw std::invalid_argument("invalid or duplicate typed descriptor binding");
+        if (binding.kind == DescriptorKind::accelerationStructure && !capabilities_.accelerationStructure)
+            throw std::runtime_error("acceleration-structure descriptors are unsupported by this Vulkan device");
+        bindings.push_back(
+            {binding.binding, descriptorType(binding.kind), binding.count, toVkShaderStages(binding.stages), nullptr});
+    }
+
+    const VkDescriptorSetLayoutCreateInfo createInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = static_cast<std::uint32_t>(bindings.size()),
+        .pBindings = bindings.data(),
+    };
+    TypedDescriptorSetLayout typed{.desc = desc};
+    check(vkCreateDescriptorSetLayout(device_, &createInfo, nullptr, &typed.layout),
+          "create typed descriptor set layout");
+    const auto handle = typedDescriptorSetLayoutHandles_.create();
+    typedDescriptorSetLayouts_.emplace(handle, std::move(typed));
+    return handle;
+}
+
+handles::DescriptorSetHandle VulkanDevice::allocateDescriptorSetEx(handles::DescriptorSetLayoutHandle layout,
+                                                                   std::span<const DescriptorBindingEx> bindings) {
+    const auto layoutIt = typedDescriptorSetLayouts_.find(layout);
+    if (layoutIt == typedDescriptorSetLayouts_.end() || !typedDescriptorSetLayoutHandles_.isAlive(layout))
+        throw std::invalid_argument("stale typed descriptor set layout handle");
+    if (typedDescriptorPool_ == VK_NULL_HANDLE)
+        throw std::runtime_error("typed descriptor pool is unavailable");
+
+    const VkDescriptorSetAllocateInfo allocateInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = typedDescriptorPool_,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &layoutIt->second.layout,
+    };
+    TypedDescriptorSet typed{.layout = layout};
+    check(vkAllocateDescriptorSets(device_, &allocateInfo, &typed.set), "allocate typed descriptor set");
+    const auto handle = typedDescriptorSetHandles_.create();
+    try {
+        typedDescriptorSets_.emplace(handle, typed);
+        updateDescriptorSetEx(handle, bindings);
+    } catch (...) {
+        typedDescriptorSets_.erase(handle);
+        typedDescriptorSetHandles_.destroy(handle);
+        vkFreeDescriptorSets(device_, typedDescriptorPool_, 1, &typed.set);
+        throw;
+    }
+    return handle;
+}
+
+void VulkanDevice::updateDescriptorSetEx(handles::DescriptorSetHandle set,
+                                         std::span<const DescriptorBindingEx> bindings) {
+    const auto setIt = typedDescriptorSets_.find(set);
+    if (setIt == typedDescriptorSets_.end() || !typedDescriptorSetHandles_.isAlive(set))
+        throw std::invalid_argument("stale typed descriptor set handle");
+    const auto layoutIt = typedDescriptorSetLayouts_.find(setIt->second.layout);
+    if (layoutIt == typedDescriptorSetLayouts_.end())
+        throw std::logic_error("typed descriptor set refers to a missing layout");
+
+    const auto findLayoutBinding = [&layoutIt](std::uint32_t slot) -> const DescriptorSetLayoutBinding* {
+        for (const auto& binding : layoutIt->second.desc.bindings)
+            if (binding.binding == slot)
+                return &binding;
+        return nullptr;
+    };
+    const auto descriptorType = [](DescriptorKind kind) {
+        switch (kind) {
+        case DescriptorKind::sampler:
+            return VK_DESCRIPTOR_TYPE_SAMPLER;
+        case DescriptorKind::sampledImage:
+            return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        case DescriptorKind::combinedImageSampler:
+            return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        case DescriptorKind::storageImage:
+            return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        case DescriptorKind::uniformBuffer:
+            return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        case DescriptorKind::storageBuffer:
+            return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        case DescriptorKind::accelerationStructure:
+            return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        }
+        return VK_DESCRIPTOR_TYPE_MAX_ENUM;
+    };
+
+    std::vector<VkWriteDescriptorSet> writes;
+    std::vector<VkDescriptorBufferInfo> bufferInfos;
+    std::vector<VkDescriptorImageInfo> imageInfos;
+    writes.reserve(bindings.size());
+    bufferInfos.reserve(bindings.size());
+    imageInfos.reserve(bindings.size());
+    std::unordered_set<std::uint64_t> seen;
+    for (const auto& binding : bindings) {
+        const auto* layoutBinding = findLayoutBinding(binding.slot);
+        if (layoutBinding == nullptr || binding.arrayElement >= layoutBinding->count)
+            throw std::invalid_argument("typed descriptor binding is not present in its layout");
+        const std::uint64_t key = (static_cast<std::uint64_t>(binding.slot) << 32U) | binding.arrayElement;
+        if (!seen.insert(key).second)
+            throw std::invalid_argument("duplicate typed descriptor update");
+
+        const VkDescriptorType type = descriptorType(layoutBinding->kind);
+        VkWriteDescriptorSet write{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = setIt->second.set,
+            .dstBinding = binding.slot,
+            .dstArrayElement = binding.arrayElement,
+            .descriptorCount = 1,
+            .descriptorType = type,
+        };
+        switch (layoutBinding->kind) {
+        case DescriptorKind::sampler: {
+            const auto samplerIt = typedSamplers_.find(binding.sampler);
+            if (samplerIt == typedSamplers_.end() || !typedSamplerHandles_.isAlive(binding.sampler))
+                throw std::invalid_argument("stale typed sampler handle");
+            imageInfos.push_back({samplerIt->second.sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED});
+            write.pImageInfo = &imageInfos.back();
+            break;
+        }
+        case DescriptorKind::sampledImage:
+        case DescriptorKind::storageImage:
+        case DescriptorKind::combinedImageSampler: {
+            const auto textureIt = typedTextures_.find(binding.texture);
+            if (textureIt == typedTextures_.end() || !typedTextureHandles_.isAlive(binding.texture))
+                throw std::invalid_argument("stale typed texture handle");
+            VkDescriptorImageInfo info{VK_NULL_HANDLE, textureIt->second.view,
+                                       layoutBinding->kind == DescriptorKind::storageImage
+                                           ? VK_IMAGE_LAYOUT_GENERAL
+                                           : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+            if (layoutBinding->kind == DescriptorKind::combinedImageSampler) {
+                const auto samplerIt = typedSamplers_.find(binding.sampler);
+                if (samplerIt == typedSamplers_.end() || !typedSamplerHandles_.isAlive(binding.sampler))
+                    throw std::invalid_argument("stale typed sampler handle");
+                info.sampler = samplerIt->second.sampler;
+            }
+            imageInfos.push_back(info);
+            write.pImageInfo = &imageInfos.back();
+            break;
+        }
+        case DescriptorKind::uniformBuffer:
+        case DescriptorKind::storageBuffer: {
+            const auto bufferIt = typedBuffers_.find(binding.buffer);
+            if (bufferIt == typedBuffers_.end() || !typedBufferHandles_.isAlive(binding.buffer))
+                throw std::invalid_argument("stale typed buffer handle");
+            bufferInfos.push_back({bufferIt->second.resource.buffer, 0, bufferIt->second.resource.size});
+            write.pBufferInfo = &bufferInfos.back();
+            break;
+        }
+        case DescriptorKind::accelerationStructure:
+            throw std::logic_error("typed acceleration-structure descriptors are implemented in the AS backend");
+        }
+        writes.push_back(write);
+    }
+    vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+}
+
+void VulkanDevice::destroyDescriptorSetEx(handles::DescriptorSetHandle handle) {
+    const auto it = typedDescriptorSets_.find(handle);
+    if (it == typedDescriptorSets_.end() || !typedDescriptorSetHandles_.isAlive(handle))
+        throw std::invalid_argument("stale typed descriptor set handle");
+    check(vkFreeDescriptorSets(device_, typedDescriptorPool_, 1, &it->second.set), "free typed descriptor set");
+    typedDescriptorSets_.erase(it);
+    typedDescriptorSetHandles_.destroy(handle);
+}
+
+void VulkanDevice::destroyDescriptorSetLayoutEx(handles::DescriptorSetLayoutHandle handle) {
+    const auto it = typedDescriptorSetLayouts_.find(handle);
+    if (it == typedDescriptorSetLayouts_.end() || !typedDescriptorSetLayoutHandles_.isAlive(handle))
+        throw std::invalid_argument("stale typed descriptor set layout handle");
+    vkDestroyDescriptorSetLayout(device_, it->second.layout, nullptr);
+    typedDescriptorSetLayouts_.erase(it);
+    typedDescriptorSetLayoutHandles_.destroy(handle);
+}
+
+void VulkanDevice::destroyBufferEx(handles::BufferHandle handle) {
+    const auto it = typedBuffers_.find(handle);
+    if (it == typedBuffers_.end() || !typedBufferHandles_.isAlive(handle))
+        throw std::invalid_argument("stale typed buffer handle");
+    if (it->second.mapped != nullptr)
+        vkUnmapMemory(device_, it->second.resource.memory);
+    if (it->second.resource.buffer != VK_NULL_HANDLE)
+        vkDestroyBuffer(device_, it->second.resource.buffer, nullptr);
+    if (it->second.resource.memory != VK_NULL_HANDLE)
+        vkFreeMemory(device_, it->second.resource.memory, nullptr);
+    typedBuffers_.erase(it);
+    typedBufferHandles_.destroy(handle);
+}
+
+void VulkanDevice::destroyTextureEx(handles::TextureHandle handle) {
+    const auto it = typedTextures_.find(handle);
+    if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(handle))
+        throw std::invalid_argument("stale typed texture handle");
+    if (it->second.view != VK_NULL_HANDLE)
+        vkDestroyImageView(device_, it->second.view, nullptr);
+    if (it->second.resource.image != VK_NULL_HANDLE)
+        vkDestroyImage(device_, it->second.resource.image, nullptr);
+    if (it->second.resource.memory != VK_NULL_HANDLE)
+        vkFreeMemory(device_, it->second.resource.memory, nullptr);
+    typedTextures_.erase(it);
+    typedTextureHandles_.destroy(handle);
+}
+
+void VulkanDevice::retireBufferEx(handles::BufferHandle handle, std::uint64_t) {
+    waitIdle();
+    destroyBufferEx(handle);
+}
+
+void VulkanDevice::retireTextureEx(handles::TextureHandle handle, std::uint64_t) {
+    waitIdle();
+    destroyTextureEx(handle);
+}
+
+void VulkanDevice::destroyTypedResources() noexcept {
+    for (const auto& [handle, resource] : typedDescriptorSets_) {
+        static_cast<void>(handle);
+        static_cast<void>(resource);
+    }
+    typedDescriptorSets_.clear();
+    typedDescriptorSetHandles_.clear();
+    if (typedDescriptorPool_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(device_, typedDescriptorPool_, nullptr);
+        typedDescriptorPool_ = VK_NULL_HANDLE;
+    }
+    for (const auto& [handle, resource] : typedDescriptorSetLayouts_) {
+        static_cast<void>(handle);
+        if (resource.layout != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(device_, resource.layout, nullptr);
+    }
+    typedDescriptorSetLayouts_.clear();
+    typedDescriptorSetLayoutHandles_.clear();
+    for (const auto& [handle, resource] : typedSamplers_) {
+        static_cast<void>(handle);
+        if (resource.sampler != VK_NULL_HANDLE)
+            vkDestroySampler(device_, resource.sampler, nullptr);
+    }
+    typedSamplers_.clear();
+    typedSamplerHandles_.clear();
+    for (const auto& [handle, resource] : typedTextures_) {
+        static_cast<void>(handle);
+        if (resource.view != VK_NULL_HANDLE)
+            vkDestroyImageView(device_, resource.view, nullptr);
+        if (resource.resource.image != VK_NULL_HANDLE)
+            vkDestroyImage(device_, resource.resource.image, nullptr);
+        if (resource.resource.memory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, resource.resource.memory, nullptr);
+    }
+    typedTextures_.clear();
+    typedTextureHandles_.clear();
+    for (const auto& [handle, resource] : typedBuffers_) {
+        static_cast<void>(handle);
+        if (resource.mapped != nullptr)
+            vkUnmapMemory(device_, resource.resource.memory);
+        if (resource.resource.buffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, resource.resource.buffer, nullptr);
+        if (resource.resource.memory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, resource.resource.memory, nullptr);
+    }
+    typedBuffers_.clear();
+    typedBufferHandles_.clear();
 }
 
 std::uint32_t VulkanDevice::findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags flags) const {

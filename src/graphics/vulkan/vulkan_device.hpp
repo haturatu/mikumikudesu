@@ -15,6 +15,7 @@ VK_DEFINE_HANDLE(VmaAllocator)
 #include <array>
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 namespace dayo::graphics {
 
@@ -60,6 +61,22 @@ class VulkanDevice final : public Device {
     }
     [[nodiscard]] BufferHandle createBuffer(const BufferDesc& desc) override;
     [[nodiscard]] TextureHandle createTexture(const TextureDesc& desc) override;
+    [[nodiscard]] handles::TextureHandle createTextureEx(const TextureResourceDesc& desc) override;
+    [[nodiscard]] handles::BufferHandle createBufferEx(const BufferResourceDesc& desc) override;
+    void destroyTextureEx(handles::TextureHandle handle) override;
+    void destroyBufferEx(handles::BufferHandle handle) override;
+    void retireTextureEx(handles::TextureHandle handle, std::uint64_t frameIndex) override;
+    void retireBufferEx(handles::BufferHandle handle, std::uint64_t frameIndex) override;
+    [[nodiscard]] handles::SamplerHandle createSamplerEx() override;
+    [[nodiscard]] handles::DescriptorSetLayoutHandle
+    createDescriptorSetLayoutEx(const DescriptorSetLayoutDesc& desc) override;
+    void destroyDescriptorSetLayoutEx(handles::DescriptorSetLayoutHandle handle) override;
+    [[nodiscard]] handles::DescriptorSetHandle
+    allocateDescriptorSetEx(handles::DescriptorSetLayoutHandle layout,
+                            std::span<const DescriptorBindingEx> bindings) override;
+    void updateDescriptorSetEx(handles::DescriptorSetHandle set,
+                               std::span<const DescriptorBindingEx> bindings) override;
+    void destroyDescriptorSetEx(handles::DescriptorSetHandle set) override;
 
   private:
     struct Frame {
@@ -144,6 +161,7 @@ class VulkanDevice final : public Device {
     void createSurface();
     void selectPhysicalDevice();
     void createLogicalDevice();
+    void createTypedDescriptorPool();
     void queryCapabilities();
     void createSwapchain();
     void destroySwapchain();
@@ -177,6 +195,7 @@ class VulkanDevice final : public Device {
     void destroyUi();
     void recreateSwapchain();
     void destroyPreviewMesh();
+    void destroyTypedResources() noexcept;
     void synchronizePreviewVertices(Frame& frame);
     void destroyPreviewBones();
     void synchronizePreviewBones(Frame& frame);
@@ -303,6 +322,40 @@ class VulkanDevice final : public Device {
     std::uint64_t nextResourceHandle_{1};
     std::unordered_map<BufferHandle, VulkanBuffer> buffers_;
     std::unordered_map<TextureHandle, VulkanImage> textures_;
+
+    struct TypedBuffer {
+        VulkanBuffer resource;
+        BufferResourceDesc desc;
+        void* mapped{};
+    };
+    struct TypedTexture {
+        VulkanImage resource;
+        TextureResourceDesc desc;
+        VkImageView view{};
+    };
+    struct TypedSampler {
+        VkSampler sampler{};
+    };
+    struct TypedDescriptorSetLayout {
+        VkDescriptorSetLayout layout{};
+        DescriptorSetLayoutDesc desc;
+    };
+    struct TypedDescriptorSet {
+        VkDescriptorSet set{};
+        handles::DescriptorSetLayoutHandle layout{};
+    };
+
+    handles::BufferPool typedBufferHandles_;
+    handles::TexturePool typedTextureHandles_;
+    handles::SamplerPool typedSamplerHandles_;
+    handles::DescriptorSetLayoutPool typedDescriptorSetLayoutHandles_;
+    handles::DescriptorSetPool typedDescriptorSetHandles_;
+    std::unordered_map<handles::BufferHandle, TypedBuffer> typedBuffers_;
+    std::unordered_map<handles::TextureHandle, TypedTexture> typedTextures_;
+    std::unordered_map<handles::SamplerHandle, TypedSampler> typedSamplers_;
+    std::unordered_map<handles::DescriptorSetLayoutHandle, TypedDescriptorSetLayout> typedDescriptorSetLayouts_;
+    std::unordered_map<handles::DescriptorSetHandle, TypedDescriptorSet> typedDescriptorSets_;
+    VkDescriptorPool typedDescriptorPool_{};
 };
 
 } // namespace dayo::graphics
