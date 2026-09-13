@@ -90,6 +90,19 @@ struct MockCommands final : public dayo::graphics::CommandList {
     void generateMipmaps(dayo::graphics::TextureHandle) override {
         trace.emplace_back("mipmap");
     }
+    void bindPipelineEx(dayo::graphics::handles::PipelineHandle) override {
+        trace.emplace_back("bindEx");
+    }
+    void transitionEx(dayo::graphics::handles::TextureHandle) override {
+        trace.emplace_back("transitionEx");
+    }
+    void pushConstantsEx(std::span<const std::byte>) override {
+        trace.emplace_back("pushEx");
+    }
+    void traceRaysEx(dayo::graphics::handles::PipelineHandle, dayo::graphics::handles::ShaderBindingTableHandle,
+                     std::uint32_t, std::uint32_t, std::uint32_t) override {
+        trace.emplace_back("traceEx");
+    }
 };
 
 dayo::fx::FxFrameContext testContext() {
@@ -143,6 +156,22 @@ bool testMockTraceMatches() {
         threw = true;
     }
     ok &= check(threw, "raytracing dispatch fails explicitly");
+
+    MockCommands nativeCommands;
+    dayo::graphics::FxExecutionResources nativeResources;
+    nativeResources.resolveTypedPipeline = [](const dayo::fx::FxDispatch&) {
+        return std::optional<dayo::graphics::handles::PipelineHandle>{{1, 1}};
+    };
+    nativeResources.resolveShaderBindingTable = [](const dayo::fx::FxDispatch&) {
+        return std::optional<dayo::graphics::handles::ShaderBindingTableHandle>{{1, 1}};
+    };
+    dayo::fx::FxProgram nativeRayProgram;
+    nativeRayProgram.passes.push_back({"NativeRT", dayo::fx::FxOpKind::raytracing, {}, 1, 1, {}, {}});
+    const auto nativePlan = compiler.plan(nativeRayProgram, testContext());
+    const auto nativeStats = executor.execute(nativePlan, nativeCommands, testContext(), nativeResources);
+    ok &= check(nativeStats.rayTracing == 1 && nativeCommands.trace.size() == 2 &&
+                    nativeCommands.trace[0] == "bindEx" && nativeCommands.trace[1] == "traceEx",
+                "native RT executor forwards typed pipeline and SBT");
     return ok;
 }
 
