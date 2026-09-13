@@ -44,6 +44,8 @@ struct MockAccelerationBackend : dayo::graphics::IAccelerationBackend {
     std::uint64_t createTlasCalls{0};
     std::uint64_t rebuildTlasCalls{0};
     std::uint64_t updateTlasCalls{0};
+    std::uint64_t recordBlasCalls{0};
+    std::uint64_t recordTlasCalls{0};
     std::uint64_t destroyBlasCalls{0};
     std::uint64_t destroyTlasCalls{0};
     bool replaceTlasOnRebuild{false};
@@ -51,6 +53,7 @@ struct MockAccelerationBackend : dayo::graphics::IAccelerationBackend {
     std::vector<dayo::graphics::handles::BufferHandle> rebuildVertexBuffers;
     std::vector<dayo::graphics::handles::BufferHandle> refitVertexBuffers;
     std::vector<dayo::graphics::TlasInstanceDesc> lastTlasInstances;
+    std::vector<std::string>* commandEvents{};
 
     dayo::graphics::handles::AccelerationStructureHandle
     createBlas(const dayo::graphics::BlasGeometryDesc& geometry) override {
@@ -91,6 +94,18 @@ struct MockAccelerationBackend : dayo::graphics::IAccelerationBackend {
         ++updateTlasCalls;
         lastTlasInstanceCount = instances.size();
         lastTlasInstances.assign(instances.begin(), instances.end());
+    }
+    void recordBlasUpdate(dayo::graphics::CommandList&, dayo::graphics::handles::AccelerationStructureHandle,
+                          const dayo::graphics::BlasGeometryDesc&) override {
+        ++recordBlasCalls;
+        if (commandEvents != nullptr)
+            commandEvents->emplace_back("blas");
+    }
+    void recordTlasUpdate(dayo::graphics::CommandList&, dayo::graphics::handles::AccelerationStructureHandle,
+                          std::span<const dayo::graphics::TlasInstanceDesc>) override {
+        ++recordTlasCalls;
+        if (commandEvents != nullptr)
+            commandEvents->emplace_back("tlas");
     }
     void destroyBlas(dayo::graphics::handles::AccelerationStructureHandle) override {
         ++destroyBlasCalls;
@@ -685,6 +700,7 @@ int main() {
                     "native geometry runtime initializes deform and acceleration state");
         ok &= check(runtime.descriptorLayout().valid(), "native geometry creates an acceleration descriptor layout");
         MockDeformCommands commands;
+        backend.commandEvents = &commands.events;
         runtime.recordDeform(commands);
         ok &= check(commands.events == std::vector<std::string>{"bind", "descriptor", "push", "dispatch:1x1x1",
                                                                   "barrier"},
@@ -700,6 +716,11 @@ int main() {
         ok &= check(runtime.descriptorSet().valid() && device.lastDescriptorBindings.size() == 1 &&
                         device.lastDescriptorBindings.front().accelerationStructure == runtime.tlas(),
                     "native geometry publishes the current TLAS through a typed descriptor set");
+        runtime.recordAcceleration(commands);
+        ok &= check(commands.events == std::vector<std::string>{"bind", "descriptor", "push", "dispatch:1x1x1",
+                                                                  "barrier", "blas", "barrier", "tlas", "barrier"} &&
+                        backend.recordBlasCalls == 1 && backend.recordTlasCalls == 1,
+                    "native geometry records BLAS then TLAS updates after deform work");
 
         auto updatedVertices = vertices;
         updatedVertices[0].position[0] = 1.0F;
