@@ -266,6 +266,7 @@ add_library(
   src/graphics/native_frame_constants.cpp
   src/graphics/native_scene_bindings.cpp
   src/graphics/native_scene_binding_runtime.cpp
+  src/graphics/native_scene_resource_runtime.cpp
   src/graphics/sbt.cpp
   src/graphics/subayai_acceleration_structure.cpp
   src/graphics/subayai_deform.cpp
