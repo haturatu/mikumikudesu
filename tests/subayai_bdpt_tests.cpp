@@ -3,6 +3,12 @@
 #include "graphics/bdpt_accumulation.hpp"
 #include "graphics/bdpt_runtime.hpp"
 #include "graphics/device.hpp"
+#include "graphics/native_controller_runtime.hpp"
+#include "graphics/native_frame_constants.hpp"
+#include "graphics/native_scene_binding_runtime.hpp"
+#include "graphics/native_scene_bindings.hpp"
+#include "graphics/native_scene_frame_runtime.hpp"
+#include "graphics/native_scene_resource_runtime.hpp"
 #include "graphics/sbt.hpp"
 #include "graphics/subayai_acceleration_structure.hpp"
 #include "graphics/subayai_deform.hpp"
@@ -11,12 +17,6 @@
 #include "graphics/subayai_light_sampling.hpp"
 #include "graphics/subayai_material_gpu.hpp"
 #include "graphics/subayai_runtime.hpp"
-#include "graphics/native_scene_bindings.hpp"
-#include "graphics/native_scene_binding_runtime.hpp"
-#include "graphics/native_frame_constants.hpp"
-#include "graphics/native_scene_resource_runtime.hpp"
-#include "graphics/native_controller_runtime.hpp"
-#include "graphics/native_scene_frame_runtime.hpp"
 
 #include <algorithm>
 #include <array>
@@ -360,8 +360,8 @@ bool testSubayaiNativeFxExecution() {
     environment.prefiltered = {41, 1};
     environment.sphericalHarmonics[0] = 1.0F;
     auto frame = runtime.prepareFrame(context, {}, {}, environment);
-    ok &= check(runtime.nativeReady() && frame.nativeFx.has_value(),
-                "Subayai runtime prepares the native FX frame path");
+    ok &=
+        check(runtime.nativeReady() && frame.nativeFx.has_value(), "Subayai runtime prepares the native FX frame path");
     const auto frameOutput = runtime.output(frame);
     ok &= check(frameOutput.has_value() && frameOutput->valid() && frameOutput->extent.width == context.renderWidth &&
                     frameOutput->extent.height == context.renderHeight &&
@@ -370,10 +370,10 @@ bool testSubayaiNativeFxExecution() {
     ok &= check(frame.environmentDescriptorSet.valid(), "Subayai frame exposes an environment descriptor set");
     MockDeformCommands commands;
     const auto stats = runtime.execute(frame, commands);
-    ok &= check(stats.compute == 1 && commands.events ==
-                                         std::vector<std::string>{"transition", "descriptor", "descriptor", "bind",
-                                                                  "dispatch:2x1x1"},
-                "Subayai runtime executes typed FX resources through the native path");
+    ok &=
+        check(stats.compute == 1 && commands.events == std::vector<std::string>{"transition", "descriptor",
+                                                                                "descriptor", "bind", "dispatch:2x1x1"},
+              "Subayai runtime executes typed FX resources through the native path");
     ok &= check(commands.descriptorSets.size() == 2 && commands.descriptorSets[0].second == 2 &&
                     commands.descriptorSets[1].second == 3,
                 "Subayai native FX binds environment before its resource set");
@@ -408,15 +408,13 @@ bool testBdptNativeFxExecution() {
                     "BDPT runtime accepts a compilable native RT program");
     const auto context = dayo::fx::makeFxFrameContext(0.0F, 0, 16, 8, 1, 0, 3, 1, 1, 1);
     auto frame = runtime.prepareFrame(context, dayo::core::DirtyFlag::geometry);
-    ok &= check(runtime.nativeReady() && frame.nativeFx.has_value(),
-                "BDPT runtime prepares the native FX frame path");
+    ok &= check(runtime.nativeReady() && frame.nativeFx.has_value(), "BDPT runtime prepares the native FX frame path");
     ok &= check(!runtime.output(frame).has_value(),
                 "BDPT runtime does not invent an output when the graph writes no texture");
     MockDeformCommands commands;
     const auto stats = runtime.execute(frame, commands);
-    ok &= check(stats.rayTracing == 1 && commands.events ==
-                                         std::vector<std::string>{"transition", "clear", "barrier", "descriptor", "bind",
-                                                                  "traceEx"},
+    ok &= check(stats.rayTracing == 1 && commands.events == std::vector<std::string>{"transition", "clear", "barrier",
+                                                                                     "descriptor", "bind", "traceEx"},
                 "BDPT runtime clears accumulation and executes the native RT pass");
     ok &= check(commands.descriptorSets.size() == 1 && commands.descriptorSets.front().second == 0,
                 "BDPT native FX binds the persistent resource set before tracing");
@@ -509,20 +507,22 @@ int main() {
                     "Subayai material ABI is uploaded to the typed buffer");
         ok &= check(frame.lightSamplingBuffer.valid(), "Subayai frame exposes a typed light sampling buffer");
         ok &= check(frame.lightSamplingDescriptorSet.valid(), "Subayai frame exposes a light descriptor set");
-        const auto lightBytes = device.readbackBufferEx(
-            frame.lightSamplingBuffer, 0, lightTable.size() * sizeof(dayo::graphics::AliasEntry));
+        const auto lightBytes = device.readbackBufferEx(frame.lightSamplingBuffer, 0,
+                                                        lightTable.size() * sizeof(dayo::graphics::AliasEntry));
         ok &= check(lightBytes.size() == lightTable.size() * sizeof(dayo::graphics::AliasEntry),
                     "Subayai light sampling table is uploaded to the typed buffer");
         ok &= check(device.lastDescriptorBindings.size() == 1 &&
                         device.lastDescriptorBindings.front().buffer == frame.lightSamplingBuffer,
                     "Subayai light descriptor points at the uploaded buffer");
         dayo::graphics::FxExecutionResources execution;
-        execution.resolveTypedPipeline = [](const dayo::fx::FxDispatch&) ->
-            std::optional<dayo::graphics::handles::PipelineHandle> { return dayo::graphics::handles::PipelineHandle{7, 1}; };
+        execution.resolveTypedPipeline =
+            [](const dayo::fx::FxDispatch&) -> std::optional<dayo::graphics::handles::PipelineHandle> {
+            return dayo::graphics::handles::PipelineHandle{7, 1};
+        };
         MockDeformCommands commands;
         const auto stats = runtime.execute(frame, commands, execution);
-        ok &= check(stats.compute == 1 && commands.events ==
-                                             std::vector<std::string>{"descriptor", "descriptor", "bind", "dispatch:8x4x1"},
+        ok &= check(stats.compute == 1 && commands.events == std::vector<std::string>{"descriptor", "descriptor",
+                                                                                      "bind", "dispatch:8x4x1"},
                     "Subayai execution binds both native resource descriptor sets");
         ok &= check(commands.descriptorSets.size() == 2 && commands.descriptorSets[0].second == 0 &&
                         commands.descriptorSets[1].second == 1 &&
@@ -637,14 +637,14 @@ int main() {
                     "native deform runtime allocates and uploads its resources");
         ok &= check(error.empty() && runtime.ready() && runtime.resources().valid(),
                     "native deform runtime exposes complete resource ownership");
-        ok &= check(device.lastDescriptorBindings.size() == 5 && device.lastDescriptorBindings[4].buffer ==
-                        runtime.resources().deformedVertices,
+        ok &= check(device.lastDescriptorBindings.size() == 5 &&
+                        device.lastDescriptorBindings[4].buffer == runtime.resources().deformedVertices,
                     "native deform descriptor set binds the deformed output");
         const auto vertexBytes = vertices.size() * sizeof(vertices.front());
         const auto uploaded = device.readbackBufferEx(runtime.resources().baseVertices, 0, vertexBytes);
         ok &= check(uploaded.size() == vertexBytes, "native deform uploads base vertex data");
-        const auto uploadedSeed = device.readbackBufferEx(
-            runtime.resources().deformedVertices, 0, deformedVertices.size() * sizeof(deformedVertices.front()));
+        const auto uploadedSeed = device.readbackBufferEx(runtime.resources().deformedVertices, 0,
+                                                          deformedVertices.size() * sizeof(deformedVertices.front()));
         dayo::graphics::NativeDeformedVertex seed{};
         std::memcpy(&seed, uploadedSeed.data(), sizeof(seed));
         ok &= check(seed.position[0] == 3.0F, "native deform uploads the host seed for the initial BLAS");
@@ -681,8 +681,9 @@ int main() {
         std::memcpy(&refreshedVertex, refreshed.data(), sizeof(refreshedVertex));
         ok &= check(refreshedVertex.position[0] == 2.0F,
                     "native deform refresh uploads the current animated vertex data");
-        const auto refreshedSeed = device.readbackBufferEx(
-            runtime.resources().deformedVertices, 0, updatedDeformedVertices.size() * sizeof(updatedDeformedVertices.front()));
+        const auto refreshedSeed =
+            device.readbackBufferEx(runtime.resources().deformedVertices, 0,
+                                    updatedDeformedVertices.size() * sizeof(updatedDeformedVertices.front()));
         std::memcpy(&seed, refreshedSeed.data(), sizeof(seed));
         ok &= check(seed.position[0] == 4.0F, "native deform refresh uploads the current BLAS seed");
         const auto blas = runtime.blasGeometry();
@@ -720,15 +721,15 @@ int main() {
         MockAccelerationBackend backend;
         dayo::graphics::NativeGeometryRuntime runtime(&backend);
         std::string error;
-        ok &= check(runtime.initialize(device, std::span<const dayo::graphics::NativeGeometryMeshUpload>(&mesh, 1),
-                                       &error),
-                    "native geometry runtime initializes deform and acceleration state");
+        ok &= check(
+            runtime.initialize(device, std::span<const dayo::graphics::NativeGeometryMeshUpload>(&mesh, 1), &error),
+            "native geometry runtime initializes deform and acceleration state");
         ok &= check(runtime.descriptorLayout().valid(), "native geometry creates an acceleration descriptor layout");
         MockDeformCommands commands;
         backend.commandEvents = &commands.events;
         runtime.recordDeform(commands);
-        ok &= check(commands.events == std::vector<std::string>{"bind", "descriptor", "push", "dispatch:1x1x1",
-                                                                  "barrier"},
+        ok &= check(commands.events ==
+                        std::vector<std::string>{"bind", "descriptor", "push", "dispatch:1x1x1", "barrier"},
                     "native geometry records deform work before acceleration synchronization");
         ok &= check(runtime.synchronizeAcceleration(&error) && error.empty() && backend.createBlasCalls == 1,
                     "native geometry creates BLAS from the deformed output");
@@ -743,8 +744,8 @@ int main() {
                     "native geometry publishes the current TLAS through a typed descriptor set");
         runtime.recordAcceleration(commands);
         ok &= check(commands.events == std::vector<std::string>{"bind", "descriptor", "push", "dispatch:1x1x1",
-                                                                  "barrier", "as-barrier", "blas", "as-barrier", "tlas",
-                                                                  "as-barrier"} &&
+                                                                "barrier", "as-barrier", "blas", "as-barrier", "tlas",
+                                                                "as-barrier"} &&
                         backend.recordBlasCalls == 1 && backend.recordTlasCalls == 1,
                     "native geometry records BLAS then TLAS updates after deform work");
 
@@ -928,9 +929,9 @@ int main() {
         MockDeformCommands commands;
         backend.record(commands);
         ok &= check(commands.events == std::vector<std::string>{"transition", "transition", "transition", "bind",
-                                                                  "descriptor", "push", "dispatch:1x1x6", "barrier",
-                                                                  "bind", "descriptor", "push", "dispatch:1x1x6",
-                                                                  "barrier", "mipmap"},
+                                                                "descriptor", "push", "dispatch:1x1x6", "barrier",
+                                                                "bind", "descriptor", "push", "dispatch:1x1x6",
+                                                                "barrier", "mipmap"},
                     "native environment records conversion and prefilter stages with barriers");
         backend.reset();
         ok &= check(device.destroyedTextures == 3 && device.destroyedDescriptorSets == 2,
@@ -1058,26 +1059,19 @@ int main() {
                                             [slot](const auto& value) { return value.binding == slot; });
             return found == layout.bindings.end() ? nullptr : &*found;
         };
-        const auto frameIndex = static_cast<std::size_t>(
-            dayo::graphics::NativeSceneDescriptorSet::frame);
-        const auto texturesIndex = static_cast<std::size_t>(
-            dayo::graphics::NativeSceneDescriptorSet::textures);
-        const auto rawVerticesIndex = static_cast<std::size_t>(
-            dayo::graphics::NativeSceneDescriptorSet::rawVertices);
+        const auto frameIndex = static_cast<std::size_t>(dayo::graphics::NativeSceneDescriptorSet::frame);
+        const auto texturesIndex = static_cast<std::size_t>(dayo::graphics::NativeSceneDescriptorSet::textures);
+        const auto rawVerticesIndex = static_cast<std::size_t>(dayo::graphics::NativeSceneDescriptorSet::rawVertices);
         ok &= check(layouts.size() == dayo::graphics::kNativeSceneDescriptorSetCount,
                     "native scene reserves ten descriptor spaces");
-        ok &= check(dayo::graphics::nativeFxResourceSet() ==
-                        dayo::graphics::kNativeSceneDescriptorSetCount,
+        ok &= check(dayo::graphics::nativeFxResourceSet() == dayo::graphics::kNativeSceneDescriptorSetCount,
                     "FX-local resources follow native scene descriptor spaces");
-        ok &= check(dayo::graphics::nativeSceneBinding(
-                        dayo::graphics::NativeSceneRegisterClass::uav, 0) == 0 &&
-                        dayo::graphics::nativeSceneBinding(
-                            dayo::graphics::NativeSceneRegisterClass::sampled, 0) == 16 &&
-                        dayo::graphics::nativeSceneBinding(
-                            dayo::graphics::NativeSceneRegisterClass::sampler, 0) == 32 &&
-                        dayo::graphics::nativeSceneBinding(
-                            dayo::graphics::NativeSceneRegisterClass::uniform, 0) == 48,
-                    "native scene register classes use disjoint Vulkan binding ranges");
+        ok &=
+            check(dayo::graphics::nativeSceneBinding(dayo::graphics::NativeSceneRegisterClass::uav, 0) == 0 &&
+                      dayo::graphics::nativeSceneBinding(dayo::graphics::NativeSceneRegisterClass::sampled, 0) == 16 &&
+                      dayo::graphics::nativeSceneBinding(dayo::graphics::NativeSceneRegisterClass::sampler, 0) == 32 &&
+                      dayo::graphics::nativeSceneBinding(dayo::graphics::NativeSceneRegisterClass::uniform, 0) == 48,
+                  "native scene register classes use disjoint Vulkan binding ranges");
         const auto* rtOutput = binding(layouts[frameIndex], 0);
         const auto* viewConstants = binding(layouts[frameIndex], 48);
         const auto* controllerConstants = binding(layouts[frameIndex], 49);
@@ -1085,8 +1079,7 @@ int main() {
         const auto* screenTexture = binding(layouts[frameIndex], 27);
         ok &= check(rtOutput != nullptr && rtOutput->kind == dayo::graphics::DescriptorKind::storageImage,
                     "native frame binds RTOutput as a storage image");
-        ok &= check(viewConstants != nullptr &&
-                        viewConstants->kind == dayo::graphics::DescriptorKind::uniformBuffer &&
+        ok &= check(viewConstants != nullptr && viewConstants->kind == dayo::graphics::DescriptorKind::uniformBuffer &&
                         controllerConstants != nullptr &&
                         controllerConstants->kind == dayo::graphics::DescriptorKind::uniformBuffer,
                     "native frame reserves ViewCB and generated controller constants");
@@ -1099,16 +1092,15 @@ int main() {
         const auto* frameConstants = binding(layouts[texturesIndex], 48);
         ok &= check(textureTable != nullptr && textureTable->kind == dayo::graphics::DescriptorKind::storageBuffer &&
                         textures != nullptr && textures->count == counts.textures &&
-                        textures->kind == dayo::graphics::DescriptorKind::sampledImage &&
-                        frameConstants != nullptr &&
+                        textures->kind == dayo::graphics::DescriptorKind::sampledImage && frameConstants != nullptr &&
                         frameConstants->kind == dayo::graphics::DescriptorKind::uniformBuffer,
                     "native texture space preserves table, texture array, and CBuff1");
         const auto* rawVertices = binding(layouts[rawVerticesIndex], 16);
         ok &= check(rawVertices != nullptr && rawVertices->count == counts.rawVertices &&
                         rawVertices->kind == dayo::graphics::DescriptorKind::storageBuffer,
                     "native raw vertex space preserves runtime array count");
-        const auto emptyCounts = dayo::graphics::nativeSceneDescriptorLayouts(
-            dayo::graphics::NativeSceneDescriptorCounts{.textures = 0});
+        const auto emptyCounts =
+            dayo::graphics::nativeSceneDescriptorLayouts(dayo::graphics::NativeSceneDescriptorCounts{.textures = 0});
         const auto* emptyTextures = binding(emptyCounts[texturesIndex], 17);
         ok &= check(emptyTextures != nullptr && emptyTextures->count == 1,
                     "empty native arrays retain a legal placeholder descriptor");
@@ -1138,13 +1130,13 @@ int main() {
             dayo::graphics::DescriptorBindingEx{.slot = 17, .arrayElement = 0, .texture = {2, 1}},
             dayo::graphics::DescriptorBindingEx{.slot = 48, .arrayElement = 0, .buffer = {4, 1}},
         };
-        ok &= check(!runtime.bind(dayo::graphics::NativeSceneDescriptorSet::textures, partial, &error) &&
-                        !error.empty(),
-                    "native scene binding runtime rejects partial arrays before allocation");
+        ok &=
+            check(!runtime.bind(dayo::graphics::NativeSceneDescriptorSet::textures, partial, &error) && !error.empty(),
+                  "native scene binding runtime rejects partial arrays before allocation");
         const auto destroyedLayouts = device.destroyedDescriptorLayouts;
         runtime.reset();
-        ok &= check(device.destroyedDescriptorLayouts == destroyedLayouts +
-                        dayo::graphics::kNativeSceneDescriptorSetCount,
+        ok &= check(device.destroyedDescriptorLayouts ==
+                        destroyedLayouts + dayo::graphics::kNativeSceneDescriptorSetCount,
                     "native scene binding runtime releases reserved layouts");
     }
     // Native frame constants: CPU ABI and typed uniform uploads remain stable
@@ -1165,20 +1157,19 @@ int main() {
         const auto* transform = layout.find("Transform");
         const auto* samples = layout.find("Samples");
         const auto* mode = layout.find("Mode");
-        ok &= check(exposure != nullptr && exposure->offset == 0 && tint != nullptr && tint->offset == 4 &&
-                        enabled != nullptr && enabled->offset == 16 && transform != nullptr && transform->offset == 32 &&
-                        samples != nullptr && samples->offset == 96 && samples->elementStride == 16 &&
-                        mode != nullptr && mode->offset == 128 && layout.byteSize == 144,
-                    "native controller layout follows HLSL register packing");
+        ok &=
+            check(exposure != nullptr && exposure->offset == 0 && tint != nullptr && tint->offset == 4 &&
+                      enabled != nullptr && enabled->offset == 16 && transform != nullptr && transform->offset == 32 &&
+                      samples != nullptr && samples->offset == 96 && samples->elementStride == 16 && mode != nullptr &&
+                      mode->offset == 128 && layout.byteSize == 144,
+                  "native controller layout follows HLSL register packing");
         dayo::graphics::NativeControllerBlock block(layout);
         const std::array<float, 3> tintValue{0.1F, 0.2F, 0.3F};
-        const std::array<float, 16> transformValue{
-            1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
-            0.0F, 0.0F, 1.0F, 0.0F, 4.0F, 5.0F, 6.0F, 1.0F};
+        const std::array<float, 16> transformValue{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
+                                                   0.0F, 0.0F, 1.0F, 0.0F, 4.0F, 5.0F, 6.0F, 1.0F};
         ok &= check(block.setFloat("Exposure", 1.25F) && block.setFloat3("Tint", tintValue) &&
                         block.setBool("Enabled", true) && block.setMatrix4x4("Transform", transformValue) &&
-                        block.setFloat("Samples", 2.0F, 1) && block.setInt("Mode", 7) &&
-                        !block.setFloat("Mode", 1.0F),
+                        block.setFloat("Samples", 2.0F, 1) && block.setInt("Mode", 7) && !block.setFloat("Mode", 1.0F),
                     "native controller block writes typed scalar, vector, matrix, and array values");
         MockNativeDevice device;
         dayo::graphics::NativeControllerRuntime runtime;
@@ -1193,9 +1184,9 @@ int main() {
         std::memcpy(&exposureValue, uploaded.data() + exposure->offset, sizeof(exposureValue));
         std::memcpy(&sampleValue, uploaded.data() + samples->offset + samples->elementStride, sizeof(sampleValue));
         std::memcpy(&enabledValue, uploaded.data() + enabled->offset, sizeof(enabledValue));
-        ok &= check(std::abs(exposureValue - 1.25F) < 1e-6F && std::abs(sampleValue - 2.0F) < 1e-6F &&
-                        enabledValue == 1,
-                    "native controller upload preserves packed values");
+        ok &=
+            check(std::abs(exposureValue - 1.25F) < 1e-6F && std::abs(sampleValue - 2.0F) < 1e-6F && enabledValue == 1,
+                  "native controller upload preserves packed values");
         ok &= check(!runtime.sync(device, std::span<const std::byte>(uploaded.data(), uploaded.size() - 1), &error) &&
                         !error.empty(),
                     "native controller runtime rejects a mismatched cbuffer size");
@@ -1216,12 +1207,8 @@ int main() {
                     "native scene frame runtime exposes typed controller values");
 
         std::uint32_t nextHandle = 1;
-        const auto buffer = [&nextHandle]() {
-            return dayo::graphics::handles::BufferHandle{nextHandle++, 1};
-        };
-        const auto texture = [&nextHandle]() {
-            return dayo::graphics::handles::TextureHandle{nextHandle++, 1};
-        };
+        const auto buffer = [&nextHandle]() { return dayo::graphics::handles::BufferHandle{nextHandle++, 1}; };
+        const auto texture = [&nextHandle]() { return dayo::graphics::handles::TextureHandle{nextHandle++, 1}; };
         const auto acceleration = [&nextHandle]() {
             return dayo::graphics::handles::AccelerationStructureHandle{nextHandle++, 1};
         };
@@ -1262,15 +1249,17 @@ int main() {
             .modelIndex = 1, .rasterizeOrder = 2, .deformIndex = 3, .deformOrder = 4};
         ok &= check(runtime.sync(context, resources, pass, &error),
                     "native scene frame runtime synchronizes constants and canonical resources");
+        ok &= check(runtime.descriptorSetsReady(),
+                    "native scene frame runtime exposes a complete canonical descriptor set span");
         const auto controllerField = runtime.controllerBlock()->layout().find("Gain");
         float gain{};
         if (controllerField != nullptr) {
             const auto controllerBytes = device.readbackBufferEx(runtime.controllers().buffer(), 0,
-                                                                  runtime.controllerBlock()->layout().byteSize);
+                                                                 runtime.controllerBlock()->layout().byteSize);
             std::memcpy(&gain, controllerBytes.data() + controllerField->offset, sizeof(gain));
         }
-        const auto viewBytes = device.readbackBufferEx(runtime.constants().viewBuffer(), 0,
-                                                       sizeof(dayo::graphics::NativeViewConstants));
+        const auto viewBytes =
+            device.readbackBufferEx(runtime.constants().viewBuffer(), 0, sizeof(dayo::graphics::NativeViewConstants));
         dayo::graphics::NativeViewConstants view{};
         std::memcpy(&view, viewBytes.data(), sizeof(view));
         ok &= check(std::abs(gain - 3.5F) < 1e-6F && view.output[0] == 320 && view.output[1] == 200 &&
@@ -1281,8 +1270,7 @@ int main() {
     // independently of the native scene descriptor-set population.
     {
         MockNativeDevice device;
-        const auto context = dayo::fx::makeFxFrameContext(
-            30.0F, 7, 640, 360, 11, 2, 12, 4, 1, 1);
+        const auto context = dayo::fx::makeFxFrameContext(30.0F, 7, 640, 360, 11, 2, 12, 4, 1, 1);
         const auto view = dayo::graphics::makeNativeViewConstants(context, 3, 4);
         const dayo::graphics::NativeScenePassConstants pass{
             .modelIndex = 2, .rasterizeOrder = 1, .deformIndex = 2, .deformOrder = 0};
@@ -1300,8 +1288,7 @@ int main() {
                         uploadedView.modelCounts == std::array<std::uint32_t, 2>{3, 4} &&
                         uploadedView.cameraFlags[0] == (context.camera.perspective ? 1 : 0),
                     "native ViewCB preserves frame dimensions, sample, and scene counts");
-        ok &= check(uploadedPass.modelIndex == pass.modelIndex &&
-                        uploadedPass.deformIndex == pass.deformIndex,
+        ok &= check(uploadedPass.modelIndex == pass.modelIndex && uploadedPass.deformIndex == pass.deformIndex,
                     "native CBuff1 preserves model and deform selection");
         const auto destroyedBeforeReset = device.destroyedBuffers;
         runtime.reset();
@@ -1328,12 +1315,8 @@ int main() {
         ok &= check(runtime.initialize(device, counts, &error),
                     "native scene resource runtime creates canonical layouts");
         std::uint32_t nextHandle = 1;
-        const auto buffer = [&nextHandle]() {
-            return dayo::graphics::handles::BufferHandle{nextHandle++, 1};
-        };
-        const auto texture = [&nextHandle]() {
-            return dayo::graphics::handles::TextureHandle{nextHandle++, 1};
-        };
+        const auto buffer = [&nextHandle]() { return dayo::graphics::handles::BufferHandle{nextHandle++, 1}; };
+        const auto texture = [&nextHandle]() { return dayo::graphics::handles::TextureHandle{nextHandle++, 1}; };
         const auto acceleration = [&nextHandle]() {
             return dayo::graphics::handles::AccelerationStructureHandle{nextHandle++, 1};
         };
