@@ -152,8 +152,7 @@ bool BdptRuntime::synchronizeAcceleration(std::string* error) {
     return geometry_.synchronizeAcceleration(error);
 }
 
-TlasAction BdptRuntime::synchronizeWorld(std::uint64_t worldGeneration,
-                                         std::span<const WorldInstance> instances) {
+TlasAction BdptRuntime::synchronizeWorld(std::uint64_t worldGeneration, std::span<const WorldInstance> instances) {
     if (!geometry_.ready())
         throw std::logic_error("BDPT geometry is not initialized");
     return geometry_.synchronizeWorld(worldGeneration, instances);
@@ -170,9 +169,8 @@ bool BdptRuntime::ensureResources(std::uint32_t width, std::uint32_t height, std
     bindings[1] = {.slot = 1, .arrayElement = 0, .buffer = gpu.spectralLut};
     bindings[2] = {.slot = 2, .arrayElement = 0, .buffer = gpu.blackbodyLut};
     for (std::size_t index = 0; index < BdptAccumulation::kVolumeSlots; ++index)
-        bindings[3U + index] = {.slot = static_cast<std::uint32_t>(3U + index),
-                                 .arrayElement = 0,
-                                 .texture = gpu.volumes[index]};
+        bindings[3U + index] = {
+            .slot = static_cast<std::uint32_t>(3U + index), .arrayElement = 0, .texture = gpu.volumes[index]};
     try {
         if (descriptorSet_.valid()) {
             device_->updateDescriptorSetEx(descriptorSet_, bindings);
@@ -205,14 +203,26 @@ BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::Dir
     frame.gpu = accumulation_.gpuResources();
     frame.descriptorSet = descriptorSet_;
     frame.geometryDescriptorSet = geometry_.descriptorSet();
+    frame.usesCanonicalSceneBindings = sceneFrame_ != nullptr;
     if (!nativeAttempted_ && !program_.hlsl.empty()) {
         nativeAttempted_ = true;
-        std::vector<handles::DescriptorSetLayoutHandle> sharedLayouts{descriptorLayout_};
-        if (geometry_.descriptorLayout().valid())
-            sharedLayouts.push_back(geometry_.descriptorLayout());
+        std::vector<handles::DescriptorSetLayoutHandle> sharedLayouts;
+        std::vector<handles::DescriptorSetHandle> sharedSets;
+        if (sceneFrame_ != nullptr) {
+            if (!sceneFrame_->descriptorSetsReady())
+                throw std::runtime_error("native BDPT scene descriptor sets are not synchronized");
+            const auto layouts = sceneFrame_->layouts();
+            const auto sets = sceneFrame_->descriptorSets();
+            sharedLayouts.assign(layouts.begin(), layouts.end());
+            sharedSets.assign(sets.begin(), sets.end());
+        } else {
+            sharedLayouts = {descriptorLayout_};
+            if (geometry_.descriptorLayout().valid())
+                sharedLayouts.push_back(geometry_.descriptorLayout());
+        }
         std::string nativeError;
         static_cast<void>(nativeFx_.initializeForFrame(*device_, program_, fx::FxShaderCompiler{}, context,
-                                                       sharedLayouts, &nativeError));
+                                                       sharedLayouts, &nativeError, sharedSets));
     } else if (nativeFx_.ready()) {
         std::string nativeError;
         static_cast<void>(nativeFx_.refresh(context, &nativeError));
@@ -237,8 +247,9 @@ VulkanFxExecutor::Stats BdptRuntime::execute(BdptFrame& frame, CommandList& comm
         const auto existingSingle = nativeResources.resolveDescriptorSet;
         const auto accumulationSet = frame.descriptorSet;
         const auto geometrySet = frame.geometryDescriptorSet;
-        nativeResources.resolveDescriptorSets =
-            [existingSets, existingSingle, accumulationSet, geometrySet](const fx::FxDispatch& dispatch) {
+        if (!frame.usesCanonicalSceneBindings) {
+            nativeResources.resolveDescriptorSets = [existingSets, existingSingle, accumulationSet,
+                                                     geometrySet](const fx::FxDispatch& dispatch) {
                 std::vector<FxExecutionResources::TypedDescriptorSetBinding> result;
                 if (existingSets) {
                     result = existingSets(dispatch);
@@ -248,9 +259,8 @@ VulkanFxExecutor::Stats BdptRuntime::execute(BdptFrame& frame, CommandList& comm
                         result.push_back({*shared, 0});
                 }
                 const auto hasIndex = [&result](std::uint32_t index) {
-                    return std::any_of(result.begin(), result.end(), [index](const auto& binding) {
-                        return binding.setIndex == index;
-                    });
+                    return std::any_of(result.begin(), result.end(),
+                                       [index](const auto& binding) { return binding.setIndex == index; });
                 };
                 if (accumulationSet.valid() && !hasIndex(0))
                     result.push_back({accumulationSet, 0});
@@ -258,7 +268,8 @@ VulkanFxExecutor::Stats BdptRuntime::execute(BdptFrame& frame, CommandList& comm
                     result.push_back({geometrySet, 1});
                 return result;
             };
-        nativeResources.resolveDescriptorSet = {};
+            nativeResources.resolveDescriptorSet = {};
+        }
         return nativeFx_.execute(*frame.nativeFx, commands, nativeResources);
     }
     auto nativeResources = resources;

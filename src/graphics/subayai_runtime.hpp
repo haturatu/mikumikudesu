@@ -3,14 +3,15 @@
 #include "core/effect.hpp"
 #include "fx/fx_compiler.hpp"
 #include "graphics/fx_executor.hpp"
+#include "graphics/native_fx_runtime.hpp"
+#include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/subayai_bindings.hpp"
 #include "graphics/subayai_environment.hpp"
+#include "graphics/subayai_environment_runtime.hpp"
+#include "graphics/subayai_geometry.hpp"
 #include "graphics/subayai_light_sampling.hpp"
 #include "graphics/subayai_material_gpu.hpp"
 #include "graphics/subayai_material_runtime.hpp"
-#include "graphics/subayai_geometry.hpp"
-#include "graphics/subayai_environment_runtime.hpp"
-#include "graphics/native_fx_runtime.hpp"
 
 #include <optional>
 #include <span>
@@ -30,6 +31,7 @@ struct SubayaiFrame {
     handles::DescriptorSetHandle lightSamplingDescriptorSet{};
     handles::DescriptorSetHandle geometryDescriptorSet{};
     handles::DescriptorSetHandle environmentDescriptorSet{};
+    bool usesCanonicalSceneBindings{};
     EnvironmentGpuResult environment;
     std::optional<NativeFxFrame> nativeFx;
 };
@@ -42,6 +44,13 @@ class SubayaiRuntime {
   public:
     bool initialize(Device& device, fx::FxProgram program, std::string* error = nullptr);
     void reset() noexcept;
+
+    // When supplied, the upstream resources.hlsli descriptor ABI occupies
+    // sets 0..9 and the FX-local set is appended at set 10. A null provider
+    // keeps the small legacy binding layout available to older callers.
+    void setSceneFrameRuntime(NativeSceneFrameRuntime* runtime) noexcept {
+        sceneFrame_ = runtime;
+    }
 
     [[nodiscard]] bool ready() const noexcept {
         return ready_;
@@ -67,8 +76,7 @@ class SubayaiRuntime {
     void recordGeometry(CommandList& commands) const;
     void recordAcceleration(CommandList& commands) const;
     [[nodiscard]] bool synchronizeAcceleration(std::string* error = nullptr);
-    [[nodiscard]] TlasAction synchronizeWorld(std::uint64_t worldGeneration,
-                                               std::span<const WorldInstance> instances);
+    [[nodiscard]] TlasAction synchronizeWorld(std::uint64_t worldGeneration, std::span<const WorldInstance> instances);
     [[nodiscard]] const NativeGeometryRuntime& geometry() const noexcept {
         return geometry_;
     }
@@ -94,6 +102,7 @@ class SubayaiRuntime {
     SubayaiEnvironmentRuntime environmentRuntime_;
     EnvironmentService environmentService_{nullptr};
     NativeFxRuntime nativeFx_;
+    NativeSceneFrameRuntime* sceneFrame_{};
     bool nativeAttempted_{};
     bool ready_{};
 };
