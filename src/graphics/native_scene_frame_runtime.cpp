@@ -1,5 +1,6 @@
 #include "graphics/native_scene_frame_runtime.hpp"
 
+#include <algorithm>
 #include <exception>
 #include <stdexcept>
 #include <utility>
@@ -18,6 +19,13 @@ NativeSceneFrameRuntime::~NativeSceneFrameRuntime() {
     reset();
 }
 
+bool NativeSceneFrameRuntime::descriptorSetsReady() const noexcept {
+    if (!ready())
+        return false;
+    return std::all_of(scene_.descriptorSets().begin(), scene_.descriptorSets().end(),
+                       [](const auto set) { return set.valid(); });
+}
+
 bool NativeSceneFrameRuntime::initialize(Device& device, std::span<const core::EffectController> controllers,
                                          const NativeSceneDescriptorCounts& counts, std::string* error) {
     if (error != nullptr)
@@ -27,17 +35,16 @@ bool NativeSceneFrameRuntime::initialize(Device& device, std::span<const core::E
     try {
         if (!scene_.initialize(device, counts, error))
             throw std::runtime_error(error != nullptr && !error->empty() ? *error
-                                                                           : "native scene descriptors unavailable");
+                                                                         : "native scene descriptors unavailable");
         if (!constants_.initialize(device, error))
             throw std::runtime_error(error != nullptr && !error->empty() ? *error
-                                                                           : "native frame constants unavailable");
+                                                                         : "native frame constants unavailable");
         if (!controllers_.initialize(device, controllers, error))
             throw std::runtime_error(error != nullptr && !error->empty() ? *error
-                                                                           : "native controller constants unavailable");
+                                                                         : "native controller constants unavailable");
         controllerBlock_.emplace(controllers_.layout());
         if (!syncControllers(error))
-            throw std::runtime_error(error != nullptr && !error->empty() ? *error
-                                                                           : "native controller upload failed");
+            throw std::runtime_error(error != nullptr && !error->empty() ? *error : "native controller upload failed");
     } catch (const std::exception& exception) {
         if (error == nullptr || error->empty())
             setError(error, std::string("native scene frame initialization failed: ") + exception.what());
@@ -61,8 +68,8 @@ bool NativeSceneFrameRuntime::sync(const fx::FxFrameContext& context, NativeScen
     }
     if (!syncControllers(error))
         return false;
-    const auto view = makeNativeViewConstants(context, context.cloneCount,
-                                              static_cast<std::uint32_t>(context.totalMaterial));
+    const auto view =
+        makeNativeViewConstants(context, context.cloneCount, static_cast<std::uint32_t>(context.totalMaterial));
     if (!constants_.sync(*device_, view, pass, error))
         return false;
     resources.viewConstants = constants_.viewBuffer();

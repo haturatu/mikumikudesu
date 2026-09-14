@@ -24,8 +24,7 @@ class NativeSceneFrameRuntime {
     NativeSceneFrameRuntime& operator=(const NativeSceneFrameRuntime&) = delete;
 
     [[nodiscard]] bool initialize(Device& device, std::span<const core::EffectController> controllers,
-                                  const NativeSceneDescriptorCounts& counts = {},
-                                  std::string* error = nullptr);
+                                  const NativeSceneDescriptorCounts& counts = {}, std::string* error = nullptr);
     [[nodiscard]] bool sync(const fx::FxFrameContext& context, NativeSceneResourceBindings resources,
                             const NativeScenePassConstants& pass = {}, std::string* error = nullptr);
     [[nodiscard]] bool syncControllers(std::string* error = nullptr);
@@ -47,6 +46,7 @@ class NativeSceneFrameRuntime {
     [[nodiscard]] std::span<const handles::DescriptorSetHandle> descriptorSets() const noexcept {
         return scene_.descriptorSets();
     }
+    [[nodiscard]] bool descriptorSetsReady() const noexcept;
     [[nodiscard]] const NativeSceneResourceRuntime& resources() const noexcept {
         return scene_;
     }

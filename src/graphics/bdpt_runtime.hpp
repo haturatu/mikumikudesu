@@ -5,6 +5,7 @@
 #include "graphics/bdpt_accumulation.hpp"
 #include "graphics/fx_executor.hpp"
 #include "graphics/native_fx_runtime.hpp"
+#include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/subayai_geometry.hpp"
 
 #include <array>
@@ -22,6 +23,7 @@ struct BdptFrame {
     bool clearAccumulation{};
     handles::DescriptorSetHandle descriptorSet{};
     handles::DescriptorSetHandle geometryDescriptorSet{};
+    bool usesCanonicalSceneBindings{};
     std::optional<NativeFxFrame> nativeFx;
 };
 
@@ -39,6 +41,9 @@ class BdptRuntime {
 
     bool initialize(Device& device, fx::FxProgram program, std::string* error = nullptr);
     void reset() noexcept;
+    void setSceneFrameRuntime(NativeSceneFrameRuntime* runtime) noexcept {
+        sceneFrame_ = runtime;
+    }
     [[nodiscard]] bool ready() const noexcept {
         return ready_;
     }
@@ -62,8 +67,7 @@ class BdptRuntime {
     void recordGeometry(CommandList& commands) const;
     void recordAcceleration(CommandList& commands) const;
     [[nodiscard]] bool synchronizeAcceleration(std::string* error = nullptr);
-    [[nodiscard]] TlasAction synchronizeWorld(std::uint64_t worldGeneration,
-                                               std::span<const WorldInstance> instances);
+    [[nodiscard]] TlasAction synchronizeWorld(std::uint64_t worldGeneration, std::span<const WorldInstance> instances);
     [[nodiscard]] const NativeGeometryRuntime& geometry() const noexcept {
         return geometry_;
     }
@@ -83,6 +87,7 @@ class BdptRuntime {
     handles::DescriptorSetLayoutHandle descriptorLayout_{};
     handles::DescriptorSetHandle descriptorSet_{};
     NativeFxRuntime nativeFx_;
+    NativeSceneFrameRuntime* sceneFrame_{};
     bool nativeAttempted_{};
     bool ready_{false};
 };

@@ -1,8 +1,9 @@
 #pragma once
 
 #include "core/effect.hpp"
-#include "graphics/native_renderer_requirements.hpp"
 #include "graphics/bdpt_runtime.hpp"
+#include "graphics/native_renderer_requirements.hpp"
+#include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/subayai_runtime.hpp"
 
 #include <optional>
@@ -24,10 +25,10 @@ class NativeRendererCoordinator {
     NativeRendererCoordinator(const NativeRendererCoordinator&) = delete;
     NativeRendererCoordinator& operator=(const NativeRendererCoordinator&) = delete;
 
-    [[nodiscard]] NativeRendererStatus prepare(Device& device, RendererKind requested,
-                                                const core::EffectGraph& graph);
+    [[nodiscard]] NativeRendererStatus prepare(Device& device, RendererKind requested, const core::EffectGraph& graph);
     [[nodiscard]] NativeRendererStatus prepare(Device& device, RendererKind requested, fx::FxProgram program);
     void setEnvironmentBackend(IEnvironmentBackend* backend) noexcept;
+    void setSceneFrameRuntime(NativeSceneFrameRuntime* runtime) noexcept;
     [[nodiscard]] bool updateEnvironment(const EnvironmentDesc& description);
     void reset() noexcept;
 
@@ -41,16 +42,18 @@ class NativeRendererCoordinator {
     [[nodiscard]] BdptRuntime* bdpt() noexcept {
         return status_.nativeReady && status_.active == RendererKind::bdpt ? &bdpt_ : nullptr;
     }
-    [[nodiscard]] std::optional<NativeFrameOutput>
-    recordFrame(CommandList& commands, const fx::FxFrameContext& context, core::DirtyFlag dirty,
-                std::span<const core::MaterialParameterBlock> materials, std::span<const AliasEntry> lightSampling,
-                const EnvironmentGpuResult& environment);
+    [[nodiscard]] std::optional<NativeFrameOutput> recordFrame(CommandList& commands, const fx::FxFrameContext& context,
+                                                               core::DirtyFlag dirty,
+                                                               std::span<const core::MaterialParameterBlock> materials,
+                                                               std::span<const AliasEntry> lightSampling,
+                                                               const EnvironmentGpuResult& environment);
 
   private:
     NativeRendererStatus status_{};
     SubayaiRuntime subayai_;
     BdptRuntime bdpt_;
     IEnvironmentBackend* environmentBackend_{};
+    NativeSceneFrameRuntime* sceneFrameRuntime_{};
 };
 
 } // namespace dayo::graphics

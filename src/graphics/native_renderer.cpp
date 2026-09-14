@@ -17,8 +17,7 @@ void appendReason(std::ostringstream& output, std::string_view reason) {
 
 } // namespace
 
-std::string missingEffectFeatures(const DeviceCapabilities& capabilities,
-                                  const fx::FxRequiredFeatures& required) {
+std::string missingEffectFeatures(const DeviceCapabilities& capabilities, const fx::FxRequiredFeatures& required) {
     std::ostringstream output;
     if (required.descriptorIndexing && !capabilities.descriptorIndexing)
         appendReason(output, "descriptorIndexing");
@@ -34,7 +33,7 @@ std::string missingEffectFeatures(const DeviceCapabilities& capabilities,
 }
 
 NativeRendererStatus decideNativeRenderer(const DeviceCapabilities& capabilities, RendererKind requested,
-                                           const fx::FxRequiredFeatures& required) {
+                                          const fx::FxRequiredFeatures& required) {
     NativeRendererStatus result{.requested = requested, .active = requested};
     if (requested == RendererKind::preview)
         return result;
@@ -50,8 +49,8 @@ NativeRendererStatus decideNativeRenderer(const DeviceCapabilities& capabilities
 }
 
 NativeRendererStatus decideNativeRendererForInitialization(const DeviceCapabilities& capabilities,
-                                                            RendererKind requested,
-                                                            const fx::FxRequiredFeatures& required) {
+                                                           RendererKind requested,
+                                                           const fx::FxRequiredFeatures& required) {
     NativeRendererStatus result{.requested = requested, .active = requested};
     if (requested == RendererKind::preview)
         return result;
@@ -67,7 +66,7 @@ NativeRendererStatus decideNativeRendererForInitialization(const DeviceCapabilit
 }
 
 NativeRendererStatus NativeRendererCoordinator::prepare(Device& device, RendererKind requested,
-                                                         const core::EffectGraph& graph) {
+                                                        const core::EffectGraph& graph) {
     return prepare(device, requested, fx::FxCompiler{}.compile(graph));
 }
 
@@ -82,11 +81,15 @@ NativeRendererStatus NativeRendererCoordinator::prepare(Device& device, Renderer
     switch (requested) {
     case RendererKind::subayai:
         initialized = subayai_.initialize(device, std::move(program), &error);
-        if (initialized)
+        if (initialized) {
             subayai_.setEnvironmentBackend(environmentBackend_);
+            subayai_.setSceneFrameRuntime(sceneFrameRuntime_);
+        }
         break;
     case RendererKind::bdpt:
         initialized = bdpt_.initialize(device, std::move(program), &error);
+        if (initialized)
+            bdpt_.setSceneFrameRuntime(sceneFrameRuntime_);
         break;
     case RendererKind::preview:
         break;
@@ -105,6 +108,12 @@ void NativeRendererCoordinator::setEnvironmentBackend(IEnvironmentBackend* backe
     subayai_.setEnvironmentBackend(backend);
 }
 
+void NativeRendererCoordinator::setSceneFrameRuntime(NativeSceneFrameRuntime* runtime) noexcept {
+    sceneFrameRuntime_ = runtime;
+    subayai_.setSceneFrameRuntime(runtime);
+    bdpt_.setSceneFrameRuntime(runtime);
+}
+
 bool NativeRendererCoordinator::updateEnvironment(const EnvironmentDesc& description) {
     if (auto* runtime = subayai())
         return runtime->updateEnvironment(description);
@@ -112,8 +121,7 @@ bool NativeRendererCoordinator::updateEnvironment(const EnvironmentDesc& descrip
 }
 
 std::optional<NativeFrameOutput>
-NativeRendererCoordinator::recordFrame(CommandList& commands, const fx::FxFrameContext& context,
-                                       core::DirtyFlag dirty,
+NativeRendererCoordinator::recordFrame(CommandList& commands, const fx::FxFrameContext& context, core::DirtyFlag dirty,
                                        std::span<const core::MaterialParameterBlock> materials,
                                        std::span<const AliasEntry> lightSampling,
                                        const EnvironmentGpuResult& environment) {
