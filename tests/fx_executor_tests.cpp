@@ -891,6 +891,17 @@ bool testNativeFxRuntimeRefreshesFrameResources() {
     ok &= check(device.textureDescs_.size() == allocationsBeforeRefresh + 1,
                 "native FX runtime does not rebuild resources for an unchanged context");
 
+    auto temporalContext = secondContext;
+    temporalContext.frame += 1.0F;
+    temporalContext.sample += 1U;
+    temporalContext.camera.distance += 0.25F;
+    temporalContext.lighting.color[0] += 0.1F;
+    const auto allocationsBeforeTemporalRefresh = device.textureDescs_.size();
+    ok &= check(runtime.refresh(temporalContext, &error),
+                "native FX runtime accepts a new frame without rebuilding resources");
+    ok &= check(device.textureDescs_.size() == allocationsBeforeTemporalRefresh,
+                "native FX runtime keeps persistent resources across frame changes");
+
     dayo::graphics::FxExecutionResources resources;
     resources.resolveDescriptorSets = [](const dayo::fx::FxDispatch&) {
         return std::vector<dayo::graphics::FxExecutionResources::TypedDescriptorSetBinding>{{{900, 1}, 0}};

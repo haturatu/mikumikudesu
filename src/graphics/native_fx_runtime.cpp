@@ -14,8 +14,11 @@ void setError(std::string* error, std::string message) {
 }
 
 [[nodiscard]] bool sameResourceContext(const fx::FxFrameContext& left, const fx::FxFrameContext& right) noexcept {
-    return left.frame == right.frame && left.sample == right.sample && left.renderWidth == right.renderWidth &&
-           left.renderHeight == right.renderHeight && left.currentModel == right.currentModel &&
+    // Frame/sample/camera/light values are per-dispatch state. They are
+    // already supplied to prepareFrame() and must not rebuild persistent FX
+    // textures, descriptor sets, shader modules, or pipelines every frame.
+    // Only values that can change a declared resource extent belong here.
+    return left.renderWidth == right.renderWidth && left.renderHeight == right.renderHeight &&
            left.modelIndex == right.modelIndex && left.vertexCount == right.vertexCount &&
            left.totalMaterial == right.totalMaterial && left.cloneCount == right.cloneCount &&
            left.clonedVertexCount == right.clonedVertexCount;
