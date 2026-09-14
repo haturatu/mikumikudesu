@@ -422,17 +422,24 @@ bool testBdptNativeFxExecution() {
     bool ok = check(runtime.initialize(device, std::move(program), &error),
                     "BDPT runtime accepts a compilable native RT program");
     const auto context = dayo::fx::makeFxFrameContext(0.0F, 0, 16, 8, 1, 0, 3, 1, 1, 1);
-    auto frame = runtime.prepareFrame(context, dayo::core::DirtyFlag::geometry);
+    const std::array<dayo::graphics::AliasEntry, 1> lightSampling{{{1.0F, 0}}};
+    auto frame = runtime.prepareFrame(context, dayo::core::DirtyFlag::geometry, lightSampling);
     ok &= check(runtime.nativeReady() && frame.nativeFx.has_value(), "BDPT runtime prepares the native FX frame path");
-    ok &= check(!runtime.output(frame).has_value(),
-                "BDPT runtime does not invent an output when the graph writes no texture");
+    const auto frameOutput = runtime.output(frame);
+    ok &= check(frameOutput.has_value() && frameOutput->texture == frame.gpu.accumulation &&
+                    frameOutput->extent.width == context.renderWidth && frameOutput->extent.height == context.renderHeight &&
+                    frameOutput->format == dayo::graphics::PixelFormat::rgba16Float,
+                "BDPT runtime exposes persistent accumulation when the graph has no explicit output");
     MockDeformCommands commands;
     const auto stats = runtime.execute(frame, commands);
     ok &= check(stats.rayTracing == 1 && commands.events == std::vector<std::string>{"transition", "clear", "barrier",
-                                                                                     "descriptor", "bind", "traceEx"},
+                                                                                     "descriptor", "descriptor", "bind",
+                                                                                     "traceEx"},
                 "BDPT runtime clears accumulation and executes the native RT pass");
-    ok &= check(commands.descriptorSets.size() == 1 && commands.descriptorSets.front().second == 0,
-                "BDPT native FX binds the persistent resource set before tracing");
+    ok &= check(commands.descriptorSets.size() == 2 && commands.descriptorSets[0].second == 0 &&
+                    commands.descriptorSets[0].first == frame.lightSamplingDescriptorSet &&
+                    commands.descriptorSets[1].second == 1 && commands.descriptorSets[1].first == frame.descriptorSet,
+                "BDPT native FX binds light sampling before persistent resources");
     runtime.reset();
     return ok;
 }
