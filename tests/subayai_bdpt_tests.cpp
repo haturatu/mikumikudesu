@@ -7,6 +7,7 @@
 #include "graphics/native_frame_constants.hpp"
 #include "graphics/native_scene_binding_runtime.hpp"
 #include "graphics/native_scene_bindings.hpp"
+#include "graphics/native_scene_data.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/native_scene_resource_runtime.hpp"
 #include "graphics/sbt.hpp"
@@ -1265,6 +1266,46 @@ int main() {
         ok &= check(std::abs(gain - 3.5F) < 1e-6F && view.output[0] == 320 && view.output[1] == 200 &&
                         view.output[2] == 4,
                     "native scene frame runtime uploads controller and frame values together");
+    }
+    // Canonical scene CPU buffers preserve the upstream StructuredBuffer
+    // layout independently from Preview and the compact BLAS vertex format.
+    {
+        mmd::PmxModel model;
+        model.vertices.resize(4);
+        model.vertices[0].position = {0.0F, 0.0F, 0.0F};
+        model.vertices[1].position = {1.0F, 0.0F, 0.0F};
+        model.vertices[2].position = {1.0F, 1.0F, 0.0F};
+        model.vertices[3].position = {0.0F, 1.0F, 0.0F};
+        for (auto& vertex : model.vertices) {
+            vertex.normal = {0.0F, 0.0F, 1.0F};
+            vertex.uv = {vertex.position[0], vertex.position[1]};
+        }
+        model.indices = {0, 1, 2, 0, 2, 3};
+        model.materials.resize(2);
+        model.materials[0].diffuse = {1.0F, 0.0F, 0.0F, 1.0F};
+        model.materials[0].indexCount = 3;
+        model.materials[1].diffuse = {0.0F, 1.0F, 0.0F, 1.0F};
+        model.materials[1].indexCount = 3;
+        std::array<dayo::graphics::PreviewVertex, 4> preview{};
+        for (std::size_t index = 0; index < preview.size(); ++index) {
+            std::copy(model.vertices[index].position.begin(), model.vertices[index].position.end(),
+                      std::begin(preview[index].position));
+            std::copy(model.vertices[index].normal.begin(), model.vertices[index].normal.end(),
+                      std::begin(preview[index].normal));
+            std::copy(model.vertices[index].uv.begin(), model.vertices[index].uv.end(), std::begin(preview[index].uv));
+        }
+        const auto data = dayo::graphics::makeNativeSceneModelData(model, preview);
+        ok &= check(data.vertices.size() == 4 && data.indices == model.indices && data.materials.size() == 2 &&
+                        data.faces == std::vector<std::uint32_t>{0, 1} && data.materialFaces.size() == 2 &&
+                        data.faceWalker.size() == 2,
+                    "native scene data expands PMX model buffers deterministically");
+        ok &= check(std::abs(data.vertices[0].tangent[0] - 1.0F) < 1e-5F &&
+                        std::abs(data.vertices[0].tangent[1]) < 1e-5F &&
+                        std::abs(data.materialFaces[0].totalArea - 0.5F) < 1e-5F &&
+                        std::abs(data.materialFaces[1].totalArea - 0.5F) < 1e-5F,
+                    "native scene data reconstructs tangent and material face area");
+        ok &= check(data.materials[0].vertexCount == 3 && data.materials[1].vertexCount == 3,
+                    "native scene data preserves material index counts");
     }
     // Native frame constants: CPU ABI and typed uniform uploads remain stable
     // independently of the native scene descriptor-set population.
