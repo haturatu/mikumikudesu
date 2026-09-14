@@ -17,6 +17,7 @@
 #include "graphics/native_scene_model_runtime.hpp"
 #include "graphics/native_scene_resource_store.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
+#include "graphics/subayai_light_sampling.hpp"
 #include "ui/ui_state.hpp"
 
 #include <array>
@@ -117,6 +118,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::vector<NativeModelGeometry> nativeGeometry_;
     graphics::NativeSceneModelRuntime nativeSceneModelRuntime_;
     std::vector<graphics::NativeSceneModelData> nativeSceneModelData_;
+    graphics::LightSamplingService nativeLightSampling_;
+    std::vector<float> nativeLightPowers_;
     std::uint64_t nativeDeformVersion_{};
     std::uint64_t animatedTopologyGeneration_{};
     float animationFrame_{};

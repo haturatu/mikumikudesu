@@ -288,7 +288,21 @@ Application::recordNativeFrame(graphics::CommandList& commands, const graphics::
                 materials.emplace_back();
         }
     }
-    const std::array lightSampling{graphics::AliasEntry{1.0F, 0}};
+    const auto nativeDirty = scene_.dirtyFlags();
+    if (nativeLightSampling_.lightCount() == 0 || scene_.dirty(core::DirtyFlag::lighting)) {
+        float power = 1.0F;
+        const auto* lightingMotion = scene_.cameraMotion();
+        if (lightingMotion != nullptr && !lightingMotion->lights.empty()) {
+            const auto light = core::evaluateLight(*lightingMotion, animationFrame_);
+            power = std::max(0.0F, 0.2126F * light.color[0] + 0.7152F * light.color[1] + 0.0722F * light.color[2]);
+        }
+        if (!std::isfinite(power) || power <= 0.0F)
+            power = 1.0F;
+        nativeLightPowers_ = {power};
+        nativeLightSampling_.update(nativeLightPowers_, true);
+        scene_.clearDirty(core::DirtyFlag::lighting);
+    }
+    const auto lightSampling = nativeLightSampling_.table();
     try {
         std::string modelError;
         if (!nativeSceneModelData_.empty() &&
@@ -359,7 +373,7 @@ Application::recordNativeFrame(graphics::CommandList& commands, const graphics::
             throw std::runtime_error(sceneError.empty() ? "native scene resource composition failed" : sceneError);
         if (!nativeSceneFrame_.sync(frameContext, nativeSceneResources_.bindings(), {}, &sceneError))
             throw std::runtime_error(sceneError.empty() ? "native scene frame synchronization failed" : sceneError);
-        return nativeRenderer_.recordFrame(commands, frameContext, scene_.dirtyFlags(), materials, lightSampling, {});
+        return nativeRenderer_.recordFrame(commands, frameContext, nativeDirty, materials, lightSampling, {});
     } catch (const std::exception& exception) {
         // Keep the command buffer usable for the Preview fallback. Native
         // resources remain owned until the next renderer request, so a
@@ -421,6 +435,8 @@ void Application::resetProjectRuntimeState() {
     nativeGeometry_.clear();
     nativeSceneModelRuntime_.reset();
     nativeSceneModelData_.clear();
+    nativeLightSampling_.clear();
+    nativeLightPowers_.clear();
     nativeDeformVersion_ = 0;
     mediaSeconds_ = 0.0;
     uploadedVideoFrame_ = -1;
