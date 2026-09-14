@@ -21,6 +21,10 @@ void setError(std::string* error, std::string value) {
     return std::max<std::size_t>(1, byteSize);
 }
 
+template <typename T> [[nodiscard]] std::size_t byteSize(const std::vector<T>& values) noexcept {
+    return values.size() * sizeof(T);
+}
+
 template <typename T>
 handles::BufferHandle upload(Device& device, std::span<const T> values, ResourceUsage usage, std::string_view name) {
     const auto byteSize = values.size_bytes();
@@ -78,12 +82,12 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
         faceWalkerBytes_.reserve(models.size());
 
         for (const auto& model : models) {
-            vertexBytes_.push_back(model.vertices.size_bytes());
-            indexBytes_.push_back(model.indices.size_bytes());
-            materialBytes_.push_back(model.materials.size_bytes());
-            faceBytes_.push_back(model.faces.size_bytes());
-            materialFaceBytes_.push_back(model.materialFaces.size_bytes());
-            faceWalkerBytes_.push_back(model.faceWalker.size_bytes());
+            vertexBytes_.push_back(byteSize(model.vertices));
+            indexBytes_.push_back(byteSize(model.indices));
+            materialBytes_.push_back(byteSize(model.materials));
+            faceBytes_.push_back(byteSize(model.faces));
+            materialFaceBytes_.push_back(byteSize(model.materialFaces));
+            faceWalkerBytes_.push_back(byteSize(model.faceWalker));
             vertices_.push_back(upload(device, std::span<const NativeSceneVertex>(model.vertices),
                                        ResourceUsage::storageRead | ResourceUsage::vertexRead |
                                            ResourceUsage::asBuildRead | ResourceUsage::rayTracingRead,
@@ -125,12 +129,12 @@ bool NativeSceneModelRuntime::update(Device& device, std::span<const NativeScene
     const bool sameLayout = ready() && device_ == &device && models.size() == modelCount() &&
                             std::all_of(models.begin(), models.end(), [&](const auto& model) {
                                 const auto index = static_cast<std::size_t>(&model - models.data());
-                                return model.vertices.size_bytes() == vertexBytes_[index] &&
-                                       model.indices.size_bytes() == indexBytes_[index] &&
-                                       model.materials.size_bytes() == materialBytes_[index] &&
-                                       model.faces.size_bytes() == faceBytes_[index] &&
-                                       model.materialFaces.size_bytes() == materialFaceBytes_[index] &&
-                                       model.faceWalker.size_bytes() == faceWalkerBytes_[index];
+                                return byteSize(model.vertices) == vertexBytes_[index] &&
+                                       byteSize(model.indices) == indexBytes_[index] &&
+                                       byteSize(model.materials) == materialBytes_[index] &&
+                                       byteSize(model.faces) == faceBytes_[index] &&
+                                       byteSize(model.materialFaces) == materialFaceBytes_[index] &&
+                                       byteSize(model.faceWalker) == faceWalkerBytes_[index];
                             });
     if (!sameLayout)
         return sync(device, models, error);
