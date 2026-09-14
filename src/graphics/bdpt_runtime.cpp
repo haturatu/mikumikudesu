@@ -221,16 +221,26 @@ BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::Dir
     if (!bindings_.bindLightSampling(lightRuntime_.buffer(), &lightError))
         throw std::runtime_error(lightError.empty() ? "BDPT light sampling descriptor binding failed" : lightError);
     BdptFrame frame;
-    frame.context = context;
-    frame.plan = fx::FxCompiler{}.plan(program_, context);
     frame.clearAccumulation = accumulation_.beginFrame(dirty);
     frame.sampleIndex = accumulation_.sampleIndex();
+    // The accumulation counter is owned by this runtime, not by the scene's
+    // animation timeline. Publish the value selected for this output frame
+    // before making the FX plan so ViewCB.output.z and SAMPLE expressions use
+    // the same sample that will be accumulated by the native pass.
+    frame.context = context;
+    frame.context.sample = frame.sampleIndex;
+    frame.plan = fx::FxCompiler{}.plan(program_, frame.context);
     frame.gpu = accumulation_.gpuResources();
     frame.descriptorSet = descriptorSet_;
     frame.lightSamplingBuffer = lightRuntime_.buffer();
     frame.lightSamplingDescriptorSet = bindings_.lightSamplingSet();
     frame.geometryDescriptorSet = geometry_.descriptorSet();
     frame.usesCanonicalSceneBindings = sceneFrame_ != nullptr;
+    if (sceneFrame_ != nullptr) {
+        std::string frameError;
+        if (!sceneFrame_->syncViewConstants(frame.context, &frameError))
+            throw std::runtime_error(frameError.empty() ? "BDPT ViewCB synchronization failed" : frameError);
+    }
     if (!nativeAttempted_ && !program_.hlsl.empty()) {
         nativeAttempted_ = true;
         std::vector<handles::DescriptorSetLayoutHandle> sharedLayouts;
