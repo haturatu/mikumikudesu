@@ -54,6 +54,20 @@ namespace {
     return ", space" + std::to_string(resourceSet);
 }
 
+[[nodiscard]] char registerPrefix(FxNativeShaderRegister registerClass) noexcept {
+    switch (registerClass) {
+    case FxNativeShaderRegister::uav:
+        return 'u';
+    case FxNativeShaderRegister::sampled:
+        return 't';
+    case FxNativeShaderRegister::sampler:
+        return 's';
+    case FxNativeShaderRegister::uniform:
+        return 'b';
+    }
+    return 't';
+}
+
 [[nodiscard]] std::string controllerName(std::string_view name, std::string& arraySuffix) {
     arraySuffix.clear();
     const auto bracket = name.find('[');
@@ -141,12 +155,31 @@ void appendSamplerDeclarations(std::ostringstream& output, const FxProgram& prog
     }
 }
 
+void appendSharedDeclarations(std::ostringstream& output, const FxNativeShaderSourceOptions& options) {
+    if (!options.preamble.empty()) {
+        output << options.preamble;
+        if (options.preamble.back() != '\n')
+            output << '\n';
+    }
+    std::unordered_set<std::string> names;
+    for (const auto& resource : options.resources) {
+        if (resource.declaration.empty())
+            throw std::invalid_argument("native FX shared resource declaration is empty");
+        if (!names.insert(resource.declaration).second)
+            throw std::invalid_argument("native FX shared resource declaration is duplicated: " +
+                                        resource.declaration);
+        output << resource.declaration << " : register(" << registerPrefix(resource.registerClass)
+               << resource.registerIndex << resourceSetSuffix(resource.descriptorSet) << ");\n";
+    }
+}
+
 } // namespace
 
 std::string makeNativeFxShaderSource(const FxProgram& program, const FxDispatch& dispatch,
-                                     std::uint32_t resourceSet) {
+                                     std::uint32_t resourceSet, const FxNativeShaderSourceOptions& options) {
     std::ostringstream output;
     output << "// generated native FX declarations\n";
+    appendSharedDeclarations(output, options);
     appendControllerBlock(output, program);
     output << "#ifdef " << passMacro(dispatch.name) << "\n";
     std::uint32_t sampledBinding = 0;

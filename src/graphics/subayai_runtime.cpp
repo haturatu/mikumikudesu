@@ -7,6 +7,67 @@
 
 namespace dayo::graphics {
 
+namespace {
+
+void addSharedResource(fx::FxNativeShaderSourceOptions& options, std::string declaration,
+                       fx::FxNativeShaderRegister registerClass, std::uint32_t registerIndex,
+                       std::uint32_t descriptorSet) {
+    options.resources.push_back({.declaration = std::move(declaration),
+                                 .registerClass = registerClass,
+                                 .registerIndex = registerIndex,
+                                 .descriptorSet = descriptorSet});
+}
+
+std::string subayaiShaderPreamble() {
+    return "struct YRZ_SubayaiMaterialGpu {\n"
+           "    float4 baseColor;\n"
+           "    float4 emission;\n"
+           "    float4 specular;\n"
+           "    float4 hair;\n"
+           "    float4 surface;\n"
+           "    uint4 flags;\n"
+           "};\n"
+           "struct YRZ_SubayaiAliasEntry { float probability; uint alias; };\n";
+}
+
+void appendSubayaiSharedBindings(const SubayaiBindingRuntime& bindings, const SubayaiEnvironmentRuntime& environment,
+                                 const NativeGeometryRuntime& geometry,
+                                 std::vector<handles::DescriptorSetLayoutHandle>& layouts,
+                                 std::vector<handles::DescriptorSetHandle>& descriptorSets,
+                                 fx::FxNativeShaderSourceOptions& options) {
+    const auto append = [&](handles::DescriptorSetLayoutHandle layout, handles::DescriptorSetHandle set,
+                            const auto& describe) {
+        if (!layout.valid() || !set.valid())
+            return;
+        const auto index = static_cast<std::uint32_t>(layouts.size());
+        layouts.push_back(layout);
+        descriptorSets.push_back(set);
+        describe(index);
+    };
+    append(bindings.layouts().material, bindings.materialSet(), [&](const auto index) {
+        addSharedResource(options, "StructuredBuffer<YRZ_SubayaiMaterialGpu> YRZ_SubayaiMaterials",
+                          fx::FxNativeShaderRegister::sampled, 0, index);
+    });
+    append(bindings.layouts().lightSampling, bindings.lightSamplingSet(), [&](const auto index) {
+        addSharedResource(options, "StructuredBuffer<YRZ_SubayaiAliasEntry> YRZ_SubayaiLightSampling",
+                          fx::FxNativeShaderRegister::sampled, 0, index);
+    });
+    append(environment.layout(), environment.descriptorSet(), [&](const auto index) {
+        addSharedResource(options, "TextureCube<float4> YRZ_SubayaiEnvironment",
+                          fx::FxNativeShaderRegister::sampled, 0, index);
+        addSharedResource(options, "TextureCube<float4> YRZ_SubayaiPrefilteredEnvironment",
+                          fx::FxNativeShaderRegister::sampled, 1, index);
+        addSharedResource(options, "StructuredBuffer<float> YRZ_SubayaiEnvironmentSH",
+                          fx::FxNativeShaderRegister::sampled, 2, index);
+    });
+    append(geometry.descriptorLayout(), geometry.descriptorSet(), [&](const auto index) {
+        addSharedResource(options, "RaytracingAccelerationStructure YRZ_SubayaiTLAS",
+                          fx::FxNativeShaderRegister::sampled, 0, index);
+    });
+}
+
+} // namespace
+
 bool SubayaiRuntime::initialize(Device& device, fx::FxProgram program, std::string* error) {
     if (error != nullptr)
         error->clear();
@@ -169,6 +230,7 @@ SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
         nativeAttempted_ = true;
         std::vector<handles::DescriptorSetLayoutHandle> sharedLayouts;
         std::vector<handles::DescriptorSetHandle> sharedSets;
+        fx::FxNativeShaderSourceOptions sourceOptions;
         if (sceneFrame_ != nullptr) {
             if (!sceneFrame_->descriptorSetsReady())
                 throw std::runtime_error("native Subayai scene descriptor sets are not synchronized");
@@ -176,15 +238,13 @@ SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
             const auto sets = sceneFrame_->descriptorSets();
             sharedLayouts.assign(layouts.begin(), layouts.end());
             sharedSets.assign(sets.begin(), sets.end());
-        } else {
-            sharedLayouts = {bindings_.layouts().material, bindings_.layouts().lightSampling,
-                             environmentRuntime_.layout()};
-            if (geometry_.descriptorLayout().valid())
-                sharedLayouts.push_back(geometry_.descriptorLayout());
         }
+        sourceOptions.preamble = subayaiShaderPreamble();
+        appendSubayaiSharedBindings(bindings_, environmentRuntime_, geometry_, sharedLayouts, sharedSets, sourceOptions);
         std::string nativeError;
         static_cast<void>(nativeFx_.initializeForFrame(*device_, program_, fx::FxShaderCompiler{}, context,
-                                                       sharedLayouts, &nativeError, sharedSets));
+                                                       sharedLayouts, &nativeError, sharedSets,
+                                                       std::move(sourceOptions)));
     } else if (nativeFx_.ready()) {
         std::string nativeError;
         static_cast<void>(nativeFx_.refresh(context, &nativeError));
@@ -198,47 +258,8 @@ VulkanFxExecutor::Stats SubayaiRuntime::execute(SubayaiFrame& frame, CommandList
                                                 const FxExecutionResources& resources) const {
     if (!ready_)
         throw std::logic_error("Subayai runtime is not initialized");
-    if (frame.nativeFx.has_value()) {
-        auto nativeResources = resources;
-        if (!frame.usesCanonicalSceneBindings &&
-            (frame.materialDescriptorSet.valid() || frame.lightSamplingDescriptorSet.valid() ||
-             frame.geometryDescriptorSet.valid() || frame.environmentDescriptorSet.valid())) {
-            const auto existingSets = nativeResources.resolveDescriptorSets;
-            const auto existingSingle = nativeResources.resolveDescriptorSet;
-            const auto materialSet = frame.materialDescriptorSet;
-            const auto lightSet = frame.lightSamplingDescriptorSet;
-            const auto geometrySet = frame.geometryDescriptorSet;
-            const auto environmentSet = frame.environmentDescriptorSet;
-            const auto environmentSetIndex = geometry_.descriptorLayout().valid() ? 3U : 2U;
-            nativeResources.resolveDescriptorSets = [existingSets, existingSingle, materialSet, lightSet, geometrySet,
-                                                     environmentSet,
-                                                     environmentSetIndex](const fx::FxDispatch& dispatch) {
-                std::vector<FxExecutionResources::TypedDescriptorSetBinding> result;
-                if (existingSets) {
-                    result = existingSets(dispatch);
-                } else if (existingSingle) {
-                    const auto shared = existingSingle(dispatch);
-                    if (shared.has_value())
-                        result.push_back({*shared, 0});
-                }
-                const auto hasIndex = [&result](std::uint32_t index) {
-                    return std::any_of(result.begin(), result.end(),
-                                       [index](const auto& binding) { return binding.setIndex == index; });
-                };
-                if (materialSet.valid() && !hasIndex(0))
-                    result.push_back({materialSet, 0});
-                if (lightSet.valid() && !hasIndex(1))
-                    result.push_back({lightSet, 1});
-                if (geometrySet.valid() && !hasIndex(2))
-                    result.push_back({geometrySet, 2});
-                if (environmentSet.valid() && !hasIndex(environmentSetIndex))
-                    result.push_back({environmentSet, environmentSetIndex});
-                return result;
-            };
-            nativeResources.resolveDescriptorSet = {};
-        }
-        return nativeFx_.execute(*frame.nativeFx, commands, nativeResources);
-    }
+    if (frame.nativeFx.has_value())
+        return nativeFx_.execute(*frame.nativeFx, commands, resources);
     auto nativeResources = resources;
     if (!nativeResources.resolveDescriptorSets && !nativeResources.resolveDescriptorSet &&
         (frame.materialDescriptorSet.valid() || frame.lightSamplingDescriptorSet.valid() ||

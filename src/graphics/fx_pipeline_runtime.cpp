@@ -248,7 +248,8 @@ FxPipelineRuntime::~FxPipelineRuntime() {
 handles::ShaderHandle FxPipelineRuntime::compileShader(Device& device, const fx::FxProgram& program,
                                                         const fx::FxDispatch& dispatch, std::string_view entryPoint,
                                                         fx::FxShaderStage stage, const fx::FxShaderCompiler& compiler,
-                                                        Entry& entry, std::uint32_t resourceSet) {
+                                                        Entry& entry, std::uint32_t resourceSet,
+                                                        const fx::FxNativeShaderSourceOptions& sourceOptions) {
     if (entryPoint.empty())
         throw std::invalid_argument("FX shader entry point is empty for pass " + dispatch.name);
     if (program.hlsl.empty())
@@ -258,7 +259,7 @@ handles::ShaderHandle FxPipelineRuntime::compileShader(Device& device, const fx:
     fx::FxShaderCompileRequest request;
     request.macros = dispatch.macros;
     request.macros.push_back(passMacro(dispatch.name));
-    const auto generatedSource = fx::makeNativeFxShaderSource(program, dispatch, resourceSet);
+    const auto generatedSource = fx::makeNativeFxShaderSource(program, dispatch, resourceSet, sourceOptions);
     key.sourceHash = program.sourcePath.string() + "@" + std::to_string(program.sourceVersion) + "@" +
                      std::to_string(resourceSet);
     key.hlslHash = std::to_string(std::hash<std::string>{}(generatedSource));
@@ -297,7 +298,8 @@ handles::ShaderHandle FxPipelineRuntime::compileShader(Device& device, const fx:
 }
 
 bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, const fx::FxShaderCompiler& compiler,
-                              const LayoutResolver& resolveLayout, std::string* error, std::uint32_t resourceSet) {
+                              const LayoutResolver& resolveLayout, std::string* error, std::uint32_t resourceSet,
+                              const fx::FxNativeShaderSourceOptions& sourceOptions) {
     if (error != nullptr)
         error->clear();
     reset();
@@ -326,9 +328,11 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                 if (raster == nullptr || raster->vertexShader.empty() || raster->pixelShader.empty())
                     throw std::invalid_argument("raster FX pass requires vertex and pixel shaders: " + dispatch.name);
                 const auto vertex = compileShader(device, program, dispatch, raster->vertexShader,
-                                                  fx::FxShaderStage::vertex, compiler, entry, resourceSet);
+                                                  fx::FxShaderStage::vertex, compiler, entry, resourceSet,
+                                                  sourceOptions);
                 const auto pixel = compileShader(device, program, dispatch, raster->pixelShader,
-                                                 fx::FxShaderStage::fragment, compiler, entry, resourceSet);
+                                                 fx::FxShaderStage::fragment, compiler, entry, resourceSet,
+                                                 sourceOptions);
                 entry.pipeline = device.createGraphicsPipelineEx({.layout = *layout,
                                                                    .shaders = {vertex, pixel},
                                                                    .colorFormat = graphicsTargetFormat(program,
@@ -344,7 +348,8 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                     throw std::invalid_argument(
                         "postprocess FX pipeline needs a renderer-owned fullscreen vertex shader: " + dispatch.name);
                 const auto pixel = compileShader(device, program, dispatch, postprocess->pixelShader,
-                                                 fx::FxShaderStage::fragment, compiler, entry, resourceSet);
+                                                 fx::FxShaderStage::fragment, compiler, entry, resourceSet,
+                                                 sourceOptions);
                 entry.pipeline = device.createGraphicsPipelineEx({.layout = *layout,
                                                                     .shaders = {fullscreenVertex, pixel},
                                                                     .colorFormat = graphicsTargetFormat(program,
@@ -356,7 +361,8 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                 if (compute == nullptr || compute->computeShader.empty())
                     throw std::invalid_argument("compute FX pass requires a compute shader: " + dispatch.name);
                 const auto shader = compileShader(device, program, dispatch, compute->computeShader,
-                                                  fx::FxShaderStage::compute, compiler, entry, resourceSet);
+                                                  fx::FxShaderStage::compute, compiler, entry, resourceSet,
+                                                  sourceOptions);
                 entry.pipeline = device.createComputePipelineEx({.layout = *layout, .shaders = {shader}});
                 break;
             }
@@ -371,11 +377,11 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                 descriptor.maxRecursionDepth = ray->maxRecursionDepth;
                 descriptor.rayGeneration.push_back(
                     compileShader(device, program, dispatch, ray->rayGenerationShader,
-                                  fx::FxShaderStage::rayGeneration, compiler, entry, resourceSet));
+                                  fx::FxShaderStage::rayGeneration, compiler, entry, resourceSet, sourceOptions));
                 for (const auto& shader : ray->missShaders)
                     descriptor.miss.push_back(
                         compileShader(device, program, dispatch, shader, fx::FxShaderStage::miss, compiler, entry,
-                                      resourceSet));
+                                      resourceSet, sourceOptions));
                 for (const auto& group : ray->hitGroups) {
                     RayTracingHitGroupDesc hit;
                     hit.type = group.type == core::fx::FxRayTracingHitGroupType::procedural
@@ -383,19 +389,22 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                                    : RayTracingHitGroupType::triangles;
                     if (!group.closestHit.empty())
                         hit.closestHit = compileShader(device, program, dispatch, group.closestHit,
-                                                       fx::FxShaderStage::closestHit, compiler, entry, resourceSet);
+                                                       fx::FxShaderStage::closestHit, compiler, entry, resourceSet,
+                                                       sourceOptions);
                     if (!group.anyHit.empty())
                         hit.anyHit = compileShader(device, program, dispatch, group.anyHit,
-                                                   fx::FxShaderStage::anyHit, compiler, entry, resourceSet);
+                                                   fx::FxShaderStage::anyHit, compiler, entry, resourceSet,
+                                                   sourceOptions);
                     if (!group.intersection.empty())
                         hit.intersection = compileShader(device, program, dispatch, group.intersection,
-                                                         fx::FxShaderStage::intersection, compiler, entry, resourceSet);
+                                                         fx::FxShaderStage::intersection, compiler, entry, resourceSet,
+                                                         sourceOptions);
                     descriptor.hitGroups.push_back(hit);
                 }
                 for (const auto& shader : ray->callableShaders)
                     descriptor.callable.push_back(compileShader(device, program, dispatch, shader,
                                                                 fx::FxShaderStage::callable, compiler, entry,
-                                                                resourceSet));
+                                                                resourceSet, sourceOptions));
                 entry.pipeline = device.createRayTracingPipelineEx(descriptor);
                 entry.sbt = device.createShaderBindingTable({
                     .pipeline = entry.pipeline,

@@ -3,6 +3,7 @@
 #include "fx/fx_compiler.hpp"
 #include "fx/fx_shader_cache.hpp"
 #include "fx/fx_shader_compiler.hpp"
+#include "fx/fx_shader_source.hpp"
 #include "graphics/device.hpp"
 
 #include <functional>
@@ -29,7 +30,8 @@ class FxPipelineRuntime {
 
     [[nodiscard]] bool build(Device& device, const fx::FxProgram& program, const fx::FxShaderCompiler& compiler,
                               const LayoutResolver& resolveLayout, std::string* error = nullptr,
-                              std::uint32_t resourceSet = 0);
+                              std::uint32_t resourceSet = 0,
+                              const fx::FxNativeShaderSourceOptions& sourceOptions = {});
     void reset() noexcept;
 
     [[nodiscard]] std::optional<handles::PipelineHandle> resolvePipeline(const fx::FxDispatch& dispatch) const;
@@ -49,7 +51,8 @@ class FxPipelineRuntime {
     [[nodiscard]] handles::ShaderHandle compileShader(Device& device, const fx::FxProgram& program,
                                                       const fx::FxDispatch& dispatch, std::string_view entryPoint,
                                                       fx::FxShaderStage stage, const fx::FxShaderCompiler& compiler,
-                                                      Entry& entry, std::uint32_t resourceSet);
+                                                      Entry& entry, std::uint32_t resourceSet,
+                                                      const fx::FxNativeShaderSourceOptions& sourceOptions);
     void destroyEntry(const Entry& entry) noexcept;
 
     Device* device_{nullptr};

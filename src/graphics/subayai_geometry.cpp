@@ -1,5 +1,7 @@
 #include "graphics/subayai_geometry.hpp"
 
+#include "graphics/native_scene_bindings.hpp"
+
 #include <array>
 #include <stdexcept>
 #include <utility>
@@ -17,7 +19,8 @@ namespace {
 } // namespace
 
 DescriptorSetLayoutDesc nativeGeometryDescriptorLayout() noexcept {
-    return {.bindings = {{0, DescriptorKind::accelerationStructure, 1, nativeGeometryStages()}}};
+    return {.bindings = {{nativeSceneBinding(NativeSceneRegisterClass::sampled, 0),
+                          DescriptorKind::accelerationStructure, 1, nativeGeometryStages()}}};
 }
 
 NativeGeometryRuntime::~NativeGeometryRuntime() {
@@ -163,7 +166,9 @@ TlasAction NativeGeometryRuntime::synchronizeWorld(std::uint64_t worldGeneration
     if (!tlas.valid())
         throw std::runtime_error("native geometry did not produce a TLAS");
     const std::array<DescriptorBindingEx, 1> bindings{
-        DescriptorBindingEx{.slot = 0, .arrayElement = 0, .accelerationStructure = tlas}};
+        DescriptorBindingEx{.slot = nativeSceneBinding(NativeSceneRegisterClass::sampled, 0),
+                            .arrayElement = 0,
+                            .accelerationStructure = tlas}};
     if (descriptorSet_.valid()) {
         device_->updateDescriptorSetEx(descriptorSet_, bindings);
     } else {

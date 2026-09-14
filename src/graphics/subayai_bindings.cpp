@@ -1,5 +1,7 @@
 #include "graphics/subayai_bindings.hpp"
 
+#include "graphics/native_scene_bindings.hpp"
+
 #include <array>
 #include <exception>
 #include <stdexcept>
@@ -22,11 +24,13 @@ void setError(std::string* error, std::string value) {
 } // namespace
 
 DescriptorSetLayoutDesc subayaiMaterialBindingLayout() {
-    return {.bindings = {{0, DescriptorKind::storageBuffer, 1, nativeSubayaiStages()}}};
+    return {.bindings = {{nativeSceneBinding(NativeSceneRegisterClass::sampled, 0),
+                          DescriptorKind::storageBuffer, 1, nativeSubayaiStages()}}};
 }
 
 DescriptorSetLayoutDesc subayaiLightSamplingBindingLayout() {
-    return {.bindings = {{0, DescriptorKind::storageBuffer, 1, nativeSubayaiStages()}}};
+    return {.bindings = {{nativeSceneBinding(NativeSceneRegisterClass::sampled, 0),
+                          DescriptorKind::storageBuffer, 1, nativeSubayaiStages()}}};
 }
 
 SubayaiBindingRuntime::~SubayaiBindingRuntime() {
@@ -73,7 +77,9 @@ bool SubayaiBindingRuntime::bindBuffer(handles::DescriptorSetLayoutHandle layout
             return true;
         }
         const std::array<DescriptorBindingEx, 1> bindings{
-            DescriptorBindingEx{.slot = 0, .arrayElement = 0, .buffer = buffer}};
+            DescriptorBindingEx{.slot = nativeSceneBinding(NativeSceneRegisterClass::sampled, 0),
+                                .arrayElement = 0,
+                                .buffer = buffer}};
         if (set.valid()) {
             device_->updateDescriptorSetEx(set, bindings);
         } else {

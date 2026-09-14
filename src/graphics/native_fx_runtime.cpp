@@ -30,18 +30,20 @@ NativeFxRuntime::~NativeFxRuntime() {
 bool NativeFxRuntime::initialize(Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
                                  std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts,
                                  std::string* error,
-                                 std::span<const handles::DescriptorSetHandle> sharedDescriptorSets) {
+                                 std::span<const handles::DescriptorSetHandle> sharedDescriptorSets,
+                                 fx::FxNativeShaderSourceOptions sourceOptions) {
     const auto defaultContext =
         fx::makeFxFrameContext(0.0F, 0, 1, 1, 0, 0, 1, 1, 1, program.meshCloneCount);
     return initializeForFrame(device, std::move(program), compiler,
-                              defaultContext, sharedLayouts, error, sharedDescriptorSets);
+                              defaultContext, sharedLayouts, error, sharedDescriptorSets, std::move(sourceOptions));
 }
 
 bool NativeFxRuntime::initializeForFrame(Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
                                          const fx::FxFrameContext& context,
                                          std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts,
                                          std::string* error,
-                                         std::span<const handles::DescriptorSetHandle> sharedDescriptorSets) {
+                                         std::span<const handles::DescriptorSetHandle> sharedDescriptorSets,
+                                         fx::FxNativeShaderSourceOptions sourceOptions) {
     if (error != nullptr)
         error->clear();
     reset();
@@ -50,6 +52,7 @@ bool NativeFxRuntime::initializeForFrame(Device& device, fx::FxProgram program, 
     compiler_ = compiler;
     sharedLayouts_.assign(sharedLayouts.begin(), sharedLayouts.end());
     sharedDescriptorSets_.assign(sharedDescriptorSets.begin(), sharedDescriptorSets.end());
+    sourceOptions_ = std::move(sourceOptions);
     configured_ = true;
     try {
         if (!sharedDescriptorSets_.empty() && sharedDescriptorSets_.size() != sharedLayouts_.size())
@@ -118,7 +121,7 @@ bool NativeFxRuntime::buildForContext(const fx::FxFrameContext& context, std::st
                               [layout](const fx::FxDispatch&) -> std::optional<handles::PipelineLayoutHandle> {
                                   return layout;
                               },
-                              error, resourceSetIndex_))
+                              error, resourceSetIndex_, sourceOptions_))
             throw std::runtime_error(error != nullptr && !error->empty() ? *error
                                                                             : "FX pipeline initialization failed");
     } catch (const std::exception& exception) {
@@ -153,6 +156,7 @@ void NativeFxRuntime::reset() noexcept {
     compiler_ = fx::FxShaderCompiler{};
     sharedLayouts_.clear();
     sharedDescriptorSets_.clear();
+    sourceOptions_ = {};
     device_ = nullptr;
     resourceContext_.reset();
     configured_ = false;
