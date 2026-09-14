@@ -10,6 +10,7 @@
 #include "graphics/native_scene_data.hpp"
 #include "graphics/native_scene_resource_store.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
+#include "graphics/native_scene_model_runtime.hpp"
 #include "graphics/native_scene_resource_runtime.hpp"
 #include "graphics/sbt.hpp"
 #include "graphics/subayai_acceleration_structure.hpp"
@@ -1307,6 +1308,27 @@ int main() {
                     "native scene data reconstructs tangent and material face area");
         ok &= check(data.materials[0].vertexCount == 3 && data.materials[1].vertexCount == 3,
                     "native scene data preserves material index counts");
+
+        MockNativeDevice device;
+        dayo::graphics::NativeSceneModelRuntime runtime;
+        const std::array<dayo::graphics::NativeSceneModelData, 1> models{data};
+        std::string error;
+        ok &= check(runtime.sync(device, models, &error) && runtime.ready() && runtime.modelCount() == 1,
+                    "native scene model runtime allocates one buffer set per model");
+        const auto counts = runtime.descriptorCounts();
+        const auto bindings = runtime.bindings();
+        ok &= check(counts.vertexBuffers == 1 && counts.indexBuffers == 1 && counts.materials == 1 &&
+                        bindings.vertexBuffers.size() == 1 && bindings.indexBuffers.size() == 1 &&
+                        bindings.materials.size() == 1 && bindings.previousVertices[0] == bindings.vertexBuffers[0] &&
+                        bindings.rawVertices[0] == bindings.vertexBuffers[0],
+                    "native scene model runtime exposes fixed per-model descriptor arrays");
+        const auto uploaded = device.readbackBufferEx(bindings.vertexBuffers[0], 0,
+                                                      sizeof(dayo::graphics::NativeSceneVertex));
+        dayo::graphics::NativeSceneVertex firstVertex{};
+        std::memcpy(&firstVertex, uploaded.data(), sizeof(firstVertex));
+        ok &= check(std::abs(firstVertex.position[0] - data.vertices[0].position[0]) < 1e-6F &&
+                        std::abs(firstVertex.tangent[0] - data.vertices[0].tangent[0]) < 1e-6F,
+                    "native scene model runtime uploads the canonical vertex ABI");
     }
     // Native frame constants: CPU ABI and typed uniform uploads remain stable
     // independently of the native scene descriptor-set population.
