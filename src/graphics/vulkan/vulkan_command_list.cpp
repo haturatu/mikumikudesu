@@ -149,9 +149,13 @@ void VulkanCommandList::copyTextureEx(handles::TextureHandle source, handles::Te
 }
 
 void VulkanCommandList::clearTextureEx(handles::TextureHandle texture) {
+    clearTextureEx(texture, {0.0F, 0.0F, 0.0F, 0.0F});
+}
+
+void VulkanCommandList::clearTextureEx(handles::TextureHandle texture, const std::array<float, 4>& value) {
     if (device_ == nullptr)
         throw std::logic_error("typed texture clear requires a Vulkan device");
-    device_->recordClearTexture(commandBuffer_, texture, {0.0F, 0.0F, 0.0F, 0.0F});
+    device_->recordClearTexture(commandBuffer_, texture, value);
 }
 
 void VulkanCommandList::generateMipmapsEx(handles::TextureHandle texture) {

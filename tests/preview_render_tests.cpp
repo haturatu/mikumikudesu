@@ -669,15 +669,18 @@ bool recordsNativeOffscreenOutput(dayo::graphics::VulkanDevice& device) {
             .usage = dayo::graphics::ResourceUsage::sampledRead | dayo::graphics::ResourceUsage::transferDst,
             .lifetime = dayo::graphics::ResourceLifetime::transient,
         });
-        commands.clearTextureEx(output);
+        commands.clearTextureEx(output, {1.0F, 0.0F, 0.0F, 1.0F});
         return std::optional<dayo::graphics::NativeFrameOutput>{dayo::graphics::NativeFrameOutput{
             .texture = output,
             .extent = {target.width, target.height, 1},
             .format = dayo::graphics::PixelFormat::rgba16Float,
         }};
     });
+    bool outputMatches = false;
     try {
-        static_cast<void>(device.renderToImage({64, 64}));
+        const auto image = device.renderToImage({64, 64});
+        const auto pixel = centerPixel(image);
+        outputMatches = pixel[0] > 200U && pixel[1] < 32U && pixel[2] < 32U && pixel[3] > 200U;
     } catch (...) {
         device.setNativeFrameRecorder({});
         device.setNativeRendererAvailability(false, false);
@@ -691,7 +694,7 @@ bool recordsNativeOffscreenOutput(dayo::graphics::VulkanDevice& device) {
     device.selectRenderer(dayo::graphics::RendererKind::preview);
     if (output.valid())
         device.destroyTextureEx(output);
-    return called;
+    return called && outputMatches;
 }
 
 } // namespace

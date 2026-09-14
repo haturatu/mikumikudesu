@@ -445,6 +445,9 @@ class CommandList {
     virtual void clearTextureEx(handles::TextureHandle) {
         throw std::logic_error("Typed command-list texture clear is not implemented by this backend");
     }
+    virtual void clearTextureEx(handles::TextureHandle, const std::array<float, 4>&) {
+        throw std::logic_error("Typed command-list colored texture clear is not implemented by this backend");
+    }
     virtual void generateMipmapsEx(handles::TextureHandle) {
         throw std::logic_error("Typed command-list mipmap generation is not implemented by this backend");
     }
