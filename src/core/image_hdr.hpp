@@ -40,4 +40,9 @@ struct ImageData {
 [[nodiscard]] ImageRgba8 halfToRgba8(const ImageData& image);
 [[nodiscard]] ImageData convertImage(const ImageData& image, PixelType target, ColorSpace targetSpace);
 
+// Loads an HDR Radiance image as linear float32 data and all other stb-backed
+// image formats through the bounded RGBA8 path. Decode dimensions are checked
+// before the decoder allocates its output.
+[[nodiscard]] ImageData loadImageData(const std::filesystem::path& path);
+
 } // namespace dayo::core

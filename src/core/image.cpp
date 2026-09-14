@@ -1,4 +1,5 @@
 #include "core/image.hpp"
+#include "core/image_hdr.hpp"
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_FAILURE_USERMSG
@@ -315,6 +316,47 @@ ImageRgba8 loadImageRgba8(const std::filesystem::path& path) {
     ImageRgba8 image{static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
                      std::vector<std::uint8_t>(decoded.get(), decoded.get() + static_cast<std::size_t>(actualBytes))};
     return image;
+}
+
+ImageData loadImageData(const std::filesystem::path& path) {
+    auto extension = path.extension().string();
+    std::ranges::transform(extension, extension.begin(),
+                           [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    if (extension != ".hdr") {
+        const auto ldr = loadImageRgba8(path);
+        return rgba8ToHalf(ldr, ColorSpace::srgb);
+    }
+
+    int infoWidth = 0;
+    int infoHeight = 0;
+    int infoChannels = 0;
+    if (!stbi_info(path.c_str(), &infoWidth, &infoHeight, &infoChannels))
+        throw std::runtime_error("cannot inspect HDR image " + path.string() + ": " + stbi_failure_reason());
+    if (infoWidth <= 0 || infoHeight <= 0)
+        throw std::runtime_error("invalid HDR image dimensions: " + path.string());
+    const auto pixels = checkedMultiply(static_cast<std::uint64_t>(infoWidth), static_cast<std::uint64_t>(infoHeight),
+                                        "HDR image pixels");
+    const auto decodedBytes = checkedMultiply(pixels, 4U * sizeof(float), "HDR image bytes");
+    if (decodedBytes > std::numeric_limits<std::size_t>::max())
+        throw std::runtime_error("HDR image exceeds addressable memory: " + path.string());
+    checkPeakAllocation(decodedBytes, decodedBytes, "HDR image");
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    std::unique_ptr<float, decltype(&stbi_image_free)> decoded(
+        stbi_loadf(path.c_str(), &width, &height, &channels, 4), &stbi_image_free);
+    if (decoded == nullptr)
+        throw std::runtime_error("cannot decode HDR image " + path.string() + ": " + stbi_failure_reason());
+    if (width != infoWidth || height != infoHeight)
+        throw std::runtime_error("HDR image dimensions changed during decode: " + path.string());
+    ImageData result{.width = static_cast<std::uint32_t>(width),
+                     .height = static_cast<std::uint32_t>(height),
+                     .channels = 4,
+                     .type = PixelType::float32,
+                     .space = ColorSpace::linear,
+                     .bytes = std::vector<std::uint8_t>(static_cast<std::size_t>(decodedBytes))};
+    std::memcpy(result.bytes.data(), decoded.get(), result.bytes.size());
+    return result;
 }
 
 } // namespace dayo::core

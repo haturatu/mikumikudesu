@@ -1,5 +1,6 @@
 #include "graphics/subayai_environment.hpp"
 
+#include "core/image_hdr.hpp"
 #include "core/log.hpp"
 
 #include <algorithm>
@@ -169,14 +170,7 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateEx(const EnvironmentDes
         throw std::invalid_argument("native environment backend has incomplete compute pass bindings");
     if (desc.source.empty())
         throw std::invalid_argument("native environment requires an equirectangular source");
-    const auto ldr = core::loadImageRgba8(desc.source);
-    core::ImageData image{.width = ldr.width,
-                          .height = ldr.height,
-                          .channels = 4,
-                          .type = core::PixelType::unorm8,
-                          .space = core::ColorSpace::srgb,
-                          .bytes = ldr.pixels};
-    return regenerateImage(desc, image);
+    return regenerateImage(desc, core::loadImageData(desc.source));
 }
 
 EnvironmentGpuResult NativeEnvironmentBackend::regenerateImage(const EnvironmentDesc& desc,
