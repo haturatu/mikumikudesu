@@ -1,4 +1,5 @@
 #include "core/denoiser.hpp"
+#include "core/image_hdr.hpp"
 #include "core/scene.hpp"
 #include "graphics/bdpt_accumulation.hpp"
 #include "graphics/bdpt_runtime.hpp"
@@ -26,6 +27,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <optional>
 #include <span>
@@ -939,6 +942,37 @@ int main() {
         backend.reset();
         ok &= check(device.destroyedTextures == 3 && device.destroyedDescriptorSets == 2,
                     "native environment reset releases textures and descriptor sets");
+    }
+    // HDR environment sources are inspected before float decode and remain
+    // linear ImageData for the environment conversion path.
+    {
+        const auto path = std::filesystem::temp_directory_path() / "dayo-native-environment-test.hdr";
+        {
+            std::ofstream output(path, std::ios::binary | std::ios::trunc);
+            output << "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 2 +X 4\n";
+            for (int scanline = 0; scanline < 2; ++scanline) {
+                output.put(static_cast<char>(2));
+                output.put(static_cast<char>(2));
+                output.put(static_cast<char>(0));
+                output.put(static_cast<char>(4));
+                for (int channel = 0; channel < 4; ++channel) {
+                    output.put(static_cast<char>(132));
+                    output.put(static_cast<char>(channel == 3 ? 129 : 128));
+                }
+            }
+        }
+        try {
+            const auto image = dayo::core::loadImageData(path);
+            ok &= check(image.width == 4 && image.height == 2 && image.channels == 4 &&
+                            image.type == dayo::core::PixelType::float32 &&
+                            image.space == dayo::core::ColorSpace::linear && image.byteSize() == 4U * 2U * 4U * sizeof(float),
+                        "HDR environment loader returns bounded linear float data");
+        } catch (const std::exception& exception) {
+            std::cerr << "HDR test decode failed: " << exception.what() << '\n';
+            ok = false;
+        }
+        std::error_code removeError;
+        std::filesystem::remove(path, removeError);
     }
     // LightSamplingService updates only on lighting dirty; light count from caller.
     {
