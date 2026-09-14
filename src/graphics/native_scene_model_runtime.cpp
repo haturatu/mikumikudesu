@@ -90,8 +90,15 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
             faceWalkerBytes_.push_back(byteSize(model.faceWalker));
             vertices_.push_back(upload(device, std::span<const NativeSceneVertex>(model.vertices),
                                        ResourceUsage::storageRead | ResourceUsage::vertexRead |
-                                           ResourceUsage::asBuildRead | ResourceUsage::rayTracingRead,
+                                           ResourceUsage::asBuildRead | ResourceUsage::rayTracingRead |
+                                           ResourceUsage::transferSrc,
                                        "vertices"));
+            previousVertices_.push_back(upload(device, std::span<const NativeSceneVertex>(model.vertices),
+                                               ResourceUsage::storageRead | ResourceUsage::rayTracingRead,
+                                               "previous vertices"));
+            rawVertices_.push_back(upload(device, std::span<const NativeSceneVertex>(model.vertices),
+                                          ResourceUsage::storageRead | ResourceUsage::rayTracingRead,
+                                          "raw vertices"));
             indices_.push_back(upload(device, std::span<const std::uint32_t>(model.indices),
                                       ResourceUsage::storageRead | ResourceUsage::indexRead | ResourceUsage::asBuildRead |
                                           ResourceUsage::rayTracingRead,
@@ -141,6 +148,11 @@ bool NativeSceneModelRuntime::update(Device& device, std::span<const NativeScene
     try {
         for (std::size_t index = 0; index < models.size(); ++index) {
             const auto& model = models[index];
+            // Preserve the exact GPU stream used by the preceding frame
+            // before replacing the current animated data. copyBufferEx is an
+            // ordered transfer, so this does not require a CPU readback or a
+            // second host-side vertex snapshot.
+            device.copyBufferEx(vertices_[index], previousVertices_[index]);
             if (!model.vertices.empty())
                 device.uploadBufferEx(vertices_[index], std::as_bytes(std::span<const NativeSceneVertex>(model.vertices)), 0);
             if (!model.indices.empty())
@@ -187,10 +199,8 @@ NativeSceneResourceBindings NativeSceneModelRuntime::bindings() const noexcept {
     result.faces = faces_;
     result.materialFaces = materialFaces_;
     result.faceWalkers = faceWalkers_;
-    // Until the deform bridge owns a second canonical vertex allocation, the
-    // initial raw vertex stream is also the previous-frame stream.
-    result.previousVertices = vertices_;
-    result.rawVertices = vertices_;
+    result.previousVertices = previousVertices_;
+    result.rawVertices = rawVertices_;
     return result;
 }
 
@@ -202,6 +212,8 @@ void NativeSceneModelRuntime::reset() noexcept {
         } catch (...) {
         }
         destroy(*device, vertices_);
+        destroy(*device, previousVertices_);
+        destroy(*device, rawVertices_);
         destroy(*device, indices_);
         destroy(*device, materials_);
         destroy(*device, faces_);
@@ -209,6 +221,8 @@ void NativeSceneModelRuntime::reset() noexcept {
         destroy(*device, faceWalkers_);
     } else {
         vertices_.clear();
+        previousVertices_.clear();
+        rawVertices_.clear();
         indices_.clear();
         materials_.clear();
         faces_.clear();

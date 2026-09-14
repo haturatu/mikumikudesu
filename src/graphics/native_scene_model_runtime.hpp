@@ -39,6 +39,8 @@ class NativeSceneModelRuntime {
   private:
     Device* device_{};
     std::vector<handles::BufferHandle> vertices_;
+    std::vector<handles::BufferHandle> previousVertices_;
+    std::vector<handles::BufferHandle> rawVertices_;
     std::vector<handles::BufferHandle> indices_;
     std::vector<handles::BufferHandle> materials_;
     std::vector<handles::BufferHandle> faces_;

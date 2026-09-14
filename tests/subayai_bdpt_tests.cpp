@@ -198,6 +198,15 @@ struct MockNativeDevice final : dayo::graphics::Device {
         ++destroyedBuffers;
         typedBuffers_.erase(handle);
     }
+    void copyBufferEx(dayo::graphics::handles::BufferHandle source,
+                      dayo::graphics::handles::BufferHandle destination) override {
+        const auto sourceIt = typedBuffers_.find(source);
+        const auto destinationIt = typedBuffers_.find(destination);
+        if (sourceIt == typedBuffers_.end() || destinationIt == typedBuffers_.end() ||
+            sourceIt->second.bytes.size() > destinationIt->second.bytes.size())
+            throw std::out_of_range("mock typed buffer copy exceeds allocation");
+        std::copy(sourceIt->second.bytes.begin(), sourceIt->second.bytes.end(), destinationIt->second.bytes.begin());
+    }
     dayo::graphics::handles::DescriptorSetHandle
     allocateDescriptorSetEx(dayo::graphics::handles::DescriptorSetLayoutHandle layout,
                             std::span<const dayo::graphics::DescriptorBindingEx> bindings) override {
@@ -1379,8 +1388,9 @@ int main() {
         const auto bindings = runtime.bindings();
         ok &= check(counts.vertexBuffers == 1 && counts.indexBuffers == 1 && counts.materials == 1 &&
                         bindings.vertexBuffers.size() == 1 && bindings.indexBuffers.size() == 1 &&
-                        bindings.materials.size() == 1 && bindings.previousVertices[0] == bindings.vertexBuffers[0] &&
-                        bindings.rawVertices[0] == bindings.vertexBuffers[0],
+                        bindings.materials.size() == 1 && bindings.previousVertices.size() == 1 &&
+                        bindings.rawVertices.size() == 1 && bindings.previousVertices[0] != bindings.vertexBuffers[0] &&
+                        bindings.rawVertices[0] != bindings.vertexBuffers[0],
                     "native scene model runtime exposes fixed per-model descriptor arrays");
         const auto uploaded = device.readbackBufferEx(bindings.vertexBuffers[0], 0,
                                                       sizeof(dayo::graphics::NativeSceneVertex));
@@ -1392,6 +1402,8 @@ int main() {
         auto updatedModels = models;
         updatedModels[0].vertices[0].position[0] = 2.0F;
         const auto vertexBuffer = bindings.vertexBuffers[0];
+        const auto previousBuffer = bindings.previousVertices[0];
+        const auto rawBuffer = bindings.rawVertices[0];
         ok &= check(runtime.update(device, updatedModels, &error) &&
                         runtime.bindings().vertexBuffers[0] == vertexBuffer,
                     "native scene model runtime reuses buffers when the ABI layout is unchanged");
@@ -1399,6 +1411,14 @@ int main() {
         std::memcpy(&firstVertex, updated.data(), sizeof(firstVertex));
         ok &= check(std::abs(firstVertex.position[0] - 2.0F) < 1e-6F,
                     "native scene model runtime refreshes animated canonical vertices in place");
+        const auto previous = device.readbackBufferEx(previousBuffer, 0, sizeof(dayo::graphics::NativeSceneVertex));
+        std::memcpy(&firstVertex, previous.data(), sizeof(firstVertex));
+        ok &= check(std::abs(firstVertex.position[0] - data.vertices[0].position[0]) < 1e-6F,
+                    "native scene model runtime preserves the preceding vertex stream");
+        const auto raw = device.readbackBufferEx(rawBuffer, 0, sizeof(dayo::graphics::NativeSceneVertex));
+        std::memcpy(&firstVertex, raw.data(), sizeof(firstVertex));
+        ok &= check(std::abs(firstVertex.position[0] - data.vertices[0].position[0]) < 1e-6F,
+                    "native scene model runtime keeps the raw vertex stream immutable");
     }
     // Native frame constants: CPU ABI and typed uniform uploads remain stable
     // independently of the native scene descriptor-set population.
