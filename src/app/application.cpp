@@ -2596,10 +2596,19 @@ void Application::buildImageSequenceExportUi() {
         }
         ImGui::Checkbox("Motion blur", &sequenceOutput_.motionBlur);
         ImGui::Checkbox("Overwrite existing frames", &sequenceOutput_.overwrite);
-        if (sequenceOutput_.format == core::OutputFormat::exr)
-            sequenceOutput_.format = core::OutputFormat::ppm;
-        int format = std::clamp(static_cast<int>(sequenceOutput_.format), 0, 1);
-        if (ImGui::Combo("Format", &format, "PPM\0PNG\0"))
+        int format = sequenceOutput_.format == core::OutputFormat::png ? 1
+                   : sequenceOutput_.format == core::OutputFormat::exr ? 2
+                                                                        : 0;
+#if DAYO_HAS_OPENEXR
+        constexpr int formatCount = 3;
+        constexpr const char* formatNames = "PPM\0PNG\0OpenEXR\0";
+#else
+        constexpr int formatCount = 2;
+        constexpr const char* formatNames = "PPM\0PNG\0";
+        format = std::min(format, formatCount - 1);
+#endif
+        format = std::clamp(format, 0, formatCount - 1);
+        if (ImGui::Combo("Format", &format, formatNames))
             sequenceOutput_.format = static_cast<core::OutputFormat>(format);
         if (ImGui::Button("Render sequence"))
             startImageSequenceExport();
