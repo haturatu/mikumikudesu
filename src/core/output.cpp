@@ -29,6 +29,10 @@ OutputSettings normalizeSettings(OutputSettings settings) {
     settings.maxPendingFrames = std::max(settings.maxPendingFrames, 1U);
     if (settings.lastFrame < settings.firstFrame)
         throw std::invalid_argument("output frame range is reversed");
+#if !DAYO_HAS_OPENEXR
+    if (settings.format == OutputFormat::exr)
+        throw std::runtime_error("EXR output requires an OpenEXR-enabled build");
+#endif
     if (!settings.overwrite) {
         for (std::uint64_t frame = settings.firstFrame; frame <= settings.lastFrame; ++frame) {
             const auto path = outputPath(settings, static_cast<std::uint32_t>(frame));
