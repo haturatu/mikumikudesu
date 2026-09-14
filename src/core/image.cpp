@@ -9,6 +9,7 @@
 #include <array>
 #include <bit>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -23,6 +24,13 @@ namespace dayo::core {
 namespace {
 
 constexpr std::uint64_t kImageAllocationBudget = 512ULL * 1024ULL * 1024ULL;
+
+struct StbiFileCloser {
+    void operator()(std::FILE* file) const noexcept {
+        if (file != nullptr)
+            std::fclose(file);
+    }
+};
 
 std::uint32_t u32(const std::uint8_t* value) {
     return static_cast<std::uint32_t>(value[0]) | (static_cast<std::uint32_t>(value[1]) << 8U) |
@@ -288,21 +296,25 @@ ImageRgba8 loadImageRgba8(const std::filesystem::path& path) {
                            [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
     if (extension == ".dds")
         return decodeDds(path);
+    std::unique_ptr<std::FILE, StbiFileCloser> file(std::fopen(path.c_str(), "rb"));
+    if (!file)
+        throw std::runtime_error("cannot open image " + path.string());
     int infoWidth = 0;
     int infoHeight = 0;
     int infoChannels = 0;
-    if (!stbi_info(path.c_str(), &infoWidth, &infoHeight, &infoChannels))
+    if (!stbi_info_from_file(file.get(), &infoWidth, &infoHeight, &infoChannels))
         throw std::runtime_error("cannot inspect image " + path.string() + ": " + stbi_failure_reason());
     if (infoWidth <= 0 || infoHeight <= 0)
         throw std::runtime_error("invalid image dimensions: " + path.string());
     const auto expectedBytes =
         checkedRgbaBytes(static_cast<std::uint32_t>(infoWidth), static_cast<std::uint32_t>(infoHeight), "image");
     checkPeakAllocation(expectedBytes, expectedBytes, "image");
+    std::rewind(file.get());
     int width = 0;
     int height = 0;
     int channels = 0;
     std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> decoded(
-        stbi_load(path.c_str(), &width, &height, &channels, STBI_rgb_alpha), &stbi_image_free);
+        stbi_load_from_file(file.get(), &width, &height, &channels, STBI_rgb_alpha), &stbi_image_free);
     if (decoded == nullptr) {
         throw std::runtime_error("cannot decode image " + path.string() + ": " + stbi_failure_reason());
     }
@@ -327,10 +339,13 @@ ImageData loadImageData(const std::filesystem::path& path) {
         return rgba8ToHalf(ldr, ColorSpace::srgb);
     }
 
+    std::unique_ptr<std::FILE, StbiFileCloser> file(std::fopen(path.c_str(), "rb"));
+    if (!file)
+        throw std::runtime_error("cannot open HDR image " + path.string());
     int infoWidth = 0;
     int infoHeight = 0;
     int infoChannels = 0;
-    if (!stbi_info(path.c_str(), &infoWidth, &infoHeight, &infoChannels))
+    if (!stbi_info_from_file(file.get(), &infoWidth, &infoHeight, &infoChannels))
         throw std::runtime_error("cannot inspect HDR image " + path.string() + ": " + stbi_failure_reason());
     if (infoWidth <= 0 || infoHeight <= 0)
         throw std::runtime_error("invalid HDR image dimensions: " + path.string());
@@ -340,11 +355,12 @@ ImageData loadImageData(const std::filesystem::path& path) {
     if (decodedBytes > std::numeric_limits<std::size_t>::max())
         throw std::runtime_error("HDR image exceeds addressable memory: " + path.string());
     checkPeakAllocation(decodedBytes, decodedBytes, "HDR image");
+    std::rewind(file.get());
     int width = 0;
     int height = 0;
     int channels = 0;
     std::unique_ptr<float, decltype(&stbi_image_free)> decoded(
-        stbi_loadf(path.c_str(), &width, &height, &channels, 4), &stbi_image_free);
+        stbi_loadf_from_file(file.get(), &width, &height, &channels, 4), &stbi_image_free);
     if (decoded == nullptr)
         throw std::runtime_error("cannot decode HDR image " + path.string() + ": " + stbi_failure_reason());
     if (width != infoWidth || height != infoHeight)
