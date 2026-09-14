@@ -1,5 +1,7 @@
 #include "graphics/subayai_environment_runtime.hpp"
 
+#include "graphics/native_scene_bindings.hpp"
+
 #include <algorithm>
 #include <array>
 #include <exception>
@@ -28,9 +30,12 @@ void setError(std::string* error, std::string value) {
 } // namespace
 
 DescriptorSetLayoutDesc subayaiEnvironmentBindingLayout() noexcept {
-    return {.bindings = {{0, DescriptorKind::sampledImage, 1, nativeEnvironmentStages()},
-                         {1, DescriptorKind::sampledImage, 1, nativeEnvironmentStages()},
-                         {2, DescriptorKind::storageBuffer, 1, nativeEnvironmentStages()}}};
+    return {.bindings = {{nativeSceneBinding(NativeSceneRegisterClass::sampled, 0), DescriptorKind::sampledImage, 1,
+                          nativeEnvironmentStages()},
+                         {nativeSceneBinding(NativeSceneRegisterClass::sampled, 1), DescriptorKind::sampledImage, 1,
+                          nativeEnvironmentStages()},
+                         {nativeSceneBinding(NativeSceneRegisterClass::sampled, 2), DescriptorKind::storageBuffer, 1,
+                          nativeEnvironmentStages()}}};
 }
 
 SubayaiEnvironmentRuntime::~SubayaiEnvironmentRuntime() {
@@ -113,9 +118,15 @@ bool SubayaiEnvironmentRuntime::bind(const EnvironmentGpuResult& result, std::st
         device_->uploadBufferEx(sphericalHarmonicsBuffer_,
                                 std::as_bytes(std::span<const float>(result.sphericalHarmonics)), 0);
         const std::array<DescriptorBindingEx, 3> bindings{
-            DescriptorBindingEx{.slot = 0, .arrayElement = 0, .texture = result.cubemap},
-            DescriptorBindingEx{.slot = 1, .arrayElement = 0, .texture = result.prefiltered},
-            DescriptorBindingEx{.slot = 2, .arrayElement = 0, .buffer = sphericalHarmonicsBuffer_}};
+            DescriptorBindingEx{.slot = nativeSceneBinding(NativeSceneRegisterClass::sampled, 0),
+                                .arrayElement = 0,
+                                .texture = result.cubemap},
+            DescriptorBindingEx{.slot = nativeSceneBinding(NativeSceneRegisterClass::sampled, 1),
+                                .arrayElement = 0,
+                                .texture = result.prefiltered},
+            DescriptorBindingEx{.slot = nativeSceneBinding(NativeSceneRegisterClass::sampled, 2),
+                                .arrayElement = 0,
+                                .buffer = sphericalHarmonicsBuffer_}};
         if (descriptorSet_.valid()) {
             device_->updateDescriptorSetEx(descriptorSet_, bindings);
         } else {

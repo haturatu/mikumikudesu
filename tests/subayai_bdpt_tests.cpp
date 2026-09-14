@@ -361,11 +361,15 @@ bool testSubayaiNativeFxExecution() {
     bool ok = check(runtime.initialize(device, std::move(program), &error),
                     "Subayai runtime accepts a compilable native FX program");
     const auto context = dayo::fx::makeFxFrameContext(0.0F, 0, 16, 8, 1, 0, 3, 1, 1, 1);
+    dayo::core::MaterialParameterBlock material;
+    material.set("Anisotropy", 0.75F);
+    const std::array<dayo::core::MaterialParameterBlock, 1> materials{material};
+    const std::array<dayo::graphics::AliasEntry, 1> lightSampling{{{1.0F, 0}}};
     dayo::graphics::EnvironmentGpuResult environment;
     environment.cubemap = {40, 1};
     environment.prefiltered = {41, 1};
     environment.sphericalHarmonics[0] = 1.0F;
-    auto frame = runtime.prepareFrame(context, {}, {}, environment);
+    auto frame = runtime.prepareFrame(context, materials, lightSampling, environment);
     ok &=
         check(runtime.nativeReady() && frame.nativeFx.has_value(), "Subayai runtime prepares the native FX frame path");
     const auto frameOutput = runtime.output(frame);
@@ -377,12 +381,17 @@ bool testSubayaiNativeFxExecution() {
     MockDeformCommands commands;
     const auto stats = runtime.execute(frame, commands);
     ok &=
-        check(stats.compute == 1 && commands.events == std::vector<std::string>{"transition", "descriptor",
-                                                                                "descriptor", "bind", "dispatch:2x1x1"},
+        check(stats.compute == 1 &&
+                  commands.events == std::vector<std::string>{"transition", "descriptor", "descriptor", "descriptor",
+                                                               "descriptor", "bind", "dispatch:2x1x1"},
               "Subayai runtime executes typed FX resources through the native path");
-    ok &= check(commands.descriptorSets.size() == 2 && commands.descriptorSets[0].second == 2 &&
-                    commands.descriptorSets[1].second == 3,
-                "Subayai native FX binds environment before its resource set");
+    ok &= check(commands.descriptorSets.size() == 4 && commands.descriptorSets[0].second == 0 &&
+                    commands.descriptorSets[1].second == 1 && commands.descriptorSets[2].second == 2 &&
+                    commands.descriptorSets[3].second == 3 &&
+                    commands.descriptorSets[0].first == frame.materialDescriptorSet &&
+                    commands.descriptorSets[1].first == frame.lightSamplingDescriptorSet &&
+                    commands.descriptorSets[2].first == frame.environmentDescriptorSet,
+                "Subayai native FX binds material, light, environment, and effect resources in stable set order");
     runtime.reset();
     return ok;
 }

@@ -1179,13 +1179,20 @@ bool testFxPipelineRuntime() {
     dispatch.resources = {{"NativeOutput", true}};
     program.passes.push_back(dispatch);
 
-    const auto generated = dayo::fx::makeNativeFxShaderSource(program, dispatch, 7);
+    dayo::fx::FxNativeShaderSourceOptions sharedSource;
+    sharedSource.preamble = "struct SharedValue { float4 value; };\n";
+    sharedSource.resources.push_back({.declaration = "StructuredBuffer<SharedValue> SharedValues",
+                                      .registerClass = dayo::fx::FxNativeShaderRegister::sampled,
+                                      .registerIndex = 0,
+                                      .descriptorSet = 3});
+    const auto generated = dayo::fx::makeNativeFxShaderSource(program, dispatch, 7, sharedSource);
     bool ok = check(generated.find("YRZFX_ControllerCB") != std::string::npos &&
                         generated.find("NativeOutput : register(u0, space7)") != std::string::npos &&
                         generated.find("NativeInput : register(t0, space7)") != std::string::npos &&
                         generated.find("NativeData : register(u1, space7)") != std::string::npos &&
-                        generated.find("NativeSampler : register(s0, space7)") != std::string::npos,
-                    "native FX source emits disjoint typed register classes");
+                        generated.find("NativeSampler : register(s0, space7)") != std::string::npos &&
+                        generated.find("SharedValues : register(t0, space3)") != std::string::npos,
+                    "native FX source emits disjoint typed and renderer-shared register classes");
 
     dayo::graphics::FxPipelineRuntime runtime;
     std::string error;
@@ -1194,7 +1201,7 @@ bool testFxPipelineRuntime() {
         [](const dayo::fx::FxDispatch&) {
             return std::optional<dayo::graphics::handles::PipelineLayoutHandle>{{1, 1}};
         },
-        &error);
+        &error, 7, sharedSource);
     ok &= check(built, "FX pipeline runtime materializes a compute pipeline");
     ok &= check(error.empty() && runtime.size() == 1 && runtime.resolvePipeline(dispatch).has_value(),
                 "FX pipeline runtime indexes the materialized pipeline");

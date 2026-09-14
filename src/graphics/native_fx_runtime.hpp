@@ -3,6 +3,7 @@
 #include "fx/fx_compiler.hpp"
 #include "fx/fx_frame.hpp"
 #include "fx/fx_shader_compiler.hpp"
+#include "fx/fx_shader_source.hpp"
 #include "graphics/fx_executor.hpp"
 #include "graphics/fx_pipeline_runtime.hpp"
 #include "graphics/fx_resource_runtime.hpp"
@@ -34,7 +35,8 @@ class NativeFxRuntime {
     [[nodiscard]] bool initialize(Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
                                    std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts = {},
                                    std::string* error = nullptr,
-                                   std::span<const handles::DescriptorSetHandle> sharedDescriptorSets = {});
+                                   std::span<const handles::DescriptorSetHandle> sharedDescriptorSets = {},
+                                   fx::FxNativeShaderSourceOptions sourceOptions = {});
     // Initializes resources against the first real frame context. The
     // compatibility overload above remains useful for callers that do not
     // have a frame yet.
@@ -42,7 +44,8 @@ class NativeFxRuntime {
         Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
         const fx::FxFrameContext& context,
         std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts = {}, std::string* error = nullptr,
-        std::span<const handles::DescriptorSetHandle> sharedDescriptorSets = {});
+        std::span<const handles::DescriptorSetHandle> sharedDescriptorSets = {},
+        fx::FxNativeShaderSourceOptions sourceOptions = {});
     // Rebuilds size-dependent FX resources and their descriptor/pipeline
     // lifetime when a render/model context changes. Callers should invoke
     // this at a frame boundary before prepareFrame().
@@ -85,6 +88,7 @@ class NativeFxRuntime {
     fx::FxShaderCompiler compiler_{};
     std::vector<handles::DescriptorSetLayoutHandle> sharedLayouts_;
     std::vector<handles::DescriptorSetHandle> sharedDescriptorSets_;
+    fx::FxNativeShaderSourceOptions sourceOptions_;
     FxResourceRuntime resources_;
     FxPipelineRuntime pipelines_;
     handles::PipelineLayoutHandle pipelineLayout_{};
