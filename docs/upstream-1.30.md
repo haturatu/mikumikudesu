@@ -15,15 +15,16 @@ installも同じ一覧を使い、拡張子による除外を行わず、第三�
 
 | 段階 | 完了条件 | 状態 |
 | --- | --- | --- |
-| 1. baseline・配布 | 1.30 ZIPの固定、SHA256検証、共通manifestによる配布、公式assetの既存互換テスト | このPRの対象 |
+| 1. baseline・配布 | 1.30 ZIPの固定、SHA256検証、共通manifestによる配布、公式assetの既存互換テスト | 実装済み |
 | 2. データ・solver互換 | Windows 1.30保存fixtureの往復、camera/external parent/制限IKの数値比較 | データ形式は実装済み、実機検証は未実施 |
-| 3. FX 1.30契約 | buffer/size expression、pow、CloneCount/CLONEDVERTEXCOUNT、MatDescとresource allocationの接続 | 未完了 |
-| 4. Subayai/BDPT実行 | Vulkan BLAS/TLAS/SBT、各pass実行器、RT対応GPUでの画像比較 | graph解析・feature検出のみ |
+| 3. FX 1.30契約 | buffer/size expression、pow、CloneCount/CLONEDVERTEXCOUNT、MatDesc、resource allocation、RT hit groupの接続 | 実装済み。上流全FXの互換性検証は未実施 |
+| 4. Subayai/BDPT実行 | Vulkan BLAS/TLAS/SBT、各pass実行器、native frame/output bridge、RT対応GPUでの画像比較 | runtime接続・feature fallback・CPU/Mock検証は実装済み、RT対応GPUでの画像比較は未実施 |
 
-`nativeSubayai`/`nativeBdpt`はfalseのままです。Previewのclone複製は、上流FXが参照する
+`nativeSubayai`/`nativeBdpt`は起動時のGPU capability、選択したFX graphの要求feature、native runtimeの
+初期化結果をすべて満たした場合だけ有効になります。Previewのclone複製は、上流FXが参照する
 `Dayo::CloneCount[modelIndex]`との接続完了を意味しません。1.30の追加エフェクトを同梱しても、
 その実行をサポートしたことにはなりません。OIDNは任意検出で、2.5.0への固定は行いません。
-非同期画像出力はbounded queueまで本PRで対応済みです。ファイル名末尾からの連番開始は別の残件です。
+非同期画像出力はbounded queueまで対応済みです。ファイル名末尾からの連番開始は別の残件です。
 
 ## Windows fixtureの受け入れ条件
 
