@@ -122,6 +122,80 @@ const char* workspaceSuffix(ui::Workspace workspace) noexcept {
 
 Application::Application(Options options) : options_(std::move(options)) {}
 
+bool Application::ensureNativeSceneRuntime(bool restartRenderer, std::string* error) {
+    if (error != nullptr)
+        error->clear();
+    if (device_ == nullptr || scene_.effect() == nullptr) {
+        if (error != nullptr)
+            *error = "native scene runtime requires a device and effect";
+        return false;
+    }
+    if (nativeSceneModelData_.size() > std::numeric_limits<std::uint32_t>::max()) {
+        if (error != nullptr)
+            *error = "native scene model count exceeds descriptor limits";
+        return false;
+    }
+    const auto modelCount = static_cast<std::uint32_t>(std::max<std::size_t>(1, nativeSceneModelData_.size()));
+    const graphics::NativeSceneDescriptorCounts counts{.textures = 1,
+                                                       .vertexBuffers = modelCount,
+                                                       .indexBuffers = modelCount,
+                                                       .materials = modelCount,
+                                                       .faces = modelCount,
+                                                       .materialFaces = modelCount,
+                                                       .faceWalkers = modelCount,
+                                                       .previousVertices = modelCount,
+                                                       .rawVertices = modelCount};
+    const auto sameCounts = [](const auto& left, const auto& right) {
+        return left.textures == right.textures && left.vertexBuffers == right.vertexBuffers &&
+               left.indexBuffers == right.indexBuffers && left.materials == right.materials &&
+               left.faces == right.faces && left.materialFaces == right.materialFaces &&
+               left.faceWalkers == right.faceWalkers && left.previousVertices == right.previousVertices &&
+               left.rawVertices == right.rawVertices;
+    };
+    if (nativeSceneFrame_.ready() && nativeSceneResources_.ready() &&
+        sameCounts(nativeSceneFrame_.resources().counts(), counts) &&
+        sameCounts(nativeSceneResources_.counts(), counts)) {
+        nativeRenderer_.setSceneFrameRuntime(&nativeSceneFrame_);
+        return true;
+    }
+
+    const bool wasNative = nativeRenderer_.status().nativeReady;
+    nativeSceneFrame_.reset();
+    nativeSceneResources_.reset();
+    try {
+        std::string runtimeError;
+        if (!nativeSceneResources_.initialize(*device_, counts, &runtimeError))
+            throw std::runtime_error(runtimeError.empty() ? "native scene resource store initialization failed"
+                                                           : runtimeError);
+        if (!nativeSceneFrame_.initialize(*device_, scene_.effect()->controllers, counts, &runtimeError))
+            throw std::runtime_error(runtimeError.empty() ? "native scene frame initialization failed" : runtimeError);
+        nativeRenderer_.setSceneFrameRuntime(&nativeSceneFrame_);
+    } catch (const std::exception& exception) {
+        nativeSceneFrame_.reset();
+        nativeSceneResources_.reset();
+        if (error != nullptr)
+            *error = exception.what();
+        return false;
+    } catch (...) {
+        nativeSceneFrame_.reset();
+        nativeSceneResources_.reset();
+        if (error != nullptr)
+            *error = "native scene runtime initialization failed";
+        return false;
+    }
+
+    if (restartRenderer && wasNative) {
+        nativeRenderer_.reset();
+        requestRenderer(requestedRenderer_);
+        if (!nativeRenderer_.status().nativeReady) {
+            if (error != nullptr)
+                *error = nativeRenderer_.status().reason;
+            return false;
+        }
+    }
+    return true;
+}
+
 void Application::requestRenderer(graphics::RendererKind renderer) {
     requestedRenderer_ = renderer;
     if (device_ == nullptr)
@@ -133,6 +207,12 @@ void Application::requestRenderer(graphics::RendererKind renderer) {
         return;
     }
     try {
+        if (renderer != graphics::RendererKind::preview) {
+            std::string sceneError;
+            if (!ensureNativeSceneRuntime(false, &sceneError))
+                throw std::runtime_error(sceneError.empty() ? "native scene runtime unavailable" : sceneError);
+            nativeRenderer_.setSceneFrameRuntime(&nativeSceneFrame_);
+        }
         const auto status = nativeRenderer_.prepare(*device_, renderer, *scene_.effect());
         device_->setNativeRendererAvailability(status.nativeReady && status.active == graphics::RendererKind::subayai,
                                                status.nativeReady && status.active == graphics::RendererKind::bdpt);
@@ -214,8 +294,12 @@ Application::recordNativeFrame(graphics::CommandList& commands, const graphics::
         if (!nativeSceneModelData_.empty() &&
             !nativeSceneModelRuntime_.update(*device_, nativeSceneModelData_, &modelError))
             throw std::runtime_error(modelError.empty() ? "native scene model synchronization failed" : modelError);
+        std::string sceneError;
+        if (!ensureNativeSceneRuntime(true, &sceneError))
+            throw std::runtime_error(sceneError.empty() ? "native scene runtime synchronization failed" : sceneError);
         std::vector<graphics::NativeGeometryMeshUpload> geometryUploads;
         std::vector<graphics::WorldInstance> worldInstances;
+        graphics::handles::AccelerationStructureHandle tlas;
         geometryUploads.reserve(nativeGeometry_.size());
         for (const auto& mesh : nativeGeometry_) {
             geometryUploads.push_back({
@@ -249,6 +333,7 @@ Application::recordNativeFrame(graphics::CommandList& commands, const graphics::
                 throw std::runtime_error(geometryError.empty() ? "native acceleration synchronization failed"
                                                                  : geometryError);
             static_cast<void>(runtime->synchronizeWorld(nativeDeformVersion_, worldInstances));
+            tlas = runtime->geometry().tlas();
             runtime->recordGeometry(commands);
             runtime->recordAcceleration(commands);
         };
@@ -256,8 +341,25 @@ Application::recordNativeFrame(graphics::CommandList& commands, const graphics::
             synchronizeGeometry(runtime);
         else if (auto* bdptRuntime = nativeRenderer_.bdpt())
             synchronizeGeometry(bdptRuntime);
-        return nativeRenderer_.recordFrame(commands, makeNativeFrameContext(target), scene_.dirtyFlags(), materials,
-                                           lightSampling, {});
+        if (!tlas.valid())
+            throw std::runtime_error("native scene runtime requires a synchronized TLAS");
+        const auto frameContext = makeNativeFrameContext(target);
+        auto sceneResources = nativeSceneResources_.bindings();
+        const auto modelResources = nativeSceneModelRuntime_.bindings();
+        sceneResources.tlas = tlas;
+        sceneResources.vertexBuffers = modelResources.vertexBuffers;
+        sceneResources.indexBuffers = modelResources.indexBuffers;
+        sceneResources.materials = modelResources.materials;
+        sceneResources.faces = modelResources.faces;
+        sceneResources.materialFaces = modelResources.materialFaces;
+        sceneResources.faceWalkers = modelResources.faceWalkers;
+        sceneResources.previousVertices = modelResources.previousVertices;
+        sceneResources.rawVertices = modelResources.rawVertices;
+        if (!nativeSceneResources_.compose(sceneResources, &sceneError))
+            throw std::runtime_error(sceneError.empty() ? "native scene resource composition failed" : sceneError);
+        if (!nativeSceneFrame_.sync(frameContext, nativeSceneResources_.bindings(), {}, &sceneError))
+            throw std::runtime_error(sceneError.empty() ? "native scene frame synchronization failed" : sceneError);
+        return nativeRenderer_.recordFrame(commands, frameContext, scene_.dirtyFlags(), materials, lightSampling, {});
     } catch (const std::exception& exception) {
         // Keep the command buffer usable for the Preview fallback. Native
         // resources remain owned until the next renderer request, so a
@@ -297,6 +399,8 @@ void Application::resetProjectRuntimeState() {
     videoRangeInitialized_ = false;
     scene_.clearProjectState();
     nativeRenderer_.reset();
+    nativeSceneFrame_.reset();
+    nativeSceneResources_.reset();
     if (device_ != nullptr) {
         device_->setNativeRendererAvailability(false, false);
         device_->clearPreviewResources();
@@ -360,6 +464,8 @@ int Application::run() {
     });
     const auto cleanupGraphicsRuntime = [this](void*) noexcept {
         nativeRenderer_.reset();
+        nativeSceneFrame_.reset();
+        nativeSceneResources_.reset();
         nativeSceneModelRuntime_.reset();
         nativeRenderer_.setEnvironmentBackend(nullptr);
         device_ = nullptr;

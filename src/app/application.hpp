@@ -15,6 +15,8 @@
 #include "graphics/device.hpp"
 #include "graphics/native_renderer.hpp"
 #include "graphics/native_scene_model_runtime.hpp"
+#include "graphics/native_scene_resource_store.hpp"
+#include "graphics/native_scene_frame_runtime.hpp"
 #include "ui/ui_state.hpp"
 
 #include <array>
@@ -62,6 +64,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void restoreImageSequenceState();
     void setWorkspace(ui::Workspace workspace);
     void requestRenderer(graphics::RendererKind renderer);
+    [[nodiscard]] bool ensureNativeSceneRuntime(bool restartRenderer, std::string* error = nullptr);
     [[nodiscard]] fx::FxFrameContext makeNativeFrameContext(const graphics::RenderTargetDesc& target) const;
     [[nodiscard]] std::optional<graphics::NativeFrameOutput>
     recordNativeFrame(graphics::CommandList& commands, const graphics::RenderTargetDesc& target);
@@ -84,6 +87,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     graphics::Device* device_{};
     graphics::RendererKind requestedRenderer_{graphics::RendererKind::preview};
     graphics::NativeRendererCoordinator nativeRenderer_;
+    graphics::NativeSceneFrameRuntime nativeSceneFrame_;
+    graphics::NativeSceneResourceStore nativeSceneResources_;
     core::Scene scene_;
     core::TaskScheduler taskScheduler_;
     core::FrameScratch frameScratch_;
