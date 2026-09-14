@@ -14,6 +14,7 @@
 #include "fx/fx_frame.hpp"
 #include "graphics/device.hpp"
 #include "graphics/native_renderer.hpp"
+#include "graphics/native_scene_model_runtime.hpp"
 #include "ui/ui_state.hpp"
 
 #include <array>
@@ -109,6 +110,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
         std::vector<graphics::NativeDeformedVertex> deformedVertices;
     };
     std::vector<NativeModelGeometry> nativeGeometry_;
+    graphics::NativeSceneModelRuntime nativeSceneModelRuntime_;
+    std::vector<graphics::NativeSceneModelData> nativeSceneModelData_;
     std::uint64_t nativeDeformVersion_{};
     std::uint64_t animatedTopologyGeneration_{};
     float animationFrame_{};

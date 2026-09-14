@@ -210,6 +210,10 @@ Application::recordNativeFrame(graphics::CommandList& commands, const graphics::
     }
     const std::array lightSampling{graphics::AliasEntry{1.0F, 0}};
     try {
+        std::string modelError;
+        if (!nativeSceneModelData_.empty() &&
+            !nativeSceneModelRuntime_.update(*device_, nativeSceneModelData_, &modelError))
+            throw std::runtime_error(modelError.empty() ? "native scene model synchronization failed" : modelError);
         std::vector<graphics::NativeGeometryMeshUpload> geometryUploads;
         std::vector<graphics::WorldInstance> worldInstances;
         geometryUploads.reserve(nativeGeometry_.size());
@@ -311,6 +315,8 @@ void Application::resetProjectRuntimeState() {
     animatedMaterialTemplates_.clear();
     animatedTopologyGeneration_ = 0;
     nativeGeometry_.clear();
+    nativeSceneModelRuntime_.reset();
+    nativeSceneModelData_.clear();
     nativeDeformVersion_ = 0;
     mediaSeconds_ = 0.0;
     uploadedVideoFrame_ = -1;
@@ -354,6 +360,7 @@ int Application::run() {
     });
     const auto cleanupGraphicsRuntime = [this](void*) noexcept {
         nativeRenderer_.reset();
+        nativeSceneModelRuntime_.reset();
         nativeRenderer_.setEnvironmentBackend(nullptr);
         device_ = nullptr;
     };
@@ -1075,6 +1082,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     std::pmr::vector<graphics::PreviewBoneTransform> bones(scratch);
     std::vector<NativeModelGeometry> nativeGeometry;
     nativeGeometry.reserve(evaluated.size());
+    std::vector<graphics::NativeSceneModelData> nativeSceneModels;
+    nativeSceneModels.reserve(evaluated.size());
     for (const auto& evaluatedModel : evaluated) {
         const auto& instance = *evaluatedModel.instance;
         const auto& frame = evaluatedModel.frame;
@@ -1294,8 +1303,11 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             std::copy(std::begin(vertex.uv), std::end(vertex.uv), seed.uv);
             native.deformedVertices.push_back(seed);
         }
-        if (!native.baseVertices.empty() && !native.indices.empty())
+        if (!native.baseVertices.empty() && !native.indices.empty()) {
+            nativeSceneModels.push_back(
+                graphics::makeNativeSceneModelData(*instance.model, native.baseVertices, frame.materials));
             nativeGeometry.push_back(std::move(native));
+        }
         if (rebuildTopology) {
             for (const auto index : instance.model->indices)
                 animatedIndices_.push_back(baseVertex + index);
@@ -1350,6 +1362,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         }
     }
     nativeGeometry_ = std::move(nativeGeometry);
+    nativeSceneModelData_ = std::move(nativeSceneModels);
     nativeDeformVersion_ = nativeDeformVersion_ == std::numeric_limits<std::uint64_t>::max()
                                ? 1U
                                : nativeDeformVersion_ + 1U;

@@ -23,6 +23,8 @@ class NativeSceneModelRuntime {
 
     [[nodiscard]] bool sync(Device& device, std::span<const NativeSceneModelData> models,
                              std::string* error = nullptr);
+    [[nodiscard]] bool update(Device& device, std::span<const NativeSceneModelData> models,
+                              std::string* error = nullptr);
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
@@ -42,6 +44,12 @@ class NativeSceneModelRuntime {
     std::vector<handles::BufferHandle> faces_;
     std::vector<handles::BufferHandle> materialFaces_;
     std::vector<handles::BufferHandle> faceWalkers_;
+    std::vector<std::size_t> vertexBytes_;
+    std::vector<std::size_t> indexBytes_;
+    std::vector<std::size_t> materialBytes_;
+    std::vector<std::size_t> faceBytes_;
+    std::vector<std::size_t> materialFaceBytes_;
+    std::vector<std::size_t> faceWalkerBytes_;
 };
 
 } // namespace dayo::graphics

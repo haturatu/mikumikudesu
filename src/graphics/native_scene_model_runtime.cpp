@@ -21,6 +21,10 @@ void setError(std::string* error, std::string value) {
     return std::max<std::size_t>(1, byteSize);
 }
 
+template <typename T> [[nodiscard]] std::size_t byteSize(const std::vector<T>& values) noexcept {
+    return values.size() * sizeof(T);
+}
+
 template <typename T>
 handles::BufferHandle upload(Device& device, std::span<const T> values, ResourceUsage usage, std::string_view name) {
     const auto byteSize = values.size_bytes();
@@ -70,8 +74,20 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
         faces_.reserve(models.size());
         materialFaces_.reserve(models.size());
         faceWalkers_.reserve(models.size());
+        vertexBytes_.reserve(models.size());
+        indexBytes_.reserve(models.size());
+        materialBytes_.reserve(models.size());
+        faceBytes_.reserve(models.size());
+        materialFaceBytes_.reserve(models.size());
+        faceWalkerBytes_.reserve(models.size());
 
         for (const auto& model : models) {
+            vertexBytes_.push_back(byteSize(model.vertices));
+            indexBytes_.push_back(byteSize(model.indices));
+            materialBytes_.push_back(byteSize(model.materials));
+            faceBytes_.push_back(byteSize(model.faces));
+            materialFaceBytes_.push_back(byteSize(model.materialFaces));
+            faceWalkerBytes_.push_back(byteSize(model.faceWalker));
             vertices_.push_back(upload(device, std::span<const NativeSceneVertex>(model.vertices),
                                        ResourceUsage::storageRead | ResourceUsage::vertexRead |
                                            ResourceUsage::asBuildRead | ResourceUsage::rayTracingRead,
@@ -96,6 +112,55 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
     } catch (...) {
         setError(error, "native scene model upload failed");
         reset();
+        return false;
+    }
+    return true;
+}
+
+bool NativeSceneModelRuntime::update(Device& device, std::span<const NativeSceneModelData> models,
+                                     std::string* error) {
+    if (error != nullptr)
+        error->clear();
+    if (models.empty()) {
+        reset();
+        setError(error, "native scene model runtime requires at least one model");
+        return false;
+    }
+    const bool sameLayout = ready() && device_ == &device && models.size() == modelCount() &&
+                            std::all_of(models.begin(), models.end(), [&](const auto& model) {
+                                const auto index = static_cast<std::size_t>(&model - models.data());
+                                return byteSize(model.vertices) == vertexBytes_[index] &&
+                                       byteSize(model.indices) == indexBytes_[index] &&
+                                       byteSize(model.materials) == materialBytes_[index] &&
+                                       byteSize(model.faces) == faceBytes_[index] &&
+                                       byteSize(model.materialFaces) == materialFaceBytes_[index] &&
+                                       byteSize(model.faceWalker) == faceWalkerBytes_[index];
+                            });
+    if (!sameLayout)
+        return sync(device, models, error);
+    try {
+        for (std::size_t index = 0; index < models.size(); ++index) {
+            const auto& model = models[index];
+            if (!model.vertices.empty())
+                device.uploadBufferEx(vertices_[index], std::as_bytes(std::span<const NativeSceneVertex>(model.vertices)), 0);
+            if (!model.indices.empty())
+                device.uploadBufferEx(indices_[index], std::as_bytes(std::span<const std::uint32_t>(model.indices)), 0);
+            if (!model.materials.empty())
+                device.uploadBufferEx(materials_[index], std::as_bytes(std::span<const NativeSceneMaterial>(model.materials)), 0);
+            if (!model.faces.empty())
+                device.uploadBufferEx(faces_[index], std::as_bytes(std::span<const std::uint32_t>(model.faces)), 0);
+            if (!model.materialFaces.empty())
+                device.uploadBufferEx(materialFaces_[index],
+                                      std::as_bytes(std::span<const NativeSceneMaterialFace>(model.materialFaces)), 0);
+            if (!model.faceWalker.empty())
+                device.uploadBufferEx(faceWalkers_[index],
+                                      std::as_bytes(std::span<const NativeSceneWalkerAlias>(model.faceWalker)), 0);
+        }
+    } catch (const std::exception& exception) {
+        setError(error, std::string("native scene model update failed: ") + exception.what());
+        return false;
+    } catch (...) {
+        setError(error, "native scene model update failed");
         return false;
     }
     return true;
@@ -150,6 +215,12 @@ void NativeSceneModelRuntime::reset() noexcept {
         materialFaces_.clear();
         faceWalkers_.clear();
     }
+    vertexBytes_.clear();
+    indexBytes_.clear();
+    materialBytes_.clear();
+    faceBytes_.clear();
+    materialFaceBytes_.clear();
+    faceWalkerBytes_.clear();
     device_ = nullptr;
 }
 

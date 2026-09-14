@@ -1329,6 +1329,16 @@ int main() {
         ok &= check(std::abs(firstVertex.position[0] - data.vertices[0].position[0]) < 1e-6F &&
                         std::abs(firstVertex.tangent[0] - data.vertices[0].tangent[0]) < 1e-6F,
                     "native scene model runtime uploads the canonical vertex ABI");
+        auto updatedModels = models;
+        updatedModels[0].vertices[0].position[0] = 2.0F;
+        const auto vertexBuffer = bindings.vertexBuffers[0];
+        ok &= check(runtime.update(device, updatedModels, &error) &&
+                        runtime.bindings().vertexBuffers[0] == vertexBuffer,
+                    "native scene model runtime reuses buffers when the ABI layout is unchanged");
+        const auto updated = device.readbackBufferEx(vertexBuffer, 0, sizeof(dayo::graphics::NativeSceneVertex));
+        std::memcpy(&firstVertex, updated.data(), sizeof(firstVertex));
+        ok &= check(std::abs(firstVertex.position[0] - 2.0F) < 1e-6F,
+                    "native scene model runtime refreshes animated canonical vertices in place");
     }
     // Native frame constants: CPU ABI and typed uniform uploads remain stable
     // independently of the native scene descriptor-set population.
