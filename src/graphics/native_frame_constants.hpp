@@ -73,6 +73,7 @@ class NativeFrameConstantsRuntime {
     NativeFrameConstantsRuntime& operator=(const NativeFrameConstantsRuntime&) = delete;
 
     [[nodiscard]] bool initialize(Device& device, std::string* error = nullptr);
+    [[nodiscard]] bool syncView(Device& device, const NativeViewConstants& view, std::string* error = nullptr);
     [[nodiscard]] bool sync(Device& device, const NativeViewConstants& view,
                             const NativeScenePassConstants& pass, std::string* error = nullptr);
     void reset() noexcept;

@@ -25,6 +25,7 @@ class NativeSceneFrameRuntime {
 
     [[nodiscard]] bool initialize(Device& device, std::span<const core::EffectController> controllers,
                                   const NativeSceneDescriptorCounts& counts = {}, std::string* error = nullptr);
+    [[nodiscard]] bool syncViewConstants(const fx::FxFrameContext& context, std::string* error = nullptr);
     [[nodiscard]] bool sync(const fx::FxFrameContext& context, NativeSceneResourceBindings resources,
                             const NativeScenePassConstants& pass = {}, std::string* error = nullptr);
     [[nodiscard]] bool syncControllers(std::string* error = nullptr);

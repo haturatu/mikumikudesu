@@ -80,8 +80,7 @@ bool NativeFrameConstantsRuntime::initialize(Device& device, std::string* error)
     return true;
 }
 
-bool NativeFrameConstantsRuntime::sync(Device& device, const NativeViewConstants& view,
-                                       const NativeScenePassConstants& pass, std::string* error) {
+bool NativeFrameConstantsRuntime::syncView(Device& device, const NativeViewConstants& view, std::string* error) {
     if (error != nullptr)
         error->clear();
     if (device_ == nullptr && !initialize(device, error))
@@ -92,12 +91,29 @@ bool NativeFrameConstantsRuntime::sync(Device& device, const NativeViewConstants
     }
     try {
         device_->uploadBufferEx(viewBuffer_, std::as_bytes(std::span<const NativeViewConstants>(&view, 1)), 0);
-        device_->uploadBufferEx(passBuffer_, std::as_bytes(std::span<const NativeScenePassConstants>(&pass, 1)), 0);
     } catch (const std::exception& exception) {
-        setError(error, std::string("native frame constants upload failed: ") + exception.what());
+        setError(error, std::string("native ViewCB upload failed: ") + exception.what());
         return false;
     } catch (...) {
-        setError(error, "native frame constants upload failed");
+        setError(error, "native ViewCB upload failed");
+        return false;
+    }
+    return true;
+}
+
+bool NativeFrameConstantsRuntime::sync(Device& device, const NativeViewConstants& view,
+                                       const NativeScenePassConstants& pass, std::string* error) {
+    if (error != nullptr)
+        error->clear();
+    if (!syncView(device, view, error))
+        return false;
+    try {
+        device_->uploadBufferEx(passBuffer_, std::as_bytes(std::span<const NativeScenePassConstants>(&pass, 1)), 0);
+    } catch (const std::exception& exception) {
+        setError(error, std::string("native CBuff1 upload failed: ") + exception.what());
+        return false;
+    } catch (...) {
+        setError(error, "native CBuff1 upload failed");
         return false;
     }
     return true;

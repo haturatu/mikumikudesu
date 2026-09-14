@@ -589,9 +589,11 @@ int main() {
                     "BDPT spectral LUT is uploaded to its typed buffer");
         const auto context = dayo::fx::makeFxFrameContext(0.0F, 0, 16, 8, 1, 0, 3, 1, 1, 1);
         auto first = runtime.prepareFrame(context, dayo::core::DirtyFlag::geometry);
-        ok &= check(first.clearAccumulation && first.sampleIndex == 0, "BDPT dirty frame clears accumulation");
+        ok &= check(first.clearAccumulation && first.sampleIndex == 0 && first.context.sample == 0,
+                    "BDPT dirty frame clears and publishes sample zero");
         auto second = runtime.prepareFrame(context, dayo::core::DirtyFlag::none);
-        ok &= check(!second.clearAccumulation && second.sampleIndex == 1, "BDPT clean frame advances sample index");
+        ok &= check(!second.clearAccumulation && second.sampleIndex == 1 && second.context.sample == 1,
+                    "BDPT clean frame advances and publishes the sample index");
         ok &= check(first.gpu.accumulation == second.gpu.accumulation, "BDPT accumulation texture persists per extent");
         runtime.reset();
         ok &= check(!runtime.ready() && !runtime.accumulation().gpuReady(), "BDPT reset releases typed resources");
@@ -1318,6 +1320,14 @@ int main() {
         ok &= check(std::abs(gain - 3.5F) < 1e-6F && view.output[0] == 320 && view.output[1] == 200 &&
                         view.output[2] == 4,
                     "native scene frame runtime uploads controller and frame values together");
+        auto sampleOnly = context;
+        sampleOnly.sample = 9;
+        ok &= check(runtime.syncViewConstants(sampleOnly, &error),
+                    "native scene frame runtime refreshes ViewCB without rebinding scene resources");
+        const auto refreshedViewBytes =
+            device.readbackBufferEx(runtime.constants().viewBuffer(), 0, sizeof(dayo::graphics::NativeViewConstants));
+        std::memcpy(&view, refreshedViewBytes.data(), sizeof(view));
+        ok &= check(view.output[2] == 9, "native scene frame runtime publishes a changed sample index");
     }
     // Canonical scene CPU buffers preserve the upstream StructuredBuffer
     // layout independently from Preview and the compact BLAS vertex format.
