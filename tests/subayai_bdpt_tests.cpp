@@ -8,6 +8,7 @@
 #include "graphics/native_scene_binding_runtime.hpp"
 #include "graphics/native_scene_bindings.hpp"
 #include "graphics/native_scene_data.hpp"
+#include "graphics/native_scene_resource_store.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/native_scene_resource_runtime.hpp"
 #include "graphics/sbt.hpp"
@@ -1404,6 +1405,44 @@ int main() {
         incomplete.textures = std::span<const dayo::graphics::handles::TextureHandle>(textures.data(), 1);
         ok &= check(!runtime.sync(incomplete, &error) && !error.empty(),
                     "native scene resource runtime rejects an array count mismatch");
+    }
+    // The resource store supplies safe placeholders for every fixed binding,
+    // but refuses to manufacture a fake TLAS for a missing scene geometry.
+    {
+        MockNativeDevice device;
+        dayo::graphics::NativeSceneResourceStore store;
+        const dayo::graphics::NativeSceneDescriptorCounts counts{.textures = 2};
+        std::string error;
+        ok &= check(store.initialize(device, counts, &error) && store.ready(),
+                    "native scene resource store initializes fallback resources without a TLAS");
+        const auto& fallback = store.bindings();
+        ok &= check(!fallback.tlas.valid() && fallback.rtOutput.valid() && fallback.oidnBuffer.valid() &&
+                        fallback.textures.size() == 2 && fallback.textures[0].valid(),
+                    "native scene resource store keeps TLAS empty while filling fixed placeholders");
+
+        std::uint32_t nextHandle = 100;
+        const auto texture = [&nextHandle]() { return dayo::graphics::handles::TextureHandle{nextHandle++, 1}; };
+        const auto acceleration = [&nextHandle]() {
+            return dayo::graphics::handles::AccelerationStructureHandle{nextHandle++, 1};
+        };
+        const std::array<dayo::graphics::handles::TextureHandle, 2> textures{texture(), texture()};
+        dayo::graphics::NativeSceneResourceBindings overrides;
+        overrides.tlas = acceleration();
+        overrides.rtOutput = texture();
+        overrides.textures = textures;
+        ok &= check(store.compose(overrides, &error),
+                    "native scene resource store composes a real TLAS and scene overrides");
+        ok &= check(store.bindings().tlas == overrides.tlas && store.bindings().rtOutput == overrides.rtOutput &&
+                        store.bindings().textures[0] == textures[0] && store.bindings().textures[1] == textures[1],
+                    "native scene resource store retains owned array and scalar overrides");
+
+        auto invalid = overrides;
+        invalid.textures = std::span<const dayo::graphics::handles::TextureHandle>(textures.data(), 1);
+        ok &= check(!store.compose(invalid, &error) && !error.empty(),
+                    "native scene resource store rejects an incomplete fixed array");
+        store.reset();
+        ok &= check(device.destroyedTextures == 1 && device.destroyedBuffers == 1,
+                    "native scene resource store releases only its owned placeholders");
     }
     // DenoiserRuntime fallback: staging/readback -> CPU -> upload copy without CUDA.
     {
