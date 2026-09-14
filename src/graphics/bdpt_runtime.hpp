@@ -7,6 +7,8 @@
 #include "graphics/native_fx_runtime.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/subayai_geometry.hpp"
+#include "graphics/subayai_bindings.hpp"
+#include "graphics/subayai_light_sampling.hpp"
 
 #include <array>
 #include <optional>
@@ -22,6 +24,8 @@ struct BdptFrame {
     std::uint32_t sampleIndex{};
     bool clearAccumulation{};
     handles::DescriptorSetHandle descriptorSet{};
+    handles::BufferHandle lightSamplingBuffer{};
+    handles::DescriptorSetHandle lightSamplingDescriptorSet{};
     handles::DescriptorSetHandle geometryDescriptorSet{};
     bool usesCanonicalSceneBindings{};
     std::optional<NativeFxFrame> nativeFx;
@@ -74,7 +78,8 @@ class BdptRuntime {
 
     // Scene dirty state controls whether the progressive target is cleared or
     // the next sample is accumulated.
-    [[nodiscard]] BdptFrame prepareFrame(const fx::FxFrameContext& context, core::DirtyFlag dirty);
+    [[nodiscard]] BdptFrame prepareFrame(const fx::FxFrameContext& context, core::DirtyFlag dirty,
+                                         std::span<const AliasEntry> lightSampling = {});
     [[nodiscard]] VulkanFxExecutor::Stats execute(BdptFrame& frame, CommandList& commands,
                                                   const FxExecutionResources& resources = {}) const;
     [[nodiscard]] std::optional<NativeFrameOutput> output(const BdptFrame& frame) const;
@@ -84,6 +89,8 @@ class BdptRuntime {
     fx::FxProgram program_;
     BdptAccumulation accumulation_;
     NativeGeometryRuntime geometry_;
+    SubayaiBindingRuntime bindings_;
+    LightSamplingGpuRuntime lightRuntime_;
     handles::DescriptorSetLayoutHandle descriptorLayout_{};
     handles::DescriptorSetHandle descriptorSet_{};
     NativeFxRuntime nativeFx_;

@@ -136,7 +136,7 @@ NativeRendererCoordinator::recordFrame(CommandList& commands, const fx::FxFrameC
         return subayai_.output(frame);
     }
     case RendererKind::bdpt: {
-        auto frame = bdpt_.prepareFrame(context, dirty);
+        auto frame = bdpt_.prepareFrame(context, dirty, lightSampling);
         const auto stats = bdpt_.execute(frame, commands);
         static_cast<void>(stats);
         return bdpt_.output(frame);
