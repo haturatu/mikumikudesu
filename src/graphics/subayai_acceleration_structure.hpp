@@ -12,10 +12,11 @@
 namespace dayo::graphics {
 
 // Host-side bookkeeping for Subayai/BDPT acceleration structures.
-// Vulkan builds stay behind the RT feature gate; this service only decides
-// rebuild / refit / update and tracks TLAS instance counts derived from
-// Scene::cloneCount. nativeSubayai/nativeBdpt remain false, so callers must
-// fall back to Preview when DeviceCapabilities::supports() is false.
+// Vulkan builds stay behind the RT feature gate; this service decides rebuild /
+// refit / update and tracks TLAS instance counts derived from Scene::cloneCount.
+// Callers still must fall back to Preview when DeviceCapabilities::supports()
+// is false because native availability is conditional on the active device and
+// effect graph.
 enum class BlasAction { none, rebuild, refit };
 enum class TlasAction { none, rebuild, update };
 

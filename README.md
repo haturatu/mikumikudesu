@@ -16,19 +16,21 @@ PreviewはLinux/AMDで実動します。SubayaiとBDPTについては、`.fxdayo
 deform→BLAS/TLAS、environment/light GPU resource、native runtime、OpenEXR encoderまでを
 段階的に実装しています。
 
-ただし、現在のApplicationのswapchain/viewport/output経路はPreviewに接続されたままです。そのため
-`nativeSubayai`と`nativeBdpt`は意図的にfalseであり、native描画に対応していると偽装しません。
-NativeRendererCoordinatorはeffect graphから要求featureを算出し、未接続または不足している場合は
-理由を記録してPreviewへ戻します。要求featureはrenderer名だけでなく、各グラフの実際の宣言から
-判定されます。
+Applicationのswapchain、viewport、offscreen、画像連番出力はnative rendererの出力bridgeに接続されています。
+ただし`nativeSubayai`と`nativeBdpt`は常に有効になるわけではありません。起動時にGPU capability、
+FX graphが要求するfeature、runtimeの初期化結果を確認し、いずれかが不足している場合は理由を記録して
+Previewへ戻します。要求featureはrenderer名だけでなく、各グラフの実際の宣言から判定されます。
+そのためnative pathが接続済みであることと、すべてのGPU・すべての`.fxdayo`でnative描画できることは
+別の契約です。対応外の環境では従来どおりPreviewを使用します。
 
 Subayaiの材質注釈はコア層から専用GPU ABIへリンクされ、標準の`hair.txt`に含まれる異方性、IOR、
 AutoNormalをPreview ABIと分離して保持します。native passが有効になるまでPreview shaderの
 挙動は変更しません。
 
 画像連番出力はOpenEXRが利用できるbuildではEXRをエンコードし、利用できない場合は従来どおり
-PNG/PPMを使います。Subayai/BDPTの動画・画面出力を有効化するには、native output bridgeと
-実行時のresource bindingを追加する必要があります。
+PNG/PPMを使います。Subayai/BDPTが選択されている場合は、viewport、offscreen render、画像連番出力が
+同じnative frame recorderの結果を使用します。native runtimeを利用できない場合は、renderer選択時に
+Previewへフォールバックします。
 `.vmdayo`は本家1.30ソースのv3レイアウト（header、model dictionary、metadata、全track、
 axis別MMD/Catmull-Rom方式）を実装しています。単体ファイルの二重headerと`.dayo`内の単一headerを
 区別し、カメラsubsetとモデル別subsetを双方向変換します。未知の入力はopaque payloadとして保持します。
