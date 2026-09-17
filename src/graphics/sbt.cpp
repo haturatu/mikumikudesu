@@ -36,10 +36,16 @@ void ShaderBindingTableBuilder::addHitGroup(std::string name) {
     log::debug("SBT hit group added: ", hitGroups_.size());
 }
 
+void ShaderBindingTableBuilder::addCallable(std::string name) {
+    callable_.push_back(std::move(name));
+    log::debug("SBT callable added: ", callable_.size());
+}
+
 void ShaderBindingTableBuilder::clear() noexcept {
     raygen_.clear();
     miss_.clear();
     hitGroups_.clear();
+    callable_.clear();
 }
 
 ShaderBindingTableBuilder::Layout ShaderBindingTableBuilder::build(std::uint64_t baseAddress,
@@ -59,6 +65,7 @@ ShaderBindingTableBuilder::Layout ShaderBindingTableBuilder::build(std::uint64_t
     layout.raygenStride = stride;
     layout.missStride = stride;
     layout.hitStride = stride;
+    layout.callableStride = stride;
     const auto alignAddress = [baseAlignment](std::uint64_t address) -> std::optional<std::uint64_t> {
         const auto alignment = static_cast<std::uint64_t>(baseAlignment);
         const auto remainder = address % alignment;
@@ -76,6 +83,7 @@ ShaderBindingTableBuilder::Layout ShaderBindingTableBuilder::build(std::uint64_t
     const auto raygenSize = static_cast<std::uint64_t>(stride) * static_cast<std::uint64_t>(raygen_.size());
     const auto missSize = static_cast<std::uint64_t>(stride) * static_cast<std::uint64_t>(miss_.size());
     const auto hitSize = static_cast<std::uint64_t>(stride) * static_cast<std::uint64_t>(hitGroups_.size());
+    const auto callableSize = static_cast<std::uint64_t>(stride) * static_cast<std::uint64_t>(callable_.size());
     if (layout.raygenAddress > std::numeric_limits<std::uint64_t>::max() - raygenSize)
         return Layout{};
     const auto missAddress = alignAddress(layout.raygenAddress + raygenSize);
@@ -93,7 +101,14 @@ ShaderBindingTableBuilder::Layout ShaderBindingTableBuilder::build(std::uint64_t
     const auto endAddress = layout.hitAddress + hitSize;
     if (endAddress < layout.hitAddress || endAddress < baseAddress)
         return Layout{};
-    layout.totalSize = endAddress - baseAddress;
+    const auto callableAddress = alignAddress(endAddress);
+    if (!callableAddress.has_value() || *callableAddress > std::numeric_limits<std::uint64_t>::max() - callableSize)
+        return Layout{};
+    layout.callableAddress = *callableAddress;
+    const auto finalAddress = *callableAddress + callableSize;
+    if (finalAddress < *callableAddress || finalAddress < baseAddress)
+        return Layout{};
+    layout.totalSize = finalAddress - baseAddress;
     return layout;
 }
 

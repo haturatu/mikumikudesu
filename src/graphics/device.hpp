@@ -7,7 +7,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -19,6 +21,8 @@ class Window;
 }
 
 namespace dayo::graphics {
+
+class IAccelerationBackend;
 
 enum class RendererKind { preview, subayai, bdpt };
 
@@ -62,6 +66,7 @@ struct DeviceCapabilities {
         return nativeBdpt && hardwareSupportsBdpt();
     }
     [[nodiscard]] bool supports(RendererKind renderer) const noexcept;
+    [[nodiscard]] std::string missingHardwareFeatures(RendererKind renderer) const;
     [[nodiscard]] std::string missingFeatures(RendererKind renderer) const;
     [[nodiscard]] std::string json() const;
 };
@@ -238,66 +243,6 @@ using SamplerHandle = std::uint64_t;
 using ShaderHandle = std::uint64_t;
 using AccelerationStructureHandle = std::uint64_t;
 
-struct ShaderDesc {
-    std::span<const std::uint32_t> spirv;
-    std::string entryPoint{"main"};
-};
-struct PipelineDesc {
-    std::vector<ShaderHandle> shaders;
-    bool compute{};
-};
-struct GraphicsPipelineDescEx {
-    handles::PipelineLayoutHandle layout{};
-    std::vector<ShaderHandle> shaders;
-};
-struct ComputePipelineDescEx {
-    handles::PipelineLayoutHandle layout{};
-    std::vector<ShaderHandle> shaders;
-};
-
-enum class RayTracingHitGroupType : std::uint8_t { triangles, procedural };
-
-struct RayTracingHitGroupDesc {
-    RayTracingHitGroupType type{RayTracingHitGroupType::triangles};
-    handles::ShaderHandle closestHit{};
-    handles::ShaderHandle anyHit{};
-    handles::ShaderHandle intersection{};
-};
-
-struct RayTracingPipelineDesc {
-    std::vector<ShaderHandle> rayGeneration;
-    std::vector<ShaderHandle> miss;
-    std::vector<ShaderHandle> closestHit;
-    std::vector<ShaderHandle> callable;
-};
-struct RayTracingPipelineDescEx {
-    handles::PipelineLayoutHandle layout{};
-    std::vector<ShaderHandle> rayGeneration;
-    std::vector<ShaderHandle> miss;
-    std::vector<ShaderHandle> closestHit;
-    std::vector<RayTracingHitGroupDesc> hitGroups;
-    std::vector<ShaderHandle> callable;
-    std::uint32_t maxPayloadSize{};
-    std::uint32_t maxAttributeSize{};
-    std::uint32_t maxRecursionDepth{1};
-};
-struct DescriptorBinding {
-    std::uint32_t slot{};
-    BufferHandle buffer{};
-    TextureViewHandle texture{};
-    SamplerHandle sampler{};
-};
-
-enum class DescriptorKind : std::uint8_t {
-    sampler,
-    sampledImage,
-    combinedImageSampler,
-    storageImage,
-    uniformBuffer,
-    storageBuffer,
-    accelerationStructure,
-};
-
 enum class ShaderStageMask : std::uint32_t {
     none = 0,
     vertex = 1U << 0U,
@@ -319,6 +264,68 @@ constexpr ShaderStageMask& operator|=(ShaderStageMask& left, ShaderStageMask rig
     left = left | right;
     return left;
 }
+
+struct ShaderDesc {
+    std::span<const std::uint32_t> spirv;
+    std::string entryPoint{"main"};
+    ShaderStageMask stage{ShaderStageMask::compute};
+};
+struct PipelineDesc {
+    std::vector<ShaderHandle> shaders;
+    bool compute{};
+};
+struct GraphicsPipelineDescEx {
+    handles::PipelineLayoutHandle layout{};
+    std::vector<handles::ShaderHandle> shaders;
+    PixelFormat colorFormat{PixelFormat::rgba16Float};
+};
+struct ComputePipelineDescEx {
+    handles::PipelineLayoutHandle layout{};
+    std::vector<handles::ShaderHandle> shaders;
+};
+
+enum class RayTracingHitGroupType : std::uint8_t { triangles, procedural };
+
+struct RayTracingHitGroupDesc {
+    RayTracingHitGroupType type{RayTracingHitGroupType::triangles};
+    handles::ShaderHandle closestHit{};
+    handles::ShaderHandle anyHit{};
+    handles::ShaderHandle intersection{};
+};
+
+struct RayTracingPipelineDesc {
+    std::vector<ShaderHandle> rayGeneration;
+    std::vector<ShaderHandle> miss;
+    std::vector<ShaderHandle> closestHit;
+    std::vector<ShaderHandle> callable;
+};
+struct RayTracingPipelineDescEx {
+    handles::PipelineLayoutHandle layout{};
+    std::vector<handles::ShaderHandle> rayGeneration;
+    std::vector<handles::ShaderHandle> miss;
+    std::vector<handles::ShaderHandle> closestHit;
+    std::vector<RayTracingHitGroupDesc> hitGroups;
+    std::vector<handles::ShaderHandle> callable;
+    std::uint32_t maxPayloadSize{};
+    std::uint32_t maxAttributeSize{};
+    std::uint32_t maxRecursionDepth{1};
+};
+struct DescriptorBinding {
+    std::uint32_t slot{};
+    BufferHandle buffer{};
+    TextureViewHandle texture{};
+    SamplerHandle sampler{};
+};
+
+enum class DescriptorKind : std::uint8_t {
+    sampler,
+    sampledImage,
+    combinedImageSampler,
+    storageImage,
+    uniformBuffer,
+    storageBuffer,
+    accelerationStructure,
+};
 
 struct DescriptorSetLayoutBinding {
     std::uint32_t binding{};
@@ -363,6 +370,15 @@ struct BlasGeometryDesc {
     std::vector<BlasTriangleGeometryDesc> triangles;
 };
 
+struct AccelerationInstanceDesc {
+    handles::AccelerationStructureHandle blas{};
+    std::array<float, 12> transform{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F};
+    std::uint32_t instanceId{};
+    std::uint32_t mask{0xFFU};
+    std::uint32_t sbtRecordOffset{};
+    std::uint32_t flags{};
+};
+
 // Typed (generation-checked) descriptors. The legacy uint64_t handles above
 // are preserved for the Preview backend; new FX/RT paths use handles:: types.
 struct DescriptorBindingEx {
@@ -403,12 +419,24 @@ class CommandList {
         static_cast<void>(depth);
         traceRays(width, height);
     }
-    virtual void bindResources(std::span<const DescriptorBinding>) {}
-    virtual void pushConstants(std::span<const std::byte>) {}
-    virtual void copyTexture(TextureHandle, TextureHandle) {}
-    virtual void clearTexture(TextureHandle) {}
-    virtual void generateMipmaps(TextureHandle) {}
-    virtual void buildAccelerationStructure(AccelerationStructureHandle) {}
+    virtual void bindResources(std::span<const DescriptorBinding>) {
+        throw std::logic_error("legacy command-list descriptor bindings are not implemented by this backend");
+    }
+    virtual void pushConstants(std::span<const std::byte>) {
+        throw std::logic_error("legacy command-list push constants are not implemented by this backend");
+    }
+    virtual void copyTexture(TextureHandle, TextureHandle) {
+        throw std::logic_error("legacy command-list texture copy is not implemented by this backend");
+    }
+    virtual void clearTexture(TextureHandle) {
+        throw std::logic_error("legacy command-list texture clear is not implemented by this backend");
+    }
+    virtual void generateMipmaps(TextureHandle) {
+        throw std::logic_error("legacy command-list mipmap generation is not implemented by this backend");
+    }
+    virtual void buildAccelerationStructure(AccelerationStructureHandle) {
+        throw std::logic_error("legacy command-list acceleration structures are not implemented by this backend");
+    }
     // Typed (generation-checked) recording. Preview command lists that do not
     // implement the typed path fail explicitly instead of dropping commands.
     virtual void copyTextureEx(handles::TextureHandle, handles::TextureHandle) {
@@ -417,10 +445,65 @@ class CommandList {
     virtual void clearTextureEx(handles::TextureHandle) {
         throw std::logic_error("Typed command-list texture clear is not implemented by this backend");
     }
+    virtual void clearTextureEx(handles::TextureHandle, const std::array<float, 4>&) {
+        throw std::logic_error("Typed command-list colored texture clear is not implemented by this backend");
+    }
     virtual void generateMipmapsEx(handles::TextureHandle) {
         throw std::logic_error("Typed command-list mipmap generation is not implemented by this backend");
     }
+    virtual void copyBufferEx(handles::BufferHandle, handles::BufferHandle) {
+        throw std::logic_error("Typed command-list buffer copy is not implemented by this backend");
+    }
+    virtual void bindPipelineEx(handles::PipelineHandle) {
+        throw std::logic_error("Typed command-list pipelines are not implemented by this backend");
+    }
+    virtual void bindDescriptorSetEx(handles::DescriptorSetHandle, std::uint32_t = 0) {
+        throw std::logic_error("Typed command-list descriptor sets are not implemented by this backend");
+    }
+    virtual void pushConstantsEx(std::span<const std::byte>) {
+        throw std::logic_error("Typed command-list push constants are not implemented by this backend");
+    }
+    virtual void beginRenderingEx(handles::TextureHandle, bool = false) {
+        throw std::logic_error("Typed command-list rendering is not implemented by this backend");
+    }
+    virtual void endRenderingEx() {
+        throw std::logic_error("Typed command-list rendering is not implemented by this backend");
+    }
+    virtual void memoryBarrierEx() {
+        throw std::logic_error("Typed command-list memory barriers are not implemented by this backend");
+    }
+    virtual void accelerationStructureBarrierEx() {
+        throw std::logic_error("Typed acceleration barriers are not implemented by this backend");
+    }
+    virtual void buildBlasEx(handles::AccelerationStructureHandle, const BlasGeometryDesc&, bool) {
+        throw std::logic_error("Typed BLAS command recording is not implemented by this backend");
+    }
+    virtual void buildTlasEx(handles::AccelerationStructureHandle, std::span<const AccelerationInstanceDesc>, bool) {
+        throw std::logic_error("Typed TLAS command recording is not implemented by this backend");
+    }
+    virtual void transitionEx(handles::TextureHandle) {
+        throw std::logic_error("Typed command-list texture transitions are not implemented by this backend");
+    }
+    virtual void traceRaysEx(handles::PipelineHandle, handles::ShaderBindingTableHandle, std::uint32_t, std::uint32_t,
+                             std::uint32_t = 1) {
+        throw std::logic_error("Typed command-list ray tracing is not implemented by this backend");
+    }
 };
+
+// A native renderer returns the last typed color resource it wrote. The
+// presentation backend owns the conversion into its swapchain/viewport
+// target, so native runtimes never need to know about SDL or Vulkan images.
+struct NativeFrameOutput {
+    handles::TextureHandle texture{};
+    Extent3D extent{};
+    PixelFormat format{PixelFormat::rgba8Unorm};
+
+    [[nodiscard]] bool valid() const noexcept {
+        return texture.valid() && extent.width != 0 && extent.height != 0 && extent.depth == 1;
+    }
+};
+
+using NativeFrameRecorder = std::function<std::optional<NativeFrameOutput>(CommandList&, const RenderTargetDesc&)>;
 
 class Device {
   public:
@@ -431,10 +514,53 @@ class Device {
     [[nodiscard]] virtual const DeviceCapabilities& capabilities() const noexcept = 0;
     [[nodiscard]] virtual const GraphicsConvention& convention() const noexcept = 0;
     [[nodiscard]] virtual RendererKind activeRenderer() const noexcept = 0;
+    // The built-in deform pass is optional for non-Vulkan/Preview backends.
+    // Native geometry uses these handles only when the backend exposes the
+    // typed compute pipeline required to populate its BLAS input buffer.
+    [[nodiscard]] virtual handles::PipelineHandle nativeDeformPipeline() const noexcept {
+        return {};
+    }
+    [[nodiscard]] virtual handles::DescriptorSetLayoutHandle nativeDeformDescriptorLayout() const noexcept {
+        return {};
+    }
+    // Native postprocess FX passes use the renderer-owned fullscreen triangle
+    // vertex shader while retaining their effect-authored fragment shader.
+    [[nodiscard]] virtual handles::ShaderHandle nativeFullscreenVertexShader() const noexcept {
+        return {};
+    }
+    [[nodiscard]] virtual handles::PipelineHandle nativeEnvironmentEquirectPipeline() const noexcept {
+        return {};
+    }
+    [[nodiscard]] virtual handles::DescriptorSetLayoutHandle nativeEnvironmentEquirectLayout() const noexcept {
+        return {};
+    }
+    [[nodiscard]] virtual handles::PipelineHandle nativeEnvironmentPrefilterPipeline() const noexcept {
+        return {};
+    }
+    [[nodiscard]] virtual handles::DescriptorSetLayoutHandle nativeEnvironmentPrefilterLayout() const noexcept {
+        return {};
+    }
+    // Native RT runtimes can use the backend-neutral rebuild/refit policy
+    // without downcasting the device. Preview/mock devices return nullptr.
+    [[nodiscard]] virtual IAccelerationBackend* nativeAccelerationBackend() noexcept {
+        return nullptr;
+    }
     virtual void selectRenderer(RendererKind requested) = 0;
     virtual void resize() = 0;
     virtual void beginUiFrame() = 0;
     virtual void renderFrame() = 0;
+    // The callback is invoked while the backend's frame command buffer is
+    // recording. An empty result keeps the existing Preview recording path;
+    // a valid result is composited into the viewport/swapchain by the
+    // backend. Preview and mock devices accept only an empty callback.
+    virtual void setNativeFrameRecorder(NativeFrameRecorder recorder) {
+        if (recorder)
+            throw std::logic_error("native frame recording is not implemented by this backend");
+    }
+    // Native implementation gates are published only after the coordinator
+    // has successfully initialized the requested runtime. Hardware feature
+    // discovery remains independent from this application/runtime state.
+    virtual void setNativeRendererAvailability(bool, bool) {}
     virtual void setPreviewViewportExtent(const RenderTargetDesc&) {}
     [[nodiscard]] virtual PreviewViewport previewViewport() const noexcept {
         return {};
@@ -508,14 +634,41 @@ class Device {
     [[nodiscard]] virtual handles::BufferHandle createBufferEx(const BufferResourceDesc&) {
         throw std::logic_error("Typed buffers are not implemented by this backend");
     }
+    [[nodiscard]] virtual handles::SamplerHandle createSamplerEx() {
+        throw std::logic_error("Typed samplers are not implemented by this backend");
+    }
+    [[nodiscard]] virtual handles::SamplerHandle createSamplerEx(const SamplerResourceDesc& desc) {
+        static_cast<void>(desc);
+        return createSamplerEx();
+    }
+    [[nodiscard]] virtual handles::ShaderHandle createShaderEx(const ShaderDesc&) {
+        throw std::logic_error("Typed shaders are not implemented by this backend");
+    }
+    virtual void destroyShaderEx(handles::ShaderHandle) {
+        throw std::logic_error("Typed shader destroy is not implemented by this backend");
+    }
     [[nodiscard]] virtual handles::AccelerationStructureHandle createBlasEx(const BlasGeometryDesc&) {
         throw std::logic_error("Typed BLAS is not implemented by this backend");
     }
-    virtual void rebuildBlasEx(handles::AccelerationStructureHandle, const BlasGeometryDesc&) {
+    [[nodiscard]] virtual handles::AccelerationStructureHandle rebuildBlasEx(handles::AccelerationStructureHandle,
+                                                                             const BlasGeometryDesc&) {
         throw std::logic_error("Typed BLAS rebuild is not implemented by this backend");
     }
     virtual void refitBlasEx(handles::AccelerationStructureHandle, const BlasGeometryDesc&) {
         throw std::logic_error("Typed BLAS refit is not implemented by this backend");
+    }
+    [[nodiscard]] virtual handles::AccelerationStructureHandle createTlasEx(std::span<const AccelerationInstanceDesc>) {
+        throw std::logic_error("Typed TLAS is not implemented by this backend");
+    }
+    [[nodiscard]] virtual handles::AccelerationStructureHandle
+    rebuildTlasEx(handles::AccelerationStructureHandle, std::span<const AccelerationInstanceDesc>) {
+        throw std::logic_error("Typed TLAS rebuild is not implemented by this backend");
+    }
+    virtual void updateTlasEx(handles::AccelerationStructureHandle, std::span<const AccelerationInstanceDesc>) {
+        throw std::logic_error("Typed TLAS update is not implemented by this backend");
+    }
+    virtual void destroyAccelerationStructureEx(handles::AccelerationStructureHandle) {
+        throw std::logic_error("Typed acceleration-structure destroy is not implemented by this backend");
     }
     // ---- destroy / retirement ----
     virtual void destroyTextureEx(handles::TextureHandle) {
@@ -523,6 +676,9 @@ class Device {
     }
     virtual void destroyBufferEx(handles::BufferHandle) {
         throw std::logic_error("Typed buffer destroy is not implemented by this backend");
+    }
+    virtual void destroySamplerEx(handles::SamplerHandle) {
+        throw std::logic_error("Typed sampler destroy is not implemented by this backend");
     }
     virtual void retireTextureEx(handles::TextureHandle, std::uint64_t /*frameIndex*/) {
         throw std::logic_error("Typed texture retirement is not implemented by this backend");

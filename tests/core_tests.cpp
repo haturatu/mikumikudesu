@@ -950,7 +950,12 @@ int main() {
                     "sequence output preserves files created after preflight");
         dayo::core::OutputSettings failingSettings;
         failingSettings.directory = outputDirectory;
-        failingSettings.format = dayo::core::OutputFormat::exr;
+        failingSettings.format = dayo::core::OutputFormat::png;
+        const auto blockingDirectory = outputDirectory / "not-a-directory";
+        std::ofstream blocker(blockingDirectory, std::ios::binary | std::ios::trunc);
+        blocker << "file";
+        blocker.close();
+        failingSettings.directory = blockingDirectory;
         dayo::core::OutputQueue failingQueue(failingSettings);
         failingQueue.push(0, dayo::core::ImageRgba8{1, 1, {0, 0, 0, 255}});
         failingQueue.close();

@@ -1,5 +1,6 @@
 #include "fx/fx_shader_cache.hpp"
 
+#include <algorithm>
 #include <functional>
 
 namespace dayo::fx {
@@ -13,6 +14,33 @@ FxShaderCache::Handle FxShaderCache::getOrCompile(const FxShaderKey& key, const 
     const Handle handle = next_++;
     entries_.emplace(combined, handle);
     return handle;
+}
+
+FxShaderArtifact FxShaderCache::compileOrGet(const FxShaderKey& key, const FxShaderCompileRequest& request,
+                                             const FxShaderCompiler& compiler) {
+    const auto id = key.combined();
+    {
+        std::scoped_lock lock(mutex_);
+        const auto found = entries_.find(id);
+        if (found != entries_.end()) {
+            const auto artifact = artifacts_.find(found->second);
+            if (artifact != artifacts_.end())
+                return artifact->second;
+        }
+    }
+
+    FxShaderArtifact artifact = compiler.compile(request);
+    std::scoped_lock lock(mutex_);
+    const auto existing = entries_.find(id);
+    if (existing != entries_.end()) {
+        const auto cached = artifacts_.find(existing->second);
+        if (cached != artifacts_.end())
+            return cached->second;
+    }
+    const Handle handle = next_++;
+    entries_.emplace(id, handle);
+    artifacts_.emplace(handle, artifact);
+    return artifact;
 }
 
 std::optional<FxShaderCache::Handle> FxShaderCache::findExact(const FxShaderKey& key, const std::string& source) const {
@@ -32,9 +60,18 @@ std::optional<FxShaderCache::Handle> FxShaderCache::find(const FxShaderKey& key)
     return std::nullopt;
 }
 
+std::optional<std::vector<std::uint32_t>> FxShaderCache::binary(Handle handle) const {
+    std::scoped_lock lock(mutex_);
+    const auto found = std::ranges::find_if(artifacts_, [handle](const auto& entry) { return entry.first == handle; });
+    if (found == artifacts_.end())
+        return std::nullopt;
+    return found->second.spirv;
+}
+
 void FxShaderCache::clear() noexcept {
     std::scoped_lock lock(mutex_);
     entries_.clear();
+    artifacts_.clear();
 }
 
 std::size_t FxShaderCache::size() const noexcept {

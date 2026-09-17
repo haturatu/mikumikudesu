@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -86,14 +87,37 @@ struct FxDispatch {
     // compatible for Preview callers, while native backends consume this
     // lossless variant.
     FxExecutable executable{FxRasterDispatch{}};
+    std::vector<std::string> macros;
 };
 
 struct FxProgram {
     std::string label;
     std::vector<FxDispatch> passes;
+    // Resource declarations are part of the compiled program. Keeping them
+    // here prevents native backends from having to reconstruct typed image,
+    // buffer, and sampler metadata from a source graph that may already have
+    // been replaced by hot reload.
+    std::vector<core::EffectTexture> textures;
+    std::vector<core::EffectTexture> textures3D;
+    std::vector<core::EffectBuffer> buffers;
+    std::vector<core::EffectSampler> samplers;
+    std::vector<core::EffectController> controllers;
+    std::uint32_t meshCloneCount{1};
     std::uint64_t generation{};
     std::uint64_t sourceVersion{};
+    std::filesystem::path sourcePath;
+    std::string hlsl;
 };
+
+struct FxRequiredFeatures {
+    bool descriptorIndexing{};
+    bool accelerationStructure{};
+    bool rayQuery{};
+    bool rayTracingPipeline{};
+    bool fragmentShaderBarycentric{};
+};
+
+[[nodiscard]] FxRequiredFeatures requiredFeatures(const FxProgram& program) noexcept;
 
 struct FxFramePlan {
     std::vector<FxDispatch> ordered;

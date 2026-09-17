@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <iostream>
 #include <numbers>
+#include <optional>
 #include <span>
 
 namespace {
@@ -648,6 +649,54 @@ bool rendersInteractiveViewport(dayo::graphics::VulkanDevice& device) {
 }
 #endif
 
+bool recordsNativeOffscreenOutput(dayo::graphics::VulkanDevice& device) {
+    if (!device.capabilities().hardwareSupportsSubayai())
+        return true;
+
+    device.setNativeRendererAvailability(true, false);
+    device.selectRenderer(dayo::graphics::RendererKind::subayai);
+    bool called = false;
+    dayo::graphics::handles::TextureHandle output{};
+    device.setNativeFrameRecorder(
+        [&](dayo::graphics::CommandList& commands, const dayo::graphics::RenderTargetDesc& target) {
+            called = true;
+            output = device.createTextureEx({
+                .dimension = dayo::graphics::TextureDimension::d2,
+                .extent = {target.width, target.height, 1},
+                .format = dayo::graphics::PixelFormat::rgba16Float,
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .usage = dayo::graphics::ResourceUsage::sampledRead | dayo::graphics::ResourceUsage::transferDst,
+                .lifetime = dayo::graphics::ResourceLifetime::transient,
+            });
+            commands.clearTextureEx(output, {1.0F, 0.0F, 0.0F, 1.0F});
+            return std::optional<dayo::graphics::NativeFrameOutput>{dayo::graphics::NativeFrameOutput{
+                .texture = output,
+                .extent = {target.width, target.height, 1},
+                .format = dayo::graphics::PixelFormat::rgba16Float,
+            }};
+        });
+    bool outputMatches = false;
+    try {
+        const auto image = device.renderToImage({64, 64});
+        const auto pixel = centerPixel(image);
+        outputMatches = pixel[0] > 200U && pixel[1] < 32U && pixel[2] < 32U && pixel[3] > 200U;
+    } catch (...) {
+        device.setNativeFrameRecorder({});
+        device.setNativeRendererAvailability(false, false);
+        device.selectRenderer(dayo::graphics::RendererKind::preview);
+        if (output.valid())
+            device.destroyTextureEx(output);
+        throw;
+    }
+    device.setNativeFrameRecorder({});
+    device.setNativeRendererAvailability(false, false);
+    device.selectRenderer(dayo::graphics::RendererKind::preview);
+    if (output.valid())
+        device.destroyTextureEx(output);
+    return called && outputMatches;
+}
+
 } // namespace
 
 int main() {
@@ -675,6 +724,16 @@ int main() {
         scene.cameraDistance = 3.0F;
         scene.backgroundEnabled = false;
         device.updatePreviewScene(scene);
+        if (!device.nativeEnvironmentEquirectPipeline().valid() || !device.nativeEnvironmentEquirectLayout().valid() ||
+            !device.nativeEnvironmentPrefilterPipeline().valid() ||
+            !device.nativeEnvironmentPrefilterLayout().valid()) {
+            std::cerr << "FAIL: native environment compute pipelines were not initialized\n";
+            return 1;
+        }
+        if (!recordsNativeOffscreenOutput(device)) {
+            std::cerr << "FAIL: native renderer was not recorded for offscreen output\n";
+            return 1;
+        }
 #if DAYO_HAS_IMGUI
         if (!rendersInteractiveViewport(device)) {
             std::cerr << "FAIL: interactive preview viewport did not render or resize\n";

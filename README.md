@@ -11,17 +11,26 @@ Linux側を`SDL3 + Vulkan 1.3 + HLSL/SPIR-V`で構成しています。
 
 ## 制約
 
-PreviewはLinux/AMDで実動します。SubayaiとBDPTについては、`.fxdayo`グラフと必要featureの
-検出までは移植済みですが、Vulkan acceleration structure/SBTと各passの実行器は未接続です。
-そのため`nativeSubayai`と`nativeBdpt`は意図的にfalseであり、対応していると偽装しません。
+PreviewはLinux/AMDで実動します。SubayaiとBDPTについては、`.fxdayo`のraygen/miss/hit-groupを
+保持するFX契約、DXC→SPIR-V shader compiler、typed Vulkan resource/descriptor/pipeline/SBT、
+deform→BLAS/TLAS、environment/light GPU resource、native runtime、OpenEXR encoderまでを
+段階的に実装しています。
 
-Subayaiの材質注釈はコア層で読み込めます。標準の`hair.txt`からは異方性、IOR、AutoNormalを
-取得できますが、これらを実際のハイライトへ反映するnative Subayai passはまだ未接続です。
+Applicationのswapchain、viewport、offscreen、画像連番出力はnative rendererの出力bridgeに接続されています。
+ただし`nativeSubayai`と`nativeBdpt`は常に有効になるわけではありません。起動時にGPU capability、
+FX graphが要求するfeature、runtimeの初期化結果を確認し、いずれかが不足している場合は理由を記録して
+Previewへ戻します。要求featureはrenderer名だけでなく、各グラフの実際の宣言から判定されます。
+そのためnative pathが接続済みであることと、すべてのGPU・すべての`.fxdayo`でnative描画できることは
+別の契約です。対応外の環境では従来どおりPreviewを使用します。
 
-Subayai/BDPTのVulkan pass executor（acceleration structure/SBTを含む）は、featureのないAMD
-Vega等でも起動できるよう未接続のままです。RT対応GPUではbackend契約とgraph compileまでを
-検証し、未対応GPUでは不足featureを表示してPreviewへ戻します。OpenEXR encoderは任意依存の
-ため現在は未接続です（連番出力はPNG/PPM）。
+Subayaiの材質注釈はコア層から専用GPU ABIへリンクされ、標準の`hair.txt`に含まれる異方性、IOR、
+AutoNormalをPreview ABIと分離して保持します。native passが有効になるまでPreview shaderの
+挙動は変更しません。
+
+画像連番出力はOpenEXRが利用できるbuildではEXRをエンコードし、利用できない場合は従来どおり
+PNG/PPMを使います。Subayai/BDPTが選択されている場合は、viewport、offscreen render、画像連番出力が
+同じnative frame recorderの結果を使用します。native runtimeを利用できない場合は、renderer選択時に
+Previewへフォールバックします。
 `.vmdayo`は本家1.30ソースのv3レイアウト（header、model dictionary、metadata、全track、
 axis別MMD/Catmull-Rom方式）を実装しています。単体ファイルの二重headerと`.dayo`内の単一headerを
 区別し、カメラsubsetとモデル別subsetを双方向変換します。未知の入力はopaque payloadとして保持します。
@@ -234,7 +243,7 @@ offscreen Vulkan targetをCPUへreadbackしてMP4へ渡します。`--video-fps`
 ```
 
 動画書き出しはGPUを使うため、音声書き出しのような完全headless処理ではありません。SDL/Vulkan
-のhidden windowとPreview deviceを起動します。Subayai/BDPTは現在のnative executor未実装のため、
+のhidden windowとPreview deviceを起動します。Subayai/BDPTのnative output bridgeはまだ無効のため、
 動画書き出しではPreview rendererを使用してください。
 
 system packageのみで構成する場合:
@@ -273,7 +282,10 @@ src/
 ├── platform/                SDL3 window/event/audio
 └── graphics/
     ├── device.hpp           API非依存device/resource契約
-    └── vulkan/              Vulkan swapchain/pipeline/resource実装
+    ├── native_renderer.*    effect要件判定とnative runtime lifecycle
+    ├── subayai_*.{hpp,cpp}  deform/AS/material/environment/light契約
+    ├── bdpt_*.{hpp,cpp}     accumulation/LUT/volume/runtime契約
+    └── vulkan/              typed Vulkan resource/command/AS/pipeline/SBT実装
 
 deps/mikumikudayo.lock       取得するMikuMikuDayo Release ZIPの固定情報
 MikuMikuDayo/                 初回セットアップ時に展開されるローカル依存（Git管理外）

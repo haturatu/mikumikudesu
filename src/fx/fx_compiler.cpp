@@ -95,11 +95,25 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
     if (program.label.empty())
         program.label = graph.category.empty() ? "fx" : graph.category;
     program.generation = 1;
+    program.sourcePath = graph.sourcePath;
+    program.hlsl = graph.hlsl;
+    program.textures = graph.textures;
+    program.textures3D = graph.textures3D;
+    program.buffers = graph.buffers;
+    program.samplers = graph.samplers;
+    program.controllers = graph.controllers;
+    program.meshCloneCount = graph.meshCloneCount;
+    if (!graph.generatedCode.empty()) {
+        if (!program.hlsl.empty() && program.hlsl.back() != '\n')
+            program.hlsl.push_back('\n');
+        program.hlsl += graph.generatedCode;
+    }
     for (const auto& pass : graph.passes) {
         FxDispatch dispatch;
         dispatch.name = pass.name.empty() ? "pass" : pass.name;
         dispatch.kind = fxOpFromPassType(pass.type);
         dispatch.conditions = pass.conditions;
+        dispatch.macros = pass.macros;
         if (!pass.computeShader.empty())
             dispatch.shader = pass.computeShader;
         else if (!pass.pixelShader.empty())
@@ -230,6 +244,26 @@ FxFramePlan FxCompiler::plan(const FxProgram& program, const FxFrameContext& con
     framePlan.renderWidth = context.renderWidth;
     framePlan.renderHeight = context.renderHeight;
     return framePlan;
+}
+
+FxRequiredFeatures requiredFeatures(const FxProgram& program) noexcept {
+    FxRequiredFeatures required;
+    for (const auto& dispatch : program.passes) {
+        if (dispatch.kind == FxOpKind::raster || dispatch.kind == FxOpKind::postprocess)
+            required.descriptorIndexing = true;
+        if (dispatch.kind != FxOpKind::raytracing)
+            continue;
+        required.accelerationStructure = true;
+        required.rayTracingPipeline = true;
+        required.rayQuery = true;
+        if (const auto* ray = std::get_if<FxRayTracingDispatch>(&dispatch.executable); ray != nullptr) {
+            for (const auto& group : ray->hitGroups) {
+                if (group.type == core::fx::FxRayTracingHitGroupType::procedural)
+                    required.fragmentShaderBarycentric = true;
+            }
+        }
+    }
+    return required;
 }
 
 bool FxCompiler::buildPipelines(const FxProgram& program, std::string* error) const {

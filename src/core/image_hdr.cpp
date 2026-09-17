@@ -198,7 +198,7 @@ ImageRgba8 halfToRgba8(const ImageData& image) {
             std::memcpy(&bits, image.bytes.data() + (index * 4U + channel) * sizeof(bits), sizeof(bits));
             const float value = halfToFloat(bits);
             result.pixels[index * 4U + channel] =
-                static_cast<std::uint8_t>(std::clamp(value, 0.0F, 1.0F) * 255.0F + 0.5F);
+                static_cast<std::uint8_t>(std::lround(std::clamp(value, 0.0F, 1.0F) * 255.0F));
         }
     }
     return result;

@@ -173,6 +173,7 @@ add_library(
   src/core/fx/fx_size.cpp
   src/core/fx/fx_symbol.cpp
   src/core/image.cpp
+  src/core/image_hdr.cpp
   src/core/audio_export.cpp
   src/core/video_export.cpp
   src/core/media.cpp
@@ -247,7 +248,9 @@ add_library(
   src/fx/fx_preview_path.cpp
   src/fx/fx_resource_registry.cpp
   src/fx/fx_scheduler.cpp
+  src/fx/fx_shader_compiler.cpp
   src/fx/fx_shader_cache.cpp
+  src/fx/fx_shader_source.cpp
   src/fx/fx_texture_cache.cpp
   src/fx/fx_watcher.cpp
 )
@@ -257,12 +260,36 @@ target_link_libraries(dayo_fx PUBLIC dayo_core)
 add_library(
   dayo_graphics
   src/graphics/bdpt_accumulation.cpp
+  src/graphics/bdpt_runtime.cpp
   src/graphics/device.cpp
+  src/graphics/native_renderer.cpp
+  src/graphics/native_controller_runtime.cpp
+  src/graphics/native_scene_frame_runtime.cpp
+  src/graphics/native_scene_data.cpp
+  src/graphics/native_scene_model_runtime.cpp
+  src/graphics/native_scene_resource_store.cpp
+  src/graphics/native_frame_constants.cpp
+  src/graphics/native_scene_bindings.cpp
+  src/graphics/native_scene_binding_runtime.cpp
+  src/graphics/native_scene_resource_runtime.cpp
   src/graphics/sbt.cpp
   src/graphics/subayai_acceleration_structure.cpp
+  src/graphics/subayai_deform.cpp
+  src/graphics/subayai_geometry.cpp
   src/graphics/subayai_environment.cpp
+  src/graphics/subayai_environment_runtime.cpp
+  src/graphics/subayai_bindings.cpp
   src/graphics/subayai_light_sampling.cpp
+  src/graphics/subayai_material_gpu.cpp
+  src/graphics/subayai_material_runtime.cpp
+  src/graphics/subayai_runtime.cpp
+  src/graphics/fx_pipeline_runtime.cpp
+  src/graphics/fx_resource_runtime.cpp
+  src/graphics/native_fx_runtime.cpp
   src/graphics/vulkan/vulkan_device.cpp
+  src/graphics/vulkan/vulkan_acceleration_structure.cpp
+  src/graphics/vulkan/vulkan_acceleration_resources.cpp
+  src/graphics/vulkan/vulkan_command_list.cpp
   src/graphics/vulkan/vulkan_upload_context.cpp
   src/graphics/vulkan_fx_executor.cpp
   src/ui/fonts.cpp
@@ -315,10 +342,35 @@ include(cmake/CompileHlsl.cmake)
 dayo_compile_hlsl(DAYO_PREVIEW_VERTEX_SPV SOURCE shaders/preview.hlsl ENTRY VS PROFILE vs_6_6 STAGE vert)
 dayo_compile_hlsl(DAYO_PREVIEW_EDGE_VERTEX_SPV SOURCE shaders/preview.hlsl ENTRY EdgeVS PROFILE vs_6_6 STAGE vert)
 dayo_compile_hlsl(DAYO_PREVIEW_FRAGMENT_SPV SOURCE shaders/preview.hlsl ENTRY PS PROFILE ps_6_6 STAGE frag)
+dayo_compile_hlsl(DAYO_NATIVE_OUTPUT_VERTEX_SPV SOURCE shaders/native_output.hlsl ENTRY VS PROFILE vs_6_6 STAGE vert)
+dayo_compile_hlsl(DAYO_NATIVE_OUTPUT_FRAGMENT_SPV SOURCE shaders/native_output.hlsl ENTRY PS PROFILE ps_6_6 STAGE frag)
+dayo_compile_hlsl(DAYO_NATIVE_DEFORM_SPV SOURCE shaders/native_deform.hlsl ENTRY NativeDeform PROFILE cs_6_6 STAGE comp)
+dayo_compile_hlsl(
+  DAYO_NATIVE_ENVIRONMENT_EQUIRECT_SPV
+  SOURCE shaders/native_environment_equirect.hlsl
+  ENTRY EquirectToCube
+  PROFILE cs_6_6
+  STAGE comp
+)
+dayo_compile_hlsl(
+  DAYO_NATIVE_ENVIRONMENT_PREFILTER_SPV
+  SOURCE shaders/native_environment_prefilter.hlsl
+  ENTRY PrefilterCube
+  PROFILE cs_6_6
+  STAGE comp
+)
 add_custom_target(
   dayo_shaders
   ALL
-  DEPENDS ${DAYO_PREVIEW_VERTEX_SPV} ${DAYO_PREVIEW_EDGE_VERTEX_SPV} ${DAYO_PREVIEW_FRAGMENT_SPV}
+  DEPENDS
+    ${DAYO_PREVIEW_VERTEX_SPV}
+    ${DAYO_PREVIEW_EDGE_VERTEX_SPV}
+    ${DAYO_PREVIEW_FRAGMENT_SPV}
+    ${DAYO_NATIVE_OUTPUT_VERTEX_SPV}
+    ${DAYO_NATIVE_OUTPUT_FRAGMENT_SPV}
+    ${DAYO_NATIVE_DEFORM_SPV}
+    ${DAYO_NATIVE_ENVIRONMENT_EQUIRECT_SPV}
+    ${DAYO_NATIVE_ENVIRONMENT_PREFILTER_SPV}
 )
 add_dependencies(dayo_graphics dayo_shaders)
 target_compile_definitions(
@@ -327,6 +379,11 @@ target_compile_definitions(
     DAYO_PREVIEW_VERTEX_SPV="${DAYO_PREVIEW_VERTEX_SPV}"
     DAYO_PREVIEW_EDGE_VERTEX_SPV="${DAYO_PREVIEW_EDGE_VERTEX_SPV}"
     DAYO_PREVIEW_FRAGMENT_SPV="${DAYO_PREVIEW_FRAGMENT_SPV}"
+    DAYO_NATIVE_OUTPUT_VERTEX_SPV="${DAYO_NATIVE_OUTPUT_VERTEX_SPV}"
+    DAYO_NATIVE_OUTPUT_FRAGMENT_SPV="${DAYO_NATIVE_OUTPUT_FRAGMENT_SPV}"
+    DAYO_NATIVE_DEFORM_SPV="${DAYO_NATIVE_DEFORM_SPV}"
+    DAYO_NATIVE_ENVIRONMENT_EQUIRECT_SPV="${DAYO_NATIVE_ENVIRONMENT_EQUIRECT_SPV}"
+    DAYO_NATIVE_ENVIRONMENT_PREFILTER_SPV="${DAYO_NATIVE_ENVIRONMENT_PREFILTER_SPV}"
 )
 
 if(DAYO_ENABLE_IMGUI)
@@ -481,6 +538,17 @@ if(DAYO_HAS_MEDIA)
   target_link_libraries(dayo_core PUBLIC PkgConfig::FFMPEG)
 endif()
 
+set(DAYO_HAS_OPENEXR 0)
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(OPENEXR QUIET IMPORTED_TARGET OpenEXR)
+  if(OPENEXR_FOUND)
+    set(DAYO_HAS_OPENEXR 1)
+    target_link_libraries(dayo_core PUBLIC PkgConfig::OPENEXR)
+  endif()
+endif()
+target_compile_definitions(dayo_core PUBLIC DAYO_HAS_OPENEXR=${DAYO_HAS_OPENEXR})
+
 add_executable(
   mikumikudesu
   src/app/application.cpp
@@ -595,6 +663,8 @@ if(BUILD_TESTING)
   target_link_libraries(dayo_cli_tests PRIVATE dayo_cli)
   add_executable(dayo_core_tests tests/core_tests.cpp)
   target_link_libraries(dayo_core_tests PRIVATE dayo_core)
+  add_executable(dayo_output_tests tests/output_tests.cpp)
+  target_link_libraries(dayo_output_tests PRIVATE dayo_core)
   add_executable(dayo_video_export_job_tests tests/video_export_job_tests.cpp src/app/video_export_job.cpp)
   target_link_libraries(dayo_video_export_job_tests PRIVATE dayo_core)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
@@ -645,6 +715,15 @@ if(BUILD_TESTING)
       if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         target_compile_options(dayo_core_tests PRIVATE -Wno-error=deprecated-literal-operator)
       endif()
+    endif()
+  endif()
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      dayo_output_tests
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_output_tests PRIVATE -Werror)
     endif()
   endif()
 
@@ -753,7 +832,24 @@ if(BUILD_TESTING)
     endif()
   endif()
 
+  add_executable(dayo_native_renderer_tests tests/native_renderer_tests.cpp)
+  target_include_directories(dayo_native_renderer_tests PRIVATE src)
+  target_link_libraries(dayo_native_renderer_tests PRIVATE dayo_graphics)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      dayo_native_renderer_tests
+      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
+    if(DAYO_WARNINGS_AS_ERRORS)
+      target_compile_options(dayo_native_renderer_tests PRIVATE -Werror)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(dayo_native_renderer_tests PRIVATE -Wno-error=deprecated-literal-operator)
+      endif()
+    endif()
+  endif()
+
   add_test(NAME core COMMAND dayo_core_tests)
+  add_test(NAME output COMMAND dayo_output_tests)
   add_test(NAME video_export_job COMMAND dayo_video_export_job_tests)
   set_tests_properties(video_export_job PROPERTIES TIMEOUT 20)
   add_test(NAME cli COMMAND dayo_cli_tests)
@@ -766,6 +862,7 @@ if(BUILD_TESTING)
   add_test(NAME graph_device COMMAND dayo_graph_device_tests)
   set_tests_properties(graph_device PROPERTIES TIMEOUT 20)
   add_test(NAME subayai_bdpt COMMAND dayo_subayai_bdpt_tests)
+  add_test(NAME native_renderer COMMAND dayo_native_renderer_tests)
   add_test(NAME upstream_compat COMMAND dayo_upstream_compat_tests)
   set_tests_properties(upstream_compat PROPERTIES LABELS "upstream" TIMEOUT 60)
   add_test(NAME vulkan_probe COMMAND mikumikudesu --probe --hidden)
@@ -800,6 +897,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_graphics
     mikumikudesu
     dayo_core_tests
+    dayo_output_tests
     dayo_video_export_job_tests
     dayo_cli_tests
     dayo_fx_executor_tests
@@ -807,6 +905,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_preview_tests
     dayo_graph_device_tests
     dayo_subayai_bdpt_tests
+    dayo_native_renderer_tests
     dayo_upstream_compat_tests
     dayo_fx_linker_tests
     dayo_fx_semantic_tests
@@ -821,6 +920,9 @@ if(DAYO_ENABLE_SANITIZERS)
   endif()
   if(TARGET dayo_core_tests)
     target_link_options(dayo_core_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+  if(TARGET dayo_output_tests)
+    target_link_options(dayo_output_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
   if(TARGET dayo_video_export_job_tests)
     target_link_options(dayo_video_export_job_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
@@ -848,6 +950,9 @@ if(DAYO_ENABLE_SANITIZERS)
   endif()
   if(TARGET dayo_subayai_bdpt_tests)
     target_link_options(dayo_subayai_bdpt_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+  if(TARGET dayo_native_renderer_tests)
+    target_link_options(dayo_native_renderer_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
 endif()
 

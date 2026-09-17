@@ -122,6 +122,269 @@ const char* workspaceSuffix(ui::Workspace workspace) noexcept {
 
 Application::Application(Options options) : options_(std::move(options)) {}
 
+bool Application::ensureNativeSceneRuntime(bool restartRenderer, std::string* error) {
+    if (error != nullptr)
+        error->clear();
+    if (device_ == nullptr || scene_.effect() == nullptr) {
+        if (error != nullptr)
+            *error = "native scene runtime requires a device and effect";
+        return false;
+    }
+    if (nativeSceneModelData_.size() > std::numeric_limits<std::uint32_t>::max()) {
+        if (error != nullptr)
+            *error = "native scene model count exceeds descriptor limits";
+        return false;
+    }
+    const auto modelCount = static_cast<std::uint32_t>(std::max<std::size_t>(1, nativeSceneModelData_.size()));
+    const graphics::NativeSceneDescriptorCounts counts{.textures = 1,
+                                                       .vertexBuffers = modelCount,
+                                                       .indexBuffers = modelCount,
+                                                       .materials = modelCount,
+                                                       .faces = modelCount,
+                                                       .materialFaces = modelCount,
+                                                       .faceWalkers = modelCount,
+                                                       .previousVertices = modelCount,
+                                                       .rawVertices = modelCount};
+    const auto sameCounts = [](const auto& left, const auto& right) {
+        return left.textures == right.textures && left.vertexBuffers == right.vertexBuffers &&
+               left.indexBuffers == right.indexBuffers && left.materials == right.materials &&
+               left.faces == right.faces && left.materialFaces == right.materialFaces &&
+               left.faceWalkers == right.faceWalkers && left.previousVertices == right.previousVertices &&
+               left.rawVertices == right.rawVertices;
+    };
+    if (nativeSceneFrame_.ready() && nativeSceneResources_.ready() &&
+        sameCounts(nativeSceneFrame_.resources().counts(), counts) &&
+        sameCounts(nativeSceneResources_.counts(), counts)) {
+        nativeRenderer_.setSceneFrameRuntime(&nativeSceneFrame_);
+        return true;
+    }
+
+    const bool wasNative = nativeRenderer_.status().nativeReady;
+    nativeSceneFrame_.reset();
+    nativeSceneResources_.reset();
+    try {
+        std::string runtimeError;
+        if (!nativeSceneResources_.initialize(*device_, counts, &runtimeError))
+            throw std::runtime_error(runtimeError.empty() ? "native scene resource store initialization failed"
+                                                          : runtimeError);
+        if (!nativeSceneFrame_.initialize(*device_, scene_.effect()->controllers, counts, &runtimeError))
+            throw std::runtime_error(runtimeError.empty() ? "native scene frame initialization failed" : runtimeError);
+        nativeRenderer_.setSceneFrameRuntime(&nativeSceneFrame_);
+    } catch (const std::exception& exception) {
+        nativeSceneFrame_.reset();
+        nativeSceneResources_.reset();
+        if (error != nullptr)
+            *error = exception.what();
+        return false;
+    } catch (...) {
+        nativeSceneFrame_.reset();
+        nativeSceneResources_.reset();
+        if (error != nullptr)
+            *error = "native scene runtime initialization failed";
+        return false;
+    }
+
+    if (restartRenderer && wasNative) {
+        nativeRenderer_.reset();
+        requestRenderer(requestedRenderer_);
+        if (!nativeRenderer_.status().nativeReady) {
+            if (error != nullptr)
+                *error = nativeRenderer_.status().reason;
+            return false;
+        }
+    }
+    return true;
+}
+
+void Application::requestRenderer(graphics::RendererKind renderer) {
+    requestedRenderer_ = renderer;
+    if (device_ == nullptr)
+        return;
+    if (scene_.effect() == nullptr) {
+        nativeRenderer_.reset();
+        device_->setNativeRendererAvailability(false, false);
+        device_->selectRenderer(renderer);
+        return;
+    }
+    try {
+        if (renderer != graphics::RendererKind::preview) {
+            std::string sceneError;
+            if (!ensureNativeSceneRuntime(false, &sceneError))
+                throw std::runtime_error(sceneError.empty() ? "native scene runtime unavailable" : sceneError);
+            nativeRenderer_.setSceneFrameRuntime(&nativeSceneFrame_);
+        }
+        const auto status = nativeRenderer_.prepare(*device_, renderer, *scene_.effect());
+        device_->setNativeRendererAvailability(status.nativeReady && status.active == graphics::RendererKind::subayai,
+                                               status.nativeReady && status.active == graphics::RendererKind::bdpt);
+        device_->selectRenderer(status.active);
+        if (status.fellBack())
+            log::warn("Native ", graphics::toString(renderer), " unavailable; using Preview: ", status.reason);
+    } catch (const std::exception& exception) {
+        nativeRenderer_.reset();
+        device_->setNativeRendererAvailability(false, false);
+        device_->selectRenderer(graphics::RendererKind::preview);
+        log::warn("Native ", graphics::toString(renderer),
+                  " effect preparation failed; using Preview: ", exception.what());
+    }
+}
+
+fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTargetDesc& target) const {
+    const auto* model = selectedModel();
+    const auto* motion =
+        scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
+    fx::FxCameraState camera;
+    camera.rotation = {cameraPitch_, cameraYaw_, 0.0F};
+    camera.distance = cameraDistance_;
+    fx::FxLightingState lighting;
+    std::uint32_t modelIndex = 0;
+    std::size_t totalMaterials = 0;
+    for (std::size_t index = 0; index < scene_.models().size(); ++index) {
+        const auto& instance = scene_.models()[index];
+        if (instance.id == scene_.selectedModelId())
+            modelIndex = static_cast<std::uint32_t>(index);
+        if (instance.visible && instance.model != nullptr)
+            totalMaterials += instance.model->materials.size();
+    }
+    if (!manualCamera_ && motion != nullptr && !motion->cameras.empty()) {
+        const auto evaluated = core::evaluateCamera(*motion, animationFrame_);
+        camera.position = evaluated.position;
+        camera.rotation = evaluated.rotation;
+        camera.distance = evaluated.distance;
+        camera.verticalFovRadians = std::clamp(evaluated.viewAngle, 1.0F, 179.0F) * 0.01745329252F;
+        camera.perspective = evaluated.perspective;
+    }
+    if (motion != nullptr && !motion->lights.empty()) {
+        const auto evaluated = core::evaluateLight(*motion, animationFrame_);
+        lighting.direction = evaluated.position;
+        lighting.color = evaluated.color;
+    }
+    const auto* program = nativeRenderer_.program();
+    const auto sceneCloneCount = model == nullptr ? 1U : model->cloneCount;
+    const auto effectCloneCount = program == nullptr ? 1U : program->meshCloneCount;
+    return fx::makeFxFrameContext(animationFrame_, scene_.accumulatedSamples(), target.width, target.height,
+                                  model == nullptr ? 0U : model->id, modelIndex, animatedVertexCount_, totalMaterials,
+                                  sceneCloneCount, effectCloneCount, camera, lighting);
+}
+
+std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphics::CommandList& commands,
+                                                                          const graphics::RenderTargetDesc& target) {
+    if (device_ == nullptr || device_->activeRenderer() == graphics::RendererKind::preview)
+        return std::nullopt;
+    const auto& background = scene_.background();
+    if (background.image && background.imagePath &&
+        static_cast<std::uint64_t>(background.image->height) * 2U == background.image->width) {
+        static_cast<void>(nativeRenderer_.updateEnvironment(
+            {.source = background.imagePath->string(), .exposure = 1.0F, .version = 1}));
+    }
+    std::vector<core::MaterialParameterBlock> materials;
+    for (const auto& instance : scene_.models()) {
+        if (!instance.visible || instance.model == nullptr)
+            continue;
+        for (std::size_t index = 0; index < instance.model->materials.size(); ++index) {
+            if (index < instance.materialSettings.size())
+                materials.push_back(instance.materialSettings[index].parameters);
+            else
+                materials.emplace_back();
+        }
+    }
+    const auto nativeDirty = scene_.dirtyFlags();
+    if (nativeLightSampling_.lightCount() == 0 || scene_.dirty(core::DirtyFlag::lighting)) {
+        float power = 1.0F;
+        const auto* lightingMotion = scene_.cameraMotion();
+        if (lightingMotion != nullptr && !lightingMotion->lights.empty()) {
+            const auto light = core::evaluateLight(*lightingMotion, animationFrame_);
+            power = std::max(0.0F, 0.2126F * light.color[0] + 0.7152F * light.color[1] + 0.0722F * light.color[2]);
+        }
+        if (!std::isfinite(power) || power <= 0.0F)
+            power = 1.0F;
+        nativeLightPowers_ = {power};
+        nativeLightSampling_.update(nativeLightPowers_, true);
+        scene_.clearDirty(core::DirtyFlag::lighting);
+    }
+    const auto lightSampling = nativeLightSampling_.table();
+    try {
+        std::string modelError;
+        if (!nativeSceneModelData_.empty() &&
+            !nativeSceneModelRuntime_.updateFrame(*device_, commands, nativeSceneModelData_, &modelError))
+            throw std::runtime_error(modelError.empty() ? "native scene model synchronization failed" : modelError);
+        std::string sceneError;
+        if (!ensureNativeSceneRuntime(true, &sceneError))
+            throw std::runtime_error(sceneError.empty() ? "native scene runtime synchronization failed" : sceneError);
+        std::vector<graphics::NativeGeometryMeshUpload> geometryUploads;
+        std::vector<graphics::WorldInstance> worldInstances;
+        graphics::handles::AccelerationStructureHandle tlas;
+        geometryUploads.reserve(nativeGeometry_.size());
+        for (const auto& mesh : nativeGeometry_) {
+            geometryUploads.push_back({
+                .meshId = mesh.meshId,
+                .deform = {.baseVertices = mesh.baseVertices,
+                           .bones = mesh.bones,
+                           .morphDeltas = mesh.morphDeltas,
+                           .morphWeights = mesh.morphWeights,
+                           .indices = mesh.indices,
+                           .deformedVertices = mesh.deformedVertices},
+                .deformPipeline = device_->nativeDeformPipeline(),
+                .deformDescriptorLayout = device_->nativeDeformDescriptorLayout(),
+                .topologyGeneration = scene_.topologyGeneration(),
+                .deformVersion = nativeDeformVersion_,
+            });
+            const auto cloneCenter = (static_cast<float>(mesh.cloneCount) - 1.0F) * 0.5F;
+            for (std::uint32_t clone = 0; clone < mesh.cloneCount; ++clone) {
+                graphics::Matrix3x4 transform;
+                transform.values[3] = (static_cast<float>(clone) - cloneCenter) * 2.2F;
+                worldInstances.push_back({.meshId = mesh.meshId, .transform = transform});
+            }
+        }
+        const auto synchronizeGeometry = [&](auto* runtime) {
+            std::string geometryError;
+            if (!runtime->syncGeometry(geometryUploads, &geometryError))
+                throw std::runtime_error(geometryError.empty() ? "native geometry synchronization failed"
+                                                               : geometryError);
+            if (geometryUploads.empty())
+                return;
+            if (!runtime->synchronizeAcceleration(&geometryError))
+                throw std::runtime_error(geometryError.empty() ? "native acceleration synchronization failed"
+                                                               : geometryError);
+            static_cast<void>(runtime->synchronizeWorld(nativeDeformVersion_, worldInstances));
+            tlas = runtime->geometry().tlas();
+            runtime->recordGeometry(commands);
+            runtime->recordAcceleration(commands);
+        };
+        if (auto* runtime = nativeRenderer_.subayai())
+            synchronizeGeometry(runtime);
+        else if (auto* bdptRuntime = nativeRenderer_.bdpt())
+            synchronizeGeometry(bdptRuntime);
+        if (!tlas.valid())
+            throw std::runtime_error("native scene runtime requires a synchronized TLAS");
+        const auto frameContext = makeNativeFrameContext(target);
+        auto sceneResources = nativeSceneResources_.bindings();
+        const auto modelResources = nativeSceneModelRuntime_.bindings();
+        sceneResources.tlas = tlas;
+        sceneResources.vertexBuffers = modelResources.vertexBuffers;
+        sceneResources.indexBuffers = modelResources.indexBuffers;
+        sceneResources.materials = modelResources.materials;
+        sceneResources.faces = modelResources.faces;
+        sceneResources.materialFaces = modelResources.materialFaces;
+        sceneResources.faceWalkers = modelResources.faceWalkers;
+        sceneResources.previousVertices = modelResources.previousVertices;
+        sceneResources.rawVertices = modelResources.rawVertices;
+        if (!nativeSceneResources_.compose(sceneResources, &sceneError))
+            throw std::runtime_error(sceneError.empty() ? "native scene resource composition failed" : sceneError);
+        if (!nativeSceneFrame_.sync(frameContext, nativeSceneResources_.bindings(), {}, &sceneError))
+            throw std::runtime_error(sceneError.empty() ? "native scene frame synchronization failed" : sceneError);
+        return nativeRenderer_.recordFrame(commands, frameContext, nativeDirty, materials, lightSampling, {});
+    } catch (const std::exception& exception) {
+        // Keep the command buffer usable for the Preview fallback. Native
+        // resources remain owned until the next renderer request, so a
+        // failure cannot destroy objects referenced by commands already
+        // recorded in this frame.
+        log::warn("Native renderer frame failed; using Preview: ", exception.what());
+        device_->setNativeRendererAvailability(false, false);
+        device_->selectRenderer(graphics::RendererKind::preview);
+        return std::nullopt;
+    }
+}
+
 std::string Application::workspaceWindowName(const char* title, const char* id) const {
 #if DAYO_HAS_IMGUI
     return std::string(title) + "##" + id + "." + workspaceSuffix(uiState_.workspace);
@@ -148,8 +411,13 @@ void Application::resetProjectRuntimeState() {
     activeVideoExport_.reset();
     videoRangeInitialized_ = false;
     scene_.clearProjectState();
-    if (device_ != nullptr)
+    nativeRenderer_.reset();
+    nativeSceneFrame_.reset();
+    nativeSceneResources_.reset();
+    if (device_ != nullptr) {
+        device_->setNativeRendererAvailability(false, false);
         device_->clearPreviewResources();
+    }
     effectReloader_.reset();
     audioPlayer_.stop();
     audioSource_.clear();
@@ -163,6 +431,12 @@ void Application::resetProjectRuntimeState() {
     animatedVertexCount_ = 0;
     animatedMaterialTemplates_.clear();
     animatedTopologyGeneration_ = 0;
+    nativeGeometry_.clear();
+    nativeSceneModelRuntime_.reset();
+    nativeSceneModelData_.clear();
+    nativeLightSampling_.clear();
+    nativeLightPowers_.clear();
+    nativeDeformVersion_ = 0;
     mediaSeconds_ = 0.0;
     uploadedVideoFrame_ = -1;
     videoMode_ = false;
@@ -189,7 +463,30 @@ int Application::run() {
     auto window = platform::createWindow(windowOptions);
     auto device = graphics::createVulkanDevice(*window, options_.validation);
     device_ = device.get();
-    device->selectRenderer(options_.renderer);
+    std::unique_ptr<graphics::NativeEnvironmentBackend> environmentBackend;
+    const graphics::EnvironmentPassBindings environmentBindings{
+        .equirectToCubePipeline = device_->nativeEnvironmentEquirectPipeline(),
+        .equirectToCubeLayout = device_->nativeEnvironmentEquirectLayout(),
+        .prefilterPipeline = device_->nativeEnvironmentPrefilterPipeline(),
+        .prefilterLayout = device_->nativeEnvironmentPrefilterLayout(),
+    };
+    if (environmentBindings.valid()) {
+        environmentBackend = std::make_unique<graphics::NativeEnvironmentBackend>(*device_, environmentBindings);
+        nativeRenderer_.setEnvironmentBackend(environmentBackend.get());
+    }
+    device_->setNativeFrameRecorder([this](graphics::CommandList& commands, const graphics::RenderTargetDesc& target) {
+        return recordNativeFrame(commands, target);
+    });
+    const auto cleanupGraphicsRuntime = [this](void*) noexcept {
+        nativeRenderer_.reset();
+        nativeSceneFrame_.reset();
+        nativeSceneResources_.reset();
+        nativeSceneModelRuntime_.reset();
+        nativeRenderer_.setEnvironmentBackend(nullptr);
+        device_ = nullptr;
+    };
+    std::unique_ptr<void, decltype(cleanupGraphicsRuntime)> runtimeCleanup(this, cleanupGraphicsRuntime);
+    requestRenderer(options_.renderer);
     log::info("Graphics convention: depth [0,1], Vulkan framebuffer Y handled in backend");
     const auto denoiser = core::selectDenoiser();
     log::info("Denoiser: ", denoiser.detail);
@@ -331,6 +628,7 @@ int Application::run() {
             std::string reloadError;
             if (effectReloader_->poll(&reloadError) && effectReloader_->current() != nullptr) {
                 scene_.setEffect(*effectReloader_->current());
+                requestRenderer(requestedRenderer_);
                 log::info("Hot reloaded effect graph");
             } else if (!reloadError.empty()) {
                 log::warn("FX hot reload deferred: ", reloadError);
@@ -385,7 +683,7 @@ int Application::run() {
 
 core::DayoProject Application::currentProject() const {
     core::DayoProject project;
-    project.renderer = device_ == nullptr ? "preview" : std::string(graphics::toString(device_->activeRenderer()));
+    project.renderer = std::string(graphics::toString(requestedRenderer_));
     project.frame = animationFrame_;
     project.playing = playing_;
     project.assets = projectAssets_;
@@ -560,11 +858,11 @@ void Application::handleAsset(const std::filesystem::path& path) {
 #endif
             resetProjectRuntimeState();
             if (project.renderer == "subayai")
-                device_->selectRenderer(graphics::RendererKind::subayai);
+                requestRenderer(graphics::RendererKind::subayai);
             else if (project.renderer == "bdpt")
-                device_->selectRenderer(graphics::RendererKind::bdpt);
+                requestRenderer(graphics::RendererKind::bdpt);
             else
-                device_->selectRenderer(graphics::RendererKind::preview);
+                requestRenderer(graphics::RendererKind::preview);
             for (const auto& asset : project.assets)
                 handleAsset(asset.path);
             if (project.embeddedMotions.size() > 1U) {
@@ -802,10 +1100,11 @@ void Application::handleAsset(const std::filesystem::path& path) {
             std::ranges::transform(filename, filename.begin(),
                                    [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
             if (device_ != nullptr && filename.find("subayai") != std::string::npos) {
-                device_->selectRenderer(graphics::RendererKind::subayai);
+                requestedRenderer_ = graphics::RendererKind::subayai;
             } else if (device_ != nullptr && filename.find("bdpt") != std::string::npos) {
-                device_->selectRenderer(graphics::RendererKind::bdpt);
+                requestedRenderer_ = graphics::RendererKind::bdpt;
             }
+            requestRenderer(requestedRenderer_);
             lastAsset_ = "Effect " + path.filename().string() + " — " + std::to_string(scene_.effect()->passes.size()) +
                          " passes, " + std::to_string(scene_.effect()->textures.size()) + " textures";
             log::info("Loaded effect graph: ", lastAsset_);
@@ -902,6 +1201,10 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     std::size_t materialCursor = 0;
     std::uint32_t indexCursor = 0;
     std::pmr::vector<graphics::PreviewBoneTransform> bones(scratch);
+    std::vector<NativeModelGeometry> nativeGeometry;
+    nativeGeometry.reserve(evaluated.size());
+    std::vector<graphics::NativeSceneModelData> nativeSceneModels;
+    nativeSceneModels.reserve(evaluated.size());
     for (const auto& evaluatedModel : evaluated) {
         const auto& instance = *evaluatedModel.instance;
         const auto& frame = evaluatedModel.frame;
@@ -982,6 +1285,69 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         const auto cloneCount = std::max(instance.cloneCount, 1U);
         const auto baseVertex = static_cast<std::uint32_t>(vertices.size());
         const auto firstModelIndex = indexCursor;
+        NativeModelGeometry native;
+        native.meshId = static_cast<std::uint32_t>(nativeGeometry.size() + 1U);
+        native.cloneCount = cloneCount;
+        native.indices.assign(instance.model->indices.begin(), instance.model->indices.end());
+        native.morphWeights.resize(instance.model->morphs.size(), 0.0F);
+        for (std::size_t morphIndex = 0; morphIndex < native.morphWeights.size(); ++morphIndex) {
+            if (morphIndex < frame.morphWeights.size())
+                native.morphWeights[morphIndex] = frame.morphWeights[morphIndex];
+        }
+        std::vector<std::array<std::uint32_t, 2>> nativeMorphRanges(instance.model->vertices.size());
+        std::vector<std::uint32_t> nativeMorphCounts(instance.model->vertices.size(), 0U);
+        for (const auto& morph : instance.model->morphs) {
+            if (morph.type != 1)
+                continue;
+            for (const auto& offset : morph.offsets) {
+                if (offset.index < 0 || static_cast<std::size_t>(offset.index) >= nativeMorphCounts.size())
+                    continue;
+                ++nativeMorphCounts[static_cast<std::size_t>(offset.index)];
+            }
+        }
+        std::size_t nativeMorphOffset = 0;
+        for (std::size_t vertexIndex = 0; vertexIndex < nativeMorphRanges.size(); ++vertexIndex) {
+            if (nativeMorphOffset > std::numeric_limits<std::uint32_t>::max())
+                throw std::overflow_error("native morph delta count exceeds the native deform ABI");
+            nativeMorphRanges[vertexIndex] = {static_cast<std::uint32_t>(nativeMorphOffset),
+                                              nativeMorphCounts[vertexIndex]};
+            nativeMorphOffset += nativeMorphCounts[vertexIndex];
+        }
+        native.morphDeltas.resize(nativeMorphOffset);
+        std::vector<std::uint32_t> nativeMorphCursors;
+        nativeMorphCursors.reserve(nativeMorphRanges.size());
+        for (const auto range : nativeMorphRanges)
+            nativeMorphCursors.push_back(range[0]);
+        for (std::size_t morphIndex = 0; morphIndex < instance.model->morphs.size(); ++morphIndex) {
+            const auto& morph = instance.model->morphs[morphIndex];
+            if (morph.type != 1)
+                continue;
+            for (const auto& offset : morph.offsets) {
+                if (offset.index < 0 || static_cast<std::size_t>(offset.index) >= nativeMorphCursors.size())
+                    continue;
+                graphics::PreviewMorphDelta delta;
+                for (std::size_t axis = 0; axis < 3; ++axis)
+                    delta.delta[axis] = offset.vector3[axis] * instance.normalization.scale;
+                delta.morphIndex = static_cast<std::uint32_t>(morphIndex);
+                native.morphDeltas[nativeMorphCursors[static_cast<std::size_t>(offset.index)]++] = delta;
+            }
+        }
+        if (gpuSkinning) {
+            native.bones.reserve(frame.bones.size());
+            for (const auto& source : frame.bones) {
+                graphics::PreviewBoneTransform bone;
+                std::copy(source.rotation.begin(), source.rotation.end(), bone.rotation);
+                const auto rotatedCenter = rotateQuaternion(source.rotation, instance.normalization.center);
+                for (std::size_t axis = 0; axis < 3; ++axis) {
+                    bone.translation[axis] =
+                        (rotatedCenter[axis] + source.translation[axis] - instance.normalization.center[axis]) *
+                        instance.normalization.scale;
+                }
+                native.bones.push_back(bone);
+            }
+        }
+        native.baseVertices.reserve(frame.vertices.size());
+        native.deformedVertices.reserve(frame.vertices.size());
         if (rebuildVertices) {
             auto conversion = frameProfiler_.measure(core::ProfileSection::vertexConvert);
             for (std::size_t sourceIndex = 0; sourceIndex < frame.vertices.size(); ++sourceIndex) {
@@ -1019,6 +1385,49 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                     animatedMorphRanges_.push_back(morphRange);
             }
             conversion.finish();
+        }
+        for (std::size_t sourceIndex = 0; sourceIndex < frame.vertices.size(); ++sourceIndex) {
+            const auto& source = frame.vertices[sourceIndex];
+            graphics::PreviewVertex vertex;
+            std::memcpy(vertex.position, source.position.data(), sizeof(vertex.position));
+            std::memcpy(vertex.normal, source.normal.data(), sizeof(vertex.normal));
+            std::memcpy(vertex.uv, source.uv.data(), sizeof(vertex.uv));
+            if (gpuSkinning) {
+                for (std::size_t influence = 0; influence < 4; ++influence) {
+                    vertex.bones[influence] =
+                        source.bones[influence] < 0 ||
+                                static_cast<std::size_t>(source.bones[influence]) >= frame.bones.size()
+                            ? -1
+                            : source.bones[influence];
+                    vertex.weights[influence] = source.weights[influence];
+                }
+                const auto normalizedC = normalizePreviewPoint(source.sdefC, instance.normalization);
+                const auto normalizedR0 = normalizePreviewPoint(source.sdefR0, instance.normalization);
+                const auto normalizedR1 = normalizePreviewPoint(source.sdefR1, instance.normalization);
+                std::copy(normalizedC.begin(), normalizedC.end(), vertex.sdefC);
+                for (std::size_t axis = 0; axis < 3; ++axis)
+                    vertex.sdefHalfDelta[axis] = (normalizedR0[axis] - normalizedR1[axis]) * 0.5F;
+                vertex.skinningType = static_cast<std::uint32_t>(source.weightType);
+                vertex.gpuSkinning = 1;
+            }
+            vertex.edgeScale = source.edgeScale;
+            const auto morphRange = nativeMorphRanges[sourceIndex];
+            vertex.morphStart = morphRange[0];
+            vertex.morphCount = gpuSkinning ? morphRange[1] : 0U;
+            native.baseVertices.push_back(vertex);
+
+            graphics::NativeDeformedVertex seed;
+            std::copy(std::begin(vertex.position), std::end(vertex.position), seed.position);
+            seed.position[3] = 1.0F;
+            std::copy(std::begin(vertex.normal), std::end(vertex.normal), seed.normal);
+            seed.normal[3] = 0.0F;
+            std::copy(std::begin(vertex.uv), std::end(vertex.uv), seed.uv);
+            native.deformedVertices.push_back(seed);
+        }
+        if (!native.baseVertices.empty() && !native.indices.empty()) {
+            nativeSceneModels.push_back(
+                graphics::makeNativeSceneModelData(*instance.model, native.baseVertices, frame.materials));
+            nativeGeometry.push_back(std::move(native));
         }
         if (rebuildTopology) {
             for (const auto index : instance.model->indices)
@@ -1073,6 +1482,10 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             firstIndex += instance.model->materials[materialIndex].indexCount;
         }
     }
+    nativeGeometry_ = std::move(nativeGeometry);
+    nativeSceneModelData_ = std::move(nativeSceneModels);
+    nativeDeformVersion_ =
+        nativeDeformVersion_ == std::numeric_limits<std::uint64_t>::max() ? 1U : nativeDeformVersion_ + 1U;
     if ((rebuildVertices && vertices.empty()) || animatedIndices_.empty())
         return;
     if (rebuildTopology) {
@@ -2181,10 +2594,19 @@ void Application::buildImageSequenceExportUi() {
         }
         ImGui::Checkbox("Motion blur", &sequenceOutput_.motionBlur);
         ImGui::Checkbox("Overwrite existing frames", &sequenceOutput_.overwrite);
-        if (sequenceOutput_.format == core::OutputFormat::exr)
-            sequenceOutput_.format = core::OutputFormat::ppm;
-        int format = std::clamp(static_cast<int>(sequenceOutput_.format), 0, 1);
-        if (ImGui::Combo("Format", &format, "PPM\0PNG\0"))
+        int format = sequenceOutput_.format == core::OutputFormat::png   ? 1
+                     : sequenceOutput_.format == core::OutputFormat::exr ? 2
+                                                                         : 0;
+#if DAYO_HAS_OPENEXR
+        constexpr int formatCount = 3;
+        constexpr const char* formatNames = "PPM\0PNG\0OpenEXR\0";
+#else
+        constexpr int formatCount = 2;
+        constexpr const char* formatNames = "PPM\0PNG\0";
+        format = std::min(format, formatCount - 1);
+#endif
+        format = std::clamp(format, 0, formatCount - 1);
+        if (ImGui::Combo("Format", &format, formatNames))
             sequenceOutput_.format = static_cast<core::OutputFormat>(format);
         if (ImGui::Button("Render sequence"))
             startImageSequenceExport();

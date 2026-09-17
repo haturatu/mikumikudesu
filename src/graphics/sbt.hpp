@@ -29,12 +29,15 @@ class ShaderBindingTableBuilder {
         std::uint32_t raygenStride{0};
         std::uint32_t missStride{0};
         std::uint32_t hitStride{0};
+        std::uint64_t callableAddress{0};
+        std::uint32_t callableStride{0};
         std::uint64_t totalSize{0};
     };
 
     void setRaygen(std::string name);
     void addMiss(std::string name);
     void addHitGroup(std::string name);
+    void addCallable(std::string name);
     void clear() noexcept;
 
     [[nodiscard]] std::size_t raygenCount() const noexcept {
@@ -47,7 +50,7 @@ class ShaderBindingTableBuilder {
         return hitGroups_.size();
     }
     [[nodiscard]] std::size_t totalGroups() const noexcept {
-        return raygen_.size() + miss_.size() + hitGroups_.size();
+        return raygen_.size() + miss_.size() + hitGroups_.size() + callable_.size();
     }
 
     [[nodiscard]] const std::vector<std::string>& raygen() const noexcept {
@@ -58,6 +61,9 @@ class ShaderBindingTableBuilder {
     }
     [[nodiscard]] const std::vector<std::string>& hitGroups() const noexcept {
         return hitGroups_;
+    }
+    [[nodiscard]] const std::vector<std::string>& callable() const noexcept {
+        return callable_;
     }
 
     // Properties correspond to VkPhysicalDeviceRayTracingPipelinePropertiesKHR.
@@ -76,6 +82,7 @@ class ShaderBindingTableBuilder {
     std::vector<std::string> raygen_;
     std::vector<std::string> miss_;
     std::vector<std::string> hitGroups_;
+    std::vector<std::string> callable_;
 };
 
 [[nodiscard]] std::uint32_t alignUp(std::uint32_t value, std::uint32_t alignment) noexcept;

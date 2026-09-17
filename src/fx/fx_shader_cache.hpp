@@ -1,5 +1,7 @@
 #pragma once
 
+#include "fx/fx_shader_compiler.hpp"
+
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -19,9 +21,10 @@ struct FxShaderKey {
     std::string spirvTarget;
     std::string compatProfile;
     std::string macros;
+    std::string includeDirectories;
     [[nodiscard]] std::string combined() const {
         return sourceHash + "|" + hlslHash + "|" + entryPoint + "|" + stage + "|" + dxcVersion + "|" + spirvTarget +
-               "|" + compatProfile + "|" + macros;
+               "|" + compatProfile + "|" + macros + "|" + includeDirectories;
     }
 };
 
@@ -46,14 +49,18 @@ class FxShaderCache {
   public:
     using Handle = std::uint64_t;
     Handle getOrCompile(const FxShaderKey& key, const std::string& source);
+    [[nodiscard]] FxShaderArtifact compileOrGet(const FxShaderKey& key, const FxShaderCompileRequest& request,
+                                                const FxShaderCompiler& compiler);
     [[nodiscard]] std::optional<Handle> find(const FxShaderKey& key) const;
     [[nodiscard]] std::optional<Handle> findExact(const FxShaderKey& key, const std::string& source) const;
+    [[nodiscard]] std::optional<std::vector<std::uint32_t>> binary(Handle handle) const;
     void clear() noexcept;
     [[nodiscard]] std::size_t size() const noexcept;
 
   private:
     mutable std::mutex mutex_;
     std::unordered_map<std::string, Handle> entries_;
+    std::unordered_map<Handle, FxShaderArtifact> artifacts_;
     Handle next_{1};
 };
 

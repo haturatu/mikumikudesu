@@ -26,16 +26,23 @@ bool AccelerationStructureService::canBuildNative(const DeviceCapabilities& capa
     return false;
 }
 
-BlasAction AccelerationStructureService::notifyMesh(std::uint32_t meshId, BufferHandle vertexBuffer,
+handles::AccelerationStructureHandle AccelerationStructureService::blas(std::uint32_t meshId) const noexcept {
+    const auto found = meshes_.find(meshId);
+    return found == meshes_.end() ? handles::AccelerationStructureHandle{} : found->second.blas;
+}
+
+BlasAction AccelerationStructureService::notifyMesh(std::uint32_t meshId, const BlasGeometryDesc& geometry,
                                                     std::uint64_t topologyGeneration, std::uint64_t deformVersion) {
+    if (geometry.triangles.empty())
+        throw std::invalid_argument("BLAS geometry must contain at least one triangle description");
     auto found = meshes_.find(meshId);
     if (found == meshes_.end()) {
         MeshState state;
         state.topologyGeneration = topologyGeneration;
         state.deformVersion = deformVersion;
-        state.vertexBuffer = vertexBuffer;
+        state.geometry = geometry;
         if (backend_ != nullptr) {
-            state.blas = backend_->createBlas(vertexBuffer);
+            state.blas = backend_->createBlas(geometry);
         }
         state.built = true;
         meshes_.emplace(meshId, state);
@@ -48,10 +55,10 @@ BlasAction AccelerationStructureService::notifyMesh(std::uint32_t meshId, Buffer
     if (state.topologyGeneration != topologyGeneration) {
         state.topologyGeneration = topologyGeneration;
         state.deformVersion = deformVersion;
-        state.vertexBuffer = vertexBuffer;
+        state.geometry = geometry;
         if (backend_ != nullptr) {
             const auto previousBlas = state.blas;
-            const auto replacement = backend_->rebuildBlas(state.blas, vertexBuffer);
+            const auto replacement = backend_->rebuildBlas(state.blas, geometry);
             if (replacement != previousBlas) {
                 if (previousBlas.valid())
                     backend_->destroyBlas(previousBlas);
@@ -65,9 +72,9 @@ BlasAction AccelerationStructureService::notifyMesh(std::uint32_t meshId, Buffer
     }
     if (state.deformVersion != deformVersion) {
         state.deformVersion = deformVersion;
-        state.vertexBuffer = vertexBuffer;
+        state.geometry = geometry;
         if (backend_ != nullptr) {
-            backend_->refitBlas(state.blas, vertexBuffer);
+            backend_->refitBlas(state.blas, geometry);
         }
         ++blasRefits_;
         log::debug("BLAS refit: mesh ", meshId, " deform ", deformVersion);
@@ -150,7 +157,14 @@ TlasAction AccelerationStructureService::notifyWorld(std::uint64_t worldGenerati
     if (countChanged || blasChanged) {
         rebuildInstances();
         if (backend_ != nullptr) {
-            backend_->rebuildTlas(tlas_, std::span<const TlasInstanceDesc>(tlasScratch_.data(), tlasScratch_.size()));
+            const auto previousTlas = tlas_;
+            const auto replacement = backend_->rebuildTlas(
+                tlas_, std::span<const TlasInstanceDesc>(tlasScratch_.data(), tlasScratch_.size()));
+            if (replacement != previousTlas) {
+                if (previousTlas.valid())
+                    backend_->destroyTlas(previousTlas);
+                tlas_ = replacement;
+            }
         }
         tlasInstanceCount_ = instanceCount;
         cachedWorldGeneration_ = worldGeneration;
@@ -172,6 +186,24 @@ TlasAction AccelerationStructureService::notifyWorld(std::uint64_t worldGenerati
     }
     log::debug("TLAS unchanged: instances ", instanceCount);
     return TlasAction::none;
+}
+
+void AccelerationStructureService::recordBlasUpdates(CommandList& commands) const {
+    if (backend_ == nullptr)
+        throw std::logic_error("recorded BLAS updates require an acceleration backend");
+    for (const auto& [meshId, state] : meshes_) {
+        static_cast<void>(meshId);
+        if (state.built && state.blas.valid())
+            backend_->recordBlasUpdate(commands, state.blas, state.geometry);
+    }
+}
+
+void AccelerationStructureService::recordTlasUpdate(CommandList& commands) const {
+    if (backend_ == nullptr)
+        throw std::logic_error("recorded TLAS updates require an acceleration backend");
+    if (!tlasBuilt_ || !tlas_.valid())
+        throw std::logic_error("recorded TLAS update requires a built TLAS");
+    backend_->recordTlasUpdate(commands, tlas_, tlasScratch_);
 }
 
 bool AccelerationStructureService::removeMesh(std::uint32_t meshId) {
@@ -225,6 +257,13 @@ void AccelerationStructureService::reset() noexcept {
     hasCachedWorld_ = false;
     tlasInstanceCount_ = 0;
     tlasScratch_.clear();
+}
+
+void AccelerationStructureService::setBackend(IAccelerationBackend* backend) noexcept {
+    if (backend_ == backend)
+        return;
+    reset();
+    backend_ = backend;
 }
 
 const char* toString(BlasAction action) noexcept {

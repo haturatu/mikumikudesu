@@ -11,7 +11,13 @@
 #include "core/scene.hpp"
 #include "core/task_scheduler.hpp"
 #include "core/video_export.hpp"
+#include "fx/fx_frame.hpp"
 #include "graphics/device.hpp"
+#include "graphics/native_renderer.hpp"
+#include "graphics/native_scene_frame_runtime.hpp"
+#include "graphics/native_scene_model_runtime.hpp"
+#include "graphics/native_scene_resource_store.hpp"
+#include "graphics/subayai_light_sampling.hpp"
 #include "ui/ui_state.hpp"
 
 #include <array>
@@ -58,6 +64,11 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void finishImageSequenceExport(std::string status);
     void restoreImageSequenceState();
     void setWorkspace(ui::Workspace workspace);
+    void requestRenderer(graphics::RendererKind renderer);
+    [[nodiscard]] bool ensureNativeSceneRuntime(bool restartRenderer, std::string* error = nullptr);
+    [[nodiscard]] fx::FxFrameContext makeNativeFrameContext(const graphics::RenderTargetDesc& target) const;
+    [[nodiscard]] std::optional<graphics::NativeFrameOutput>
+    recordNativeFrame(graphics::CommandList& commands, const graphics::RenderTargetDesc& target);
     void setAudioExportDestinationForSource(const std::filesystem::path& source);
     void buildAudioExportUi();
     void buildVideoExportUi();
@@ -75,6 +86,10 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
 
     Options options_;
     graphics::Device* device_{};
+    graphics::RendererKind requestedRenderer_{graphics::RendererKind::preview};
+    graphics::NativeRendererCoordinator nativeRenderer_;
+    graphics::NativeSceneFrameRuntime nativeSceneFrame_;
+    graphics::NativeSceneResourceStore nativeSceneResources_;
     core::Scene scene_;
     core::TaskScheduler taskScheduler_;
     core::FrameScratch frameScratch_;
@@ -90,6 +105,22 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::uint64_t animatedVertexCount_{};
     std::vector<graphics::PreviewMaterial> animatedMaterialTemplates_;
     std::vector<graphics::PreviewDraw> animatedDraws_;
+    struct NativeModelGeometry {
+        std::uint32_t meshId{};
+        std::uint32_t cloneCount{1};
+        std::vector<graphics::PreviewVertex> baseVertices;
+        std::vector<graphics::PreviewBoneTransform> bones;
+        std::vector<graphics::PreviewMorphDelta> morphDeltas;
+        std::vector<float> morphWeights;
+        std::vector<std::uint32_t> indices;
+        std::vector<graphics::NativeDeformedVertex> deformedVertices;
+    };
+    std::vector<NativeModelGeometry> nativeGeometry_;
+    graphics::NativeSceneModelRuntime nativeSceneModelRuntime_;
+    std::vector<graphics::NativeSceneModelData> nativeSceneModelData_;
+    graphics::LightSamplingService nativeLightSampling_;
+    std::vector<float> nativeLightPowers_;
+    std::uint64_t nativeDeformVersion_{};
     std::uint64_t animatedTopologyGeneration_{};
     float animationFrame_{};
     int uploadedAnimationFrame_{-1};

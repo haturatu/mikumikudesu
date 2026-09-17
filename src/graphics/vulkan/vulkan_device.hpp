@@ -3,6 +3,7 @@
 #include "graphics/device.hpp"
 #include "graphics/preview_gpu_scene.hpp"
 #include "graphics/preview_render_plan.hpp"
+#include "graphics/vulkan/vulkan_acceleration_structure.hpp"
 
 #include <vulkan/vulkan.h>
 
@@ -13,12 +14,15 @@ VK_DEFINE_HANDLE(VmaAllocator)
 #include "graphics/vulkan/vulkan_resources.hpp"
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 namespace dayo::graphics {
 
 class VulkanUploadContext;
+class VulkanCommandList;
 
 class VulkanDevice final : public Device {
   public:
@@ -34,10 +38,36 @@ class VulkanDevice final : public Device {
     [[nodiscard]] RendererKind activeRenderer() const noexcept override {
         return activeRenderer_;
     }
+    [[nodiscard]] handles::PipelineHandle nativeDeformPipeline() const noexcept override {
+        return nativeDeformPipeline_;
+    }
+    [[nodiscard]] handles::DescriptorSetLayoutHandle nativeDeformDescriptorLayout() const noexcept override {
+        return nativeDeformDescriptorLayout_;
+    }
+    [[nodiscard]] handles::ShaderHandle nativeFullscreenVertexShader() const noexcept override {
+        return nativeFullscreenVertexShader_;
+    }
+    [[nodiscard]] handles::PipelineHandle nativeEnvironmentEquirectPipeline() const noexcept override {
+        return nativeEnvironmentEquirectPipeline_;
+    }
+    [[nodiscard]] handles::DescriptorSetLayoutHandle nativeEnvironmentEquirectLayout() const noexcept override {
+        return nativeEnvironmentEquirectLayout_;
+    }
+    [[nodiscard]] handles::PipelineHandle nativeEnvironmentPrefilterPipeline() const noexcept override {
+        return nativeEnvironmentPrefilterPipeline_;
+    }
+    [[nodiscard]] handles::DescriptorSetLayoutHandle nativeEnvironmentPrefilterLayout() const noexcept override {
+        return nativeEnvironmentPrefilterLayout_;
+    }
+    [[nodiscard]] IAccelerationBackend* nativeAccelerationBackend() noexcept override {
+        return &accelerationBackend_;
+    }
     void selectRenderer(RendererKind requested) override;
     void resize() override;
     void beginUiFrame() override;
     void renderFrame() override;
+    void setNativeFrameRecorder(NativeFrameRecorder recorder) override;
+    void setNativeRendererAvailability(bool subayai, bool bdpt) override;
     void setPreviewViewportExtent(const RenderTargetDesc& target) override;
     [[nodiscard]] PreviewViewport previewViewport() const noexcept override;
     [[nodiscard]] std::uint64_t previewGpuNanoseconds() const noexcept override {
@@ -60,8 +90,67 @@ class VulkanDevice final : public Device {
     }
     [[nodiscard]] BufferHandle createBuffer(const BufferDesc& desc) override;
     [[nodiscard]] TextureHandle createTexture(const TextureDesc& desc) override;
+    [[nodiscard]] handles::TextureHandle createTextureEx(const TextureResourceDesc& desc) override;
+    [[nodiscard]] handles::BufferHandle createBufferEx(const BufferResourceDesc& desc) override;
+    void destroyTextureEx(handles::TextureHandle handle) override;
+    void destroyBufferEx(handles::BufferHandle handle) override;
+    void destroySamplerEx(handles::SamplerHandle handle) override;
+    void retireTextureEx(handles::TextureHandle handle, std::uint64_t frameIndex) override;
+    void retireBufferEx(handles::BufferHandle handle, std::uint64_t frameIndex) override;
+    [[nodiscard]] handles::SamplerHandle createSamplerEx() override;
+    [[nodiscard]] handles::SamplerHandle createSamplerEx(const SamplerResourceDesc& desc) override;
+    [[nodiscard]] handles::ShaderHandle createShaderEx(const ShaderDesc& desc) override;
+    void destroyShaderEx(handles::ShaderHandle handle) override;
+    [[nodiscard]] handles::PipelineLayoutHandle createPipelineLayoutEx(const PipelineLayoutDesc& desc) override;
+    void destroyPipelineLayoutEx(handles::PipelineLayoutHandle handle) override;
+    [[nodiscard]] handles::PipelineHandle createGraphicsPipelineEx(const GraphicsPipelineDescEx& desc) override;
+    [[nodiscard]] handles::PipelineHandle createComputePipelineEx(const ComputePipelineDescEx& desc) override;
+    [[nodiscard]] handles::PipelineHandle createRayTracingPipelineEx(const RayTracingPipelineDescEx& desc) override;
+    void destroyPipelineEx(handles::PipelineHandle handle) override;
+    [[nodiscard]] handles::AccelerationStructureHandle createBlasEx(const BlasGeometryDesc& desc) override;
+    [[nodiscard]] handles::AccelerationStructureHandle rebuildBlasEx(handles::AccelerationStructureHandle blas,
+                                                                     const BlasGeometryDesc& desc) override;
+    void refitBlasEx(handles::AccelerationStructureHandle blas, const BlasGeometryDesc& desc) override;
+    [[nodiscard]] handles::AccelerationStructureHandle
+    createTlasEx(std::span<const AccelerationInstanceDesc> instances) override;
+    [[nodiscard]] handles::AccelerationStructureHandle
+    rebuildTlasEx(handles::AccelerationStructureHandle tlas,
+                  std::span<const AccelerationInstanceDesc> instances) override;
+    void updateTlasEx(handles::AccelerationStructureHandle tlas,
+                      std::span<const AccelerationInstanceDesc> instances) override;
+    void destroyAccelerationStructureEx(handles::AccelerationStructureHandle handle) override;
+    [[nodiscard]] handles::ShaderBindingTableHandle
+    createShaderBindingTable(const ShaderBindingTableDesc& desc) override;
+    void destroyShaderBindingTable(handles::ShaderBindingTableHandle handle) override;
+    void copyBufferEx(handles::BufferHandle source, handles::BufferHandle destination) override;
+    void copyBufferToTextureEx(handles::BufferHandle source, handles::TextureHandle destination) override;
+    void copyTextureToBufferEx(handles::TextureHandle source, handles::BufferHandle destination) override;
+    void copyTextureEx(handles::TextureHandle source, handles::TextureHandle destination) override;
+    void clearTextureEx(handles::TextureHandle texture, const std::array<float, 4>& value) override;
+    void clearBufferEx(handles::BufferHandle buffer, std::uint32_t value) override;
+    void generateMipmapsEx(handles::TextureHandle texture) override;
+    void uploadTextureEx(handles::TextureHandle texture, std::span<const std::uint8_t> bytes, std::uint32_t mipLevel,
+                         std::uint32_t arrayLayer) override;
+    [[nodiscard]] std::vector<std::uint8_t> readbackTextureEx(handles::TextureHandle texture, std::uint32_t mipLevel,
+                                                              std::uint32_t arrayLayer) override;
+    [[nodiscard]] handles::DescriptorSetLayoutHandle
+    createDescriptorSetLayoutEx(const DescriptorSetLayoutDesc& desc) override;
+    void destroyDescriptorSetLayoutEx(handles::DescriptorSetLayoutHandle handle) override;
+    [[nodiscard]] handles::DescriptorSetHandle
+    allocateDescriptorSetEx(handles::DescriptorSetLayoutHandle layout,
+                            std::span<const DescriptorBindingEx> bindings) override;
+    void updateDescriptorSetEx(handles::DescriptorSetHandle set,
+                               std::span<const DescriptorBindingEx> bindings) override;
+    void destroyDescriptorSetEx(handles::DescriptorSetHandle set) override;
+    void uploadBufferEx(handles::BufferHandle handle, std::span<const std::byte> bytes,
+                        std::size_t offset = 0) override;
+    [[nodiscard]] std::vector<std::byte> readbackBufferEx(handles::BufferHandle handle, std::size_t offset,
+                                                          std::size_t size) override;
 
   private:
+    friend class VulkanCommandList;
+    friend class VulkanAccelerationBackend;
+
     struct Frame {
         VkCommandPool commandPool{};
         VkCommandBuffer commandBuffer{};
@@ -144,6 +233,7 @@ class VulkanDevice final : public Device {
     void createSurface();
     void selectPhysicalDevice();
     void createLogicalDevice();
+    void createTypedDescriptorPool();
     void queryCapabilities();
     void createSwapchain();
     void destroySwapchain();
@@ -152,6 +242,12 @@ class VulkanDevice final : public Device {
     void destroyPipelineCache();
     void createPipeline();
     void destroyPipeline();
+    void createNativeOutputPipeline();
+    void destroyNativeOutputPipeline() noexcept;
+    void createNativeDeformPipeline();
+    void destroyNativeDeformPipeline() noexcept;
+    void createNativeEnvironmentPipelines();
+    void destroyNativeEnvironmentPipelines() noexcept;
     void createPreviewDescriptors();
     void destroyPreviewDescriptors();
     void destroyPreviewTextures();
@@ -177,6 +273,8 @@ class VulkanDevice final : public Device {
     void destroyUi();
     void recreateSwapchain();
     void destroyPreviewMesh();
+    void destroyTypedResources() noexcept;
+    struct TypedTexture;
     void synchronizePreviewVertices(Frame& frame);
     void destroyPreviewBones();
     void synchronizePreviewBones(Frame& frame);
@@ -201,6 +299,79 @@ class VulkanDevice final : public Device {
     void uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer,
                              VkDeviceMemory& memory, VkDeviceSize allocationSize = 0);
     [[nodiscard]] std::uint32_t findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags flags) const;
+    [[nodiscard]] VkDeviceAddress bufferDeviceAddress(VkBuffer buffer) const;
+    void recordTraceRays(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
+                         handles::ShaderBindingTableHandle sbt, std::uint32_t width, std::uint32_t height,
+                         std::uint32_t depth);
+    void recordNativeOutputToImage(VkCommandBuffer commandBuffer, const NativeFrameOutput& output, VkImage target,
+                                   VkImageView targetView, VkImageLayout previousLayout,
+                                   VkPipelineStageFlags2 previousStage, VkAccessFlags2 previousAccess,
+                                   VkImageLayout finalLayout, VkPipelineStageFlags2 finalStage,
+                                   VkAccessFlags2 finalAccess, bool initialized, VkExtent2D extent);
+    void recordBindPipeline(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline);
+    void recordTransitionTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture);
+    void recordTextureTransition(VkCommandBuffer commandBuffer, handles::TextureHandle texture,
+                                 VkImageLayout nextLayout);
+    void recordCopyTexture(VkCommandBuffer commandBuffer, handles::TextureHandle source,
+                           handles::TextureHandle destination);
+    void recordClearTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture,
+                            const std::array<float, 4>& value);
+    void recordGenerateMipmaps(VkCommandBuffer commandBuffer, handles::TextureHandle texture);
+    void recordCopyBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle source,
+                          handles::BufferHandle destination);
+    void recordBindDescriptorSet(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
+                                 handles::DescriptorSetHandle set, std::uint32_t setIndex);
+    void recordPushConstants(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
+                             std::span<const std::byte> bytes);
+    void recordBeginRendering(VkCommandBuffer commandBuffer, handles::TextureHandle target, bool clear);
+    void recordEndRendering(VkCommandBuffer commandBuffer, handles::TextureHandle target);
+    void recordMemoryBarrier(VkCommandBuffer commandBuffer);
+    void recordAccelerationStructureBarrier(VkCommandBuffer commandBuffer);
+    void recordBlasUpdate(VkCommandBuffer commandBuffer, handles::AccelerationStructureHandle blas,
+                          const BlasGeometryDesc& geometry);
+    void recordTlasUpdate(VkCommandBuffer commandBuffer, handles::AccelerationStructureHandle tlas,
+                          std::span<const AccelerationInstanceDesc> instances);
+    struct TypedAccelerationStructure {
+        VkAccelerationStructureKHR structure{};
+        VkBuffer storageBuffer{};
+        VkDeviceMemory storageMemory{};
+        VkDeviceSize storageSize{};
+        VkBuffer instanceBuffer{};
+        VkDeviceMemory instanceMemory{};
+        void* mappedInstances{};
+        VkDeviceSize instanceSize{};
+        bool topLevel{};
+        bool allowUpdate{};
+    };
+    [[nodiscard]] VkBuffer createAccelerationBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkDeviceMemory& memory,
+                                                    bool hostVisible, void** mapped);
+    void destroyAccelerationBuffer(VkBuffer buffer, VkDeviceMemory memory, void* mapped) noexcept;
+    struct BlasBuildInput {
+        std::vector<VkAccelerationStructureGeometryKHR> geometries;
+        std::vector<VkAccelerationStructureBuildRangeInfoKHR> ranges;
+        std::vector<std::uint32_t> primitiveCounts;
+        bool allowUpdate{};
+    };
+    [[nodiscard]] BlasBuildInput makeBlasBuildInput(const BlasGeometryDesc& geometry) const;
+    [[nodiscard]] std::vector<VkAccelerationStructureInstanceKHR>
+    makeTlasInstances(std::span<const AccelerationInstanceDesc> instances) const;
+    void recordAccelerationBuild(const TypedAccelerationStructure& destination, const BlasGeometryDesc& geometry,
+                                 bool update);
+    void recordAccelerationBuildOnCommand(VkCommandBuffer commandBuffer, const TypedAccelerationStructure& destination,
+                                          const BlasGeometryDesc& geometry, bool update);
+    void recordTopLevelBuild(const TypedAccelerationStructure& destination,
+                             std::span<const AccelerationInstanceDesc> instances, bool update);
+    void recordTopLevelBuildOnCommand(VkCommandBuffer commandBuffer, const TypedAccelerationStructure& destination,
+                                      std::span<const AccelerationInstanceDesc> instances, bool update);
+    struct PendingAccelerationScratch {
+        VkBuffer buffer{};
+        VkDeviceMemory memory{};
+    };
+    void reclaimAccelerationScratch(std::size_t frameIndex) noexcept;
+    void reclaimAllAccelerationScratch() noexcept;
+    [[nodiscard]] VkBuffer allocateRecordedAccelerationScratch(VkDeviceSize size);
+    void submitImmediate(const std::function<void(VkCommandBuffer)>& record);
+    [[nodiscard]] static VkImageLayout typedTextureFinalLayout(const TypedTexture& texture) noexcept;
 
     platform::Window& window_;
     DeviceCapabilities capabilities_;
@@ -208,12 +379,14 @@ class VulkanDevice final : public Device {
     RendererKind activeRenderer_{RendererKind::preview};
     bool validation_{};
     bool swapchainDirty_{};
+    VulkanAccelerationBackend accelerationBackend_;
 
     VkInstance instance_{};
     VkDebugUtilsMessengerEXT debugMessenger_{};
     VkSurfaceKHR surface_{};
     VkPhysicalDevice physicalDevice_{};
     VkPhysicalDeviceProperties physicalProperties_{};
+    VkPhysicalDeviceRayTracingPipelinePropertiesKHR rayTracingPipelineProperties_{};
     VkDevice device_{};
 #if DAYO_ENABLE_VMA
     VmaAllocator allocator_{};
@@ -239,6 +412,24 @@ class VulkanDevice final : public Device {
     VkPipeline transparentPipeline_{};
     VkPipeline edgePipeline_{};
     VkPipeline backgroundPipeline_{};
+    VkPipeline nativeOutputPipeline_{};
+    VkPipelineLayout nativeOutputPipelineLayout_{};
+    VkDescriptorSetLayout nativeOutputDescriptorSetLayout_{};
+    VkDescriptorPool nativeOutputDescriptorPool_{};
+    std::array<VkDescriptorSet, 2> nativeOutputDescriptors_{};
+    handles::DescriptorSetLayoutHandle nativeDeformDescriptorLayout_{};
+    handles::PipelineLayoutHandle nativeDeformPipelineLayout_{};
+    handles::ShaderHandle nativeDeformShader_{};
+    handles::PipelineHandle nativeDeformPipeline_{};
+    handles::ShaderHandle nativeFullscreenVertexShader_{};
+    handles::DescriptorSetLayoutHandle nativeEnvironmentEquirectLayout_{};
+    handles::PipelineLayoutHandle nativeEnvironmentEquirectPipelineLayout_{};
+    handles::ShaderHandle nativeEnvironmentEquirectShader_{};
+    handles::PipelineHandle nativeEnvironmentEquirectPipeline_{};
+    handles::DescriptorSetLayoutHandle nativeEnvironmentPrefilterLayout_{};
+    handles::PipelineLayoutHandle nativeEnvironmentPrefilterPipelineLayout_{};
+    handles::ShaderHandle nativeEnvironmentPrefilterShader_{};
+    handles::PipelineHandle nativeEnvironmentPrefilterPipeline_{};
     VkDescriptorSetLayout previewDescriptorSetLayout_{};
     VkDescriptorSetLayout previewSkinningDescriptorSetLayout_{};
     VkDescriptorSetLayout previewMorphDescriptorSetLayout_{};
@@ -255,6 +446,7 @@ class VulkanDevice final : public Device {
     bool uiInitialized_{};
 #endif
     std::array<Frame, 2> frames_{};
+    std::array<std::vector<PendingAccelerationScratch>, 2> pendingAccelerationScratch_;
     std::size_t frameIndex_{};
     std::uint64_t previewGpuNanoseconds_{};
     VkBuffer previewStaticVertexBuffer_{};
@@ -299,10 +491,81 @@ class VulkanDevice final : public Device {
     std::array<ViewportResource, 2> viewportResources_{};
     bool viewportRequested_{};
     VkExtent2D requestedViewportExtent_{};
+    NativeFrameRecorder nativeFrameRecorder_;
 
     std::uint64_t nextResourceHandle_{1};
     std::unordered_map<BufferHandle, VulkanBuffer> buffers_;
     std::unordered_map<TextureHandle, VulkanImage> textures_;
+
+    struct TypedBuffer {
+        VulkanBuffer resource;
+        BufferResourceDesc desc;
+        void* mapped{};
+    };
+    struct TypedTexture {
+        VulkanImage resource;
+        TextureResourceDesc desc;
+        VkImageView view{};
+        VkImageLayout layout{VK_IMAGE_LAYOUT_UNDEFINED};
+    };
+    struct TypedSampler {
+        VkSampler sampler{};
+    };
+    struct TypedDescriptorSetLayout {
+        VkDescriptorSetLayout layout{};
+        DescriptorSetLayoutDesc desc;
+    };
+    struct TypedDescriptorSet {
+        VkDescriptorSet set{};
+        handles::DescriptorSetLayoutHandle layout{};
+    };
+    struct TypedShader {
+        VkShaderModule module{};
+        ShaderStageMask stage{ShaderStageMask::compute};
+        std::string entryPoint{"main"};
+    };
+    struct TypedPipelineLayout {
+        VkPipelineLayout layout{};
+        PipelineLayoutDesc desc;
+    };
+    struct TypedPipeline {
+        VkPipeline pipeline{};
+        handles::PipelineLayoutHandle layout{};
+        std::uint32_t groupCount{};
+        bool rayTracing{};
+        VkPipelineBindPoint bindPoint{VK_PIPELINE_BIND_POINT_GRAPHICS};
+    };
+    struct TypedShaderBindingTable {
+        VkBuffer buffer{};
+        VkDeviceMemory memory{};
+        VkDeviceSize size{};
+        VkStridedDeviceAddressRegionKHR raygen{};
+        VkStridedDeviceAddressRegionKHR miss{};
+        VkStridedDeviceAddressRegionKHR hit{};
+        VkStridedDeviceAddressRegionKHR callable{};
+    };
+
+    handles::BufferPool typedBufferHandles_;
+    handles::TexturePool typedTextureHandles_;
+    handles::SamplerPool typedSamplerHandles_;
+    handles::ShaderPool typedShaderHandles_;
+    handles::DescriptorSetLayoutPool typedDescriptorSetLayoutHandles_;
+    handles::DescriptorSetPool typedDescriptorSetHandles_;
+    handles::PipelineLayoutPool typedPipelineLayoutHandles_;
+    handles::PipelinePool typedPipelineHandles_;
+    handles::ShaderBindingTablePool typedShaderBindingTableHandles_;
+    handles::AccelerationStructurePool typedAccelerationStructureHandles_;
+    std::unordered_map<handles::BufferHandle, TypedBuffer> typedBuffers_;
+    std::unordered_map<handles::TextureHandle, TypedTexture> typedTextures_;
+    std::unordered_map<handles::SamplerHandle, TypedSampler> typedSamplers_;
+    std::unordered_map<handles::ShaderHandle, TypedShader> typedShaders_;
+    std::unordered_map<handles::DescriptorSetLayoutHandle, TypedDescriptorSetLayout> typedDescriptorSetLayouts_;
+    std::unordered_map<handles::DescriptorSetHandle, TypedDescriptorSet> typedDescriptorSets_;
+    std::unordered_map<handles::PipelineLayoutHandle, TypedPipelineLayout> typedPipelineLayouts_;
+    std::unordered_map<handles::PipelineHandle, TypedPipeline> typedPipelines_;
+    std::unordered_map<handles::ShaderBindingTableHandle, TypedShaderBindingTable> typedShaderBindingTables_;
+    std::unordered_map<handles::AccelerationStructureHandle, TypedAccelerationStructure> typedAccelerationStructures_;
+    VkDescriptorPool typedDescriptorPool_{};
 };
 
 } // namespace dayo::graphics

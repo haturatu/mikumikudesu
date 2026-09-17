@@ -14,7 +14,34 @@ namespace dayo::graphics {
 
 enum class TextureDimension : std::uint8_t { d1, d2, d3, cube };
 
-enum class PixelFormat : std::uint8_t { rgba8Unorm, rgba8Srgb, rgba16Float, rgba32Float, depth32Float };
+// The FX format names are intentionally represented individually instead of
+// collapsing single/dual-channel images into an RGBA format. Shader image
+// declarations and Vulkan image views must agree on the component layout.
+enum class PixelFormat : std::uint8_t {
+    r8Unorm,
+    r16Float,
+    r16g16Float,
+    r32Float,
+    r32g32Float,
+    rgba8Unorm,
+    rgba8Srgb,
+    rgba16Float,
+    rgba32Float,
+    depth32Float
+};
+
+enum class SamplerFilter : std::uint8_t { nearest, linear };
+enum class SamplerAddressMode : std::uint8_t { repeat, clampToEdge, mirroredRepeat, clampToBorder };
+
+struct SamplerResourceDesc {
+    SamplerFilter filter{SamplerFilter::linear};
+    SamplerAddressMode addressU{SamplerAddressMode::repeat};
+    SamplerAddressMode addressV{SamplerAddressMode::repeat};
+    SamplerAddressMode addressW{SamplerAddressMode::repeat};
+    float mipLodBias{};
+    float minLod{};
+    float maxLod{std::numeric_limits<float>::max()};
+};
 
 enum class ResourceLifetime : std::uint8_t { transient, persistent };
 
@@ -248,15 +275,23 @@ struct PhysicalResourceRequirements {
 // made from them never under-allocate physical memory.
 [[nodiscard]] constexpr std::size_t pixelFormatByteSize(PixelFormat format) noexcept {
     switch (format) {
+    case PixelFormat::r8Unorm:
+        return 1;
+    case PixelFormat::r16Float:
+        return 2;
+    case PixelFormat::r16g16Float:
+    case PixelFormat::r32Float:
+        return 4;
+    case PixelFormat::r32g32Float:
+        return 8;
     case PixelFormat::rgba8Unorm:
     case PixelFormat::rgba8Srgb:
+    case PixelFormat::depth32Float:
         return 4;
     case PixelFormat::rgba16Float:
         return 8;
     case PixelFormat::rgba32Float:
         return 16;
-    case PixelFormat::depth32Float:
-        return 4;
     }
     return 4;
 }

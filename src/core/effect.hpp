@@ -31,6 +31,9 @@ struct EffectTexture {
     std::string name;
     std::string format;
     std::string view;
+    std::string filename;
+    std::string shared;
+    bool mipmap{};
     EffectSize size;
     float widthRatio{1.0F};
     float heightRatio{1.0F};

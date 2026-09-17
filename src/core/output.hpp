@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/image.hpp"
+#include "core/image_hdr.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -25,6 +26,7 @@ struct OutputSettings {
 
 [[nodiscard]] std::filesystem::path outputPath(const OutputSettings& settings, std::uint32_t frame);
 void writeFrame(const std::filesystem::path& path, const ImageRgba8& image, OutputFormat format);
+void writeFrame(const std::filesystem::path& path, const ImageData& image);
 
 struct OutputWorker;
 

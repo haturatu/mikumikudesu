@@ -12,10 +12,11 @@
 namespace dayo::graphics {
 
 // Host-side bookkeeping for Subayai/BDPT acceleration structures.
-// Vulkan builds stay behind the RT feature gate; this service only decides
-// rebuild / refit / update and tracks TLAS instance counts derived from
-// Scene::cloneCount. nativeSubayai/nativeBdpt remain false, so callers must
-// fall back to Preview when DeviceCapabilities::supports() is false.
+// Vulkan builds stay behind the RT feature gate; this service decides rebuild /
+// refit / update and tracks TLAS instance counts derived from Scene::cloneCount.
+// Callers still must fall back to Preview when DeviceCapabilities::supports()
+// is false because native availability is conditional on the active device and
+// effect graph.
 enum class BlasAction { none, rebuild, refit };
 enum class TlasAction { none, rebuild, update };
 
@@ -45,18 +46,29 @@ struct WorldInstance {
 class IAccelerationBackend {
   public:
     virtual ~IAccelerationBackend() = default;
-    virtual handles::AccelerationStructureHandle createBlas(BufferHandle vertexBuffer) = 0;
+    virtual handles::AccelerationStructureHandle createBlas(const BlasGeometryDesc& geometry) = 0;
     // A topology rebuild may reallocate the BLAS, so it returns the current
     // handle and receives the buffer that contains the new geometry.
     virtual handles::AccelerationStructureHandle rebuildBlas(handles::AccelerationStructureHandle blas,
-                                                             BufferHandle vertexBuffer) = 0;
-    virtual void refitBlas(handles::AccelerationStructureHandle blas, BufferHandle vertexBuffer) = 0;
+                                                             const BlasGeometryDesc& geometry) = 0;
+    virtual void refitBlas(handles::AccelerationStructureHandle blas, const BlasGeometryDesc& geometry) = 0;
     virtual handles::AccelerationStructureHandle createTlas(std::span<const TlasInstanceDesc> instances) = 0;
-    virtual void rebuildTlas(handles::AccelerationStructureHandle tlas,
-                             std::span<const TlasInstanceDesc> instances) = 0;
+    [[nodiscard]] virtual handles::AccelerationStructureHandle
+    rebuildTlas(handles::AccelerationStructureHandle tlas, std::span<const TlasInstanceDesc> instances) = 0;
     virtual void updateTlas(handles::AccelerationStructureHandle tlas, std::span<const TlasInstanceDesc> instances) = 0;
     virtual void destroyBlas(handles::AccelerationStructureHandle) {}
     virtual void destroyTlas(handles::AccelerationStructureHandle) {}
+    // Records an update after the current frame's deform dispatch. The
+    // immediate methods above remain the resource-creation and policy path;
+    // native Vulkan callers use these methods to avoid consuming stale vertex
+    // data before the command buffer has executed.
+    virtual void recordBlasUpdate(CommandList&, handles::AccelerationStructureHandle, const BlasGeometryDesc&) {
+        throw std::logic_error("recorded BLAS updates are not implemented by this backend");
+    }
+    virtual void recordTlasUpdate(CommandList&, handles::AccelerationStructureHandle,
+                                  std::span<const TlasInstanceDesc>) {
+        throw std::logic_error("recorded TLAS updates are not implemented by this backend");
+    }
 };
 
 class AccelerationStructureService {
@@ -71,7 +83,7 @@ class AccelerationStructureService {
     // RT-incapable GPUs keep running Preview; this never enables native passes.
     [[nodiscard]] static bool canBuildNative(const DeviceCapabilities& capabilities, RendererKind renderer) noexcept;
 
-    [[nodiscard]] BlasAction notifyMesh(std::uint32_t meshId, BufferHandle vertexBuffer,
+    [[nodiscard]] BlasAction notifyMesh(std::uint32_t meshId, const BlasGeometryDesc& geometry,
                                         std::uint64_t topologyGeneration, std::uint64_t deformVersion);
     // cloneCountsPerMesh holds visible-model clone counts only; the TLAS
     // instance count is their sum so CloneCount is reflected directly. Meshes
@@ -81,13 +93,21 @@ class AccelerationStructureService {
                                          std::span<const std::uint32_t> cloneCountsPerMesh);
     [[nodiscard]] TlasAction notifyWorld(std::uint64_t worldGeneration, std::span<const WorldInstance> instances);
 
+    void recordBlasUpdates(CommandList& commands) const;
+    void recordTlasUpdate(CommandList& commands) const;
+
     [[nodiscard]] bool removeMesh(std::uint32_t meshId);
     // Releases all backend-owned acceleration structures. Safe to call more
     // than once and used by the destructor for service lifetime cleanup.
     void reset() noexcept;
+    void setBackend(IAccelerationBackend* backend) noexcept;
 
     [[nodiscard]] std::size_t blasCount() const noexcept {
         return meshes_.size();
+    }
+    [[nodiscard]] handles::AccelerationStructureHandle blas(std::uint32_t meshId) const noexcept;
+    [[nodiscard]] handles::AccelerationStructureHandle tlas() const noexcept {
+        return tlas_;
     }
     [[nodiscard]] std::size_t tlasInstanceCount() const noexcept {
         return tlasInstanceCount_;
@@ -112,7 +132,7 @@ class AccelerationStructureService {
     struct MeshState {
         std::uint64_t topologyGeneration{};
         std::uint64_t deformVersion{};
-        BufferHandle vertexBuffer{};
+        BlasGeometryDesc geometry;
         handles::AccelerationStructureHandle blas{};
         bool built{false};
     };
