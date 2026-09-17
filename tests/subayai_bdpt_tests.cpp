@@ -439,7 +439,7 @@ bool testBdptNativeFxExecution() {
     dayo::fx::FxProgram program;
     program.label = "BDPT-native";
     program.sourcePath = "bdpt-native.fxdayo";
-    program.hlsl = "[shader(\"raygeneration\")] void main() {}\n";
+    program.hlsl = "void main() {}\n";
     dayo::fx::FxDispatch dispatch;
     dispatch.name = "native-raytrace";
     dispatch.kind = dayo::fx::FxOpKind::raytracing;
@@ -458,6 +458,10 @@ bool testBdptNativeFxExecution() {
     const std::array<dayo::graphics::AliasEntry, 1> lightSampling{{{1.0F, 0}}};
     auto frame = runtime.prepareFrame(context, dayo::core::DirtyFlag::geometry, lightSampling);
     ok &= check(runtime.nativeReady() && frame.nativeFx.has_value(), "BDPT runtime prepares the native FX frame path");
+    if (!runtime.nativeReady() || !frame.nativeFx.has_value()) {
+        runtime.reset();
+        return false;
+    }
     const auto frameOutput = runtime.output(frame);
     ok &= check(frameOutput.has_value() && frameOutput->texture == frame.gpu.accumulation &&
                     frameOutput->extent.width == context.renderWidth && frameOutput->extent.height == context.renderHeight &&

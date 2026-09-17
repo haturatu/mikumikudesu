@@ -2487,7 +2487,6 @@ void VulkanDevice::renderFrame() {
     }
 
 #if DAYO_HAS_IMGUI
-    bool nativeViewportRendered = false;
     if (viewportRequested_) {
         auto& viewport = viewportResources_[frameIndex_];
         if (viewport.colorImage != VK_NULL_HANDLE) {
@@ -2499,7 +2498,6 @@ void VulkanDevice::renderFrame() {
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     viewport.colorInitialized, viewport.extent);
                 viewport.colorInitialized = true;
-                nativeViewportRendered = true;
             } else {
                 recordPreviewPass(frame.commandBuffer, frame, viewport.colorImage, viewport.colorView, viewport.depth,
                                   viewport.extent, viewport.colorInitialized, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
