@@ -75,6 +75,20 @@ void destroy(Device& device, std::vector<handles::BufferHandle>& handles) noexce
     handles.clear();
 }
 
+template <std::size_t N>
+void destroy(Device& device, std::vector<std::array<handles::BufferHandle, N>>& slots) noexcept {
+    for (auto& slot : slots)
+        for (const auto handle : slot) {
+            if (!handle.valid())
+                continue;
+            try {
+                device.destroyBufferEx(handle);
+            } catch (...) {
+            }
+        }
+    slots.clear();
+}
+
 } // namespace
 
 NativeSceneModelRuntime::StaticHashes
@@ -149,8 +163,10 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
                                                ResourceUsage::storageRead | ResourceUsage::rayTracingRead |
                                                    ResourceUsage::transferDst,
                                                "previous vertices"));
-            vertexStaging_.push_back(createStaging(device, std::span<const NativeSceneVertex>(model.vertices),
-                                                   "vertex staging"));
+            StagingSlots vertexStaging{};
+            for (auto& slot : vertexStaging)
+                slot = createStaging(device, std::span<const NativeSceneVertex>(model.vertices), "vertex staging");
+            vertexStaging_.push_back(vertexStaging);
             rawVertices_.push_back(upload(device, std::span<const NativeSceneVertex>(model.vertices),
                                           ResourceUsage::storageRead | ResourceUsage::rayTracingRead,
                                           "raw vertices"));
@@ -244,14 +260,15 @@ bool NativeSceneModelRuntime::updateFrame(Device& device, CommandList& commands,
         return sync(device, models, error);
 
     try {
+        const auto slot = transferSlot_;
         bool recordedTransfer = false;
         for (std::size_t index = 0; index < models.size(); ++index) {
             const auto& model = models[index];
             if (!model.vertices.empty()) {
-                device.uploadBufferEx(vertexStaging_[index],
+                device.uploadBufferEx(vertexStaging_[index][slot],
                                       std::as_bytes(std::span<const NativeSceneVertex>(model.vertices)), 0);
                 commands.copyBufferEx(vertices_[index], previousVertices_[index]);
-                commands.copyBufferEx(vertexStaging_[index], vertices_[index]);
+                commands.copyBufferEx(vertexStaging_[index][slot], vertices_[index]);
                 recordedTransfer = true;
             }
 
@@ -260,10 +277,10 @@ bool NativeSceneModelRuntime::updateFrame(Device& device, CommandList& commands,
                                            std::uint64_t oldHash, std::uint64_t newHash, std::string_view name) {
                 if (oldHash == newHash || values.empty())
                     return false;
-                if (!staging[index].valid())
-                    staging[index] = createStaging(device, std::span(values), name);
-                device.uploadBufferEx(staging[index], std::as_bytes(std::span(values)), 0);
-                commands.copyBufferEx(staging[index], destination);
+                if (!staging[index][slot].valid())
+                    staging[index][slot] = createStaging(device, std::span(values), name);
+                device.uploadBufferEx(staging[index][slot], std::as_bytes(std::span(values)), 0);
+                commands.copyBufferEx(staging[index][slot], destination);
                 return true;
             };
             const bool indicesChanged = copyIfChanged(indexStaging_, indices_[index], model.indices,
@@ -285,6 +302,7 @@ bool NativeSceneModelRuntime::updateFrame(Device& device, CommandList& commands,
         }
         if (recordedTransfer)
             commands.memoryBarrierEx();
+        transferSlot_ = (transferSlot_ + 1U) % kTransferSlots;
     } catch (const std::exception& exception) {
         setError(error, std::string("native scene frame update failed: ") + exception.what());
         return false;
@@ -365,6 +383,7 @@ void NativeSceneModelRuntime::reset() noexcept {
     materialFaceBytes_.clear();
     faceWalkerBytes_.clear();
     staticHashes_.clear();
+    transferSlot_ = 0;
     device_ = nullptr;
 }
 

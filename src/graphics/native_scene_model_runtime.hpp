@@ -3,6 +3,7 @@
 #include "graphics/native_scene_data.hpp"
 #include "graphics/native_scene_resource_runtime.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -44,6 +45,9 @@ class NativeSceneModelRuntime {
     [[nodiscard]] NativeSceneResourceBindings bindings() const noexcept;
 
   private:
+    static constexpr std::size_t kTransferSlots = 2;
+    using StagingSlots = std::array<handles::BufferHandle, kTransferSlots>;
+
     struct StaticHashes {
         std::uint64_t indices{};
         std::uint64_t materials{};
@@ -59,17 +63,17 @@ class NativeSceneModelRuntime {
     std::vector<handles::BufferHandle> vertices_;
     std::vector<handles::BufferHandle> previousVertices_;
     std::vector<handles::BufferHandle> rawVertices_;
-    std::vector<handles::BufferHandle> vertexStaging_;
+    std::vector<StagingSlots> vertexStaging_;
     std::vector<handles::BufferHandle> indices_;
-    std::vector<handles::BufferHandle> indexStaging_;
+    std::vector<StagingSlots> indexStaging_;
     std::vector<handles::BufferHandle> materials_;
-    std::vector<handles::BufferHandle> materialStaging_;
+    std::vector<StagingSlots> materialStaging_;
     std::vector<handles::BufferHandle> faces_;
-    std::vector<handles::BufferHandle> faceStaging_;
+    std::vector<StagingSlots> faceStaging_;
     std::vector<handles::BufferHandle> materialFaces_;
-    std::vector<handles::BufferHandle> materialFaceStaging_;
+    std::vector<StagingSlots> materialFaceStaging_;
     std::vector<handles::BufferHandle> faceWalkers_;
-    std::vector<handles::BufferHandle> faceWalkerStaging_;
+    std::vector<StagingSlots> faceWalkerStaging_;
     std::vector<std::size_t> vertexBytes_;
     std::vector<std::size_t> indexBytes_;
     std::vector<std::size_t> materialBytes_;
@@ -77,6 +81,7 @@ class NativeSceneModelRuntime {
     std::vector<std::size_t> materialFaceBytes_;
     std::vector<std::size_t> faceWalkerBytes_;
     std::vector<StaticHashes> staticHashes_;
+    std::size_t transferSlot_{};
 };
 
 } // namespace dayo::graphics
