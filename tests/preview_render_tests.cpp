@@ -657,25 +657,25 @@ bool recordsNativeOffscreenOutput(dayo::graphics::VulkanDevice& device) {
     device.selectRenderer(dayo::graphics::RendererKind::subayai);
     bool called = false;
     dayo::graphics::handles::TextureHandle output{};
-    device.setNativeFrameRecorder([&](dayo::graphics::CommandList& commands,
-                                      const dayo::graphics::RenderTargetDesc& target) {
-        called = true;
-        output = device.createTextureEx({
-            .dimension = dayo::graphics::TextureDimension::d2,
-            .extent = {target.width, target.height, 1},
-            .format = dayo::graphics::PixelFormat::rgba16Float,
-            .mipLevels = 1,
-            .arrayLayers = 1,
-            .usage = dayo::graphics::ResourceUsage::sampledRead | dayo::graphics::ResourceUsage::transferDst,
-            .lifetime = dayo::graphics::ResourceLifetime::transient,
+    device.setNativeFrameRecorder(
+        [&](dayo::graphics::CommandList& commands, const dayo::graphics::RenderTargetDesc& target) {
+            called = true;
+            output = device.createTextureEx({
+                .dimension = dayo::graphics::TextureDimension::d2,
+                .extent = {target.width, target.height, 1},
+                .format = dayo::graphics::PixelFormat::rgba16Float,
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .usage = dayo::graphics::ResourceUsage::sampledRead | dayo::graphics::ResourceUsage::transferDst,
+                .lifetime = dayo::graphics::ResourceLifetime::transient,
+            });
+            commands.clearTextureEx(output, {1.0F, 0.0F, 0.0F, 1.0F});
+            return std::optional<dayo::graphics::NativeFrameOutput>{dayo::graphics::NativeFrameOutput{
+                .texture = output,
+                .extent = {target.width, target.height, 1},
+                .format = dayo::graphics::PixelFormat::rgba16Float,
+            }};
         });
-        commands.clearTextureEx(output, {1.0F, 0.0F, 0.0F, 1.0F});
-        return std::optional<dayo::graphics::NativeFrameOutput>{dayo::graphics::NativeFrameOutput{
-            .texture = output,
-            .extent = {target.width, target.height, 1},
-            .format = dayo::graphics::PixelFormat::rgba16Float,
-        }};
-    });
     bool outputMatches = false;
     try {
         const auto image = device.renderToImage({64, 64});
@@ -724,8 +724,7 @@ int main() {
         scene.cameraDistance = 3.0F;
         scene.backgroundEnabled = false;
         device.updatePreviewScene(scene);
-        if (!device.nativeEnvironmentEquirectPipeline().valid() ||
-            !device.nativeEnvironmentEquirectLayout().valid() ||
+        if (!device.nativeEnvironmentEquirectPipeline().valid() || !device.nativeEnvironmentEquirectLayout().valid() ||
             !device.nativeEnvironmentPrefilterPipeline().valid() ||
             !device.nativeEnvironmentPrefilterLayout().valid()) {
             std::cerr << "FAIL: native environment compute pipelines were not initialized\n";

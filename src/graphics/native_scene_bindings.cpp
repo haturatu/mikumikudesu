@@ -17,8 +17,7 @@ namespace {
 
 void add(DescriptorSetLayoutDesc& layout, NativeSceneRegisterClass registerClass, std::uint32_t registerIndex,
          DescriptorKind kind, std::uint32_t count, ShaderStageMask stages) {
-    layout.bindings.push_back(
-        {nativeSceneBinding(registerClass, registerIndex), kind, descriptorCount(count), stages});
+    layout.bindings.push_back({nativeSceneBinding(registerClass, registerIndex), kind, descriptorCount(count), stages});
 }
 
 } // namespace

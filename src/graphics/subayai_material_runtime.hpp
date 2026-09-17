@@ -22,7 +22,7 @@ class SubayaiMaterialGpuRuntime {
     SubayaiMaterialGpuRuntime& operator=(const SubayaiMaterialGpuRuntime&) = delete;
 
     [[nodiscard]] bool sync(Device& device, std::span<const core::MaterialParameterBlock> materials,
-                             std::string* error = nullptr);
+                            std::string* error = nullptr);
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {

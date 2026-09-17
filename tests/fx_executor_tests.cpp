@@ -102,18 +102,15 @@ struct MockDevice final : public dayo::graphics::Device {
     dayo::graphics::TextureHandle createTexture(const dayo::graphics::TextureDesc&) override {
         return 0;
     }
-    dayo::graphics::handles::TextureHandle
-    createTextureEx(const dayo::graphics::TextureResourceDesc& desc) override {
+    dayo::graphics::handles::TextureHandle createTextureEx(const dayo::graphics::TextureResourceDesc& desc) override {
         textureDescs_.push_back(desc);
         return {nextTypedHandle_++, 1};
     }
-    dayo::graphics::handles::BufferHandle
-    createBufferEx(const dayo::graphics::BufferResourceDesc& desc) override {
+    dayo::graphics::handles::BufferHandle createBufferEx(const dayo::graphics::BufferResourceDesc& desc) override {
         bufferDescs_.push_back(desc);
         return {nextTypedHandle_++, 1};
     }
-    dayo::graphics::handles::SamplerHandle
-    createSamplerEx(const dayo::graphics::SamplerResourceDesc& desc) override {
+    dayo::graphics::handles::SamplerHandle createSamplerEx(const dayo::graphics::SamplerResourceDesc& desc) override {
         samplerDescs_.push_back(desc);
         return {nextTypedHandle_++, 1};
     }
@@ -129,8 +126,8 @@ struct MockDevice final : public dayo::graphics::Device {
         if (handle.valid())
             ++destroyedSamplers_;
     }
-    void uploadTextureEx(dayo::graphics::handles::TextureHandle, std::span<const std::uint8_t> bytes,
-                         std::uint32_t, std::uint32_t) override {
+    void uploadTextureEx(dayo::graphics::handles::TextureHandle, std::span<const std::uint8_t> bytes, std::uint32_t,
+                         std::uint32_t) override {
         uploadedTextureBytes_ = bytes.size();
     }
     void generateMipmapsEx(dayo::graphics::handles::TextureHandle) override {
@@ -393,11 +390,11 @@ bool testMockTraceMatches() {
     graphicsProgram.passes.push_back(postprocess);
     const auto graphicsPlan = dayo::fx::FxCompiler{}.plan(graphicsProgram, testContext());
     const auto graphicsStats = executor.execute(graphicsPlan, graphicsCommands, testContext(), typedResources);
-    ok &= check(graphicsStats.postprocess == 1 &&
-                    graphicsCommands.trace == std::vector<std::string>{"transitionEx", "descriptorEx",
-                                                                         "beginRenderingEx", "bindEx", "draw:3x1",
-                                                                         "endRenderingEx"},
-                "typed graphics executor brackets postprocess draws with a render target");
+    ok &=
+        check(graphicsStats.postprocess == 1 &&
+                  graphicsCommands.trace == std::vector<std::string>{"transitionEx", "descriptorEx", "beginRenderingEx",
+                                                                     "bindEx", "draw:3x1", "endRenderingEx"},
+              "typed graphics executor brackets postprocess draws with a render target");
     return ok;
 }
 
@@ -413,8 +410,8 @@ bool testTypedBufferResourceExecution() {
     program.passes.push_back(dispatch);
 
     dayo::graphics::FxExecutionResources resources;
-    resources.resolveTypedResource = [](std::string_view name) ->
-        std::optional<dayo::graphics::FxExecutionResources::TypedResource> {
+    resources.resolveTypedResource =
+        [](std::string_view name) -> std::optional<dayo::graphics::FxExecutionResources::TypedResource> {
         if (name != "Lights")
             return std::nullopt;
         return dayo::graphics::FxExecutionResources::TypedResource{
@@ -767,19 +764,18 @@ bool testFxResourceRuntimeMaterializesDeclarations() {
     dayo::graphics::FxResourceRuntime runtime;
     std::string error;
     const auto context = testContext();
-    bool ok = check(runtime.initialize(device, program, context, &error),
-                    "FX resource runtime materializes declarations");
+    bool ok =
+        check(runtime.initialize(device, program, context, &error), "FX resource runtime materializes declarations");
     ok &= check(error.empty(), "FX resource runtime has no initialization error");
     ok &= check(runtime.ready() && runtime.resourceCount() == 4, "FX resource runtime owns every declaration");
     const auto colorTexture = runtime.resolveTexture("Color");
     const auto volumeTexture = runtime.resolveTexture("Volume");
     const auto lightBuffer = runtime.resolveBuffer("Lights");
     const auto linearSampler = runtime.resolveSampler("Linear");
-    ok &= check(colorTexture.has_value() && colorTexture->valid() && volumeTexture.has_value() &&
-                    volumeTexture->valid(),
-                "FX resource runtime resolves 2D and 3D textures");
-    ok &= check(lightBuffer.has_value() && lightBuffer->valid() && linearSampler.has_value() &&
-                    linearSampler->valid(),
+    ok &=
+        check(colorTexture.has_value() && colorTexture->valid() && volumeTexture.has_value() && volumeTexture->valid(),
+              "FX resource runtime resolves 2D and 3D textures");
+    ok &= check(lightBuffer.has_value() && lightBuffer->valid() && linearSampler.has_value() && linearSampler->valid(),
                 "FX resource runtime resolves buffers and samplers");
     const auto colorExtent = runtime.extent("Color");
     const auto volumeExtent = runtime.extent("Volume");
@@ -796,11 +792,10 @@ bool testFxResourceRuntimeMaterializesDeclarations() {
                     device.descriptorLayout_.bindings[2].kind == dayo::graphics::DescriptorKind::storageBuffer &&
                     device.descriptorLayout_.bindings[3].kind == dayo::graphics::DescriptorKind::sampler,
                 "FX resource runtime derives descriptor kinds from views");
-    ok &= check(device.descriptorLayout_.bindings[0].binding == 16 &&
-                    device.descriptorLayout_.bindings[1].binding == 0 &&
-                    device.descriptorLayout_.bindings[2].binding == 1 &&
-                    device.descriptorLayout_.bindings[3].binding == 32,
-                "FX resource runtime aligns descriptor slots with HLSL register classes");
+    ok &= check(
+        device.descriptorLayout_.bindings[0].binding == 16 && device.descriptorLayout_.bindings[1].binding == 0 &&
+            device.descriptorLayout_.bindings[2].binding == 1 && device.descriptorLayout_.bindings[3].binding == 32,
+        "FX resource runtime aligns descriptor slots with HLSL register classes");
     dayo::fx::FxDispatch dispatch;
     ok &= check(runtime.resolveDescriptorSet(dispatch).has_value(), "FX resource runtime resolves pass descriptor set");
     runtime.reset();
@@ -910,8 +905,8 @@ bool testNativeFxRuntimeRefreshesFrameResources() {
     MockCommands commands;
     const auto stats = runtime.execute(frame, commands, resources);
     ok &= check(stats.compute == 1, "native FX runtime executes after a resource refresh");
-    const auto descriptorCount = static_cast<std::size_t>(
-        std::count(commands.trace.begin(), commands.trace.end(), std::string{"descriptorEx"}));
+    const auto descriptorCount =
+        static_cast<std::size_t>(std::count(commands.trace.begin(), commands.trace.end(), std::string{"descriptorEx"}));
     ok &= check(descriptorCount == 2, "native FX runtime appends its resource set to shared descriptor bindings");
     runtime.reset();
     return ok;
@@ -1004,8 +999,8 @@ bool testNativeFxRuntimeBindsFixedSceneSets() {
     auto frame = runtime.prepareFrame(context);
     MockCommands commands;
     const auto stats = runtime.execute(frame, commands);
-    const auto descriptorCount = static_cast<std::size_t>(
-        std::count(commands.trace.begin(), commands.trace.end(), std::string{"descriptorEx"}));
+    const auto descriptorCount =
+        static_cast<std::size_t>(std::count(commands.trace.begin(), commands.trace.end(), std::string{"descriptorEx"}));
     ok &= check(stats.compute == 1 && descriptorCount == dayo::graphics::kNativeSceneDescriptorSetCount + 1,
                 "native FX runtime binds every native scene set before FX resources");
     runtime.reset();
@@ -1074,8 +1069,7 @@ bool testRealShaderCompilation() {
     const auto directory =
         fs::temp_directory_path() /
         ("dayo-fx-shader-include-" +
-         std::to_string(static_cast<unsigned long long>(
-             std::chrono::steady_clock::now().time_since_epoch().count())));
+         std::to_string(static_cast<unsigned long long>(std::chrono::steady_clock::now().time_since_epoch().count())));
     std::error_code error;
     fs::create_directories(directory, error);
     if (error)
@@ -1101,13 +1095,12 @@ bool testRealShaderCompilation() {
     resourceRequest.sourcePath = directory / "resource-registers.hlsl";
     resourceRequest.entryPoint = "main";
     resourceRequest.stage = dayo::fx::FxShaderStage::compute;
-    resourceRequest.hlsl =
-        "RWTexture2D<float4> U : register(u0);\n"
-        "Texture2D<float4> T : register(t0);\n"
-        "SamplerState S : register(s0);\n"
-        "cbuffer B : register(b0) { float4 x; }\n"
-        "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) "
-        "{ U[id.xy] = T.SampleLevel(S, float2(0, 0), 0) + x; }\n";
+    resourceRequest.hlsl = "RWTexture2D<float4> U : register(u0);\n"
+                           "Texture2D<float4> T : register(t0);\n"
+                           "SamplerState S : register(s0);\n"
+                           "cbuffer B : register(b0) { float4 x; }\n"
+                           "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) "
+                           "{ U[id.xy] = T.SampleLevel(S, float2(0, 0), 0) + x; }\n";
     const auto resourceArtifact = compiler.compile(resourceRequest);
     ok &= check(hasUniqueDescriptorBindings(resourceArtifact.spirv),
                 "glslc keeps HLSL register classes in distinct bindings");
@@ -1134,8 +1127,7 @@ bool testFxPipelineRuntime() {
     const auto directory =
         fs::temp_directory_path() /
         ("dayo-fx-pipeline-include-" +
-         std::to_string(static_cast<unsigned long long>(
-             std::chrono::steady_clock::now().time_since_epoch().count())));
+         std::to_string(static_cast<unsigned long long>(std::chrono::steady_clock::now().time_since_epoch().count())));
     std::error_code fileError;
     fs::create_directories(directory, fileError);
     if (fileError)
@@ -1179,7 +1171,8 @@ bool testFxPipelineRuntime() {
     program.hlsl = "#include \"constants.hlsli\"\n"
                    "#include \"subayai/hlsl/casesensitive.hlsli\"\n"
                    "#ifdef YRZ_PASS_deform\n"
-                   "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) { NativeOutput[id.xy] = float4(Gain + TEST_CASE_SENSITIVE_VALUE, 0, 0, 1); }\n"
+                   "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) { NativeOutput[id.xy] = "
+                   "float4(Gain + TEST_CASE_SENSITIVE_VALUE, 0, 0, 1); }\n"
                    "#endif\n";
     dayo::fx::FxDispatch dispatch;
     dispatch.name = "deform";
@@ -1234,7 +1227,8 @@ bool testFxPipelineRuntime() {
                     [](const dayo::fx::FxDispatch&) {
                         return std::optional<dayo::graphics::handles::PipelineLayoutHandle>{{1, 1}};
                     },
-                    &error) && error.empty() && runtime.resolvePipeline(postprocess).has_value(),
+                    &error) &&
+                    error.empty() && runtime.resolvePipeline(postprocess).has_value(),
                 "FX pipeline runtime combines renderer fullscreen vertex with postprocess pixel shader");
     runtime.reset();
     fs::remove_all(directory, fileError);

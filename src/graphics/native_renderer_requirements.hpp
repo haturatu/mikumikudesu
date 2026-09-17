@@ -25,11 +25,11 @@ struct NativeRendererStatus {
 // device capability. This prevents a renderer name from accidentally making
 // an effect with a stronger RT contract executable.
 [[nodiscard]] std::string missingEffectFeatures(const DeviceCapabilities& capabilities,
-                                                 const fx::FxRequiredFeatures& required);
-[[nodiscard]] NativeRendererStatus decideNativeRenderer(const DeviceCapabilities& capabilities,
-                                                         RendererKind requested,
-                                                         const fx::FxRequiredFeatures& required);
-[[nodiscard]] NativeRendererStatus decideNativeRendererForInitialization(
-    const DeviceCapabilities& capabilities, RendererKind requested, const fx::FxRequiredFeatures& required);
+                                                const fx::FxRequiredFeatures& required);
+[[nodiscard]] NativeRendererStatus decideNativeRenderer(const DeviceCapabilities& capabilities, RendererKind requested,
+                                                        const fx::FxRequiredFeatures& required);
+[[nodiscard]] NativeRendererStatus decideNativeRendererForInitialization(const DeviceCapabilities& capabilities,
+                                                                         RendererKind requested,
+                                                                         const fx::FxRequiredFeatures& required);
 
 } // namespace dayo::graphics

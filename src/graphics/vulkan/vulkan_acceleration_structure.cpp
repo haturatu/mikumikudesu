@@ -68,8 +68,7 @@ void VulkanAccelerationBackend::destroyTlas(handles::AccelerationStructureHandle
     device_->destroyAccelerationStructureEx(tlas);
 }
 
-void VulkanAccelerationBackend::recordBlasUpdate(CommandList& commands,
-                                                 handles::AccelerationStructureHandle blas,
+void VulkanAccelerationBackend::recordBlasUpdate(CommandList& commands, handles::AccelerationStructureHandle blas,
                                                  const BlasGeometryDesc& geometry) {
     auto* vulkanCommands = dynamic_cast<VulkanCommandList*>(&commands);
     if (vulkanCommands == nullptr)
@@ -77,8 +76,7 @@ void VulkanAccelerationBackend::recordBlasUpdate(CommandList& commands,
     device_->recordBlasUpdate(vulkanCommands->commandBuffer(), blas, geometry);
 }
 
-void VulkanAccelerationBackend::recordTlasUpdate(CommandList& commands,
-                                                 handles::AccelerationStructureHandle tlas,
+void VulkanAccelerationBackend::recordTlasUpdate(CommandList& commands, handles::AccelerationStructureHandle tlas,
                                                  std::span<const TlasInstanceDesc> instances) {
     auto* vulkanCommands = dynamic_cast<VulkanCommandList*>(&commands);
     if (vulkanCommands == nullptr)

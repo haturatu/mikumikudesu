@@ -135,8 +135,7 @@ template <typename T> bool writeValue(std::byte* destination, const T& value) no
     return true;
 }
 
-template <std::size_t N>
-bool writeArray(std::byte* destination, const std::array<float, N>& value) noexcept {
+template <std::size_t N> bool writeArray(std::byte* destination, const std::array<float, N>& value) noexcept {
     if (destination == nullptr)
         return false;
     std::memcpy(destination, value.data(), sizeof(value));

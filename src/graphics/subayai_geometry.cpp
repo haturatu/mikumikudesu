@@ -158,7 +158,7 @@ bool NativeGeometryRuntime::synchronizeAcceleration(std::string* error) {
 }
 
 TlasAction NativeGeometryRuntime::synchronizeWorld(std::uint64_t worldGeneration,
-                                                    std::span<const WorldInstance> instances) {
+                                                   std::span<const WorldInstance> instances) {
     if (!ready())
         throw std::logic_error("native geometry runtime is not initialized");
     const auto action = acceleration_.notifyWorld(worldGeneration, instances);

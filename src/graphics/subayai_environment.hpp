@@ -154,8 +154,7 @@ class NativeEnvironmentBackend final : public IEnvironmentBackend {
         handles::DescriptorSetHandle prefilterSet{};
     };
 
-    [[nodiscard]] EnvironmentGpuResult regenerateLinear(const EnvironmentDesc& desc,
-                                                        const core::ImageData& image);
+    [[nodiscard]] EnvironmentGpuResult regenerateLinear(const EnvironmentDesc& desc, const core::ImageData& image);
     Device* device_{};
     EnvironmentPassBindings bindings_;
     Resources resources_;

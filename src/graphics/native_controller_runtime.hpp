@@ -48,8 +48,7 @@ struct NativeControllerLayout {
     [[nodiscard]] const NativeControllerField* find(std::string_view name) const noexcept;
 };
 
-[[nodiscard]] NativeControllerLayout
-makeNativeControllerLayout(std::span<const core::EffectController> controllers);
+[[nodiscard]] NativeControllerLayout makeNativeControllerLayout(std::span<const core::EffectController> controllers);
 
 // Mutable host-side values for one generated controller block. The block is
 // initialized to zero so an effect remains deterministic until its application
@@ -69,18 +68,13 @@ class NativeControllerBlock {
     bool setInt(std::string_view name, std::int32_t value, std::size_t arrayIndex = 0) noexcept;
     bool setUInt(std::string_view name, std::uint32_t value, std::size_t arrayIndex = 0) noexcept;
     bool setFloat(std::string_view name, float value, std::size_t arrayIndex = 0) noexcept;
-    bool setFloat2(std::string_view name, const std::array<float, 2>& value,
-                   std::size_t arrayIndex = 0) noexcept;
-    bool setFloat3(std::string_view name, const std::array<float, 3>& value,
-                   std::size_t arrayIndex = 0) noexcept;
-    bool setFloat4(std::string_view name, const std::array<float, 4>& value,
-                   std::size_t arrayIndex = 0) noexcept;
-    bool setMatrix4x4(std::string_view name, const std::array<float, 16>& value,
-                     std::size_t arrayIndex = 0) noexcept;
+    bool setFloat2(std::string_view name, const std::array<float, 2>& value, std::size_t arrayIndex = 0) noexcept;
+    bool setFloat3(std::string_view name, const std::array<float, 3>& value, std::size_t arrayIndex = 0) noexcept;
+    bool setFloat4(std::string_view name, const std::array<float, 4>& value, std::size_t arrayIndex = 0) noexcept;
+    bool setMatrix4x4(std::string_view name, const std::array<float, 16>& value, std::size_t arrayIndex = 0) noexcept;
 
   private:
-    [[nodiscard]] std::byte* element(const NativeControllerField& field,
-                                      std::size_t arrayIndex) noexcept;
+    [[nodiscard]] std::byte* element(const NativeControllerField& field, std::size_t arrayIndex) noexcept;
 
     NativeControllerLayout layout_;
     std::vector<std::byte> bytes_;
@@ -99,8 +93,7 @@ class NativeControllerRuntime {
 
     [[nodiscard]] bool initialize(Device& device, std::span<const core::EffectController> controllers,
                                   std::string* error = nullptr);
-    [[nodiscard]] bool sync(Device& device, std::span<const std::byte> bytes,
-                            std::string* error = nullptr);
+    [[nodiscard]] bool sync(Device& device, std::span<const std::byte> bytes, std::string* error = nullptr);
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {

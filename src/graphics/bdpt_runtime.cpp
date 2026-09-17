@@ -28,15 +28,15 @@ DescriptorSetLayoutDesc bdptResourceBindingLayout() noexcept {
     const auto stages = nativeBdptStages();
     DescriptorSetLayoutDesc result;
     result.bindings.reserve(3U + BdptAccumulation::kVolumeSlots);
-    result.bindings.push_back({nativeSceneBinding(NativeSceneRegisterClass::uav, 0), DescriptorKind::storageImage, 1,
-                               stages});
-    result.bindings.push_back({nativeSceneBinding(NativeSceneRegisterClass::sampled, 0),
-                               DescriptorKind::storageBuffer, 1, stages});
-    result.bindings.push_back({nativeSceneBinding(NativeSceneRegisterClass::sampled, 1),
-                               DescriptorKind::storageBuffer, 1, stages});
+    result.bindings.push_back(
+        {nativeSceneBinding(NativeSceneRegisterClass::uav, 0), DescriptorKind::storageImage, 1, stages});
+    result.bindings.push_back(
+        {nativeSceneBinding(NativeSceneRegisterClass::sampled, 0), DescriptorKind::storageBuffer, 1, stages});
+    result.bindings.push_back(
+        {nativeSceneBinding(NativeSceneRegisterClass::sampled, 1), DescriptorKind::storageBuffer, 1, stages});
     for (std::uint32_t index = 0; index < BdptAccumulation::kVolumeSlots; ++index)
-        result.bindings.push_back({nativeSceneBinding(NativeSceneRegisterClass::uav, 1U + index),
-                                   DescriptorKind::storageImage, 1, stages});
+        result.bindings.push_back(
+            {nativeSceneBinding(NativeSceneRegisterClass::uav, 1U + index), DescriptorKind::storageImage, 1, stages});
     return result;
 }
 
@@ -176,20 +176,18 @@ bool BdptRuntime::ensureResources(std::uint32_t width, std::uint32_t height, std
         return false;
     const auto gpu = accumulation_.gpuResources();
     std::array<DescriptorBindingEx, 3U + BdptAccumulation::kVolumeSlots> bindings{};
-    bindings[0] = {.slot = nativeSceneBinding(NativeSceneRegisterClass::uav, 0),
-                   .arrayElement = 0,
-                   .texture = gpu.accumulation};
-    bindings[1] = {.slot = nativeSceneBinding(NativeSceneRegisterClass::sampled, 0),
-                   .arrayElement = 0,
-                   .buffer = gpu.spectralLut};
+    bindings[0] = {
+        .slot = nativeSceneBinding(NativeSceneRegisterClass::uav, 0), .arrayElement = 0, .texture = gpu.accumulation};
+    bindings[1] = {
+        .slot = nativeSceneBinding(NativeSceneRegisterClass::sampled, 0), .arrayElement = 0, .buffer = gpu.spectralLut};
     bindings[2] = {.slot = nativeSceneBinding(NativeSceneRegisterClass::sampled, 1),
                    .arrayElement = 0,
                    .buffer = gpu.blackbodyLut};
     for (std::size_t index = 0; index < BdptAccumulation::kVolumeSlots; ++index)
-        bindings[3U + index] = {.slot = nativeSceneBinding(NativeSceneRegisterClass::uav,
-                                                            1U + static_cast<std::uint32_t>(index)),
-                                .arrayElement = 0,
-                                .texture = gpu.volumes[index]};
+        bindings[3U + index] = {
+            .slot = nativeSceneBinding(NativeSceneRegisterClass::uav, 1U + static_cast<std::uint32_t>(index)),
+            .arrayElement = 0,
+            .texture = gpu.volumes[index]};
     try {
         if (descriptorSet_.valid()) {
             device_->updateDescriptorSetEx(descriptorSet_, bindings);
@@ -246,8 +244,7 @@ BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::Dir
         std::vector<handles::DescriptorSetLayoutHandle> sharedLayouts;
         std::vector<handles::DescriptorSetHandle> sharedSets;
         fx::FxNativeShaderSourceOptions sourceOptions;
-        sourceOptions.preamble =
-            "struct YRZ_BdptAliasEntry { float probability; uint alias; };\n";
+        sourceOptions.preamble = "struct YRZ_BdptAliasEntry { float probability; uint alias; };\n";
         if (sceneFrame_ != nullptr) {
             if (!sceneFrame_->descriptorSetsReady())
                 throw std::runtime_error("native BDPT scene descriptor sets are not synchronized");
@@ -266,37 +263,37 @@ BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::Dir
             describe(index);
         };
         append(bindings_.layouts().lightSampling, bindings_.lightSamplingSet(), [&](const auto index) {
-            sourceOptions.resources.push_back({
-                .declaration = "StructuredBuffer<YRZ_BdptAliasEntry> YRZ_BdptLightSampling",
-                .registerClass = fx::FxNativeShaderRegister::sampled,
-                .registerIndex = 0,
-                .descriptorSet = index});
+            sourceOptions.resources.push_back(
+                {.declaration = "StructuredBuffer<YRZ_BdptAliasEntry> YRZ_BdptLightSampling",
+                 .registerClass = fx::FxNativeShaderRegister::sampled,
+                 .registerIndex = 0,
+                 .descriptorSet = index});
         });
         append(descriptorLayout_, descriptorSet_, [&](const auto index) {
             sourceOptions.resources.push_back({.declaration = "RWTexture2D<float4> YRZ_BdptAccumulation",
-                                                .registerClass = fx::FxNativeShaderRegister::uav,
-                                                .registerIndex = 0,
-                                                .descriptorSet = index});
+                                               .registerClass = fx::FxNativeShaderRegister::uav,
+                                               .registerIndex = 0,
+                                               .descriptorSet = index});
             sourceOptions.resources.push_back({.declaration = "StructuredBuffer<float> YRZ_BdptSpectralLut",
-                                                .registerClass = fx::FxNativeShaderRegister::sampled,
-                                                .registerIndex = 0,
-                                                .descriptorSet = index});
+                                               .registerClass = fx::FxNativeShaderRegister::sampled,
+                                               .registerIndex = 0,
+                                               .descriptorSet = index});
             sourceOptions.resources.push_back({.declaration = "StructuredBuffer<float> YRZ_BdptBlackbodyLut",
-                                                .registerClass = fx::FxNativeShaderRegister::sampled,
-                                                .registerIndex = 1,
-                                                .descriptorSet = index});
+                                               .registerClass = fx::FxNativeShaderRegister::sampled,
+                                               .registerIndex = 1,
+                                               .descriptorSet = index});
             for (std::uint32_t volume = 0; volume < BdptAccumulation::kVolumeSlots; ++volume)
-                sourceOptions.resources.push_back({
-                    .declaration = "RWTexture3D<float4> YRZ_BdptVolume" + std::to_string(volume),
-                    .registerClass = fx::FxNativeShaderRegister::uav,
-                    .registerIndex = 1U + volume,
-                    .descriptorSet = index});
+                sourceOptions.resources.push_back(
+                    {.declaration = "RWTexture3D<float4> YRZ_BdptVolume" + std::to_string(volume),
+                     .registerClass = fx::FxNativeShaderRegister::uav,
+                     .registerIndex = 1U + volume,
+                     .descriptorSet = index});
         });
         append(geometry_.descriptorLayout(), geometry_.descriptorSet(), [&](const auto index) {
             sourceOptions.resources.push_back({.declaration = "RaytracingAccelerationStructure YRZ_BdptTLAS",
-                                                .registerClass = fx::FxNativeShaderRegister::sampled,
-                                                .registerIndex = 0,
-                                                .descriptorSet = index});
+                                               .registerClass = fx::FxNativeShaderRegister::sampled,
+                                               .registerIndex = 0,
+                                               .descriptorSet = index});
         });
         std::string nativeError;
         static_cast<void>(nativeFx_.initializeForFrame(*device_, program_, fx::FxShaderCompiler{}, context,
@@ -323,7 +320,8 @@ VulkanFxExecutor::Stats BdptRuntime::execute(BdptFrame& frame, CommandList& comm
     if (frame.nativeFx.has_value())
         return nativeFx_.execute(*frame.nativeFx, commands, resources);
     auto nativeResources = resources;
-    if ((frame.descriptorSet.valid() || frame.lightSamplingDescriptorSet.valid() || frame.geometryDescriptorSet.valid()) &&
+    if ((frame.descriptorSet.valid() || frame.lightSamplingDescriptorSet.valid() ||
+         frame.geometryDescriptorSet.valid()) &&
         !nativeResources.resolveDescriptorSets && !nativeResources.resolveDescriptorSet) {
         const auto descriptorSet = frame.descriptorSet;
         const auto lightSamplingSet = frame.lightSamplingDescriptorSet;

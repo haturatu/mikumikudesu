@@ -62,18 +62,14 @@ bool NativeSceneResourceRuntime::sync(const NativeSceneResourceBindings& resourc
         setError(error, "native scene resource is unavailable: " + std::string(name));
         return false;
     };
-    if (!checkHandle(resources.rtOutput.valid(), "RTOutput") ||
-        !checkHandle(resources.oidnBuffer.valid(), "OIDNBuf") ||
+    if (!checkHandle(resources.rtOutput.valid(), "RTOutput") || !checkHandle(resources.oidnBuffer.valid(), "OIDNBuf") ||
         !checkHandle(resources.normalDepth.valid(), "NormalDepth") ||
-        !checkHandle(resources.gbuffer1.valid(), "GBuffer1") ||
-        !checkHandle(resources.gbuffer2.valid(), "GBuffer2") ||
-        !checkHandle(resources.tlas.valid(), "TLAS") ||
-        !checkHandle(resources.modelToMaterial.valid(), "Model2Mat") ||
+        !checkHandle(resources.gbuffer1.valid(), "GBuffer1") || !checkHandle(resources.gbuffer2.valid(), "GBuffer2") ||
+        !checkHandle(resources.tlas.valid(), "TLAS") || !checkHandle(resources.modelToMaterial.valid(), "Model2Mat") ||
         !checkHandle(resources.materialToModel.valid(), "Mat2Model") ||
         !checkHandle(resources.peekaboo.valid(), "Peekaboo") ||
         !checkHandle(resources.materialSelected.valid(), "MatSelected") ||
-        !checkHandle(resources.skybox.valid(), "Skybox") ||
-        !checkHandle(resources.skywalker.valid(), "Skywalker") ||
+        !checkHandle(resources.skybox.valid(), "Skybox") || !checkHandle(resources.skywalker.valid(), "Skywalker") ||
         !checkHandle(resources.skywalkerRow.valid(), "SkywalkerRow") ||
         !checkHandle(resources.skyboxSh.valid(), "SkyboxSH") ||
         !checkHandle(resources.screenBmp.valid(), "ScreenBMP") ||
@@ -83,15 +79,11 @@ bool NativeSceneResourceRuntime::sync(const NativeSceneResourceBindings& resourc
         !checkHandle(resources.controllerConstants.valid(), "YRZFX_ControllerCB") ||
         !checkHandle(resources.textureTable.valid(), "TextureTable") ||
         !checkHandle(resources.passConstants.valid(), "CBuff1") ||
-        !checkHandle(valid(resources.textures), "Textures") ||
-        !checkHandle(valid(resources.vertexBuffers), "VB") ||
-        !checkHandle(valid(resources.indexBuffers), "IB") ||
-        !checkHandle(valid(resources.materials), "MMDMaterials") ||
-        !checkHandle(valid(resources.faces), "Faces") ||
-        !checkHandle(valid(resources.materialFaces), "Mat2face") ||
+        !checkHandle(valid(resources.textures), "Textures") || !checkHandle(valid(resources.vertexBuffers), "VB") ||
+        !checkHandle(valid(resources.indexBuffers), "IB") || !checkHandle(valid(resources.materials), "MMDMaterials") ||
+        !checkHandle(valid(resources.faces), "Faces") || !checkHandle(valid(resources.materialFaces), "Mat2face") ||
         !checkHandle(valid(resources.faceWalkers), "FaceWalker") ||
-        !checkHandle(valid(resources.previousVertices), "PreVB") ||
-        !checkHandle(valid(resources.rawVertices), "RawVB"))
+        !checkHandle(valid(resources.previousVertices), "PreVB") || !checkHandle(valid(resources.rawVertices), "RawVB"))
         return false;
 
     std::vector<DescriptorBindingEx> frame;

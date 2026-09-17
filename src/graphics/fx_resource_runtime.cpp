@@ -1,7 +1,7 @@
 #include "graphics/fx_resource_runtime.hpp"
 
-#include "core/image.hpp"
 #include "core/fx/fx_size.hpp"
+#include "core/image.hpp"
 #include "graphics/native_scene_bindings.hpp"
 
 #include <algorithm>
@@ -168,7 +168,7 @@ class ExtentTable final : public core::fx::FxResourceTable {
 
 [[nodiscard]] DescriptorKind bufferDescriptorKind(std::string_view view) {
     return contains(view, "UAV") || contains(view, "STORAGE") ? DescriptorKind::storageBuffer
-                                                                  : DescriptorKind::uniformBuffer;
+                                                              : DescriptorKind::uniformBuffer;
 }
 
 [[nodiscard]] std::size_t checkedSize(std::uint64_t value, std::string_view name) {
@@ -242,16 +242,14 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
         std::uint32_t sampledBinding = 0;
         std::uint32_t samplerBinding = 0;
         const auto nextBinding = [&](NativeSceneRegisterClass registerClass) {
-            const auto index = registerClass == NativeSceneRegisterClass::uav
-                                   ? uavBinding++
-                                   : registerClass == NativeSceneRegisterClass::sampled
-                                         ? sampledBinding++
-                                         : samplerBinding++;
+            const auto index = registerClass == NativeSceneRegisterClass::uav       ? uavBinding++
+                               : registerClass == NativeSceneRegisterClass::sampled ? sampledBinding++
+                                                                                    : samplerBinding++;
             return nativeSceneBinding(registerClass, index);
         };
         const auto registerClass = [](std::string_view view) {
             return contains(view, "UAV") || contains(view, "STORAGE") ? NativeSceneRegisterClass::uav
-                                                                        : NativeSceneRegisterClass::sampled;
+                                                                      : NativeSceneRegisterClass::sampled;
         };
         const auto addBinding = [&](std::uint32_t binding, DescriptorKind kind) {
             descriptorLayoutDesc_.bindings.push_back({binding, kind, 1, stages});
@@ -363,10 +361,8 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
         for (const auto& declaration : program.samplers) {
             const auto name = addName(declaration.name);
             const auto binding = nextBinding(NativeSceneRegisterClass::sampler);
-            Resource resource{.name = name,
-                              .kind = Kind::sampler,
-                              .descriptorKind = DescriptorKind::sampler,
-                              .binding = binding};
+            Resource resource{
+                .name = name, .kind = Kind::sampler, .descriptorKind = DescriptorKind::sampler, .binding = binding};
             resource.sampler = device.createSamplerEx(samplerDesc(declaration));
             if (!resource.sampler.valid())
                 throw std::runtime_error("FX sampler allocation returned an invalid handle: " + name);
@@ -491,9 +487,7 @@ FxResourceRuntime::resolveOutputTexture(std::span<const fx::FxDispatch> ordered)
             const auto& candidate = resources_[found->second];
             if (candidate.kind != Kind::texture)
                 continue;
-            return ResolvedTexture{.handle = candidate.texture,
-                                   .extent = candidate.extent,
-                                   .format = candidate.format};
+            return ResolvedTexture{.handle = candidate.texture, .extent = candidate.extent, .format = candidate.format};
         }
     }
     return std::nullopt;

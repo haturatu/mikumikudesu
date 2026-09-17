@@ -4,11 +4,11 @@
 
 #include <algorithm>
 #include <cctype>
-#include <functional>
 #include <filesystem>
+#include <functional>
 #include <optional>
-#include <sstream>
 #include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 #include <system_error>
@@ -103,7 +103,7 @@ std::string lowerAscii(std::string_view value) {
 }
 
 std::optional<std::filesystem::path> resolveIncludeCase(const std::filesystem::path& directory,
-                                                         std::string_view include) {
+                                                        std::string_view include) {
     const std::filesystem::path requested(include);
     if (requested.is_absolute())
         return std::nullopt;
@@ -155,10 +155,10 @@ std::string normalizeIncludeCase(std::string_view source, const std::filesystem:
         const auto length = lineEnd == std::string_view::npos ? source.size() - lineStart : lineEnd - lineStart;
         const auto line = source.substr(lineStart, length);
         const auto includeStart = line.find("#include");
-        const auto quoteStart = includeStart == std::string_view::npos ? std::string_view::npos
-                                                                          : line.find('"', includeStart + 8);
-        const auto quoteEnd = quoteStart == std::string_view::npos ? std::string_view::npos
-                                                                     : line.find('"', quoteStart + 1);
+        const auto quoteStart =
+            includeStart == std::string_view::npos ? std::string_view::npos : line.find('"', includeStart + 8);
+        const auto quoteEnd =
+            quoteStart == std::string_view::npos ? std::string_view::npos : line.find('"', quoteStart + 1);
         if (quoteStart != std::string_view::npos && quoteEnd != std::string_view::npos) {
             const auto include = line.substr(quoteStart + 1, quoteEnd - quoteStart - 1);
             const auto resolved = resolveIncludeCase(directory, include);
@@ -229,10 +229,9 @@ PixelFormat graphicsTargetFormat(const fx::FxProgram& program, const fx::FxDispa
     for (const auto& resource : dispatch.resources) {
         if (!resource.write)
             continue;
-        const auto texture = std::find_if(program.textures.begin(), program.textures.end(),
-                                          [&resource](const auto& declaration) {
-                                              return declaration.name == resource.name;
-                                          });
+        const auto texture =
+            std::find_if(program.textures.begin(), program.textures.end(),
+                         [&resource](const auto& declaration) { return declaration.name == resource.name; });
         if (texture != program.textures.end())
             return textureFormat(texture->format);
     }
@@ -246,10 +245,10 @@ FxPipelineRuntime::~FxPipelineRuntime() {
 }
 
 handles::ShaderHandle FxPipelineRuntime::compileShader(Device& device, const fx::FxProgram& program,
-                                                        const fx::FxDispatch& dispatch, std::string_view entryPoint,
-                                                        fx::FxShaderStage stage, const fx::FxShaderCompiler& compiler,
-                                                        Entry& entry, std::uint32_t resourceSet,
-                                                        const fx::FxNativeShaderSourceOptions& sourceOptions) {
+                                                       const fx::FxDispatch& dispatch, std::string_view entryPoint,
+                                                       fx::FxShaderStage stage, const fx::FxShaderCompiler& compiler,
+                                                       Entry& entry, std::uint32_t resourceSet,
+                                                       const fx::FxNativeShaderSourceOptions& sourceOptions) {
     if (entryPoint.empty())
         throw std::invalid_argument("FX shader entry point is empty for pass " + dispatch.name);
     if (program.hlsl.empty())
@@ -260,8 +259,8 @@ handles::ShaderHandle FxPipelineRuntime::compileShader(Device& device, const fx:
     request.macros = dispatch.macros;
     request.macros.push_back(passMacro(dispatch.name));
     const auto generatedSource = fx::makeNativeFxShaderSource(program, dispatch, resourceSet, sourceOptions);
-    key.sourceHash = program.sourcePath.string() + "@" + std::to_string(program.sourceVersion) + "@" +
-                     std::to_string(resourceSet);
+    key.sourceHash =
+        program.sourcePath.string() + "@" + std::to_string(program.sourceVersion) + "@" + std::to_string(resourceSet);
     key.hlslHash = std::to_string(std::hash<std::string>{}(generatedSource));
     key.entryPoint = std::string(entryPoint);
     key.stage = stageName(stage);
@@ -275,15 +274,14 @@ handles::ShaderHandle FxPipelineRuntime::compileShader(Device& device, const fx:
     // resolution they have in the source tree.
     if (!program.sourcePath.empty()) {
         const auto sourceDirectory = program.sourcePath.parent_path();
-        request.includeDirectories.push_back(sourceDirectory.empty() ? std::filesystem::path{"."}
-                                                                      : sourceDirectory);
+        request.includeDirectories.push_back(sourceDirectory.empty() ? std::filesystem::path{"."} : sourceDirectory);
     }
     key.includeDirectories = includeDirectoryKey(request.includeDirectories);
 
-    const auto sourceDirectory = program.sourcePath.empty() ? std::filesystem::path{"."}
-                                                            : program.sourcePath.parent_path();
-    request.hlsl = normalizeIncludeCase(generatedSource, sourceDirectory.empty() ? std::filesystem::path{"."}
-                                                                                   : sourceDirectory);
+    const auto sourceDirectory =
+        program.sourcePath.empty() ? std::filesystem::path{"."} : program.sourcePath.parent_path();
+    request.hlsl =
+        normalizeIncludeCase(generatedSource, sourceDirectory.empty() ? std::filesystem::path{"."} : sourceDirectory);
     request.sourcePath = program.sourcePath;
     request.entryPoint = std::string(entryPoint);
     request.stage = stage;
@@ -327,16 +325,16 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                 const auto* raster = std::get_if<fx::FxRasterDispatch>(&dispatch.executable);
                 if (raster == nullptr || raster->vertexShader.empty() || raster->pixelShader.empty())
                     throw std::invalid_argument("raster FX pass requires vertex and pixel shaders: " + dispatch.name);
-                const auto vertex = compileShader(device, program, dispatch, raster->vertexShader,
-                                                  fx::FxShaderStage::vertex, compiler, entry, resourceSet,
-                                                  sourceOptions);
-                const auto pixel = compileShader(device, program, dispatch, raster->pixelShader,
-                                                 fx::FxShaderStage::fragment, compiler, entry, resourceSet,
-                                                 sourceOptions);
-                entry.pipeline = device.createGraphicsPipelineEx({.layout = *layout,
-                                                                   .shaders = {vertex, pixel},
-                                                                   .colorFormat = graphicsTargetFormat(program,
-                                                                                                       dispatch)});
+                const auto vertex =
+                    compileShader(device, program, dispatch, raster->vertexShader, fx::FxShaderStage::vertex, compiler,
+                                  entry, resourceSet, sourceOptions);
+                const auto pixel =
+                    compileShader(device, program, dispatch, raster->pixelShader, fx::FxShaderStage::fragment, compiler,
+                                  entry, resourceSet, sourceOptions);
+                entry.pipeline =
+                    device.createGraphicsPipelineEx({.layout = *layout,
+                                                     .shaders = {vertex, pixel},
+                                                     .colorFormat = graphicsTargetFormat(program, dispatch)});
                 break;
             }
             case fx::FxOpKind::postprocess: {
@@ -347,22 +345,22 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                 if (!fullscreenVertex.valid())
                     throw std::invalid_argument(
                         "postprocess FX pipeline needs a renderer-owned fullscreen vertex shader: " + dispatch.name);
-                const auto pixel = compileShader(device, program, dispatch, postprocess->pixelShader,
-                                                 fx::FxShaderStage::fragment, compiler, entry, resourceSet,
-                                                 sourceOptions);
-                entry.pipeline = device.createGraphicsPipelineEx({.layout = *layout,
-                                                                    .shaders = {fullscreenVertex, pixel},
-                                                                    .colorFormat = graphicsTargetFormat(program,
-                                                                                                        dispatch)});
+                const auto pixel =
+                    compileShader(device, program, dispatch, postprocess->pixelShader, fx::FxShaderStage::fragment,
+                                  compiler, entry, resourceSet, sourceOptions);
+                entry.pipeline =
+                    device.createGraphicsPipelineEx({.layout = *layout,
+                                                     .shaders = {fullscreenVertex, pixel},
+                                                     .colorFormat = graphicsTargetFormat(program, dispatch)});
                 break;
             }
             case fx::FxOpKind::compute: {
                 const auto* compute = std::get_if<fx::FxComputeDispatch>(&dispatch.executable);
                 if (compute == nullptr || compute->computeShader.empty())
                     throw std::invalid_argument("compute FX pass requires a compute shader: " + dispatch.name);
-                const auto shader = compileShader(device, program, dispatch, compute->computeShader,
-                                                  fx::FxShaderStage::compute, compiler, entry, resourceSet,
-                                                  sourceOptions);
+                const auto shader =
+                    compileShader(device, program, dispatch, compute->computeShader, fx::FxShaderStage::compute,
+                                  compiler, entry, resourceSet, sourceOptions);
                 entry.pipeline = device.createComputePipelineEx({.layout = *layout, .shaders = {shader}});
                 break;
             }
@@ -375,30 +373,28 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                 descriptor.maxPayloadSize = ray->maxPayloadSize;
                 descriptor.maxAttributeSize = ray->maxAttributeSize;
                 descriptor.maxRecursionDepth = ray->maxRecursionDepth;
-                descriptor.rayGeneration.push_back(
-                    compileShader(device, program, dispatch, ray->rayGenerationShader,
-                                  fx::FxShaderStage::rayGeneration, compiler, entry, resourceSet, sourceOptions));
+                descriptor.rayGeneration.push_back(compileShader(device, program, dispatch, ray->rayGenerationShader,
+                                                                 fx::FxShaderStage::rayGeneration, compiler, entry,
+                                                                 resourceSet, sourceOptions));
                 for (const auto& shader : ray->missShaders)
-                    descriptor.miss.push_back(
-                        compileShader(device, program, dispatch, shader, fx::FxShaderStage::miss, compiler, entry,
-                                      resourceSet, sourceOptions));
+                    descriptor.miss.push_back(compileShader(device, program, dispatch, shader, fx::FxShaderStage::miss,
+                                                            compiler, entry, resourceSet, sourceOptions));
                 for (const auto& group : ray->hitGroups) {
                     RayTracingHitGroupDesc hit;
                     hit.type = group.type == core::fx::FxRayTracingHitGroupType::procedural
                                    ? RayTracingHitGroupType::procedural
                                    : RayTracingHitGroupType::triangles;
                     if (!group.closestHit.empty())
-                        hit.closestHit = compileShader(device, program, dispatch, group.closestHit,
-                                                       fx::FxShaderStage::closestHit, compiler, entry, resourceSet,
-                                                       sourceOptions);
+                        hit.closestHit =
+                            compileShader(device, program, dispatch, group.closestHit, fx::FxShaderStage::closestHit,
+                                          compiler, entry, resourceSet, sourceOptions);
                     if (!group.anyHit.empty())
-                        hit.anyHit = compileShader(device, program, dispatch, group.anyHit,
-                                                   fx::FxShaderStage::anyHit, compiler, entry, resourceSet,
-                                                   sourceOptions);
+                        hit.anyHit = compileShader(device, program, dispatch, group.anyHit, fx::FxShaderStage::anyHit,
+                                                   compiler, entry, resourceSet, sourceOptions);
                     if (!group.intersection.empty())
-                        hit.intersection = compileShader(device, program, dispatch, group.intersection,
-                                                         fx::FxShaderStage::intersection, compiler, entry, resourceSet,
-                                                         sourceOptions);
+                        hit.intersection =
+                            compileShader(device, program, dispatch, group.intersection,
+                                          fx::FxShaderStage::intersection, compiler, entry, resourceSet, sourceOptions);
                     descriptor.hitGroups.push_back(hit);
                 }
                 for (const auto& shader : ray->callableShaders)

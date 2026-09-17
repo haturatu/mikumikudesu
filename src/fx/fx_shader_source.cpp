@@ -118,25 +118,25 @@ void appendControllerBlock(std::ostringstream& output, const FxProgram& program)
 }
 
 void appendTextureDeclarations(std::ostringstream& output, const FxProgram& program, std::uint32_t resourceSet,
-                               std::uint32_t& sampledBinding,
-                               std::uint32_t& uavBinding) {
+                               std::uint32_t& sampledBinding, std::uint32_t& uavBinding) {
     for (const auto& texture : program.textures) {
         const auto write = isUav(texture.view);
         const auto binding = write ? uavBinding++ : sampledBinding++;
-        output << (write ? "RWTexture2D<" : "Texture2D<") << elementType(texture.format) << "> " << identifier(texture.name)
-               << " : register(" << (write ? 'u' : 't') << binding << resourceSetSuffix(resourceSet) << ");\n";
+        output << (write ? "RWTexture2D<" : "Texture2D<") << elementType(texture.format) << "> "
+               << identifier(texture.name) << " : register(" << (write ? 'u' : 't') << binding
+               << resourceSetSuffix(resourceSet) << ");\n";
     }
     for (const auto& texture : program.textures3D) {
         const auto write = isUav(texture.view);
         const auto binding = write ? uavBinding++ : sampledBinding++;
-        output << (write ? "RWTexture3D<" : "Texture3D<") << elementType(texture.format) << "> " << identifier(texture.name)
-               << " : register(" << (write ? 'u' : 't') << binding << resourceSetSuffix(resourceSet) << ");\n";
+        output << (write ? "RWTexture3D<" : "Texture3D<") << elementType(texture.format) << "> "
+               << identifier(texture.name) << " : register(" << (write ? 'u' : 't') << binding
+               << resourceSetSuffix(resourceSet) << ");\n";
     }
 }
 
 void appendBufferDeclarations(std::ostringstream& output, const FxProgram& program, std::uint32_t resourceSet,
-                              std::uint32_t& sampledBinding,
-                              std::uint32_t& uavBinding) {
+                              std::uint32_t& sampledBinding, std::uint32_t& uavBinding) {
     for (const auto& buffer : program.buffers) {
         const auto write = isUav(buffer.view);
         const auto binding = write ? uavBinding++ : sampledBinding++;
@@ -166,8 +166,7 @@ void appendSharedDeclarations(std::ostringstream& output, const FxNativeShaderSo
         if (resource.declaration.empty())
             throw std::invalid_argument("native FX shared resource declaration is empty");
         if (!names.insert(resource.declaration).second)
-            throw std::invalid_argument("native FX shared resource declaration is duplicated: " +
-                                        resource.declaration);
+            throw std::invalid_argument("native FX shared resource declaration is duplicated: " + resource.declaration);
         output << resource.declaration << " : register(" << registerPrefix(resource.registerClass)
                << resource.registerIndex << resourceSetSuffix(resource.descriptorSet) << ");\n";
     }
@@ -175,8 +174,8 @@ void appendSharedDeclarations(std::ostringstream& output, const FxNativeShaderSo
 
 } // namespace
 
-std::string makeNativeFxShaderSource(const FxProgram& program, const FxDispatch& dispatch,
-                                     std::uint32_t resourceSet, const FxNativeShaderSourceOptions& options) {
+std::string makeNativeFxShaderSource(const FxProgram& program, const FxDispatch& dispatch, std::uint32_t resourceSet,
+                                     const FxNativeShaderSourceOptions& options) {
     std::ostringstream output;
     output << "// generated native FX declarations\n";
     appendSharedDeclarations(output, options);

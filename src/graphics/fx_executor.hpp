@@ -38,8 +38,7 @@ struct FxExecutionResources {
         std::function<std::optional<handles::ShaderBindingTableHandle>(const dayo::fx::FxDispatch&)>;
     using DescriptorSetResolver =
         std::function<std::optional<handles::DescriptorSetHandle>(const dayo::fx::FxDispatch&)>;
-    using DescriptorSetsResolver =
-        std::function<std::vector<TypedDescriptorSetBinding>(const dayo::fx::FxDispatch&)>;
+    using DescriptorSetsResolver = std::function<std::vector<TypedDescriptorSetBinding>(const dayo::fx::FxDispatch&)>;
     using ResourceBindingResolver =
         std::function<std::optional<DescriptorBinding>(std::string_view, bool, std::uint32_t)>;
     using PushConstantResolver =

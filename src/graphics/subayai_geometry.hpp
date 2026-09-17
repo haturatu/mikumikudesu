@@ -29,7 +29,8 @@ struct NativeGeometryMeshUpload {
 // records the current-frame BLAS/TLAS updates after the deform dispatch.
 class NativeGeometryRuntime {
   public:
-    explicit NativeGeometryRuntime(IAccelerationBackend* backend = nullptr) : backend_(backend), acceleration_(backend) {}
+    explicit NativeGeometryRuntime(IAccelerationBackend* backend = nullptr)
+        : backend_(backend), acceleration_(backend) {}
     ~NativeGeometryRuntime();
 
     NativeGeometryRuntime(const NativeGeometryRuntime&) = delete;
@@ -42,8 +43,7 @@ class NativeGeometryRuntime {
     [[nodiscard]] bool updateMesh(const NativeGeometryMeshUpload& mesh, std::string* error = nullptr);
     void recordDeform(CommandList& commands) const;
     [[nodiscard]] bool synchronizeAcceleration(std::string* error = nullptr);
-    [[nodiscard]] TlasAction synchronizeWorld(std::uint64_t worldGeneration,
-                                               std::span<const WorldInstance> instances);
+    [[nodiscard]] TlasAction synchronizeWorld(std::uint64_t worldGeneration, std::span<const WorldInstance> instances);
     void recordAcceleration(CommandList& commands) const;
     void reset() noexcept;
 

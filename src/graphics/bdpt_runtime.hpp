@@ -6,8 +6,8 @@
 #include "graphics/fx_executor.hpp"
 #include "graphics/native_fx_runtime.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
-#include "graphics/subayai_geometry.hpp"
 #include "graphics/subayai_bindings.hpp"
+#include "graphics/subayai_geometry.hpp"
 #include "graphics/subayai_light_sampling.hpp"
 
 #include <array>

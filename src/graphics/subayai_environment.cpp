@@ -48,15 +48,14 @@ constexpr float kPi = 3.14159265358979323846F;
     const auto sampleHeight = std::min<std::uint32_t>(image.height, 128U);
     double totalWeight = 0.0;
     for (std::uint32_t y = 0; y < sampleHeight; ++y) {
-        const auto sourceY = static_cast<std::uint32_t>(
-            (static_cast<std::uint64_t>(y) * image.height) / sampleHeight);
+        const auto sourceY = static_cast<std::uint32_t>((static_cast<std::uint64_t>(y) * image.height) / sampleHeight);
         const float v = (static_cast<float>(y) + 0.5F) / static_cast<float>(sampleHeight);
         const float theta = v * kPi;
         const float sinTheta = std::sin(theta);
         const float cosTheta = std::cos(theta);
         for (std::uint32_t x = 0; x < sampleWidth; ++x) {
-            const auto sourceX = static_cast<std::uint32_t>(
-                (static_cast<std::uint64_t>(x) * image.width) / sampleWidth);
+            const auto sourceX =
+                static_cast<std::uint32_t>((static_cast<std::uint64_t>(x) * image.width) / sampleWidth);
             const float u = (static_cast<float>(x) + 0.5F) / static_cast<float>(sampleWidth);
             const float phi = u * 2.0F * kPi;
             const float directionX = sinTheta * std::cos(phi);
@@ -90,7 +89,7 @@ constexpr float kPi = 3.14159265358979323846F;
 }
 
 [[nodiscard]] std::array<DescriptorBindingEx, 2> passBindings(handles::TextureHandle source,
-                                                               handles::TextureHandle destination) noexcept {
+                                                              handles::TextureHandle destination) noexcept {
     return {DescriptorBindingEx{.slot = 0, .arrayElement = 0, .texture = source},
             DescriptorBindingEx{.slot = 1, .arrayElement = 0, .texture = destination}};
 }
@@ -226,8 +225,7 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const Environmen
         });
         device_->uploadTextureEx(resources_.source, image.bytes, 0, 0);
         const auto conversion = passBindings(resources_.source, resources_.cubemap);
-        resources_.equirectToCubeSet =
-            device_->allocateDescriptorSetEx(bindings_.equirectToCubeLayout, conversion);
+        resources_.equirectToCubeSet = device_->allocateDescriptorSetEx(bindings_.equirectToCubeLayout, conversion);
         const auto prefilter = passBindings(resources_.cubemap, resources_.prefiltered);
         resources_.prefilterSet = device_->allocateDescriptorSetEx(bindings_.prefilterLayout, prefilter);
         if (!resources_.equirectToCubeSet.valid() || !resources_.prefilterSet.valid())
@@ -247,8 +245,7 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const Environmen
 void NativeEnvironmentBackend::record(CommandList& commands) const {
     if (!ready() || !bindings_.valid())
         throw std::logic_error("native environment backend is not initialized");
-    const NativeEnvironmentPushConstants constants{
-        .faceSize = faceSize_, .mipLevels = mipLevels_, .reserved = {0, 0}};
+    const NativeEnvironmentPushConstants constants{.faceSize = faceSize_, .mipLevels = mipLevels_, .reserved = {0, 0}};
     const auto groups = (faceSize_ + 7U) / 8U;
     commands.transitionEx(resources_.source);
     commands.transitionEx(resources_.cubemap);

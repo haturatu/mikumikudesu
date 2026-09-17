@@ -282,8 +282,8 @@ void VulkanDevice::recordAccelerationBuildOnCommand(VkCommandBuffer commandBuffe
     buildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
     buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
     buildInfo.flags = sizeInfo.flags;
-    buildInfo.mode = update ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR
-                            : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    buildInfo.mode =
+        update ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     buildInfo.srcAccelerationStructure = update ? destination.structure : VK_NULL_HANDLE;
     buildInfo.dstAccelerationStructure = destination.structure;
     buildInfo.scratchData.deviceAddress = bufferDeviceAddress(scratch);
@@ -471,8 +471,7 @@ void VulkanDevice::recordTopLevelBuildOnCommand(VkCommandBuffer commandBuffer,
                                                 std::span<const AccelerationInstanceDesc> instances, bool update) {
     if (commandBuffer == VK_NULL_HANDLE)
         throw std::invalid_argument("TLAS command recording requires a command buffer");
-    if (!destination.topLevel || destination.instanceBuffer == VK_NULL_HANDLE ||
-        destination.mappedInstances == nullptr)
+    if (!destination.topLevel || destination.instanceBuffer == VK_NULL_HANDLE || destination.mappedInstances == nullptr)
         throw std::logic_error("TLAS has no instance buffer");
     const auto encoded = makeTlasInstances(instances);
     const auto bytes = checkedMultiply(encoded.size(), sizeof(VkAccelerationStructureInstanceKHR),
@@ -514,8 +513,8 @@ void VulkanDevice::recordTopLevelBuildOnCommand(VkCommandBuffer commandBuffer,
     buildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
     buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
     buildInfo.flags = sizeInfo.flags;
-    buildInfo.mode = update ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR
-                            : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    buildInfo.mode =
+        update ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     buildInfo.srcAccelerationStructure = update ? destination.structure : VK_NULL_HANDLE;
     buildInfo.dstAccelerationStructure = destination.structure;
     buildInfo.scratchData.deviceAddress = bufferDeviceAddress(scratch);

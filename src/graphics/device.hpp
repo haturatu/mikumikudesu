@@ -503,8 +503,7 @@ struct NativeFrameOutput {
     }
 };
 
-using NativeFrameRecorder =
-    std::function<std::optional<NativeFrameOutput>(CommandList&, const RenderTargetDesc&)>;
+using NativeFrameRecorder = std::function<std::optional<NativeFrameOutput>(CommandList&, const RenderTargetDesc&)>;
 
 class Device {
   public:

@@ -83,7 +83,8 @@ struct NativeDeformResources {
 // the resource set for the following BLAS build, but is not read by the
 // vertex deformation compute shader.
 [[nodiscard]] DescriptorSetLayoutDesc nativeDeformDescriptorLayout() noexcept;
-[[nodiscard]] PipelineLayoutDesc nativeDeformPipelineLayout(handles::DescriptorSetLayoutHandle descriptorLayout) noexcept;
+[[nodiscard]] PipelineLayoutDesc
+nativeDeformPipelineLayout(handles::DescriptorSetLayoutHandle descriptorLayout) noexcept;
 
 // Owns the buffers and descriptor set for one native deform pass. The
 // pipeline and descriptor-set layout are renderer-owned because they are
@@ -96,10 +97,8 @@ class NativeDeformRuntime {
     NativeDeformRuntime(const NativeDeformRuntime&) = delete;
     NativeDeformRuntime& operator=(const NativeDeformRuntime&) = delete;
 
-    [[nodiscard]] bool initialize(Device& device, const NativeDeformUpload& upload,
-                                  handles::PipelineHandle pipeline,
-                                  handles::DescriptorSetLayoutHandle descriptorLayout,
-                                  std::string* error = nullptr);
+    [[nodiscard]] bool initialize(Device& device, const NativeDeformUpload& upload, handles::PipelineHandle pipeline,
+                                  handles::DescriptorSetLayoutHandle descriptorLayout, std::string* error = nullptr);
     // Refreshes the CPU-visible deform inputs without replacing resources when
     // the mesh shape is unchanged. A shape change recreates the resource set
     // so descriptor bindings and BLAS geometry remain valid.

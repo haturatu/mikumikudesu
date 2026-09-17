@@ -48,9 +48,8 @@ class SubayaiBindingRuntime {
     }
 
   private:
-    [[nodiscard]] bool bindBuffer(handles::DescriptorSetLayoutHandle layout,
-                                  handles::DescriptorSetHandle& set, handles::BufferHandle buffer,
-                                  const char* label, std::string* error);
+    [[nodiscard]] bool bindBuffer(handles::DescriptorSetLayoutHandle layout, handles::DescriptorSetHandle& set,
+                                  handles::BufferHandle buffer, const char* label, std::string* error);
 
     Device* device_{};
     SubayaiBindingLayouts layouts_{};

@@ -36,7 +36,7 @@ class FxResourceRuntime {
     FxResourceRuntime& operator=(const FxResourceRuntime&) = delete;
 
     [[nodiscard]] bool initialize(Device& device, const fx::FxProgram& program, const fx::FxFrameContext& context,
-                                   std::string* error = nullptr);
+                                  std::string* error = nullptr);
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
@@ -45,8 +45,7 @@ class FxResourceRuntime {
     [[nodiscard]] std::optional<handles::TextureHandle> resolveTexture(std::string_view name) const;
     [[nodiscard]] std::optional<handles::BufferHandle> resolveBuffer(std::string_view name) const;
     [[nodiscard]] std::optional<handles::SamplerHandle> resolveSampler(std::string_view name) const;
-    [[nodiscard]] std::optional<handles::DescriptorSetHandle>
-    resolveDescriptorSet(const fx::FxDispatch&) const;
+    [[nodiscard]] std::optional<handles::DescriptorSetHandle> resolveDescriptorSet(const fx::FxDispatch&) const;
     [[nodiscard]] handles::DescriptorSetLayoutHandle descriptorLayout() const noexcept {
         return descriptorLayout_;
     }
@@ -60,8 +59,7 @@ class FxResourceRuntime {
     // Resolves the last texture written by a frame plan. Native presentation
     // uses this explicit final-write rule instead of guessing a resource name
     // such as "screen" or "output" from an effect authoring convention.
-    [[nodiscard]] std::optional<ResolvedTexture>
-    resolveOutputTexture(std::span<const fx::FxDispatch> ordered) const;
+    [[nodiscard]] std::optional<ResolvedTexture> resolveOutputTexture(std::span<const fx::FxDispatch> ordered) const;
     [[nodiscard]] std::size_t resourceCount() const noexcept {
         return resources_.size();
     }

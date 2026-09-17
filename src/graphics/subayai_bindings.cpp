@@ -24,13 +24,13 @@ void setError(std::string* error, std::string value) {
 } // namespace
 
 DescriptorSetLayoutDesc subayaiMaterialBindingLayout() {
-    return {.bindings = {{nativeSceneBinding(NativeSceneRegisterClass::sampled, 0),
-                          DescriptorKind::storageBuffer, 1, nativeSubayaiStages()}}};
+    return {.bindings = {{nativeSceneBinding(NativeSceneRegisterClass::sampled, 0), DescriptorKind::storageBuffer, 1,
+                          nativeSubayaiStages()}}};
 }
 
 DescriptorSetLayoutDesc subayaiLightSamplingBindingLayout() {
-    return {.bindings = {{nativeSceneBinding(NativeSceneRegisterClass::sampled, 0),
-                          DescriptorKind::storageBuffer, 1, nativeSubayaiStages()}}};
+    return {.bindings = {{nativeSceneBinding(NativeSceneRegisterClass::sampled, 0), DescriptorKind::storageBuffer, 1,
+                          nativeSubayaiStages()}}};
 }
 
 SubayaiBindingRuntime::~SubayaiBindingRuntime() {
@@ -59,9 +59,8 @@ bool SubayaiBindingRuntime::initialize(Device& device, std::string* error) {
     return true;
 }
 
-bool SubayaiBindingRuntime::bindBuffer(handles::DescriptorSetLayoutHandle layout,
-                                       handles::DescriptorSetHandle& set, handles::BufferHandle buffer,
-                                       const char* label, std::string* error) {
+bool SubayaiBindingRuntime::bindBuffer(handles::DescriptorSetLayoutHandle layout, handles::DescriptorSetHandle& set,
+                                       handles::BufferHandle buffer, const char* label, std::string* error) {
     if (error != nullptr)
         error->clear();
     if (device_ == nullptr || !layout.valid()) {
@@ -76,17 +75,14 @@ bool SubayaiBindingRuntime::bindBuffer(handles::DescriptorSetLayoutHandle layout
             }
             return true;
         }
-        const std::array<DescriptorBindingEx, 1> bindings{
-            DescriptorBindingEx{.slot = nativeSceneBinding(NativeSceneRegisterClass::sampled, 0),
-                                .arrayElement = 0,
-                                .buffer = buffer}};
+        const std::array<DescriptorBindingEx, 1> bindings{DescriptorBindingEx{
+            .slot = nativeSceneBinding(NativeSceneRegisterClass::sampled, 0), .arrayElement = 0, .buffer = buffer}};
         if (set.valid()) {
             device_->updateDescriptorSetEx(set, bindings);
         } else {
             set = device_->allocateDescriptorSetEx(layout, bindings);
             if (!set.valid())
-                throw std::runtime_error(std::string("Subayai ") + label +
-                                         " descriptor allocation returned invalid");
+                throw std::runtime_error(std::string("Subayai ") + label + " descriptor allocation returned invalid");
         }
     } catch (const std::exception& exception) {
         setError(error, std::string("Subayai ") + label + " descriptor binding failed: " + exception.what());

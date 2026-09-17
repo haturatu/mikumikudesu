@@ -31,14 +31,12 @@ NativeFxRuntime::~NativeFxRuntime() {
 }
 
 bool NativeFxRuntime::initialize(Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
-                                 std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts,
-                                 std::string* error,
+                                 std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts, std::string* error,
                                  std::span<const handles::DescriptorSetHandle> sharedDescriptorSets,
                                  fx::FxNativeShaderSourceOptions sourceOptions) {
-    const auto defaultContext =
-        fx::makeFxFrameContext(0.0F, 0, 1, 1, 0, 0, 1, 1, 1, program.meshCloneCount);
-    return initializeForFrame(device, std::move(program), compiler,
-                              defaultContext, sharedLayouts, error, sharedDescriptorSets, std::move(sourceOptions));
+    const auto defaultContext = fx::makeFxFrameContext(0.0F, 0, 1, 1, 0, 0, 1, 1, 1, program.meshCloneCount);
+    return initializeForFrame(device, std::move(program), compiler, defaultContext, sharedLayouts, error,
+                              sharedDescriptorSets, std::move(sourceOptions));
 }
 
 bool NativeFxRuntime::initializeForFrame(Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
@@ -103,7 +101,7 @@ bool NativeFxRuntime::buildForContext(const fx::FxFrameContext& context, std::st
     try {
         if (!resources_.initialize(*device_, program_, context, error))
             throw std::runtime_error(error != nullptr && !error->empty() ? *error
-                                                                            : "FX resource initialization failed");
+                                                                         : "FX resource initialization failed");
 
         std::vector<handles::DescriptorSetLayoutHandle> setLayouts;
         setLayouts.reserve(sharedLayouts_.size() + 1U);
@@ -120,13 +118,12 @@ bool NativeFxRuntime::buildForContext(const fx::FxFrameContext& context, std::st
         if (!pipelineLayout_.valid())
             throw std::runtime_error("native FX pipeline layout allocation returned an invalid handle");
         const auto layout = pipelineLayout_;
-        if (!pipelines_.build(*device_, program_, compiler_,
-                              [layout](const fx::FxDispatch&) -> std::optional<handles::PipelineLayoutHandle> {
-                                  return layout;
-                              },
-                              error, resourceSetIndex_, sourceOptions_))
+        if (!pipelines_.build(
+                *device_, program_, compiler_,
+                [layout](const fx::FxDispatch&) -> std::optional<handles::PipelineLayoutHandle> { return layout; },
+                error, resourceSetIndex_, sourceOptions_))
             throw std::runtime_error(error != nullptr && !error->empty() ? *error
-                                                                            : "FX pipeline initialization failed");
+                                                                         : "FX pipeline initialization failed");
     } catch (const std::exception& exception) {
         if (error == nullptr || error->empty())
             setError(error, exception.what());
@@ -189,8 +186,8 @@ VulkanFxExecutor::Stats NativeFxRuntime::execute(NativeFxFrame& frame, CommandLi
 
     auto nativeResources = resources;
     if (!nativeResources.resolveTypedResource) {
-        nativeResources.resolveTypedResource = [this](std::string_view name)
-            -> std::optional<FxExecutionResources::TypedResource> {
+        nativeResources.resolveTypedResource =
+            [this](std::string_view name) -> std::optional<FxExecutionResources::TypedResource> {
             if (const auto texture = resources_.resolveTexture(name); texture.has_value())
                 return FxExecutionResources::TypedResource{.texture = *texture};
             if (const auto buffer = resources_.resolveBuffer(name); buffer.has_value())
@@ -217,8 +214,8 @@ VulkanFxExecutor::Stats NativeFxRuntime::execute(NativeFxFrame& frame, CommandLi
         const auto existingSets = nativeResources.resolveDescriptorSets;
         const auto existingSingle = nativeResources.resolveDescriptorSet;
         const auto sharedSets = sharedDescriptorSets_;
-        nativeResources.resolveDescriptorSets = [existingSets, existingSingle, set,
-                                                 setIndex, sharedSets](const fx::FxDispatch& dispatch) {
+        nativeResources.resolveDescriptorSets = [existingSets, existingSingle, set, setIndex,
+                                                 sharedSets](const fx::FxDispatch& dispatch) {
             std::vector<FxExecutionResources::TypedDescriptorSetBinding> result;
             if (existingSets) {
                 result = existingSets(dispatch);
@@ -228,9 +225,8 @@ VulkanFxExecutor::Stats NativeFxRuntime::execute(NativeFxFrame& frame, CommandLi
                     result.push_back({*shared, 0});
             }
             const auto hasIndex = [&result](std::uint32_t index) {
-                return std::any_of(result.begin(), result.end(), [index](const auto& binding) {
-                    return binding.setIndex == index;
-                });
+                return std::any_of(result.begin(), result.end(),
+                                   [index](const auto& binding) { return binding.setIndex == index; });
             };
             for (std::size_t index = 0; index < sharedSets.size(); ++index) {
                 if (!hasIndex(static_cast<std::uint32_t>(index)))

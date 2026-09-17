@@ -19,8 +19,7 @@ namespace dayo::graphics {
 // because the FX graph cannot infer application-specific resource bindings.
 class FxPipelineRuntime {
   public:
-    using LayoutResolver =
-        std::function<std::optional<handles::PipelineLayoutHandle>(const fx::FxDispatch&)>;
+    using LayoutResolver = std::function<std::optional<handles::PipelineLayoutHandle>(const fx::FxDispatch&)>;
 
     FxPipelineRuntime() = default;
     ~FxPipelineRuntime();
@@ -29,9 +28,8 @@ class FxPipelineRuntime {
     FxPipelineRuntime& operator=(const FxPipelineRuntime&) = delete;
 
     [[nodiscard]] bool build(Device& device, const fx::FxProgram& program, const fx::FxShaderCompiler& compiler,
-                              const LayoutResolver& resolveLayout, std::string* error = nullptr,
-                              std::uint32_t resourceSet = 0,
-                              const fx::FxNativeShaderSourceOptions& sourceOptions = {});
+                             const LayoutResolver& resolveLayout, std::string* error = nullptr,
+                             std::uint32_t resourceSet = 0, const fx::FxNativeShaderSourceOptions& sourceOptions = {});
     void reset() noexcept;
 
     [[nodiscard]] std::optional<handles::PipelineHandle> resolvePipeline(const fx::FxDispatch& dispatch) const;

@@ -117,8 +117,7 @@ NativeSceneModelRuntime::~NativeSceneModelRuntime() {
     reset();
 }
 
-bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneModelData> models,
-                                   std::string* error) {
+bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneModelData> models, std::string* error) {
     if (error != nullptr)
         error->clear();
     reset();
@@ -170,8 +169,8 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
             rawVertices_.push_back(upload(device, std::span<const NativeSceneVertex>(model.vertices),
                                           ResourceUsage::storageRead | ResourceUsage::rayTracingRead, "raw vertices"));
             indices_.push_back(upload(device, std::span<const std::uint32_t>(model.indices),
-                                      ResourceUsage::storageRead | ResourceUsage::indexRead | ResourceUsage::asBuildRead |
-                                          ResourceUsage::rayTracingRead,
+                                      ResourceUsage::storageRead | ResourceUsage::indexRead |
+                                          ResourceUsage::asBuildRead | ResourceUsage::rayTracingRead,
                                       "indices"));
             materials_.push_back(upload(device, std::span<const NativeSceneMaterial>(model.materials),
                                         ResourceUsage::storageRead | ResourceUsage::rayTracingRead, "materials"));
@@ -201,8 +200,7 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
     return true;
 }
 
-bool NativeSceneModelRuntime::update(Device& device, std::span<const NativeSceneModelData> models,
-                                     std::string* error) {
+bool NativeSceneModelRuntime::update(Device& device, std::span<const NativeSceneModelData> models, std::string* error) {
     if (error != nullptr)
         error->clear();
     if (models.empty()) {

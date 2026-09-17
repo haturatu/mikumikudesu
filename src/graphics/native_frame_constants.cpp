@@ -15,13 +15,12 @@ void setError(std::string* error, std::string value) {
 }
 
 [[nodiscard]] std::array<float, 16> identityMatrix() noexcept {
-    return {1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
-            0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F};
+    return {1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F};
 }
 
 [[nodiscard]] std::uint32_t narrowSample(std::uint64_t sample) noexcept {
     return sample > std::numeric_limits<std::uint32_t>::max() ? std::numeric_limits<std::uint32_t>::max()
-                                                               : static_cast<std::uint32_t>(sample);
+                                                              : static_cast<std::uint32_t>(sample);
 }
 
 } // namespace

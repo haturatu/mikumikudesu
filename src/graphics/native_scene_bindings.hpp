@@ -37,16 +37,15 @@ enum class NativeSceneRegisterClass : std::uint8_t {
 // Keep this mapping in one place so descriptor layouts and generated shaders
 // use the same Vulkan binding convention.
 [[nodiscard]] constexpr std::uint32_t nativeSceneBinding(NativeSceneRegisterClass registerClass,
-                                                          std::uint32_t registerIndex) noexcept {
+                                                         std::uint32_t registerIndex) noexcept {
     constexpr std::uint32_t uavBase = 0;
     constexpr std::uint32_t sampledBase = 16;
     constexpr std::uint32_t samplerBase = 32;
     constexpr std::uint32_t uniformBase = 48;
-    const auto base = registerClass == NativeSceneRegisterClass::uav
-                          ? uavBase
-                          : registerClass == NativeSceneRegisterClass::sampled
-                                ? sampledBase
-                                : registerClass == NativeSceneRegisterClass::sampler ? samplerBase : uniformBase;
+    const auto base = registerClass == NativeSceneRegisterClass::uav       ? uavBase
+                      : registerClass == NativeSceneRegisterClass::sampled ? sampledBase
+                      : registerClass == NativeSceneRegisterClass::sampler ? samplerBase
+                                                                           : uniformBase;
     return base + registerIndex;
 }
 
@@ -63,8 +62,7 @@ struct NativeSceneDescriptorCounts {
 };
 
 [[nodiscard]] DescriptorSetLayoutDesc
-nativeSceneDescriptorLayout(NativeSceneDescriptorSet set,
-                            const NativeSceneDescriptorCounts& counts = {}) noexcept;
+nativeSceneDescriptorLayout(NativeSceneDescriptorSet set, const NativeSceneDescriptorCounts& counts = {}) noexcept;
 
 [[nodiscard]] std::array<DescriptorSetLayoutDesc, kNativeSceneDescriptorSetCount>
 nativeSceneDescriptorLayouts(const NativeSceneDescriptorCounts& counts = {}) noexcept;

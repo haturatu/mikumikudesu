@@ -305,10 +305,9 @@ class VulkanDevice final : public Device {
                          std::uint32_t depth);
     void recordNativeOutputToImage(VkCommandBuffer commandBuffer, const NativeFrameOutput& output, VkImage target,
                                    VkImageView targetView, VkImageLayout previousLayout,
-                                   VkPipelineStageFlags2 previousStage,
-                                   VkAccessFlags2 previousAccess, VkImageLayout finalLayout,
-                                   VkPipelineStageFlags2 finalStage, VkAccessFlags2 finalAccess, bool initialized,
-                                   VkExtent2D extent);
+                                   VkPipelineStageFlags2 previousStage, VkAccessFlags2 previousAccess,
+                                   VkImageLayout finalLayout, VkPipelineStageFlags2 finalStage,
+                                   VkAccessFlags2 finalAccess, bool initialized, VkExtent2D extent);
     void recordBindPipeline(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline);
     void recordTransitionTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture);
     void recordTextureTransition(VkCommandBuffer commandBuffer, handles::TextureHandle texture,
@@ -358,13 +357,11 @@ class VulkanDevice final : public Device {
     makeTlasInstances(std::span<const AccelerationInstanceDesc> instances) const;
     void recordAccelerationBuild(const TypedAccelerationStructure& destination, const BlasGeometryDesc& geometry,
                                  bool update);
-    void recordAccelerationBuildOnCommand(VkCommandBuffer commandBuffer,
-                                          const TypedAccelerationStructure& destination,
+    void recordAccelerationBuildOnCommand(VkCommandBuffer commandBuffer, const TypedAccelerationStructure& destination,
                                           const BlasGeometryDesc& geometry, bool update);
     void recordTopLevelBuild(const TypedAccelerationStructure& destination,
                              std::span<const AccelerationInstanceDesc> instances, bool update);
-    void recordTopLevelBuildOnCommand(VkCommandBuffer commandBuffer,
-                                      const TypedAccelerationStructure& destination,
+    void recordTopLevelBuildOnCommand(VkCommandBuffer commandBuffer, const TypedAccelerationStructure& destination,
                                       std::span<const AccelerationInstanceDesc> instances, bool update);
     struct PendingAccelerationScratch {
         VkBuffer buffer{};

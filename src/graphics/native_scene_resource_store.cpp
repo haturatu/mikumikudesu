@@ -102,8 +102,8 @@ bool NativeSceneResourceStore::initialize(Device& device, NativeSceneDescriptorC
         bindings_.textureTable = placeholderBuffer_;
         bindings_.passConstants = placeholderBuffer_;
         if (!replaceArrays({}, error))
-            throw std::runtime_error(error != nullptr && !error->empty() ? *error
-                                                                           : "native scene placeholder composition failed");
+            throw std::runtime_error(
+                error != nullptr && !error->empty() ? *error : "native scene placeholder composition failed");
     } catch (const std::exception& exception) {
         setError(error, std::string("native scene resource store initialization failed: ") + exception.what());
         reset();

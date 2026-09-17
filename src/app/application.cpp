@@ -166,7 +166,7 @@ bool Application::ensureNativeSceneRuntime(bool restartRenderer, std::string* er
         std::string runtimeError;
         if (!nativeSceneResources_.initialize(*device_, counts, &runtimeError))
             throw std::runtime_error(runtimeError.empty() ? "native scene resource store initialization failed"
-                                                           : runtimeError);
+                                                          : runtimeError);
         if (!nativeSceneFrame_.initialize(*device_, scene_.effect()->controllers, counts, &runtimeError))
             throw std::runtime_error(runtimeError.empty() ? "native scene frame initialization failed" : runtimeError);
         nativeRenderer_.setSceneFrameRuntime(&nativeSceneFrame_);
@@ -223,16 +223,15 @@ void Application::requestRenderer(graphics::RendererKind renderer) {
         nativeRenderer_.reset();
         device_->setNativeRendererAvailability(false, false);
         device_->selectRenderer(graphics::RendererKind::preview);
-        log::warn("Native ", graphics::toString(renderer), " effect preparation failed; using Preview: ",
-                  exception.what());
+        log::warn("Native ", graphics::toString(renderer),
+                  " effect preparation failed; using Preview: ", exception.what());
     }
 }
 
 fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTargetDesc& target) const {
     const auto* model = selectedModel();
-    const auto* motion = scene_.cameraMotion() != nullptr
-                             ? scene_.cameraMotion()
-                             : (model != nullptr ? model->motion.get() : nullptr);
+    const auto* motion =
+        scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
     fx::FxCameraState camera;
     camera.rotation = {cameraPitch_, cameraYaw_, 0.0F};
     camera.distance = cameraDistance_;
@@ -267,8 +266,8 @@ fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTar
                                   sceneCloneCount, effectCloneCount, camera, lighting);
 }
 
-std::optional<graphics::NativeFrameOutput>
-Application::recordNativeFrame(graphics::CommandList& commands, const graphics::RenderTargetDesc& target) {
+std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphics::CommandList& commands,
+                                                                          const graphics::RenderTargetDesc& target) {
     if (device_ == nullptr || device_->activeRenderer() == graphics::RendererKind::preview)
         return std::nullopt;
     const auto& background = scene_.background();
@@ -340,12 +339,12 @@ Application::recordNativeFrame(graphics::CommandList& commands, const graphics::
             std::string geometryError;
             if (!runtime->syncGeometry(geometryUploads, &geometryError))
                 throw std::runtime_error(geometryError.empty() ? "native geometry synchronization failed"
-                                                                 : geometryError);
+                                                               : geometryError);
             if (geometryUploads.empty())
                 return;
             if (!runtime->synchronizeAcceleration(&geometryError))
                 throw std::runtime_error(geometryError.empty() ? "native acceleration synchronization failed"
-                                                                 : geometryError);
+                                                               : geometryError);
             static_cast<void>(runtime->synchronizeWorld(nativeDeformVersion_, worldInstances));
             tlas = runtime->geometry().tlas();
             runtime->recordGeometry(commands);
@@ -1485,9 +1484,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     }
     nativeGeometry_ = std::move(nativeGeometry);
     nativeSceneModelData_ = std::move(nativeSceneModels);
-    nativeDeformVersion_ = nativeDeformVersion_ == std::numeric_limits<std::uint64_t>::max()
-                               ? 1U
-                               : nativeDeformVersion_ + 1U;
+    nativeDeformVersion_ =
+        nativeDeformVersion_ == std::numeric_limits<std::uint64_t>::max() ? 1U : nativeDeformVersion_ + 1U;
     if ((rebuildVertices && vertices.empty()) || animatedIndices_.empty())
         return;
     if (rebuildTopology) {
@@ -2596,9 +2594,9 @@ void Application::buildImageSequenceExportUi() {
         }
         ImGui::Checkbox("Motion blur", &sequenceOutput_.motionBlur);
         ImGui::Checkbox("Overwrite existing frames", &sequenceOutput_.overwrite);
-        int format = sequenceOutput_.format == core::OutputFormat::png ? 1
-                   : sequenceOutput_.format == core::OutputFormat::exr ? 2
-                                                                        : 0;
+        int format = sequenceOutput_.format == core::OutputFormat::png   ? 1
+                     : sequenceOutput_.format == core::OutputFormat::exr ? 2
+                                                                         : 0;
 #if DAYO_HAS_OPENEXR
         constexpr int formatCount = 3;
         constexpr const char* formatNames = "PPM\0PNG\0OpenEXR\0";

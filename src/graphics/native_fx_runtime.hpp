@@ -33,19 +33,19 @@ class NativeFxRuntime {
     NativeFxRuntime& operator=(const NativeFxRuntime&) = delete;
 
     [[nodiscard]] bool initialize(Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
-                                   std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts = {},
-                                   std::string* error = nullptr,
-                                   std::span<const handles::DescriptorSetHandle> sharedDescriptorSets = {},
-                                   fx::FxNativeShaderSourceOptions sourceOptions = {});
+                                  std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts = {},
+                                  std::string* error = nullptr,
+                                  std::span<const handles::DescriptorSetHandle> sharedDescriptorSets = {},
+                                  fx::FxNativeShaderSourceOptions sourceOptions = {});
     // Initializes resources against the first real frame context. The
     // compatibility overload above remains useful for callers that do not
     // have a frame yet.
-    [[nodiscard]] bool initializeForFrame(
-        Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
-        const fx::FxFrameContext& context,
-        std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts = {}, std::string* error = nullptr,
-        std::span<const handles::DescriptorSetHandle> sharedDescriptorSets = {},
-        fx::FxNativeShaderSourceOptions sourceOptions = {});
+    [[nodiscard]] bool initializeForFrame(Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
+                                          const fx::FxFrameContext& context,
+                                          std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts = {},
+                                          std::string* error = nullptr,
+                                          std::span<const handles::DescriptorSetHandle> sharedDescriptorSets = {},
+                                          fx::FxNativeShaderSourceOptions sourceOptions = {});
     // Rebuilds size-dependent FX resources and their descriptor/pipeline
     // lifetime when a render/model context changes. Callers should invoke
     // this at a frame boundary before prepareFrame().

@@ -112,8 +112,7 @@ NativeDeformRuntime::~NativeDeformRuntime() {
     reset();
 }
 
-bool NativeDeformRuntime::initialize(Device& device, const NativeDeformUpload& upload,
-                                     handles::PipelineHandle pipeline,
+bool NativeDeformRuntime::initialize(Device& device, const NativeDeformUpload& upload, handles::PipelineHandle pipeline,
                                      handles::DescriptorSetLayoutHandle descriptorLayout, std::string* error) {
     if (error != nullptr)
         error->clear();
@@ -148,8 +147,8 @@ bool NativeDeformRuntime::initialize(Device& device, const NativeDeformUpload& u
             // overwrites it with the animated result in the same frame.
             initialDeformed.resize(input.vertexCount);
             for (std::size_t index = 0; index < initialDeformed.size(); ++index) {
-                std::copy(std::begin(upload.baseVertices[index].position), std::end(upload.baseVertices[index].position),
-                          initialDeformed[index].position);
+                std::copy(std::begin(upload.baseVertices[index].position),
+                          std::end(upload.baseVertices[index].position), initialDeformed[index].position);
                 initialDeformed[index].position[3] = 1.0F;
                 std::copy(std::begin(upload.baseVertices[index].normal), std::end(upload.baseVertices[index].normal),
                           initialDeformed[index].normal);
@@ -172,10 +171,8 @@ bool NativeDeformRuntime::initialize(Device& device, const NativeDeformUpload& u
         }
 
         const std::array<DescriptorBindingEx, 5> bindings{
-            DescriptorBindingEx{0, 0, resources_.baseVertices},
-            DescriptorBindingEx{1, 0, resources_.bones},
-            DescriptorBindingEx{2, 0, resources_.morphDeltas},
-            DescriptorBindingEx{3, 0, resources_.morphWeights},
+            DescriptorBindingEx{0, 0, resources_.baseVertices},     DescriptorBindingEx{1, 0, resources_.bones},
+            DescriptorBindingEx{2, 0, resources_.morphDeltas},      DescriptorBindingEx{3, 0, resources_.morphWeights},
             DescriptorBindingEx{4, 0, resources_.deformedVertices},
         };
         resources_.descriptorSet = device.allocateDescriptorSetEx(descriptorLayout, bindings);
@@ -244,9 +241,9 @@ void NativeDeformRuntime::reset() noexcept {
             } catch (...) {
             }
         }
-        const std::array<handles::BufferHandle, 6> buffers{
-            resources_.baseVertices, resources_.bones, resources_.morphDeltas,
-            resources_.morphWeights, resources_.deformedVertices, resources_.indices};
+        const std::array<handles::BufferHandle, 6> buffers{resources_.baseVertices,     resources_.bones,
+                                                           resources_.morphDeltas,      resources_.morphWeights,
+                                                           resources_.deformedVertices, resources_.indices};
         for (const auto buffer : buffers) {
             if (!buffer.valid())
                 continue;

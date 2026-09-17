@@ -28,8 +28,7 @@ class NativeSceneBindingRuntime {
     [[nodiscard]] bool ready() const noexcept {
         return device_ != nullptr;
     }
-    [[nodiscard]] handles::DescriptorSetLayoutHandle
-    layout(NativeSceneDescriptorSet set) const noexcept;
+    [[nodiscard]] handles::DescriptorSetLayoutHandle layout(NativeSceneDescriptorSet set) const noexcept;
     [[nodiscard]] handles::DescriptorSetHandle descriptorSet(NativeSceneDescriptorSet set) const noexcept;
     [[nodiscard]] std::span<const handles::DescriptorSetLayoutHandle> layouts() const noexcept {
         return layouts_;
