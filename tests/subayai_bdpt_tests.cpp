@@ -324,15 +324,22 @@ struct MockNativeSceneCommands final : dayo::graphics::CommandList {
     void copyBufferEx(dayo::graphics::handles::BufferHandle source,
                       dayo::graphics::handles::BufferHandle destination) override {
         copies.emplace_back(source, destination);
+        events.emplace_back("copy");
         device_->copyBufferEx(source, destination);
     }
     void memoryBarrierEx() override {
         barrierRecorded = true;
     }
+    void transferBarrierEx() override {
+        events.emplace_back("transfer-barrier");
+        transferBarrierRecorded = true;
+    }
 
     MockNativeDevice* device_{};
     std::vector<std::pair<dayo::graphics::handles::BufferHandle, dayo::graphics::handles::BufferHandle>> copies;
+    std::vector<std::string> events;
     bool barrierRecorded{};
+    bool transferBarrierRecorded{};
 };
 
 struct MockDeformCommands final : dayo::graphics::CommandList {
@@ -1472,9 +1479,10 @@ int main() {
         const auto uploadsBeforeFrame = device.uploadBufferCalls;
         ok &= check(runtime.updateFrame(device, frameCommands, updatedModels, &error),
                     "native scene model runtime records animated transfers in the frame command list");
-        ok &= check(frameCommands.copies.size() == 2 && frameCommands.barrierRecorded &&
+        ok &= check(frameCommands.copies.size() == 2 && frameCommands.events == std::vector<std::string>{"copy", "transfer-barrier", "copy"} &&
+                        frameCommands.transferBarrierRecorded && frameCommands.barrierRecorded &&
                         device.uploadBufferCalls == uploadsBeforeFrame + 1,
-                    "native scene frame update records previous/current copies without a device-local upload");
+                    "native scene frame update orders previous/current copies with a transfer barrier");
         const auto frameCurrent = device.readbackBufferEx(vertexBuffer, 0, sizeof(dayo::graphics::NativeSceneVertex));
         std::memcpy(&firstVertex, frameCurrent.data(), sizeof(firstVertex));
         ok &= check(std::abs(firstVertex.position[0] - 3.0F) < 1e-6F,

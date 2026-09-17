@@ -326,6 +326,7 @@ class VulkanDevice final : public Device {
     void recordBeginRendering(VkCommandBuffer commandBuffer, handles::TextureHandle target, bool clear);
     void recordEndRendering(VkCommandBuffer commandBuffer, handles::TextureHandle target);
     void recordMemoryBarrier(VkCommandBuffer commandBuffer);
+    void recordTransferBarrier(VkCommandBuffer commandBuffer);
     void recordAccelerationStructureBarrier(VkCommandBuffer commandBuffer);
     void recordBlasUpdate(VkCommandBuffer commandBuffer, handles::AccelerationStructureHandle blas,
                           const BlasGeometryDesc& geometry);
