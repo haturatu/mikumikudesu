@@ -254,16 +254,32 @@ struct ComputePipelineDescEx {
     handles::PipelineLayoutHandle layout{};
     std::vector<ShaderHandle> shaders;
 };
+
+enum class RayTracingHitGroupType : std::uint8_t { triangles, procedural };
+
+struct RayTracingHitGroupDesc {
+    RayTracingHitGroupType type{RayTracingHitGroupType::triangles};
+    handles::ShaderHandle closestHit{};
+    handles::ShaderHandle anyHit{};
+    handles::ShaderHandle intersection{};
+};
+
 struct RayTracingPipelineDesc {
     std::vector<ShaderHandle> rayGeneration;
     std::vector<ShaderHandle> miss;
     std::vector<ShaderHandle> closestHit;
+    std::vector<ShaderHandle> callable;
 };
 struct RayTracingPipelineDescEx {
     handles::PipelineLayoutHandle layout{};
     std::vector<ShaderHandle> rayGeneration;
     std::vector<ShaderHandle> miss;
     std::vector<ShaderHandle> closestHit;
+    std::vector<RayTracingHitGroupDesc> hitGroups;
+    std::vector<ShaderHandle> callable;
+    std::uint32_t maxPayloadSize{};
+    std::uint32_t maxAttributeSize{};
+    std::uint32_t maxRecursionDepth{1};
 };
 struct DescriptorBinding {
     std::uint32_t slot{};
@@ -290,6 +306,9 @@ enum class ShaderStageMask : std::uint32_t {
     rayGeneration = 1U << 3U,
     miss = 1U << 4U,
     closestHit = 1U << 5U,
+    anyHit = 1U << 6U,
+    intersection = 1U << 7U,
+    callable = 1U << 8U,
 };
 
 constexpr ShaderStageMask operator|(ShaderStageMask left, ShaderStageMask right) noexcept {
@@ -323,6 +342,27 @@ struct PipelineLayoutDesc {
     std::vector<PushConstantRange> pushConstants;
 };
 
+enum class VertexFormat : std::uint8_t { r32g32b32Sfloat };
+enum class IndexType : std::uint8_t { none, uint16, uint32 };
+
+struct BlasTriangleGeometryDesc {
+    handles::BufferHandle vertexBuffer{};
+    std::size_t vertexOffset{};
+    VertexFormat vertexFormat{VertexFormat::r32g32b32Sfloat};
+    std::uint32_t vertexStride{};
+    std::uint32_t vertexCount{};
+    handles::BufferHandle indexBuffer{};
+    std::size_t indexOffset{};
+    IndexType indexType{IndexType::none};
+    std::uint32_t indexCount{};
+    bool opaque{true};
+    bool allowUpdate{true};
+};
+
+struct BlasGeometryDesc {
+    std::vector<BlasTriangleGeometryDesc> triangles;
+};
+
 // Typed (generation-checked) descriptors. The legacy uint64_t handles above
 // are preserved for the Preview backend; new FX/RT paths use handles:: types.
 struct DescriptorBindingEx {
@@ -346,6 +386,7 @@ struct ShaderBindingTableDesc {
     std::uint32_t raygenCount{};
     std::uint32_t missCount{};
     std::uint32_t hitCount{};
+    std::uint32_t callableCount{};
 };
 
 class CommandList {
@@ -356,6 +397,12 @@ class CommandList {
     virtual void draw(std::uint32_t vertexCount, std::uint32_t instanceCount = 1) = 0;
     virtual void dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) = 0;
     virtual void traceRays(std::uint32_t width, std::uint32_t height) = 0;
+    virtual void traceRays(handles::ShaderBindingTableHandle sbt, std::uint32_t width, std::uint32_t height,
+                           std::uint32_t depth = 1) {
+        static_cast<void>(sbt);
+        static_cast<void>(depth);
+        traceRays(width, height);
+    }
     virtual void bindResources(std::span<const DescriptorBinding>) {}
     virtual void pushConstants(std::span<const std::byte>) {}
     virtual void copyTexture(TextureHandle, TextureHandle) {}
@@ -460,6 +507,15 @@ class Device {
     }
     [[nodiscard]] virtual handles::BufferHandle createBufferEx(const BufferResourceDesc&) {
         throw std::logic_error("Typed buffers are not implemented by this backend");
+    }
+    [[nodiscard]] virtual handles::AccelerationStructureHandle createBlasEx(const BlasGeometryDesc&) {
+        throw std::logic_error("Typed BLAS is not implemented by this backend");
+    }
+    virtual void rebuildBlasEx(handles::AccelerationStructureHandle, const BlasGeometryDesc&) {
+        throw std::logic_error("Typed BLAS rebuild is not implemented by this backend");
+    }
+    virtual void refitBlasEx(handles::AccelerationStructureHandle, const BlasGeometryDesc&) {
+        throw std::logic_error("Typed BLAS refit is not implemented by this backend");
     }
     // ---- destroy / retirement ----
     virtual void destroyTextureEx(handles::TextureHandle) {

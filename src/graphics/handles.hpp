@@ -63,6 +63,24 @@ struct SamplerHandle {
     }
 };
 
+struct ShaderHandle {
+    std::uint32_t index{kInvalidHandleIndex};
+    std::uint32_t generation{};
+
+    [[nodiscard]] constexpr bool valid() const noexcept {
+        return index != kInvalidHandleIndex;
+    }
+    [[nodiscard]] constexpr bool operator==(const ShaderHandle& other) const noexcept {
+        return index == other.index && generation == other.generation;
+    }
+    [[nodiscard]] constexpr bool operator!=(const ShaderHandle& other) const noexcept {
+        return !(*this == other);
+    }
+    [[nodiscard]] constexpr explicit operator bool() const noexcept {
+        return valid();
+    }
+};
+
 struct DescriptorSetHandle {
     std::uint32_t index{kInvalidHandleIndex};
     std::uint32_t generation{};
@@ -249,6 +267,7 @@ template <typename Handle> class GenerationRegistry {
 using BufferPool = GenerationRegistry<BufferHandle>;
 using TexturePool = GenerationRegistry<TextureHandle>;
 using SamplerPool = GenerationRegistry<SamplerHandle>;
+using ShaderPool = GenerationRegistry<ShaderHandle>;
 using DescriptorSetPool = GenerationRegistry<DescriptorSetHandle>;
 using DescriptorSetLayoutPool = GenerationRegistry<DescriptorSetLayoutHandle>;
 using PipelinePool = GenerationRegistry<PipelineHandle>;
@@ -324,6 +343,11 @@ template <> struct hash<dayo::graphics::handles::TextureHandle> {
 };
 template <> struct hash<dayo::graphics::handles::SamplerHandle> {
     std::size_t operator()(dayo::graphics::handles::SamplerHandle handle) const noexcept {
+        return (static_cast<std::size_t>(handle.index) << 32U) | handle.generation;
+    }
+};
+template <> struct hash<dayo::graphics::handles::ShaderHandle> {
+    std::size_t operator()(dayo::graphics::handles::ShaderHandle handle) const noexcept {
         return (static_cast<std::size_t>(handle.index) << 32U) | handle.generation;
     }
 };
