@@ -5108,6 +5108,16 @@ void VulkanDevice::recordGenerateMipmaps(VkCommandBuffer commandBuffer, handles:
         (toBits(it->second.desc.usage) & toBits(ResourceUsage::transferSrc)) == 0U ||
         (toBits(it->second.desc.usage) & toBits(ResourceUsage::transferDst)) == 0U)
         throw std::invalid_argument("typed mipmap generation requires color transfer source/destination usage");
+    VkFormatProperties2 formatProperties{.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
+    vkGetPhysicalDeviceFormatProperties2(physicalDevice_, toVkFormat(it->second.desc.format), &formatProperties);
+    const auto features = formatProperties.formatProperties.optimalTilingFeatures;
+    const bool blitSource = (features & VK_FORMAT_FEATURE_BLIT_SRC_BIT) != 0U;
+    const bool blitDestination = (features & VK_FORMAT_FEATURE_BLIT_DST_BIT) != 0U;
+    if (!blitSource || !blitDestination)
+        throw std::runtime_error("typed mipmap generation has no Vulkan blit support for the texture format");
+    const auto filter = (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0U
+                            ? VK_FILTER_LINEAR
+                            : VK_FILTER_NEAREST;
     recordTextureTransition(commandBuffer, texture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     const auto aspect = imageAspect(it->second.desc.format);
     for (std::uint32_t mip = 1; mip < it->second.desc.mipLevels; ++mip) {
@@ -5145,7 +5155,7 @@ void VulkanDevice::recordGenerateMipmaps(VkCommandBuffer commandBuffer, handles:
                             static_cast<std::int32_t>(destinationExtent.depth)}},
         };
         vkCmdBlitImage(commandBuffer, it->second.resource.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                       it->second.resource.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+                       it->second.resource.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, filter);
         const VkImageMemoryBarrier2 restoreBarrier{
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
             .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
