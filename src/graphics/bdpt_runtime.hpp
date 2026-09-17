@@ -69,6 +69,7 @@ class BdptRuntime {
     [[nodiscard]] bool ensureResources(std::uint32_t width, std::uint32_t height, std::string* error = nullptr);
     [[nodiscard]] bool syncGeometry(std::span<const NativeGeometryMeshUpload> meshes, std::string* error = nullptr);
     void recordGeometry(CommandList& commands) const;
+    void recordGeometry(CommandList& commands, std::span<const NativeGeometryMeshUpload> meshes);
     void recordAcceleration(CommandList& commands) const;
     [[nodiscard]] bool synchronizeAcceleration(std::string* error = nullptr);
     [[nodiscard]] TlasAction synchronizeWorld(std::uint64_t worldGeneration, std::span<const WorldInstance> instances);

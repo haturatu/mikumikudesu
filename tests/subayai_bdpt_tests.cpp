@@ -75,6 +75,7 @@ struct MockAccelerationBackend : dayo::graphics::IAccelerationBackend {
     std::size_t lastTlasInstanceCount{};
     std::vector<dayo::graphics::handles::BufferHandle> rebuildVertexBuffers;
     std::vector<dayo::graphics::handles::BufferHandle> refitVertexBuffers;
+    std::vector<dayo::graphics::handles::BufferHandle> recordedVertexBuffers;
     std::vector<dayo::graphics::TlasInstanceDesc> lastTlasInstances;
     std::vector<std::string>* commandEvents{};
 
@@ -119,8 +120,9 @@ struct MockAccelerationBackend : dayo::graphics::IAccelerationBackend {
         lastTlasInstances.assign(instances.begin(), instances.end());
     }
     void recordBlasUpdate(dayo::graphics::CommandList&, dayo::graphics::handles::AccelerationStructureHandle,
-                          const dayo::graphics::BlasGeometryDesc&) override {
+                          const dayo::graphics::BlasGeometryDesc& geometry) override {
         ++recordBlasCalls;
+        recordedVertexBuffers.push_back(geometry.triangles.front().vertexBuffer);
         if (commandEvents != nullptr)
             commandEvents->emplace_back("blas");
     }
@@ -167,6 +169,9 @@ struct MockNativeDevice final : dayo::graphics::Device {
     void resize() override {}
     void beginUiFrame() override {}
     void renderFrame() override {}
+    std::size_t currentFrameSlot() const noexcept override {
+        return frameSlot;
+    }
     void waitIdle() override {}
     void uploadPreviewMesh(std::span<const dayo::graphics::PreviewVertex>, std::span<const std::uint32_t>) override {}
     void updatePreviewVertices(std::span<const dayo::graphics::PreviewVertex>) override {}
@@ -308,6 +313,7 @@ struct MockNativeDevice final : dayo::graphics::Device {
     std::size_t destroyedDescriptorSets{};
     std::size_t destroyedDescriptorLayouts{};
     std::size_t uploadBufferCalls{};
+    std::size_t frameSlot{};
     dayo::graphics::DescriptorSetLayoutDesc lastDescriptorLayout;
     std::vector<dayo::graphics::DescriptorBindingEx> lastDescriptorBindings;
     std::unordered_map<dayo::graphics::handles::BufferHandle, Buffer> typedBuffers_;
@@ -354,6 +360,9 @@ struct MockDeformCommands final : dayo::graphics::CommandList {
         events.push_back("dispatch:" + std::to_string(x) + "x" + std::to_string(y) + "x" + std::to_string(z));
     }
     void traceRays(std::uint32_t, std::uint32_t) override {}
+    void uploadBufferEx(dayo::graphics::handles::BufferHandle, std::span<const std::byte>, std::size_t) override {
+        events.emplace_back("upload");
+    }
     void traceRaysEx(dayo::graphics::handles::PipelineHandle, dayo::graphics::handles::ShaderBindingTableHandle,
                      std::uint32_t, std::uint32_t, std::uint32_t) override {
         events.emplace_back("traceEx");
@@ -850,11 +859,15 @@ int main() {
             .deformVersion = 2,
         };
         ok &= check(runtime.updateMesh(updatedMesh, &error) && runtime.synchronizeAcceleration(&error) &&
-                        backend.refitBlasCalls == 1,
-                    "native geometry refreshes deform data and refits the existing BLAS");
+                        backend.refitBlasCalls == 0,
+                    "native geometry refreshes deform data without a synchronous BLAS refit");
         ok &= check(runtime.synchronizeWorld(2, instances) == dayo::graphics::TlasAction::update &&
-                        backend.updateTlasCalls == 1,
-                    "native geometry updates world-only TLAS transforms");
+                        backend.updateTlasCalls == 0,
+                    "native geometry queues world-only TLAS transforms for the frame command list");
+        runtime.recordDeform(commands, std::span<const dayo::graphics::NativeGeometryMeshUpload>(&updatedMesh, 1));
+        runtime.recordAcceleration(commands);
+        ok &= check(backend.recordBlasCalls == 2 && backend.recordTlasCalls == 2,
+                    "native geometry records deferred BLAS and TLAS updates after deform work");
         runtime.reset();
         ok &= check(backend.destroyBlasCalls == 1 && backend.destroyTlasCalls == 1 && device.destroyedBuffers == 6,
                     "native geometry reset releases AS and deform resources in dependency order");
@@ -867,10 +880,14 @@ int main() {
         ok &= check(service.notifyMesh(0, geometry(11), 1, 1) == BlasAction::rebuild, "BLAS first build is rebuild");
         ok &= check(backend.createBlasCalls == 1, "BLAS create called once");
         ok &= check(service.notifyMesh(0, geometry(11), 1, 1) == BlasAction::none, "BLAS unchanged reports none");
-        ok &= check(service.notifyMesh(0, geometry(11), 1, 2) == BlasAction::refit, "BLAS deform-only refits");
-        ok &= check(backend.refitBlasCalls == 1, "BLAS refit called once");
-        ok &= check(backend.refitVertexBuffers.size() == 1 && backend.refitVertexBuffers.front().index == 11,
-                    "BLAS refit receives the current vertex buffer");
+        ok &= check(service.notifyMesh(0, geometry(11), 1, 2) == BlasAction::refit,
+                    "BLAS deform-only queues a refit");
+        ok &= check(backend.refitBlasCalls == 0, "BLAS deform updates do not submit synchronously");
+        MockDeformCommands commands;
+        service.recordBlasUpdates(commands);
+        ok &= check(backend.recordBlasCalls == 1 && backend.recordedVertexBuffers.size() == 1 &&
+                        backend.recordedVertexBuffers.front().index == 11,
+                    "recorded BLAS refit receives the current vertex buffer");
         ok &= check(service.notifyMesh(0, geometry(11), 2, 2) == BlasAction::rebuild, "BLAS topology change rebuilds");
         ok &= check(backend.rebuildBlasCalls == 1, "BLAS rebuild called once");
         ok &= check(backend.rebuildVertexBuffers.size() == 1 && backend.rebuildVertexBuffers.front().index == 11,
@@ -885,10 +902,13 @@ int main() {
             AccelerationStructureService service(&backend);
             static_cast<void>(service.notifyMesh(0, geometry(11), 1, 1));
             static_cast<void>(service.notifyMesh(0, geometry(22), 1, 2));
+            MockDeformCommands commands;
+            service.recordBlasUpdates(commands);
             static_cast<void>(service.notifyMesh(0, geometry(33), 2, 3));
         }
-        ok &= check(backend.refitVertexBuffers.size() == 1 && backend.refitVertexBuffers.front().index == 22,
-                    "deform update forwards a replaced vertex buffer");
+        ok &= check(backend.refitBlasCalls == 0 && backend.recordedVertexBuffers.size() == 1 &&
+                        backend.recordedVertexBuffers.front().index == 22,
+                    "deform update forwards a replaced vertex buffer to recorded BLAS work");
         ok &= check(backend.rebuildVertexBuffers.size() == 1 && backend.rebuildVertexBuffers.front().index == 33,
                     "topology update forwards a replaced vertex buffer");
         ok &= check(backend.destroyBlasCalls == 1, "service destructor releases remaining BLAS");
@@ -904,8 +924,11 @@ int main() {
         ok &= check(service.tlasInstanceCount() == 5, "TLAS instance count sums CloneCount");
         ok &= check(backend.lastTlasInstanceCount == 5, "TLAS backend receives every cloned instance");
         ok &= check(service.notifyWorld(10, clones) == TlasAction::none, "TLAS unchanged reports none");
-        ok &= check(service.notifyWorld(11, clones) == TlasAction::update, "TLAS world change updates");
-        ok &= check(backend.updateTlasCalls == 1, "TLAS update called once");
+        ok &= check(service.notifyWorld(11, clones) == TlasAction::update, "TLAS world change queues an update");
+        ok &= check(backend.updateTlasCalls == 0, "TLAS world changes do not submit synchronously");
+        MockDeformCommands commands;
+        service.recordTlasUpdate(commands);
+        ok &= check(backend.recordTlasCalls == 1, "TLAS update is recorded on the frame command list");
         const std::array<std::uint32_t, 2> grown{2, 4};
         ok &= check(service.notifyWorld(11, grown) == TlasAction::rebuild, "TLAS clone growth rebuilds");
         ok &= check(service.tlasInstanceCount() == 6, "TLAS instance count follows CloneCount");
@@ -1089,8 +1112,8 @@ int main() {
                     "light alias GPU buffer contains the complete table");
         ok &= check(gpu.sync(device, table, &error) && device.destroyedBuffers == 0,
                     "unchanged light alias count reuses its buffer");
-        ok &= check(gpu.sync(device, {}, &error) && !gpu.ready() && device.destroyedBuffers == 1,
-                    "clearing lights releases the alias buffer");
+        ok &= check(gpu.sync(device, {}, &error) && !gpu.ready() && device.destroyedBuffers == 2,
+                    "clearing lights releases both frame alias buffers");
     }
     // BDPT accumulation: dirty resets to 0+clear, otherwise increments.
     {
@@ -1527,8 +1550,8 @@ int main() {
                     "native CBuff1 preserves model and deform selection");
         const auto destroyedBeforeReset = device.destroyedBuffers;
         runtime.reset();
-        ok &= check(device.destroyedBuffers == destroyedBeforeReset + 2,
-                    "native frame constants reset releases both uniform buffers");
+        ok &= check(device.destroyedBuffers == destroyedBeforeReset + 4,
+                    "native frame constants reset releases both frame-indexed uniform-buffer pairs");
     }
     // Native scene resources: fixed frame bindings and all runtime arrays are
     // materialized into the upstream descriptor spaces in one operation.

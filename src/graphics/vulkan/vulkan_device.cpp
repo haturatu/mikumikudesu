@@ -2040,6 +2040,7 @@ void VulkanDevice::destroyFrames() {
     destroyPreviewMorphs();
     destroyPreviewIndirectBuffers();
     for (auto& frame : frames_) {
+        destroyNativeUploadBuffers(frame);
         if (frame.timestampQueryPool != VK_NULL_HANDLE)
             vkDestroyQueryPool(device_, frame.timestampQueryPool, nullptr);
         if (frame.inFlight != VK_NULL_HANDLE)
@@ -2052,6 +2053,78 @@ void VulkanDevice::destroyFrames() {
             vkDestroyCommandPool(device_, frame.commandPool, nullptr);
         frame = {};
     }
+}
+
+void VulkanDevice::resetNativeUploadBuffers(Frame& frame) noexcept {
+    for (auto& upload : frame.nativeUploadBuffers)
+        upload.offset = 0;
+}
+
+void VulkanDevice::destroyNativeUploadBuffers(Frame& frame) noexcept {
+    for (auto& upload : frame.nativeUploadBuffers) {
+        if (upload.mapped != nullptr)
+            vkUnmapMemory(device_, upload.memory);
+        if (upload.memory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, upload.memory, nullptr);
+        if (upload.buffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, upload.buffer, nullptr);
+    }
+    frame.nativeUploadBuffers.clear();
+}
+
+VulkanDevice::Frame* VulkanDevice::frameForCommandBuffer(VkCommandBuffer commandBuffer) noexcept {
+    const auto found = std::find_if(frames_.begin(), frames_.end(), [commandBuffer](const auto& frame) {
+        return frame.commandBuffer == commandBuffer;
+    });
+    return found == frames_.end() ? nullptr : &*found;
+}
+
+VulkanDevice::Frame::NativeUploadBuffer&
+VulkanDevice::allocateNativeUploadBuffer(Frame& frame, VkDeviceSize size, VkDeviceSize alignment) {
+    for (auto& upload : frame.nativeUploadBuffers) {
+        const auto offset = alignDeviceAddress(upload.offset, alignment);
+        if (offset <= upload.capacity && size <= upload.capacity - offset) {
+            upload.offset = offset + size;
+            return upload;
+        }
+    }
+
+    const VkDeviceSize capacity = std::max<VkDeviceSize>(growPreviewCapacity(size), 64ULL * 1024ULL);
+    Frame::NativeUploadBuffer upload;
+    try {
+        const VkBufferCreateInfo bufferInfo{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = capacity,
+            .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        };
+        check(vkCreateBuffer(device_, &bufferInfo, nullptr, &upload.buffer), "create native frame upload buffer");
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(device_, upload.buffer, &requirements);
+        const VkMemoryAllocateInfo allocationInfo{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = requirements.size,
+            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits,
+                                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+        };
+        check(vkAllocateMemory(device_, &allocationInfo, nullptr, &upload.memory),
+              "allocate native frame upload memory");
+        check(vkBindBufferMemory(device_, upload.buffer, upload.memory, 0), "bind native frame upload memory");
+        check(vkMapMemory(device_, upload.memory, 0, capacity, 0, &upload.mapped),
+              "map native frame upload memory");
+        upload.capacity = capacity;
+        upload.offset = size;
+        frame.nativeUploadBuffers.push_back(upload);
+    } catch (...) {
+        if (upload.mapped != nullptr)
+            vkUnmapMemory(device_, upload.memory);
+        if (upload.memory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, upload.memory, nullptr);
+        if (upload.buffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, upload.buffer, nullptr);
+        throw;
+    }
+    return frame.nativeUploadBuffers.back();
 }
 
 void VulkanDevice::resolveTimestampQuery(Frame& frame) noexcept {
@@ -2438,6 +2511,7 @@ void VulkanDevice::renderFrame() {
     auto& frame = frames_[frameIndex_];
     check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for frame");
     reclaimAccelerationScratch(frameIndex_);
+    resetNativeUploadBuffers(frame);
     resolveTimestampQuery(frame);
     synchronizePreviewVertices(frame);
     synchronizePreviewBones(frame);
@@ -2927,6 +3001,7 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     auto& frame = frames_[frameIndex_];
     check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for offscreen frame slot");
     reclaimAccelerationScratch(frameIndex_);
+    resetNativeUploadBuffers(frame);
     const auto uploadWaitValue = uploadContext_->lastSubmittedValue();
     if (uploadWaitValue != 0)
         uploadContext_->wait(uploadWaitValue);
@@ -4660,6 +4735,47 @@ void VulkanDevice::recordCopyBuffer(VkCommandBuffer commandBuffer, handles::Buff
         throw std::out_of_range("typed command-list buffer copy destination is too small");
     const VkBufferCopy region{0, 0, sourceIt->second.resource.size};
     vkCmdCopyBuffer(commandBuffer, sourceIt->second.resource.buffer, destinationIt->second.resource.buffer, 1, &region);
+}
+
+void VulkanDevice::recordUploadBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle destination,
+                                      std::span<const std::byte> bytes, std::size_t offset) {
+    const auto destinationIt = typedBuffers_.find(destination);
+    if (destinationIt == typedBuffers_.end() || !typedBufferHandles_.isAlive(destination))
+        throw std::invalid_argument("typed command-list buffer upload references a stale buffer handle");
+    if (commandBuffer == VK_NULL_HANDLE)
+        throw std::invalid_argument("typed command-list buffer upload requires a command buffer");
+    if (offset > destinationIt->second.desc.size || bytes.size() > destinationIt->second.desc.size - offset)
+        throw std::out_of_range("typed command-list buffer upload exceeds allocation");
+    if (bytes.empty())
+        return;
+    if ((toBits(destinationIt->second.desc.usage) & toBits(ResourceUsage::transferDst)) == 0U)
+        throw std::logic_error("typed command-list buffer upload requires transfer-destination usage");
+    auto* frame = frameForCommandBuffer(commandBuffer);
+    if (frame == nullptr)
+        throw std::invalid_argument("typed command-list buffer upload is not a frame command buffer");
+    auto& staging = allocateNativeUploadBuffer(*frame, bytes.size(), 4);
+    const auto stagingOffset = staging.offset - bytes.size();
+    std::memcpy(static_cast<std::byte*>(staging.mapped) + stagingOffset, bytes.data(), bytes.size());
+    const VkBufferCopy copy{.srcOffset = stagingOffset, .dstOffset = offset, .size = bytes.size()};
+    vkCmdCopyBuffer(commandBuffer, staging.buffer, destinationIt->second.resource.buffer, 1, &copy);
+    const VkBufferMemoryBarrier2 visible{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = destinationIt->second.resource.buffer,
+        .offset = offset,
+        .size = bytes.size(),
+    };
+    const VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .bufferMemoryBarrierCount = 1,
+        .pBufferMemoryBarriers = &visible,
+    };
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
 }
 
 void VulkanDevice::copyBufferToTextureEx(handles::BufferHandle source, handles::TextureHandle destination) {

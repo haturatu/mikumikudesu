@@ -148,6 +148,11 @@ void BdptRuntime::recordGeometry(CommandList& commands) const {
         geometry_.recordDeform(commands);
 }
 
+void BdptRuntime::recordGeometry(CommandList& commands, std::span<const NativeGeometryMeshUpload> meshes) {
+    if (geometry_.ready())
+        geometry_.recordDeform(commands, meshes);
+}
+
 void BdptRuntime::recordAcceleration(CommandList& commands) const {
     if (geometry_.ready())
         geometry_.recordAcceleration(commands);
@@ -232,11 +237,6 @@ BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::Dir
     frame.lightSamplingDescriptorSet = bindings_.lightSamplingSet();
     frame.geometryDescriptorSet = geometry_.descriptorSet();
     frame.usesCanonicalSceneBindings = sceneFrame_ != nullptr;
-    if (sceneFrame_ != nullptr) {
-        std::string frameError;
-        if (!sceneFrame_->syncViewConstants(frame.context, &frameError))
-            throw std::runtime_error(frameError.empty() ? "BDPT ViewCB synchronization failed" : frameError);
-    }
     if (!nativeAttempted_ && !program_.hlsl.empty()) {
         nativeAttempted_ = true;
         std::vector<handles::DescriptorSetLayoutHandle> sharedLayouts;

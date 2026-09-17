@@ -73,9 +73,9 @@ BlasAction AccelerationStructureService::notifyMesh(std::uint32_t meshId, const 
     if (state.deformVersion != deformVersion) {
         state.deformVersion = deformVersion;
         state.geometry = geometry;
-        if (backend_ != nullptr) {
-            backend_->refitBlas(state.blas, geometry);
-        }
+        // Deform output is written by the current frame command buffer. The
+        // update must therefore be recorded after that dispatch instead of
+        // being submitted synchronously from this bookkeeping phase.
         ++blasRefits_;
         log::debug("BLAS refit: mesh ", meshId, " deform ", deformVersion);
         return BlasAction::refit;
@@ -176,9 +176,8 @@ TlasAction AccelerationStructureService::notifyWorld(std::uint64_t worldGenerati
     }
     if (worldChanged) {
         rebuildInstances();
-        if (backend_ != nullptr) {
-            backend_->updateTlas(tlas_, std::span<const TlasInstanceDesc>(tlasScratch_.data(), tlasScratch_.size()));
-        }
+        // Keep the new instance transforms in the service and record the
+        // update in the active frame command buffer below the geometry work.
         cachedWorldGeneration_ = worldGeneration;
         ++tlasUpdates_;
         log::debug("TLAS update: world ", worldGeneration);

@@ -98,7 +98,7 @@ bool NativeGeometryRuntime::updateMesh(const NativeGeometryMeshUpload& mesh, std
             mesh.deformDescriptorLayout != found->second.deformDescriptorLayout) {
             throw std::invalid_argument("native geometry update cannot replace the deform pipeline");
         }
-        if (!found->second.deform.update(*device_, mesh.deform, error))
+        if (!found->second.deform.prepare(*device_, mesh.deform, error))
             return false;
         found->second.topologyGeneration = mesh.topologyGeneration;
         found->second.deformVersion = mesh.deformVersion;
@@ -120,6 +120,21 @@ void NativeGeometryRuntime::recordDeform(CommandList& commands) const {
     for (const auto& [meshId, state] : meshes_) {
         static_cast<void>(meshId);
         state.deform.record(commands);
+    }
+    commands.memoryBarrierEx();
+}
+
+void NativeGeometryRuntime::recordDeform(CommandList& commands,
+                                         std::span<const NativeGeometryMeshUpload> meshes) {
+    if (!ready())
+        throw std::logic_error("native geometry runtime is not initialized");
+    if (meshes.size() != meshes_.size())
+        throw std::invalid_argument("native geometry frame mesh count does not match the runtime");
+    for (const auto& mesh : meshes) {
+        const auto found = meshes_.find(mesh.meshId);
+        if (found == meshes_.end())
+            throw std::invalid_argument("native geometry frame references an unknown mesh");
+        found->second.deform.record(commands, mesh.deform);
     }
     commands.memoryBarrierEx();
 }

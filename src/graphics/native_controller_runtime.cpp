@@ -277,14 +277,17 @@ bool NativeControllerRuntime::initialize(Device& device, std::span<const core::E
     device_ = &device;
     try {
         layout_ = makeNativeControllerLayout(controllers);
-        buffer_ = device.createBufferEx({.size = layout_.byteSize,
-                                         .usage = ResourceUsage::uniformRead | ResourceUsage::transferDst,
-                                         .cpuVisible = false,
-                                         .lifetime = ResourceLifetime::persistent});
-        if (!buffer_.valid())
-            throw std::runtime_error("native controller buffer is invalid");
+        for (auto& buffer : buffers_) {
+            buffer = device.createBufferEx({.size = layout_.byteSize,
+                                            .usage = ResourceUsage::uniformRead | ResourceUsage::hostRead,
+                                            .cpuVisible = true,
+                                            .lifetime = ResourceLifetime::persistent});
+            if (!buffer.valid())
+                throw std::runtime_error("native controller buffer is invalid");
+        }
         const std::vector<std::byte> initial(layout_.byteSize, std::byte{0});
-        device.uploadBufferEx(buffer_, initial, 0);
+        for (const auto buffer : buffers_)
+            device.uploadBufferEx(buffer, initial, 0);
     } catch (const std::exception& exception) {
         setError(error, std::string("native controller buffer initialization failed: ") + exception.what());
         reset();
@@ -300,7 +303,7 @@ bool NativeControllerRuntime::initialize(Device& device, std::span<const core::E
 bool NativeControllerRuntime::sync(Device& device, std::span<const std::byte> bytes, std::string* error) {
     if (error != nullptr)
         error->clear();
-    if (device_ == nullptr || !buffer_.valid()) {
+    if (device_ == nullptr || !ready()) {
         setError(error, "native controller buffer is not initialized");
         return false;
     }
@@ -313,7 +316,8 @@ bool NativeControllerRuntime::sync(Device& device, std::span<const std::byte> by
         return false;
     }
     try {
-        device_->uploadBufferEx(buffer_, bytes, 0);
+        const auto buffer = buffers_[device_->currentFrameSlot() % kNativeFramesInFlight];
+        device_->uploadBufferEx(buffer, bytes, 0);
     } catch (const std::exception& exception) {
         setError(error, std::string("native controller buffer upload failed: ") + exception.what());
         return false;
@@ -326,16 +330,23 @@ bool NativeControllerRuntime::sync(Device& device, std::span<const std::byte> by
 
 void NativeControllerRuntime::reset() noexcept {
     Device* device = device_;
-    if (device != nullptr && buffer_.valid()) {
+    if (device != nullptr) {
         try {
             device->waitIdle();
-            device->destroyBufferEx(buffer_);
         } catch (...) {
+        }
+        for (const auto buffer : buffers_) {
+            if (buffer.valid()) {
+                try {
+                    device->destroyBufferEx(buffer);
+                } catch (...) {
+                }
+            }
         }
     }
     device_ = nullptr;
     layout_ = {};
-    buffer_ = {};
+    buffers_.fill({});
 }
 
 } // namespace dayo::graphics

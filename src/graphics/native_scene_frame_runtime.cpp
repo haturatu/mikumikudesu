@@ -65,8 +65,6 @@ bool NativeSceneFrameRuntime::syncViewConstants(const fx::FxFrameContext& contex
         setError(error, "native scene frame runtime is not initialized");
         return false;
     }
-    if (!syncControllers(error))
-        return false;
     const auto view =
         makeNativeViewConstants(context, context.cloneCount, static_cast<std::uint32_t>(context.totalMaterial));
     return constants_.syncView(*device_, view, error);

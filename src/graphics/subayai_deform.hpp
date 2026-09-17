@@ -103,6 +103,10 @@ class NativeDeformRuntime {
     // the mesh shape is unchanged. A shape change recreates the resource set
     // so descriptor bindings and BLAS geometry remain valid.
     [[nodiscard]] bool update(Device& device, const NativeDeformUpload& upload, std::string* error = nullptr);
+    // Validates the next frame's shape without performing a device-local
+    // upload. A shape change is an infrequent resource rebuild; unchanged
+    // inputs are copied into the active frame command list by record().
+    [[nodiscard]] bool prepare(Device& device, const NativeDeformUpload& upload, std::string* error = nullptr);
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
@@ -123,6 +127,10 @@ class NativeDeformRuntime {
     // compute dispatch. The caller must submit/wait this command list before
     // passing blasGeometry() to the acceleration-structure service.
     void record(CommandList& commands) const;
+    // Records the current frame's dynamic inputs and the deform dispatch. The
+    // upload commands use the active frame staging ring and do not submit or
+    // wait on a transfer-only queue.
+    void record(CommandList& commands, const NativeDeformUpload& upload);
 
   private:
     Device* device_{nullptr};
@@ -132,6 +140,9 @@ class NativeDeformRuntime {
     handles::PipelineHandle pipeline_{};
     handles::DescriptorSetLayoutHandle descriptorLayout_{};
     std::uint32_t workgroupCount_{};
+    std::uint64_t baseVerticesHash_{};
+    std::uint64_t morphDeltasHash_{};
+    std::uint64_t indicesHash_{};
 };
 
 // Describes the compute input/output contract shared by a native deform pass

@@ -42,6 +42,7 @@ class NativeGeometryRuntime {
                                   std::string* error = nullptr);
     [[nodiscard]] bool updateMesh(const NativeGeometryMeshUpload& mesh, std::string* error = nullptr);
     void recordDeform(CommandList& commands) const;
+    void recordDeform(CommandList& commands, std::span<const NativeGeometryMeshUpload> meshes);
     [[nodiscard]] bool synchronizeAcceleration(std::string* error = nullptr);
     [[nodiscard]] TlasAction synchronizeWorld(std::uint64_t worldGeneration, std::span<const WorldInstance> instances);
     void recordAcceleration(CommandList& commands) const;

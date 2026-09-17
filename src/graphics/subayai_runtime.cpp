@@ -160,6 +160,11 @@ void SubayaiRuntime::recordGeometry(CommandList& commands) const {
         geometry_.recordDeform(commands);
 }
 
+void SubayaiRuntime::recordGeometry(CommandList& commands, std::span<const NativeGeometryMeshUpload> meshes) {
+    if (geometry_.ready())
+        geometry_.recordDeform(commands, meshes);
+}
+
 void SubayaiRuntime::recordAcceleration(CommandList& commands) const {
     if (geometry_.ready())
         geometry_.recordAcceleration(commands);

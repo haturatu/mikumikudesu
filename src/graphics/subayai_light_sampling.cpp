@@ -2,6 +2,7 @@
 
 #include "core/log.hpp"
 
+#include <cstring>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
@@ -10,6 +11,15 @@
 #include <vector>
 
 namespace dayo::graphics {
+
+namespace {
+
+[[nodiscard]] bool sameTable(std::span<const AliasEntry> left, std::span<const AliasEntry> right) noexcept {
+    return left.size() == right.size() &&
+           (left.empty() || std::memcmp(left.data(), right.data(), left.size_bytes()) == 0);
+}
+
+} // namespace
 
 void LightSamplingService::update(std::span<const float> lightPowers, bool lightingDirty) {
     if (!lightingDirty) {
@@ -117,20 +127,36 @@ bool LightSamplingGpuRuntime::sync(Device& device, std::span<const AliasEntry> t
         return false;
     }
     try {
-        if (device_ == &device && count_ == table.size() && buffer_.valid()) {
-            device.uploadBufferEx(buffer_, std::as_bytes(table), 0);
+        const bool sameShape = device_ == &device && ready() && count_ == table.size();
+        const bool changed = !sameShape || !sameTable(table_, table);
+        if (sameShape) {
+            table_.assign(table.begin(), table.end());
+            const auto slot = device.currentFrameSlot() % kNativeFramesInFlight;
+            if (!changed && uploaded_[slot])
+                return true;
+            device.uploadBufferEx(buffers_[slot], std::as_bytes(std::span<const AliasEntry>(table_)), 0);
+            uploaded_[slot] = true;
             return true;
         }
+
         reset();
         device_ = &device;
-        buffer_ = device.createBufferEx({
-            .size = table.size() * sizeof(AliasEntry),
-            .usage = ResourceUsage::storageRead | ResourceUsage::transferDst | ResourceUsage::hostRead,
-            .cpuVisible = true,
-            .lifetime = ResourceLifetime::persistent,
-        });
-        device.uploadBufferEx(buffer_, std::as_bytes(table), 0);
         count_ = table.size();
+        table_.assign(table.begin(), table.end());
+        for (auto& buffer : buffers_) {
+            buffer = device.createBufferEx({
+                .size = table.size() * sizeof(AliasEntry),
+                .usage = ResourceUsage::storageRead | ResourceUsage::hostRead,
+                .cpuVisible = true,
+                .lifetime = ResourceLifetime::persistent,
+            });
+            if (!buffer.valid())
+                throw std::runtime_error("light sampling buffer is invalid");
+        }
+        for (std::size_t slot = 0; slot < kNativeFramesInFlight; ++slot) {
+            device.uploadBufferEx(buffers_[slot], std::as_bytes(std::span<const AliasEntry>(table_)), 0);
+            uploaded_[slot] = true;
+        }
     } catch (const std::exception& exception) {
         if (error != nullptr)
             *error = std::string("light sampling GPU upload failed: ") + exception.what();
@@ -147,16 +173,25 @@ bool LightSamplingGpuRuntime::sync(Device& device, std::span<const AliasEntry> t
 
 void LightSamplingGpuRuntime::reset() noexcept {
     Device* device = device_;
-    if (device != nullptr && buffer_.valid()) {
+    if (device != nullptr) {
         try {
             device->waitIdle();
-            device->destroyBufferEx(buffer_);
         } catch (...) {
+        }
+        for (const auto buffer : buffers_) {
+            if (buffer.valid()) {
+                try {
+                    device->destroyBufferEx(buffer);
+                } catch (...) {
+                }
+            }
         }
     }
     device_ = nullptr;
-    buffer_ = {};
+    buffers_.fill({});
+    uploaded_.fill(false);
     count_ = 0;
+    table_.clear();
 }
 
 } // namespace dayo::graphics
