@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <ranges>
 #include <stdexcept>
 #include <utility>
 
@@ -139,10 +140,7 @@ bool BdptRuntime::syncGeometry(std::span<const NativeGeometryMeshUpload> meshes,
         geometry_.setBackend(device_->nativeAccelerationBackend());
         return geometry_.initialize(*device_, meshes, error);
     }
-    for (const auto& mesh : meshes)
-        if (!geometry_.updateMesh(mesh, error))
-            return false;
-    return true;
+    return std::ranges::all_of(meshes, [this, error](const auto& mesh) { return geometry_.updateMesh(mesh, error); });
 }
 
 void BdptRuntime::recordGeometry(CommandList& commands) const {
