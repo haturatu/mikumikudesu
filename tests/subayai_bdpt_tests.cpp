@@ -9,10 +9,10 @@
 #include "graphics/native_scene_binding_runtime.hpp"
 #include "graphics/native_scene_bindings.hpp"
 #include "graphics/native_scene_data.hpp"
-#include "graphics/native_scene_resource_store.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/native_scene_model_runtime.hpp"
 #include "graphics/native_scene_resource_runtime.hpp"
+#include "graphics/native_scene_resource_store.hpp"
 #include "graphics/sbt.hpp"
 #include "graphics/subayai_acceleration_structure.hpp"
 #include "graphics/subayai_deform.hpp"
@@ -413,11 +413,10 @@ bool testSubayaiNativeFxExecution() {
     ok &= check(frame.environmentDescriptorSet.valid(), "Subayai frame exposes an environment descriptor set");
     MockDeformCommands commands;
     const auto stats = runtime.execute(frame, commands);
-    ok &=
-        check(stats.compute == 1 &&
-                  commands.events == std::vector<std::string>{"transition", "descriptor", "descriptor", "descriptor",
-                                                               "descriptor", "bind", "dispatch:2x1x1"},
-              "Subayai runtime executes typed FX resources through the native path");
+    ok &= check(stats.compute == 1 &&
+                    commands.events == std::vector<std::string>{"transition", "descriptor", "descriptor", "descriptor",
+                                                                "descriptor", "bind", "dispatch:2x1x1"},
+                "Subayai runtime executes typed FX resources through the native path");
     ok &= check(commands.descriptorSets.size() == 4 && commands.descriptorSets[0].second == 0 &&
                     commands.descriptorSets[1].second == 1 && commands.descriptorSets[2].second == 2 &&
                     commands.descriptorSets[3].second == 3 &&
@@ -464,14 +463,15 @@ bool testBdptNativeFxExecution() {
     }
     const auto frameOutput = runtime.output(frame);
     ok &= check(frameOutput.has_value() && frameOutput->texture == frame.gpu.accumulation &&
-                    frameOutput->extent.width == context.renderWidth && frameOutput->extent.height == context.renderHeight &&
+                    frameOutput->extent.width == context.renderWidth &&
+                    frameOutput->extent.height == context.renderHeight &&
                     frameOutput->format == dayo::graphics::PixelFormat::rgba16Float,
                 "BDPT runtime exposes persistent accumulation when the graph has no explicit output");
     MockDeformCommands commands;
     const auto stats = runtime.execute(frame, commands);
-    ok &= check(stats.rayTracing == 1 && commands.events == std::vector<std::string>{"transition", "clear", "barrier",
-                                                                                     "descriptor", "descriptor", "bind",
-                                                                                     "traceEx"},
+    ok &= check(stats.rayTracing == 1 &&
+                    commands.events == std::vector<std::string>{"transition", "clear", "barrier", "descriptor",
+                                                                "descriptor", "bind", "traceEx"},
                 "BDPT runtime clears accumulation and executes the native RT pass");
     ok &= check(commands.descriptorSets.size() == 2 && commands.descriptorSets[0].second == 0 &&
                     commands.descriptorSets[0].first == frame.lightSamplingDescriptorSet &&
@@ -1020,7 +1020,8 @@ int main() {
             const auto image = dayo::core::loadImageData(path);
             ok &= check(image.width == 4 && image.height == 2 && image.channels == 4 &&
                             image.type == dayo::core::PixelType::float32 &&
-                            image.space == dayo::core::ColorSpace::linear && image.byteSize() == 4U * 2U * 4U * sizeof(float),
+                            image.space == dayo::core::ColorSpace::linear &&
+                            image.byteSize() == 4U * 2U * 4U * sizeof(float),
                         "HDR environment loader returns bounded linear float data");
         } catch (const std::exception& exception) {
             std::cerr << "HDR test decode failed: " << exception.what() << '\n';
@@ -1420,8 +1421,8 @@ int main() {
                         bindings.rawVertices.size() == 1 && bindings.previousVertices[0] != bindings.vertexBuffers[0] &&
                         bindings.rawVertices[0] != bindings.vertexBuffers[0],
                     "native scene model runtime exposes fixed per-model descriptor arrays");
-        const auto uploaded = device.readbackBufferEx(bindings.vertexBuffers[0], 0,
-                                                      sizeof(dayo::graphics::NativeSceneVertex));
+        const auto uploaded =
+            device.readbackBufferEx(bindings.vertexBuffers[0], 0, sizeof(dayo::graphics::NativeSceneVertex));
         dayo::graphics::NativeSceneVertex firstVertex{};
         std::memcpy(&firstVertex, uploaded.data(), sizeof(firstVertex));
         ok &= check(std::abs(firstVertex.position[0] - data.vertices[0].position[0]) < 1e-6F &&
@@ -1432,9 +1433,9 @@ int main() {
         const auto vertexBuffer = bindings.vertexBuffers[0];
         const auto previousBuffer = bindings.previousVertices[0];
         const auto rawBuffer = bindings.rawVertices[0];
-        ok &= check(runtime.update(device, updatedModels, &error) &&
-                        runtime.bindings().vertexBuffers[0] == vertexBuffer,
-                    "native scene model runtime reuses buffers when the ABI layout is unchanged");
+        ok &=
+            check(runtime.update(device, updatedModels, &error) && runtime.bindings().vertexBuffers[0] == vertexBuffer,
+                  "native scene model runtime reuses buffers when the ABI layout is unchanged");
         const auto updated = device.readbackBufferEx(vertexBuffer, 0, sizeof(dayo::graphics::NativeSceneVertex));
         std::memcpy(&firstVertex, updated.data(), sizeof(firstVertex));
         ok &= check(std::abs(firstVertex.position[0] - 2.0F) < 1e-6F,

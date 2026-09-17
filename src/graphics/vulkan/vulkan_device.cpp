@@ -3,9 +3,9 @@
 #include "graphics/vulkan/vulkan_upload_context.hpp"
 
 #include "core/log.hpp"
-#include "graphics/timestamp.hpp"
 #include "graphics/subayai_deform.hpp"
 #include "graphics/subayai_environment.hpp"
+#include "graphics/timestamp.hpp"
 #include "platform/window.hpp"
 #include "ui/fonts.hpp"
 #include "ui/theme.hpp"
@@ -1305,11 +1305,10 @@ void VulkanDevice::createNativeOutputPipeline() {
     vkDestroyShaderModule(device_, vertex, nullptr);
 
     const auto words = std::span<const std::uint32_t>(reinterpret_cast<const std::uint32_t*>(vertexCode.data()),
-                                                       vertexCode.size() / sizeof(std::uint32_t));
+                                                      vertexCode.size() / sizeof(std::uint32_t));
     try {
-        nativeFullscreenVertexShader_ = createShaderEx({.spirv = words,
-                                                        .entryPoint = "VS",
-                                                        .stage = ShaderStageMask::vertex});
+        nativeFullscreenVertexShader_ =
+            createShaderEx({.spirv = words, .entryPoint = "VS", .stage = ShaderStageMask::vertex});
     } catch (...) {
         destroyNativeOutputPipeline();
         throw;
@@ -1336,14 +1335,13 @@ void VulkanDevice::createNativeDeformPipeline() {
     const auto code = readBinary(DAYO_NATIVE_DEFORM_SPV);
     try {
         nativeDeformDescriptorLayout_ = createDescriptorSetLayoutEx(graphics::nativeDeformDescriptorLayout());
-        nativeDeformPipelineLayout_ = createPipelineLayoutEx(
-            nativeDeformPipelineLayout(nativeDeformDescriptorLayout_));
+        nativeDeformPipelineLayout_ = createPipelineLayoutEx(nativeDeformPipelineLayout(nativeDeformDescriptorLayout_));
         const auto words = std::span<const std::uint32_t>(reinterpret_cast<const std::uint32_t*>(code.data()),
-                                                           code.size() / sizeof(std::uint32_t));
-        nativeDeformShader_ = createShaderEx({.spirv = words, .entryPoint = "NativeDeform",
-                                              .stage = ShaderStageMask::compute});
-        nativeDeformPipeline_ = createComputePipelineEx(
-            {.layout = nativeDeformPipelineLayout_, .shaders = {nativeDeformShader_}});
+                                                          code.size() / sizeof(std::uint32_t));
+        nativeDeformShader_ =
+            createShaderEx({.spirv = words, .entryPoint = "NativeDeform", .stage = ShaderStageMask::compute});
+        nativeDeformPipeline_ =
+            createComputePipelineEx({.layout = nativeDeformPipelineLayout_, .shaders = {nativeDeformShader_}});
     } catch (...) {
         destroyNativeDeformPipeline();
         throw;
@@ -1402,12 +1400,10 @@ void VulkanDevice::createNativeEnvironmentPipelines() {
             reinterpret_cast<const std::uint32_t*>(equirectCode.data()), equirectCode.size() / sizeof(std::uint32_t));
         const auto prefilterWords = std::span<const std::uint32_t>(
             reinterpret_cast<const std::uint32_t*>(prefilterCode.data()), prefilterCode.size() / sizeof(std::uint32_t));
-        nativeEnvironmentEquirectShader_ = createShaderEx({.spirv = equirectWords,
-                                                            .entryPoint = "EquirectToCube",
-                                                            .stage = ShaderStageMask::compute});
-        nativeEnvironmentPrefilterShader_ = createShaderEx({.spirv = prefilterWords,
-                                                              .entryPoint = "PrefilterCube",
-                                                              .stage = ShaderStageMask::compute});
+        nativeEnvironmentEquirectShader_ =
+            createShaderEx({.spirv = equirectWords, .entryPoint = "EquirectToCube", .stage = ShaderStageMask::compute});
+        nativeEnvironmentPrefilterShader_ =
+            createShaderEx({.spirv = prefilterWords, .entryPoint = "PrefilterCube", .stage = ShaderStageMask::compute});
         nativeEnvironmentEquirectPipeline_ = createComputePipelineEx(
             {.layout = nativeEnvironmentEquirectPipelineLayout_, .shaders = {nativeEnvironmentEquirectShader_}});
         nativeEnvironmentPrefilterPipeline_ = createComputePipelineEx(
@@ -2491,12 +2487,12 @@ void VulkanDevice::renderFrame() {
         auto& viewport = viewportResources_[frameIndex_];
         if (viewport.colorImage != VK_NULL_HANDLE) {
             if (nativeOutput.has_value()) {
-                recordNativeOutputToImage(
-                    frame.commandBuffer, *nativeOutput, viewport.colorImage, viewport.colorView,
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                    viewport.colorInitialized, viewport.extent);
+                recordNativeOutputToImage(frame.commandBuffer, *nativeOutput, viewport.colorImage, viewport.colorView,
+                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                          viewport.colorInitialized, viewport.extent);
                 viewport.colorInitialized = true;
             } else {
                 recordPreviewPass(frame.commandBuffer, frame, viewport.colorImage, viewport.colorView, viewport.depth,
@@ -2571,13 +2567,11 @@ void VulkanDevice::renderFrame() {
     vkCmdEndRendering(frame.commandBuffer);
 #else
     if (nativeOutput.has_value()) {
-        recordNativeOutputToImage(frame.commandBuffer, *nativeOutput, swapchainImages_[imageIndex],
-                                  swapchainViews_[imageIndex],
-                                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0U,
-                                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                                  swapchainInitialized_[imageIndex], swapchainExtent_);
+        recordNativeOutputToImage(
+            frame.commandBuffer, *nativeOutput, swapchainImages_[imageIndex], swapchainViews_[imageIndex],
+            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0U,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, swapchainInitialized_[imageIndex], swapchainExtent_);
     } else {
         recordPreviewPass(frame.commandBuffer, frame, swapchainImages_[imageIndex], swapchainViews_[imageIndex],
                           swapchainDepth_[imageIndex], swapchainExtent_, swapchainInitialized_[imageIndex],
@@ -2719,8 +2713,7 @@ void VulkanDevice::createViewportResource(ViewportResource& resource, VkExtent2D
             .arrayLayers = 1,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                     VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
         };
@@ -2972,11 +2965,11 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
             throw std::invalid_argument("native frame recorder returned an invalid output");
     }
     if (nativeOutput.has_value()) {
-        recordNativeOutputToImage(
-            frame.commandBuffer, *nativeOutput, offscreen_.colorImage, offscreen_.colorView,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, offscreen_.colorInitialized, extent);
+        recordNativeOutputToImage(frame.commandBuffer, *nativeOutput, offscreen_.colorImage, offscreen_.colorView,
+                                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                  VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                                  offscreen_.colorInitialized, extent);
     } else {
         recordPreviewPass(frame.commandBuffer, frame, offscreen_.colorImage, offscreen_.colorView, offscreen_.depth,
                           extent, offscreen_.colorInitialized, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -4949,8 +4942,8 @@ void VulkanDevice::recordNativeOutputToImage(VkCommandBuffer commandBuffer, cons
         .pColorAttachments = &attachment,
     };
     vkCmdBeginRendering(commandBuffer, &rendering);
-    const VkViewport viewport{0.0F, 0.0F, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0F,
-                              1.0F};
+    const VkViewport viewport{0.0F, 0.0F, static_cast<float>(extent.width), static_cast<float>(extent.height),
+                              0.0F, 1.0F};
     const VkRect2D scissor{{0, 0}, extent};
     vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
@@ -5243,8 +5236,8 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, handles::
         .pColorAttachments = &attachment,
     };
     vkCmdBeginRendering(commandBuffer, &rendering);
-    const VkViewport viewport{0.0F, 0.0F, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0F,
-                              1.0F};
+    const VkViewport viewport{0.0F, 0.0F, static_cast<float>(extent.width), static_cast<float>(extent.height),
+                              0.0F, 1.0F};
     const VkRect2D scissor{{0, 0}, extent};
     vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
@@ -5292,8 +5285,8 @@ void VulkanDevice::recordAccelerationStructureBarrier(VkCommandBuffer commandBuf
         throw std::invalid_argument("acceleration barrier requires a command buffer");
     const VkMemoryBarrier2 barrier{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                        VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .srcStageMask =
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
                         VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,

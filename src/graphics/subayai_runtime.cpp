@@ -53,8 +53,8 @@ void appendSubayaiSharedBindings(const SubayaiBindingRuntime& bindings, const Su
                           fx::FxNativeShaderRegister::sampled, 0, index);
     });
     append(environment.layout(), environment.descriptorSet(), [&](const auto index) {
-        addSharedResource(options, "TextureCube<float4> YRZ_SubayaiEnvironment",
-                          fx::FxNativeShaderRegister::sampled, 0, index);
+        addSharedResource(options, "TextureCube<float4> YRZ_SubayaiEnvironment", fx::FxNativeShaderRegister::sampled, 0,
+                          index);
         addSharedResource(options, "TextureCube<float4> YRZ_SubayaiPrefilteredEnvironment",
                           fx::FxNativeShaderRegister::sampled, 1, index);
         addSharedResource(options, "StructuredBuffer<float> YRZ_SubayaiEnvironmentSH",
@@ -152,10 +152,7 @@ bool SubayaiRuntime::syncGeometry(std::span<const NativeGeometryMeshUpload> mesh
         geometry_.setBackend(device_->nativeAccelerationBackend());
         return geometry_.initialize(*device_, meshes, error);
     }
-    for (const auto& mesh : meshes)
-        if (!geometry_.updateMesh(mesh, error))
-            return false;
-    return true;
+    return std::ranges::all_of(meshes, [this, error](const auto& mesh) { return geometry_.updateMesh(mesh, error); });
 }
 
 void SubayaiRuntime::recordGeometry(CommandList& commands) const {
@@ -240,7 +237,8 @@ SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
             sharedSets.assign(sets.begin(), sets.end());
         }
         sourceOptions.preamble = subayaiShaderPreamble();
-        appendSubayaiSharedBindings(bindings_, environmentRuntime_, geometry_, sharedLayouts, sharedSets, sourceOptions);
+        appendSubayaiSharedBindings(bindings_, environmentRuntime_, geometry_, sharedLayouts, sharedSets,
+                                    sourceOptions);
         std::string nativeError;
         static_cast<void>(nativeFx_.initializeForFrame(*device_, program_, fx::FxShaderCompiler{}, context,
                                                        sharedLayouts, &nativeError, sharedSets,

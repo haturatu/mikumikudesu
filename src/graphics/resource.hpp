@@ -280,20 +280,18 @@ struct PhysicalResourceRequirements {
     case PixelFormat::r16Float:
         return 2;
     case PixelFormat::r16g16Float:
-        return 4;
     case PixelFormat::r32Float:
         return 4;
     case PixelFormat::r32g32Float:
         return 8;
     case PixelFormat::rgba8Unorm:
     case PixelFormat::rgba8Srgb:
+    case PixelFormat::depth32Float:
         return 4;
     case PixelFormat::rgba16Float:
         return 8;
     case PixelFormat::rgba32Float:
         return 16;
-    case PixelFormat::depth32Float:
-        return 4;
     }
     return 4;
 }

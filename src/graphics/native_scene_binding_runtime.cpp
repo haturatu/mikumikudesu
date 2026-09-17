@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <ranges>
 #include <stdexcept>
 #include <utility>
 
@@ -111,8 +112,7 @@ bool NativeSceneBindingRuntime::bind(NativeSceneDescriptorSet set, std::span<con
     return true;
 }
 
-handles::DescriptorSetLayoutHandle
-NativeSceneBindingRuntime::layout(NativeSceneDescriptorSet set) const noexcept {
+handles::DescriptorSetLayoutHandle NativeSceneBindingRuntime::layout(NativeSceneDescriptorSet set) const noexcept {
     const auto index = setIndex(set);
     return index < layouts_.size() ? layouts_[index] : handles::DescriptorSetLayoutHandle{};
 }
@@ -129,19 +129,19 @@ void NativeSceneBindingRuntime::reset() noexcept {
             device->waitIdle();
         } catch (...) {
         }
-        for (auto set = descriptorSets_.rbegin(); set != descriptorSets_.rend(); ++set) {
-            if (!set->valid())
+        for (const auto& set : std::ranges::reverse_view(descriptorSets_)) {
+            if (!set.valid())
                 continue;
             try {
-                device->destroyDescriptorSetEx(*set);
+                device->destroyDescriptorSetEx(set);
             } catch (...) {
             }
         }
-        for (auto layout = layouts_.rbegin(); layout != layouts_.rend(); ++layout) {
-            if (!layout->valid())
+        for (const auto& layout : std::ranges::reverse_view(layouts_)) {
+            if (!layout.valid())
                 continue;
             try {
-                device->destroyDescriptorSetLayoutEx(*layout);
+                device->destroyDescriptorSetLayoutEx(layout);
             } catch (...) {
             }
         }

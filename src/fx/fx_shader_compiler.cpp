@@ -20,7 +20,10 @@
 namespace dayo::fx {
 namespace {
 
-std::atomic<std::uint64_t> nextTemporaryId{1};
+[[nodiscard]] std::atomic<std::uint64_t>& temporaryIdCounter() noexcept {
+    static std::atomic<std::uint64_t> value{1};
+    return value;
+}
 
 [[nodiscard]] std::uint64_t processId() noexcept {
 #if defined(__unix__) || defined(__APPLE__)
@@ -41,7 +44,7 @@ std::atomic<std::uint64_t> nextTemporaryId{1};
         words[0] = static_cast<std::uint32_t>(seed);
         words[1] = static_cast<std::uint32_t>(seed >> 32U);
         words[2] = static_cast<std::uint32_t>(processId());
-        words[3] = static_cast<std::uint32_t>(nextTemporaryId.load(std::memory_order_relaxed));
+        words[3] = static_cast<std::uint32_t>(temporaryIdCounter().load(std::memory_order_relaxed));
     }
     return words;
 }
@@ -83,7 +86,7 @@ std::atomic<std::uint64_t> nextTemporaryId{1};
         throw std::runtime_error("cannot locate temporary directory: " + error.message());
     const auto pid = processId();
     for (int attempt = 0; attempt < 64; ++attempt) {
-        const auto id = nextTemporaryId.fetch_add(1, std::memory_order_relaxed);
+        const auto id = temporaryIdCounter().fetch_add(1, std::memory_order_relaxed);
         const auto path =
             root / ("mikumikudesu-fx-" + std::to_string(pid) + "-" + std::to_string(id) + "-" + randomSuffix());
         error.clear();
@@ -158,16 +161,16 @@ class TemporaryDirectory {
                                        const std::filesystem::path& input, const std::filesystem::path& output,
                                        const std::filesystem::path& diagnostics) {
     std::ostringstream command;
-    command << quoteShellArgument(executable.string())
-            << " -x hlsl --target-env=" << quoteShellArgument(request.targetEnvironment)
+    command << quoteShellArgument(executable.string()) << " -x hlsl --target-env="
+            << quoteShellArgument(request.targetEnvironment)
             // glslc's HLSL frontend otherwise gives t/u/s/b register class
             // zero the same Vulkan binding. Keep each class in a disjoint
             // range so the generated descriptor layout remains valid.
-            << " -fhlsl-iomap -fpreserve-bindings"
-            << " -fuav-binding-base " << FxShaderCompiler::glslcStage(request.stage) << " 0"
-            << " -ftexture-binding-base " << FxShaderCompiler::glslcStage(request.stage) << " 16"
-            << " -fsampler-binding-base " << FxShaderCompiler::glslcStage(request.stage) << " 32"
-            << " -fubo-binding-base " << FxShaderCompiler::glslcStage(request.stage) << " 48"
+            << " -fhlsl-iomap -fpreserve-bindings" << " -fuav-binding-base "
+            << FxShaderCompiler::glslcStage(request.stage) << " 0" << " -ftexture-binding-base "
+            << FxShaderCompiler::glslcStage(request.stage) << " 16" << " -fsampler-binding-base "
+            << FxShaderCompiler::glslcStage(request.stage) << " 32" << " -fubo-binding-base "
+            << FxShaderCompiler::glslcStage(request.stage) << " 48"
             << " -fshader-stage=" << FxShaderCompiler::glslcStage(request.stage)
             << " -fentry-point=" << quoteShellArgument(request.entryPoint) << " -o "
             << quoteShellArgument(output.string());

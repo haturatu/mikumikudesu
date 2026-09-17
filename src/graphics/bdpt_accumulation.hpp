@@ -2,6 +2,7 @@
 
 #include "graphics/handles.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -47,11 +48,7 @@ class BdptAccumulation {
         [[nodiscard]] bool valid() const noexcept {
             if (!accumulation.valid() || !spectralLut.valid() || !blackbodyLut.valid())
                 return false;
-            for (const auto volume : volumes) {
-                if (!volume.valid())
-                    return false;
-            }
-            return true;
+            return std::ranges::all_of(volumes, [](const auto volume) { return volume.valid(); });
         }
     };
 
