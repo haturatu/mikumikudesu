@@ -254,6 +254,7 @@ struct MockNativeDevice final : dayo::graphics::Device {
                          std::uint32_t) override {}
     void uploadBufferEx(dayo::graphics::handles::BufferHandle handle, std::span<const std::byte> bytes,
                         std::size_t offset) override {
+        ++uploadBufferCalls;
         auto it = typedBuffers_.find(handle);
         if (it == typedBuffers_.end() || offset > it->second.bytes.size() ||
             bytes.size() > it->second.bytes.size() - offset)
@@ -295,9 +296,32 @@ struct MockNativeDevice final : dayo::graphics::Device {
     std::size_t clearedTextures{};
     std::size_t destroyedDescriptorSets{};
     std::size_t destroyedDescriptorLayouts{};
+    std::size_t uploadBufferCalls{};
     dayo::graphics::DescriptorSetLayoutDesc lastDescriptorLayout;
     std::vector<dayo::graphics::DescriptorBindingEx> lastDescriptorBindings;
     std::unordered_map<dayo::graphics::handles::BufferHandle, Buffer> typedBuffers_;
+};
+
+struct MockNativeSceneCommands final : dayo::graphics::CommandList {
+    explicit MockNativeSceneCommands(MockNativeDevice& device) : device_(&device) {}
+
+    void transition(dayo::graphics::TextureHandle) override {}
+    void bindPipeline(dayo::graphics::PipelineHandle) override {}
+    void draw(std::uint32_t, std::uint32_t) override {}
+    void dispatch(std::uint32_t, std::uint32_t, std::uint32_t) override {}
+    void traceRays(std::uint32_t, std::uint32_t) override {}
+    void copyBufferEx(dayo::graphics::handles::BufferHandle source,
+                      dayo::graphics::handles::BufferHandle destination) override {
+        copies.emplace_back(source, destination);
+        device_->copyBufferEx(source, destination);
+    }
+    void memoryBarrierEx() override {
+        barrierRecorded = true;
+    }
+
+    MockNativeDevice* device_{};
+    std::vector<std::pair<dayo::graphics::handles::BufferHandle, dayo::graphics::handles::BufferHandle>> copies;
+    bool barrierRecorded{};
 };
 
 struct MockDeformCommands final : dayo::graphics::CommandList {
@@ -1419,6 +1443,31 @@ int main() {
         std::memcpy(&firstVertex, raw.data(), sizeof(firstVertex));
         ok &= check(std::abs(firstVertex.position[0] - data.vertices[0].position[0]) < 1e-6F,
                     "native scene model runtime keeps the raw vertex stream immutable");
+
+        updatedModels[0].vertices[0].position[0] = 3.0F;
+        MockNativeSceneCommands frameCommands(device);
+        const auto uploadsBeforeFrame = device.uploadBufferCalls;
+        ok &= check(runtime.updateFrame(device, frameCommands, updatedModels, &error),
+                    "native scene model runtime records animated transfers in the frame command list");
+        ok &= check(frameCommands.copies.size() == 2 && frameCommands.barrierRecorded &&
+                        device.uploadBufferCalls == uploadsBeforeFrame + 1,
+                    "native scene frame update records previous/current copies without a device-local upload");
+        const auto frameCurrent = device.readbackBufferEx(vertexBuffer, 0, sizeof(dayo::graphics::NativeSceneVertex));
+        std::memcpy(&firstVertex, frameCurrent.data(), sizeof(firstVertex));
+        ok &= check(std::abs(firstVertex.position[0] - 3.0F) < 1e-6F,
+                    "native scene frame update publishes the current vertex stream");
+        const auto framePrevious =
+            device.readbackBufferEx(previousBuffer, 0, sizeof(dayo::graphics::NativeSceneVertex));
+        std::memcpy(&firstVertex, framePrevious.data(), sizeof(firstVertex));
+        ok &= check(std::abs(firstVertex.position[0] - 2.0F) < 1e-6F,
+                    "native scene frame update preserves the prior current vertex stream");
+
+        updatedModels[0].materials[0].diffuse[0] = 0.25F;
+        const auto copiesBeforeMaterial = frameCommands.copies.size();
+        ok &= check(runtime.updateFrame(device, frameCommands, updatedModels, &error),
+                    "native scene frame update accepts a changed material buffer");
+        ok &= check(frameCommands.copies.size() == copiesBeforeMaterial + 3,
+                    "native scene frame update records only the changed material and vertex transfers");
     }
     // Native frame constants: CPU ABI and typed uniform uploads remain stable
     // independently of the native scene descriptor-set population.

@@ -318,6 +318,8 @@ class VulkanDevice final : public Device {
     void recordClearTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture,
                             const std::array<float, 4>& value);
     void recordGenerateMipmaps(VkCommandBuffer commandBuffer, handles::TextureHandle texture);
+    void recordCopyBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle source,
+                          handles::BufferHandle destination);
     void recordBindDescriptorSet(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
                                  handles::DescriptorSetHandle set, std::uint32_t setIndex);
     void recordPushConstants(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,

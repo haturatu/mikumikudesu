@@ -49,6 +49,7 @@ class VulkanCommandList final : public CommandList {
     void clearTextureEx(handles::TextureHandle texture) override;
     void clearTextureEx(handles::TextureHandle texture, const std::array<float, 4>& value) override;
     void generateMipmapsEx(handles::TextureHandle texture) override;
+    void copyBufferEx(handles::BufferHandle source, handles::BufferHandle destination) override;
 
     void bindRayTracingPipeline(handles::PipelineHandle pipeline) noexcept {
         pipeline_ = pipeline;

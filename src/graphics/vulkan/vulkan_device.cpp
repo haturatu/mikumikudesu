@@ -4653,6 +4653,25 @@ void VulkanDevice::copyBufferEx(handles::BufferHandle source, handles::BufferHan
     });
 }
 
+void VulkanDevice::recordCopyBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle source,
+                                    handles::BufferHandle destination) {
+    const auto sourceIt = typedBuffers_.find(source);
+    const auto destinationIt = typedBuffers_.find(destination);
+    if (sourceIt == typedBuffers_.end() || !typedBufferHandles_.isAlive(source) ||
+        destinationIt == typedBuffers_.end() || !typedBufferHandles_.isAlive(destination))
+        throw std::invalid_argument("typed command-list buffer copy references a stale buffer handle");
+    if (commandBuffer == VK_NULL_HANDLE)
+        throw std::invalid_argument("typed command-list buffer copy requires a command buffer");
+    if ((toBits(sourceIt->second.desc.usage) & toBits(ResourceUsage::transferSrc)) == 0U ||
+        (toBits(destinationIt->second.desc.usage) & toBits(ResourceUsage::transferDst)) == 0U)
+        throw std::invalid_argument("typed command-list buffer copy requires transfer usage");
+    if (sourceIt->second.desc.size > destinationIt->second.desc.size)
+        throw std::out_of_range("typed command-list buffer copy destination is too small");
+    const VkBufferCopy region{0, 0, sourceIt->second.resource.size};
+    vkCmdCopyBuffer(commandBuffer, sourceIt->second.resource.buffer, destinationIt->second.resource.buffer, 1,
+                    &region);
+}
+
 void VulkanDevice::copyBufferToTextureEx(handles::BufferHandle source, handles::TextureHandle destination) {
     const auto sourceIt = typedBuffers_.find(source);
     const auto destinationIt = typedTextures_.find(destination);
@@ -5242,10 +5261,17 @@ void VulkanDevice::recordMemoryBarrier(VkCommandBuffer commandBuffer) {
         throw std::invalid_argument("typed memory barrier requires a command buffer");
     const VkMemoryBarrier2 barrier{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                        VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+                        VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                         VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                        VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+                        VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                         VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                         VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
     };
     const VkDependencyInfo dependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,

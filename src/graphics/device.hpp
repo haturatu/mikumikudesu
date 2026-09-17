@@ -451,6 +451,9 @@ class CommandList {
     virtual void generateMipmapsEx(handles::TextureHandle) {
         throw std::logic_error("Typed command-list mipmap generation is not implemented by this backend");
     }
+    virtual void copyBufferEx(handles::BufferHandle, handles::BufferHandle) {
+        throw std::logic_error("Typed command-list buffer copy is not implemented by this backend");
+    }
     virtual void bindPipelineEx(handles::PipelineHandle) {
         throw std::logic_error("Typed command-list pipelines are not implemented by this backend");
     }

@@ -306,7 +306,7 @@ Application::recordNativeFrame(graphics::CommandList& commands, const graphics::
     try {
         std::string modelError;
         if (!nativeSceneModelData_.empty() &&
-            !nativeSceneModelRuntime_.update(*device_, nativeSceneModelData_, &modelError))
+            !nativeSceneModelRuntime_.updateFrame(*device_, commands, nativeSceneModelData_, &modelError))
             throw std::runtime_error(modelError.empty() ? "native scene model synchronization failed" : modelError);
         std::string sceneError;
         if (!ensureNativeSceneRuntime(true, &sceneError))

@@ -164,4 +164,10 @@ void VulkanCommandList::generateMipmapsEx(handles::TextureHandle texture) {
     device_->recordGenerateMipmaps(commandBuffer_, texture);
 }
 
+void VulkanCommandList::copyBufferEx(handles::BufferHandle source, handles::BufferHandle destination) {
+    if (device_ == nullptr)
+        throw std::logic_error("typed buffer copy requires a Vulkan device");
+    device_->recordCopyBuffer(commandBuffer_, source, destination);
+}
+
 } // namespace dayo::graphics

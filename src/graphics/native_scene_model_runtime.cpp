@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <limits>
 #include <stdexcept>
@@ -39,6 +40,29 @@ handles::BufferHandle upload(Device& device, std::span<const T> values, Resource
     return handle;
 }
 
+template <typename T>
+handles::BufferHandle createStaging(Device& device, std::span<const T> values, std::string_view name) {
+    const auto handle = device.createBufferEx({.size = allocationSize(values.size_bytes()),
+                                               .usage = ResourceUsage::transferSrc,
+                                               .cpuVisible = true,
+                                               .lifetime = ResourceLifetime::persistent});
+    if (!handle.valid())
+        throw std::runtime_error("native scene staging buffer allocation returned an invalid handle: " +
+                                 std::string(name));
+    return handle;
+}
+
+template <typename T> [[nodiscard]] std::uint64_t hashValues(std::span<const T> values) noexcept {
+    constexpr std::uint64_t offset = 1469598103934665603ULL;
+    constexpr std::uint64_t prime = 1099511628211ULL;
+    auto result = offset ^ static_cast<std::uint64_t>(values.size_bytes());
+    for (const auto value : std::as_bytes(values)) {
+        result ^= std::to_integer<std::uint8_t>(value);
+        result *= prime;
+    }
+    return result;
+}
+
 void destroy(Device& device, std::vector<handles::BufferHandle>& handles) noexcept {
     for (const auto handle : handles) {
         if (!handle.valid())
@@ -52,6 +76,28 @@ void destroy(Device& device, std::vector<handles::BufferHandle>& handles) noexce
 }
 
 } // namespace
+
+NativeSceneModelRuntime::StaticHashes
+NativeSceneModelRuntime::makeStaticHashes(const NativeSceneModelData& model) noexcept {
+    return {.indices = hashValues(std::span<const std::uint32_t>(model.indices)),
+            .materials = hashValues(std::span<const NativeSceneMaterial>(model.materials)),
+            .faces = hashValues(std::span<const std::uint32_t>(model.faces)),
+            .materialFaces = hashValues(std::span<const NativeSceneMaterialFace>(model.materialFaces)),
+            .faceWalker = hashValues(std::span<const NativeSceneWalkerAlias>(model.faceWalker))};
+}
+
+bool NativeSceneModelRuntime::sameLayout(Device& device, std::span<const NativeSceneModelData> models) const noexcept {
+    return ready() && device_ == &device && models.size() == modelCount() &&
+           std::all_of(models.begin(), models.end(), [&](const auto& model) {
+               const auto index = static_cast<std::size_t>(&model - models.data());
+               return byteSize(model.vertices) == vertexBytes_[index] &&
+                      byteSize(model.indices) == indexBytes_[index] &&
+                      byteSize(model.materials) == materialBytes_[index] &&
+                      byteSize(model.faces) == faceBytes_[index] &&
+                      byteSize(model.materialFaces) == materialFaceBytes_[index] &&
+                      byteSize(model.faceWalker) == faceWalkerBytes_[index];
+           });
+}
 
 NativeSceneModelRuntime::~NativeSceneModelRuntime() {
     reset();
@@ -69,11 +115,17 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
     try {
         device_ = &device;
         vertices_.reserve(models.size());
+        vertexStaging_.reserve(models.size());
         indices_.reserve(models.size());
+        indexStaging_.reserve(models.size());
         materials_.reserve(models.size());
+        materialStaging_.reserve(models.size());
         faces_.reserve(models.size());
+        faceStaging_.reserve(models.size());
         materialFaces_.reserve(models.size());
+        materialFaceStaging_.reserve(models.size());
         faceWalkers_.reserve(models.size());
+        faceWalkerStaging_.reserve(models.size());
         vertexBytes_.reserve(models.size());
         indexBytes_.reserve(models.size());
         materialBytes_.reserve(models.size());
@@ -94,8 +146,11 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
                                            ResourceUsage::transferSrc,
                                        "vertices"));
             previousVertices_.push_back(upload(device, std::span<const NativeSceneVertex>(model.vertices),
-                                               ResourceUsage::storageRead | ResourceUsage::rayTracingRead,
+                                               ResourceUsage::storageRead | ResourceUsage::rayTracingRead |
+                                                   ResourceUsage::transferDst,
                                                "previous vertices"));
+            vertexStaging_.push_back(createStaging(device, std::span<const NativeSceneVertex>(model.vertices),
+                                                   "vertex staging"));
             rawVertices_.push_back(upload(device, std::span<const NativeSceneVertex>(model.vertices),
                                           ResourceUsage::storageRead | ResourceUsage::rayTracingRead,
                                           "raw vertices"));
@@ -111,6 +166,12 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
                                             ResourceUsage::storageRead | ResourceUsage::rayTracingRead, "material faces"));
             faceWalkers_.push_back(upload(device, std::span<const NativeSceneWalkerAlias>(model.faceWalker),
                                           ResourceUsage::storageRead | ResourceUsage::rayTracingRead, "face walkers"));
+            indexStaging_.push_back({});
+            materialStaging_.push_back({});
+            faceStaging_.push_back({});
+            materialFaceStaging_.push_back({});
+            faceWalkerStaging_.push_back({});
+            staticHashes_.push_back(makeStaticHashes(model));
         }
     } catch (const std::exception& exception) {
         setError(error, std::string("native scene model upload failed: ") + exception.what());
@@ -133,17 +194,7 @@ bool NativeSceneModelRuntime::update(Device& device, std::span<const NativeScene
         setError(error, "native scene model runtime requires at least one model");
         return false;
     }
-    const bool sameLayout = ready() && device_ == &device && models.size() == modelCount() &&
-                            std::all_of(models.begin(), models.end(), [&](const auto& model) {
-                                const auto index = static_cast<std::size_t>(&model - models.data());
-                                return byteSize(model.vertices) == vertexBytes_[index] &&
-                                       byteSize(model.indices) == indexBytes_[index] &&
-                                       byteSize(model.materials) == materialBytes_[index] &&
-                                       byteSize(model.faces) == faceBytes_[index] &&
-                                       byteSize(model.materialFaces) == materialFaceBytes_[index] &&
-                                       byteSize(model.faceWalker) == faceWalkerBytes_[index];
-                            });
-    if (!sameLayout)
+    if (!sameLayout(device, models))
         return sync(device, models, error);
     try {
         for (std::size_t index = 0; index < models.size(); ++index) {
@@ -155,24 +206,90 @@ bool NativeSceneModelRuntime::update(Device& device, std::span<const NativeScene
             device.copyBufferEx(vertices_[index], previousVertices_[index]);
             if (!model.vertices.empty())
                 device.uploadBufferEx(vertices_[index], std::as_bytes(std::span<const NativeSceneVertex>(model.vertices)), 0);
-            if (!model.indices.empty())
+            const auto hashes = makeStaticHashes(model);
+            if (hashes.indices != staticHashes_[index].indices && !model.indices.empty())
                 device.uploadBufferEx(indices_[index], std::as_bytes(std::span<const std::uint32_t>(model.indices)), 0);
-            if (!model.materials.empty())
+            if (hashes.materials != staticHashes_[index].materials && !model.materials.empty())
                 device.uploadBufferEx(materials_[index], std::as_bytes(std::span<const NativeSceneMaterial>(model.materials)), 0);
-            if (!model.faces.empty())
+            if (hashes.faces != staticHashes_[index].faces && !model.faces.empty())
                 device.uploadBufferEx(faces_[index], std::as_bytes(std::span<const std::uint32_t>(model.faces)), 0);
-            if (!model.materialFaces.empty())
+            if (hashes.materialFaces != staticHashes_[index].materialFaces && !model.materialFaces.empty())
                 device.uploadBufferEx(materialFaces_[index],
                                       std::as_bytes(std::span<const NativeSceneMaterialFace>(model.materialFaces)), 0);
-            if (!model.faceWalker.empty())
+            if (hashes.faceWalker != staticHashes_[index].faceWalker && !model.faceWalker.empty())
                 device.uploadBufferEx(faceWalkers_[index],
                                       std::as_bytes(std::span<const NativeSceneWalkerAlias>(model.faceWalker)), 0);
+            staticHashes_[index] = hashes;
         }
     } catch (const std::exception& exception) {
         setError(error, std::string("native scene model update failed: ") + exception.what());
         return false;
     } catch (...) {
         setError(error, "native scene model update failed");
+        return false;
+    }
+    return true;
+}
+
+bool NativeSceneModelRuntime::updateFrame(Device& device, CommandList& commands,
+                                          std::span<const NativeSceneModelData> models, std::string* error) {
+    if (error != nullptr)
+        error->clear();
+    if (models.empty()) {
+        reset();
+        setError(error, "native scene model runtime requires at least one model");
+        return false;
+    }
+    if (!sameLayout(device, models))
+        return sync(device, models, error);
+
+    try {
+        bool recordedTransfer = false;
+        for (std::size_t index = 0; index < models.size(); ++index) {
+            const auto& model = models[index];
+            if (!model.vertices.empty()) {
+                device.uploadBufferEx(vertexStaging_[index],
+                                      std::as_bytes(std::span<const NativeSceneVertex>(model.vertices)), 0);
+                commands.copyBufferEx(vertices_[index], previousVertices_[index]);
+                commands.copyBufferEx(vertexStaging_[index], vertices_[index]);
+                recordedTransfer = true;
+            }
+
+            const auto hashes = makeStaticHashes(model);
+            const auto copyIfChanged = [&](auto& staging, auto destination, const auto& values,
+                                           std::uint64_t oldHash, std::uint64_t newHash, std::string_view name) {
+                if (oldHash == newHash || values.empty())
+                    return false;
+                if (!staging[index].valid())
+                    staging[index] = createStaging(device, std::span(values), name);
+                device.uploadBufferEx(staging[index], std::as_bytes(std::span(values)), 0);
+                commands.copyBufferEx(staging[index], destination);
+                return true;
+            };
+            const bool indicesChanged = copyIfChanged(indexStaging_, indices_[index], model.indices,
+                                                      staticHashes_[index].indices, hashes.indices, "index staging");
+            const bool materialsChanged = copyIfChanged(materialStaging_, materials_[index], model.materials,
+                                                        staticHashes_[index].materials, hashes.materials,
+                                                        "material staging");
+            const bool facesChanged = copyIfChanged(faceStaging_, faces_[index], model.faces,
+                                                    staticHashes_[index].faces, hashes.faces, "face staging");
+            const bool materialFacesChanged = copyIfChanged(materialFaceStaging_, materialFaces_[index],
+                                                            model.materialFaces, staticHashes_[index].materialFaces,
+                                                            hashes.materialFaces, "material face staging");
+            const bool faceWalkerChanged = copyIfChanged(faceWalkerStaging_, faceWalkers_[index], model.faceWalker,
+                                                         staticHashes_[index].faceWalker, hashes.faceWalker,
+                                                         "face walker staging");
+            recordedTransfer = recordedTransfer || indicesChanged || materialsChanged || facesChanged ||
+                               materialFacesChanged || faceWalkerChanged;
+            staticHashes_[index] = hashes;
+        }
+        if (recordedTransfer)
+            commands.memoryBarrierEx();
+    } catch (const std::exception& exception) {
+        setError(error, std::string("native scene frame update failed: ") + exception.what());
+        return false;
+    } catch (...) {
+        setError(error, "native scene frame update failed");
         return false;
     }
     return true;
@@ -214,20 +331,32 @@ void NativeSceneModelRuntime::reset() noexcept {
         destroy(*device, vertices_);
         destroy(*device, previousVertices_);
         destroy(*device, rawVertices_);
+        destroy(*device, vertexStaging_);
         destroy(*device, indices_);
+        destroy(*device, indexStaging_);
         destroy(*device, materials_);
+        destroy(*device, materialStaging_);
         destroy(*device, faces_);
+        destroy(*device, faceStaging_);
         destroy(*device, materialFaces_);
+        destroy(*device, materialFaceStaging_);
         destroy(*device, faceWalkers_);
+        destroy(*device, faceWalkerStaging_);
     } else {
         vertices_.clear();
         previousVertices_.clear();
         rawVertices_.clear();
+        vertexStaging_.clear();
         indices_.clear();
+        indexStaging_.clear();
         materials_.clear();
+        materialStaging_.clear();
         faces_.clear();
+        faceStaging_.clear();
         materialFaces_.clear();
+        materialFaceStaging_.clear();
         faceWalkers_.clear();
+        faceWalkerStaging_.clear();
     }
     vertexBytes_.clear();
     indexBytes_.clear();
@@ -235,6 +364,7 @@ void NativeSceneModelRuntime::reset() noexcept {
     faceBytes_.clear();
     materialFaceBytes_.clear();
     faceWalkerBytes_.clear();
+    staticHashes_.clear();
     device_ = nullptr;
 }
 
