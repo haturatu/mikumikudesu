@@ -1,18 +1,60 @@
 #include "fx/fx_shader_compiler.hpp"
 
 #include <atomic>
+#include <array>
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <limits>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
 #include <system_error>
 
+#if defined(__unix__) || defined(__APPLE__)
+#include <unistd.h>
+#endif
+
 namespace dayo::fx {
 namespace {
 
 std::atomic<std::uint64_t> nextTemporaryId{1};
+
+[[nodiscard]] std::uint64_t processId() noexcept {
+#if defined(__unix__) || defined(__APPLE__)
+    return static_cast<std::uint64_t>(::getpid());
+#else
+    return 0;
+#endif
+}
+
+[[nodiscard]] std::array<std::uint32_t, 4> randomWords() noexcept {
+    std::array<std::uint32_t, 4> words{};
+    try {
+        std::random_device source;
+        for (auto& word : words)
+            word = source();
+    } catch (...) {
+        const auto seed = static_cast<std::uint64_t>(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+        words[0] = static_cast<std::uint32_t>(seed);
+        words[1] = static_cast<std::uint32_t>(seed >> 32U);
+        words[2] = static_cast<std::uint32_t>(processId());
+        words[3] = static_cast<std::uint32_t>(nextTemporaryId.load(std::memory_order_relaxed));
+    }
+    return words;
+}
+
+[[nodiscard]] std::string randomSuffix() {
+    const auto words = randomWords();
+    std::ostringstream output;
+    output << std::hex << std::setfill('0');
+    for (const auto word : words)
+        output << std::setw(8) << word;
+    return output.str();
+}
 
 [[nodiscard]] std::string quoteShellArgument(std::string_view value) {
     std::string quoted;
@@ -40,11 +82,18 @@ std::atomic<std::uint64_t> nextTemporaryId{1};
     const auto root = std::filesystem::temp_directory_path(error);
     if (error)
         throw std::runtime_error("cannot locate temporary directory: " + error.message());
-    const auto path = root / ("mikumikudesu-fx-" + std::to_string(nextTemporaryId.fetch_add(1)));
-    std::filesystem::create_directory(path, error);
-    if (error)
-        throw std::runtime_error("cannot create shader compile directory: " + error.message());
-    return path;
+    const auto pid = processId();
+    for (int attempt = 0; attempt < 64; ++attempt) {
+        const auto id = nextTemporaryId.fetch_add(1, std::memory_order_relaxed);
+        const auto path = root / ("mikumikudesu-fx-" + std::to_string(pid) + "-" + std::to_string(id) + "-" +
+                                  randomSuffix());
+        error.clear();
+        if (std::filesystem::create_directory(path, error))
+            return path;
+        if (error && error != std::errc::file_exists)
+            throw std::runtime_error("cannot create shader compile directory: " + error.message());
+    }
+    throw std::runtime_error("cannot create a unique shader compile directory");
 }
 
 class TemporaryDirectory {
