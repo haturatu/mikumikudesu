@@ -9,7 +9,6 @@
 #include <array>
 #include <bit>
 #include <cctype>
-#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -24,13 +23,6 @@ namespace dayo::core {
 namespace {
 
 constexpr std::uint64_t kImageAllocationBudget = 512ULL * 1024ULL * 1024ULL;
-
-struct StbiFileCloser {
-    void operator()(std::FILE* file) const noexcept {
-        if (file != nullptr)
-            std::fclose(file);
-    }
-};
 
 std::uint32_t u32(const std::uint8_t* value) {
     return static_cast<std::uint32_t>(value[0]) | (static_cast<std::uint32_t>(value[1]) << 8U) |
@@ -118,6 +110,25 @@ std::uint64_t checkedRgbaBytes(std::uint32_t width, std::uint32_t height, std::s
 void checkPeakAllocation(std::uint64_t inputBytes, std::uint64_t outputBytes, std::string_view field) {
     if (inputBytes > kImageAllocationBudget || outputBytes > kImageAllocationBudget - inputBytes)
         throw std::runtime_error("image allocation budget exceeded for " + std::string(field));
+}
+
+[[nodiscard]] std::vector<std::uint8_t> readImageSnapshot(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input)
+        throw std::runtime_error("cannot open image " + path.string());
+    const auto end = input.tellg();
+    if (end <= 0)
+        throw std::runtime_error("empty image " + path.string());
+    const auto size = static_cast<std::uint64_t>(end);
+    if (size > kImageAllocationBudget || size > std::numeric_limits<std::size_t>::max() ||
+        size > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max()))
+        throw std::runtime_error("encoded image exceeds allocation budget: " + path.string());
+    std::vector<std::uint8_t> snapshot(static_cast<std::size_t>(size));
+    input.seekg(0);
+    input.read(reinterpret_cast<char*>(snapshot.data()), static_cast<std::streamsize>(snapshot.size()));
+    if (!input || input.gcount() != static_cast<std::streamsize>(snapshot.size()))
+        throw std::runtime_error("cannot read image " + path.string());
+    return snapshot;
 }
 
 enum class BlockFormat { bc1, bc2, bc3, bc4, bc5 };
@@ -296,25 +307,26 @@ ImageRgba8 loadImageRgba8(const std::filesystem::path& path) {
                            [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
     if (extension == ".dds")
         return decodeDds(path);
-    std::unique_ptr<std::FILE, StbiFileCloser> file(std::fopen(path.c_str(), "rb"));
-    if (!file)
-        throw std::runtime_error("cannot open image " + path.string());
+    const auto snapshot = readImageSnapshot(path);
     int infoWidth = 0;
     int infoHeight = 0;
     int infoChannels = 0;
-    if (!stbi_info_from_file(file.get(), &infoWidth, &infoHeight, &infoChannels))
+    if (!stbi_info_from_memory(snapshot.data(), static_cast<int>(snapshot.size()), &infoWidth, &infoHeight,
+                               &infoChannels))
         throw std::runtime_error("cannot inspect image " + path.string() + ": " + stbi_failure_reason());
     if (infoWidth <= 0 || infoHeight <= 0)
         throw std::runtime_error("invalid image dimensions: " + path.string());
     const auto expectedBytes =
         checkedRgbaBytes(static_cast<std::uint32_t>(infoWidth), static_cast<std::uint32_t>(infoHeight), "image");
-    checkPeakAllocation(expectedBytes, expectedBytes, "image");
-    std::rewind(file.get());
+    const auto decodedAndCopiedBytes = checkedMultiply(expectedBytes, 2U, "image decoded buffers");
+    checkPeakAllocation(snapshot.size(), decodedAndCopiedBytes, "image");
     int width = 0;
     int height = 0;
     int channels = 0;
     std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> decoded(
-        stbi_load_from_file(file.get(), &width, &height, &channels, STBI_rgb_alpha), &stbi_image_free);
+        stbi_load_from_memory(snapshot.data(), static_cast<int>(snapshot.size()), &width, &height, &channels,
+                              STBI_rgb_alpha),
+        &stbi_image_free);
     if (decoded == nullptr) {
         throw std::runtime_error("cannot decode image " + path.string() + ": " + stbi_failure_reason());
     }
@@ -324,7 +336,7 @@ ImageRgba8 loadImageRgba8(const std::filesystem::path& path) {
         checkedRgbaBytes(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), "image");
     if (actualBytes != expectedBytes)
         throw std::runtime_error("image dimensions changed during decode: " + path.string());
-    checkPeakAllocation(actualBytes, actualBytes, "image");
+    checkPeakAllocation(snapshot.size(), checkedMultiply(actualBytes, 2U, "image decoded buffers"), "image");
     ImageRgba8 image{static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
                      std::vector<std::uint8_t>(decoded.get(), decoded.get() + static_cast<std::size_t>(actualBytes))};
     return image;
@@ -339,13 +351,12 @@ ImageData loadImageData(const std::filesystem::path& path) {
         return rgba8ToHalf(ldr, ColorSpace::srgb);
     }
 
-    std::unique_ptr<std::FILE, StbiFileCloser> file(std::fopen(path.c_str(), "rb"));
-    if (!file)
-        throw std::runtime_error("cannot open HDR image " + path.string());
+    const auto snapshot = readImageSnapshot(path);
     int infoWidth = 0;
     int infoHeight = 0;
     int infoChannels = 0;
-    if (!stbi_info_from_file(file.get(), &infoWidth, &infoHeight, &infoChannels))
+    if (!stbi_info_from_memory(snapshot.data(), static_cast<int>(snapshot.size()), &infoWidth, &infoHeight,
+                               &infoChannels))
         throw std::runtime_error("cannot inspect HDR image " + path.string() + ": " + stbi_failure_reason());
     if (infoWidth <= 0 || infoHeight <= 0)
         throw std::runtime_error("invalid HDR image dimensions: " + path.string());
@@ -354,17 +365,19 @@ ImageData loadImageData(const std::filesystem::path& path) {
     const auto decodedBytes = checkedMultiply(pixels, 4U * sizeof(float), "HDR image bytes");
     if (decodedBytes > std::numeric_limits<std::size_t>::max())
         throw std::runtime_error("HDR image exceeds addressable memory: " + path.string());
-    checkPeakAllocation(decodedBytes, decodedBytes, "HDR image");
-    std::rewind(file.get());
+    const auto decodedAndCopiedBytes = checkedMultiply(decodedBytes, 2U, "HDR image decoded buffers");
+    checkPeakAllocation(snapshot.size(), decodedAndCopiedBytes, "HDR image");
     int width = 0;
     int height = 0;
     int channels = 0;
     std::unique_ptr<float, decltype(&stbi_image_free)> decoded(
-        stbi_loadf_from_file(file.get(), &width, &height, &channels, 4), &stbi_image_free);
+        stbi_loadf_from_memory(snapshot.data(), static_cast<int>(snapshot.size()), &width, &height, &channels, 4),
+        &stbi_image_free);
     if (decoded == nullptr)
         throw std::runtime_error("cannot decode HDR image " + path.string() + ": " + stbi_failure_reason());
     if (width != infoWidth || height != infoHeight)
         throw std::runtime_error("HDR image dimensions changed during decode: " + path.string());
+    checkPeakAllocation(snapshot.size(), checkedMultiply(decodedBytes, 2U, "HDR image decoded buffers"), "HDR image");
     ImageData result{.width = static_cast<std::uint32_t>(width),
                      .height = static_cast<std::uint32_t>(height),
                      .channels = 4,
