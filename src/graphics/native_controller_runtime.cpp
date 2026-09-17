@@ -177,9 +177,7 @@ NativeControllerLayout makeNativeControllerLayout(std::span<const core::EffectCo
             field.elementStride = isMatrix(type) ? elementSize : 16;
             cursor = checkedAdd(cursor, checkedMultiply(field.elementStride, parsed.arrayCount));
         } else {
-            if (elementSize > 16U)
-                cursor = align16(cursor);
-            else if (cursor % 16U + elementSize > 16U)
+            if (elementSize > 16U || cursor % 16U + elementSize > 16U)
                 cursor = align16(cursor);
             field.offset = cursor;
             cursor = checkedAdd(cursor, elementSize);

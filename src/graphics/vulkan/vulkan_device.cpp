@@ -4073,7 +4073,7 @@ handles::BufferHandle VulkanDevice::createBufferEx(const BufferResourceDesc& des
     }
 
     const auto handle = typedBufferHandles_.create();
-    typedBuffers_.emplace(handle, std::move(typed));
+    typedBuffers_.emplace(handle, typed);
     return handle;
 }
 
@@ -4143,7 +4143,7 @@ handles::TextureHandle VulkanDevice::createTextureEx(const TextureResourceDesc& 
     }
 
     const auto handle = typedTextureHandles_.create();
-    typedTextures_.emplace(handle, std::move(typed));
+    typedTextures_.emplace(handle, typed);
     return handle;
 }
 
@@ -4296,7 +4296,7 @@ handles::PipelineHandle VulkanDevice::createComputePipelineEx(const ComputePipel
     check(vkCreateComputePipelines(device_, pipelineCache_, 1, &createInfo, nullptr, &typed.pipeline),
           "create typed compute pipeline");
     const auto handle = typedPipelineHandles_.create();
-    typedPipelines_.emplace(handle, std::move(typed));
+    typedPipelines_.emplace(handle, typed);
     return handle;
 }
 
@@ -4391,7 +4391,7 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
     check(vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &createInfo, nullptr, &typed.pipeline),
           "create typed graphics pipeline");
     const auto handle = typedPipelineHandles_.create();
-    typedPipelines_.emplace(handle, std::move(typed));
+    typedPipelines_.emplace(handle, typed);
     return handle;
 }
 
@@ -4474,7 +4474,7 @@ handles::PipelineHandle VulkanDevice::createRayTracingPipelineEx(const RayTracin
     check(create(device_, VK_NULL_HANDLE, pipelineCache_, 1, &createInfo, nullptr, &typed.pipeline),
           "create typed ray-tracing pipeline");
     const auto handle = typedPipelineHandles_.create();
-    typedPipelines_.emplace(handle, std::move(typed));
+    typedPipelines_.emplace(handle, typed);
     return handle;
 }
 
@@ -4596,7 +4596,7 @@ handles::ShaderBindingTableHandle VulkanDevice::createShaderBindingTable(const S
         throw;
     }
     const auto handle = typedShaderBindingTableHandles_.create();
-    typedShaderBindingTables_.emplace(handle, std::move(typed));
+    typedShaderBindingTables_.emplace(handle, typed);
     return handle;
 }
 

@@ -8,6 +8,7 @@
 #include <cctype>
 #include <exception>
 #include <limits>
+#include <ranges>
 #include <stdexcept>
 #include <utility>
 
@@ -477,11 +478,11 @@ std::optional<Extent3D> FxResourceRuntime::extent(std::string_view name) const {
 
 std::optional<FxResourceRuntime::ResolvedTexture>
 FxResourceRuntime::resolveOutputTexture(std::span<const fx::FxDispatch> ordered) const {
-    for (auto dispatch = ordered.rbegin(); dispatch != ordered.rend(); ++dispatch) {
-        for (auto resource = dispatch->resources.rbegin(); resource != dispatch->resources.rend(); ++resource) {
-            if (!resource->write)
+    for (const auto& dispatch : std::ranges::reverse_view(ordered)) {
+        for (const auto& resource : std::ranges::reverse_view(dispatch.resources)) {
+            if (!resource.write)
                 continue;
-            const auto found = indices_.find(resource->name);
+            const auto found = indices_.find(resource.name);
             if (found == indices_.end())
                 continue;
             const auto& candidate = resources_[found->second];

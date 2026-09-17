@@ -48,6 +48,17 @@ bool check(bool value, std::string_view message) {
     return value;
 }
 
+bool supportsRayGeneration(const dayo::fx::FxShaderCompiler& compiler) {
+    dayo::fx::FxShaderCompileRequest request;
+    request.hlsl = "void main() {}\n";
+    request.stage = dayo::fx::FxShaderStage::rayGeneration;
+    try {
+        return !compiler.compile(request).spirv.empty();
+    } catch (...) {
+        return false;
+    }
+}
+
 struct MockAccelerationBackend : dayo::graphics::IAccelerationBackend {
     std::uint32_t next{1};
     std::uint64_t createBlasCalls{0};
@@ -431,6 +442,12 @@ bool testSubayaiNativeFxExecution() {
 bool testBdptNativeFxExecution() {
     dayo::fx::FxShaderCompiler compiler;
     if (!compiler.available())
+        return true;
+    // Ubuntu's fallback glslc package may compile the raster/compute stages
+    // used by the other native tests without supporting ray-generation input.
+    // Keep this test active on RT-capable toolchains and let the runtime
+    // capability query provide the production fallback on older toolchains.
+    if (!supportsRayGeneration(compiler))
         return true;
 
     MockNativeDevice device;
