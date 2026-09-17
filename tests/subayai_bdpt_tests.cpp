@@ -1055,12 +1055,12 @@ int main() {
         ok &= check(service.lightCount() == 0 && service.buildCount() == 0, "alias skips clean lighting");
         service.update(powers, true);
         ok &= check(service.lightCount() == 3 && service.buildCount() == 1, "alias builds from caller powers");
-        const auto table = service.table();
+        const auto initialTable = service.table();
         double probabilitySum = 0.0;
         bool aliasesInRange = true;
-        for (const AliasEntry& entry : table) {
+        for (const AliasEntry& entry : initialTable) {
             probabilitySum += static_cast<double>(entry.probability);
-            aliasesInRange &= entry.alias < table.size();
+            aliasesInRange &= entry.alias < initialTable.size();
             aliasesInRange &= entry.probability >= 0.0F && entry.probability <= 1.0F;
         }
         ok &= check(aliasesInRange, "alias entries reference valid lights");
@@ -1071,6 +1071,7 @@ int main() {
         service.update(moreLights, true);
         ok &= check(service.lightCount() == 5 && service.buildCount() == 2, "alias light count is caller-driven");
 
+        const auto table = service.table();
         MockNativeDevice device;
         dayo::graphics::LightSamplingGpuRuntime gpu;
         std::string error;
