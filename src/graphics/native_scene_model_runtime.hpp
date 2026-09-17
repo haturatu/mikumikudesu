@@ -23,15 +23,13 @@ class NativeSceneModelRuntime {
     NativeSceneModelRuntime(const NativeSceneModelRuntime&) = delete;
     NativeSceneModelRuntime& operator=(const NativeSceneModelRuntime&) = delete;
 
-    [[nodiscard]] bool sync(Device& device, std::span<const NativeSceneModelData> models,
-                             std::string* error = nullptr);
+    [[nodiscard]] bool sync(Device& device, std::span<const NativeSceneModelData> models, std::string* error = nullptr);
     [[nodiscard]] bool update(Device& device, std::span<const NativeSceneModelData> models,
                               std::string* error = nullptr);
     // Records animated and dirty static buffer transfers into the current
     // frame. CPU-visible staging writes are non-blocking; the device-local
     // copies are ordered with the native passes by the command-list barrier.
-    [[nodiscard]] bool updateFrame(Device& device, CommandList& commands,
-                                   std::span<const NativeSceneModelData> models,
+    [[nodiscard]] bool updateFrame(Device& device, CommandList& commands, std::span<const NativeSceneModelData> models,
                                    std::string* error = nullptr);
     void reset() noexcept;
 

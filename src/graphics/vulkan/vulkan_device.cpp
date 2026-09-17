@@ -4668,8 +4668,7 @@ void VulkanDevice::recordCopyBuffer(VkCommandBuffer commandBuffer, handles::Buff
     if (sourceIt->second.desc.size > destinationIt->second.desc.size)
         throw std::out_of_range("typed command-list buffer copy destination is too small");
     const VkBufferCopy region{0, 0, sourceIt->second.resource.size};
-    vkCmdCopyBuffer(commandBuffer, sourceIt->second.resource.buffer, destinationIt->second.resource.buffer, 1,
-                    &region);
+    vkCmdCopyBuffer(commandBuffer, sourceIt->second.resource.buffer, destinationIt->second.resource.buffer, 1, &region);
 }
 
 void VulkanDevice::copyBufferToTextureEx(handles::BufferHandle source, handles::TextureHandle destination) {
@@ -5115,9 +5114,8 @@ void VulkanDevice::recordGenerateMipmaps(VkCommandBuffer commandBuffer, handles:
     const bool blitDestination = (features & VK_FORMAT_FEATURE_BLIT_DST_BIT) != 0U;
     if (!blitSource || !blitDestination)
         throw std::runtime_error("typed mipmap generation has no Vulkan blit support for the texture format");
-    const auto filter = (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0U
-                            ? VK_FILTER_LINEAR
-                            : VK_FILTER_NEAREST;
+    const auto filter =
+        (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0U ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
     recordTextureTransition(commandBuffer, texture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     const auto aspect = imageAspect(it->second.desc.format);
     for (std::uint32_t mip = 1; mip < it->second.desc.mipLevels; ++mip) {

@@ -1,7 +1,7 @@
 #include "fx/fx_shader_compiler.hpp"
 
-#include <atomic>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -37,8 +37,7 @@ std::atomic<std::uint64_t> nextTemporaryId{1};
         for (auto& word : words)
             word = source();
     } catch (...) {
-        const auto seed = static_cast<std::uint64_t>(
-            std::chrono::steady_clock::now().time_since_epoch().count());
+        const auto seed = static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
         words[0] = static_cast<std::uint32_t>(seed);
         words[1] = static_cast<std::uint32_t>(seed >> 32U);
         words[2] = static_cast<std::uint32_t>(processId());
@@ -85,8 +84,8 @@ std::atomic<std::uint64_t> nextTemporaryId{1};
     const auto pid = processId();
     for (int attempt = 0; attempt < 64; ++attempt) {
         const auto id = nextTemporaryId.fetch_add(1, std::memory_order_relaxed);
-        const auto path = root / ("mikumikudesu-fx-" + std::to_string(pid) + "-" + std::to_string(id) + "-" +
-                                  randomSuffix());
+        const auto path =
+            root / ("mikumikudesu-fx-" + std::to_string(pid) + "-" + std::to_string(id) + "-" + randomSuffix());
         error.clear();
         if (std::filesystem::create_directory(path, error))
             return path;

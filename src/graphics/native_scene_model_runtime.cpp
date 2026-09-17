@@ -159,17 +159,16 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
                                            ResourceUsage::asBuildRead | ResourceUsage::rayTracingRead |
                                            ResourceUsage::transferSrc,
                                        "vertices"));
-            previousVertices_.push_back(upload(device, std::span<const NativeSceneVertex>(model.vertices),
-                                               ResourceUsage::storageRead | ResourceUsage::rayTracingRead |
-                                                   ResourceUsage::transferDst,
-                                               "previous vertices"));
+            previousVertices_.push_back(
+                upload(device, std::span<const NativeSceneVertex>(model.vertices),
+                       ResourceUsage::storageRead | ResourceUsage::rayTracingRead | ResourceUsage::transferDst,
+                       "previous vertices"));
             StagingSlots vertexStaging{};
             for (auto& slot : vertexStaging)
                 slot = createStaging(device, std::span<const NativeSceneVertex>(model.vertices), "vertex staging");
             vertexStaging_.push_back(vertexStaging);
             rawVertices_.push_back(upload(device, std::span<const NativeSceneVertex>(model.vertices),
-                                          ResourceUsage::storageRead | ResourceUsage::rayTracingRead,
-                                          "raw vertices"));
+                                          ResourceUsage::storageRead | ResourceUsage::rayTracingRead, "raw vertices"));
             indices_.push_back(upload(device, std::span<const std::uint32_t>(model.indices),
                                       ResourceUsage::storageRead | ResourceUsage::indexRead | ResourceUsage::asBuildRead |
                                           ResourceUsage::rayTracingRead,
@@ -179,7 +178,8 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
             faces_.push_back(upload(device, std::span<const std::uint32_t>(model.faces),
                                     ResourceUsage::storageRead | ResourceUsage::rayTracingRead, "faces"));
             materialFaces_.push_back(upload(device, std::span<const NativeSceneMaterialFace>(model.materialFaces),
-                                            ResourceUsage::storageRead | ResourceUsage::rayTracingRead, "material faces"));
+                                            ResourceUsage::storageRead | ResourceUsage::rayTracingRead,
+                                            "material faces"));
             faceWalkers_.push_back(upload(device, std::span<const NativeSceneWalkerAlias>(model.faceWalker),
                                           ResourceUsage::storageRead | ResourceUsage::rayTracingRead, "face walkers"));
             indexStaging_.push_back({});
@@ -221,12 +221,14 @@ bool NativeSceneModelRuntime::update(Device& device, std::span<const NativeScene
             // second host-side vertex snapshot.
             device.copyBufferEx(vertices_[index], previousVertices_[index]);
             if (!model.vertices.empty())
-                device.uploadBufferEx(vertices_[index], std::as_bytes(std::span<const NativeSceneVertex>(model.vertices)), 0);
+                device.uploadBufferEx(vertices_[index],
+                                      std::as_bytes(std::span<const NativeSceneVertex>(model.vertices)), 0);
             const auto hashes = makeStaticHashes(model);
             if (hashes.indices != staticHashes_[index].indices && !model.indices.empty())
                 device.uploadBufferEx(indices_[index], std::as_bytes(std::span<const std::uint32_t>(model.indices)), 0);
             if (hashes.materials != staticHashes_[index].materials && !model.materials.empty())
-                device.uploadBufferEx(materials_[index], std::as_bytes(std::span<const NativeSceneMaterial>(model.materials)), 0);
+                device.uploadBufferEx(materials_[index],
+                                      std::as_bytes(std::span<const NativeSceneMaterial>(model.materials)), 0);
             if (hashes.faces != staticHashes_[index].faces && !model.faces.empty())
                 device.uploadBufferEx(faces_[index], std::as_bytes(std::span<const std::uint32_t>(model.faces)), 0);
             if (hashes.materialFaces != staticHashes_[index].materialFaces && !model.materialFaces.empty())
@@ -273,8 +275,8 @@ bool NativeSceneModelRuntime::updateFrame(Device& device, CommandList& commands,
             }
 
             const auto hashes = makeStaticHashes(model);
-            const auto copyIfChanged = [&](auto& staging, auto destination, const auto& values,
-                                           std::uint64_t oldHash, std::uint64_t newHash, std::string_view name) {
+            const auto copyIfChanged = [&](auto& staging, auto destination, const auto& values, std::uint64_t oldHash,
+                                           std::uint64_t newHash, std::string_view name) {
                 if (oldHash == newHash || values.empty())
                     return false;
                 if (!staging[index][slot].valid())
@@ -285,17 +287,17 @@ bool NativeSceneModelRuntime::updateFrame(Device& device, CommandList& commands,
             };
             const bool indicesChanged = copyIfChanged(indexStaging_, indices_[index], model.indices,
                                                       staticHashes_[index].indices, hashes.indices, "index staging");
-            const bool materialsChanged = copyIfChanged(materialStaging_, materials_[index], model.materials,
-                                                        staticHashes_[index].materials, hashes.materials,
-                                                        "material staging");
+            const bool materialsChanged =
+                copyIfChanged(materialStaging_, materials_[index], model.materials, staticHashes_[index].materials,
+                              hashes.materials, "material staging");
             const bool facesChanged = copyIfChanged(faceStaging_, faces_[index], model.faces,
                                                     staticHashes_[index].faces, hashes.faces, "face staging");
-            const bool materialFacesChanged = copyIfChanged(materialFaceStaging_, materialFaces_[index],
-                                                            model.materialFaces, staticHashes_[index].materialFaces,
-                                                            hashes.materialFaces, "material face staging");
-            const bool faceWalkerChanged = copyIfChanged(faceWalkerStaging_, faceWalkers_[index], model.faceWalker,
-                                                         staticHashes_[index].faceWalker, hashes.faceWalker,
-                                                         "face walker staging");
+            const bool materialFacesChanged =
+                copyIfChanged(materialFaceStaging_, materialFaces_[index], model.materialFaces,
+                              staticHashes_[index].materialFaces, hashes.materialFaces, "material face staging");
+            const bool faceWalkerChanged =
+                copyIfChanged(faceWalkerStaging_, faceWalkers_[index], model.faceWalker,
+                              staticHashes_[index].faceWalker, hashes.faceWalker, "face walker staging");
             recordedTransfer = recordedTransfer || indicesChanged || materialsChanged || facesChanged ||
                                materialFacesChanged || faceWalkerChanged;
             staticHashes_[index] = hashes;
@@ -314,7 +316,8 @@ bool NativeSceneModelRuntime::updateFrame(Device& device, CommandList& commands,
 }
 
 NativeSceneDescriptorCounts NativeSceneModelRuntime::descriptorCounts() const noexcept {
-    const auto count = static_cast<std::uint32_t>(std::min<std::size_t>(modelCount(), std::numeric_limits<std::uint32_t>::max()));
+    const auto count =
+        static_cast<std::uint32_t>(std::min<std::size_t>(modelCount(), std::numeric_limits<std::uint32_t>::max()));
     return {.textures = 1,
             .vertexBuffers = count,
             .indexBuffers = count,
