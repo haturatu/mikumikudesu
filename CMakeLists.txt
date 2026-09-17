@@ -905,6 +905,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_preview_tests
     dayo_graph_device_tests
     dayo_subayai_bdpt_tests
+    dayo_native_renderer_tests
     dayo_upstream_compat_tests
     dayo_fx_linker_tests
     dayo_fx_semantic_tests
@@ -949,6 +950,9 @@ if(DAYO_ENABLE_SANITIZERS)
   endif()
   if(TARGET dayo_subayai_bdpt_tests)
     target_link_options(dayo_subayai_bdpt_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+  endif()
+  if(TARGET dayo_native_renderer_tests)
+    target_link_options(dayo_native_renderer_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
   endif()
 endif()
 
