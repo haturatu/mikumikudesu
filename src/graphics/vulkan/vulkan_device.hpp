@@ -66,6 +66,9 @@ class VulkanDevice final : public Device {
     void resize() override;
     void beginUiFrame() override;
     void renderFrame() override;
+    [[nodiscard]] std::size_t currentFrameSlot() const noexcept override {
+        return frameIndex_;
+    }
     void setNativeFrameRecorder(NativeFrameRecorder recorder) override;
     void setNativeRendererAvailability(bool subayai, bool bdpt) override;
     void setPreviewViewportExtent(const RenderTargetDesc& target) override;
@@ -189,6 +192,14 @@ class VulkanDevice final : public Device {
         VkDeviceMemory previewIndirectMemory{};
         void* mappedPreviewIndirect{};
         std::uint64_t previewIndirectGeneration{};
+        struct NativeUploadBuffer {
+            VkBuffer buffer{};
+            VkDeviceMemory memory{};
+            void* mapped{};
+            VkDeviceSize capacity{};
+            VkDeviceSize offset{};
+        };
+        std::vector<NativeUploadBuffer> nativeUploadBuffers;
     };
 
     struct DepthResource {
@@ -319,6 +330,8 @@ class VulkanDevice final : public Device {
     void recordGenerateMipmaps(VkCommandBuffer commandBuffer, handles::TextureHandle texture);
     void recordCopyBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle source,
                           handles::BufferHandle destination);
+    void recordUploadBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle destination,
+                            std::span<const std::byte> bytes, std::size_t offset);
     void recordBindDescriptorSet(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
                                  handles::DescriptorSetHandle set, std::uint32_t setIndex);
     void recordPushConstants(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
@@ -370,6 +383,11 @@ class VulkanDevice final : public Device {
     };
     void reclaimAccelerationScratch(std::size_t frameIndex) noexcept;
     void reclaimAllAccelerationScratch() noexcept;
+    void resetNativeUploadBuffers(Frame& frame) noexcept;
+    void destroyNativeUploadBuffers(Frame& frame) noexcept;
+    [[nodiscard]] Frame* frameForCommandBuffer(VkCommandBuffer commandBuffer) noexcept;
+    [[nodiscard]] Frame::NativeUploadBuffer& allocateNativeUploadBuffer(Frame& frame, VkDeviceSize size,
+                                                                        VkDeviceSize alignment);
     [[nodiscard]] VkBuffer allocateRecordedAccelerationScratch(VkDeviceSize size);
     void submitImmediate(const std::function<void(VkCommandBuffer)>& record);
     [[nodiscard]] static VkImageLayout typedTextureFinalLayout(const TypedTexture& texture) noexcept;

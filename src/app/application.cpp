@@ -347,7 +347,7 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                                                                : geometryError);
             static_cast<void>(runtime->synchronizeWorld(nativeDeformVersion_, worldInstances));
             tlas = runtime->geometry().tlas();
-            runtime->recordGeometry(commands);
+            runtime->recordGeometry(commands, geometryUploads);
             runtime->recordAcceleration(commands);
         };
         if (auto* runtime = nativeRenderer_.subayai())

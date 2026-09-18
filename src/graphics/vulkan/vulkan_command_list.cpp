@@ -176,4 +176,11 @@ void VulkanCommandList::copyBufferEx(handles::BufferHandle source, handles::Buff
     device_->recordCopyBuffer(commandBuffer_, source, destination);
 }
 
+void VulkanCommandList::uploadBufferEx(handles::BufferHandle destination, std::span<const std::byte> bytes,
+                                       std::size_t offset) {
+    if (device_ == nullptr)
+        throw std::logic_error("typed command-list buffer upload requires a Vulkan device");
+    device_->recordUploadBuffer(commandBuffer_, destination, bytes, offset);
+}
+
 } // namespace dayo::graphics

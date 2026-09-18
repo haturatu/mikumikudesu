@@ -2,6 +2,7 @@
 
 #include "graphics/device.hpp"
 
+#include <array>
 #include <string>
 
 namespace dayo::graphics {
@@ -41,20 +42,26 @@ class SubayaiBindingRuntime {
         return layouts_;
     }
     [[nodiscard]] handles::DescriptorSetHandle materialSet() const noexcept {
-        return materialSet_;
+        return device_ == nullptr ? handles::DescriptorSetHandle{}
+                                  : materialSets_[device_->currentFrameSlot() % kNativeFramesInFlight];
     }
     [[nodiscard]] handles::DescriptorSetHandle lightSamplingSet() const noexcept {
-        return lightSamplingSet_;
+        return device_ == nullptr ? handles::DescriptorSetHandle{}
+                                  : lightSamplingSets_[device_->currentFrameSlot() % kNativeFramesInFlight];
     }
 
   private:
+    [[nodiscard]] std::size_t currentSlot() const noexcept {
+        return device_ == nullptr ? 0 : device_->currentFrameSlot() % kNativeFramesInFlight;
+    }
+
     [[nodiscard]] bool bindBuffer(handles::DescriptorSetLayoutHandle layout, handles::DescriptorSetHandle& set,
                                   handles::BufferHandle buffer, const char* label, std::string* error);
 
     Device* device_{};
     SubayaiBindingLayouts layouts_{};
-    handles::DescriptorSetHandle materialSet_{};
-    handles::DescriptorSetHandle lightSamplingSet_{};
+    std::array<handles::DescriptorSetHandle, kNativeFramesInFlight> materialSets_{};
+    std::array<handles::DescriptorSetHandle, kNativeFramesInFlight> lightSamplingSets_{};
 };
 
 } // namespace dayo::graphics

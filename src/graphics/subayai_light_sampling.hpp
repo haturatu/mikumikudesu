@@ -2,6 +2,8 @@
 
 #include "graphics/device.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -56,10 +58,12 @@ class LightSamplingGpuRuntime {
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
-        return device_ != nullptr && buffer_.valid() && count_ != 0;
+        return device_ != nullptr && count_ != 0 &&
+               std::all_of(buffers_.begin(), buffers_.end(), [](const auto buffer) { return buffer.valid(); });
     }
     [[nodiscard]] handles::BufferHandle buffer() const noexcept {
-        return buffer_;
+        return device_ == nullptr ? handles::BufferHandle{}
+                                  : buffers_[device_->currentFrameSlot() % kNativeFramesInFlight];
     }
     [[nodiscard]] std::size_t count() const noexcept {
         return count_;
@@ -67,8 +71,11 @@ class LightSamplingGpuRuntime {
 
   private:
     Device* device_{};
-    handles::BufferHandle buffer_{};
+    std::array<handles::BufferHandle, kNativeFramesInFlight> buffers_{};
+    std::uint64_t generation_{};
+    std::array<std::uint64_t, kNativeFramesInFlight> uploadedGenerations_{};
     std::size_t count_{};
+    std::vector<AliasEntry> table_;
 };
 
 } // namespace dayo::graphics

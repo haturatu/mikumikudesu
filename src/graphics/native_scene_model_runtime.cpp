@@ -127,18 +127,6 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
     }
     try {
         device_ = &device;
-        vertices_.reserve(models.size());
-        vertexStaging_.reserve(models.size());
-        indices_.reserve(models.size());
-        indexStaging_.reserve(models.size());
-        materials_.reserve(models.size());
-        materialStaging_.reserve(models.size());
-        faces_.reserve(models.size());
-        faceStaging_.reserve(models.size());
-        materialFaces_.reserve(models.size());
-        materialFaceStaging_.reserve(models.size());
-        faceWalkers_.reserve(models.size());
-        faceWalkerStaging_.reserve(models.size());
         vertexBytes_.reserve(models.size());
         indexBytes_.reserve(models.size());
         materialBytes_.reserve(models.size());
@@ -153,40 +141,61 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
             faceBytes_.push_back(byteSize(model.faces));
             materialFaceBytes_.push_back(byteSize(model.materialFaces));
             faceWalkerBytes_.push_back(byteSize(model.faceWalker));
-            vertices_.push_back(upload(device, std::span<const NativeSceneVertex>(model.vertices),
-                                       ResourceUsage::storageRead | ResourceUsage::vertexRead |
-                                           ResourceUsage::asBuildRead | ResourceUsage::rayTracingRead |
-                                           ResourceUsage::transferSrc,
-                                       "vertices"));
-            previousVertices_.push_back(
-                upload(device, std::span<const NativeSceneVertex>(model.vertices),
-                       ResourceUsage::storageRead | ResourceUsage::rayTracingRead | ResourceUsage::transferDst,
-                       "previous vertices"));
-            StagingSlots vertexStaging{};
-            for (auto& slot : vertexStaging)
-                slot = createStaging(device, std::span<const NativeSceneVertex>(model.vertices), "vertex staging");
-            vertexStaging_.push_back(vertexStaging);
-            rawVertices_.push_back(upload(device, std::span<const NativeSceneVertex>(model.vertices),
-                                          ResourceUsage::storageRead | ResourceUsage::rayTracingRead, "raw vertices"));
-            indices_.push_back(upload(device, std::span<const std::uint32_t>(model.indices),
-                                      ResourceUsage::storageRead | ResourceUsage::indexRead |
-                                          ResourceUsage::asBuildRead | ResourceUsage::rayTracingRead,
-                                      "indices"));
-            materials_.push_back(upload(device, std::span<const NativeSceneMaterial>(model.materials),
-                                        ResourceUsage::storageRead | ResourceUsage::rayTracingRead, "materials"));
-            faces_.push_back(upload(device, std::span<const std::uint32_t>(model.faces),
-                                    ResourceUsage::storageRead | ResourceUsage::rayTracingRead, "faces"));
-            materialFaces_.push_back(upload(device, std::span<const NativeSceneMaterialFace>(model.materialFaces),
-                                            ResourceUsage::storageRead | ResourceUsage::rayTracingRead,
-                                            "material faces"));
-            faceWalkers_.push_back(upload(device, std::span<const NativeSceneWalkerAlias>(model.faceWalker),
-                                          ResourceUsage::storageRead | ResourceUsage::rayTracingRead, "face walkers"));
-            indexStaging_.push_back({});
-            materialStaging_.push_back({});
-            faceStaging_.push_back({});
-            materialFaceStaging_.push_back({});
-            faceWalkerStaging_.push_back({});
-            staticHashes_.push_back(makeStaticHashes(model));
+        }
+
+        for (auto& frame : frameResources_) {
+            frame.vertices.reserve(models.size());
+            frame.previousVertices.reserve(models.size());
+            frame.rawVertices.reserve(models.size());
+            frame.vertexStaging.reserve(models.size());
+            frame.indices.reserve(models.size());
+            frame.indexStaging.reserve(models.size());
+            frame.materials.reserve(models.size());
+            frame.materialStaging.reserve(models.size());
+            frame.faces.reserve(models.size());
+            frame.faceStaging.reserve(models.size());
+            frame.materialFaces.reserve(models.size());
+            frame.materialFaceStaging.reserve(models.size());
+            frame.faceWalkers.reserve(models.size());
+            frame.faceWalkerStaging.reserve(models.size());
+            frame.staticHashes.reserve(models.size());
+            for (const auto& model : models) {
+                frame.vertices.push_back(upload(device, std::span<const NativeSceneVertex>(model.vertices),
+                                                ResourceUsage::storageRead | ResourceUsage::vertexRead |
+                                                    ResourceUsage::asBuildRead | ResourceUsage::rayTracingRead |
+                                                    ResourceUsage::transferSrc,
+                                                "vertices"));
+                frame.previousVertices.push_back(
+                    upload(device, std::span<const NativeSceneVertex>(model.vertices),
+                           ResourceUsage::storageRead | ResourceUsage::rayTracingRead | ResourceUsage::transferDst,
+                           "previous vertices"));
+                frame.vertexStaging.push_back(
+                    createStaging(device, std::span<const NativeSceneVertex>(model.vertices), "vertex staging"));
+                frame.rawVertices.push_back(upload(device, std::span<const NativeSceneVertex>(model.vertices),
+                                                   ResourceUsage::storageRead | ResourceUsage::rayTracingRead,
+                                                   "raw vertices"));
+                frame.indices.push_back(upload(device, std::span<const std::uint32_t>(model.indices),
+                                               ResourceUsage::storageRead | ResourceUsage::indexRead |
+                                                   ResourceUsage::asBuildRead | ResourceUsage::rayTracingRead,
+                                               "indices"));
+                frame.materials.push_back(upload(device, std::span<const NativeSceneMaterial>(model.materials),
+                                                 ResourceUsage::storageRead | ResourceUsage::rayTracingRead,
+                                                 "materials"));
+                frame.faces.push_back(upload(device, std::span<const std::uint32_t>(model.faces),
+                                             ResourceUsage::storageRead | ResourceUsage::rayTracingRead, "faces"));
+                frame.materialFaces.push_back(
+                    upload(device, std::span<const NativeSceneMaterialFace>(model.materialFaces),
+                           ResourceUsage::storageRead | ResourceUsage::rayTracingRead, "material faces"));
+                frame.faceWalkers.push_back(upload(device, std::span<const NativeSceneWalkerAlias>(model.faceWalker),
+                                                   ResourceUsage::storageRead | ResourceUsage::rayTracingRead,
+                                                   "face walkers"));
+                frame.indexStaging.push_back({});
+                frame.materialStaging.push_back({});
+                frame.faceStaging.push_back({});
+                frame.materialFaceStaging.push_back({});
+                frame.faceWalkerStaging.push_back({});
+                frame.staticHashes.push_back(makeStaticHashes(model));
+            }
         }
     } catch (const std::exception& exception) {
         setError(error, std::string("native scene model upload failed: ") + exception.what());
@@ -211,31 +220,36 @@ bool NativeSceneModelRuntime::update(Device& device, std::span<const NativeScene
     if (!sameLayout(device, models))
         return sync(device, models, error);
     try {
-        for (std::size_t index = 0; index < models.size(); ++index) {
-            const auto& model = models[index];
-            // Preserve the exact GPU stream used by the preceding frame
-            // before replacing the current animated data. copyBufferEx is an
-            // ordered transfer, so this does not require a CPU readback or a
-            // second host-side vertex snapshot.
-            device.copyBufferEx(vertices_[index], previousVertices_[index]);
-            if (!model.vertices.empty())
-                device.uploadBufferEx(vertices_[index],
-                                      std::as_bytes(std::span<const NativeSceneVertex>(model.vertices)), 0);
-            const auto hashes = makeStaticHashes(model);
-            if (hashes.indices != staticHashes_[index].indices && !model.indices.empty())
-                device.uploadBufferEx(indices_[index], std::as_bytes(std::span<const std::uint32_t>(model.indices)), 0);
-            if (hashes.materials != staticHashes_[index].materials && !model.materials.empty())
-                device.uploadBufferEx(materials_[index],
-                                      std::as_bytes(std::span<const NativeSceneMaterial>(model.materials)), 0);
-            if (hashes.faces != staticHashes_[index].faces && !model.faces.empty())
-                device.uploadBufferEx(faces_[index], std::as_bytes(std::span<const std::uint32_t>(model.faces)), 0);
-            if (hashes.materialFaces != staticHashes_[index].materialFaces && !model.materialFaces.empty())
-                device.uploadBufferEx(materialFaces_[index],
-                                      std::as_bytes(std::span<const NativeSceneMaterialFace>(model.materialFaces)), 0);
-            if (hashes.faceWalker != staticHashes_[index].faceWalker && !model.faceWalker.empty())
-                device.uploadBufferEx(faceWalkers_[index],
-                                      std::as_bytes(std::span<const NativeSceneWalkerAlias>(model.faceWalker)), 0);
-            staticHashes_[index] = hashes;
+        for (auto& frame : frameResources_) {
+            for (std::size_t index = 0; index < models.size(); ++index) {
+                const auto& model = models[index];
+                // Preserve the exact GPU stream used by the preceding frame
+                // before replacing the current animated data. copyBufferEx is
+                // an ordered transfer, so this does not require a CPU
+                // readback or a second host-side vertex snapshot.
+                device.copyBufferEx(frame.vertices[index], frame.previousVertices[index]);
+                if (!model.vertices.empty())
+                    device.uploadBufferEx(frame.vertices[index],
+                                          std::as_bytes(std::span<const NativeSceneVertex>(model.vertices)), 0);
+                const auto hashes = makeStaticHashes(model);
+                if (hashes.indices != frame.staticHashes[index].indices && !model.indices.empty())
+                    device.uploadBufferEx(frame.indices[index],
+                                          std::as_bytes(std::span<const std::uint32_t>(model.indices)), 0);
+                if (hashes.materials != frame.staticHashes[index].materials && !model.materials.empty())
+                    device.uploadBufferEx(frame.materials[index],
+                                          std::as_bytes(std::span<const NativeSceneMaterial>(model.materials)), 0);
+                if (hashes.faces != frame.staticHashes[index].faces && !model.faces.empty())
+                    device.uploadBufferEx(frame.faces[index],
+                                          std::as_bytes(std::span<const std::uint32_t>(model.faces)), 0);
+                if (hashes.materialFaces != frame.staticHashes[index].materialFaces && !model.materialFaces.empty())
+                    device.uploadBufferEx(frame.materialFaces[index],
+                                          std::as_bytes(std::span<const NativeSceneMaterialFace>(model.materialFaces)),
+                                          0);
+                if (hashes.faceWalker != frame.staticHashes[index].faceWalker && !model.faceWalker.empty())
+                    device.uploadBufferEx(frame.faceWalkers[index],
+                                          std::as_bytes(std::span<const NativeSceneWalkerAlias>(model.faceWalker)), 0);
+                frame.staticHashes[index] = hashes;
+            }
         }
     } catch (const std::exception& exception) {
         setError(error, std::string("native scene model update failed: ") + exception.what());
@@ -260,16 +274,22 @@ bool NativeSceneModelRuntime::updateFrame(Device& device, CommandList& commands,
         return sync(device, models, error);
 
     try {
-        const auto slot = transferSlot_;
+        const auto slot = device.currentFrameSlot() % kNativeFramesInFlight;
+        const auto previousSlot = (slot + kNativeFramesInFlight - 1) % kNativeFramesInFlight;
+        auto& frame = frameResources_[slot];
+        const auto& previousFrame = frameResources_[previousSlot];
         bool recordedTransfer = false;
         for (std::size_t index = 0; index < models.size(); ++index) {
             const auto& model = models[index];
             if (!model.vertices.empty()) {
-                device.uploadBufferEx(vertexStaging_[index][slot],
+                device.uploadBufferEx(frame.vertexStaging[index],
                                       std::as_bytes(std::span<const NativeSceneVertex>(model.vertices)), 0);
-                commands.copyBufferEx(vertices_[index], previousVertices_[index]);
+                // Temporal history comes from the current stream recorded in
+                // the preceding frame slot. Preserve it in this slot's PreVB
+                // before replacing this slot's current vertex stream.
+                commands.copyBufferEx(previousFrame.vertices[index], frame.previousVertices[index]);
                 commands.transferBarrierEx();
-                commands.copyBufferEx(vertexStaging_[index][slot], vertices_[index]);
+                commands.copyBufferEx(frame.vertexStaging[index], frame.vertices[index]);
                 recordedTransfer = true;
             }
 
@@ -278,32 +298,32 @@ bool NativeSceneModelRuntime::updateFrame(Device& device, CommandList& commands,
                                            std::uint64_t newHash, std::string_view name) {
                 if (oldHash == newHash || values.empty())
                     return false;
-                if (!staging[index][slot].valid())
-                    staging[index][slot] = createStaging(device, std::span(values), name);
-                device.uploadBufferEx(staging[index][slot], std::as_bytes(std::span(values)), 0);
-                commands.copyBufferEx(staging[index][slot], destination);
+                if (!staging[index].valid())
+                    staging[index] = createStaging(device, std::span(values), name);
+                device.uploadBufferEx(staging[index], std::as_bytes(std::span(values)), 0);
+                commands.copyBufferEx(staging[index], destination);
                 return true;
             };
-            const bool indicesChanged = copyIfChanged(indexStaging_, indices_[index], model.indices,
-                                                      staticHashes_[index].indices, hashes.indices, "index staging");
+            const bool indicesChanged =
+                copyIfChanged(frame.indexStaging, frame.indices[index], model.indices,
+                              frame.staticHashes[index].indices, hashes.indices, "index staging");
             const bool materialsChanged =
-                copyIfChanged(materialStaging_, materials_[index], model.materials, staticHashes_[index].materials,
-                              hashes.materials, "material staging");
-            const bool facesChanged = copyIfChanged(faceStaging_, faces_[index], model.faces,
-                                                    staticHashes_[index].faces, hashes.faces, "face staging");
+                copyIfChanged(frame.materialStaging, frame.materials[index], model.materials,
+                              frame.staticHashes[index].materials, hashes.materials, "material staging");
+            const bool facesChanged = copyIfChanged(frame.faceStaging, frame.faces[index], model.faces,
+                                                    frame.staticHashes[index].faces, hashes.faces, "face staging");
             const bool materialFacesChanged =
-                copyIfChanged(materialFaceStaging_, materialFaces_[index], model.materialFaces,
-                              staticHashes_[index].materialFaces, hashes.materialFaces, "material face staging");
+                copyIfChanged(frame.materialFaceStaging, frame.materialFaces[index], model.materialFaces,
+                              frame.staticHashes[index].materialFaces, hashes.materialFaces, "material face staging");
             const bool faceWalkerChanged =
-                copyIfChanged(faceWalkerStaging_, faceWalkers_[index], model.faceWalker,
-                              staticHashes_[index].faceWalker, hashes.faceWalker, "face walker staging");
+                copyIfChanged(frame.faceWalkerStaging, frame.faceWalkers[index], model.faceWalker,
+                              frame.staticHashes[index].faceWalker, hashes.faceWalker, "face walker staging");
             recordedTransfer = recordedTransfer || indicesChanged || materialsChanged || facesChanged ||
                                materialFacesChanged || faceWalkerChanged;
-            staticHashes_[index] = hashes;
+            frame.staticHashes[index] = hashes;
         }
         if (recordedTransfer)
             commands.memoryBarrierEx();
-        transferSlot_ = (transferSlot_ + 1U) % kTransferSlots;
     } catch (const std::exception& exception) {
         setError(error, std::string("native scene frame update failed: ") + exception.what());
         return false;
@@ -329,15 +349,16 @@ NativeSceneDescriptorCounts NativeSceneModelRuntime::descriptorCounts() const no
 }
 
 NativeSceneResourceBindings NativeSceneModelRuntime::bindings() const noexcept {
+    const auto& frame = frameResources_[currentSlot()];
     NativeSceneResourceBindings result;
-    result.vertexBuffers = vertices_;
-    result.indexBuffers = indices_;
-    result.materials = materials_;
-    result.faces = faces_;
-    result.materialFaces = materialFaces_;
-    result.faceWalkers = faceWalkers_;
-    result.previousVertices = previousVertices_;
-    result.rawVertices = rawVertices_;
+    result.vertexBuffers = frame.vertices;
+    result.indexBuffers = frame.indices;
+    result.materials = frame.materials;
+    result.faces = frame.faces;
+    result.materialFaces = frame.materialFaces;
+    result.faceWalkers = frame.faceWalkers;
+    result.previousVertices = frame.previousVertices;
+    result.rawVertices = frame.rawVertices;
     return result;
 }
 
@@ -348,35 +369,24 @@ void NativeSceneModelRuntime::reset() noexcept {
             device->waitIdle();
         } catch (...) {
         }
-        destroy(*device, vertices_);
-        destroy(*device, previousVertices_);
-        destroy(*device, rawVertices_);
-        destroy(*device, vertexStaging_);
-        destroy(*device, indices_);
-        destroy(*device, indexStaging_);
-        destroy(*device, materials_);
-        destroy(*device, materialStaging_);
-        destroy(*device, faces_);
-        destroy(*device, faceStaging_);
-        destroy(*device, materialFaces_);
-        destroy(*device, materialFaceStaging_);
-        destroy(*device, faceWalkers_);
-        destroy(*device, faceWalkerStaging_);
+        for (auto& frame : frameResources_) {
+            destroy(*device, frame.vertices);
+            destroy(*device, frame.previousVertices);
+            destroy(*device, frame.rawVertices);
+            destroy(*device, frame.vertexStaging);
+            destroy(*device, frame.indices);
+            destroy(*device, frame.indexStaging);
+            destroy(*device, frame.materials);
+            destroy(*device, frame.materialStaging);
+            destroy(*device, frame.faces);
+            destroy(*device, frame.faceStaging);
+            destroy(*device, frame.materialFaces);
+            destroy(*device, frame.materialFaceStaging);
+            destroy(*device, frame.faceWalkers);
+            destroy(*device, frame.faceWalkerStaging);
+        }
     } else {
-        vertices_.clear();
-        previousVertices_.clear();
-        rawVertices_.clear();
-        vertexStaging_.clear();
-        indices_.clear();
-        indexStaging_.clear();
-        materials_.clear();
-        materialStaging_.clear();
-        faces_.clear();
-        faceStaging_.clear();
-        materialFaces_.clear();
-        materialFaceStaging_.clear();
-        faceWalkers_.clear();
-        faceWalkerStaging_.clear();
+        frameResources_ = {};
     }
     vertexBytes_.clear();
     indexBytes_.clear();
@@ -384,8 +394,7 @@ void NativeSceneModelRuntime::reset() noexcept {
     faceBytes_.clear();
     materialFaceBytes_.clear();
     faceWalkerBytes_.clear();
-    staticHashes_.clear();
-    transferSlot_ = 0;
+    frameResources_ = {};
     device_ = nullptr;
 }
 

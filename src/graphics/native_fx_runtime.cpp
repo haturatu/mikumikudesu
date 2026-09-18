@@ -170,12 +170,22 @@ std::optional<NativeFrameOutput> NativeFxRuntime::output(const NativeFxFrame& fr
     return NativeFrameOutput{.texture = resolved->handle, .extent = resolved->extent, .format = resolved->format};
 }
 
-NativeFxFrame NativeFxRuntime::prepareFrame(const fx::FxFrameContext& context) const {
+NativeFxFrame NativeFxRuntime::prepareFrame(const fx::FxFrameContext& context,
+                                            std::span<const handles::DescriptorSetHandle> sharedSets) const {
     if (!ready_)
         throw std::logic_error("native FX runtime is not initialized");
     NativeFxFrame frame;
     frame.context = context;
     frame.plan = fx::FxCompiler{}.plan(program_, context);
+    if (sharedSets.empty())
+        frame.sharedDescriptorSets = sharedDescriptorSets_;
+    else
+        frame.sharedDescriptorSets.assign(sharedSets.begin(), sharedSets.end());
+    if (frame.sharedDescriptorSets.size() != sharedLayouts_.size())
+        throw std::invalid_argument("native FX frame shared descriptor sets must match shared layouts");
+    if (std::any_of(frame.sharedDescriptorSets.begin(), frame.sharedDescriptorSets.end(),
+                    [](const auto set) { return !set.valid(); }))
+        throw std::invalid_argument("native FX frame shared descriptor sets contain an invalid handle");
     return frame;
 }
 
@@ -208,12 +218,12 @@ VulkanFxExecutor::Stats NativeFxRuntime::execute(NativeFxFrame& frame, CommandLi
         };
     }
 
-    if (resources_.descriptorSet().valid() || !sharedDescriptorSets_.empty()) {
+    if (resources_.descriptorSet().valid() || !frame.sharedDescriptorSets.empty()) {
         const auto set = resources_.descriptorSet();
         const auto setIndex = resourceSetIndex_;
         const auto existingSets = nativeResources.resolveDescriptorSets;
         const auto existingSingle = nativeResources.resolveDescriptorSet;
-        const auto sharedSets = sharedDescriptorSets_;
+        const auto sharedSets = frame.sharedDescriptorSets;
         nativeResources.resolveDescriptorSets = [existingSets, existingSingle, set, setIndex,
                                                  sharedSets](const fx::FxDispatch& dispatch) {
             std::vector<FxExecutionResources::TypedDescriptorSetBinding> result;

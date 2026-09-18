@@ -3,6 +3,7 @@
 #include "core/effect.hpp"
 #include "graphics/device.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -97,19 +98,21 @@ class NativeControllerRuntime {
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
-        return device_ != nullptr && buffer_.valid();
+        return device_ != nullptr &&
+               std::all_of(buffers_.begin(), buffers_.end(), [](const auto buffer) { return buffer.valid(); });
     }
     [[nodiscard]] const NativeControllerLayout& layout() const noexcept {
         return layout_;
     }
     [[nodiscard]] handles::BufferHandle buffer() const noexcept {
-        return buffer_;
+        return device_ == nullptr ? handles::BufferHandle{}
+                                  : buffers_[device_->currentFrameSlot() % kNativeFramesInFlight];
     }
 
   private:
     Device* device_{};
     NativeControllerLayout layout_;
-    handles::BufferHandle buffer_{};
+    std::array<handles::BufferHandle, kNativeFramesInFlight> buffers_{};
 };
 
 } // namespace dayo::graphics

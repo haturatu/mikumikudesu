@@ -32,7 +32,8 @@ void NativeGeometryRuntime::setBackend(IAccelerationBackend* backend) noexcept {
         return;
     reset();
     backend_ = backend;
-    acceleration_.setBackend(backend);
+    for (auto& acceleration : accelerations_)
+        acceleration.setBackend(backend);
 }
 
 bool NativeGeometryRuntime::initialize(Device& device, std::span<const NativeGeometryMeshUpload> meshes,
@@ -76,8 +77,8 @@ bool NativeGeometryRuntime::initializeMesh(const NativeGeometryMeshUpload& mesh,
     auto found = meshes_.find(mesh.meshId);
     if (found == meshes_.end() || device_ == nullptr)
         return false;
-    if (!found->second.deform.initialize(*device_, mesh.deform, mesh.deformPipeline, mesh.deformDescriptorLayout,
-                                         error))
+    if (!found->second.deform.initialize(*device_, mesh.deform, mesh.deformPipeline, mesh.deformDescriptorLayout, error,
+                                         mesh.topologyGeneration))
         return false;
     found->second.deformDescriptorLayout = mesh.deformDescriptorLayout;
     found->second.topologyGeneration = mesh.topologyGeneration;
@@ -98,7 +99,7 @@ bool NativeGeometryRuntime::updateMesh(const NativeGeometryMeshUpload& mesh, std
             mesh.deformDescriptorLayout != found->second.deformDescriptorLayout) {
             throw std::invalid_argument("native geometry update cannot replace the deform pipeline");
         }
-        if (!found->second.deform.update(*device_, mesh.deform, error))
+        if (!found->second.deform.prepare(*device_, mesh.deform, error, mesh.topologyGeneration))
             return false;
         found->second.topologyGeneration = mesh.topologyGeneration;
         found->second.deformVersion = mesh.deformVersion;
@@ -124,15 +125,30 @@ void NativeGeometryRuntime::recordDeform(CommandList& commands) const {
     commands.memoryBarrierEx();
 }
 
+void NativeGeometryRuntime::recordDeform(CommandList& commands, std::span<const NativeGeometryMeshUpload> meshes) {
+    if (!ready())
+        throw std::logic_error("native geometry runtime is not initialized");
+    if (meshes.size() != meshes_.size())
+        throw std::invalid_argument("native geometry frame mesh count does not match the runtime");
+    for (const auto& mesh : meshes) {
+        const auto found = meshes_.find(mesh.meshId);
+        if (found == meshes_.end())
+            throw std::invalid_argument("native geometry frame references an unknown mesh");
+        found->second.deform.record(commands, mesh.deform, mesh.topologyGeneration);
+    }
+    commands.memoryBarrierEx();
+}
+
 void NativeGeometryRuntime::recordAcceleration(CommandList& commands) const {
     if (!ready())
         throw std::logic_error("native geometry runtime is not initialized");
+    const auto& acceleration = accelerations_[currentSlot()];
     commands.accelerationStructureBarrierEx();
-    acceleration_.recordBlasUpdates(commands);
+    acceleration.recordBlasUpdates(commands);
     // BLAS writes must be visible to the TLAS build, and the completed TLAS
     // must be visible to the following ray-query or ray-tracing pass.
     commands.accelerationStructureBarrierEx();
-    acceleration_.recordTlasUpdate(commands);
+    acceleration.recordTlasUpdate(commands);
     commands.accelerationStructureBarrierEx();
 }
 
@@ -142,9 +158,10 @@ bool NativeGeometryRuntime::synchronizeAcceleration(std::string* error) {
     try {
         if (!ready())
             throw std::logic_error("native geometry runtime is not initialized");
+        const auto slot = currentSlot();
         for (auto& [meshId, state] : meshes_)
-            static_cast<void>(acceleration_.notifyMesh(meshId, state.deform.blasGeometry(), state.topologyGeneration,
-                                                       state.deformVersion));
+            static_cast<void>(accelerations_[slot].notifyMesh(meshId, state.deform.blasGeometry(),
+                                                              state.topologyGeneration, state.deformVersion));
     } catch (const std::exception& exception) {
         if (error != nullptr)
             *error = exception.what();
@@ -161,19 +178,20 @@ TlasAction NativeGeometryRuntime::synchronizeWorld(std::uint64_t worldGeneration
                                                    std::span<const WorldInstance> instances) {
     if (!ready())
         throw std::logic_error("native geometry runtime is not initialized");
-    const auto action = acceleration_.notifyWorld(worldGeneration, instances);
-    const auto tlas = acceleration_.tlas();
+    const auto slot = currentSlot();
+    const auto action = accelerations_[slot].notifyWorld(worldGeneration, instances);
+    const auto tlas = accelerations_[slot].tlas();
     if (!tlas.valid())
         throw std::runtime_error("native geometry did not produce a TLAS");
     const std::array<DescriptorBindingEx, 1> bindings{
         DescriptorBindingEx{.slot = nativeSceneBinding(NativeSceneRegisterClass::sampled, 0),
                             .arrayElement = 0,
                             .accelerationStructure = tlas}};
-    if (descriptorSet_.valid()) {
-        device_->updateDescriptorSetEx(descriptorSet_, bindings);
+    if (descriptorSets_[slot].valid()) {
+        device_->updateDescriptorSetEx(descriptorSets_[slot], bindings);
     } else {
-        descriptorSet_ = device_->allocateDescriptorSetEx(descriptorLayout_, bindings);
-        if (!descriptorSet_.valid())
+        descriptorSets_[slot] = device_->allocateDescriptorSetEx(descriptorLayout_, bindings);
+        if (!descriptorSets_[slot].valid())
             throw std::runtime_error("native geometry acceleration descriptor set is invalid");
     }
     return action;
@@ -191,10 +209,12 @@ void NativeGeometryRuntime::reset() noexcept {
             device->waitIdle();
         } catch (...) {
         }
-        if (descriptorSet_.valid()) {
-            try {
-                device->destroyDescriptorSetEx(descriptorSet_);
-            } catch (...) {
+        for (const auto descriptorSet : descriptorSets_) {
+            if (descriptorSet.valid()) {
+                try {
+                    device->destroyDescriptorSetEx(descriptorSet);
+                } catch (...) {
+                }
             }
         }
         if (descriptorLayout_.valid()) {
@@ -204,11 +224,12 @@ void NativeGeometryRuntime::reset() noexcept {
             }
         }
     }
-    acceleration_.reset();
+    for (auto& acceleration : accelerations_)
+        acceleration.reset();
     meshes_.clear();
     device_ = nullptr;
     descriptorLayout_ = {};
-    descriptorSet_ = {};
+    descriptorSets_.fill({});
 }
 
 } // namespace dayo::graphics

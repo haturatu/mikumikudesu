@@ -26,6 +26,11 @@ class IAccelerationBackend;
 
 enum class RendererKind { preview, subayai, bdpt };
 
+// Native dynamic resources are private to one of the backend's frame-in-flight
+// slots. Keep this ABI-wide so descriptor/resource owners use the same ring
+// size as VulkanDevice::frames_.
+inline constexpr std::size_t kNativeFramesInFlight = 2;
+
 struct GraphicsConvention {
     bool depthZeroToOne{true};
     bool framebufferYFlip{true};
@@ -454,6 +459,12 @@ class CommandList {
     virtual void copyBufferEx(handles::BufferHandle, handles::BufferHandle) {
         throw std::logic_error("Typed command-list buffer copy is not implemented by this backend");
     }
+    // Writes a dynamic buffer through staging owned by the active frame and
+    // records the copy into this command list. Unlike Device::uploadBufferEx,
+    // this path never submits or waits on a transfer-only command buffer.
+    virtual void uploadBufferEx(handles::BufferHandle, std::span<const std::byte>, std::size_t = 0) {
+        throw std::logic_error("Typed command-list buffer upload is not implemented by this backend");
+    }
     virtual void bindPipelineEx(handles::PipelineHandle) {
         throw std::logic_error("Typed command-list pipelines are not implemented by this backend");
     }
@@ -555,6 +566,12 @@ class Device {
     virtual void resize() = 0;
     virtual void beginUiFrame() = 0;
     virtual void renderFrame() = 0;
+    // Returns the frame-in-flight slot whose command buffer is currently
+    // recording. Dynamic native resources use this to select a private slot
+    // without updating resources still referenced by an older frame.
+    [[nodiscard]] virtual std::size_t currentFrameSlot() const noexcept {
+        return 0;
+    }
     // The callback is invoked while the backend's frame command buffer is
     // recording. An empty result keeps the existing Preview recording path;
     // a valid result is composited into the viewport/swapchain by the

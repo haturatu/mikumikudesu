@@ -95,11 +95,12 @@ bool NativeSceneBindingRuntime::bind(NativeSceneDescriptorSet set, std::span<con
         return false;
     const auto index = setIndex(set);
     try {
-        if (descriptorSets_[index].valid()) {
-            device_->updateDescriptorSetEx(descriptorSets_[index], bindings);
+        auto& descriptorSet = descriptorSets_[currentSlot()][index];
+        if (descriptorSet.valid()) {
+            device_->updateDescriptorSetEx(descriptorSet, bindings);
         } else {
-            descriptorSets_[index] = device_->allocateDescriptorSetEx(layouts_[index], bindings);
-            if (!descriptorSets_[index].valid())
+            descriptorSet = device_->allocateDescriptorSetEx(layouts_[index], bindings);
+            if (!descriptorSet.valid())
                 throw std::runtime_error("native scene descriptor set allocation returned an invalid handle");
         }
     } catch (const std::exception& exception) {
@@ -119,7 +120,8 @@ handles::DescriptorSetLayoutHandle NativeSceneBindingRuntime::layout(NativeScene
 
 handles::DescriptorSetHandle NativeSceneBindingRuntime::descriptorSet(NativeSceneDescriptorSet set) const noexcept {
     const auto index = setIndex(set);
-    return index < descriptorSets_.size() ? descriptorSets_[index] : handles::DescriptorSetHandle{};
+    return index < kNativeSceneDescriptorSetCount ? descriptorSets_[currentSlot()][index]
+                                                  : handles::DescriptorSetHandle{};
 }
 
 void NativeSceneBindingRuntime::reset() noexcept {
@@ -129,12 +131,14 @@ void NativeSceneBindingRuntime::reset() noexcept {
             device->waitIdle();
         } catch (...) {
         }
-        for (const auto& set : std::ranges::reverse_view(descriptorSets_)) {
-            if (!set.valid())
-                continue;
-            try {
-                device->destroyDescriptorSetEx(set);
-            } catch (...) {
+        for (auto& frameSets : descriptorSets_) {
+            for (const auto& set : std::ranges::reverse_view(frameSets)) {
+                if (!set.valid())
+                    continue;
+                try {
+                    device->destroyDescriptorSetEx(set);
+                } catch (...) {
+                }
             }
         }
         for (const auto& layout : std::ranges::reverse_view(layouts_)) {

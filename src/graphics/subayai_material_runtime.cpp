@@ -1,10 +1,29 @@
 #include "graphics/subayai_material_runtime.hpp"
 
+#include <algorithm>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <utility>
 
 namespace dayo::graphics {
+
+namespace {
+
+[[nodiscard]] bool sameMaterials(std::span<const SubayaiMaterialGpu> left,
+                                 std::span<const SubayaiMaterialGpu> right) noexcept {
+    return left.size() == right.size() &&
+           (left.empty() || std::memcmp(left.data(), right.data(), left.size_bytes()) == 0);
+}
+
+void advanceGeneration(std::uint64_t& generation) noexcept {
+    if (generation == std::numeric_limits<std::uint64_t>::max())
+        generation = 1;
+    else
+        ++generation;
+}
+
+} // namespace
 
 SubayaiMaterialGpuRuntime::~SubayaiMaterialGpuRuntime() {
     reset();
@@ -41,21 +60,41 @@ bool SubayaiMaterialGpuRuntime::sync(Device& device, std::span<const core::Mater
         linked.push_back(linkSubayaiMaterial(material));
 
     try {
-        if (device_ == &device && buffer_.valid() && materials_.size() == linked.size()) {
-            device.uploadBufferEx(buffer_, std::as_bytes(std::span<const SubayaiMaterialGpu>(linked)), 0);
-            materials_ = std::move(linked);
+        const auto oldMaterials = std::span<const SubayaiMaterialGpu>(materials_);
+        const bool sameShape = device_ == &device && ready() && materials_.size() == linked.size();
+        const bool changed = !sameShape || !sameMaterials(oldMaterials, linked);
+        if (sameShape) {
+            if (changed) {
+                materials_ = std::move(linked);
+                advanceGeneration(generation_);
+            }
+            const auto slot = device.currentFrameSlot() % kNativeFramesInFlight;
+            if (uploadedGenerations_[slot] == generation_)
+                return true;
+            device.uploadBufferEx(buffers_[slot], std::as_bytes(std::span<const SubayaiMaterialGpu>(materials_)), 0);
+            uploadedGenerations_[slot] = generation_;
             return true;
         }
+
         reset();
         device_ = &device;
-        buffer_ = device.createBufferEx({
-            .size = linked.size() * sizeof(SubayaiMaterialGpu),
-            .usage = ResourceUsage::storageRead | ResourceUsage::transferDst,
-            .cpuVisible = false,
-            .lifetime = ResourceLifetime::persistent,
-        });
-        device.uploadBufferEx(buffer_, std::as_bytes(std::span<const SubayaiMaterialGpu>(linked)), 0);
+        for (auto& buffer : buffers_) {
+            buffer = device.createBufferEx({
+                .size = linked.size() * sizeof(SubayaiMaterialGpu),
+                .usage = ResourceUsage::storageRead | ResourceUsage::hostRead,
+                .cpuVisible = true,
+                .lifetime = ResourceLifetime::persistent,
+            });
+            if (!buffer.valid())
+                throw std::runtime_error("Subayai material buffer is invalid");
+        }
         materials_ = std::move(linked);
+        generation_ = 1;
+        uploadedGenerations_.fill(0);
+        for (std::size_t slot = 0; slot < kNativeFramesInFlight; ++slot) {
+            device.uploadBufferEx(buffers_[slot], std::as_bytes(std::span<const SubayaiMaterialGpu>(materials_)), 0);
+            uploadedGenerations_[slot] = generation_;
+        }
     } catch (const std::exception& exception) {
         if (error != nullptr)
             *error = std::string("Subayai material GPU upload failed: ") + exception.what();
@@ -72,15 +111,24 @@ bool SubayaiMaterialGpuRuntime::sync(Device& device, std::span<const core::Mater
 
 void SubayaiMaterialGpuRuntime::reset() noexcept {
     Device* device = device_;
-    if (device != nullptr && buffer_.valid()) {
+    if (device != nullptr) {
         try {
             device->waitIdle();
-            device->destroyBufferEx(buffer_);
         } catch (...) {
+        }
+        for (const auto buffer : buffers_) {
+            if (buffer.valid()) {
+                try {
+                    device->destroyBufferEx(buffer);
+                } catch (...) {
+                }
+            }
         }
     }
     device_ = nullptr;
-    buffer_ = {};
+    buffers_.fill({});
+    generation_ = 0;
+    uploadedGenerations_.fill(0);
     materials_.clear();
 }
 

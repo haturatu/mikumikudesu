@@ -3,6 +3,8 @@
 #include "graphics/device.hpp"
 #include "graphics/subayai_material_gpu.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <span>
 #include <string>
@@ -26,10 +28,12 @@ class SubayaiMaterialGpuRuntime {
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
-        return device_ != nullptr && buffer_.valid() && !materials_.empty();
+        return device_ != nullptr && !materials_.empty() &&
+               std::all_of(buffers_.begin(), buffers_.end(), [](const auto buffer) { return buffer.valid(); });
     }
     [[nodiscard]] handles::BufferHandle buffer() const noexcept {
-        return buffer_;
+        return device_ == nullptr ? handles::BufferHandle{}
+                                  : buffers_[device_->currentFrameSlot() % kNativeFramesInFlight];
     }
     [[nodiscard]] std::size_t count() const noexcept {
         return materials_.size();
@@ -40,7 +44,9 @@ class SubayaiMaterialGpuRuntime {
 
   private:
     Device* device_{};
-    handles::BufferHandle buffer_{};
+    std::array<handles::BufferHandle, kNativeFramesInFlight> buffers_{};
+    std::uint64_t generation_{};
+    std::array<std::uint64_t, kNativeFramesInFlight> uploadedGenerations_{};
     std::vector<SubayaiMaterialGpu> materials_;
 };
 

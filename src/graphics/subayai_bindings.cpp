@@ -95,11 +95,11 @@ bool SubayaiBindingRuntime::bindBuffer(handles::DescriptorSetLayoutHandle layout
 }
 
 bool SubayaiBindingRuntime::bindMaterial(handles::BufferHandle buffer, std::string* error) {
-    return bindBuffer(layouts_.material, materialSet_, buffer, "material", error);
+    return bindBuffer(layouts_.material, materialSets_[currentSlot()], buffer, "material", error);
 }
 
 bool SubayaiBindingRuntime::bindLightSampling(handles::BufferHandle buffer, std::string* error) {
-    return bindBuffer(layouts_.lightSampling, lightSamplingSet_, buffer, "light sampling", error);
+    return bindBuffer(layouts_.lightSampling, lightSamplingSets_[currentSlot()], buffer, "light sampling", error);
 }
 
 void SubayaiBindingRuntime::reset() noexcept {
@@ -109,16 +109,20 @@ void SubayaiBindingRuntime::reset() noexcept {
             device->waitIdle();
         } catch (...) {
         }
-        if (materialSet_.valid()) {
-            try {
-                device->destroyDescriptorSetEx(materialSet_);
-            } catch (...) {
+        for (const auto set : materialSets_) {
+            if (set.valid()) {
+                try {
+                    device->destroyDescriptorSetEx(set);
+                } catch (...) {
+                }
             }
         }
-        if (lightSamplingSet_.valid()) {
-            try {
-                device->destroyDescriptorSetEx(lightSamplingSet_);
-            } catch (...) {
+        for (const auto set : lightSamplingSets_) {
+            if (set.valid()) {
+                try {
+                    device->destroyDescriptorSetEx(set);
+                } catch (...) {
+                }
             }
         }
         if (layouts_.lightSampling.valid()) {
@@ -136,8 +140,8 @@ void SubayaiBindingRuntime::reset() noexcept {
     }
     device_ = nullptr;
     layouts_ = {};
-    materialSet_ = {};
-    lightSamplingSet_ = {};
+    materialSets_.fill({});
+    lightSamplingSets_.fill({});
 }
 
 } // namespace dayo::graphics

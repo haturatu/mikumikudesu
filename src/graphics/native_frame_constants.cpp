@@ -50,23 +50,32 @@ bool NativeFrameConstantsRuntime::initialize(Device& device, std::string* error)
     reset();
     device_ = &device;
     try {
-        const BufferResourceDesc description{
-            .size = sizeof(NativeViewConstants),
-            .usage = ResourceUsage::uniformRead | ResourceUsage::transferDst,
-            .cpuVisible = false,
-            .lifetime = ResourceLifetime::persistent,
-        };
-        viewBuffer_ = device.createBufferEx(description);
-        if (!viewBuffer_.valid())
-            throw std::runtime_error("native ViewCB buffer is invalid");
-        passBuffer_ = device.createBufferEx({
-            .size = sizeof(NativeScenePassConstants),
-            .usage = ResourceUsage::uniformRead | ResourceUsage::transferDst,
-            .cpuVisible = false,
-            .lifetime = ResourceLifetime::persistent,
-        });
-        if (!passBuffer_.valid())
-            throw std::runtime_error("native CBuff1 buffer is invalid");
+        for (auto& buffer : viewBuffers_) {
+            buffer = device.createBufferEx({
+                .size = sizeof(NativeViewConstants),
+                .usage = ResourceUsage::uniformRead | ResourceUsage::hostRead,
+                .cpuVisible = true,
+                .lifetime = ResourceLifetime::persistent,
+            });
+            if (!buffer.valid())
+                throw std::runtime_error("native ViewCB buffer is invalid");
+        }
+        for (auto& buffer : passBuffers_) {
+            buffer = device.createBufferEx({
+                .size = sizeof(NativeScenePassConstants),
+                .usage = ResourceUsage::uniformRead | ResourceUsage::hostRead,
+                .cpuVisible = true,
+                .lifetime = ResourceLifetime::persistent,
+            });
+            if (!buffer.valid())
+                throw std::runtime_error("native CBuff1 buffer is invalid");
+        }
+        const NativeViewConstants initialView{};
+        const NativeScenePassConstants initialPass{};
+        for (const auto buffer : viewBuffers_)
+            device.uploadBufferEx(buffer, std::as_bytes(std::span<const NativeViewConstants>(&initialView, 1)), 0);
+        for (const auto buffer : passBuffers_)
+            device.uploadBufferEx(buffer, std::as_bytes(std::span<const NativeScenePassConstants>(&initialPass, 1)), 0);
     } catch (const std::exception& exception) {
         setError(error, std::string("native frame constants initialization failed: ") + exception.what());
         reset();
@@ -89,7 +98,8 @@ bool NativeFrameConstantsRuntime::syncView(Device& device, const NativeViewConst
         return false;
     }
     try {
-        device_->uploadBufferEx(viewBuffer_, std::as_bytes(std::span<const NativeViewConstants>(&view, 1)), 0);
+        const auto buffer = viewBuffers_[device_->currentFrameSlot() % kNativeFramesInFlight];
+        device_->uploadBufferEx(buffer, std::as_bytes(std::span<const NativeViewConstants>(&view, 1)), 0);
     } catch (const std::exception& exception) {
         setError(error, std::string("native ViewCB upload failed: ") + exception.what());
         return false;
@@ -107,7 +117,8 @@ bool NativeFrameConstantsRuntime::sync(Device& device, const NativeViewConstants
     if (!syncView(device, view, error))
         return false;
     try {
-        device_->uploadBufferEx(passBuffer_, std::as_bytes(std::span<const NativeScenePassConstants>(&pass, 1)), 0);
+        const auto buffer = passBuffers_[device_->currentFrameSlot() % kNativeFramesInFlight];
+        device_->uploadBufferEx(buffer, std::as_bytes(std::span<const NativeScenePassConstants>(&pass, 1)), 0);
     } catch (const std::exception& exception) {
         setError(error, std::string("native CBuff1 upload failed: ") + exception.what());
         return false;
@@ -125,22 +136,26 @@ void NativeFrameConstantsRuntime::reset() noexcept {
             device->waitIdle();
         } catch (...) {
         }
-        if (viewBuffer_.valid()) {
-            try {
-                device->destroyBufferEx(viewBuffer_);
-            } catch (...) {
+        for (const auto buffer : viewBuffers_) {
+            if (buffer.valid()) {
+                try {
+                    device->destroyBufferEx(buffer);
+                } catch (...) {
+                }
             }
         }
-        if (passBuffer_.valid()) {
-            try {
-                device->destroyBufferEx(passBuffer_);
-            } catch (...) {
+        for (const auto buffer : passBuffers_) {
+            if (buffer.valid()) {
+                try {
+                    device->destroyBufferEx(buffer);
+                } catch (...) {
+                }
             }
         }
     }
     device_ = nullptr;
-    viewBuffer_ = {};
-    passBuffer_ = {};
+    viewBuffers_.fill({});
+    passBuffers_.fill({});
 }
 
 } // namespace dayo::graphics
