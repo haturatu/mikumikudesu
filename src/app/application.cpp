@@ -1122,6 +1122,11 @@ void Application::handleAsset(const std::filesystem::path& path) {
 void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     if (device_ == nullptr || scene_.models().empty())
         return;
+    if (scene_.dirty(core::DirtyFlag::material)) {
+        nativeMaterialGeneration_ = nativeMaterialGeneration_ == std::numeric_limits<std::uint64_t>::max()
+                                        ? 1U
+                                        : nativeMaterialGeneration_ + 1U;
+    }
     frameScratch_.reset();
     auto* scratch = frameScratch_.resource();
     std::size_t vertexCount = 0;
@@ -1425,8 +1430,11 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             native.deformedVertices.push_back(seed);
         }
         if (!native.baseVertices.empty() && !native.indices.empty()) {
-            nativeSceneModels.push_back(
-                graphics::makeNativeSceneModelData(*instance.model, native.baseVertices, frame.materials));
+            auto nativeModel =
+                graphics::makeNativeSceneModelData(*instance.model, native.baseVertices, frame.materials);
+            nativeModel.topologyGeneration = scene_.topologyGeneration();
+            nativeModel.materialGeneration = nativeMaterialGeneration_;
+            nativeSceneModels.push_back(std::move(nativeModel));
             nativeGeometry.push_back(std::move(native));
         }
         if (rebuildTopology) {

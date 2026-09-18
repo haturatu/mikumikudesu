@@ -45,12 +45,9 @@ class NativeSceneModelRuntime {
     [[nodiscard]] NativeSceneResourceBindings bindings() const noexcept;
 
   private:
-    struct StaticHashes {
-        std::uint64_t indices{};
-        std::uint64_t materials{};
-        std::uint64_t faces{};
-        std::uint64_t materialFaces{};
-        std::uint64_t faceWalker{};
+    struct StaticGenerations {
+        std::uint64_t topology{};
+        std::uint64_t material{};
     };
 
     struct FrameResources {
@@ -68,11 +65,10 @@ class NativeSceneModelRuntime {
         std::vector<handles::BufferHandle> materialFaceStaging;
         std::vector<handles::BufferHandle> faceWalkers;
         std::vector<handles::BufferHandle> faceWalkerStaging;
-        std::vector<StaticHashes> staticHashes;
+        std::vector<StaticGenerations> staticGenerations;
     };
 
     [[nodiscard]] bool sameLayout(Device& device, std::span<const NativeSceneModelData> models) const noexcept;
-    [[nodiscard]] static StaticHashes makeStaticHashes(const NativeSceneModelData& model) noexcept;
     [[nodiscard]] std::size_t currentSlot() const noexcept {
         return device_ == nullptr ? 0 : device_->currentFrameSlot() % kNativeFramesInFlight;
     }

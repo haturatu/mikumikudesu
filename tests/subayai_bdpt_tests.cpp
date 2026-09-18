@@ -1604,6 +1604,7 @@ int main() {
                     "native scene frame update preserves the prior current vertex stream");
 
         updatedModels[0].materials[0].diffuse[0] = 0.25F;
+        ++updatedModels[0].materialGeneration;
         const auto copiesBeforeMaterial = frameCommands.copies.size();
         ok &= check(runtime.updateFrame(device, frameCommands, updatedModels, &error),
                     "native scene frame update accepts a changed material buffer");

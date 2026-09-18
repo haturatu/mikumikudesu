@@ -52,17 +52,6 @@ handles::BufferHandle createStaging(Device& device, std::span<const T> values, s
     return handle;
 }
 
-template <typename T> [[nodiscard]] std::uint64_t hashValues(std::span<const T> values) noexcept {
-    constexpr std::uint64_t offset = 1469598103934665603ULL;
-    constexpr std::uint64_t prime = 1099511628211ULL;
-    auto result = offset ^ static_cast<std::uint64_t>(values.size_bytes());
-    for (const auto value : std::as_bytes(values)) {
-        result ^= std::to_integer<std::uint8_t>(value);
-        result *= prime;
-    }
-    return result;
-}
-
 void destroy(Device& device, std::vector<handles::BufferHandle>& handles) noexcept {
     for (const auto handle : handles) {
         if (!handle.valid())
@@ -90,15 +79,6 @@ void destroy(Device& device, std::vector<std::array<handles::BufferHandle, N>>& 
 }
 
 } // namespace
-
-NativeSceneModelRuntime::StaticHashes
-NativeSceneModelRuntime::makeStaticHashes(const NativeSceneModelData& model) noexcept {
-    return {.indices = hashValues(std::span<const std::uint32_t>(model.indices)),
-            .materials = hashValues(std::span<const NativeSceneMaterial>(model.materials)),
-            .faces = hashValues(std::span<const std::uint32_t>(model.faces)),
-            .materialFaces = hashValues(std::span<const NativeSceneMaterialFace>(model.materialFaces)),
-            .faceWalker = hashValues(std::span<const NativeSceneWalkerAlias>(model.faceWalker))};
-}
 
 bool NativeSceneModelRuntime::sameLayout(Device& device, std::span<const NativeSceneModelData> models) const noexcept {
     return ready() && device_ == &device && models.size() == modelCount() &&
@@ -158,7 +138,7 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
             frame.materialFaceStaging.reserve(models.size());
             frame.faceWalkers.reserve(models.size());
             frame.faceWalkerStaging.reserve(models.size());
-            frame.staticHashes.reserve(models.size());
+            frame.staticGenerations.reserve(models.size());
             for (const auto& model : models) {
                 frame.vertices.push_back(upload(device, std::span<const NativeSceneVertex>(model.vertices),
                                                 ResourceUsage::storageRead | ResourceUsage::vertexRead |
@@ -194,7 +174,7 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
                 frame.faceStaging.push_back({});
                 frame.materialFaceStaging.push_back({});
                 frame.faceWalkerStaging.push_back({});
-                frame.staticHashes.push_back(makeStaticHashes(model));
+                frame.staticGenerations.push_back({model.topologyGeneration, model.materialGeneration});
             }
         }
     } catch (const std::exception& exception) {
@@ -223,32 +203,30 @@ bool NativeSceneModelRuntime::update(Device& device, std::span<const NativeScene
         for (auto& frame : frameResources_) {
             for (std::size_t index = 0; index < models.size(); ++index) {
                 const auto& model = models[index];
-                // Preserve the exact GPU stream used by the preceding frame
-                // before replacing the current animated data. copyBufferEx is
-                // an ordered transfer, so this does not require a CPU
-                // readback or a second host-side vertex snapshot.
+                const auto& generations = frame.staticGenerations[index];
+                const bool topologyChanged = generations.topology != model.topologyGeneration;
+                const bool materialChanged = generations.material != model.materialGeneration;
                 device.copyBufferEx(frame.vertices[index], frame.previousVertices[index]);
                 if (!model.vertices.empty())
                     device.uploadBufferEx(frame.vertices[index],
                                           std::as_bytes(std::span<const NativeSceneVertex>(model.vertices)), 0);
-                const auto hashes = makeStaticHashes(model);
-                if (hashes.indices != frame.staticHashes[index].indices && !model.indices.empty())
+                if (topologyChanged && !model.indices.empty())
                     device.uploadBufferEx(frame.indices[index],
                                           std::as_bytes(std::span<const std::uint32_t>(model.indices)), 0);
-                if (hashes.materials != frame.staticHashes[index].materials && !model.materials.empty())
+                if (materialChanged && !model.materials.empty())
                     device.uploadBufferEx(frame.materials[index],
                                           std::as_bytes(std::span<const NativeSceneMaterial>(model.materials)), 0);
-                if (hashes.faces != frame.staticHashes[index].faces && !model.faces.empty())
+                if (topologyChanged && !model.faces.empty())
                     device.uploadBufferEx(frame.faces[index],
                                           std::as_bytes(std::span<const std::uint32_t>(model.faces)), 0);
-                if (hashes.materialFaces != frame.staticHashes[index].materialFaces && !model.materialFaces.empty())
+                if (topologyChanged && !model.materialFaces.empty())
                     device.uploadBufferEx(frame.materialFaces[index],
                                           std::as_bytes(std::span<const NativeSceneMaterialFace>(model.materialFaces)),
                                           0);
-                if (hashes.faceWalker != frame.staticHashes[index].faceWalker && !model.faceWalker.empty())
+                if (topologyChanged && !model.faceWalker.empty())
                     device.uploadBufferEx(frame.faceWalkers[index],
                                           std::as_bytes(std::span<const NativeSceneWalkerAlias>(model.faceWalker)), 0);
-                frame.staticHashes[index] = hashes;
+                frame.staticGenerations[index] = {model.topologyGeneration, model.materialGeneration};
             }
         }
     } catch (const std::exception& exception) {
@@ -300,10 +278,12 @@ bool NativeSceneModelRuntime::updateFrame(Device& device, CommandList& commands,
                 recordedTransfer = true;
             }
 
-            const auto hashes = makeStaticHashes(model);
-            const auto copyIfChanged = [&](auto& staging, auto destination, const auto& values, std::uint64_t oldHash,
-                                           std::uint64_t newHash, std::string_view name) {
-                if (oldHash == newHash || values.empty())
+            const auto& generations = frame.staticGenerations[index];
+            const bool topologyChanged = generations.topology != model.topologyGeneration;
+            const bool materialChanged = generations.material != model.materialGeneration;
+            const auto copyIfChanged = [&](auto& staging, auto destination, const auto& values, bool changed,
+                                           std::string_view name) {
+                if (!changed || values.empty())
                     return false;
                 if (!staging[index].valid())
                     staging[index] = createStaging(device, std::span(values), name);
@@ -311,23 +291,20 @@ bool NativeSceneModelRuntime::updateFrame(Device& device, CommandList& commands,
                 commands.copyBufferEx(staging[index], destination);
                 return true;
             };
-            const bool indicesChanged =
-                copyIfChanged(frame.indexStaging, frame.indices[index], model.indices,
-                              frame.staticHashes[index].indices, hashes.indices, "index staging");
-            const bool materialsChanged =
-                copyIfChanged(frame.materialStaging, frame.materials[index], model.materials,
-                              frame.staticHashes[index].materials, hashes.materials, "material staging");
-            const bool facesChanged = copyIfChanged(frame.faceStaging, frame.faces[index], model.faces,
-                                                    frame.staticHashes[index].faces, hashes.faces, "face staging");
+            const bool indicesChanged = copyIfChanged(frame.indexStaging, frame.indices[index], model.indices,
+                                                      topologyChanged, "index staging");
+            const bool materialsChanged = copyIfChanged(frame.materialStaging, frame.materials[index], model.materials,
+                                                        materialChanged, "material staging");
+            const bool facesChanged =
+                copyIfChanged(frame.faceStaging, frame.faces[index], model.faces, topologyChanged, "face staging");
             const bool materialFacesChanged =
                 copyIfChanged(frame.materialFaceStaging, frame.materialFaces[index], model.materialFaces,
-                              frame.staticHashes[index].materialFaces, hashes.materialFaces, "material face staging");
-            const bool faceWalkerChanged =
-                copyIfChanged(frame.faceWalkerStaging, frame.faceWalkers[index], model.faceWalker,
-                              frame.staticHashes[index].faceWalker, hashes.faceWalker, "face walker staging");
+                              topologyChanged, "material face staging");
+            const bool faceWalkerChanged = copyIfChanged(frame.faceWalkerStaging, frame.faceWalkers[index],
+                                                         model.faceWalker, topologyChanged, "face walker staging");
             recordedTransfer = recordedTransfer || indicesChanged || materialsChanged || facesChanged ||
                                materialFacesChanged || faceWalkerChanged;
-            frame.staticHashes[index] = hashes;
+            frame.staticGenerations[index] = {model.topologyGeneration, model.materialGeneration};
         }
         if (recordedTransfer)
             commands.memoryBarrierEx();
