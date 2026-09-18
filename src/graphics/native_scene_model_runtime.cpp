@@ -247,8 +247,7 @@ bool NativeSceneModelRuntime::update(Device& device, std::span<const NativeScene
                                           0);
                 if (hashes.faceWalker != frame.staticHashes[index].faceWalker && !model.faceWalker.empty())
                     device.uploadBufferEx(frame.faceWalkers[index],
-                                          std::as_bytes(std::span<const NativeSceneWalkerAlias>(model.faceWalker)),
-                                          0);
+                                          std::as_bytes(std::span<const NativeSceneWalkerAlias>(model.faceWalker)), 0);
                 frame.staticHashes[index] = hashes;
             }
         }
@@ -299,12 +298,12 @@ bool NativeSceneModelRuntime::updateFrame(Device& device, CommandList& commands,
                 commands.copyBufferEx(staging[index], destination);
                 return true;
             };
-            const bool indicesChanged = copyIfChanged(frame.indexStaging, frame.indices[index], model.indices,
-                                                      frame.staticHashes[index].indices, hashes.indices, "index staging");
+            const bool indicesChanged =
+                copyIfChanged(frame.indexStaging, frame.indices[index], model.indices,
+                              frame.staticHashes[index].indices, hashes.indices, "index staging");
             const bool materialsChanged =
                 copyIfChanged(frame.materialStaging, frame.materials[index], model.materials,
-                              frame.staticHashes[index].materials,
-                              hashes.materials, "material staging");
+                              frame.staticHashes[index].materials, hashes.materials, "material staging");
             const bool facesChanged = copyIfChanged(frame.faceStaging, frame.faces[index], model.faces,
                                                     frame.staticHashes[index].faces, hashes.faces, "face staging");
             const bool materialFacesChanged =

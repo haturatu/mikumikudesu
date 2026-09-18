@@ -272,24 +272,24 @@ BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::Dir
         });
         append(descriptorLayout_, descriptorSets_[device_->currentFrameSlot() % kNativeFramesInFlight],
                [&](const auto index) {
-            sourceOptions.resources.push_back({.declaration = "RWTexture2D<float4> YRZ_BdptAccumulation",
-                                               .registerClass = fx::FxNativeShaderRegister::uav,
-                                               .registerIndex = 0,
-                                               .descriptorSet = index});
-            sourceOptions.resources.push_back({.declaration = "StructuredBuffer<float> YRZ_BdptSpectralLut",
-                                               .registerClass = fx::FxNativeShaderRegister::sampled,
-                                               .registerIndex = 0,
-                                               .descriptorSet = index});
-            sourceOptions.resources.push_back({.declaration = "StructuredBuffer<float> YRZ_BdptBlackbodyLut",
-                                               .registerClass = fx::FxNativeShaderRegister::sampled,
-                                               .registerIndex = 1,
-                                               .descriptorSet = index});
-            for (std::uint32_t volume = 0; volume < BdptAccumulation::kVolumeSlots; ++volume)
-                sourceOptions.resources.push_back(
-                    {.declaration = "RWTexture3D<float4> YRZ_BdptVolume" + std::to_string(volume),
-                     .registerClass = fx::FxNativeShaderRegister::uav,
-                     .registerIndex = 1U + volume,
-                     .descriptorSet = index});
+                   sourceOptions.resources.push_back({.declaration = "RWTexture2D<float4> YRZ_BdptAccumulation",
+                                                      .registerClass = fx::FxNativeShaderRegister::uav,
+                                                      .registerIndex = 0,
+                                                      .descriptorSet = index});
+                   sourceOptions.resources.push_back({.declaration = "StructuredBuffer<float> YRZ_BdptSpectralLut",
+                                                      .registerClass = fx::FxNativeShaderRegister::sampled,
+                                                      .registerIndex = 0,
+                                                      .descriptorSet = index});
+                   sourceOptions.resources.push_back({.declaration = "StructuredBuffer<float> YRZ_BdptBlackbodyLut",
+                                                      .registerClass = fx::FxNativeShaderRegister::sampled,
+                                                      .registerIndex = 1,
+                                                      .descriptorSet = index});
+                   for (std::uint32_t volume = 0; volume < BdptAccumulation::kVolumeSlots; ++volume)
+                       sourceOptions.resources.push_back(
+                           {.declaration = "RWTexture3D<float4> YRZ_BdptVolume" + std::to_string(volume),
+                            .registerClass = fx::FxNativeShaderRegister::uav,
+                            .registerIndex = 1U + volume,
+                            .descriptorSet = index});
                });
         append(geometry_.descriptorLayout(), geometry_.descriptorSet(), [&](const auto index) {
             sourceOptions.resources.push_back({.declaration = "RaytracingAccelerationStructure YRZ_BdptTLAS",
@@ -312,7 +312,7 @@ BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::Dir
             frameSharedSets.insert(frameSharedSets.end(), sets.begin(), sets.end());
         }
         const auto append = [&frameSharedSets](handles::DescriptorSetLayoutHandle layout,
-                                                handles::DescriptorSetHandle set) {
+                                               handles::DescriptorSetHandle set) {
             if (layout.valid() && set.valid())
                 frameSharedSets.push_back(set);
         };

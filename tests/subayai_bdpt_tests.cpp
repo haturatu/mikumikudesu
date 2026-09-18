@@ -321,8 +321,7 @@ struct MockNativeDevice final : dayo::graphics::Device {
     std::size_t frameSlot{};
     dayo::graphics::DescriptorSetLayoutDesc lastDescriptorLayout;
     std::vector<dayo::graphics::DescriptorBindingEx> lastDescriptorBindings;
-    std::unordered_map<dayo::graphics::handles::DescriptorSetHandle,
-                       std::vector<dayo::graphics::DescriptorBindingEx>>
+    std::unordered_map<dayo::graphics::handles::DescriptorSetHandle, std::vector<dayo::graphics::DescriptorBindingEx>>
         descriptorBindings_;
     std::unordered_map<dayo::graphics::handles::BufferHandle, Buffer> typedBuffers_;
 };
@@ -880,8 +879,7 @@ int main() {
         runtime.reset();
         ok &= check(backend.destroyBlasCalls == 1 && backend.destroyTlasCalls == 1,
                     "native geometry reset releases the current frame AS resources");
-        ok &= check(device.destroyedBuffers == 12,
-                    "native geometry reset releases both frame deform resource sets");
+        ok &= check(device.destroyedBuffers == 12, "native geometry reset releases both frame deform resource sets");
     }
 
     // BLAS branching: rebuild on topology, refit on deform-only, none otherwise.

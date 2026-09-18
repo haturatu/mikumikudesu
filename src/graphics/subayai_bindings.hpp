@@ -43,11 +43,11 @@ class SubayaiBindingRuntime {
     }
     [[nodiscard]] handles::DescriptorSetHandle materialSet() const noexcept {
         return device_ == nullptr ? handles::DescriptorSetHandle{}
-                                   : materialSets_[device_->currentFrameSlot() % kNativeFramesInFlight];
+                                  : materialSets_[device_->currentFrameSlot() % kNativeFramesInFlight];
     }
     [[nodiscard]] handles::DescriptorSetHandle lightSamplingSet() const noexcept {
         return device_ == nullptr ? handles::DescriptorSetHandle{}
-                                   : lightSamplingSets_[device_->currentFrameSlot() % kNativeFramesInFlight];
+                                  : lightSamplingSets_[device_->currentFrameSlot() % kNativeFramesInFlight];
     }
 
   private:

@@ -30,8 +30,7 @@ struct NativeGeometryMeshUpload {
 // records the current-frame BLAS/TLAS updates after the deform dispatch.
 class NativeGeometryRuntime {
   public:
-    explicit NativeGeometryRuntime(IAccelerationBackend* backend = nullptr)
-        : backend_(backend) {
+    explicit NativeGeometryRuntime(IAccelerationBackend* backend = nullptr) : backend_(backend) {
         for (auto& acceleration : accelerations_)
             acceleration.setBackend(backend);
     }

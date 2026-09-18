@@ -32,11 +32,11 @@ class SubayaiEnvironmentRuntime {
     }
     [[nodiscard]] handles::DescriptorSetHandle descriptorSet() const noexcept {
         return device_ == nullptr ? handles::DescriptorSetHandle{}
-                                   : descriptorSets_[device_->currentFrameSlot() % kNativeFramesInFlight];
+                                  : descriptorSets_[device_->currentFrameSlot() % kNativeFramesInFlight];
     }
     [[nodiscard]] handles::BufferHandle sphericalHarmonicsBuffer() const noexcept {
         return device_ == nullptr ? handles::BufferHandle{}
-                                   : sphericalHarmonicsBuffers_[device_->currentFrameSlot() % kNativeFramesInFlight];
+                                  : sphericalHarmonicsBuffers_[device_->currentFrameSlot() % kNativeFramesInFlight];
     }
 
   private:

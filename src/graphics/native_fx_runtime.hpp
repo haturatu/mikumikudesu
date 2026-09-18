@@ -82,8 +82,8 @@ class NativeFxRuntime {
         return sharedDescriptorSets_.size();
     }
 
-    [[nodiscard]] NativeFxFrame
-    prepareFrame(const fx::FxFrameContext& context, std::span<const handles::DescriptorSetHandle> sharedSets = {}) const;
+    [[nodiscard]] NativeFxFrame prepareFrame(const fx::FxFrameContext& context,
+                                             std::span<const handles::DescriptorSetHandle> sharedSets = {}) const;
     [[nodiscard]] VulkanFxExecutor::Stats execute(NativeFxFrame& frame, CommandList& commands,
                                                   const FxExecutionResources& resources = {}) const;
 

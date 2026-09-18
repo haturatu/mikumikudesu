@@ -259,7 +259,7 @@ SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
             frameSharedSets.insert(frameSharedSets.end(), sets.begin(), sets.end());
         }
         const auto append = [&frameSharedSets](handles::DescriptorSetLayoutHandle layout,
-                                                handles::DescriptorSetHandle set) {
+                                               handles::DescriptorSetHandle set) {
             if (layout.valid() && set.valid())
                 frameSharedSets.push_back(set);
         };

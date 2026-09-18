@@ -111,8 +111,9 @@ class NativeDeformRuntime {
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
-        return device_ != nullptr && std::all_of(resources_.begin(), resources_.end(),
-                                                  [](const auto& resources) { return resources.valid(); }) &&
+        return device_ != nullptr &&
+               std::all_of(resources_.begin(), resources_.end(),
+                           [](const auto& resources) { return resources.valid(); }) &&
                pipeline_.valid() && workgroupCount_ != 0;
     }
     [[nodiscard]] const NativeDeformPlan& plan() const noexcept {
