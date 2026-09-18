@@ -1479,7 +1479,8 @@ int main() {
         const auto uploadsBeforeFrame = device.uploadBufferCalls;
         ok &= check(runtime.updateFrame(device, frameCommands, updatedModels, &error),
                     "native scene model runtime records animated transfers in the frame command list");
-        ok &= check(frameCommands.copies.size() == 2 && frameCommands.events == std::vector<std::string>{"copy", "transfer-barrier", "copy"} &&
+        ok &= check(frameCommands.copies.size() == 2 &&
+                        frameCommands.events == std::vector<std::string>{"copy", "transfer-barrier", "copy"} &&
                         frameCommands.transferBarrierRecorded && frameCommands.barrierRecorded &&
                         device.uploadBufferCalls == uploadsBeforeFrame + 1,
                     "native scene frame update orders previous/current copies with a transfer barrier");
