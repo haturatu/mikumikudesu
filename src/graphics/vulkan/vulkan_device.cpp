@@ -2079,8 +2079,8 @@ VulkanDevice::Frame* VulkanDevice::frameForCommandBuffer(VkCommandBuffer command
     return found == frames_.end() ? nullptr : &*found;
 }
 
-VulkanDevice::Frame::NativeUploadBuffer&
-VulkanDevice::allocateNativeUploadBuffer(Frame& frame, VkDeviceSize size, VkDeviceSize alignment) {
+VulkanDevice::Frame::NativeUploadBuffer& VulkanDevice::allocateNativeUploadBuffer(Frame& frame, VkDeviceSize size,
+                                                                                  VkDeviceSize alignment) {
     for (auto& upload : frame.nativeUploadBuffers) {
         const auto offset = alignDeviceAddress(upload.offset, alignment);
         if (offset <= upload.capacity && size <= upload.capacity - offset) {
@@ -2104,14 +2104,13 @@ VulkanDevice::allocateNativeUploadBuffer(Frame& frame, VkDeviceSize size, VkDevi
         const VkMemoryAllocateInfo allocationInfo{
             .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
             .allocationSize = requirements.size,
-            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits,
-                                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
         };
         check(vkAllocateMemory(device_, &allocationInfo, nullptr, &upload.memory),
               "allocate native frame upload memory");
         check(vkBindBufferMemory(device_, upload.buffer, upload.memory, 0), "bind native frame upload memory");
-        check(vkMapMemory(device_, upload.memory, 0, capacity, 0, &upload.mapped),
-              "map native frame upload memory");
+        check(vkMapMemory(device_, upload.memory, 0, capacity, 0, &upload.mapped), "map native frame upload memory");
         upload.capacity = capacity;
         upload.offset = size;
         frame.nativeUploadBuffers.push_back(upload);

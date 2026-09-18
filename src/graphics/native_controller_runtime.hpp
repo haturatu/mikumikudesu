@@ -98,15 +98,15 @@ class NativeControllerRuntime {
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
-        return device_ != nullptr && std::all_of(buffers_.begin(), buffers_.end(),
-                                                  [](const auto buffer) { return buffer.valid(); });
+        return device_ != nullptr &&
+               std::all_of(buffers_.begin(), buffers_.end(), [](const auto buffer) { return buffer.valid(); });
     }
     [[nodiscard]] const NativeControllerLayout& layout() const noexcept {
         return layout_;
     }
     [[nodiscard]] handles::BufferHandle buffer() const noexcept {
         return device_ == nullptr ? handles::BufferHandle{}
-                                   : buffers_[device_->currentFrameSlot() % kNativeFramesInFlight];
+                                  : buffers_[device_->currentFrameSlot() % kNativeFramesInFlight];
     }
 
   private:

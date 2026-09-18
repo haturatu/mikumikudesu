@@ -387,7 +387,7 @@ class VulkanDevice final : public Device {
     void destroyNativeUploadBuffers(Frame& frame) noexcept;
     [[nodiscard]] Frame* frameForCommandBuffer(VkCommandBuffer commandBuffer) noexcept;
     [[nodiscard]] Frame::NativeUploadBuffer& allocateNativeUploadBuffer(Frame& frame, VkDeviceSize size,
-                                                                          VkDeviceSize alignment);
+                                                                        VkDeviceSize alignment);
     [[nodiscard]] VkBuffer allocateRecordedAccelerationScratch(VkDeviceSize size);
     void submitImmediate(const std::function<void(VkCommandBuffer)>& record);
     [[nodiscard]] static VkImageLayout typedTextureFinalLayout(const TypedTexture& texture) noexcept;

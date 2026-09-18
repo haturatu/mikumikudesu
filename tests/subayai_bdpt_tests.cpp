@@ -880,8 +880,7 @@ int main() {
         ok &= check(service.notifyMesh(0, geometry(11), 1, 1) == BlasAction::rebuild, "BLAS first build is rebuild");
         ok &= check(backend.createBlasCalls == 1, "BLAS create called once");
         ok &= check(service.notifyMesh(0, geometry(11), 1, 1) == BlasAction::none, "BLAS unchanged reports none");
-        ok &= check(service.notifyMesh(0, geometry(11), 1, 2) == BlasAction::refit,
-                    "BLAS deform-only queues a refit");
+        ok &= check(service.notifyMesh(0, geometry(11), 1, 2) == BlasAction::refit, "BLAS deform-only queues a refit");
         ok &= check(backend.refitBlasCalls == 0, "BLAS deform updates do not submit synchronously");
         MockDeformCommands commands;
         service.recordBlasUpdates(commands);

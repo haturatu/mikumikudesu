@@ -63,7 +63,7 @@ class LightSamplingGpuRuntime {
     }
     [[nodiscard]] handles::BufferHandle buffer() const noexcept {
         return device_ == nullptr ? handles::BufferHandle{}
-                                   : buffers_[device_->currentFrameSlot() % kNativeFramesInFlight];
+                                  : buffers_[device_->currentFrameSlot() % kNativeFramesInFlight];
     }
     [[nodiscard]] std::size_t count() const noexcept {
         return count_;

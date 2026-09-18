@@ -3,8 +3,8 @@
 #include "fx/fx_frame.hpp"
 #include "graphics/device.hpp"
 
-#include <array>
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <string>
 
@@ -79,18 +79,18 @@ class NativeFrameConstantsRuntime {
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
-        return device_ != nullptr && std::all_of(viewBuffers_.begin(), viewBuffers_.end(),
-                                                 [](const auto buffer) { return buffer.valid(); }) &&
-               std::all_of(passBuffers_.begin(), passBuffers_.end(),
-                           [](const auto buffer) { return buffer.valid(); });
+        return device_ != nullptr &&
+               std::all_of(viewBuffers_.begin(), viewBuffers_.end(),
+                           [](const auto buffer) { return buffer.valid(); }) &&
+               std::all_of(passBuffers_.begin(), passBuffers_.end(), [](const auto buffer) { return buffer.valid(); });
     }
     [[nodiscard]] handles::BufferHandle viewBuffer() const noexcept {
         return device_ == nullptr ? handles::BufferHandle{}
-                                   : viewBuffers_[device_->currentFrameSlot() % kNativeFramesInFlight];
+                                  : viewBuffers_[device_->currentFrameSlot() % kNativeFramesInFlight];
     }
     [[nodiscard]] handles::BufferHandle passBuffer() const noexcept {
         return device_ == nullptr ? handles::BufferHandle{}
-                                   : passBuffers_[device_->currentFrameSlot() % kNativeFramesInFlight];
+                                  : passBuffers_[device_->currentFrameSlot() % kNativeFramesInFlight];
     }
 
   private:

@@ -124,8 +124,7 @@ void NativeGeometryRuntime::recordDeform(CommandList& commands) const {
     commands.memoryBarrierEx();
 }
 
-void NativeGeometryRuntime::recordDeform(CommandList& commands,
-                                         std::span<const NativeGeometryMeshUpload> meshes) {
+void NativeGeometryRuntime::recordDeform(CommandList& commands, std::span<const NativeGeometryMeshUpload> meshes) {
     if (!ready())
         throw std::logic_error("native geometry runtime is not initialized");
     if (meshes.size() != meshes_.size())
