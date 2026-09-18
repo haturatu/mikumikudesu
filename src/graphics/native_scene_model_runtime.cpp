@@ -279,16 +279,23 @@ bool NativeSceneModelRuntime::updateFrame(Device& device, CommandList& commands,
         auto& frame = frameResources_[slot];
         const auto& previousFrame = frameResources_[previousSlot];
         bool recordedTransfer = false;
+        bool recordedHistoryBarrier = false;
         for (std::size_t index = 0; index < models.size(); ++index) {
             const auto& model = models[index];
             if (!model.vertices.empty()) {
+                if (!recordedHistoryBarrier) {
+                    // The source is written by the preceding frame
+                    // submission. A queue submission boundary alone does not
+                    // make that write visible to this frame's copy read.
+                    commands.memoryBarrierEx();
+                    recordedHistoryBarrier = true;
+                }
                 device.uploadBufferEx(frame.vertexStaging[index],
                                       std::as_bytes(std::span<const NativeSceneVertex>(model.vertices)), 0);
                 // Temporal history comes from the current stream recorded in
                 // the preceding frame slot. Preserve it in this slot's PreVB
                 // before replacing this slot's current vertex stream.
                 commands.copyBufferEx(previousFrame.vertices[index], frame.previousVertices[index]);
-                commands.transferBarrierEx();
                 commands.copyBufferEx(frame.vertexStaging[index], frame.vertices[index]);
                 recordedTransfer = true;
             }
