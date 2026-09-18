@@ -5375,17 +5375,14 @@ void VulkanDevice::recordMemoryBarrier(VkCommandBuffer commandBuffer) {
         throw std::invalid_argument("typed memory barrier requires a command buffer");
     const VkMemoryBarrier2 barrier{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                        VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-                        VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
-        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
-                         VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                        VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-                        VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
-        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
-                         VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-                         VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+        // Native resources are consumed by raster, compute, ray tracing, and
+        // copy commands. Keep this generic barrier broad enough to cover all
+        // producers and consumers, including writes from the preceding frame
+        // submission that feed the current frame's history copy.
+        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
     };
     const VkDependencyInfo dependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,

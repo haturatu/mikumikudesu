@@ -346,6 +346,7 @@ struct MockNativeSceneCommands final : dayo::graphics::CommandList {
         transferBarrierRecorded = true;
     }
     void memoryBarrierEx() override {
+        events.emplace_back("memory-barrier");
         barrierRecorded = true;
     }
 
@@ -1587,10 +1588,11 @@ int main() {
         ok &= check(runtime.updateFrame(device, frameCommands, updatedModels, &error),
                     "native scene model runtime records animated transfers in the frame command list");
         ok &= check(frameCommands.copies.size() == 2 &&
-                        frameCommands.events == std::vector<std::string>{"copy", "transfer-barrier", "copy"} &&
-                        frameCommands.transferBarrierRecorded && frameCommands.barrierRecorded &&
+                        frameCommands.events ==
+                            std::vector<std::string>{"memory-barrier", "copy", "copy", "memory-barrier"} &&
+                        !frameCommands.transferBarrierRecorded && frameCommands.barrierRecorded &&
                         device.uploadBufferCalls == uploadsBeforeFrame + 1,
-                    "native scene frame update orders previous/current copies with a transfer barrier");
+                    "native scene frame update orders history/current copies with cross-frame barriers");
         const auto frameCurrent = device.readbackBufferEx(vertexBuffer, 0, sizeof(dayo::graphics::NativeSceneVertex));
         std::memcpy(&firstVertex, frameCurrent.data(), sizeof(firstVertex));
         ok &= check(std::abs(firstVertex.position[0] - 3.0F) < 1e-6F,
