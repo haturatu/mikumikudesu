@@ -10,6 +10,8 @@
 namespace dayo::core {
 namespace {
 
+constexpr std::size_t kImageAllocationBudget = 512ULL * 1024ULL * 1024ULL;
+
 std::size_t checkedMul(std::size_t lhs, std::size_t rhs, const char* message) {
     if (rhs != 0 && lhs > std::numeric_limits<std::size_t>::max() / rhs)
         throw std::overflow_error(message);
@@ -174,7 +176,10 @@ ImageData rgba8ToHalf(const ImageRgba8& image, ColorSpace space) {
     const std::size_t samples = checkedMul(pixels, 4U, "RGBA8 sample count overflow");
     if (image.pixels.size() < samples)
         throw std::invalid_argument("truncated RGBA8 image");
-    result.bytes.resize(checkedMul(samples, sizeof(std::uint16_t), "half image byte count overflow"));
+    const auto outputBytes = checkedMul(samples, sizeof(std::uint16_t), "half image byte count overflow");
+    if (image.pixels.size() > kImageAllocationBudget || outputBytes > kImageAllocationBudget - image.pixels.size())
+        throw std::runtime_error("image allocation budget exceeded for RGBA8 to half conversion");
+    result.bytes.resize(outputBytes);
     for (std::size_t index = 0; index < pixels; ++index) {
         for (std::size_t channel = 0; channel < 4; ++channel) {
             const float value = static_cast<float>(image.pixels[index * 4U + channel]) / 255.0F;
