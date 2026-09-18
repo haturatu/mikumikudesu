@@ -177,8 +177,7 @@ ImageData rgba8ToHalf(const ImageRgba8& image, ColorSpace space) {
     if (image.pixels.size() < samples)
         throw std::invalid_argument("truncated RGBA8 image");
     const auto outputBytes = checkedMul(samples, sizeof(std::uint16_t), "half image byte count overflow");
-    if (image.pixels.size() > kImageAllocationBudget ||
-        outputBytes > kImageAllocationBudget - image.pixels.size())
+    if (image.pixels.size() > kImageAllocationBudget || outputBytes > kImageAllocationBudget - image.pixels.size())
         throw std::runtime_error("image allocation budget exceeded for RGBA8 to half conversion");
     result.bytes.resize(outputBytes);
     for (std::size_t index = 0; index < pixels; ++index) {
