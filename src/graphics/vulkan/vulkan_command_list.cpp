@@ -106,6 +106,12 @@ void VulkanCommandList::memoryBarrierEx() {
     device_->recordMemoryBarrier(commandBuffer_);
 }
 
+void VulkanCommandList::transferBarrierEx() {
+    if (device_ == nullptr)
+        throw std::logic_error("typed transfer barrier requires a Vulkan device");
+    device_->recordTransferBarrier(commandBuffer_);
+}
+
 void VulkanCommandList::accelerationStructureBarrierEx() {
     if (device_ == nullptr)
         throw std::logic_error("acceleration barrier requires a Vulkan device");

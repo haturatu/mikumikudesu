@@ -5280,6 +5280,24 @@ void VulkanDevice::recordMemoryBarrier(VkCommandBuffer commandBuffer) {
     vkCmdPipelineBarrier2(commandBuffer, &dependency);
 }
 
+void VulkanDevice::recordTransferBarrier(VkCommandBuffer commandBuffer) {
+    if (commandBuffer == VK_NULL_HANDLE)
+        throw std::invalid_argument("typed transfer barrier requires a command buffer");
+    const VkMemoryBarrier2 barrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+    };
+    const VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &barrier,
+    };
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+}
+
 void VulkanDevice::recordAccelerationStructureBarrier(VkCommandBuffer commandBuffer) {
     if (commandBuffer == VK_NULL_HANDLE)
         throw std::invalid_argument("acceleration barrier requires a command buffer");

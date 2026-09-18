@@ -37,6 +37,7 @@ class VulkanCommandList final : public CommandList {
     void beginRenderingEx(handles::TextureHandle target, bool clear = false) override;
     void endRenderingEx() override;
     void memoryBarrierEx() override;
+    void transferBarrierEx() override;
     void accelerationStructureBarrierEx() override;
     void transitionEx(handles::TextureHandle texture) override;
     void traceRaysEx(handles::PipelineHandle pipeline, handles::ShaderBindingTableHandle sbt, std::uint32_t width,

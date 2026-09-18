@@ -268,6 +268,7 @@ bool NativeSceneModelRuntime::updateFrame(Device& device, CommandList& commands,
                 device.uploadBufferEx(vertexStaging_[index][slot],
                                       std::as_bytes(std::span<const NativeSceneVertex>(model.vertices)), 0);
                 commands.copyBufferEx(vertices_[index], previousVertices_[index]);
+                commands.transferBarrierEx();
                 commands.copyBufferEx(vertexStaging_[index][slot], vertices_[index]);
                 recordedTransfer = true;
             }

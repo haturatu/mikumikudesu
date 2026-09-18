@@ -472,6 +472,12 @@ class CommandList {
     virtual void memoryBarrierEx() {
         throw std::logic_error("Typed command-list memory barriers are not implemented by this backend");
     }
+    // Orders a transfer read before a following transfer write. This is
+    // intentionally narrower than memoryBarrierEx so copy-to-copy hazards
+    // do not depend on a later shader barrier.
+    virtual void transferBarrierEx() {
+        throw std::logic_error("Typed command-list transfer barriers are not implemented by this backend");
+    }
     virtual void accelerationStructureBarrierEx() {
         throw std::logic_error("Typed acceleration barriers are not implemented by this backend");
     }
