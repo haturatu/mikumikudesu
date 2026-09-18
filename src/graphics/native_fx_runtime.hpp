@@ -18,6 +18,10 @@ namespace dayo::graphics {
 struct NativeFxFrame {
     fx::FxFrameContext context;
     fx::FxFramePlan plan;
+    // Shared sets are selected for the same frame slot as the resource data;
+    // keeping them on the frame prevents a later descriptor update from
+    // changing a set referenced by an in-flight command buffer.
+    std::vector<handles::DescriptorSetHandle> sharedDescriptorSets;
 };
 
 // Backend-neutral native FX owner. It gives a compiled program one lifetime
@@ -78,7 +82,8 @@ class NativeFxRuntime {
         return sharedDescriptorSets_.size();
     }
 
-    [[nodiscard]] NativeFxFrame prepareFrame(const fx::FxFrameContext& context) const;
+    [[nodiscard]] NativeFxFrame
+    prepareFrame(const fx::FxFrameContext& context, std::span<const handles::DescriptorSetHandle> sharedSets = {}) const;
     [[nodiscard]] VulkanFxExecutor::Stats execute(NativeFxFrame& frame, CommandList& commands,
                                                   const FxExecutionResources& resources = {}) const;
 

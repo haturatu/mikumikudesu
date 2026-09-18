@@ -252,8 +252,23 @@ SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
         std::string nativeError;
         static_cast<void>(nativeFx_.refresh(context, &nativeError));
     }
-    if (nativeFx_.ready())
-        frame.nativeFx = nativeFx_.prepareFrame(context);
+    if (nativeFx_.ready()) {
+        std::vector<handles::DescriptorSetHandle> frameSharedSets;
+        if (sceneFrame_) {
+            const auto sets = sceneFrame_->descriptorSets();
+            frameSharedSets.insert(frameSharedSets.end(), sets.begin(), sets.end());
+        }
+        const auto append = [&frameSharedSets](handles::DescriptorSetLayoutHandle layout,
+                                                handles::DescriptorSetHandle set) {
+            if (layout.valid() && set.valid())
+                frameSharedSets.push_back(set);
+        };
+        append(bindings_.layouts().material, bindings_.materialSet());
+        append(bindings_.layouts().lightSampling, bindings_.lightSamplingSet());
+        append(geometry_.descriptorLayout(), geometry_.descriptorSet());
+        append(environmentRuntime_.layout(), environmentRuntime_.descriptorSet());
+        frame.nativeFx = nativeFx_.prepareFrame(context, frameSharedSets);
+    }
     return frame;
 }
 

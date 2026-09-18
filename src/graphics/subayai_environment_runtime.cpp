@@ -72,25 +72,27 @@ bool SubayaiEnvironmentRuntime::sync(Device& device, const EnvironmentGpuResult&
         setError(error, "Subayai environment resources belong to a different device");
         return false;
     }
+    const auto slot = currentSlot();
     if (!result.cubemap.valid() && !result.prefiltered.valid()) {
-        if (descriptorSet_.valid()) {
+        if (descriptorSets_[slot].valid()) {
             try {
-                device.destroyDescriptorSetEx(descriptorSet_);
+                device.destroyDescriptorSetEx(descriptorSets_[slot]);
             } catch (const std::exception& exception) {
                 setError(error, exception.what());
                 return false;
             }
-            descriptorSet_ = {};
+            descriptorSets_[slot] = {};
         }
-        if (sphericalHarmonicsBuffer_.valid()) {
+        if (sphericalHarmonicsBuffers_[slot].valid()) {
             try {
-                device.destroyBufferEx(sphericalHarmonicsBuffer_);
+                device.destroyBufferEx(sphericalHarmonicsBuffers_[slot]);
             } catch (const std::exception& exception) {
                 setError(error, exception.what());
                 return false;
             }
-            sphericalHarmonicsBuffer_ = {};
+            sphericalHarmonicsBuffers_[slot] = {};
         }
+        bound_[slot] = {};
         current_ = {};
         return true;
     }
@@ -98,24 +100,27 @@ bool SubayaiEnvironmentRuntime::sync(Device& device, const EnvironmentGpuResult&
         setError(error, "Subayai environment requires both cubemap and prefiltered handles");
         return false;
     }
-    if (sameResult(current_, result) && descriptorSet_.valid() && sphericalHarmonicsBuffer_.valid())
+    if (sameResult(bound_[slot], result) && descriptorSets_[slot].valid() && sphericalHarmonicsBuffers_[slot].valid()) {
+        current_ = result;
         return true;
+    }
     return bind(result, error);
 }
 
 bool SubayaiEnvironmentRuntime::bind(const EnvironmentGpuResult& result, std::string* error) {
     try {
-        if (!sphericalHarmonicsBuffer_.valid()) {
-            sphericalHarmonicsBuffer_ = device_->createBufferEx({
+        const auto slot = currentSlot();
+        if (!sphericalHarmonicsBuffers_[slot].valid()) {
+            sphericalHarmonicsBuffers_[slot] = device_->createBufferEx({
                 .size = result.sphericalHarmonics.size() * sizeof(float),
-                .usage = ResourceUsage::storageRead | ResourceUsage::transferDst,
-                .cpuVisible = false,
+                .usage = ResourceUsage::storageRead | ResourceUsage::hostRead,
+                .cpuVisible = true,
                 .lifetime = ResourceLifetime::persistent,
             });
-            if (!sphericalHarmonicsBuffer_.valid())
+            if (!sphericalHarmonicsBuffers_[slot].valid())
                 throw std::runtime_error("Subayai environment SH buffer is invalid");
         }
-        device_->uploadBufferEx(sphericalHarmonicsBuffer_,
+        device_->uploadBufferEx(sphericalHarmonicsBuffers_[slot],
                                 std::as_bytes(std::span<const float>(result.sphericalHarmonics)), 0);
         const std::array<DescriptorBindingEx, 3> bindings{
             DescriptorBindingEx{.slot = nativeSceneBinding(NativeSceneRegisterClass::sampled, 0),
@@ -126,14 +131,15 @@ bool SubayaiEnvironmentRuntime::bind(const EnvironmentGpuResult& result, std::st
                                 .texture = result.prefiltered},
             DescriptorBindingEx{.slot = nativeSceneBinding(NativeSceneRegisterClass::sampled, 2),
                                 .arrayElement = 0,
-                                .buffer = sphericalHarmonicsBuffer_}};
-        if (descriptorSet_.valid()) {
-            device_->updateDescriptorSetEx(descriptorSet_, bindings);
+                                .buffer = sphericalHarmonicsBuffers_[slot]}};
+        if (descriptorSets_[slot].valid()) {
+            device_->updateDescriptorSetEx(descriptorSets_[slot], bindings);
         } else {
-            descriptorSet_ = device_->allocateDescriptorSetEx(layout_, bindings);
-            if (!descriptorSet_.valid())
+            descriptorSets_[slot] = device_->allocateDescriptorSetEx(layout_, bindings);
+            if (!descriptorSets_[slot].valid())
                 throw std::runtime_error("Subayai environment descriptor set is invalid");
         }
+        bound_[slot] = result;
         current_ = result;
     } catch (const std::exception& exception) {
         setError(error, std::string("Subayai environment binding failed: ") + exception.what());
@@ -152,16 +158,20 @@ void SubayaiEnvironmentRuntime::reset() noexcept {
             device->waitIdle();
         } catch (...) {
         }
-        if (descriptorSet_.valid()) {
-            try {
-                device->destroyDescriptorSetEx(descriptorSet_);
-            } catch (...) {
+        for (const auto descriptorSet : descriptorSets_) {
+            if (descriptorSet.valid()) {
+                try {
+                    device->destroyDescriptorSetEx(descriptorSet);
+                } catch (...) {
+                }
             }
         }
-        if (sphericalHarmonicsBuffer_.valid()) {
-            try {
-                device->destroyBufferEx(sphericalHarmonicsBuffer_);
-            } catch (...) {
+        for (const auto buffer : sphericalHarmonicsBuffers_) {
+            if (buffer.valid()) {
+                try {
+                    device->destroyBufferEx(buffer);
+                } catch (...) {
+                }
             }
         }
         if (layout_.valid()) {
@@ -173,8 +183,9 @@ void SubayaiEnvironmentRuntime::reset() noexcept {
     }
     device_ = nullptr;
     layout_ = {};
-    descriptorSet_ = {};
-    sphericalHarmonicsBuffer_ = {};
+    descriptorSets_.fill({});
+    sphericalHarmonicsBuffers_.fill({});
+    bound_.fill({});
     current_ = {};
 }
 

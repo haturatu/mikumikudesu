@@ -90,10 +90,12 @@ void BdptRuntime::reset() noexcept {
     bindings_.reset();
     lightRuntime_.reset();
     if (device_ != nullptr) {
-        if (descriptorSet_.valid()) {
-            try {
-                device_->destroyDescriptorSetEx(descriptorSet_);
-            } catch (...) {
+        for (const auto descriptorSet : descriptorSets_) {
+            if (descriptorSet.valid()) {
+                try {
+                    device_->destroyDescriptorSetEx(descriptorSet);
+                } catch (...) {
+                }
             }
         }
         if (descriptorLayout_.valid()) {
@@ -109,7 +111,7 @@ void BdptRuntime::reset() noexcept {
     program_ = {};
     accumulation_ = {};
     descriptorLayout_ = {};
-    descriptorSet_ = {};
+    descriptorSets_.fill({});
     nativeAttempted_ = false;
     ready_ = false;
 }
@@ -192,11 +194,12 @@ bool BdptRuntime::ensureResources(std::uint32_t width, std::uint32_t height, std
             .arrayElement = 0,
             .texture = gpu.volumes[index]};
     try {
-        if (descriptorSet_.valid()) {
-            device_->updateDescriptorSetEx(descriptorSet_, bindings);
+        const auto slot = device_->currentFrameSlot() % kNativeFramesInFlight;
+        if (descriptorSets_[slot].valid()) {
+            device_->updateDescriptorSetEx(descriptorSets_[slot], bindings);
         } else {
-            descriptorSet_ = device_->allocateDescriptorSetEx(descriptorLayout_, bindings);
-            if (!descriptorSet_.valid())
+            descriptorSets_[slot] = device_->allocateDescriptorSetEx(descriptorLayout_, bindings);
+            if (!descriptorSets_[slot].valid())
                 throw std::runtime_error("BDPT resource descriptor set is invalid");
         }
     } catch (const std::exception& exception) {
@@ -232,7 +235,7 @@ BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::Dir
     frame.context.sample = frame.sampleIndex;
     frame.plan = fx::FxCompiler{}.plan(program_, frame.context);
     frame.gpu = accumulation_.gpuResources();
-    frame.descriptorSet = descriptorSet_;
+    frame.descriptorSet = descriptorSets_[device_->currentFrameSlot() % kNativeFramesInFlight];
     frame.lightSamplingBuffer = lightRuntime_.buffer();
     frame.lightSamplingDescriptorSet = bindings_.lightSamplingSet();
     frame.geometryDescriptorSet = geometry_.descriptorSet();
@@ -267,7 +270,8 @@ BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::Dir
                  .registerIndex = 0,
                  .descriptorSet = index});
         });
-        append(descriptorLayout_, descriptorSet_, [&](const auto index) {
+        append(descriptorLayout_, descriptorSets_[device_->currentFrameSlot() % kNativeFramesInFlight],
+               [&](const auto index) {
             sourceOptions.resources.push_back({.declaration = "RWTexture2D<float4> YRZ_BdptAccumulation",
                                                .registerClass = fx::FxNativeShaderRegister::uav,
                                                .registerIndex = 0,
@@ -286,7 +290,7 @@ BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::Dir
                      .registerClass = fx::FxNativeShaderRegister::uav,
                      .registerIndex = 1U + volume,
                      .descriptorSet = index});
-        });
+               });
         append(geometry_.descriptorLayout(), geometry_.descriptorSet(), [&](const auto index) {
             sourceOptions.resources.push_back({.declaration = "RaytracingAccelerationStructure YRZ_BdptTLAS",
                                                .registerClass = fx::FxNativeShaderRegister::sampled,
@@ -301,8 +305,22 @@ BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::Dir
         std::string nativeError;
         static_cast<void>(nativeFx_.refresh(context, &nativeError));
     }
-    if (nativeFx_.ready())
-        frame.nativeFx = nativeFx_.prepareFrame(context);
+    if (nativeFx_.ready()) {
+        std::vector<handles::DescriptorSetHandle> frameSharedSets;
+        if (sceneFrame_) {
+            const auto sets = sceneFrame_->descriptorSets();
+            frameSharedSets.insert(frameSharedSets.end(), sets.begin(), sets.end());
+        }
+        const auto append = [&frameSharedSets](handles::DescriptorSetLayoutHandle layout,
+                                                handles::DescriptorSetHandle set) {
+            if (layout.valid() && set.valid())
+                frameSharedSets.push_back(set);
+        };
+        append(bindings_.layouts().lightSampling, bindings_.lightSamplingSet());
+        append(descriptorLayout_, descriptorSets_[device_->currentFrameSlot() % kNativeFramesInFlight]);
+        append(geometry_.descriptorLayout(), geometry_.descriptorSet());
+        frame.nativeFx = nativeFx_.prepareFrame(context, frameSharedSets);
+    }
     return frame;
 }
 

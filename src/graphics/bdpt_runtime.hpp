@@ -93,7 +93,7 @@ class BdptRuntime {
     SubayaiBindingRuntime bindings_;
     LightSamplingGpuRuntime lightRuntime_;
     handles::DescriptorSetLayoutHandle descriptorLayout_{};
-    handles::DescriptorSetHandle descriptorSet_{};
+    std::array<handles::DescriptorSetHandle, kNativeFramesInFlight> descriptorSets_{};
     NativeFxRuntime nativeFx_;
     NativeSceneFrameRuntime* sceneFrame_{};
     bool nativeAttempted_{};

@@ -2,6 +2,7 @@
 
 #include "graphics/device.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -110,13 +111,15 @@ class NativeDeformRuntime {
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
-        return device_ != nullptr && resources_.valid() && pipeline_.valid() && workgroupCount_ != 0;
+        return device_ != nullptr && std::all_of(resources_.begin(), resources_.end(),
+                                                  [](const auto& resources) { return resources.valid(); }) &&
+               pipeline_.valid() && workgroupCount_ != 0;
     }
     [[nodiscard]] const NativeDeformPlan& plan() const noexcept {
         return plan_;
     }
     [[nodiscard]] const NativeDeformResources& resources() const noexcept {
-        return resources_;
+        return resources_[currentSlot()];
     }
     [[nodiscard]] handles::PipelineHandle pipeline() const noexcept {
         return pipeline_;
@@ -133,16 +136,20 @@ class NativeDeformRuntime {
     void record(CommandList& commands, const NativeDeformUpload& upload);
 
   private:
+    [[nodiscard]] std::size_t currentSlot() const noexcept {
+        return device_ == nullptr ? 0 : device_->currentFrameSlot() % kNativeFramesInFlight;
+    }
+
     Device* device_{nullptr};
     NativeDeformPlan plan_;
-    NativeDeformResources resources_;
+    std::array<NativeDeformResources, kNativeFramesInFlight> resources_{};
     NativeDeformPushConstants constants_;
     handles::PipelineHandle pipeline_{};
     handles::DescriptorSetLayoutHandle descriptorLayout_{};
     std::uint32_t workgroupCount_{};
-    std::uint64_t baseVerticesHash_{};
-    std::uint64_t morphDeltasHash_{};
-    std::uint64_t indicesHash_{};
+    std::array<std::uint64_t, kNativeFramesInFlight> baseVerticesHashes_{};
+    std::array<std::uint64_t, kNativeFramesInFlight> morphDeltasHashes_{};
+    std::array<std::uint64_t, kNativeFramesInFlight> indicesHashes_{};
 };
 
 // Describes the compute input/output contract shared by a native deform pass

@@ -229,15 +229,20 @@ struct MockNativeDevice final : dayo::graphics::Device {
         if (!layout.valid())
             throw std::invalid_argument("mock descriptor layout is invalid");
         lastDescriptorBindings.assign(bindings.begin(), bindings.end());
-        return {nextDescriptorSet_++, 1};
+        const auto set = dayo::graphics::handles::DescriptorSetHandle{nextDescriptorSet_++, 1};
+        descriptorBindings_[set].assign(bindings.begin(), bindings.end());
+        return set;
     }
-    void updateDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle,
+    void updateDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle set,
                                std::span<const dayo::graphics::DescriptorBindingEx> bindings) override {
         lastDescriptorBindings.assign(bindings.begin(), bindings.end());
+        descriptorBindings_[set].assign(bindings.begin(), bindings.end());
     }
     void destroyDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle handle) override {
-        if (handle.valid())
+        if (handle.valid()) {
             ++destroyedDescriptorSets;
+            descriptorBindings_.erase(handle);
+        }
     }
     void destroyDescriptorSetLayoutEx(dayo::graphics::handles::DescriptorSetLayoutHandle handle) override {
         if (handle.valid())
@@ -316,6 +321,9 @@ struct MockNativeDevice final : dayo::graphics::Device {
     std::size_t frameSlot{};
     dayo::graphics::DescriptorSetLayoutDesc lastDescriptorLayout;
     std::vector<dayo::graphics::DescriptorBindingEx> lastDescriptorBindings;
+    std::unordered_map<dayo::graphics::handles::DescriptorSetHandle,
+                       std::vector<dayo::graphics::DescriptorBindingEx>>
+        descriptorBindings_;
     std::unordered_map<dayo::graphics::handles::BufferHandle, Buffer> typedBuffers_;
 };
 
@@ -333,12 +341,12 @@ struct MockNativeSceneCommands final : dayo::graphics::CommandList {
         events.emplace_back("copy");
         device_->copyBufferEx(source, destination);
     }
-    void memoryBarrierEx() override {
-        barrierRecorded = true;
-    }
     void transferBarrierEx() override {
         events.emplace_back("transfer-barrier");
         transferBarrierRecorded = true;
+    }
+    void memoryBarrierEx() override {
+        barrierRecorded = true;
     }
 
     MockNativeDevice* device_{};
@@ -731,8 +739,9 @@ int main() {
                     "native deform runtime allocates and uploads its resources");
         ok &= check(error.empty() && runtime.ready() && runtime.resources().valid(),
                     "native deform runtime exposes complete resource ownership");
-        ok &= check(device.lastDescriptorBindings.size() == 5 &&
-                        device.lastDescriptorBindings[4].buffer == runtime.resources().deformedVertices,
+        ok &= check(device.descriptorBindings_[runtime.resources().descriptorSet].size() == 5 &&
+                        device.descriptorBindings_[runtime.resources().descriptorSet][4].buffer ==
+                            runtime.resources().deformedVertices,
                     "native deform descriptor set binds the deformed output");
         const auto vertexBytes = vertices.size() * sizeof(vertices.front());
         const auto uploaded = device.readbackBufferEx(runtime.resources().baseVertices, 0, vertexBytes);
@@ -785,8 +794,8 @@ int main() {
                         blas.triangles.front().indexBuffer == runtime.resources().indices,
                     "native deform exposes output and index buffers for BLAS");
         runtime.reset();
-        ok &= check(device.destroyedBuffers == 6 && device.destroyedDescriptorSets == 1,
-                    "native deform reset releases descriptor and six buffers");
+        ok &= check(device.destroyedBuffers == 12 && device.destroyedDescriptorSets == 2,
+                    "native deform reset releases both frame descriptor and buffer sets");
     }
 
     // Native geometry coordinates deform dispatches with BLAS/TLAS policy.
@@ -869,8 +878,10 @@ int main() {
         ok &= check(backend.recordBlasCalls == 2 && backend.recordTlasCalls == 2,
                     "native geometry records deferred BLAS and TLAS updates after deform work");
         runtime.reset();
-        ok &= check(backend.destroyBlasCalls == 1 && backend.destroyTlasCalls == 1 && device.destroyedBuffers == 6,
-                    "native geometry reset releases AS and deform resources in dependency order");
+        ok &= check(backend.destroyBlasCalls == 1 && backend.destroyTlasCalls == 1,
+                    "native geometry reset releases the current frame AS resources");
+        ok &= check(device.destroyedBuffers == 12,
+                    "native geometry reset releases both frame deform resource sets");
     }
 
     // BLAS branching: rebuild on topology, refit on deform-only, none otherwise.

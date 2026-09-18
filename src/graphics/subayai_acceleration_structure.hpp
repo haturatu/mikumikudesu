@@ -73,7 +73,7 @@ class IAccelerationBackend {
 
 class AccelerationStructureService {
   public:
-    explicit AccelerationStructureService(IAccelerationBackend* backend) : backend_(backend) {}
+    explicit AccelerationStructureService(IAccelerationBackend* backend = nullptr) : backend_(backend) {}
     ~AccelerationStructureService();
 
     AccelerationStructureService(const AccelerationStructureService&) = delete;

@@ -145,13 +145,8 @@ bool NativeDeformRuntime::initialize(Device& device, const NativeDeformUpload& u
                       .morphCount = input.morphCount};
         workgroupCount_ = plan_.workgroupCount;
 
-        resources_.baseVertices = device.createBufferEx(uploadable(plan_.baseVertices, sizeof(PreviewVertex)));
-        resources_.bones = device.createBufferEx(uploadable(plan_.bones, sizeof(PreviewBoneTransform)));
-        resources_.morphDeltas = device.createBufferEx(uploadable(plan_.morphDeltas, sizeof(PreviewMorphDelta)));
-        resources_.morphWeights = device.createBufferEx(uploadable(plan_.morphWeights, sizeof(float)));
-        resources_.deformedVertices = device.createBufferEx(plan_.deformedVertices);
-        resources_.indices = device.createBufferEx(uploadable(plan_.indices, sizeof(std::uint32_t)));
-
+        if (!upload.deformedVertices.empty() && upload.deformedVertices.size() != input.vertexCount)
+            throw std::invalid_argument("native deform seed vertex count does not match base vertices");
         std::vector<NativeDeformedVertex> initialDeformed;
         if (upload.deformedVertices.empty()) {
             // A valid finite seed lets the first BLAS build complete before
@@ -168,32 +163,39 @@ bool NativeDeformRuntime::initialize(Device& device, const NativeDeformUpload& u
                 std::copy(std::begin(upload.baseVertices[index].uv), std::end(upload.baseVertices[index].uv),
                           initialDeformed[index].uv);
             }
-            device.uploadBufferEx(resources_.deformedVertices, std::as_bytes(std::span(initialDeformed)), 0);
         }
 
-        device.uploadBufferEx(resources_.baseVertices, std::as_bytes(upload.baseVertices), 0);
-        device.uploadBufferEx(resources_.bones, std::as_bytes(upload.bones), 0);
-        device.uploadBufferEx(resources_.morphDeltas, std::as_bytes(upload.morphDeltas), 0);
-        device.uploadBufferEx(resources_.morphWeights, std::as_bytes(upload.morphWeights), 0);
-        device.uploadBufferEx(resources_.indices, std::as_bytes(upload.indices), 0);
-        if (!upload.deformedVertices.empty()) {
-            if (upload.deformedVertices.size() != input.vertexCount)
-                throw std::invalid_argument("native deform seed vertex count does not match base vertices");
-            device.uploadBufferEx(resources_.deformedVertices, std::as_bytes(upload.deformedVertices), 0);
+        for (auto& resources : resources_) {
+            resources.baseVertices = device.createBufferEx(uploadable(plan_.baseVertices, sizeof(PreviewVertex)));
+            resources.bones = device.createBufferEx(uploadable(plan_.bones, sizeof(PreviewBoneTransform)));
+            resources.morphDeltas = device.createBufferEx(uploadable(plan_.morphDeltas, sizeof(PreviewMorphDelta)));
+            resources.morphWeights = device.createBufferEx(uploadable(plan_.morphWeights, sizeof(float)));
+            resources.deformedVertices = device.createBufferEx(plan_.deformedVertices);
+            resources.indices = device.createBufferEx(uploadable(plan_.indices, sizeof(std::uint32_t)));
+
+            if (upload.deformedVertices.empty())
+                device.uploadBufferEx(resources.deformedVertices, std::as_bytes(std::span(initialDeformed)), 0);
+            else
+                device.uploadBufferEx(resources.deformedVertices, std::as_bytes(upload.deformedVertices), 0);
+            device.uploadBufferEx(resources.baseVertices, std::as_bytes(upload.baseVertices), 0);
+            device.uploadBufferEx(resources.bones, std::as_bytes(upload.bones), 0);
+            device.uploadBufferEx(resources.morphDeltas, std::as_bytes(upload.morphDeltas), 0);
+            device.uploadBufferEx(resources.morphWeights, std::as_bytes(upload.morphWeights), 0);
+            device.uploadBufferEx(resources.indices, std::as_bytes(upload.indices), 0);
+
+            const std::array<DescriptorBindingEx, 5> bindings{
+                DescriptorBindingEx{0, 0, resources.baseVertices},     DescriptorBindingEx{1, 0, resources.bones},
+                DescriptorBindingEx{2, 0, resources.morphDeltas},      DescriptorBindingEx{3, 0, resources.morphWeights},
+                DescriptorBindingEx{4, 0, resources.deformedVertices},
+            };
+            resources.descriptorSet = device.allocateDescriptorSetEx(descriptorLayout, bindings);
+            if (!resources.descriptorSet.valid())
+                throw std::runtime_error("native deform descriptor-set allocation returned an invalid handle");
         }
 
-        baseVerticesHash_ = hashValues(upload.baseVertices);
-        morphDeltasHash_ = hashValues(upload.morphDeltas);
-        indicesHash_ = hashValues(upload.indices);
-
-        const std::array<DescriptorBindingEx, 5> bindings{
-            DescriptorBindingEx{0, 0, resources_.baseVertices},     DescriptorBindingEx{1, 0, resources_.bones},
-            DescriptorBindingEx{2, 0, resources_.morphDeltas},      DescriptorBindingEx{3, 0, resources_.morphWeights},
-            DescriptorBindingEx{4, 0, resources_.deformedVertices},
-        };
-        resources_.descriptorSet = device.allocateDescriptorSetEx(descriptorLayout, bindings);
-        if (!resources_.descriptorSet.valid())
-            throw std::runtime_error("native deform descriptor-set allocation returned an invalid handle");
+        baseVerticesHashes_.fill(hashValues(upload.baseVertices));
+        morphDeltasHashes_.fill(hashValues(upload.morphDeltas));
+        indicesHashes_.fill(hashValues(upload.indices));
     } catch (const std::exception& exception) {
         if (error != nullptr)
             *error = exception.what();
@@ -222,19 +224,20 @@ bool NativeDeformRuntime::update(Device& device, const NativeDeformUpload& uploa
         if (shapeChanged)
             return initialize(device, upload, pipeline_, descriptorLayout_, error);
 
-        device.uploadBufferEx(resources_.baseVertices, std::as_bytes(upload.baseVertices), 0);
-        device.uploadBufferEx(resources_.bones, std::as_bytes(upload.bones), 0);
-        device.uploadBufferEx(resources_.morphDeltas, std::as_bytes(upload.morphDeltas), 0);
-        device.uploadBufferEx(resources_.morphWeights, std::as_bytes(upload.morphWeights), 0);
-        device.uploadBufferEx(resources_.indices, std::as_bytes(upload.indices), 0);
-        if (!upload.deformedVertices.empty()) {
-            if (upload.deformedVertices.size() != input.vertexCount)
-                throw std::invalid_argument("native deform seed vertex count does not match base vertices");
-            device.uploadBufferEx(resources_.deformedVertices, std::as_bytes(upload.deformedVertices), 0);
+        if (!upload.deformedVertices.empty() && upload.deformedVertices.size() != input.vertexCount)
+            throw std::invalid_argument("native deform seed vertex count does not match base vertices");
+        for (auto& resources : resources_) {
+            device.uploadBufferEx(resources.baseVertices, std::as_bytes(upload.baseVertices), 0);
+            device.uploadBufferEx(resources.bones, std::as_bytes(upload.bones), 0);
+            device.uploadBufferEx(resources.morphDeltas, std::as_bytes(upload.morphDeltas), 0);
+            device.uploadBufferEx(resources.morphWeights, std::as_bytes(upload.morphWeights), 0);
+            device.uploadBufferEx(resources.indices, std::as_bytes(upload.indices), 0);
+            if (!upload.deformedVertices.empty())
+                device.uploadBufferEx(resources.deformedVertices, std::as_bytes(upload.deformedVertices), 0);
         }
-        baseVerticesHash_ = hashValues(upload.baseVertices);
-        morphDeltasHash_ = hashValues(upload.morphDeltas);
-        indicesHash_ = hashValues(upload.indices);
+        baseVerticesHashes_.fill(hashValues(upload.baseVertices));
+        morphDeltasHashes_.fill(hashValues(upload.morphDeltas));
+        indicesHashes_.fill(hashValues(upload.indices));
     } catch (const std::exception& exception) {
         if (error != nullptr)
             *error = exception.what();
@@ -281,47 +284,51 @@ void NativeDeformRuntime::reset() noexcept {
             device->waitIdle();
         } catch (...) {
         }
-        if (resources_.descriptorSet.valid()) {
-            try {
-                device->destroyDescriptorSetEx(resources_.descriptorSet);
-            } catch (...) {
+        for (auto& resources : resources_) {
+            if (resources.descriptorSet.valid()) {
+                try {
+                    device->destroyDescriptorSetEx(resources.descriptorSet);
+                } catch (...) {
+                }
             }
-        }
-        const std::array<handles::BufferHandle, 6> buffers{resources_.baseVertices,     resources_.bones,
-                                                           resources_.morphDeltas,      resources_.morphWeights,
-                                                           resources_.deformedVertices, resources_.indices};
-        for (const auto buffer : buffers) {
-            if (!buffer.valid())
-                continue;
-            try {
-                device->destroyBufferEx(buffer);
-            } catch (...) {
+            const std::array<handles::BufferHandle, 6> buffers{resources.baseVertices, resources.bones,
+                                                               resources.morphDeltas, resources.morphWeights,
+                                                               resources.deformedVertices, resources.indices};
+            for (const auto buffer : buffers) {
+                if (!buffer.valid())
+                    continue;
+                try {
+                    device->destroyBufferEx(buffer);
+                } catch (...) {
+                }
             }
         }
     }
     device_ = nullptr;
     plan_ = {};
-    resources_ = {};
+    resources_.fill({});
     constants_ = {};
     pipeline_ = {};
     descriptorLayout_ = {};
     workgroupCount_ = 0;
-    baseVerticesHash_ = 0;
-    morphDeltasHash_ = 0;
-    indicesHash_ = 0;
+    baseVerticesHashes_.fill(0);
+    morphDeltasHashes_.fill(0);
+    indicesHashes_.fill(0);
 }
 
 BlasGeometryDesc NativeDeformRuntime::blasGeometry() const {
     if (!ready())
         throw std::logic_error("native deform runtime is not initialized");
-    return plan_.makeBlasGeometry(resources_.deformedVertices, resources_.indices);
+    const auto& resources = resources_[currentSlot()];
+    return plan_.makeBlasGeometry(resources.deformedVertices, resources.indices);
 }
 
 void NativeDeformRuntime::record(CommandList& commands) const {
     if (!ready())
         throw std::logic_error("native deform runtime is not initialized");
+    const auto& resources = resources_[currentSlot()];
     commands.bindPipelineEx(pipeline_);
-    commands.bindDescriptorSetEx(resources_.descriptorSet);
+    commands.bindDescriptorSetEx(resources.descriptorSet);
     commands.pushConstantsEx(std::as_bytes(std::span<const NativeDeformPushConstants>(&constants_, 1)));
     commands.dispatch(workgroupCount_, 1, 1);
 }
@@ -335,25 +342,27 @@ void NativeDeformRuntime::record(CommandList& commands, const NativeDeformUpload
         plan_.indices.size != checkedCountBytes(input.indexCount, sizeof(std::uint32_t), "index"))
         throw std::invalid_argument("native deform frame input shape changed after preparation");
 
+    const auto slot = currentSlot();
+    auto& resources = resources_[slot];
     const auto baseHash = hashValues(upload.baseVertices);
-    if (baseHash != baseVerticesHash_)
-        commands.uploadBufferEx(resources_.baseVertices, std::as_bytes(upload.baseVertices), 0);
+    if (baseHash != baseVerticesHashes_[slot])
+        commands.uploadBufferEx(resources.baseVertices, std::as_bytes(upload.baseVertices), 0);
     const auto morphDeltasHash = hashValues(upload.morphDeltas);
-    if (morphDeltasHash != morphDeltasHash_)
-        commands.uploadBufferEx(resources_.morphDeltas, std::as_bytes(upload.morphDeltas), 0);
+    if (morphDeltasHash != morphDeltasHashes_[slot])
+        commands.uploadBufferEx(resources.morphDeltas, std::as_bytes(upload.morphDeltas), 0);
     const auto indicesHash = hashValues(upload.indices);
-    if (indicesHash != indicesHash_)
-        commands.uploadBufferEx(resources_.indices, std::as_bytes(upload.indices), 0);
+    if (indicesHash != indicesHashes_[slot])
+        commands.uploadBufferEx(resources.indices, std::as_bytes(upload.indices), 0);
     if (!upload.bones.empty())
-        commands.uploadBufferEx(resources_.bones, std::as_bytes(upload.bones), 0);
+        commands.uploadBufferEx(resources.bones, std::as_bytes(upload.bones), 0);
     if (!upload.morphWeights.empty())
-        commands.uploadBufferEx(resources_.morphWeights, std::as_bytes(upload.morphWeights), 0);
+        commands.uploadBufferEx(resources.morphWeights, std::as_bytes(upload.morphWeights), 0);
 
-    baseVerticesHash_ = baseHash;
-    morphDeltasHash_ = morphDeltasHash;
-    indicesHash_ = indicesHash;
+    baseVerticesHashes_[slot] = baseHash;
+    morphDeltasHashes_[slot] = morphDeltasHash;
+    indicesHashes_[slot] = indicesHash;
     commands.bindPipelineEx(pipeline_);
-    commands.bindDescriptorSetEx(resources_.descriptorSet);
+    commands.bindDescriptorSetEx(resources.descriptorSet);
     commands.pushConstantsEx(std::as_bytes(std::span<const NativeDeformPushConstants>(&constants_, 1)));
     commands.dispatch(workgroupCount_, 1, 1);
 }

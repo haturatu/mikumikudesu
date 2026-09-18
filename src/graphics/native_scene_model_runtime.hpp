@@ -34,18 +34,15 @@ class NativeSceneModelRuntime {
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
-        return device_ != nullptr && !vertices_.empty();
+        return device_ != nullptr && !frameResources_[0].vertices.empty();
     }
     [[nodiscard]] std::size_t modelCount() const noexcept {
-        return vertices_.size();
+        return vertexBytes_.size();
     }
     [[nodiscard]] NativeSceneDescriptorCounts descriptorCounts() const noexcept;
     [[nodiscard]] NativeSceneResourceBindings bindings() const noexcept;
 
   private:
-    static constexpr std::size_t kTransferSlots = 2;
-    using StagingSlots = std::array<handles::BufferHandle, kTransferSlots>;
-
     struct StaticHashes {
         std::uint64_t indices{};
         std::uint64_t materials{};
@@ -54,32 +51,38 @@ class NativeSceneModelRuntime {
         std::uint64_t faceWalker{};
     };
 
+    struct FrameResources {
+        std::vector<handles::BufferHandle> vertices;
+        std::vector<handles::BufferHandle> previousVertices;
+        std::vector<handles::BufferHandle> rawVertices;
+        std::vector<handles::BufferHandle> vertexStaging;
+        std::vector<handles::BufferHandle> indices;
+        std::vector<handles::BufferHandle> indexStaging;
+        std::vector<handles::BufferHandle> materials;
+        std::vector<handles::BufferHandle> materialStaging;
+        std::vector<handles::BufferHandle> faces;
+        std::vector<handles::BufferHandle> faceStaging;
+        std::vector<handles::BufferHandle> materialFaces;
+        std::vector<handles::BufferHandle> materialFaceStaging;
+        std::vector<handles::BufferHandle> faceWalkers;
+        std::vector<handles::BufferHandle> faceWalkerStaging;
+        std::vector<StaticHashes> staticHashes;
+    };
+
     [[nodiscard]] bool sameLayout(Device& device, std::span<const NativeSceneModelData> models) const noexcept;
     [[nodiscard]] static StaticHashes makeStaticHashes(const NativeSceneModelData& model) noexcept;
+    [[nodiscard]] std::size_t currentSlot() const noexcept {
+        return device_ == nullptr ? 0 : device_->currentFrameSlot() % kNativeFramesInFlight;
+    }
 
     Device* device_{};
-    std::vector<handles::BufferHandle> vertices_;
-    std::vector<handles::BufferHandle> previousVertices_;
-    std::vector<handles::BufferHandle> rawVertices_;
-    std::vector<StagingSlots> vertexStaging_;
-    std::vector<handles::BufferHandle> indices_;
-    std::vector<StagingSlots> indexStaging_;
-    std::vector<handles::BufferHandle> materials_;
-    std::vector<StagingSlots> materialStaging_;
-    std::vector<handles::BufferHandle> faces_;
-    std::vector<StagingSlots> faceStaging_;
-    std::vector<handles::BufferHandle> materialFaces_;
-    std::vector<StagingSlots> materialFaceStaging_;
-    std::vector<handles::BufferHandle> faceWalkers_;
-    std::vector<StagingSlots> faceWalkerStaging_;
+    std::array<FrameResources, kNativeFramesInFlight> frameResources_;
     std::vector<std::size_t> vertexBytes_;
     std::vector<std::size_t> indexBytes_;
     std::vector<std::size_t> materialBytes_;
     std::vector<std::size_t> faceBytes_;
     std::vector<std::size_t> materialFaceBytes_;
     std::vector<std::size_t> faceWalkerBytes_;
-    std::vector<StaticHashes> staticHashes_;
-    std::size_t transferSlot_{};
 };
 
 } // namespace dayo::graphics

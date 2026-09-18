@@ -31,19 +31,26 @@ class SubayaiEnvironmentRuntime {
         return layout_;
     }
     [[nodiscard]] handles::DescriptorSetHandle descriptorSet() const noexcept {
-        return descriptorSet_;
+        return device_ == nullptr ? handles::DescriptorSetHandle{}
+                                   : descriptorSets_[device_->currentFrameSlot() % kNativeFramesInFlight];
     }
     [[nodiscard]] handles::BufferHandle sphericalHarmonicsBuffer() const noexcept {
-        return sphericalHarmonicsBuffer_;
+        return device_ == nullptr ? handles::BufferHandle{}
+                                   : sphericalHarmonicsBuffers_[device_->currentFrameSlot() % kNativeFramesInFlight];
     }
 
   private:
+    [[nodiscard]] std::size_t currentSlot() const noexcept {
+        return device_ == nullptr ? 0 : device_->currentFrameSlot() % kNativeFramesInFlight;
+    }
+
     [[nodiscard]] bool bind(const EnvironmentGpuResult& result, std::string* error);
 
     Device* device_{};
     handles::DescriptorSetLayoutHandle layout_{};
-    handles::DescriptorSetHandle descriptorSet_{};
-    handles::BufferHandle sphericalHarmonicsBuffer_{};
+    std::array<handles::DescriptorSetHandle, kNativeFramesInFlight> descriptorSets_{};
+    std::array<handles::BufferHandle, kNativeFramesInFlight> sphericalHarmonicsBuffers_{};
+    std::array<EnvironmentGpuResult, kNativeFramesInFlight> bound_{};
     EnvironmentGpuResult current_{};
 };
 
