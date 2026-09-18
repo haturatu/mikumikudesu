@@ -48,17 +48,6 @@ namespace {
     return desc;
 }
 
-template <typename T> [[nodiscard]] std::uint64_t hashValues(std::span<const T> values) noexcept {
-    constexpr std::uint64_t offset = 1469598103934665603ULL;
-    constexpr std::uint64_t prime = 1099511628211ULL;
-    auto result = offset ^ static_cast<std::uint64_t>(values.size_bytes());
-    for (const auto value : std::as_bytes(values)) {
-        result ^= std::to_integer<std::uint8_t>(value);
-        result *= prime;
-    }
-    return result;
-}
-
 } // namespace
 
 NativeDeformPlan makeNativeDeformPlan(const NativeDeformInput& input) {
@@ -125,7 +114,8 @@ NativeDeformRuntime::~NativeDeformRuntime() {
 }
 
 bool NativeDeformRuntime::initialize(Device& device, const NativeDeformUpload& upload, handles::PipelineHandle pipeline,
-                                     handles::DescriptorSetLayoutHandle descriptorLayout, std::string* error) {
+                                     handles::DescriptorSetLayoutHandle descriptorLayout, std::string* error,
+                                     std::uint64_t topologyGeneration) {
     if (error != nullptr)
         error->clear();
     reset();
@@ -195,9 +185,8 @@ bool NativeDeformRuntime::initialize(Device& device, const NativeDeformUpload& u
                 throw std::runtime_error("native deform descriptor-set allocation returned an invalid handle");
         }
 
-        baseVerticesHashes_.fill(hashValues(upload.baseVertices));
-        morphDeltasHashes_.fill(hashValues(upload.morphDeltas));
-        indicesHashes_.fill(hashValues(upload.indices));
+        topologyGeneration_ = topologyGeneration;
+        uploadedTopologyGenerations_.fill(topologyGeneration);
     } catch (const std::exception& exception) {
         if (error != nullptr)
             *error = exception.what();
@@ -237,9 +226,7 @@ bool NativeDeformRuntime::update(Device& device, const NativeDeformUpload& uploa
             if (!upload.deformedVertices.empty())
                 device.uploadBufferEx(resources.deformedVertices, std::as_bytes(upload.deformedVertices), 0);
         }
-        baseVerticesHashes_.fill(hashValues(upload.baseVertices));
-        morphDeltasHashes_.fill(hashValues(upload.morphDeltas));
-        indicesHashes_.fill(hashValues(upload.indices));
+        uploadedTopologyGenerations_.fill(topologyGeneration_);
     } catch (const std::exception& exception) {
         if (error != nullptr)
             *error = exception.what();
@@ -252,7 +239,8 @@ bool NativeDeformRuntime::update(Device& device, const NativeDeformUpload& uploa
     return true;
 }
 
-bool NativeDeformRuntime::prepare(Device& device, const NativeDeformUpload& upload, std::string* error) {
+bool NativeDeformRuntime::prepare(Device& device, const NativeDeformUpload& upload, std::string* error,
+                                  std::uint64_t topologyGeneration) {
     if (error != nullptr)
         error->clear();
     try {
@@ -264,9 +252,10 @@ bool NativeDeformRuntime::prepare(Device& device, const NativeDeformUpload& uplo
             constants_.morphDeltaCount != input.morphDeltaCount || constants_.morphCount != input.morphCount ||
             plan_.indices.size != checkedCountBytes(input.indexCount, sizeof(std::uint32_t), "index");
         if (shapeChanged)
-            return initialize(device, upload, pipeline_, descriptorLayout_, error);
+            return initialize(device, upload, pipeline_, descriptorLayout_, error, topologyGeneration);
         if (!upload.deformedVertices.empty() && upload.deformedVertices.size() != input.vertexCount)
             throw std::invalid_argument("native deform seed vertex count does not match base vertices");
+        topologyGeneration_ = topologyGeneration;
     } catch (const std::exception& exception) {
         if (error != nullptr)
             *error = exception.what();
@@ -313,9 +302,8 @@ void NativeDeformRuntime::reset() noexcept {
     pipeline_ = {};
     descriptorLayout_ = {};
     workgroupCount_ = 0;
-    baseVerticesHashes_.fill(0);
-    morphDeltasHashes_.fill(0);
-    indicesHashes_.fill(0);
+    topologyGeneration_ = 0;
+    uploadedTopologyGenerations_.fill(0);
 }
 
 BlasGeometryDesc NativeDeformRuntime::blasGeometry() const {
@@ -335,7 +323,8 @@ void NativeDeformRuntime::record(CommandList& commands) const {
     commands.dispatch(workgroupCount_, 1, 1);
 }
 
-void NativeDeformRuntime::record(CommandList& commands, const NativeDeformUpload& upload) {
+void NativeDeformRuntime::record(CommandList& commands, const NativeDeformUpload& upload,
+                                 std::uint64_t topologyGeneration) {
     if (!ready())
         throw std::logic_error("native deform runtime is not initialized");
     const NativeDeformInput input = makeInput(upload);
@@ -346,23 +335,17 @@ void NativeDeformRuntime::record(CommandList& commands, const NativeDeformUpload
 
     const auto slot = currentSlot();
     auto& resources = resources_[slot];
-    const auto baseHash = hashValues(upload.baseVertices);
-    if (baseHash != baseVerticesHashes_[slot])
+    if (uploadedTopologyGenerations_[slot] != topologyGeneration) {
         commands.uploadBufferEx(resources.baseVertices, std::as_bytes(upload.baseVertices), 0);
-    const auto morphDeltasHash = hashValues(upload.morphDeltas);
-    if (morphDeltasHash != morphDeltasHashes_[slot])
         commands.uploadBufferEx(resources.morphDeltas, std::as_bytes(upload.morphDeltas), 0);
-    const auto indicesHash = hashValues(upload.indices);
-    if (indicesHash != indicesHashes_[slot])
         commands.uploadBufferEx(resources.indices, std::as_bytes(upload.indices), 0);
+        uploadedTopologyGenerations_[slot] = topologyGeneration;
+    }
     if (!upload.bones.empty())
         commands.uploadBufferEx(resources.bones, std::as_bytes(upload.bones), 0);
     if (!upload.morphWeights.empty())
         commands.uploadBufferEx(resources.morphWeights, std::as_bytes(upload.morphWeights), 0);
 
-    baseVerticesHashes_[slot] = baseHash;
-    morphDeltasHashes_[slot] = morphDeltasHash;
-    indicesHashes_[slot] = indicesHash;
     commands.bindPipelineEx(pipeline_);
     commands.bindDescriptorSetEx(resources.descriptorSet);
     commands.pushConstantsEx(std::as_bytes(std::span<const NativeDeformPushConstants>(&constants_, 1)));

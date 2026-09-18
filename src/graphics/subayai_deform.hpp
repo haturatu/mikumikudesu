@@ -99,15 +99,18 @@ class NativeDeformRuntime {
     NativeDeformRuntime& operator=(const NativeDeformRuntime&) = delete;
 
     [[nodiscard]] bool initialize(Device& device, const NativeDeformUpload& upload, handles::PipelineHandle pipeline,
-                                  handles::DescriptorSetLayoutHandle descriptorLayout, std::string* error = nullptr);
+                                  handles::DescriptorSetLayoutHandle descriptorLayout, std::string* error = nullptr,
+                                  std::uint64_t topologyGeneration = 0);
     // Refreshes the CPU-visible deform inputs without replacing resources when
     // the mesh shape is unchanged. A shape change recreates the resource set
     // so descriptor bindings and BLAS geometry remain valid.
     [[nodiscard]] bool update(Device& device, const NativeDeformUpload& upload, std::string* error = nullptr);
     // Validates the next frame's shape without performing a device-local
     // upload. A shape change is an infrequent resource rebuild; unchanged
-    // inputs are copied into the active frame command list by record().
-    [[nodiscard]] bool prepare(Device& device, const NativeDeformUpload& upload, std::string* error = nullptr);
+    // inputs are copied into the active frame command list by record(). The
+    // topology generation identifies changes to static geometry data.
+    [[nodiscard]] bool prepare(Device& device, const NativeDeformUpload& upload, std::string* error = nullptr,
+                               std::uint64_t topologyGeneration = 0);
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
@@ -134,7 +137,7 @@ class NativeDeformRuntime {
     // Records the current frame's dynamic inputs and the deform dispatch. The
     // upload commands use the active frame staging ring and do not submit or
     // wait on a transfer-only queue.
-    void record(CommandList& commands, const NativeDeformUpload& upload);
+    void record(CommandList& commands, const NativeDeformUpload& upload, std::uint64_t topologyGeneration = 0);
 
   private:
     [[nodiscard]] std::size_t currentSlot() const noexcept {
@@ -148,9 +151,8 @@ class NativeDeformRuntime {
     handles::PipelineHandle pipeline_{};
     handles::DescriptorSetLayoutHandle descriptorLayout_{};
     std::uint32_t workgroupCount_{};
-    std::array<std::uint64_t, kNativeFramesInFlight> baseVerticesHashes_{};
-    std::array<std::uint64_t, kNativeFramesInFlight> morphDeltasHashes_{};
-    std::array<std::uint64_t, kNativeFramesInFlight> indicesHashes_{};
+    std::uint64_t topologyGeneration_{};
+    std::array<std::uint64_t, kNativeFramesInFlight> uploadedTopologyGenerations_{};
 };
 
 // Describes the compute input/output contract shared by a native deform pass

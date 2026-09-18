@@ -19,6 +19,13 @@ namespace {
            (left.empty() || std::memcmp(left.data(), right.data(), left.size_bytes()) == 0);
 }
 
+void advanceGeneration(std::uint64_t& generation) noexcept {
+    if (generation == std::numeric_limits<std::uint64_t>::max())
+        generation = 1;
+    else
+        ++generation;
+}
+
 } // namespace
 
 void LightSamplingService::update(std::span<const float> lightPowers, bool lightingDirty) {
@@ -130,12 +137,15 @@ bool LightSamplingGpuRuntime::sync(Device& device, std::span<const AliasEntry> t
         const bool sameShape = device_ == &device && ready() && count_ == table.size();
         const bool changed = !sameShape || !sameTable(table_, table);
         if (sameShape) {
-            table_.assign(table.begin(), table.end());
+            if (changed) {
+                table_.assign(table.begin(), table.end());
+                advanceGeneration(generation_);
+            }
             const auto slot = device.currentFrameSlot() % kNativeFramesInFlight;
-            if (!changed && uploaded_[slot])
+            if (uploadedGenerations_[slot] == generation_)
                 return true;
             device.uploadBufferEx(buffers_[slot], std::as_bytes(std::span<const AliasEntry>(table_)), 0);
-            uploaded_[slot] = true;
+            uploadedGenerations_[slot] = generation_;
             return true;
         }
 
@@ -143,6 +153,8 @@ bool LightSamplingGpuRuntime::sync(Device& device, std::span<const AliasEntry> t
         device_ = &device;
         count_ = table.size();
         table_.assign(table.begin(), table.end());
+        generation_ = 1;
+        uploadedGenerations_.fill(0);
         for (auto& buffer : buffers_) {
             buffer = device.createBufferEx({
                 .size = table.size() * sizeof(AliasEntry),
@@ -155,7 +167,7 @@ bool LightSamplingGpuRuntime::sync(Device& device, std::span<const AliasEntry> t
         }
         for (std::size_t slot = 0; slot < kNativeFramesInFlight; ++slot) {
             device.uploadBufferEx(buffers_[slot], std::as_bytes(std::span<const AliasEntry>(table_)), 0);
-            uploaded_[slot] = true;
+            uploadedGenerations_[slot] = generation_;
         }
     } catch (const std::exception& exception) {
         if (error != nullptr)
@@ -189,7 +201,8 @@ void LightSamplingGpuRuntime::reset() noexcept {
     }
     device_ = nullptr;
     buffers_.fill({});
-    uploaded_.fill(false);
+    generation_ = 0;
+    uploadedGenerations_.fill(0);
     count_ = 0;
     table_.clear();
 }

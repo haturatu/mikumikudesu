@@ -274,14 +274,20 @@ bool NativeSceneModelRuntime::updateFrame(Device& device, CommandList& commands,
         return sync(device, models, error);
 
     try {
-        auto& frame = frameResources_[device.currentFrameSlot() % kNativeFramesInFlight];
+        const auto slot = device.currentFrameSlot() % kNativeFramesInFlight;
+        const auto previousSlot = (slot + kNativeFramesInFlight - 1) % kNativeFramesInFlight;
+        auto& frame = frameResources_[slot];
+        const auto& previousFrame = frameResources_[previousSlot];
         bool recordedTransfer = false;
         for (std::size_t index = 0; index < models.size(); ++index) {
             const auto& model = models[index];
             if (!model.vertices.empty()) {
                 device.uploadBufferEx(frame.vertexStaging[index],
                                       std::as_bytes(std::span<const NativeSceneVertex>(model.vertices)), 0);
-                commands.copyBufferEx(frame.vertices[index], frame.previousVertices[index]);
+                // Temporal history comes from the current stream recorded in
+                // the preceding frame slot. Preserve it in this slot's PreVB
+                // before replacing this slot's current vertex stream.
+                commands.copyBufferEx(previousFrame.vertices[index], frame.previousVertices[index]);
                 commands.transferBarrierEx();
                 commands.copyBufferEx(frame.vertexStaging[index], frame.vertices[index]);
                 recordedTransfer = true;

@@ -20,6 +20,7 @@
 #include "graphics/subayai_geometry.hpp"
 #include "graphics/subayai_light_sampling.hpp"
 #include "graphics/subayai_material_gpu.hpp"
+#include "graphics/subayai_material_runtime.hpp"
 #include "graphics/subayai_runtime.hpp"
 
 #include <algorithm>
@@ -563,6 +564,45 @@ int main() {
         ok &= check(gpu.surface[0] == 0.25F, "Subayai roughness links to native material ABI");
     }
 
+    // A changed material generation must be uploaded to every frame slot,
+    // including a slot that already carried the previous generation.
+    {
+        MockNativeDevice device;
+        dayo::graphics::SubayaiMaterialGpuRuntime runtime;
+        dayo::core::MaterialParameterBlock initial;
+        initial.set("BaseColor", std::array<float, 4>{0.1F, 0.2F, 0.3F, 1.0F});
+        const std::array<dayo::core::MaterialParameterBlock, 1> initialMaterials{initial};
+        std::string error;
+        ok &= check(runtime.sync(device, initialMaterials, &error),
+                    "Subayai material runtime initializes both frame slots");
+        const auto slot0Buffer = runtime.buffer();
+        auto changed = initial;
+        changed.set("BaseColor", std::array<float, 4>{0.9F, 0.8F, 0.7F, 1.0F});
+        const std::array<dayo::core::MaterialParameterBlock, 1> changedMaterials{changed};
+        device.frameSlot = 0;
+        ok &= check(runtime.sync(device, changedMaterials, &error),
+                    "Subayai material runtime uploads a changed generation to slot zero");
+        device.frameSlot = 1;
+        ok &= check(runtime.sync(device, changedMaterials, &error),
+                    "Subayai material runtime uploads the same changed generation to slot one");
+        const auto slot1Buffer = runtime.buffer();
+        const auto expected = dayo::graphics::linkSubayaiMaterial(changed);
+        const auto readMaterial = [&](const auto buffer) {
+            dayo::graphics::SubayaiMaterialGpu value{};
+            const auto bytes = device.readbackBufferEx(buffer, 0, sizeof(value));
+            std::memcpy(&value, bytes.data(), sizeof(value));
+            return value;
+        };
+        const auto slot0 = readMaterial(slot0Buffer);
+        const auto slot1 = readMaterial(slot1Buffer);
+        const auto materialMatches = [&expected](const auto& value) {
+            return value.baseColor[0] == expected.baseColor[0] && value.baseColor[1] == expected.baseColor[1] &&
+                   value.baseColor[2] == expected.baseColor[2] && value.baseColor[3] == expected.baseColor[3];
+        };
+        ok &= check(materialMatches(slot0) && materialMatches(slot1),
+                    "Subayai material slots contain the current generation");
+    }
+
     // Feature requirements are derived from the compiled graph, not from a
     // renderer name alone.
     {
@@ -788,6 +828,22 @@ int main() {
                                     updatedDeformedVertices.size() * sizeof(updatedDeformedVertices.front()));
         std::memcpy(&seed, refreshedSeed.data(), sizeof(seed));
         ok &= check(seed.position[0] == 4.0F, "native deform refresh uploads the current BLAS seed");
+        MockDeformCommands topologyFrame0;
+        runtime.record(topologyFrame0, updatedUpload, 1);
+        ok &= check(topologyFrame0.events == std::vector<std::string>{"upload", "upload", "upload", "upload", "upload",
+                                                                      "bind", "descriptor", "push", "dispatch:1x1x1"},
+                    "native deform uploads static resources once for a new topology generation");
+        device.frameSlot = 1;
+        MockDeformCommands topologyFrame1;
+        runtime.record(topologyFrame1, updatedUpload, 1);
+        ok &= check(topologyFrame1.events == topologyFrame0.events,
+                    "native deform initializes the inactive slot for the new topology generation");
+        device.frameSlot = 0;
+        MockDeformCommands topologyFrame2;
+        runtime.record(topologyFrame2, updatedUpload, 1);
+        ok &= check(topologyFrame2.events ==
+                        std::vector<std::string>{"upload", "upload", "bind", "descriptor", "push", "dispatch:1x1x1"},
+                    "native deform skips static scans and uploads only dynamic inputs on a current generation");
         const auto blas = runtime.blasGeometry();
         ok &= check(blas.triangles.front().vertexBuffer == runtime.resources().deformedVertices &&
                         blas.triangles.front().indexBuffer == runtime.resources().indices,
@@ -1118,8 +1174,28 @@ int main() {
         const auto uploaded = device.readbackBufferEx(gpu.buffer(), 0, table.size() * sizeof(AliasEntry));
         ok &= check(uploaded.size() == table.size() * sizeof(AliasEntry),
                     "light alias GPU buffer contains the complete table");
-        ok &= check(gpu.sync(device, table, &error) && device.destroyedBuffers == 0,
-                    "unchanged light alias count reuses its buffer");
+        const auto slot0Buffer = gpu.buffer();
+        auto changedTable = std::vector<AliasEntry>(table.begin(), table.end());
+        changedTable[0].probability = 0.125F;
+        device.frameSlot = 0;
+        ok &= check(gpu.sync(device, changedTable, &error),
+                    "light alias runtime uploads a changed generation to slot zero");
+        device.frameSlot = 1;
+        ok &= check(gpu.sync(device, changedTable, &error),
+                    "light alias runtime uploads the same changed generation to slot one");
+        const auto slot1Buffer = gpu.buffer();
+        AliasEntry slot0Entry{};
+        AliasEntry slot1Entry{};
+        const auto slot0Bytes = device.readbackBufferEx(slot0Buffer, 0, sizeof(slot0Entry));
+        const auto slot1Bytes = device.readbackBufferEx(slot1Buffer, 0, sizeof(slot1Entry));
+        std::memcpy(&slot0Entry, slot0Bytes.data(), sizeof(slot0Entry));
+        std::memcpy(&slot1Entry, slot1Bytes.data(), sizeof(slot1Entry));
+        ok &= check(slot0Entry.probability == changedTable[0].probability &&
+                        slot1Entry.probability == changedTable[0].probability &&
+                        slot0Entry.alias == changedTable[0].alias && slot1Entry.alias == changedTable[0].alias,
+                    "light alias slots contain the current generation");
+        ok &= check(gpu.sync(device, changedTable, &error) && device.destroyedBuffers == 0,
+                    "unchanged light alias generation reuses its buffer");
         ok &= check(gpu.sync(device, {}, &error) && !gpu.ready() && device.destroyedBuffers == 2,
                     "clearing lights releases both frame alias buffers");
     }
@@ -1531,6 +1607,44 @@ int main() {
                     "native scene frame update accepts a changed material buffer");
         ok &= check(frameCommands.copies.size() == copiesBeforeMaterial + 3,
                     "native scene frame update records only the changed material and vertex transfers");
+
+        // Temporal vertex history must follow the preceding logical frame,
+        // not the buffer that happens to share the current frame slot.
+        MockNativeDevice historyDevice;
+        dayo::graphics::NativeSceneModelRuntime historyRuntime;
+        ok &= check(historyRuntime.sync(historyDevice, models, &error),
+                    "native scene history runtime initializes both frame slots");
+        auto historyModels = models;
+        const auto previousPosition = [&]() {
+            dayo::graphics::NativeSceneVertex vertex{};
+            const auto bytes =
+                historyDevice.readbackBufferEx(historyRuntime.bindings().previousVertices[0], 0, sizeof(vertex));
+            std::memcpy(&vertex, bytes.data(), sizeof(vertex));
+            return vertex.position[0];
+        };
+        historyDevice.frameSlot = 0;
+        historyModels[0].vertices[0].position[0] = 1.0F;
+        MockNativeSceneCommands historyFrame0(historyDevice);
+        ok &= check(historyRuntime.updateFrame(historyDevice, historyFrame0, historyModels, &error),
+                    "native scene history records frame zero");
+        ok &= check(std::abs(previousPosition() - 0.0F) < 1e-6F,
+                    "native scene history frame zero exposes the initial vertex stream");
+
+        historyDevice.frameSlot = 1;
+        historyModels[0].vertices[0].position[0] = 2.0F;
+        MockNativeSceneCommands historyFrame1(historyDevice);
+        ok &= check(historyRuntime.updateFrame(historyDevice, historyFrame1, historyModels, &error),
+                    "native scene history records frame one");
+        ok &= check(std::abs(previousPosition() - 1.0F) < 1e-6F,
+                    "native scene history frame one exposes frame zero vertices");
+
+        historyDevice.frameSlot = 0;
+        historyModels[0].vertices[0].position[0] = 3.0F;
+        MockNativeSceneCommands historyFrame2(historyDevice);
+        ok &= check(historyRuntime.updateFrame(historyDevice, historyFrame2, historyModels, &error),
+                    "native scene history records frame two");
+        ok &= check(std::abs(previousPosition() - 2.0F) < 1e-6F,
+                    "native scene history frame two exposes frame one vertices");
     }
     // Native frame constants: CPU ABI and typed uniform uploads remain stable
     // independently of the native scene descriptor-set population.

@@ -27,8 +27,10 @@ class NativeSceneModelRuntime {
     [[nodiscard]] bool update(Device& device, std::span<const NativeSceneModelData> models,
                               std::string* error = nullptr);
     // Records animated and dirty static buffer transfers into the current
-    // frame. CPU-visible staging writes are non-blocking; the device-local
-    // copies are ordered with the native passes by the command-list barrier.
+    // frame. The PreVB stream is refreshed from the preceding frame slot's
+    // current vertex buffer before this slot is overwritten. CPU-visible
+    // staging writes are non-blocking; device-local copies are ordered with
+    // the native passes by the command-list barrier.
     [[nodiscard]] bool updateFrame(Device& device, CommandList& commands, std::span<const NativeSceneModelData> models,
                                    std::string* error = nullptr);
     void reset() noexcept;

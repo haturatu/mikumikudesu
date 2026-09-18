@@ -77,8 +77,8 @@ bool NativeGeometryRuntime::initializeMesh(const NativeGeometryMeshUpload& mesh,
     auto found = meshes_.find(mesh.meshId);
     if (found == meshes_.end() || device_ == nullptr)
         return false;
-    if (!found->second.deform.initialize(*device_, mesh.deform, mesh.deformPipeline, mesh.deformDescriptorLayout,
-                                         error))
+    if (!found->second.deform.initialize(*device_, mesh.deform, mesh.deformPipeline, mesh.deformDescriptorLayout, error,
+                                         mesh.topologyGeneration))
         return false;
     found->second.deformDescriptorLayout = mesh.deformDescriptorLayout;
     found->second.topologyGeneration = mesh.topologyGeneration;
@@ -99,7 +99,7 @@ bool NativeGeometryRuntime::updateMesh(const NativeGeometryMeshUpload& mesh, std
             mesh.deformDescriptorLayout != found->second.deformDescriptorLayout) {
             throw std::invalid_argument("native geometry update cannot replace the deform pipeline");
         }
-        if (!found->second.deform.prepare(*device_, mesh.deform, error))
+        if (!found->second.deform.prepare(*device_, mesh.deform, error, mesh.topologyGeneration))
             return false;
         found->second.topologyGeneration = mesh.topologyGeneration;
         found->second.deformVersion = mesh.deformVersion;
@@ -134,7 +134,7 @@ void NativeGeometryRuntime::recordDeform(CommandList& commands, std::span<const 
         const auto found = meshes_.find(mesh.meshId);
         if (found == meshes_.end())
             throw std::invalid_argument("native geometry frame references an unknown mesh");
-        found->second.deform.record(commands, mesh.deform);
+        found->second.deform.record(commands, mesh.deform, mesh.topologyGeneration);
     }
     commands.memoryBarrierEx();
 }

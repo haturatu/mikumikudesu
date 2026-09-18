@@ -45,7 +45,8 @@ class SubayaiMaterialGpuRuntime {
   private:
     Device* device_{};
     std::array<handles::BufferHandle, kNativeFramesInFlight> buffers_{};
-    std::array<bool, kNativeFramesInFlight> uploaded_{};
+    std::uint64_t generation_{};
+    std::array<std::uint64_t, kNativeFramesInFlight> uploadedGenerations_{};
     std::vector<SubayaiMaterialGpu> materials_;
 };
 

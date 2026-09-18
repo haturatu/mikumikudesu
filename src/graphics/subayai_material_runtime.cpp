@@ -16,6 +16,13 @@ namespace {
            (left.empty() || std::memcmp(left.data(), right.data(), left.size_bytes()) == 0);
 }
 
+void advanceGeneration(std::uint64_t& generation) noexcept {
+    if (generation == std::numeric_limits<std::uint64_t>::max())
+        generation = 1;
+    else
+        ++generation;
+}
+
 } // namespace
 
 SubayaiMaterialGpuRuntime::~SubayaiMaterialGpuRuntime() {
@@ -57,12 +64,15 @@ bool SubayaiMaterialGpuRuntime::sync(Device& device, std::span<const core::Mater
         const bool sameShape = device_ == &device && ready() && materials_.size() == linked.size();
         const bool changed = !sameShape || !sameMaterials(oldMaterials, linked);
         if (sameShape) {
-            materials_ = std::move(linked);
+            if (changed) {
+                materials_ = std::move(linked);
+                advanceGeneration(generation_);
+            }
             const auto slot = device.currentFrameSlot() % kNativeFramesInFlight;
-            if (!changed && uploaded_[slot])
+            if (uploadedGenerations_[slot] == generation_)
                 return true;
             device.uploadBufferEx(buffers_[slot], std::as_bytes(std::span<const SubayaiMaterialGpu>(materials_)), 0);
-            uploaded_[slot] = true;
+            uploadedGenerations_[slot] = generation_;
             return true;
         }
 
@@ -79,9 +89,11 @@ bool SubayaiMaterialGpuRuntime::sync(Device& device, std::span<const core::Mater
                 throw std::runtime_error("Subayai material buffer is invalid");
         }
         materials_ = std::move(linked);
+        generation_ = 1;
+        uploadedGenerations_.fill(0);
         for (std::size_t slot = 0; slot < kNativeFramesInFlight; ++slot) {
             device.uploadBufferEx(buffers_[slot], std::as_bytes(std::span<const SubayaiMaterialGpu>(materials_)), 0);
-            uploaded_[slot] = true;
+            uploadedGenerations_[slot] = generation_;
         }
     } catch (const std::exception& exception) {
         if (error != nullptr)
@@ -115,7 +127,8 @@ void SubayaiMaterialGpuRuntime::reset() noexcept {
     }
     device_ = nullptr;
     buffers_.fill({});
-    uploaded_.fill(false);
+    generation_ = 0;
+    uploadedGenerations_.fill(0);
     materials_.clear();
 }
 
