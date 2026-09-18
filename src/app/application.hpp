@@ -121,6 +121,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     graphics::LightSamplingService nativeLightSampling_;
     std::vector<float> nativeLightPowers_;
     std::uint64_t nativeDeformVersion_{};
+    std::uint64_t nativeMaterialGeneration_{1};
     std::uint64_t animatedTopologyGeneration_{};
     float animationFrame_{};
     int uploadedAnimationFrame_{-1};

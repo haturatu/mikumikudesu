@@ -86,6 +86,11 @@ struct NativeSceneModelData {
     std::vector<std::uint32_t> faces;
     std::vector<NativeSceneMaterialFace> materialFaces;
     std::vector<NativeSceneWalkerAlias> faceWalker;
+    // Callers advance these generations when the corresponding CPU data
+    // changes. NativeSceneModelRuntime uses them instead of scanning all
+    // static bytes on every frame.
+    std::uint64_t topologyGeneration{1};
+    std::uint64_t materialGeneration{1};
 };
 
 // Converts the application's normalized Preview vertex representation to the
