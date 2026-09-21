@@ -2,8 +2,10 @@
 
 #include "core/log.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <ranges>
 #include <unordered_set>
 #include <vector>
 
@@ -54,6 +56,8 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             if (resource.write)
                 return resolveTyped(resource);
         }
+        if (resources.defaultColorTarget.valid())
+            return resources.defaultColorTarget;
         throw std::logic_error("VulkanFxExecutor: graphics pass has no writable color target: " + dispatch.name);
     };
     const auto prepareResources = [&](const dayo::fx::FxDispatch& dispatch) {
@@ -142,7 +146,12 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             commands.beginRenderingEx(info);
             return;
         }
-        commands.beginRenderingEx(resolveTypedWriteTarget(dispatch));
+        const auto target = resolveTypedWriteTarget(dispatch);
+        const auto hasExplicitTarget = std::ranges::any_of(
+            dispatch.resources, [](const dayo::fx::FxDispatch::ResourceUse& resource) { return resource.write; });
+        if (!hasExplicitTarget && resources.defaultColorTarget.valid())
+            commands.transitionEx(target);
+        commands.beginRenderingEx(target);
     };
     const auto prepareShaderPass = [&](const dayo::fx::FxDispatch& dispatch, bool beginRendering) {
         if (!dispatch.conditions.empty()) {

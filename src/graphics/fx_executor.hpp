@@ -51,6 +51,10 @@ struct FxExecutionResources {
     // Material-level scene draw ranges are optional so existing fullscreen and
     // synthetic Preview plans continue to use the legacy draw command.
     std::span<const NativeSceneDraw> sceneDraws{};
+    // Upstream postprocess passes may omit an RTV and target the host's
+    // current output semantic instead. The coordinator supplies this target
+    // from DayoSemantic::RTOutput for those passes.
+    handles::TextureHandle defaultColorTarget{};
     std::optional<std::uint32_t> rasterControllerModel;
     PassConstantsUpdater updatePassConstants;
     PassHook beforePass;

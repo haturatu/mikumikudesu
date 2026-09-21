@@ -16,6 +16,8 @@ struct NativeSceneResourceBindings {
     handles::TextureHandle normalDepth{};
     handles::TextureHandle gbuffer1{};
     handles::TextureHandle gbuffer2{};
+    // Compatibility sampled view used by older postprocess FX.
+    handles::TextureHandle gbuffer{};
     handles::AccelerationStructureHandle tlas{};
     handles::BufferHandle modelToMaterial{};
     handles::BufferHandle materialToModel{};

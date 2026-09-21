@@ -369,6 +369,7 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
             const auto* model = scene_.model(id);
             return model == nullptr ? std::nullopt : std::optional<core::ModelExecutionOrder>{model->order};
         });
+    nativeRenderer_.setEffectSchedule(scheduledEffects_);
     try {
         std::string modelError;
         if (!nativeSceneModelData_.empty() &&
@@ -471,7 +472,6 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         nativeScreenRuntime_.bindScreenSemantics(sceneResources);
         if (!nativeSceneResources_.compose(sceneResources, &sceneError))
             throw std::runtime_error(sceneError.empty() ? "native scene resource composition failed" : sceneError);
-        nativeRenderer_.setHostResourceBindings(nativeSceneResources_.bindings());
         nativeSceneDraws_.clear();
         for (std::size_t modelIndex = 0; modelIndex < nativeSceneModelData_.size(); ++modelIndex) {
             if (modelIndex >= nativeGeometry_.size() || modelIndex >= modelResources.vertexBuffers.size() ||
@@ -514,6 +514,14 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                                                    : 0,
                                                &sceneError))
             throw std::runtime_error(sceneError.empty() ? "native FX controller synchronization failed" : sceneError);
+        auto hostBindings = nativeSceneResources_.bindings();
+        hostBindings.viewConstants = nativeSceneFrame_.constants().viewBuffer();
+        hostBindings.controllerConstants = nativeSceneFrame_.controllers().buffer();
+        hostBindings.passConstants = nativeSceneFrame_.constants().passBuffer();
+        hostBindings.hostResourceMask |= graphics::dayoSemanticBit(graphics::DayoSemantic::ViewCB) |
+                                         graphics::dayoSemanticBit(graphics::DayoSemantic::ControllerCB) |
+                                         graphics::dayoSemanticBit(graphics::DayoSemantic::CBuff1);
+        nativeRenderer_.setHostResourceBindings(hostBindings);
         graphics::FxExecutionResources executionResources;
         executionResources.sceneDraws = nativeSceneDraws_;
         const auto controllerModel =

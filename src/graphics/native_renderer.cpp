@@ -131,6 +131,45 @@ void NativeRendererCoordinator::setEffectStack(const core::SceneEffectStack& eff
     postprocessRuntimes_.clear();
 }
 
+void NativeRendererCoordinator::setEffectSchedule(std::span<const fx::ScheduledFx> schedule) {
+    const auto nameFor = [](const core::SceneEffectInstance& effect) {
+        const auto stem = effect.source.stem().string();
+        return stem.empty() ? "effect-" + std::to_string(effect.id) : stem;
+    };
+    const auto reorder = [&](auto& effects, auto& runtimes, const auto& acceptsStage) {
+        std::vector<core::SceneEffectInstance> ordered;
+        std::vector<std::size_t> order;
+        for (const auto& item : schedule) {
+            if (!acceptsStage(item.stage))
+                continue;
+            const auto found = std::ranges::find_if(effects, [&](const auto& effect) {
+                return item.effectId != 0 ? effect.id == item.effectId : nameFor(effect) == item.name;
+            });
+            if (found == effects.end())
+                continue;
+            const auto index = static_cast<std::size_t>(std::distance(effects.begin(), found));
+            if (std::ranges::find(order, index) != order.end())
+                continue;
+            ordered.push_back(*found);
+            order.push_back(index);
+        }
+        const auto changed = ordered.size() != effects.size() ||
+                             !std::ranges::equal(ordered, effects, [](const auto& left, const auto& right) {
+                                 return left.id == right.id;
+                             });
+        if (!changed)
+            return;
+        effects = std::move(ordered);
+        runtimes.clear();
+    };
+    reorder(deformEffects_, deformRuntimes_, [](fx::FrameStage stage) {
+        return stage == fx::FrameStage::deform;
+    });
+    reorder(postprocessEffects_, postprocessRuntimes_, [](fx::FrameStage stage) {
+        return stage == fx::FrameStage::postPre || stage == fx::FrameStage::postPost;
+    });
+}
+
 void NativeRendererCoordinator::setControllerDeclarations(std::span<const core::EffectController> declarations) {
     const auto same = std::ranges::equal(controllerDeclarations_, declarations, [](const auto& left, const auto& right) {
         return left.name == right.name && left.controllerName == right.controllerName && left.item == right.item &&
@@ -192,8 +231,18 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
         stageResources.sceneDraws = {};
         stageResources.rasterControllerModel.reset();
         stageResources.updatePassConstants = {};
+        if (!stageResources.defaultColorTarget.valid() && hostResourceProvider_.has_value()) {
+            if (const auto output = hostResourceProvider_->resolve(DayoSemantic::RTOutput);
+                output.has_value() && output->texture.valid())
+                stageResources.defaultColorTarget = output->texture;
+        }
         static_cast<void>(runtime->execute(frame, commands, stageResources));
-        const auto output = runtime->output(frame);
+        auto output = runtime->output(frame);
+        if (!output.has_value() && stageResources.defaultColorTarget.valid()) {
+            output = NativeFrameOutput{.texture = stageResources.defaultColorTarget,
+                                       .extent = {context.renderWidth, context.renderHeight, 1},
+                                       .format = PixelFormat::rgba16Float};
+        }
         if (!output.has_value())
             continue;
         lastOutput = output;

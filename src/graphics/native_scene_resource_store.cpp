@@ -88,6 +88,7 @@ bool NativeSceneResourceStore::initialize(Device& device, NativeSceneDescriptorC
         bindings_.normalDepth = placeholderTexture_;
         bindings_.gbuffer1 = placeholderTexture_;
         bindings_.gbuffer2 = placeholderTexture_;
+        bindings_.gbuffer = placeholderTexture_;
         bindings_.modelToMaterial = placeholderBuffer_;
         bindings_.materialToModel = placeholderBuffer_;
         bindings_.peekaboo = placeholderBuffer_;
@@ -136,6 +137,10 @@ bool NativeSceneResourceStore::replaceScalars(const NativeSceneResourceBindings&
     bindings_.normalDepth = textureOrPlaceholder(overrides.normalDepth);
     bindings_.gbuffer1 = textureOrPlaceholder(overrides.gbuffer1);
     bindings_.gbuffer2 = textureOrPlaceholder(overrides.gbuffer2);
+    const auto legacyGBuffer = overrides.gbuffer.valid() && overrides.gbuffer != placeholderTexture_
+                                   ? overrides.gbuffer
+                                   : overrides.gbuffer1;
+    bindings_.gbuffer = textureOrPlaceholder(legacyGBuffer);
     bindings_.tlas = overrides.tlas;
     bindings_.modelToMaterial = bufferOrPlaceholder(overrides.modelToMaterial);
     bindings_.materialToModel = bufferOrPlaceholder(overrides.materialToModel);
@@ -168,6 +173,7 @@ bool NativeSceneResourceStore::replaceScalars(const NativeSceneResourceBindings&
     mark(DayoSemantic::NormalDepth, realTexture(overrides.normalDepth));
     mark(DayoSemantic::GBuffer1, realTexture(overrides.gbuffer1));
     mark(DayoSemantic::GBuffer2, realTexture(overrides.gbuffer2));
+    mark(DayoSemantic::GBuffer, realTexture(legacyGBuffer));
     mark(DayoSemantic::TLAS, overrides.tlas.valid());
     mark(DayoSemantic::Model2Mat, realBuffer(overrides.modelToMaterial));
     mark(DayoSemantic::Mat2Model, realBuffer(overrides.materialToModel));

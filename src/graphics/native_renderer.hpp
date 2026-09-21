@@ -3,6 +3,7 @@
 #include "core/effect.hpp"
 #include "core/fx/fx_controller_resolver.hpp"
 #include "core/scene.hpp"
+#include "fx/fx_scheduler.hpp"
 #include "graphics/bdpt_runtime.hpp"
 #include "graphics/dayo_fx_runtime.hpp"
 #include "graphics/native_renderer_requirements.hpp"
@@ -36,6 +37,7 @@ class NativeRendererCoordinator {
     void setSceneFrameRuntime(NativeSceneFrameRuntime* runtime) noexcept;
     void setHostResourceBindings(const NativeSceneResourceBindings& bindings) noexcept;
     void setEffectStack(const core::SceneEffectStack& effects);
+    void setEffectSchedule(std::span<const fx::ScheduledFx> schedule);
     void setControllerDeclarations(std::span<const core::EffectController> declarations);
     void setEvaluationSnapshot(const core::fx::SceneEvaluationSnapshot* snapshot) noexcept {
         evaluationSnapshot_ = snapshot;

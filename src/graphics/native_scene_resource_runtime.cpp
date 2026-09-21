@@ -45,6 +45,7 @@ bool NativeSceneResourceRuntime::sync(const NativeSceneResourceBindings& resourc
         return false;
     }
     const auto& counts = this->counts();
+    const auto legacyGBuffer = resources.gbuffer.valid() ? resources.gbuffer : resources.gbuffer1;
     if (!requireCount(resources.textures.size(), counts.textures, "textures", error) ||
         !requireCount(resources.vertexBuffers.size(), counts.vertexBuffers, "vertex buffers", error) ||
         !requireCount(resources.indexBuffers.size(), counts.indexBuffers, "index buffers", error) ||
@@ -65,6 +66,7 @@ bool NativeSceneResourceRuntime::sync(const NativeSceneResourceBindings& resourc
     if (!checkHandle(resources.rtOutput.valid(), "RTOutput") || !checkHandle(resources.oidnBuffer.valid(), "OIDNBuf") ||
         !checkHandle(resources.normalDepth.valid(), "NormalDepth") ||
         !checkHandle(resources.gbuffer1.valid(), "GBuffer1") || !checkHandle(resources.gbuffer2.valid(), "GBuffer2") ||
+        !checkHandle(legacyGBuffer.valid(), "GBuffer") ||
         !checkHandle(resources.tlas.valid(), "TLAS") || !checkHandle(resources.modelToMaterial.valid(), "Model2Mat") ||
         !checkHandle(resources.materialToModel.valid(), "Mat2Model") ||
         !checkHandle(resources.peekaboo.valid(), "Peekaboo") ||
@@ -87,7 +89,7 @@ bool NativeSceneResourceRuntime::sync(const NativeSceneResourceBindings& resourc
         return false;
 
     std::vector<DescriptorBindingEx> frame;
-    frame.reserve(19);
+    frame.reserve(20);
     const auto addTexture = [&frame](NativeSceneRegisterClass registerClass, std::uint32_t index,
                                      handles::TextureHandle handle) {
         frame.push_back({.slot = nativeSceneBinding(registerClass, index), .arrayElement = 0, .texture = handle});
@@ -117,6 +119,7 @@ bool NativeSceneResourceRuntime::sync(const NativeSceneResourceBindings& resourc
     addTexture(NativeSceneRegisterClass::sampled, 9, resources.screenBmp);
     addBuffer(NativeSceneRegisterClass::sampled, 10, resources.cloneCount);
     addTexture(NativeSceneRegisterClass::sampled, 11, resources.screenTexture);
+    addTexture(NativeSceneRegisterClass::sampled, 12, legacyGBuffer);
     if (!bindings_.bind(NativeSceneDescriptorSet::frame, frame, error))
         return false;
 

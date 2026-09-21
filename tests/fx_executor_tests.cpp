@@ -633,10 +633,13 @@ bool testViewConstantsAndScreenHistory() {
                 "ScreenBMP ScreenTexture and PreviousFrame stay distinct");
     dayo::graphics::NativeSceneResourceBindings bindings;
     screen.bindScreenSemantics(bindings);
-    ok &= check(
-        bindings.screenBmp == screenBmp && bindings.screenTexture == screenTexture &&
-            (bindings.hostResourceMask & dayo::graphics::dayoSemanticBit(dayo::graphics::DayoSemantic::ScreenBMP)) != 0,
-        "screen runtime exposes strict ScreenBMP semantics");
+    ok &= check(bindings.screenBmp == screenBmp && bindings.screenTexture == screenTexture &&
+                    (bindings.hostResourceMask & dayo::graphics::dayoSemanticBit(
+                        dayo::graphics::DayoSemantic::ScreenBMP)) != 0 &&
+                    bindings.rtOutput == previousFrame &&
+                    (bindings.hostResourceMask & dayo::graphics::dayoSemanticBit(
+                        dayo::graphics::DayoSemantic::RTOutput)) != 0,
+                "screen runtime exposes strict ScreenBMP semantics");
     MockCommands commands;
     screen.rotatePreviousFrame(commands, {99, 1});
     ok &= check(commands.trace == std::vector<std::string>{"transferBarrierEx", "copyEx"},
@@ -1520,7 +1523,7 @@ bool testFxPipelineRuntime() {
     bool ok = check(generated.find("YRZFX_ControllerCB") != std::string::npos &&
                         generated.find("NativeOutput : register(u0, space7)") != std::string::npos &&
                         generated.find("NativeInput : register(t0, space7)") != std::string::npos &&
-                        generated.find("NativeData : register(u1, space7)") != std::string::npos &&
+                        generated.find("NativeData : register(t1, space7)") != std::string::npos &&
                         generated.find("NativeSampler : register(s0, space7)") != std::string::npos &&
                         generated.find("SharedValues : register(t0, space3)") != std::string::npos,
                     "native FX source emits disjoint typed and renderer-shared register classes");

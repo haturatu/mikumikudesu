@@ -238,8 +238,13 @@ void NativeScreenRuntime::bindScreenSemantics(NativeSceneResourceBindings& bindi
         return;
     bindings.screenBmp = screenBmp();
     bindings.screenTexture = screenTexture();
-    bindings.hostResourceMask |=
-        dayoSemanticBit(DayoSemantic::ScreenBMP) | dayoSemanticBit(DayoSemantic::ScreenTexture);
+    // RTOutput is the logical scratch/output target for generic upstream
+    // passes that omit an explicit RTV. Keep it on the same persistent image
+    // whose completed contents become PreviousFrame at publish time.
+    bindings.rtOutput = previousFrame();
+    bindings.hostResourceMask |= dayoSemanticBit(DayoSemantic::ScreenBMP) |
+                                 dayoSemanticBit(DayoSemantic::ScreenTexture) |
+                                 dayoSemanticBit(DayoSemantic::RTOutput);
 }
 
 void NativeScreenRuntime::reset() noexcept {
