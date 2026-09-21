@@ -1,5 +1,6 @@
 #include "core/scene.hpp"
 #include "core/log.hpp"
+#include "core/fx/fx_pass.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -78,7 +79,7 @@ void Scene::clearProjectState() {
     externalParents_.clear();
     background_ = {};
     media_.reset();
-    effect_.reset();
+    clearEffects();
     timeline_ = {};
     timeline_.fps = 30.0F;
     physicsSettings_ = {};
@@ -440,20 +441,84 @@ const MediaFile* Scene::media() const noexcept {
 }
 
 void Scene::setEffect(EffectGraph graph) {
-    effect_ = std::move(graph);
+    clearEffects();
+    static_cast<void>(addEffect(std::move(graph)));
+}
+
+EffectId Scene::addEffect(EffectGraph graph, std::optional<ModelId> controllerModel,
+                          std::int32_t executionOrder) {
+    SceneEffectInstance instance;
+    instance.id = nextEffectId_++;
+    instance.source = graph.sourcePath;
+    instance.graph = std::move(graph);
+    instance.controllerModel = controllerModel;
+    instance.executionOrder = executionOrder;
+    const auto category = instance.graph.category.empty()
+                              ? fx::FxCategory::render
+                              : fx::fxCategoryFromString(instance.graph.category);
+    switch (category) {
+    case fx::FxCategory::deform:
+        effects_.deform.push_back(std::move(instance));
+        break;
+    case fx::FxCategory::render:
+        effects_.renderer = std::move(instance);
+        break;
+    case fx::FxCategory::postprocess:
+        effects_.postprocess.push_back(std::move(instance));
+        break;
+    }
+    markDirty(DirtyFlag::effect);
+    return instance.id;
+}
+
+bool Scene::removeEffect(EffectId id) {
+    if (effects_.renderer.has_value() && effects_.renderer->id == id) {
+        effects_.renderer.reset();
+        markDirty(DirtyFlag::effect);
+        return true;
+    }
+    const auto remove = [id](auto& effects) {
+        const auto found = std::find_if(effects.begin(), effects.end(), [id](const auto& effect) { return effect.id == id; });
+        if (found == effects.end())
+            return false;
+        effects.erase(found);
+        return true;
+    };
+    if (remove(effects_.deform) || remove(effects_.postprocess)) {
+        markDirty(DirtyFlag::effect);
+        return true;
+    }
+    return false;
+}
+
+void Scene::clearEffects() {
+    if (effects_.empty())
+        return;
+    effects_ = {};
     markDirty(DirtyFlag::effect);
 }
 
 void Scene::clearEffect() {
-    effect_.reset();
-    markDirty(DirtyFlag::effect);
+    clearEffects();
 }
 
 EffectGraph* Scene::effect() noexcept {
-    return effect_ ? std::addressof(*effect_) : nullptr;
+    if (effects_.renderer.has_value())
+        return &effects_.renderer->graph;
+    if (!effects_.deform.empty())
+        return &effects_.deform.front().graph;
+    if (!effects_.postprocess.empty())
+        return &effects_.postprocess.front().graph;
+    return nullptr;
 }
 const EffectGraph* Scene::effect() const noexcept {
-    return effect_ ? std::addressof(*effect_) : nullptr;
+    if (effects_.renderer.has_value())
+        return &effects_.renderer->graph;
+    if (!effects_.deform.empty())
+        return &effects_.deform.front().graph;
+    if (!effects_.postprocess.empty())
+        return &effects_.postprocess.front().graph;
+    return nullptr;
 }
 
 void Scene::markDirty(DirtyFlag flags) noexcept {

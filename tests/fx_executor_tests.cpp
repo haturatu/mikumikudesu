@@ -736,6 +736,28 @@ bool testSchedulerOrder() {
         std::none_of(filtered.begin(), filtered.end(), [](const auto& entry) { return entry.name == "Grain"; });
     ok &= check(grainGone, "scheduler skips controller-off effects");
     ok &= check(scheduler.isEnabled("Blur") && !scheduler.isEnabled("Grain"), "controller enable query");
+
+    dayo::core::Scene scene;
+    dayo::core::EffectGraph deform;
+    deform.sourcePath = "deform/Cloth.fxdayo";
+    deform.category = "deform";
+    dayo::core::EffectGraph renderer;
+    renderer.sourcePath = "renderer/Preview.fxdayo";
+    renderer.category = "render";
+    dayo::core::EffectGraph post;
+    post.sourcePath = "postprocess/ACESTonemap.fxdayo";
+    post.category = "postprocess";
+    const auto deformId = scene.addEffect(std::move(deform), 7, 2);
+    static_cast<void>(scene.addEffect(std::move(renderer), 7, 0));
+    static_cast<void>(scene.addEffect(std::move(post), std::nullopt, 5));
+    const auto stacked = scheduler.schedule(scene.effects(), {.motion = 0, .deform = 1, .postprocess = 10, .raster = 20});
+    ok &= check(stacked.size() == 5 && stacked[1].name == "Cloth" && stacked[2].name == "Preview" &&
+                    stacked[3].name == "ACESTonemap" && stacked[3].stage == dayo::fx::FrameStage::postPre,
+                "effect stack scheduler follows canonical category and model order");
+    ok &= check(scene.effects().renderer.has_value() && scene.effects().deform.size() == 1 &&
+                    scene.effects().postprocess.size() == 1 && scene.effect() != nullptr,
+                "scene stores deform renderer and postprocess instances separately");
+    ok &= check(scene.removeEffect(deformId) && scene.effects().deform.empty(), "scene removes an effect by id");
     return ok;
 }
 

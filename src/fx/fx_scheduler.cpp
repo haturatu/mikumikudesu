@@ -122,4 +122,53 @@ std::vector<ScheduledFx> FrameEffectScheduler::schedule(const EffectCatalog& cat
     return result;
 }
 
+std::vector<ScheduledFx> FrameEffectScheduler::schedule(const core::SceneEffectStack& effects,
+                                                        const core::ModelExecutionOrder& modelOrder) const {
+    std::vector<ScheduledFx> result;
+    result.push_back({"deform", FrameStage::deform, modelOrder.deform});
+    const auto nameFor = [](const core::SceneEffectInstance& effect) {
+        const auto stem = effect.source.stem().string();
+        return stem.empty() ? "effect-" + std::to_string(effect.id) : stem;
+    };
+    for (const auto& effect : effects.deform) {
+        const auto name = nameFor(effect);
+        if (isEnabled(name))
+            result.push_back({name, FrameStage::deform, effect.executionOrder});
+    }
+    if (effects.renderer.has_value()) {
+        const auto name = nameFor(*effects.renderer);
+        if (isEnabled(name))
+            result.push_back({name, FrameStage::renderer, modelOrder.raster});
+    }
+    for (const auto& effect : effects.postprocess) {
+        const auto name = nameFor(effect);
+        if (isEnabled(name))
+            result.push_back({name, FrameStage::postPre, effect.executionOrder + modelOrder.postprocess});
+    }
+    const auto rank = [](FrameStage stage) {
+        switch (stage) {
+        case FrameStage::deform:
+            return 0;
+        case FrameStage::renderer:
+            return 1;
+        case FrameStage::postPre:
+            return 2;
+        case FrameStage::tonemap:
+            return 3;
+        case FrameStage::postPost:
+            return 4;
+        case FrameStage::present:
+            return 5;
+        }
+        return 1;
+    };
+    std::stable_sort(result.begin(), result.end(), [&](const auto& left, const auto& right) {
+        const auto leftRank = rank(left.stage);
+        const auto rightRank = rank(right.stage);
+        return leftRank == rightRank ? left.order < right.order : leftRank < rightRank;
+    });
+    result.push_back({"present", FrameStage::present, 1000});
+    return result;
+}
+
 } // namespace dayo::fx

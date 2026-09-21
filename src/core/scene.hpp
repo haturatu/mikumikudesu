@@ -77,6 +77,26 @@ struct ModelExecutionOrder {
     std::int32_t raster{};
 };
 
+using EffectId = std::uint64_t;
+
+struct SceneEffectInstance {
+    EffectId id{};
+    std::filesystem::path source;
+    EffectGraph graph;
+    std::optional<ModelId> controllerModel;
+    std::int32_t executionOrder{};
+};
+
+struct SceneEffectStack {
+    std::vector<SceneEffectInstance> deform;
+    std::optional<SceneEffectInstance> renderer;
+    std::vector<SceneEffectInstance> postprocess;
+
+    [[nodiscard]] bool empty() const noexcept {
+        return deform.empty() && !renderer.has_value() && postprocess.empty();
+    }
+};
+
 struct MaterialEditorState {
     std::filesystem::path annotation;
     MaterialParameterBlock parameters;
@@ -174,9 +194,16 @@ class Scene {
     [[nodiscard]] const MediaFile* media() const noexcept;
 
     void setEffect(EffectGraph graph);
+    [[nodiscard]] EffectId addEffect(EffectGraph graph, std::optional<ModelId> controllerModel = std::nullopt,
+                                     std::int32_t executionOrder = 0);
+    bool removeEffect(EffectId id);
+    void clearEffects();
     void clearEffect();
     [[nodiscard]] EffectGraph* effect() noexcept;
     [[nodiscard]] const EffectGraph* effect() const noexcept;
+    [[nodiscard]] const SceneEffectStack& effects() const noexcept {
+        return effects_;
+    }
 
     void markDirty(DirtyFlag flags) noexcept;
     [[nodiscard]] DirtyFlag dirtyFlags() const noexcept;
@@ -239,7 +266,8 @@ class Scene {
     std::vector<ExternalParentLink> externalParents_;
     void syncGlobalMotionTracks();
     std::optional<MediaFile> media_;
-    std::optional<EffectGraph> effect_;
+    EffectId nextEffectId_{1};
+    SceneEffectStack effects_;
     DirtyFlag dirty_{DirtyFlag::camera | DirtyFlag::geometry | DirtyFlag::material | DirtyFlag::lighting |
                      DirtyFlag::background};
     RuntimeMode runtimeMode_{RuntimeMode::realtime};

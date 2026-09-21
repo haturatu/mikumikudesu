@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/scene.hpp"
 #include "fx/fx_catalog.hpp"
 
 #include <string>
@@ -37,6 +38,8 @@ class FrameEffectScheduler {
     // renderer entry; empty selects the first renderer entry.
     [[nodiscard]] std::vector<ScheduledFx> schedule(const EffectCatalog& catalog,
                                                     const std::string& rendererName = {}) const;
+    [[nodiscard]] std::vector<ScheduledFx> schedule(const core::SceneEffectStack& effects,
+                                                    const core::ModelExecutionOrder& modelOrder) const;
 
   private:
     static FrameStage stageFor(const FxCatalogEntry& entry) noexcept;
