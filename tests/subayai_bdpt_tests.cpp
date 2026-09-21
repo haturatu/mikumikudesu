@@ -1777,6 +1777,13 @@ int main() {
                         store.bindings().textures[0] == textures[0] && store.bindings().textures[1] == textures[1],
                     "native scene resource store retains owned array and scalar overrides");
 
+        auto placeholderOverride = overrides;
+        placeholderOverride.rtOutput = fallback.rtOutput;
+        ok &= check(store.compose(placeholderOverride, &error) &&
+                        (store.bindings().hostResourceMask &
+                         dayo::graphics::dayoSemanticBit(dayo::graphics::DayoSemantic::RTOutput)) == 0,
+                    "native scene resource store does not mark its placeholder as a real host semantic");
+
         auto invalid = overrides;
         invalid.textures = std::span<const dayo::graphics::handles::TextureHandle>(textures.data(), 1);
         ok &= check(!store.compose(invalid, &error) && !error.empty(),
