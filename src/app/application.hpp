@@ -13,6 +13,7 @@
 #include "core/video_export.hpp"
 #include "fx/fx_frame.hpp"
 #include "graphics/device.hpp"
+#include "graphics/native_screen_runtime.hpp"
 #include "graphics/native_renderer.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/native_scene_model_runtime.hpp"
@@ -66,6 +67,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void setWorkspace(ui::Workspace workspace);
     void requestRenderer(graphics::RendererKind renderer);
     [[nodiscard]] bool ensureNativeSceneRuntime(bool restartRenderer, std::string* error = nullptr);
+    [[nodiscard]] fx::FxCameraState makeSceneCameraState() const;
     [[nodiscard]] fx::FxFrameContext makeNativeFrameContext(const graphics::RenderTargetDesc& target) const;
     [[nodiscard]] std::optional<graphics::NativeFrameOutput>
     recordNativeFrame(graphics::CommandList& commands, const graphics::RenderTargetDesc& target);
@@ -90,6 +92,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     graphics::NativeRendererCoordinator nativeRenderer_;
     graphics::NativeSceneFrameRuntime nativeSceneFrame_;
     graphics::NativeSceneResourceStore nativeSceneResources_;
+    graphics::NativeScreenRuntime nativeScreenRuntime_;
     core::Scene scene_;
     core::TaskScheduler taskScheduler_;
     core::FrameScratch frameScratch_;
