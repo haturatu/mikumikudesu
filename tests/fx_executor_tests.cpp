@@ -649,6 +649,13 @@ bool testFxControllerResolver() {
     bool ok = check(std::get<float>(morph) == 0.75F, "controller resolver reads evaluated morph weight");
     ok &= check(std::get<std::array<float, 3>>(bone) == std::array<float, 3>{1.0F, 2.0F, 3.0F},
                 "controller resolver reads evaluated bone translation");
+    snapshot.models.front().bones.front().rotation = {0.0F, 0.0F, 0.70710677F, 0.70710677F};
+    const auto boneMatrix = resolver.resolve(
+        {.name = "Transform", .controllerName = "(self)", .item = "arm", .type = "float4x4"}, snapshot, 11);
+    const auto& matrix = std::get<std::array<float, 16>>(boneMatrix);
+    ok &= check(std::abs(matrix[1] - 1.0F) < 0.0001F && std::abs(matrix[4] + 1.0F) < 0.0001F &&
+                    matrix[12] == 1.0F && matrix[13] == 2.0F && matrix[14] == 3.0F,
+                "controller resolver preserves bone quaternion rotation in float4x4");
     auto duplicate = model;
     duplicate.id = 12;
     snapshot.models.push_back(duplicate);
