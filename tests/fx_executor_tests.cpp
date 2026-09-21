@@ -133,6 +133,7 @@ struct MockDevice final : public dayo::graphics::Device {
                          std::uint32_t) override {
         uploadedTextureBytes_ = bytes.size();
     }
+    void clearTextureEx(dayo::graphics::handles::TextureHandle, const std::array<float, 4>&) override {}
     void generateMipmapsEx(dayo::graphics::handles::TextureHandle) override {
         ++generatedMipmaps_;
     }
@@ -593,7 +594,7 @@ bool testViewConstantsAndScreenHistory() {
     dayo::graphics::NativeScreenRuntime screen;
     std::string error;
     ok &= check(screen.initialize(device, {64, 32, 1}, &error) && screen.ready() && error.empty(),
-                "screen runtime allocates persistent per-slot resources");
+                "screen runtime allocates persistent logical resources");
     const auto screenBmp = screen.screenBmp();
     const auto screenTexture = screen.screenTexture();
     const auto previousFrame = screen.previousFrame();
