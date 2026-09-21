@@ -40,13 +40,24 @@ struct FxCompilerOptions {
     bool allowSyntheticProgramForTests{false};
 };
 
+enum class FxResourceRole : std::uint8_t {
+    sampled,
+    storage,
+    colorAttachment,
+    depthAttachment,
+};
+
 struct FxRasterDispatch {
     std::string vertexShader;
     std::string pixelShader;
+    core::EffectGraphicsState graphics;
+    std::vector<core::EffectAttachment> colorAttachments;
+    std::optional<core::EffectAttachment> depthAttachment;
 };
 
 struct FxPostProcessDispatch {
     std::string pixelShader;
+    std::vector<core::EffectAttachment> colorAttachments;
 };
 
 struct FxComputeDispatch {
@@ -77,6 +88,7 @@ struct FxDispatch {
     struct ResourceUse {
         std::string name;
         bool write{};
+        FxResourceRole role{FxResourceRole::sampled};
     };
     std::vector<ResourceUse> resources;
     // Conditions remain attached to the dispatch until the frame executor

@@ -385,7 +385,7 @@ bool testMockTraceMatches() {
     dayo::fx::FxDispatch postprocess;
     postprocess.name = "typed-postprocess";
     postprocess.kind = dayo::fx::FxOpKind::postprocess;
-    postprocess.executable = dayo::fx::FxPostProcessDispatch{"main"};
+    postprocess.executable = dayo::fx::FxPostProcessDispatch{"main", {}};
     postprocess.resources = {{"source", false}, {"target", true}};
     graphicsProgram.passes.push_back(postprocess);
     const auto graphicsPlan = dayo::fx::FxCompiler{}.plan(graphicsProgram, testContext());
@@ -632,6 +632,36 @@ raw_cs
                   utilityProgram.passes.front().resources.size() == 2 &&
                   !utilityProgram.passes.front().resources[0].write && utilityProgram.passes.front().resources[1].write,
               "source-driven copy preserves read/write resource contract");
+
+    dayo::core::EffectGraph graphicsGraph;
+    graphicsGraph.sourcePath = "graphics-state.fxdayo";
+    graphicsGraph.category = "render";
+    dayo::core::EffectPass graphicsPass;
+    graphicsPass.name = "MRT";
+    graphicsPass.type = dayo::core::EffectPassType::rasterizer;
+    graphicsPass.vertexShader = "VS";
+    graphicsPass.pixelShader = "PS";
+    graphicsPass.graphics.rasterizer.cullMode = dayo::core::EffectCullMode::front;
+    graphicsPass.renderTargets = {{.name = "Color0", .clear = true, .clearValue = {}},
+                                  {.name = "Color1", .clear = false, .clearValue = {}},
+                                  {.name = "Color2", .clear = false, .clearValue = {}}};
+    graphicsPass.depth = {.name = "Depth", .clear = true, .clearValue = {}};
+    graphicsGraph.passes.push_back(graphicsPass);
+    const auto graphicsProgram = dayo::fx::FxCompiler{}.compile(graphicsGraph);
+    ok &= check(graphicsProgram.passes.size() == 1 && graphicsProgram.passes.front().resources.size() == 4,
+                "compiler keeps all graphics attachments");
+    if (!graphicsProgram.passes.empty()) {
+        const auto& dispatch = graphicsProgram.passes.front();
+        const auto* raster = std::get_if<dayo::fx::FxRasterDispatch>(&dispatch.executable);
+        ok &= check(raster != nullptr && raster->colorAttachments.size() == 3 && raster->depthAttachment.has_value() &&
+                        raster->graphics.rasterizer.cullMode == dayo::core::EffectCullMode::front,
+                    "raster dispatch keeps graphics state");
+        if (dispatch.resources.size() == 4)
+            ok &= check(dispatch.resources[0].role == dayo::fx::FxResourceRole::colorAttachment &&
+                            dispatch.resources[2].role == dayo::fx::FxResourceRole::colorAttachment &&
+                            dispatch.resources[3].role == dayo::fx::FxResourceRole::depthAttachment,
+                        "resource roles distinguish MRT and DSV");
+    }
     return ok;
 }
 
@@ -712,7 +742,7 @@ bool testFxResourceDeclarationsAreLossless() {
     pass.name = "resource-pass";
     pass.type = dayo::core::EffectPassType::compute;
     pass.computeShader = "CS";
-    pass.unorderedAccess.push_back({"Color", true});
+    pass.unorderedAccess.push_back({"Color", true, {}});
     graph.passes.push_back(std::move(pass));
 
     const auto program = dayo::fx::FxCompiler{}.compile(graph);
@@ -1221,7 +1251,7 @@ bool testFxPipelineRuntime() {
     dayo::fx::FxDispatch postprocess;
     postprocess.name = "postprocess";
     postprocess.kind = dayo::fx::FxOpKind::postprocess;
-    postprocess.executable = dayo::fx::FxPostProcessDispatch{"main"};
+    postprocess.executable = dayo::fx::FxPostProcessDispatch{"main", {}};
     program.passes = {postprocess};
     program.hlsl = "#include \"constants.hlsli\"\n"
                    "#ifdef YRZ_PASS_postprocess\n"
