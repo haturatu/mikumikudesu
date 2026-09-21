@@ -79,9 +79,9 @@ struct FxMipmapGenOp {
 
 struct FxOidnOp {
     std::string input;
+    std::string output;
     std::string albedo;
     std::string normal;
-    std::string output;
 };
 
 using FxPassOp = std::variant<FxRasterOp, FxPostProcessOp, FxComputeOp, FxRayTracingOp, FxCopyOp, FxClearRtvOp,

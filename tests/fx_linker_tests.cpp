@@ -233,9 +233,9 @@ int main() {
         const FxPass oidn{.name = "Denoise",
                           .category = FxCategory::postprocess,
                           .op = FxPassOp{FxOidnOp{.input = "Beauty",
+                                                 .output = "Denoised",
                                                  .albedo = "Albedo",
-                                                 .normal = "Normal",
-                                                 .output = "Denoised"}}};
+                                                 .normal = "Normal"}}};
         const auto oidnLegacy = effectPassFromFxPass(oidn);
         ok &= check(oidnLegacy.type == EffectPassType::oidn && oidnLegacy.oidnInput == "Beauty" &&
                         oidnLegacy.oidnAlbedo == "Albedo" && oidnLegacy.oidnNormal == "Normal" &&
