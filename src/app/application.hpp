@@ -5,6 +5,7 @@
 #include "app/video_export_job.hpp"
 #include "core/editor.hpp"
 #include "core/frame_scratch.hpp"
+#include "core/fx/fx_controller_resolver.hpp"
 #include "core/output.hpp"
 #include "core/profiling.hpp"
 #include "core/project.hpp"
@@ -94,6 +95,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     graphics::NativeSceneResourceStore nativeSceneResources_;
     graphics::NativeScreenRuntime nativeScreenRuntime_;
     core::Scene scene_;
+    core::fx::SceneEvaluationSnapshot evaluatedModels_;
     core::TaskScheduler taskScheduler_;
     core::FrameScratch frameScratch_;
     core::FrameProfiler frameProfiler_;
@@ -148,6 +150,9 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::vector<core::ProjectAsset> projectAssets_;
     std::optional<std::filesystem::path> currentProjectPath_;
     std::optional<core::EffectHotReloader> effectReloader_;
+    // The single-effect compatibility path captures the owner when the
+    // effect is loaded. Controller (self) must not follow UI selection later.
+    std::optional<core::ModelId> effectControllerModel_;
     core::PreviewNormalization normalization_;
     float cameraYaw_{};
     float cameraPitch_{};

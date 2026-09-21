@@ -8,6 +8,7 @@
 #include "fx/fx_shader_source.hpp"
 #include "fx/fx_texture_cache.hpp"
 #include "fx/fx_watcher.hpp"
+#include "core/fx/fx_controller_resolver.hpp"
 #include "graphics/dayo_host_resources.hpp"
 #include "graphics/fx_executor.hpp"
 #include "graphics/fx_pipeline_runtime.hpp"
@@ -624,6 +625,45 @@ bool testViewConstantsAndScreenHistory() {
                         dayo::graphics::NativeScreenCrop::crop4x3);
     ok &= check(commands.trace == std::vector<std::string>{"transferBarrierEx", "copyEx", "blitEx:11:0:53:32"},
                 "previous-frame ScreenBMP applies the same 4:3 crop as external backgrounds");
+    return ok;
+}
+
+bool testFxControllerResolver() {
+    dayo::core::fx::SceneEvaluationSnapshot snapshot;
+    dayo::core::fx::EvaluatedModelState model;
+    model.id = 11;
+    model.sourcePath = "ToonAnime.pmx";
+    model.displayName = "Toon Anime";
+    model.modelName = "ToonAnime";
+    model.morphNames = {"Smile"};
+    model.morphWeights = {0.75F};
+    model.boneNames = {"arm"};
+    model.bones.push_back({.rotation = {0.0F, 0.0F, 0.0F, 1.0F}, .translation = {1.0F, 2.0F, 3.0F}});
+    snapshot.models.push_back(model);
+    dayo::core::fx::FxControllerResolver resolver;
+    const auto morph = resolver.resolve({.name = "Gain", .controllerName = "(self)", .item = "Smile", .type = "float"},
+                                        snapshot, 11);
+    const auto bone = resolver.resolve({.name = "Position", .controllerName = "ToonAnime.pmx", .item = "arm",
+                                        .type = "float3"},
+                                       snapshot, 11);
+    bool ok = check(std::get<float>(morph) == 0.75F, "controller resolver reads evaluated morph weight");
+    ok &= check(std::get<std::array<float, 3>>(bone) == std::array<float, 3>{1.0F, 2.0F, 3.0F},
+                "controller resolver reads evaluated bone translation");
+    auto duplicate = model;
+    duplicate.id = 12;
+    snapshot.models.push_back(duplicate);
+    ok &= check(
+        [&] {
+            try {
+                static_cast<void>(resolver.resolve(
+                    {.name = "Ambiguous", .controllerName = "ToonAnime.pmx", .item = "Smile", .type = "float"},
+                    snapshot, 11));
+            } catch (const std::runtime_error&) {
+                return true;
+            }
+            return false;
+        }(),
+        "controller resolver rejects ambiguous model targets");
     return ok;
 }
 
@@ -1548,6 +1588,7 @@ int main() {
     ok &= testTypedBufferResourceExecution();
     ok &= testDayoHostResourceProvider();
     ok &= testViewConstantsAndScreenHistory();
+    ok &= testFxControllerResolver();
     ok &= testPreviewReferencePath();
     ok &= testSchedulerOrder();
     ok &= testCloneUnification();

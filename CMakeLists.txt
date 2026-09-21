@@ -187,6 +187,7 @@ add_library(
   src/core/subayai_hair.cpp
   src/core/subayai_material.cpp
   src/core/fx/fx_condition.cpp
+  src/core/fx/fx_controller_resolver.cpp
   src/core/fx/fx_material.cpp
   src/core/fx/fx_pass.cpp
   src/core/vmdayo.cpp

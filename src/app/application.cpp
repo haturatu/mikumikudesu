@@ -466,6 +466,10 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         }
         if (!nativeSceneFrame_.sync(frameContext, nativeSceneResources_.bindings(), {}, &sceneError))
             throw std::runtime_error(sceneError.empty() ? "native scene frame synchronization failed" : sceneError);
+        if (const auto* program = nativeRenderer_.program(); program != nullptr &&
+            !nativeSceneFrame_.syncControllers(program->controllers, evaluatedModels_,
+                                                effectControllerModel_.value_or(frameContext.currentModel), &sceneError))
+            throw std::runtime_error(sceneError.empty() ? "native FX controller synchronization failed" : sceneError);
         graphics::FxExecutionResources executionResources;
         executionResources.sceneDraws = nativeSceneDraws_;
         for (const auto& geometry : nativeGeometry_) {
@@ -527,6 +531,8 @@ void Application::resetProjectRuntimeState() {
     activeVideoExport_.reset();
     videoRangeInitialized_ = false;
     scene_.clearProjectState();
+    evaluatedModels_.models.clear();
+    effectControllerModel_.reset();
     nativeRenderer_.reset();
     nativeSceneFrame_.reset();
     nativeSceneResources_.reset();
@@ -1214,6 +1220,10 @@ void Application::handleAsset(const std::filesystem::path& path) {
             if (effectReloader_->current() == nullptr)
                 throw std::runtime_error("effect graph is empty");
             scene_.setEffect(*effectReloader_->current());
+            if (!effectControllerModel_.has_value()) {
+                if (const auto* owner = selectedModel(); owner != nullptr)
+                    effectControllerModel_ = owner->id;
+            }
             auto filename = path.filename().string();
             std::ranges::transform(filename, filename.begin(),
                                    [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
@@ -1320,6 +1330,26 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             core::normalizeForPreview(current.frame.vertices, instance.normalization);
         });
         animation.finish();
+    }
+    evaluatedModels_.models.clear();
+    evaluatedModels_.models.reserve(evaluated.size());
+    for (const auto& evaluatedModel : evaluated) {
+        const auto& instance = *evaluatedModel.instance;
+        core::fx::EvaluatedModelState snapshot;
+        snapshot.id = instance.id;
+        snapshot.sourcePath = instance.sourcePath;
+        snapshot.displayName = instance.displayName;
+        snapshot.modelName = instance.model->metadata.modelName;
+        snapshot.englishName = instance.model->metadata.englishName;
+        snapshot.morphNames.reserve(instance.model->morphs.size());
+        for (const auto& morph : instance.model->morphs)
+            snapshot.morphNames.push_back(morph.name);
+        snapshot.boneNames.reserve(instance.model->bones.size());
+        for (const auto& bone : instance.model->bones)
+            snapshot.boneNames.push_back(bone.name);
+        snapshot.morphWeights = evaluatedModel.frame.morphWeights;
+        snapshot.bones = evaluatedModel.frame.bones;
+        evaluatedModels_.models.push_back(std::move(snapshot));
     }
     std::size_t materialCursor = 0;
     std::uint32_t indexCursor = 0;
