@@ -1,6 +1,10 @@
 #include "core/effect.hpp"
 
+#include "core/fx/fx_pass.hpp"
+
 #include <algorithm>
+#include <charconv>
+#include <cctype>
 #include <fstream>
 #include <iterator>
 #include <sstream>
@@ -70,17 +74,208 @@ std::vector<std::string> strings(const nlohmann::json& parent, std::string_view 
     return result;
 }
 
+std::string lower(std::string_view value) {
+    std::string result(value);
+    for (auto& character : result)
+        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+    return result;
+}
+
+std::string compactKey(std::string_view value) {
+    std::string result;
+    for (const auto character : lower(value)) {
+        if (character != '_' && character != '-')
+            result.push_back(character);
+    }
+    return result;
+}
+
+EffectClearValue clearValue(const nlohmann::json& value) {
+    EffectClearValue result;
+    if (!value.is_object())
+        return result;
+    result.color = {value.value("x", 0.0F), value.value("y", 0.0F), value.value("z", 0.0F),
+                    value.value("w", 0.0F)};
+    result.depth = value.value("depth", 1.0F);
+    result.stencil = value.value("stencil", 0U);
+    return result;
+}
+
+EffectAttachment attachment(const nlohmann::json& value) {
+    if (value.is_string())
+        return {.name = value.get<std::string>(), .clear = false, .clearValue = {}};
+    if (!value.is_object())
+        return {};
+    EffectAttachment result;
+    result.name = value.value("name", "");
+    result.clear = value.value("clear", false);
+    if (const auto clear = value.find("value"); clear != value.end())
+        result.clearValue = clearValue(*clear);
+    if (const auto clear = value.find("clearValue"); clear != value.end())
+        result.clearValue = clearValue(*clear);
+    if (const auto depth = value.find("depth"); depth != value.end() && depth->is_number())
+        result.clearValue.depth = depth->get<float>();
+    if (const auto stencil = value.find("stencil"); stencil != value.end() && stencil->is_number_unsigned())
+        result.clearValue.stencil = stencil->get<std::uint32_t>();
+    return result;
+}
+
 std::vector<EffectAttachment> attachments(const nlohmann::json& parent, std::string_view name) {
     std::vector<EffectAttachment> result;
     const auto found = parent.find(name);
     if (found == parent.end() || !found->is_array())
         return result;
-    for (const auto& value : *found) {
-        if (value.is_string())
-            result.push_back({value.get<std::string>(), false});
-        else if (value.is_object())
-            result.push_back({value.value("name", ""), value.value("clear", false)});
+    for (const auto& value : *found)
+        result.push_back(attachment(value));
+    return result;
+}
+
+EffectCullMode cullMode(std::string_view value) {
+    const auto key = compactKey(value);
+    if (key == "none")
+        return EffectCullMode::none;
+    if (key == "front")
+        return EffectCullMode::front;
+    if (key == "back")
+        return EffectCullMode::back;
+    throw std::runtime_error("unsupported YRZFX cull mode: " + std::string(value));
+}
+
+EffectDepthFunc depthFunc(std::string_view value) {
+    const auto key = compactKey(value);
+    if (key == "never")
+        return EffectDepthFunc::never;
+    if (key == "less")
+        return EffectDepthFunc::less;
+    if (key == "equal")
+        return EffectDepthFunc::equal;
+    if (key == "lessequal")
+        return EffectDepthFunc::lessEqual;
+    if (key == "greater")
+        return EffectDepthFunc::greater;
+    if (key == "notequal")
+        return EffectDepthFunc::notEqual;
+    if (key == "greaterequal")
+        return EffectDepthFunc::greaterEqual;
+    if (key == "always")
+        return EffectDepthFunc::always;
+    throw std::runtime_error("unsupported YRZFX depth function: " + std::string(value));
+}
+
+bool knownBlendFactor(std::string_view value) {
+    const auto key = compactKey(value);
+    return key == "zero" || key == "one" || key == "srccolor" || key == "invsrccolor" || key == "srcalpha" ||
+           key == "invsrcalpha" || key == "destalpha" || key == "invdestalpha" || key == "destcolor" ||
+           key == "invdestcolor" || key == "srcalphasaturate" || key == "blendfactor" ||
+           key == "invblendfactor" || key == "src1color" || key == "invsrc1color" || key == "src1alpha" ||
+           key == "invsrc1alpha";
+}
+
+bool knownBlendOp(std::string_view value) {
+    const auto key = compactKey(value);
+    return key == "add" || key == "subtract" || key == "revsubtract" || key == "min" || key == "max";
+}
+
+std::string blendString(const nlohmann::json& parent, std::initializer_list<std::string_view> names) {
+    for (const auto name : names) {
+        const auto found = parent.find(name);
+        if (found == parent.end())
+            continue;
+        if (!found->is_string())
+            throw std::runtime_error("YRZFX blend state is not a string: " + std::string(name));
+        return found->get<std::string>();
     }
+    return {};
+}
+
+void validateBlendValue(std::string_view value, bool factor, std::string_view field) {
+    if (value.empty())
+        return;
+    if ((factor && !knownBlendFactor(value)) || (!factor && !knownBlendOp(value)))
+        throw std::runtime_error("unsupported YRZFX " + std::string(factor ? "blend factor" : "blend operation") +
+                                 " for " + std::string(field) + ": " + std::string(value));
+}
+
+EffectBlendAttachmentState blendAttachment(const nlohmann::json& value) {
+    if (!value.is_object())
+        throw std::runtime_error("YRZFX blend render target must be an object");
+    EffectBlendAttachmentState result;
+    result.enabled = value.value("blendEnable", false);
+    result.srcColor = blendString(value, {"srcBlend", "srcColor"});
+    result.dstColor = blendString(value, {"destBlend", "dstBlend", "dstColor"});
+    result.colorOp = blendString(value, {"blendOp", "colorOp"});
+    result.srcAlpha = blendString(value, {"srcBlendAlpha", "srcAlpha"});
+    result.dstAlpha = blendString(value, {"destBlendAlpha", "dstAlpha"});
+    result.alphaOp = blendString(value, {"blendOpAlpha", "alphaOp"});
+    validateBlendValue(result.srcColor, true, "srcBlend");
+    validateBlendValue(result.dstColor, true, "destBlend");
+    validateBlendValue(result.colorOp, false, "blendOp");
+    validateBlendValue(result.srcAlpha, true, "srcBlendAlpha");
+    validateBlendValue(result.dstAlpha, true, "destBlendAlpha");
+    validateBlendValue(result.alphaOp, false, "blendOpAlpha");
+    return result;
+}
+
+std::vector<EffectBlendAttachmentState> blendStates(const nlohmann::json& parent) {
+    const auto found = parent.find("blendDesc");
+    if (found == parent.end())
+        return {};
+    if (!found->is_object())
+        throw std::runtime_error("YRZFX blendDesc must be an object");
+    std::vector<EffectBlendAttachmentState> result;
+    constexpr std::string_view prefix = "renderTarget";
+    for (const auto& [name, value] : found->items()) {
+        if (name == "independentBlendEnable" || name == "alphaToCoverageEnable")
+            continue;
+        if (!name.starts_with(prefix))
+            throw std::runtime_error("unsupported YRZFX blendDesc field: " + name);
+        const auto suffix = std::string_view(name).substr(prefix.size());
+        if (suffix.empty())
+            throw std::runtime_error("YRZFX blend render target index is missing");
+        std::size_t index = 0;
+        const auto parsed = std::from_chars(suffix.data(), suffix.data() + suffix.size(), index);
+        if (parsed.ec != std::errc{} || parsed.ptr != suffix.data() + suffix.size())
+            throw std::runtime_error("invalid YRZFX blend render target index: " + name);
+        if (index >= result.size())
+            result.resize(index + 1U);
+        result[index] = blendAttachment(value);
+    }
+    return result;
+}
+
+EffectGraphicsState graphicsState(const nlohmann::json& pass) {
+    EffectGraphicsState result;
+    if (const auto rasterizer = pass.find("rasterizerDesc"); rasterizer != pass.end()) {
+        if (!rasterizer->is_object())
+            throw std::runtime_error("YRZFX rasterizerDesc must be an object");
+        const auto cull = rasterizer->find("cullMode");
+        if (cull != rasterizer->end())
+            result.rasterizer.cullMode = cullMode(cull->get<std::string>());
+    }
+    if (const auto depth = pass.find("depthStencilDesc"); depth != pass.end()) {
+        if (!depth->is_object())
+            throw std::runtime_error("YRZFX depthStencilDesc must be an object");
+        if (const auto enabled = depth->find("depthEnable"); enabled != depth->end())
+            result.depthStencil.depthEnable = enabled->get<bool>();
+        if (const auto mask = depth->find("depthWriteMask"); mask != depth->end()) {
+            if (mask->is_boolean())
+                result.depthStencil.depthWrite = mask->get<bool>();
+            else {
+                const auto key = compactKey(mask->get<std::string>());
+                if (key == "all")
+                    result.depthStencil.depthWrite = true;
+                else if (key == "zero" || key == "none")
+                    result.depthStencil.depthWrite = false;
+                else
+                    throw std::runtime_error("unsupported YRZFX depth write mask: " + mask->get<std::string>());
+            }
+        }
+        if (const auto function = depth->find("depthFunc"); function != depth->end())
+            result.depthStencil.depthFunc = depthFunc(function->get<std::string>());
+    }
+    if (const auto target = pass.find("rasterModelTarget"); target != pass.end())
+        result.modelTarget = fx::resolveRasterModelTarget(target->get<std::string>());
+    result.blend = blendStates(pass);
     return result;
 }
 
@@ -228,12 +423,18 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
                 pass.inputs = attachments(value, "readResources");
             pass.renderTargets = attachments(value, "RTV");
             pass.unorderedAccess = attachments(value, "UAV");
+            if (const auto target = value.find("target"); target != value.end() && target->is_string()) {
+                if (pass.unorderedAccess.empty() &&
+                    (pass.type == EffectPassType::clear || pass.type == EffectPassType::mipmap))
+                    pass.unorderedAccess.push_back(attachment(*target));
+            }
             if (const auto depth = value.find("DSV"); depth != value.end()) {
                 if (depth->is_string())
                     pass.depth.name = depth->get<std::string>();
                 else if (depth->is_object())
-                    pass.depth = {depth->value("name", ""), depth->value("clear", false)};
+                    pass.depth = attachment(*depth);
             }
+            pass.graphics = graphicsState(value);
             if (const auto size = value.find("outputSize"); size != value.end() && size->is_object()) {
                 pass.outputSize = effectSize(*size);
                 pass.outputWidthRatio = pass.outputSize.widthRatio;

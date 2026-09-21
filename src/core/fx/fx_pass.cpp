@@ -297,17 +297,18 @@ EffectPass effectPassFromFxPass(const FxPass& pass) {
                 out.vertexShader = concrete.vertexShader;
                 out.pixelShader = concrete.pixelShader;
                 for (const auto& target : concrete.renderTargets)
-                    out.renderTargets.push_back(EffectAttachment{.name = target, .clear = false});
+                    out.renderTargets.push_back(EffectAttachment{.name = target, .clear = false, .clearValue = {}});
                 if (!concrete.depth.empty())
                     out.depth.name = concrete.depth;
             } else if constexpr (std::is_same_v<T, FxPostProcessOp>) {
                 out.pixelShader = concrete.pixelShader;
                 if (!concrete.output.empty())
-                    out.renderTargets.push_back(EffectAttachment{.name = concrete.output, .clear = false});
+                    out.renderTargets.push_back(
+                        EffectAttachment{.name = concrete.output, .clear = false, .clearValue = {}});
             } else if constexpr (std::is_same_v<T, FxComputeOp>) {
                 out.computeShader = concrete.computeShader;
                 for (const auto& resource : concrete.resources)
-                    out.unorderedAccess.push_back(EffectAttachment{.name = resource, .clear = false});
+                    out.unorderedAccess.push_back(EffectAttachment{.name = resource, .clear = false, .clearValue = {}});
             } else if constexpr (std::is_same_v<T, FxRayTracingOp>) {
                 out.rayGenerationShader = concrete.rayGenerationShader;
                 out.missShaders = concrete.missShaders;
@@ -325,17 +326,19 @@ EffectPass effectPassFromFxPass(const FxPass& pass) {
                 out.maxRecursionDepth = concrete.maxRecursionDepth;
             } else if constexpr (std::is_same_v<T, FxCopyOp>) {
                 out.type = EffectPassType::copy;
-                out.inputs.push_back(EffectAttachment{.name = concrete.source, .clear = false});
-                out.renderTargets.push_back(EffectAttachment{.name = concrete.destination, .clear = false});
+                out.inputs.push_back(EffectAttachment{.name = concrete.source, .clear = false, .clearValue = {}});
+                out.renderTargets.push_back(
+                    EffectAttachment{.name = concrete.destination, .clear = false, .clearValue = {}});
             } else if constexpr (std::is_same_v<T, FxClearRtvOp>) {
                 out.type = EffectPassType::clear;
-                out.renderTargets.push_back(EffectAttachment{.name = concrete.target, .clear = concrete.clear});
+                out.renderTargets.push_back(
+                    EffectAttachment{.name = concrete.target, .clear = concrete.clear, .clearValue = {}});
             } else if constexpr (std::is_same_v<T, FxClearUavOp>) {
                 out.type = EffectPassType::clear;
-                out.unorderedAccess.push_back(EffectAttachment{.name = concrete.target, .clear = false});
+                out.unorderedAccess.push_back(EffectAttachment{.name = concrete.target, .clear = false, .clearValue = {}});
             } else if constexpr (std::is_same_v<T, FxMipmapGenOp>) {
                 out.type = EffectPassType::mipmap;
-                out.renderTargets.push_back(EffectAttachment{.name = concrete.texture, .clear = false});
+                out.renderTargets.push_back(EffectAttachment{.name = concrete.texture, .clear = false, .clearValue = {}});
             }
         },
         pass.op);

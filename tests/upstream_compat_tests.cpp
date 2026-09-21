@@ -1,6 +1,7 @@
 #include "core/animation.hpp"
 #include "core/asset.hpp"
 #include "core/effect.hpp"
+#include "core/fx/fx_pass.hpp"
 #include "core/image.hpp"
 #include "core/motion.hpp"
 
@@ -47,6 +48,20 @@ int main() {
     try {
         const auto previewEffect = dayo::core::loadEffectGraph(sourceDirectory / "renderer/Preview.fxdayo");
         ok &= check(previewEffect.passes.size() == 5 && !previewEffect.hlsl.empty(), "Preview fxdayo graph");
+        const auto previewRaster = std::ranges::find_if(
+            previewEffect.passes, [](const auto& pass) { return pass.name == "MMD"; });
+        const auto previewGBuffer = std::ranges::find_if(
+            previewEffect.passes, [](const auto& pass) { return pass.name == "GBuffer"; });
+        ok &= check(previewRaster != previewEffect.passes.end() &&
+                        previewRaster->graphics.rasterizer.cullMode == dayo::core::EffectCullMode::none &&
+                        previewRaster->graphics.blend.size() == 1 && previewRaster->graphics.blend[0].enabled &&
+                        previewRaster->graphics.blend[0].srcColor == "src_alpha" &&
+                        previewRaster->graphics.blend[0].dstColor == "inv_src_alpha" &&
+                        previewRaster->depth.clearValue.depth == 1.0F,
+                    "Preview graphics state is lossless");
+        ok &= check(previewGBuffer != previewEffect.passes.end() && previewGBuffer->renderTargets.size() == 3 &&
+                        previewGBuffer->renderTargets[1].clearValue.color[0] == -1.0F,
+                    "Preview MRT clear values");
         const auto subayaiEffect = dayo::core::loadEffectGraph(sourceDirectory / "renderer/Subayai.fxdayo");
         ok &= check(subayaiEffect.passes.size() >= 20 &&
                         std::ranges::any_of(
@@ -55,6 +70,13 @@ int main() {
                         subayaiEffect.hlsl.find("resources.hlsli") != std::string::npos &&
                         !subayaiEffect.controllers.empty(),
                     "Subayai Jsonnet expansion");
+        const auto subayaiRaster = std::ranges::find_if(
+            subayaiEffect.passes, [](const auto& pass) { return pass.name == "MMD"; });
+        ok &= check(subayaiRaster != subayaiEffect.passes.end() && subayaiRaster->renderTargets.size() == 4 &&
+                        subayaiRaster->graphics.blend.size() == 4 &&
+                        subayaiRaster->graphics.depthStencil.depthWrite &&
+                        subayaiRaster->graphics.depthStencil.depthFunc == dayo::core::EffectDepthFunc::lessEqual,
+                    "Subayai MRT/depth/blend state");
         const auto rayPass = std::ranges::find_if(
             subayaiEffect.passes, [](const auto& pass) { return pass.type == dayo::core::EffectPassType::raytracing; });
         ok &= check(rayPass != subayaiEffect.passes.end() && !rayPass->hitGroups.empty() &&
@@ -82,6 +104,48 @@ int main() {
                                                                                  dayo::core::EffectPassType::raytracing;
                                                                       }),
                     "BDPT fxdayo graph");
+
+        const std::string fixture = R"FX([YRZFX]
+{
+  "fx": {
+    "category": "render",
+    "passes": [{
+      "name": "Fixture",
+      "type": "rasterizer",
+      "vertexShader": "VS",
+      "pixelShader": "PS",
+      "RTV": [{"name":"Color", "clear":true, "value":{"x":1,"y":0.5,"z":0,"w":1}}],
+      "DSV": {"name":"Depth", "clear":true, "depth":0.25},
+      "rasterizerDesc": {"cullMode":"front"},
+      "depthStencilDesc": {"depthWriteMask":"zero", "depthFunc":"less_equal"},
+      "blendDesc": {"renderTarget0": {"blendEnable":true, "srcBlend":"one", "destBlend":"inv_src_alpha", "blendOp":"add"}},
+      "rasterModelTarget":"other"
+    }]
+  }
+}
+[HLSL]
+float4 PS() : SV_TARGET { return 1; }
+)FX";
+        const auto fixtureEffect = dayo::core::loadEffectGraphFromText("lossless-fixture.fxdayo", fixture);
+        const auto& fixturePass = fixtureEffect.passes.front();
+        ok &= check(fixturePass.graphics.rasterizer.cullMode == dayo::core::EffectCullMode::front &&
+                        !fixturePass.graphics.depthStencil.depthWrite &&
+                        fixturePass.graphics.depthStencil.depthFunc == dayo::core::EffectDepthFunc::lessEqual &&
+                        fixturePass.graphics.modelTarget == dayo::core::fx::RasterModelTarget::other &&
+                        fixturePass.graphics.blend.front().srcColor == "one" &&
+                        fixturePass.renderTargets.front().clearValue.color[1] == 0.5F &&
+                        fixturePass.depth.clearValue.depth == 0.25F,
+                    "YRZFX graphics state fixture");
+        bool rejectedUnknown = false;
+        try {
+            auto invalid = fixture;
+            const auto marker = invalid.find("front");
+            invalid.replace(marker, 5, "diagonal");
+            static_cast<void>(dayo::core::loadEffectGraphFromText("invalid-lossless-fixture.fxdayo", invalid));
+        } catch (const std::runtime_error&) {
+            rejectedUnknown = true;
+        }
+        ok &= check(rejectedUnknown, "YRZFX rejects unknown cull values");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: effect graph: " << exception.what() << '\n';
         ok = false;
