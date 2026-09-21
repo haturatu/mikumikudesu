@@ -451,11 +451,16 @@ bool testPreviewReferencePath() {
 
 bool testSchedulerOrder() {
     dayo::fx::EffectCatalog catalog;
-    catalog.add({"Preview", dayo::fx::FxCategory::renderer, "renderer/Preview.fxdayo", true, 0});
-    catalog.add({"Blur", dayo::fx::FxCategory::postprocess, "postprocess/Blur.fxdayo", true, 10});
-    catalog.add({"tonemap", dayo::fx::FxCategory::postprocess, "postprocess/tonemap.fxdayo", true, 50});
-    catalog.add({"Grain", dayo::fx::FxCategory::postprocess, "postprocess/Grain.fxdayo", true, 200});
-    catalog.add({"Smoke", dayo::fx::FxCategory::particle, "particle/Smoke.fxdayo", true, 5});
+    catalog.add({"Preview", dayo::fx::FxCatalogGroup::rendererDirectory, dayo::core::fx::FxCategory::render,
+                 "renderer/Preview.fxdayo", true, 0});
+    catalog.add({"Blur", dayo::fx::FxCatalogGroup::postprocessDirectory, dayo::core::fx::FxCategory::postprocess,
+                 "postprocess/Blur.fxdayo", true, 10});
+    catalog.add({"tonemap", dayo::fx::FxCatalogGroup::postprocessDirectory, dayo::core::fx::FxCategory::postprocess,
+                 "postprocess/tonemap.fxdayo", true, 50});
+    catalog.add({"Grain", dayo::fx::FxCatalogGroup::postprocessDirectory, dayo::core::fx::FxCategory::postprocess,
+                 "postprocess/Grain.fxdayo", true, 200});
+    catalog.add({"Smoke", dayo::fx::FxCatalogGroup::particleDirectory, dayo::core::fx::FxCategory::render,
+                 "particle/Smoke.fxdayo", true, 5});
     dayo::fx::FrameEffectScheduler scheduler;
     const auto scheduled = scheduler.schedule(catalog, "Preview");
     bool ok = true;

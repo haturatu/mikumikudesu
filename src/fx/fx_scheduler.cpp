@@ -1,5 +1,7 @@
 #include "fx/fx_scheduler.hpp"
 
+#include "core/fx/fx_pass.hpp"
+
 #include <algorithm>
 
 namespace dayo::fx {
@@ -34,20 +36,15 @@ bool FrameEffectScheduler::isEnabled(const std::string& name) const noexcept {
 }
 
 FrameStage FrameEffectScheduler::stageFor(const FxCatalogEntry& entry) noexcept {
-    switch (entry.category) {
-    case FxCategory::renderer:
-    case FxCategory::particle:
-    case FxCategory::sample:
+    switch (entry.executionCategory) {
+    case core::fx::FxCategory::deform:
+        return FrameStage::deform;
+    case core::fx::FxCategory::render:
         return FrameStage::renderer;
-    case FxCategory::postprocess:
-    case FxCategory::unknown:
-        break;
+    case core::fx::FxCategory::postprocess:
+        return entry.executionOrder < 100 ? FrameStage::postPre : FrameStage::postPost;
     }
-    // postprocess split: explicit tonemap names run at tonemap, low orders
-    // run before tonemap, the rest after.
-    if (entry.name == "tonemap" || entry.name == "Tonemap" || entry.name == "TONEMAP")
-        return FrameStage::tonemap;
-    return entry.executionOrder < 100 ? FrameStage::postPre : FrameStage::postPost;
+    return FrameStage::renderer;
 }
 
 std::vector<ScheduledFx> FrameEffectScheduler::schedule(const EffectCatalog& catalog,
@@ -61,8 +58,10 @@ std::vector<ScheduledFx> FrameEffectScheduler::schedule(const EffectCatalog& cat
     for (const auto& entry : catalog.all()) {
         if (!isEnabled(entry.name) || !entry.controllerEnabled)
             continue;
-        if (entry.category == FxCategory::postprocess)
+        if (entry.executionCategory == core::fx::FxCategory::postprocess)
             posts.push_back(entry);
+        else if (entry.executionCategory == core::fx::FxCategory::deform)
+            result.push_back({entry.name, FrameStage::deform, entry.executionOrder});
         else
             renderers.push_back(entry);
     }
@@ -91,8 +90,9 @@ std::vector<ScheduledFx> FrameEffectScheduler::schedule(const EffectCatalog& cat
     for (const auto& entry : posts)
         result.push_back({entry.name, stageFor(entry), entry.executionOrder});
 
-    // Stable stage ordering: deform -> renderer -> postPre -> tonemap ->
-    // postPost -> present. Within a stage keep executionOrder.
+    // Stable stage ordering: deform -> renderer -> postPre -> postPost ->
+    // present. Within a stage keep executionOrder. Tonemap is not inferred
+    // from a filename; an upstream postprocess graph owns its own metadata.
     const auto rank = [](FrameStage stage) {
         switch (stage) {
         case FrameStage::deform:

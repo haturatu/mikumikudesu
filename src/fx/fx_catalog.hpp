@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/fx/fx_pass.hpp"
+
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -8,20 +10,23 @@
 
 namespace dayo::fx {
 
-enum class FxCategory : std::uint8_t {
-    renderer,
-    postprocess,
-    particle,
-    sample,
-    unknown,
+enum class FxCatalogGroup : std::uint8_t {
+    rendererDirectory,
+    postprocessDirectory,
+    particleDirectory,
+    sampleDirectory,
 };
 
-[[nodiscard]] const char* toString(FxCategory category) noexcept;
-[[nodiscard]] FxCategory fxCategoryFromString(std::string_view name) noexcept;
+[[nodiscard]] const char* toString(FxCatalogGroup group) noexcept;
+[[nodiscard]] FxCatalogGroup fxCatalogGroupFromString(std::string_view name) noexcept;
 
 struct FxCatalogEntry {
     std::string name;
-    FxCategory category{FxCategory::unknown};
+    FxCatalogGroup group{FxCatalogGroup::rendererDirectory};
+    // This is the execution category from the loaded graph. It is deliberately
+    // separate from the directory group because upstream effects may be
+    // organized independently of their runtime category.
+    core::fx::FxCategory executionCategory{core::fx::FxCategory::render};
     std::filesystem::path path;
     bool controllerEnabled{true};
     int executionOrder{};
@@ -40,7 +45,7 @@ class EffectCatalog {
     void scanParticle(const std::filesystem::path& directory);
     void scanSample(const std::filesystem::path& directory);
     void scanAll(const std::filesystem::path& root);
-    [[nodiscard]] std::vector<FxCatalogEntry> find(FxCategory category) const;
+    [[nodiscard]] std::vector<FxCatalogEntry> find(FxCatalogGroup group) const;
     [[nodiscard]] const std::vector<FxCatalogEntry>& all() const noexcept {
         return entries_;
     }
@@ -50,7 +55,7 @@ class EffectCatalog {
     }
 
   private:
-    void scanDirectory(const std::filesystem::path& directory, FxCategory category, bool recursive);
+    void scanDirectory(const std::filesystem::path& directory, FxCatalogGroup group, bool recursive);
 
     std::vector<FxCatalogEntry> entries_;
 };

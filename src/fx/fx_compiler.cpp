@@ -66,7 +66,7 @@ core::EffectGraph FxCompiler::parse(const FxSourceDocument& document) const {
             throw;
         core::EffectGraph graph;
         graph.sourcePath = document.path;
-        graph.category = "generic";
+        graph.category = "render";
         core::EffectPass pass;
         pass.name = document.path.stem().string();
         if (pass.name.empty())
@@ -95,6 +95,8 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
     if (program.label.empty())
         program.label = graph.category.empty() ? "fx" : graph.category;
     program.generation = 1;
+    if (!graph.category.empty())
+        program.category = core::fx::fxCategoryFromString(graph.category);
     program.sourcePath = graph.sourcePath;
     program.hlsl = graph.hlsl;
     program.textures = graph.textures;
@@ -112,6 +114,7 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
         FxDispatch dispatch;
         dispatch.name = pass.name.empty() ? "pass" : pass.name;
         dispatch.kind = fxOpFromPassType(pass.type);
+        dispatch.category = program.category;
         dispatch.conditions = pass.conditions;
         dispatch.macros = pass.macros;
         if (!pass.computeShader.empty())

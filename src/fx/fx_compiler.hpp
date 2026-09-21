@@ -88,6 +88,7 @@ struct FxDispatch {
     // lossless variant.
     FxExecutable executable{FxRasterDispatch{}};
     std::vector<std::string> macros;
+    core::fx::FxCategory category{core::fx::FxCategory::render};
 };
 
 struct FxProgram {
@@ -107,6 +108,7 @@ struct FxProgram {
     std::uint64_t sourceVersion{};
     std::filesystem::path sourcePath;
     std::string hlsl;
+    core::fx::FxCategory category{core::fx::FxCategory::render};
 };
 
 struct FxRequiredFeatures {
