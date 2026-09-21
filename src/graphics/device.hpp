@@ -279,10 +279,84 @@ struct PipelineDesc {
     std::vector<ShaderHandle> shaders;
     bool compute{};
 };
+
+enum class CullModeEx : std::uint8_t { none, front, back };
+enum class FrontFaceEx : std::uint8_t { counterClockwise, clockwise };
+enum class CompareOpEx : std::uint8_t {
+    never,
+    less,
+    equal,
+    lessOrEqual,
+    greater,
+    notEqual,
+    greaterOrEqual,
+    always
+};
+enum class BlendFactorEx : std::uint8_t {
+    zero,
+    one,
+    srcColor,
+    oneMinusSrcColor,
+    dstColor,
+    oneMinusDstColor,
+    srcAlpha,
+    oneMinusSrcAlpha,
+    dstAlpha,
+    oneMinusDstAlpha,
+    srcAlphaSaturate
+};
+enum class BlendOpEx : std::uint8_t { add, subtract, reverseSubtract, min, max };
+
+struct RasterizerStateEx {
+    CullModeEx cullMode{CullModeEx::back};
+    FrontFaceEx frontFace{FrontFaceEx::counterClockwise};
+};
+
+struct DepthStencilStateEx {
+    bool depthTest{};
+    bool depthWrite{};
+    CompareOpEx depthCompare{CompareOpEx::less};
+};
+
+struct BlendAttachmentStateEx {
+    bool enabled{};
+    BlendFactorEx srcColor{BlendFactorEx::one};
+    BlendFactorEx dstColor{BlendFactorEx::zero};
+    BlendOpEx colorOp{BlendOpEx::add};
+    BlendFactorEx srcAlpha{BlendFactorEx::one};
+    BlendFactorEx dstAlpha{BlendFactorEx::zero};
+    BlendOpEx alphaOp{BlendOpEx::add};
+};
+
 struct GraphicsPipelineDescEx {
     handles::PipelineLayoutHandle layout{};
     std::vector<handles::ShaderHandle> shaders;
+    // colorFormat remains as a compatibility field for existing single-RTV
+    // callers. New FX programs should populate colorFormats instead.
     PixelFormat colorFormat{PixelFormat::rgba16Float};
+    std::vector<PixelFormat> colorFormats;
+    std::optional<PixelFormat> depthFormat;
+    RasterizerStateEx rasterizer;
+    DepthStencilStateEx depthStencil;
+    std::vector<BlendAttachmentStateEx> blendAttachments;
+};
+
+struct RenderingAttachmentEx {
+    handles::TextureHandle texture{};
+    bool clear{};
+    std::array<float, 4> clearColor{};
+};
+
+struct DepthAttachmentEx {
+    handles::TextureHandle texture{};
+    bool clear{};
+    float clearDepth{1.0F};
+};
+
+struct RenderingInfoEx {
+    std::vector<RenderingAttachmentEx> colors;
+    std::optional<DepthAttachmentEx> depth;
+    Extent3D extent{};
 };
 struct ComputePipelineDescEx {
     handles::PipelineLayoutHandle layout{};
@@ -476,6 +550,9 @@ class CommandList {
     }
     virtual void beginRenderingEx(handles::TextureHandle, bool = false) {
         throw std::logic_error("Typed command-list rendering is not implemented by this backend");
+    }
+    virtual void beginRenderingEx(const RenderingInfoEx&) {
+        throw std::logic_error("Typed multi-attachment rendering is not implemented by this backend");
     }
     virtual void endRenderingEx() {
         throw std::logic_error("Typed command-list rendering is not implemented by this backend");

@@ -186,6 +186,94 @@ VkFormat toVkFormat(PixelFormat format) {
     return VK_FORMAT_UNDEFINED;
 }
 
+VkCullModeFlags toVkCullMode(CullModeEx mode) {
+    switch (mode) {
+    case CullModeEx::none:
+        return VK_CULL_MODE_NONE;
+    case CullModeEx::front:
+        return VK_CULL_MODE_FRONT_BIT;
+    case CullModeEx::back:
+        return VK_CULL_MODE_BACK_BIT;
+    }
+    throw std::invalid_argument("unknown native cull mode");
+}
+
+VkFrontFace toVkFrontFace(FrontFaceEx frontFace) {
+    switch (frontFace) {
+    case FrontFaceEx::counterClockwise:
+        return VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    case FrontFaceEx::clockwise:
+        return VK_FRONT_FACE_CLOCKWISE;
+    }
+    throw std::invalid_argument("unknown native front-face mode");
+}
+
+VkCompareOp toVkCompareOp(CompareOpEx compare) {
+    switch (compare) {
+    case CompareOpEx::never:
+        return VK_COMPARE_OP_NEVER;
+    case CompareOpEx::less:
+        return VK_COMPARE_OP_LESS;
+    case CompareOpEx::equal:
+        return VK_COMPARE_OP_EQUAL;
+    case CompareOpEx::lessOrEqual:
+        return VK_COMPARE_OP_LESS_OR_EQUAL;
+    case CompareOpEx::greater:
+        return VK_COMPARE_OP_GREATER;
+    case CompareOpEx::notEqual:
+        return VK_COMPARE_OP_NOT_EQUAL;
+    case CompareOpEx::greaterOrEqual:
+        return VK_COMPARE_OP_GREATER_OR_EQUAL;
+    case CompareOpEx::always:
+        return VK_COMPARE_OP_ALWAYS;
+    }
+    throw std::invalid_argument("unknown native depth compare operation");
+}
+
+VkBlendFactor toVkBlendFactor(BlendFactorEx factor) {
+    switch (factor) {
+    case BlendFactorEx::zero:
+        return VK_BLEND_FACTOR_ZERO;
+    case BlendFactorEx::one:
+        return VK_BLEND_FACTOR_ONE;
+    case BlendFactorEx::srcColor:
+        return VK_BLEND_FACTOR_SRC_COLOR;
+    case BlendFactorEx::oneMinusSrcColor:
+        return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+    case BlendFactorEx::dstColor:
+        return VK_BLEND_FACTOR_DST_COLOR;
+    case BlendFactorEx::oneMinusDstColor:
+        return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+    case BlendFactorEx::srcAlpha:
+        return VK_BLEND_FACTOR_SRC_ALPHA;
+    case BlendFactorEx::oneMinusSrcAlpha:
+        return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    case BlendFactorEx::dstAlpha:
+        return VK_BLEND_FACTOR_DST_ALPHA;
+    case BlendFactorEx::oneMinusDstAlpha:
+        return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+    case BlendFactorEx::srcAlphaSaturate:
+        return VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
+    }
+    throw std::invalid_argument("unknown native blend factor");
+}
+
+VkBlendOp toVkBlendOp(BlendOpEx operation) {
+    switch (operation) {
+    case BlendOpEx::add:
+        return VK_BLEND_OP_ADD;
+    case BlendOpEx::subtract:
+        return VK_BLEND_OP_SUBTRACT;
+    case BlendOpEx::reverseSubtract:
+        return VK_BLEND_OP_REVERSE_SUBTRACT;
+    case BlendOpEx::min:
+        return VK_BLEND_OP_MIN;
+    case BlendOpEx::max:
+        return VK_BLEND_OP_MAX;
+    }
+    throw std::invalid_argument("unknown native blend operation");
+}
+
 VkImageUsageFlags toVkUsage(ResourceUsage usage) {
     VkImageUsageFlags flags = 0;
     const auto bits = toBits(usage);
@@ -4400,6 +4488,48 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
     }
     if (!hasVertex || !hasFragment)
         throw std::invalid_argument("graphics pipeline requires vertex and fragment shaders");
+    std::vector<PixelFormat> colorFormats = desc.colorFormats;
+    if (colorFormats.empty())
+        colorFormats.push_back(desc.colorFormat);
+    if (colorFormats.empty())
+        throw std::invalid_argument("native graphics pipeline requires at least one color attachment format");
+    std::vector<VkFormat> vkColorFormats;
+    vkColorFormats.reserve(colorFormats.size());
+    for (const auto format : colorFormats) {
+        const auto vkFormat = toVkFormat(format);
+        if (vkFormat == VK_FORMAT_UNDEFINED || format == PixelFormat::depth32Float)
+            throw std::invalid_argument("native graphics pipeline color format is invalid");
+        vkColorFormats.push_back(vkFormat);
+    }
+    VkFormat vkDepthFormat = VK_FORMAT_UNDEFINED;
+    if (desc.depthFormat.has_value()) {
+        vkDepthFormat = toVkFormat(*desc.depthFormat);
+        if (vkDepthFormat == VK_FORMAT_UNDEFINED || *desc.depthFormat != PixelFormat::depth32Float)
+            throw std::invalid_argument("native graphics pipeline depth format is invalid");
+    }
+    if (desc.depthStencil.depthTest && vkDepthFormat == VK_FORMAT_UNDEFINED)
+        throw std::invalid_argument("depth testing requires a depth attachment format");
+    std::vector<BlendAttachmentStateEx> blendStates(colorFormats.size());
+    if (!desc.blendAttachments.empty()) {
+        if (desc.blendAttachments.size() != colorFormats.size())
+            throw std::invalid_argument("blend attachment count does not match color attachment count");
+        blendStates = desc.blendAttachments;
+    }
+    std::vector<VkPipelineColorBlendAttachmentState> vkBlendAttachments;
+    vkBlendAttachments.reserve(blendStates.size());
+    for (const auto& state : blendStates) {
+        vkBlendAttachments.push_back({
+            .blendEnable = state.enabled ? VK_TRUE : VK_FALSE,
+            .srcColorBlendFactor = toVkBlendFactor(state.srcColor),
+            .dstColorBlendFactor = toVkBlendFactor(state.dstColor),
+            .colorBlendOp = toVkBlendOp(state.colorOp),
+            .srcAlphaBlendFactor = toVkBlendFactor(state.srcAlpha),
+            .dstAlphaBlendFactor = toVkBlendFactor(state.dstAlpha),
+            .alphaBlendOp = toVkBlendOp(state.alphaOp),
+            .colorWriteMask =
+                VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        });
+    }
     const VkPipelineVertexInputStateCreateInfo vertexInput{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
     };
@@ -4415,23 +4545,24 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
     const VkPipelineRasterizationStateCreateInfo rasterization{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .polygonMode = VK_POLYGON_MODE_FILL,
-        .cullMode = VK_CULL_MODE_NONE,
-        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .cullMode = toVkCullMode(desc.rasterizer.cullMode),
+        .frontFace = toVkFrontFace(desc.rasterizer.frontFace),
         .lineWidth = 1.0F,
     };
     const VkPipelineMultisampleStateCreateInfo multisample{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
     };
-    const VkPipelineColorBlendAttachmentState blendAttachment{
-        .blendEnable = VK_FALSE,
-        .colorWriteMask =
-            VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-    };
     const VkPipelineColorBlendStateCreateInfo blend{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-        .attachmentCount = 1,
-        .pAttachments = &blendAttachment,
+        .attachmentCount = static_cast<std::uint32_t>(vkBlendAttachments.size()),
+        .pAttachments = vkBlendAttachments.data(),
+    };
+    const VkPipelineDepthStencilStateCreateInfo depthStencil{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = desc.depthStencil.depthTest ? VK_TRUE : VK_FALSE,
+        .depthWriteEnable = desc.depthStencil.depthWrite ? VK_TRUE : VK_FALSE,
+        .depthCompareOp = toVkCompareOp(desc.depthStencil.depthCompare),
     };
     const std::array dynamicStates{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     const VkPipelineDynamicStateCreateInfo dynamic{
@@ -4439,13 +4570,11 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
         .dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size()),
         .pDynamicStates = dynamicStates.data(),
     };
-    const VkFormat colorFormat = toVkFormat(desc.colorFormat);
-    if (colorFormat == VK_FORMAT_UNDEFINED || desc.colorFormat == PixelFormat::depth32Float)
-        throw std::invalid_argument("native graphics pipeline requires a color attachment format");
     const VkPipelineRenderingCreateInfo rendering{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-        .colorAttachmentCount = 1,
-        .pColorAttachmentFormats = &colorFormat,
+        .colorAttachmentCount = static_cast<std::uint32_t>(vkColorFormats.size()),
+        .pColorAttachmentFormats = vkColorFormats.data(),
+        .depthAttachmentFormat = vkDepthFormat,
     };
     const VkGraphicsPipelineCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
@@ -4457,6 +4586,7 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
         .pViewportState = &viewport,
         .pRasterizationState = &rasterization,
         .pMultisampleState = &multisample,
+        .pDepthStencilState = &depthStencil,
         .pColorBlendState = &blend,
         .pDynamicState = &dynamic,
         .layout = layoutIt->second.layout,
@@ -5319,36 +5449,87 @@ void VulkanDevice::recordPushConstants(VkCommandBuffer commandBuffer, handles::P
 }
 
 void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, handles::TextureHandle target, bool clear) {
-    const auto it = typedTextures_.find(target);
-    if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(target))
-        throw std::invalid_argument("typed rendering target references a stale texture handle");
+    RenderingInfoEx info;
+    info.colors.push_back({.texture = target, .clear = clear});
+    recordBeginRendering(commandBuffer, info);
+}
+
+void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const RenderingInfoEx& info) {
     if (commandBuffer == VK_NULL_HANDLE)
         throw std::invalid_argument("typed rendering requires a command buffer");
-    const auto& description = it->second.desc;
-    if (description.dimension != TextureDimension::d2 || description.extent.width == 0 ||
-        description.extent.height == 0 || description.extent.depth != 1 || description.mipLevels != 1 ||
-        description.arrayLayers != 1 || description.format == PixelFormat::depth32Float ||
-        (toBits(description.usage) & toBits(ResourceUsage::colorAttachment)) == 0U)
-        throw std::invalid_argument("typed rendering target must be a single 2D color attachment");
+    if (info.colors.empty())
+        throw std::invalid_argument("typed rendering requires at least one color attachment");
 
-    const bool undefined = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED;
-    recordTextureTransition(commandBuffer, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    const VkClearValue clearValue{.color = {{0.0F, 0.0F, 0.0F, 0.0F}}};
-    const VkRenderingAttachmentInfo attachment{
-        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        .imageView = it->second.view,
-        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        .loadOp = clear || undefined ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
-        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-        .clearValue = clearValue,
-    };
-    const VkExtent2D extent{description.extent.width, description.extent.height};
+    const auto firstIt = typedTextures_.find(info.colors.front().texture);
+    if (firstIt == typedTextures_.end() || !typedTextureHandles_.isAlive(info.colors.front().texture))
+        throw std::invalid_argument("typed rendering color attachment references a stale texture handle");
+    const auto& firstDescription = firstIt->second.desc;
+    const Extent3D requestedExtent = info.extent.width == 0 || info.extent.height == 0
+                                         ? firstDescription.extent
+                                         : info.extent;
+    if (requestedExtent.width == 0 || requestedExtent.height == 0 || requestedExtent.depth != 1)
+        throw std::invalid_argument("typed rendering extent is invalid");
+
+    std::vector<VkRenderingAttachmentInfo> colorAttachments;
+    colorAttachments.reserve(info.colors.size());
+    for (const auto& color : info.colors) {
+        const auto it = typedTextures_.find(color.texture);
+        if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(color.texture))
+            throw std::invalid_argument("typed rendering color attachment references a stale texture handle");
+        const auto& description = it->second.desc;
+        if (description.dimension != TextureDimension::d2 || description.extent.width != requestedExtent.width ||
+            description.extent.height != requestedExtent.height || description.extent.depth != 1 ||
+            description.mipLevels != 1 || description.arrayLayers != 1 ||
+            description.format == PixelFormat::depth32Float ||
+            (toBits(description.usage) & toBits(ResourceUsage::colorAttachment)) == 0U)
+            throw std::invalid_argument("typed rendering color attachment is incompatible with the render area");
+        const bool undefined = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED;
+        recordTextureTransition(commandBuffer, color.texture, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        const VkClearValue clearValue{.color = {{color.clearColor[0], color.clearColor[1], color.clearColor[2],
+                                                  color.clearColor[3]}}};
+        colorAttachments.push_back({
+            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .imageView = it->second.view,
+            .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .loadOp = color.clear || undefined ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .clearValue = clearValue,
+        });
+    }
+
+    std::optional<VkRenderingAttachmentInfo> depthAttachment;
+    if (info.depth.has_value()) {
+        const auto it = typedTextures_.find(info.depth->texture);
+        if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(info.depth->texture))
+            throw std::invalid_argument("typed rendering depth attachment references a stale texture handle");
+        const auto& description = it->second.desc;
+        const auto depthBits = toBits(description.usage);
+        if (description.dimension != TextureDimension::d2 || description.extent.width != requestedExtent.width ||
+            description.extent.height != requestedExtent.height || description.extent.depth != 1 ||
+            description.mipLevels != 1 || description.arrayLayers != 1 || description.format != PixelFormat::depth32Float ||
+            (depthBits & (toBits(ResourceUsage::depthRead) | toBits(ResourceUsage::depthWrite))) == 0U)
+            throw std::invalid_argument("typed rendering depth attachment is incompatible with the render area");
+        const bool undefined = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED;
+        recordTextureTransition(commandBuffer, info.depth->texture, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        const VkClearValue clearValue{.depthStencil = {info.depth->clearDepth, 0U}};
+        depthAttachment = VkRenderingAttachmentInfo{
+            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .imageView = it->second.view,
+            .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            .loadOp = info.depth->clear || undefined ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .clearValue = clearValue,
+        };
+    }
+
+    const VkExtent2D extent{requestedExtent.width, requestedExtent.height};
     const VkRenderingInfo rendering{
         .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
         .renderArea = {{0, 0}, extent},
         .layerCount = 1,
-        .colorAttachmentCount = 1,
-        .pColorAttachments = &attachment,
+        .colorAttachmentCount = static_cast<std::uint32_t>(colorAttachments.size()),
+        .pColorAttachments = colorAttachments.data(),
+        .pDepthAttachment = depthAttachment.has_value() ? &*depthAttachment : nullptr,
     };
     vkCmdBeginRendering(commandBuffer, &rendering);
     const VkViewport viewport{0.0F, 0.0F, static_cast<float>(extent.width), static_cast<float>(extent.height),
@@ -5359,15 +5540,31 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, handles::
 }
 
 void VulkanDevice::recordEndRendering(VkCommandBuffer commandBuffer, handles::TextureHandle target) {
-    const auto it = typedTextures_.find(target);
-    if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(target))
-        throw std::invalid_argument("typed rendering target references a stale texture handle");
+    const std::array targets{target};
+    recordEndRendering(commandBuffer, targets);
+}
+
+void VulkanDevice::recordEndRendering(VkCommandBuffer commandBuffer,
+                                      std::span<const handles::TextureHandle> targets) {
+    if (targets.empty())
+        throw std::invalid_argument("typed rendering requires at least one attachment");
     if (commandBuffer == VK_NULL_HANDLE)
         throw std::invalid_argument("typed rendering requires a command buffer");
-    if (it->second.layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
-        throw std::logic_error("typed rendering target is not in color-attachment layout");
+    for (const auto target : targets) {
+        const auto it = typedTextures_.find(target);
+        if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(target))
+            throw std::invalid_argument("typed rendering attachment references a stale texture handle");
+        const auto expectedLayout = it->second.desc.format == PixelFormat::depth32Float
+                                        ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+                                        : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        if (it->second.layout != expectedLayout)
+            throw std::logic_error("typed rendering attachment is not in its rendering layout");
+    }
     vkCmdEndRendering(commandBuffer);
-    recordTextureTransition(commandBuffer, target, typedTextureFinalLayout(it->second));
+    for (const auto target : targets) {
+        const auto it = typedTextures_.find(target);
+        recordTextureTransition(commandBuffer, target, typedTextureFinalLayout(it->second));
+    }
 }
 
 void VulkanDevice::recordMemoryBarrier(VkCommandBuffer commandBuffer) {

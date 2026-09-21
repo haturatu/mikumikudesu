@@ -5,6 +5,7 @@
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
+#include <vector>
 
 namespace dayo::graphics {
 
@@ -35,6 +36,7 @@ class VulkanCommandList final : public CommandList {
     void bindDescriptorSetEx(handles::DescriptorSetHandle set, std::uint32_t setIndex = 0) override;
     void pushConstantsEx(std::span<const std::byte> bytes) override;
     void beginRenderingEx(handles::TextureHandle target, bool clear = false) override;
+    void beginRenderingEx(const RenderingInfoEx& info) override;
     void endRenderingEx() override;
     void memoryBarrierEx() override;
     void transferBarrierEx() override;
@@ -64,7 +66,7 @@ class VulkanCommandList final : public CommandList {
     VulkanDevice* device_{};
     VkCommandBuffer commandBuffer_{};
     handles::PipelineHandle pipeline_{};
-    handles::TextureHandle renderingTarget_{};
+    std::vector<handles::TextureHandle> renderingTargets_;
 };
 
 } // namespace dayo::graphics
