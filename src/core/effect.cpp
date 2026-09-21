@@ -35,9 +35,9 @@ EffectPassType passType(std::string_view value) {
         return EffectPassType::raytracing;
     if (value == "copy")
         return EffectPassType::copy;
-    if (value == "clear" || value == "clearRtv" || value == "clearUav")
+    if (value == "clear" || value == "clearRtv" || value == "clearUav" || value == "clearUAV")
         return EffectPassType::clear;
-    if (value == "mipmap" || value == "mipmapGen")
+    if (value == "mipmap" || value == "mipmapGen" || value == "mipmapgen")
         return EffectPassType::mipmap;
     if (value == "oidn")
         return EffectPassType::oidn;
@@ -423,6 +423,22 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
                 pass.inputs = attachments(value, "readResources");
             pass.renderTargets = attachments(value, "RTV");
             pass.unorderedAccess = attachments(value, "UAV");
+            if (pass.type == EffectPassType::copy) {
+                const auto appendStringAttachment = [&](std::vector<EffectAttachment>& target,
+                                                         std::initializer_list<std::string_view> names) {
+                    if (!target.empty())
+                        return;
+                    for (const auto name : names) {
+                        const auto found = value.find(name);
+                        if (found != value.end() && found->is_string()) {
+                            target.push_back(attachment(*found));
+                            return;
+                        }
+                    }
+                };
+                appendStringAttachment(pass.inputs, {"src", "source", "copySrc"});
+                appendStringAttachment(pass.renderTargets, {"dest", "destination", "copyDest"});
+            }
             if (pass.type == EffectPassType::oidn) {
                 pass.oidnInput = value.value("input", value.value("beauty", ""));
                 pass.oidnAlbedo = value.value("albedo", "");

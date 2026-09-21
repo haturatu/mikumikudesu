@@ -4,16 +4,31 @@
 #include "core/fx/fx_pass.hpp"
 #include "core/image.hpp"
 #include "core/motion.hpp"
+#include "fx/fx_compiler.hpp"
+#include "fx/fx_frame.hpp"
+#include "fx/fx_shader_compiler.hpp"
+#include "graphics/native_scene_bindings.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <map>
+#include <optional>
+#include <regex>
 #include <ranges>
 #include <stdexcept>
+#include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -21,6 +36,382 @@ bool check(bool value, std::string_view message) {
     if (!value)
         std::cerr << "FAIL: " << message << '\n';
     return value;
+}
+
+std::vector<std::filesystem::path> upstreamFxFiles(const std::filesystem::path& sourceDirectory) {
+    std::vector<std::filesystem::path> files;
+    for (const auto relativeRoot : {"renderer", "postprocess", "particle", "sample"}) {
+        const auto root = sourceDirectory / relativeRoot;
+        if (!std::filesystem::is_directory(root))
+            throw std::runtime_error("missing upstream FX directory: " + root.string());
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
+            if (entry.is_regular_file() && entry.path().extension() == ".fxdayo")
+                files.push_back(entry.path());
+        }
+    }
+    std::ranges::sort(files);
+    return files;
+}
+
+std::string normalizeUpstreamIncludes(std::string source) {
+    constexpr std::string_view wrong = "resources_PP.hlsli";
+    constexpr std::string_view right = "resources_pp.hlsli";
+    std::size_t offset = 0;
+    while ((offset = source.find(wrong, offset)) != std::string::npos) {
+        source.replace(offset, wrong.size(), right);
+        offset += right.size();
+    }
+    return source;
+}
+
+std::string passMacro(std::string_view name) {
+    std::string result = "YRZ_PASS_";
+    for (const auto character : name) {
+        const auto byte = static_cast<unsigned char>(character);
+        result.push_back(std::isalnum(byte) || character == '_' ? character : '_');
+    }
+    if (result.size() == std::string_view{"YRZ_PASS_"}.size() ||
+        std::isdigit(static_cast<unsigned char>(result[9])))
+        result.insert(result.begin() + 9, '_');
+    return result;
+}
+
+std::vector<std::filesystem::path> shaderIncludeDirectories(const std::filesystem::path& sourceDirectory,
+                                                            const std::filesystem::path& effectPath) {
+    std::vector<std::filesystem::path> directories;
+    const auto add = [&](const std::filesystem::path& path) {
+        if (path.empty() || !std::filesystem::is_directory(path))
+            return;
+        if (std::ranges::find(directories, path) == directories.end())
+            directories.push_back(path);
+    };
+    for (auto current = effectPath.parent_path(); !current.empty() && current != sourceDirectory.parent_path();
+         current = current.parent_path()) {
+        add(current);
+        if (current == sourceDirectory)
+            break;
+    }
+    add(sourceDirectory / "hlsl");
+    add(sourceDirectory);
+    return directories;
+}
+
+struct UpstreamScanResult {
+    std::size_t graphCount{};
+    std::size_t passCount{};
+    std::size_t shaderCount{};
+    std::vector<std::string> failures;
+};
+
+void appendShaderRequest(const std::filesystem::path& sourceDirectory, const std::filesystem::path& effectPath,
+                         const dayo::core::EffectGraph& graph, const dayo::core::EffectPass& pass,
+                         std::string entryPoint, dayo::fx::FxShaderStage stage,
+                         dayo::fx::FxShaderCompiler& shaderCompiler, UpstreamScanResult& result) {
+    if (entryPoint.empty())
+        return;
+    dayo::fx::FxShaderCompileRequest request;
+    request.hlsl = "#define " + passMacro(pass.name) + "\n" + normalizeUpstreamIncludes(graph.hlsl);
+    request.sourcePath = effectPath;
+    request.entryPoint = std::move(entryPoint);
+    request.stage = stage;
+    request.macros = pass.macros;
+    request.macros.push_back(passMacro(pass.name));
+    request.includeDirectories = shaderIncludeDirectories(sourceDirectory, effectPath);
+    try {
+        static_cast<void>(shaderCompiler.compile(request));
+        ++result.shaderCount;
+    } catch (const std::exception& exception) {
+        result.failures.push_back(effectPath.string() + "#" + pass.name + ": " + exception.what());
+    }
+}
+
+UpstreamScanResult scanUpstreamGraphs(const std::filesystem::path& sourceDirectory) {
+    UpstreamScanResult result;
+    const auto files = upstreamFxFiles(sourceDirectory);
+    dayo::fx::FxCompiler compiler;
+    const auto context = dayo::fx::makeFxFrameContext(0.0F, 0, 64, 64, 0, 0, 0, 0, 1, 1);
+    dayo::fx::FxShaderCompiler shaderCompiler;
+    const bool dxc = shaderCompiler.executable().filename() == "dxc" ||
+                     shaderCompiler.executable().filename() == "dxc.exe";
+    const bool compileShaders = shaderCompiler.available() && dxc;
+    if (!compileShaders)
+        std::cerr << "WARN: DXC unavailable; upstream graph shader probes skipped\n";
+
+    for (const auto& path : files) {
+        try {
+            const auto graph = dayo::core::loadEffectGraph(path);
+            const auto linked = compiler.link(graph);
+            const auto program = compiler.compile(linked);
+            std::string pipelineError;
+            if (!compiler.buildPipelines(program, &pipelineError))
+                throw std::runtime_error(pipelineError);
+            const auto plan = compiler.plan(program, context);
+            if (plan.ordered.size() != program.passes.size())
+                throw std::runtime_error("FX plan lost a dispatch");
+            ++result.graphCount;
+            result.passCount += program.passes.size();
+            for (const auto& dispatch : program.passes) {
+                for (const auto& resource : dispatch.resources)
+                    if (resource.name.empty())
+                        throw std::runtime_error("FX dispatch contains an empty resource name: " + dispatch.name);
+            }
+            if (!compileShaders)
+                continue;
+            for (const auto& pass : graph.passes) {
+                switch (pass.type) {
+                case dayo::core::EffectPassType::rasterizer:
+                case dayo::core::EffectPassType::postprocess:
+                    appendShaderRequest(sourceDirectory, path, graph, pass, pass.vertexShader,
+                                        dayo::fx::FxShaderStage::vertex, shaderCompiler, result);
+                    appendShaderRequest(sourceDirectory, path, graph, pass, pass.pixelShader,
+                                        dayo::fx::FxShaderStage::fragment, shaderCompiler, result);
+                    break;
+                case dayo::core::EffectPassType::compute:
+                    appendShaderRequest(sourceDirectory, path, graph, pass, pass.computeShader,
+                                        dayo::fx::FxShaderStage::compute, shaderCompiler, result);
+                    break;
+                case dayo::core::EffectPassType::raytracing:
+                    appendShaderRequest(sourceDirectory, path, graph, pass, pass.rayGenerationShader,
+                                        dayo::fx::FxShaderStage::rayGeneration, shaderCompiler, result);
+                    for (const auto& shader : pass.missShaders)
+                        appendShaderRequest(sourceDirectory, path, graph, pass, shader, dayo::fx::FxShaderStage::miss,
+                                            shaderCompiler, result);
+                    for (const auto& group : pass.hitGroups) {
+                        appendShaderRequest(sourceDirectory, path, graph, pass, group.closestHit,
+                                            dayo::fx::FxShaderStage::closestHit, shaderCompiler, result);
+                        appendShaderRequest(sourceDirectory, path, graph, pass, group.anyHit,
+                                            dayo::fx::FxShaderStage::anyHit, shaderCompiler, result);
+                        appendShaderRequest(sourceDirectory, path, graph, pass, group.intersection,
+                                            dayo::fx::FxShaderStage::intersection, shaderCompiler, result);
+                    }
+                    for (const auto& shader : pass.callableShaders)
+                        appendShaderRequest(sourceDirectory, path, graph, pass, shader,
+                                            dayo::fx::FxShaderStage::callable, shaderCompiler, result);
+                    break;
+                case dayo::core::EffectPassType::copy:
+                case dayo::core::EffectPassType::clear:
+                case dayo::core::EffectPassType::mipmap:
+                case dayo::core::EffectPassType::oidn:
+                case dayo::core::EffectPassType::unknown:
+                    break;
+                }
+            }
+        } catch (const std::exception& exception) {
+            result.failures.push_back(path.string() + ": " + exception.what());
+        }
+    }
+    return result;
+}
+
+struct AbiBinding {
+    char registerClass{};
+    std::uint32_t registerIndex{};
+    std::uint32_t descriptorSet{};
+};
+
+std::unordered_map<std::string, AbiBinding> readAbiBindings(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input)
+        throw std::runtime_error("cannot read upstream ABI header: " + path.string());
+    const std::regex declaration(R"(\b([A-Za-z_]\w*)\s*(?:\[\])?\s*:\s*register\(\s*([tubs])\s*(\d+)(?:\s*,\s*space\s*(\d+))?\s*\))");
+    std::unordered_map<std::string, AbiBinding> result;
+    for (std::string line; std::getline(input, line);) {
+        std::smatch match;
+        if (!std::regex_search(line, match, declaration))
+            continue;
+        result[match[1].str()] = {
+            match[2].str().front(),
+            static_cast<std::uint32_t>(std::stoul(match[3].str())),
+            match[4].matched ? static_cast<std::uint32_t>(std::stoul(match[4].str())) : 0U,
+        };
+    }
+    return result;
+}
+
+struct ExpectedAbiBinding {
+    std::string_view name;
+    char registerClass;
+    std::uint32_t registerIndex;
+    std::uint32_t descriptorSet;
+    dayo::graphics::NativeSceneRegisterClass nativeClass;
+};
+
+bool checkUpstreamAbi(const std::filesystem::path& sourceDirectory) {
+    const auto hlsl = sourceDirectory / "hlsl";
+    bool ok = true;
+    for (const auto relative : {"resources.hlsli", "resources_pp.hlsli", "cb.hlsli", "dayotypes.hlsli"})
+        ok &= check(std::filesystem::is_regular_file(hlsl / relative), "pinned upstream ABI header exists");
+    if (!ok)
+        return false;
+
+    const auto resources = readAbiBindings(hlsl / "resources.hlsli");
+    const auto cb = readAbiBindings(hlsl / "cb.hlsli");
+    const auto dayotypesText = [&] {
+        std::ifstream input(hlsl / "dayotypes.hlsli");
+        return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }();
+    const auto cbText = [&] {
+        std::ifstream input(hlsl / "cb.hlsli");
+        return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }();
+    const std::vector<ExpectedAbiBinding> expected = {
+        {"RTOutput", 'u', 0, 0, dayo::graphics::NativeSceneRegisterClass::uav},
+        {"OIDNBuf", 'u', 1, 0, dayo::graphics::NativeSceneRegisterClass::uav},
+        {"NormalDepth", 'u', 2, 0, dayo::graphics::NativeSceneRegisterClass::uav},
+        {"GBuffer1", 'u', 3, 0, dayo::graphics::NativeSceneRegisterClass::uav},
+        {"GBuffer2", 'u', 4, 0, dayo::graphics::NativeSceneRegisterClass::uav},
+        {"TLAS", 't', 0, 0, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"Model2Mat", 't', 1, 0, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"Mat2Model", 't', 2, 0, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"Peekaboo", 't', 3, 0, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"MatSelected", 't', 4, 0, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"Skybox", 't', 5, 0, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"Skywalker", 't', 6, 0, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"SkywalkerRow", 't', 7, 0, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"SkyboxSH", 't', 8, 0, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"ScreenBMP", 't', 9, 0, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"CloneCount", 't', 10, 0, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"ScreenTexture", 't', 11, 0, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"TextureTable", 't', 0, 1, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"Textures", 't', 1, 1, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"MMDMaterials", 't', 0, 4, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"Faces", 't', 0, 5, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"Mat2face", 't', 0, 6, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"FaceWalker", 't', 0, 7, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"PreVB", 't', 0, 8, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"RawVB", 't', 0, 9, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"VB", 't', 0, 2, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"IB", 't', 0, 3, dayo::graphics::NativeSceneRegisterClass::sampled},
+        {"ViewCB", 'b', 0, 0, dayo::graphics::NativeSceneRegisterClass::uniform},
+        {"CBuff1", 'b', 0, 1, dayo::graphics::NativeSceneRegisterClass::uniform},
+    };
+    for (const auto& item : expected) {
+        const auto& table = item.name == "ViewCB" ? cb : resources;
+        const auto found = table.find(std::string(item.name));
+        ok &= check(found != table.end(), std::string("upstream ABI declares ") + std::string(item.name));
+        if (found == table.end())
+            continue;
+        const auto& actual = found->second;
+        const auto expectedBinding = dayo::graphics::nativeSceneBinding(item.nativeClass, item.registerIndex);
+        ok &= check(actual.registerClass == item.registerClass && actual.registerIndex == item.registerIndex &&
+                        actual.descriptorSet == item.descriptorSet,
+                    std::string("upstream ABI register coordinates for ") + std::string(item.name));
+        ok &= check(expectedBinding == dayo::graphics::nativeSceneBinding(item.nativeClass, actual.registerIndex),
+                    std::string("native binding map covers ") + std::string(item.name));
+    }
+    for (const auto field : {"ViewMatrix", "ProjectionMatrix", "ModelCount", "TotalMaterialCount", "Resolution",
+                             "SelfShadowMode", "ScreenBMPMode", "BackgroundMode", "BackgroundTransparent",
+                             "DenoiserEnabled", "OnStart", "OnLoadSkybox", "OnResize", "OnLoad"})
+        ok &= check(cbText.find(field) != std::string::npos, std::string("ViewCB field exists: ") + field);
+    for (const auto field : {"struct OIDNInput", "float3 color", "float3 albedo", "float3 normal"})
+        ok &= check(dayotypesText.find(field) != std::string::npos,
+                    std::string("dayotypes OIDN field exists: ") + field);
+    return ok;
+}
+
+std::string spirvString(std::span<const std::uint32_t> words, std::size_t firstWord, std::size_t wordCount) {
+    std::string result;
+    for (std::size_t word = firstWord; word < wordCount; ++word) {
+        const auto value = words[word];
+        for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
+            const auto character = static_cast<char>((value >> (byte * 8U)) & 0xFFU);
+            if (character == '\0')
+                return result;
+            result.push_back(character);
+        }
+    }
+    return result;
+}
+
+std::unordered_map<std::string, std::pair<std::uint32_t, std::uint32_t>> reflectSpirvBindings(
+    std::span<const std::uint32_t> words) {
+    std::unordered_map<std::uint32_t, std::string> names;
+    std::unordered_map<std::uint32_t, std::uint32_t> bindings;
+    std::unordered_map<std::uint32_t, std::uint32_t> sets;
+    for (std::size_t offset = 5; offset < words.size();) {
+        const auto instruction = words[offset];
+        const auto wordCount = static_cast<std::size_t>(instruction >> 16U);
+        if (wordCount == 0 || offset + wordCount > words.size())
+            break;
+        const auto opcode = instruction & 0xFFFFU;
+        if (opcode == 5U && wordCount >= 3)
+            names[words[offset + 1U]] = spirvString(words.subspan(offset, wordCount), 2, wordCount);
+        if (opcode == 71U && wordCount >= 4) {
+            if (words[offset + 2U] == 33U)
+                bindings[words[offset + 1U]] = words[offset + 3U];
+            if (words[offset + 2U] == 34U)
+                sets[words[offset + 1U]] = words[offset + 3U];
+        }
+        offset += wordCount;
+    }
+    std::unordered_map<std::string, std::pair<std::uint32_t, std::uint32_t>> result;
+    for (const auto& [id, name] : names) {
+        const auto binding = bindings.find(id);
+        const auto set = sets.find(id);
+        if (binding != bindings.end() && set != sets.end())
+            result.emplace(name, std::pair{set->second, binding->second});
+    }
+    return result;
+}
+
+bool checkAbiSpirvProbe(const std::filesystem::path& sourceDirectory) {
+    dayo::fx::FxShaderCompiler compiler;
+    const bool dxc = compiler.executable().filename() == "dxc" || compiler.executable().filename() == "dxc.exe";
+    if (!compiler.available() || !dxc) {
+        std::cerr << "WARN: DXC unavailable; upstream ABI SPIR-V probe skipped\n";
+        return true;
+    }
+    dayo::fx::FxShaderCompileRequest request;
+    request.sourcePath = sourceDirectory / "hlsl/dayo_abi_probe.hlsl";
+    request.entryPoint = "main";
+    request.stage = dayo::fx::FxShaderStage::compute;
+    request.includeDirectories = {sourceDirectory / "hlsl"};
+    request.hlsl = R"HLSL(#include "resources_pp.hlsli"
+[numthreads(1, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    float4 color = ScreenBMP.Load(int3(0, 0, 0)) + ScreenTexture.Load(int3(0, 0, 0));
+    uint scene = CloneCount[0] + ModelIndex + RasterizeOrder + DeformIndex + DeformOrder;
+    color += float4(float(ModelCount + TotalMaterialCount + scene + iSample), Time, 0, 0);
+    RTOutput[id.xy] = color;
+}
+)HLSL";
+    try {
+        const auto artifact = compiler.compile(request);
+        const auto reflected = reflectSpirvBindings(artifact.spirv);
+        bool ok = true;
+        struct ExpectedProbeBinding {
+            const char* name;
+            std::uint32_t set;
+            std::uint32_t binding;
+        };
+        const std::array expectedBindings = {
+            ExpectedProbeBinding{"RTOutput", 0, dayo::graphics::nativeSceneBinding(
+                                                   dayo::graphics::NativeSceneRegisterClass::uav, 0)},
+            ExpectedProbeBinding{"ScreenBMP", 0, dayo::graphics::nativeSceneBinding(
+                                                    dayo::graphics::NativeSceneRegisterClass::sampled, 9)},
+            ExpectedProbeBinding{"ScreenTexture", 0, dayo::graphics::nativeSceneBinding(
+                                                        dayo::graphics::NativeSceneRegisterClass::sampled, 11)},
+            ExpectedProbeBinding{"CloneCount", 0, dayo::graphics::nativeSceneBinding(
+                                                    dayo::graphics::NativeSceneRegisterClass::sampled, 10)},
+            ExpectedProbeBinding{"ViewCB", 0, dayo::graphics::nativeSceneBinding(
+                                                  dayo::graphics::NativeSceneRegisterClass::uniform, 0)},
+            ExpectedProbeBinding{"CBuff1", 1, dayo::graphics::nativeSceneBinding(
+                                                   dayo::graphics::NativeSceneRegisterClass::uniform, 0)},
+        };
+        for (const auto& expected : expectedBindings) {
+            const auto found = reflected.find(expected.name);
+            ok &= check(found != reflected.end(), std::string("SPIR-V ABI probe reflects ") + expected.name);
+            if (found == reflected.end())
+                continue;
+            ok &= check(found->second.first == expected.set && found->second.second == expected.binding,
+                        std::string("SPIR-V ABI coordinates for ") + expected.name);
+        }
+        return ok;
+    } catch (const std::exception& exception) {
+        std::cerr << "FAIL: SPIR-V ABI probe: " << exception.what() << '\n';
+        return false;
+    }
 }
 
 } // namespace
@@ -43,6 +434,22 @@ int main() {
         const std::string actual((std::istreambuf_iterator<char>(marker)), std::istreambuf_iterator<char>());
         if (!check(actual == expected, "upstream installation must match the pinned release lock"))
             return 1;
+    }
+
+    try {
+        ok &= checkUpstreamAbi(sourceDirectory);
+        ok &= checkAbiSpirvProbe(sourceDirectory);
+        const auto expectedGraphCount = upstreamFxFiles(sourceDirectory).size();
+        const auto scan = scanUpstreamGraphs(sourceDirectory);
+        ok &= check(scan.graphCount == expectedGraphCount, "all pinned upstream FX graphs compile and link");
+        ok &= check(scan.failures.empty(), "all pinned upstream FX metadata and shader probes pass");
+        std::cout << "INFO: upstream oracle validated " << scan.graphCount << " graphs, " << scan.passCount
+                  << " dispatches, and " << scan.shaderCount << " shader probes\n";
+        for (const auto& failure : scan.failures)
+            std::cerr << "FAIL: upstream oracle: " << failure << '\n';
+    } catch (const std::exception& exception) {
+        std::cerr << "FAIL: upstream oracle: " << exception.what() << '\n';
+        ok = false;
     }
 
     try {

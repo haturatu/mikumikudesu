@@ -6,6 +6,7 @@
 #include <limits>
 #include <ranges>
 #include <stdexcept>
+#include <unordered_set>
 #include <utility>
 
 namespace dayo::fx {
@@ -331,13 +332,64 @@ FxRequiredFeatures requiredFeatures(const FxProgram& program) noexcept {
 }
 
 bool FxCompiler::buildPipelines(const FxProgram& program, std::string* error) const {
-    const auto empty = std::ranges::find_if(program.passes, [](const FxDispatch& pass) { return pass.name.empty(); });
-    if (empty == program.passes.end())
-        return true;
     if (error != nullptr)
-        *error = "fx pipeline: dispatch with empty name";
-    dayo::log::error("FxCompiler pipeline validation failed: empty dispatch name");
-    return false;
+        error->clear();
+    const auto fail = [&](std::string message) {
+        if (error != nullptr)
+            *error = std::move(message);
+        dayo::log::error("FxCompiler pipeline validation failed: ", error == nullptr ? "invalid dispatch" : *error);
+        return false;
+    };
+    std::unordered_set<std::string> names;
+    for (const auto& dispatch : program.passes) {
+        if (dispatch.name.empty())
+            return fail("fx pipeline: dispatch with empty name");
+        if (!names.insert(dispatch.name).second)
+            return fail("fx pipeline: duplicate dispatch name: " + dispatch.name);
+        switch (dispatch.kind) {
+        case FxOpKind::raster: {
+            const auto* raster = std::get_if<FxRasterDispatch>(&dispatch.executable);
+            if (raster == nullptr || raster->vertexShader.empty() || raster->pixelShader.empty())
+                return fail("fx pipeline: raster dispatch is missing vertex or pixel shader: " + dispatch.name);
+            break;
+        }
+        case FxOpKind::postprocess: {
+            const auto* postprocess = std::get_if<FxPostProcessDispatch>(&dispatch.executable);
+            if (postprocess == nullptr || postprocess->pixelShader.empty())
+                return fail("fx pipeline: postprocess dispatch is missing pixel shader: " + dispatch.name);
+            break;
+        }
+        case FxOpKind::compute: {
+            const auto* compute = std::get_if<FxComputeDispatch>(&dispatch.executable);
+            if (compute == nullptr || compute->computeShader.empty())
+                return fail("fx pipeline: compute dispatch is missing compute shader: " + dispatch.name);
+            break;
+        }
+        case FxOpKind::raytracing: {
+            const auto* ray = std::get_if<FxRayTracingDispatch>(&dispatch.executable);
+            if (ray == nullptr || ray->rayGenerationShader.empty())
+                return fail("fx pipeline: ray-tracing dispatch is missing raygen shader: " + dispatch.name);
+            break;
+        }
+        case FxOpKind::oidn: {
+            const auto* oidn = std::get_if<FxOidnDispatch>(&dispatch.executable);
+            if (oidn == nullptr || oidn->input.empty() || oidn->output.empty())
+                return fail("fx pipeline: OIDN dispatch is missing input or output: " + dispatch.name);
+            break;
+        }
+        case FxOpKind::copy:
+        case FxOpKind::clear:
+        case FxOpKind::mipmap:
+            break;
+        }
+        for (const auto& resource : dispatch.resources) {
+            if (resource.name.empty())
+                return fail("fx pipeline: dispatch resource has an empty name: " + dispatch.name);
+            if (resource.write && resource.role == FxResourceRole::sampled)
+                return fail("fx pipeline: writable resource is marked sampled: " + resource.name);
+        }
+    }
+    return true;
 }
 
 FxInstance::FxInstance(FxProgram initial, FxCompilerOptions options)
