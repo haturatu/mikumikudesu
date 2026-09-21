@@ -352,10 +352,11 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
     }
     EffectGraph graph;
     graph.sourcePath = path;
-    // Subayai keeps shared HLSL declarations before [YRZFX]. Preserve both
-    // HLSL regions so runtime shader compilation sees the complete source.
-    graph.hlsl = source.substr(0, jsonStart);
-    graph.hlsl += source.substr(hlslStart + hlslMarker.size());
+    // Upstream keeps ABI includes and type declarations before [YRZFX]. Keep
+    // that predecessor separate so generated declarations can be inserted
+    // after the includes and before the executable shader body.
+    graph.hlslPrefix = source.substr(0, jsonStart);
+    graph.hlsl = source.substr(hlslStart + hlslMarker.size());
 #if DAYO_HAS_JSONNET
     const auto jsonText =
         evaluateJsonnet(path, std::string_view(source).substr(jsonStart + jsonMarker.size(),
@@ -386,6 +387,15 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
     }
     if (const auto cloning = fx.find("meshCloning"); cloning != fx.end() && cloning->is_object())
         graph.meshCloneCount = std::max(1U, cloning->value("count", 1U));
+    if (const auto material = fx.find("matDescs"); material != fx.end() && material->is_object()) {
+        EffectMaterialDescriptor descriptor;
+        descriptor.name = material->value("name", "");
+        descriptor.templatePath = material->value("template", "");
+        descriptor.defaultFile = material->value("defaultFile", "");
+        if (descriptor.name.empty() || descriptor.templatePath.empty())
+            throw std::runtime_error("YRZFX matDescs requires name and template");
+        graph.materialDescriptor = std::move(descriptor);
+    }
     if (const auto values = fx.find("samplers"); values != fx.end() && values->is_array()) {
         for (const auto& value : *values)
             graph.samplers.push_back({value.value("name", ""), value.value("filter", ""),
@@ -417,6 +427,11 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
                                                   group.value("anyHit", ""), group.value("intersection", "")});
             }
             pass.macros = strings(value, "macros");
+            if (const auto threads = value.find("numthreads"); threads != value.end() && threads->is_object()) {
+                pass.numThreads = {std::max(1U, threads->value("x", 1U)),
+                                   std::max(1U, threads->value("y", 1U)),
+                                   std::max(1U, threads->value("z", 1U))};
+            }
             pass.conditions = strings(value, "conditions");
             pass.inputs = attachments(value, "inputs");
             if (pass.inputs.empty())

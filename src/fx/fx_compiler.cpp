@@ -104,6 +104,9 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
     if (!graph.category.empty())
         program.category = core::fx::fxCategoryFromString(graph.category);
     program.sourcePath = graph.sourcePath;
+    program.materialDescriptor = graph.materialDescriptor;
+    program.hlslPrefix = graph.hlslPrefix;
+    program.generatedCode = graph.generatedCode;
     program.hlsl = graph.hlsl;
     program.textures = graph.textures;
     program.textures3D = graph.textures3D;
@@ -111,11 +114,6 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
     program.samplers = graph.samplers;
     program.controllers = graph.controllers;
     program.meshCloneCount = graph.meshCloneCount;
-    if (!graph.generatedCode.empty()) {
-        if (!program.hlsl.empty() && program.hlsl.back() != '\n')
-            program.hlsl.push_back('\n');
-        program.hlsl += graph.generatedCode;
-    }
     for (const auto& pass : graph.passes) {
         FxDispatch dispatch;
         dispatch.name = pass.name.empty() ? "pass" : pass.name;
@@ -123,6 +121,13 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
         dispatch.category = program.category;
         dispatch.conditions = pass.conditions;
         dispatch.macros = pass.macros;
+        if (pass.type == core::EffectPassType::compute &&
+            std::ranges::none_of(dispatch.macros, [](const std::string& macro) {
+                return macro.starts_with("YRZ_NUMTHREADS=");
+            })) {
+            dispatch.macros.push_back("YRZ_NUMTHREADS=[numthreads(" + std::to_string(pass.numThreads[0]) + "," +
+                                      std::to_string(pass.numThreads[1]) + "," + std::to_string(pass.numThreads[2]) + ")]");
+        }
         if (!pass.computeShader.empty())
             dispatch.shader = pass.computeShader;
         else if (!pass.pixelShader.empty())

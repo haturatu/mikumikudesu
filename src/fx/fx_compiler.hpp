@@ -129,6 +129,9 @@ struct FxProgram {
     std::uint64_t generation{};
     std::uint64_t sourceVersion{};
     std::filesystem::path sourcePath;
+    std::optional<core::EffectMaterialDescriptor> materialDescriptor;
+    std::string hlslPrefix;
+    std::string generatedCode;
     std::string hlsl;
     core::fx::FxCategory category{core::fx::FxCategory::render};
 };

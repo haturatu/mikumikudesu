@@ -131,6 +131,7 @@ struct EffectPass {
     std::vector<EffectHitGroup> hitGroups;
     std::vector<std::string> callableShaders;
     std::vector<std::string> macros;
+    std::array<std::uint32_t, 3> numThreads{1, 1, 1};
     std::vector<std::string> conditions;
     std::vector<EffectAttachment> inputs;
     std::vector<EffectAttachment> renderTargets;
@@ -159,6 +160,12 @@ struct EffectController {
     std::string type;
 };
 
+struct EffectMaterialDescriptor {
+    std::string name;
+    std::filesystem::path templatePath;
+    std::filesystem::path defaultFile;
+};
+
 struct EffectGraph {
     std::filesystem::path sourcePath;
     std::string category;
@@ -168,8 +175,12 @@ struct EffectGraph {
     std::vector<EffectSampler> samplers;
     std::vector<EffectController> controllers;
     std::vector<EffectPass> passes;
+    std::optional<EffectMaterialDescriptor> materialDescriptor;
     std::uint32_t meshCloneCount{1};
     std::string generatedCode;
+    // HLSL text before [YRZFX] is part of the upstream shader source. It must
+    // precede generated declarations because it defines Dayo/YRZ ABI types.
+    std::string hlslPrefix;
     std::string hlsl;
 };
 

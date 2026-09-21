@@ -11,7 +11,6 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
-#include <system_error>
 #include <utility>
 
 namespace dayo::graphics {
@@ -92,104 +91,6 @@ std::string includeDirectoryKey(std::span<const std::filesystem::path> directori
     for (const auto& directory : directories)
         output << directory.lexically_normal().string().size() << ':' << directory.lexically_normal().string() << ';';
     return output.str();
-}
-
-std::string lowerAscii(std::string_view value) {
-    std::string result;
-    result.reserve(value.size());
-    for (const auto character : value)
-        result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
-    return result;
-}
-
-std::optional<std::filesystem::path> resolveIncludeCase(const std::filesystem::path& directory,
-                                                        std::string_view include) {
-    const std::filesystem::path requested(include);
-    if (requested.is_absolute())
-        return std::nullopt;
-
-    std::filesystem::path current = directory;
-    std::error_code error;
-    for (const auto& component : requested) {
-        const auto name = component.string();
-        if (name.empty() || name == ".")
-            continue;
-        if (name == "..") {
-            current = current.parent_path();
-            continue;
-        }
-        const auto exact = current / component;
-        if (std::filesystem::is_directory(exact, error) || std::filesystem::is_regular_file(exact, error)) {
-            current = exact;
-            continue;
-        }
-        error.clear();
-        if (!std::filesystem::is_directory(current, error))
-            return std::nullopt;
-        const auto wanted = lowerAscii(name);
-        std::optional<std::filesystem::path> match;
-        for (std::filesystem::directory_iterator iterator(current, error), end; !error && iterator != end;
-             iterator.increment(error)) {
-            if (lowerAscii(iterator->path().filename().string()) != wanted)
-                continue;
-            if (match.has_value())
-                return std::nullopt;
-            match = iterator->path();
-        }
-        if (!match.has_value())
-            return std::nullopt;
-        current = *match;
-    }
-    if (!std::filesystem::is_regular_file(current, error))
-        return std::nullopt;
-    return current;
-}
-
-std::string normalizeIncludeCase(std::string_view source, const std::filesystem::path& directory) {
-    std::string result;
-    result.reserve(source.size());
-    std::error_code error;
-    std::size_t lineStart = 0;
-    while (lineStart < source.size()) {
-        const auto lineEnd = source.find('\n', lineStart);
-        const auto length = lineEnd == std::string_view::npos ? source.size() - lineStart : lineEnd - lineStart;
-        const auto line = source.substr(lineStart, length);
-        const auto includeStart = line.find("#include");
-        const auto quoteStart =
-            includeStart == std::string_view::npos ? std::string_view::npos : line.find('"', includeStart + 8);
-        const auto quoteEnd =
-            quoteStart == std::string_view::npos ? std::string_view::npos : line.find('"', quoteStart + 1);
-        if (quoteStart != std::string_view::npos && quoteEnd != std::string_view::npos) {
-            const auto include = line.substr(quoteStart + 1, quoteEnd - quoteStart - 1);
-            const auto resolved = resolveIncludeCase(directory, include);
-            if (resolved.has_value()) {
-                const auto absoluteDirectory = std::filesystem::absolute(directory, error).lexically_normal();
-                if (!error) {
-                    const auto relative = std::filesystem::relative(*resolved, absoluteDirectory, error);
-                    if (!error && !relative.empty()) {
-                        result.append(line.substr(0, quoteStart + 1));
-                        result.append(relative.generic_string());
-                        result.append(line.substr(quoteEnd));
-                    } else {
-                        result.append(line);
-                    }
-                } else {
-                    result.append(line);
-                    error.clear();
-                }
-            } else {
-                result.append(line);
-            }
-        } else {
-            result.append(line);
-        }
-        if (lineEnd != std::string_view::npos)
-            result.push_back('\n');
-        if (lineEnd == std::string_view::npos)
-            break;
-        lineStart = lineEnd + 1;
-    }
-    return result;
 }
 
 std::string upper(std::string_view value) {
@@ -438,8 +339,8 @@ handles::ShaderHandle FxPipelineRuntime::compileShader(Device& device, const fx:
 
     const auto sourceDirectory =
         program.sourcePath.empty() ? std::filesystem::path{"."} : program.sourcePath.parent_path();
-    request.hlsl =
-        normalizeIncludeCase(generatedSource, sourceDirectory.empty() ? std::filesystem::path{"."} : sourceDirectory);
+    request.hlsl = fx::normalizeFxShaderIncludes(
+        generatedSource, sourceDirectory.empty() ? std::filesystem::path{"."} : sourceDirectory);
     request.sourcePath = program.sourcePath;
     request.entryPoint = std::string(entryPoint);
     request.stage = stage;
