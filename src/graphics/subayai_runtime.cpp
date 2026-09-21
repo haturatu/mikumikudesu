@@ -105,7 +105,7 @@ bool SubayaiRuntime::initialize(Device& device, fx::FxProgram program, std::stri
 }
 
 void SubayaiRuntime::reset() noexcept {
-    nativeFx_.reset();
+    dayoFx_.reset();
     geometry_.reset();
     environmentRuntime_.reset();
     bindings_.reset();
@@ -242,17 +242,19 @@ SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
             sharedSets.assign(sets.begin(), sets.end());
         }
         sourceOptions.preamble = subayaiShaderPreamble();
+        sourceOptions.controllerDeclarations = controllerDeclarations_;
         appendSubayaiSharedBindings(bindings_, environmentRuntime_, geometry_, sharedLayouts, sharedSets,
                                     sourceOptions);
         std::string nativeError;
-        static_cast<void>(nativeFx_.initializeForFrame(*device_, program_, fx::FxShaderCompiler{}, context,
-                                                       sharedLayouts, &nativeError, sharedSets,
-                                                       std::move(sourceOptions)));
-    } else if (nativeFx_.ready()) {
+        if (externalResourceProvider_ != nullptr)
+            dayoFx_.addProvider(*externalResourceProvider_);
+        static_cast<void>(dayoFx_.initializeForFrame(*device_, program_, fx::FxShaderCompiler{}, context, sharedLayouts,
+                                                     &nativeError, sharedSets, std::move(sourceOptions)));
+    } else if (dayoFx_.ready()) {
         std::string nativeError;
-        static_cast<void>(nativeFx_.refresh(context, &nativeError));
+        static_cast<void>(dayoFx_.refresh(context, &nativeError));
     }
-    if (nativeFx_.ready()) {
+    if (dayoFx_.ready()) {
         std::vector<handles::DescriptorSetHandle> frameSharedSets;
         if (sceneFrame_) {
             const auto sets = sceneFrame_->descriptorSets();
@@ -267,7 +269,7 @@ SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
         append(bindings_.layouts().lightSampling, bindings_.lightSamplingSet());
         append(geometry_.descriptorLayout(), geometry_.descriptorSet());
         append(environmentRuntime_.layout(), environmentRuntime_.descriptorSet());
-        frame.nativeFx = nativeFx_.prepareFrame(context, frameSharedSets);
+        frame.nativeFx = dayoFx_.prepareFrame(context, frameSharedSets);
     }
     return frame;
 }
@@ -277,7 +279,7 @@ VulkanFxExecutor::Stats SubayaiRuntime::execute(SubayaiFrame& frame, CommandList
     if (!ready_)
         throw std::logic_error("Subayai runtime is not initialized");
     if (frame.nativeFx.has_value())
-        return nativeFx_.execute(*frame.nativeFx, commands, resources);
+        return dayoFx_.execute(*frame.nativeFx, commands, resources);
     auto nativeResources = resources;
     if (!nativeResources.resolveDescriptorSets && !nativeResources.resolveDescriptorSet &&
         (frame.materialDescriptorSet.valid() || frame.lightSamplingDescriptorSet.valid() ||
@@ -305,9 +307,9 @@ VulkanFxExecutor::Stats SubayaiRuntime::execute(SubayaiFrame& frame, CommandList
 }
 
 std::optional<NativeFrameOutput> SubayaiRuntime::output(const SubayaiFrame& frame) const {
-    if (!frame.nativeFx.has_value() || !nativeFx_.ready())
+    if (!frame.nativeFx.has_value() || !dayoFx_.ready())
         return std::nullopt;
-    return nativeFx_.output(*frame.nativeFx);
+    return dayoFx_.output(*frame.nativeFx);
 }
 
 } // namespace dayo::graphics

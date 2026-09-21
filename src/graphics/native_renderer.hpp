@@ -1,14 +1,19 @@
 #pragma once
 
 #include "core/effect.hpp"
+#include "core/fx/fx_controller_resolver.hpp"
+#include "core/scene.hpp"
 #include "graphics/bdpt_runtime.hpp"
+#include "graphics/dayo_fx_runtime.hpp"
 #include "graphics/native_renderer_requirements.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/subayai_runtime.hpp"
 
 #include <optional>
+#include <memory>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace dayo::graphics {
 
@@ -29,6 +34,12 @@ class NativeRendererCoordinator {
     [[nodiscard]] NativeRendererStatus prepare(Device& device, RendererKind requested, fx::FxProgram program);
     void setEnvironmentBackend(IEnvironmentBackend* backend) noexcept;
     void setSceneFrameRuntime(NativeSceneFrameRuntime* runtime) noexcept;
+    void setHostResourceBindings(const NativeSceneResourceBindings& bindings) noexcept;
+    void setEffectStack(const core::SceneEffectStack& effects);
+    void setControllerDeclarations(std::span<const core::EffectController> declarations);
+    void setEvaluationSnapshot(const core::fx::SceneEvaluationSnapshot* snapshot) noexcept {
+        evaluationSnapshot_ = snapshot;
+    }
     [[nodiscard]] bool updateEnvironment(const EnvironmentDesc& description);
     void reset() noexcept;
 
@@ -48,11 +59,27 @@ class NativeRendererCoordinator {
                 const EnvironmentGpuResult& environment, const FxExecutionResources& resources = {});
 
   private:
+    using GenericRuntimeList = std::vector<std::unique_ptr<DayoFxRuntime>>;
+
+    [[nodiscard]] std::optional<NativeFrameOutput>
+    executeGenericEffects(std::span<const core::SceneEffectInstance> effects, GenericRuntimeList& runtimes,
+                          CommandList& commands, const fx::FxFrameContext& context,
+                          const FxExecutionResources& resources, bool publishToScreen);
+
     NativeRendererStatus status_{};
     SubayaiRuntime subayai_;
     BdptRuntime bdpt_;
     IEnvironmentBackend* environmentBackend_{};
     NativeSceneFrameRuntime* sceneFrameRuntime_{};
+    std::optional<DayoHostResourceProvider> hostResourceProvider_;
+    DayoSceneHostProvider sceneHostProvider_;
+    Device* device_{};
+    std::vector<core::SceneEffectInstance> deformEffects_;
+    std::vector<core::SceneEffectInstance> postprocessEffects_;
+    std::vector<core::EffectController> controllerDeclarations_;
+    GenericRuntimeList deformRuntimes_;
+    GenericRuntimeList postprocessRuntimes_;
+    const core::fx::SceneEvaluationSnapshot* evaluationSnapshot_{};
 };
 
 } // namespace dayo::graphics

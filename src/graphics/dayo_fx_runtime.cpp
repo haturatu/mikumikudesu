@@ -28,6 +28,16 @@ bool DayoFxRuntime::initialize(Device& device, fx::FxProgram program, const fx::
                                std::move(sourceOptions));
 }
 
+bool DayoFxRuntime::initializeForFrame(Device& device, fx::FxProgram program,
+                                       const fx::FxShaderCompiler& compiler, const fx::FxFrameContext& context,
+                                       std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts,
+                                       std::string* error,
+                                       std::span<const handles::DescriptorSetHandle> sharedDescriptorSets,
+                                       fx::FxNativeShaderSourceOptions sourceOptions) {
+    return runtime_.initializeForFrame(device, std::move(program), compiler, context, sharedLayouts, error,
+                                       sharedDescriptorSets, std::move(sourceOptions));
+}
+
 bool DayoFxRuntime::refresh(const fx::FxFrameContext& context, std::string* error) {
     return runtime_.refresh(context, error);
 }
@@ -55,13 +65,19 @@ VulkanFxExecutor::Stats DayoFxRuntime::execute(NativeFxFrame& frame, CommandList
     auto nativeResources = resources;
     const auto existingResolver = resources.resolveTypedResource;
     const auto providers = providers_;
-    nativeResources.resolveTypedResource = [existingResolver, providers, &frame](std::string_view name)
+    nativeResources.resolveTypedResource = [this, existingResolver, providers, &frame](std::string_view name)
         -> std::optional<FxExecutionResources::TypedResource> {
         if (existingResolver) {
             const auto binding = existingResolver(name);
             if (binding.has_value())
                 return binding;
         }
+        if (const auto texture = runtime_.resources().resolveTexture(name); texture.has_value())
+            return FxExecutionResources::TypedResource{.texture = *texture};
+        if (const auto buffer = runtime_.resources().resolveBuffer(name); buffer.has_value())
+            return FxExecutionResources::TypedResource{.buffer = *buffer};
+        if (const auto sampler = runtime_.resources().resolveSampler(name); sampler.has_value())
+            return FxExecutionResources::TypedResource{.sampler = *sampler};
         for (auto* provider : providers) {
             if (provider == nullptr || !provider->supports(name))
                 continue;
@@ -91,6 +107,10 @@ VulkanFxExecutor::Stats DayoFxRuntime::execute(NativeFxFrame& frame, CommandList
             existingAfter(dispatch, list);
     };
     return runtime_.execute(frame, commands, nativeResources);
+}
+
+std::optional<NativeFrameOutput> DayoFxRuntime::output(const NativeFxFrame& frame) const {
+    return runtime_.output(frame);
 }
 
 } // namespace dayo::graphics

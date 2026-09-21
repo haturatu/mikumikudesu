@@ -3,7 +3,7 @@
 #include "core/effect.hpp"
 #include "fx/fx_compiler.hpp"
 #include "graphics/fx_executor.hpp"
-#include "graphics/native_fx_runtime.hpp"
+#include "graphics/dayo_fx_runtime.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/subayai_bindings.hpp"
 #include "graphics/subayai_environment.hpp"
@@ -51,12 +51,21 @@ class SubayaiRuntime {
     void setSceneFrameRuntime(NativeSceneFrameRuntime* runtime) noexcept {
         sceneFrame_ = runtime;
     }
+    void setExternalResourceProvider(FxExternalResourceProvider* provider) noexcept {
+        externalResourceProvider_ = provider;
+        dayoFx_.clearProviders();
+        if (provider != nullptr)
+            dayoFx_.addProvider(*provider);
+    }
+    void setControllerDeclarations(std::span<const core::EffectController> declarations) {
+        controllerDeclarations_.assign(declarations.begin(), declarations.end());
+    }
 
     [[nodiscard]] bool ready() const noexcept {
         return ready_;
     }
     [[nodiscard]] bool nativeReady() const noexcept {
-        return nativeFx_.ready();
+        return dayoFx_.ready();
     }
     [[nodiscard]] const fx::FxProgram* program() const noexcept {
         return ready_ ? &program_ : nullptr;
@@ -102,7 +111,9 @@ class SubayaiRuntime {
     NativeGeometryRuntime geometry_;
     SubayaiEnvironmentRuntime environmentRuntime_;
     EnvironmentService environmentService_{nullptr};
-    NativeFxRuntime nativeFx_;
+    DayoFxRuntime dayoFx_;
+    FxExternalResourceProvider* externalResourceProvider_{};
+    std::vector<core::EffectController> controllerDeclarations_;
     NativeSceneFrameRuntime* sceneFrame_{};
     bool nativeAttempted_{};
     bool ready_{};

@@ -137,6 +137,36 @@ bool Application::ensureNativeSceneRuntime(bool restartRenderer, std::string* er
             *error = "native scene model count exceeds descriptor limits";
         return false;
     }
+    std::vector<core::EffectController> controllerDeclarations;
+    const auto appendControllers = [&controllerDeclarations](const core::EffectGraph& graph) {
+        for (const auto& controller : graph.controllers) {
+            const auto found = std::ranges::find_if(
+                controllerDeclarations, [&controller](const auto& candidate) { return candidate.name == controller.name; });
+            if (found == controllerDeclarations.end()) {
+                controllerDeclarations.push_back(controller);
+                continue;
+            }
+            if (found->type != controller.type || found->controllerName != controller.controllerName ||
+                found->item != controller.item)
+                throw std::runtime_error("native FX controller declaration conflicts: " + controller.name);
+        }
+    };
+    if (scene_.effects().renderer.has_value())
+        appendControllers(scene_.effects().renderer->graph);
+    for (const auto& effect : scene_.effects().deform)
+        appendControllers(effect.graph);
+    for (const auto& effect : scene_.effects().postprocess)
+        appendControllers(effect.graph);
+    const auto sameControllers = [](std::span<const core::EffectController> left,
+                                    std::span<const core::EffectController> right) {
+        if (left.size() != right.size())
+            return false;
+        return std::ranges::equal(left, right, [](const auto& lhs, const auto& rhs) {
+            return lhs.name == rhs.name && lhs.controllerName == rhs.controllerName && lhs.item == rhs.item &&
+                   lhs.type == rhs.type;
+        });
+    };
+    nativeRenderer_.setControllerDeclarations(controllerDeclarations);
     const auto modelCount = static_cast<std::uint32_t>(std::max<std::size_t>(1, nativeSceneModelData_.size()));
     const graphics::NativeSceneDescriptorCounts counts{.textures = 1,
                                                        .vertexBuffers = modelCount,
@@ -156,7 +186,8 @@ bool Application::ensureNativeSceneRuntime(bool restartRenderer, std::string* er
     };
     if (nativeSceneFrame_.ready() && nativeSceneResources_.ready() &&
         sameCounts(nativeSceneFrame_.resources().counts(), counts) &&
-        sameCounts(nativeSceneResources_.counts(), counts)) {
+        sameCounts(nativeSceneResources_.counts(), counts) &&
+        sameControllers(nativeControllerDeclarations_, controllerDeclarations)) {
         nativeRenderer_.setSceneFrameRuntime(&nativeSceneFrame_);
         return true;
     }
@@ -170,8 +201,9 @@ bool Application::ensureNativeSceneRuntime(bool restartRenderer, std::string* er
         if (!nativeSceneResources_.initialize(*device_, counts, &runtimeError))
             throw std::runtime_error(runtimeError.empty() ? "native scene resource store initialization failed"
                                                           : runtimeError);
-        if (!nativeSceneFrame_.initialize(*device_, scene_.effect()->controllers, counts, &runtimeError))
+        if (!nativeSceneFrame_.initialize(*device_, controllerDeclarations, counts, &runtimeError))
             throw std::runtime_error(runtimeError.empty() ? "native scene frame initialization failed" : runtimeError);
+        nativeControllerDeclarations_ = controllerDeclarations;
         nativeRenderer_.setSceneFrameRuntime(&nativeSceneFrame_);
     } catch (const std::exception& exception) {
         nativeSceneFrame_.reset();
@@ -217,6 +249,7 @@ void Application::requestRenderer(graphics::RendererKind renderer) {
             nativeRenderer_.setSceneFrameRuntime(&nativeSceneFrame_);
         }
         const auto status = nativeRenderer_.prepare(*device_, renderer, *scene_.effect());
+        nativeRenderer_.setEffectStack(scene_.effects());
         device_->setNativeRendererAvailability(status.nativeReady && status.active == graphics::RendererKind::subayai,
                                                status.nativeReady && status.active == graphics::RendererKind::bdpt);
         device_->selectRenderer(status.active);
@@ -438,6 +471,7 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         nativeScreenRuntime_.bindScreenSemantics(sceneResources);
         if (!nativeSceneResources_.compose(sceneResources, &sceneError))
             throw std::runtime_error(sceneError.empty() ? "native scene resource composition failed" : sceneError);
+        nativeRenderer_.setHostResourceBindings(nativeSceneResources_.bindings());
         nativeSceneDraws_.clear();
         for (std::size_t modelIndex = 0; modelIndex < nativeSceneModelData_.size(); ++modelIndex) {
             if (modelIndex >= nativeGeometry_.size() || modelIndex >= modelResources.vertexBuffers.size() ||
@@ -546,6 +580,7 @@ void Application::resetProjectRuntimeState() {
     videoRangeInitialized_ = false;
     scene_.clearProjectState();
     evaluatedModels_.models.clear();
+    nativeControllerDeclarations_.clear();
     nativeRenderer_.reset();
     nativeSceneFrame_.reset();
     nativeSceneResources_.reset();
@@ -600,6 +635,7 @@ int Application::run() {
     auto window = platform::createWindow(windowOptions);
     auto device = graphics::createVulkanDevice(*window, options_.validation);
     device_ = device.get();
+    nativeRenderer_.setEvaluationSnapshot(&evaluatedModels_);
     std::unique_ptr<graphics::NativeEnvironmentBackend> environmentBackend;
     const graphics::EnvironmentPassBindings environmentBindings{
         .equirectToCubePipeline = device_->nativeEnvironmentEquirectPipeline(),

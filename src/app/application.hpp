@@ -98,6 +98,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     graphics::NativeScreenRuntime nativeScreenRuntime_;
     core::Scene scene_;
     core::fx::SceneEvaluationSnapshot evaluatedModels_;
+    std::vector<core::EffectController> nativeControllerDeclarations_;
     core::TaskScheduler taskScheduler_;
     core::FrameScratch frameScratch_;
     core::FrameProfiler frameProfiler_;

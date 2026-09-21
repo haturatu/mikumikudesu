@@ -4,6 +4,7 @@
 #include <cctype>
 #include <limits>
 #include <sstream>
+#include <span>
 #include <stdexcept>
 #include <string_view>
 #include <unordered_set>
@@ -98,12 +99,16 @@ namespace {
     return name.find("UAV") != std::string::npos || name.find("STORAGE") != std::string::npos;
 }
 
-void appendControllerBlock(std::ostringstream& output, const FxProgram& program) {
-    if (program.controllers.empty())
+void appendControllerBlock(std::ostringstream& output, const FxProgram& program,
+                           std::span<const core::EffectController> sharedControllers) {
+    const auto controllers = sharedControllers.empty()
+                                 ? std::span<const core::EffectController>(program.controllers)
+                                 : sharedControllers;
+    if (controllers.empty())
         return;
     output << "cbuffer YRZFX_ControllerCB : register(b1) {\n";
     std::unordered_set<std::string> names;
-    for (const auto& controller : program.controllers) {
+    for (const auto& controller : controllers) {
         std::string arraySuffix;
         const auto name = controllerName(controller.name, arraySuffix);
         if (!names.insert(name).second)
@@ -179,7 +184,7 @@ std::string makeNativeFxShaderSource(const FxProgram& program, const FxDispatch&
     std::ostringstream output;
     output << "// generated native FX declarations\n";
     appendSharedDeclarations(output, options);
-    appendControllerBlock(output, program);
+    appendControllerBlock(output, program, options.controllerDeclarations);
     output << "#ifdef " << passMacro(dispatch.name) << "\n";
     std::uint32_t sampledBinding = 0;
     std::uint32_t uavBinding = 0;

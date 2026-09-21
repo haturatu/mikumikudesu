@@ -37,7 +37,12 @@ class FxExternalResourceProvider {
 // can implement the same interface for TLAS/light/accumulation resources.
 class DayoSceneHostProvider final : public FxExternalResourceProvider {
   public:
+    DayoSceneHostProvider() noexcept = default;
     explicit DayoSceneHostProvider(const DayoHostResourceProvider& provider) noexcept : provider_(&provider) {}
+
+    void setProvider(const DayoHostResourceProvider& provider) noexcept {
+        provider_ = &provider;
+    }
 
     [[nodiscard]] bool supports(std::string_view semantic) const override;
     [[nodiscard]] FxResourceBinding resolve(std::string_view semantic,
@@ -62,6 +67,13 @@ class DayoFxRuntime {
                                   std::string* error = nullptr,
                                   std::span<const handles::DescriptorSetHandle> sharedDescriptorSets = {},
                                   fx::FxNativeShaderSourceOptions sourceOptions = {});
+    [[nodiscard]] bool initializeForFrame(Device& device, fx::FxProgram program,
+                                          const fx::FxShaderCompiler& compiler,
+                                          const fx::FxFrameContext& context,
+                                          std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts = {},
+                                          std::string* error = nullptr,
+                                          std::span<const handles::DescriptorSetHandle> sharedDescriptorSets = {},
+                                          fx::FxNativeShaderSourceOptions sourceOptions = {});
     [[nodiscard]] bool refresh(const fx::FxFrameContext& context, std::string* error = nullptr);
     void reset() noexcept;
 
@@ -81,6 +93,7 @@ class DayoFxRuntime {
                                              std::span<const handles::DescriptorSetHandle> sharedSets = {}) const;
     [[nodiscard]] VulkanFxExecutor::Stats execute(NativeFxFrame& frame, CommandList& commands,
                                                   const FxExecutionResources& resources = {}) const;
+    [[nodiscard]] std::optional<NativeFrameOutput> output(const NativeFxFrame& frame) const;
 
     [[nodiscard]] const NativeFxRuntime& nativeRuntime() const noexcept {
         return runtime_;
