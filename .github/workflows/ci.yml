@@ -7,7 +7,6 @@ on:
       - '**/*.md'
       - docs/**
   pull_request:
-    branches: [main]
     paths-ignore:
       - '**/*.md'
       - docs/**
@@ -96,6 +95,21 @@ jobs:
             vulkan-validationlayers \
             xvfb
 
+      - name: Install DXC for upstream oracle
+        if: matrix.upstream
+        run: |
+          dxc_tag='v1.9.2602.24'
+          dxc_archive='linux_dxc_2026_05_26.x86_64.tar.gz'
+          dxc_url="https://github.com/microsoft/DirectXShaderCompiler/releases/download/${dxc_tag}/${dxc_archive}"
+          curl -fsSL "$dxc_url" -o "$RUNNER_TEMP/$dxc_archive"
+          echo '3da18b4b32899c65881276315411092fa1a076e25bbea20606bc247c5fa93c83f948785969e007115dc72afcd433ab76e54c392de6d37c11d93d8614a829e40a  '"$RUNNER_TEMP/$dxc_archive" | sha512sum --check
+          cmake -E make_directory "$RUNNER_TEMP/dxc"
+          tar --extract --gzip --file "$RUNNER_TEMP/$dxc_archive" --directory "$RUNNER_TEMP/dxc"
+          test -x "$RUNNER_TEMP/dxc/bin/dxc"
+          echo "$RUNNER_TEMP/dxc/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/dxc/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/dxc/bin/dxc" --version
+
       - name: Restore or build SDL3
         uses: ./.github/actions/setup-sdl3
 
@@ -135,6 +149,8 @@ jobs:
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
           LD_LIBRARY_PATH: ${{ github.workspace }}/.ci-deps/sdl3/lib
+          DAYO_FX_COMPILER: dxc
+          DAYO_UPSTREAM_REQUIRE_DXC: '1'
         run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset "${{ matrix.preset }}" --output-on-failure --parallel "$(nproc)" -L upstream
 
       - name: Show compiler cache statistics

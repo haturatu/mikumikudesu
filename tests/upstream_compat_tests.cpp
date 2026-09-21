@@ -8,12 +8,14 @@
 #include "fx/fx_frame.hpp"
 #include "fx/fx_shader_compiler.hpp"
 #include "fx/fx_shader_source.hpp"
+#include "graphics/fx_pipeline_runtime.hpp"
 #include "graphics/native_scene_bindings.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -54,15 +56,9 @@ std::vector<std::filesystem::path> upstreamFxFiles(const std::filesystem::path& 
     return files;
 }
 
-std::string normalizeUpstreamIncludes(std::string source) {
-    constexpr std::string_view wrong = "resources_PP.hlsli";
-    constexpr std::string_view right = "resources_pp.hlsli";
-    std::size_t offset = 0;
-    while ((offset = source.find(wrong, offset)) != std::string::npos) {
-        source.replace(offset, wrong.size(), right);
-        offset += right.size();
-    }
-    return source;
+bool upstreamShaderProbesRequired() {
+    const auto* value = std::getenv("DAYO_UPSTREAM_REQUIRE_DXC");
+    return value != nullptr && std::string_view(value) == "1";
 }
 
 std::string passMacro(std::string_view name) {
@@ -104,6 +100,247 @@ struct UpstreamScanResult {
     std::vector<std::string> failures;
 };
 
+class PipelineOracleDevice final : public dayo::graphics::Device {
+  public:
+    [[nodiscard]] const dayo::graphics::DeviceCapabilities& capabilities() const noexcept override {
+        return capabilities_;
+    }
+    [[nodiscard]] const dayo::graphics::GraphicsConvention& convention() const noexcept override {
+        return convention_;
+    }
+    [[nodiscard]] dayo::graphics::RendererKind activeRenderer() const noexcept override {
+        return dayo::graphics::RendererKind::preview;
+    }
+    [[nodiscard]] dayo::graphics::handles::ShaderHandle nativeFullscreenVertexShader() const noexcept override {
+        return {900, 1};
+    }
+    void selectRenderer(dayo::graphics::RendererKind) override {}
+    void resize() override {}
+    void beginUiFrame() override {}
+    void renderFrame() override {}
+    void waitIdle() override {}
+    void uploadPreviewMesh(std::span<const dayo::graphics::PreviewVertex>, std::span<const std::uint32_t>) override {}
+    void updatePreviewVertices(std::span<const dayo::graphics::PreviewVertex>) override {}
+    void updatePreviewBones(std::span<const dayo::graphics::PreviewBoneTransform>) override {}
+    void uploadPreviewMorphDeltas(std::span<const dayo::graphics::PreviewMorphDelta>) override {}
+    void updatePreviewMorphWeights(std::span<const float>) override {}
+    void updatePreviewMaterials(std::span<const dayo::graphics::PreviewMaterial>) override {}
+    void updatePreviewDraws(std::span<const dayo::graphics::PreviewDraw>) override {}
+    void uploadPreviewTextures(std::span<const dayo::graphics::PreviewTexture>) override {}
+    void uploadPreviewBackground(std::span<const dayo::graphics::PreviewTexture>) override {}
+    void clearPreviewResources() override {}
+    void updatePreviewScene(const dayo::graphics::PreviewScene&) override {}
+    [[nodiscard]] dayo::graphics::BufferHandle createBuffer(const dayo::graphics::BufferDesc&) override {
+        return nextLegacyHandle_++;
+    }
+    [[nodiscard]] dayo::graphics::TextureHandle createTexture(const dayo::graphics::TextureDesc&) override {
+        return nextLegacyHandle_++;
+    }
+    [[nodiscard]] dayo::graphics::handles::ShaderHandle
+    createShaderEx(const dayo::graphics::ShaderDesc&) override {
+        return {nextTypedHandle_++, 1};
+    }
+    void destroyShaderEx(dayo::graphics::handles::ShaderHandle) override {}
+    [[nodiscard]] dayo::graphics::handles::PipelineHandle
+    createGraphicsPipelineEx(const dayo::graphics::GraphicsPipelineDescEx& descriptor) override {
+        graphicsPipelines.push_back(descriptor);
+        return {nextTypedHandle_++, 1};
+    }
+    [[nodiscard]] dayo::graphics::handles::PipelineHandle
+    createComputePipelineEx(const dayo::graphics::ComputePipelineDescEx&) override {
+        return {nextTypedHandle_++, 1};
+    }
+    [[nodiscard]] dayo::graphics::handles::PipelineHandle
+    createRayTracingPipelineEx(const dayo::graphics::RayTracingPipelineDescEx&) override {
+        return {nextTypedHandle_++, 1};
+    }
+    void destroyPipelineEx(dayo::graphics::handles::PipelineHandle) override {}
+    [[nodiscard]] dayo::graphics::handles::ShaderBindingTableHandle
+    createShaderBindingTable(const dayo::graphics::ShaderBindingTableDesc&) override {
+        return {nextTypedHandle_++, 1};
+    }
+    void destroyShaderBindingTable(dayo::graphics::handles::ShaderBindingTableHandle) override {}
+
+    dayo::graphics::DeviceCapabilities capabilities_;
+    dayo::graphics::GraphicsConvention convention_;
+    std::vector<dayo::graphics::GraphicsPipelineDescEx> graphicsPipelines;
+
+  private:
+    std::uint64_t nextLegacyHandle_{1};
+    std::uint32_t nextTypedHandle_{1};
+};
+
+std::string compactPipelineValue(std::string_view value) {
+    std::string result;
+    for (const auto character : value) {
+        if (character != '_' && character != '-')
+            result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
+    }
+    return result;
+}
+
+std::optional<dayo::graphics::CullModeEx> oracleCullMode(dayo::core::EffectCullMode mode) {
+    switch (mode) {
+    case dayo::core::EffectCullMode::none:
+        return dayo::graphics::CullModeEx::none;
+    case dayo::core::EffectCullMode::front:
+        return dayo::graphics::CullModeEx::front;
+    case dayo::core::EffectCullMode::back:
+        return dayo::graphics::CullModeEx::back;
+    }
+    return std::nullopt;
+}
+
+std::optional<dayo::graphics::CompareOpEx> oracleCompareOp(dayo::core::EffectDepthFunc function) {
+    switch (function) {
+    case dayo::core::EffectDepthFunc::never:
+        return dayo::graphics::CompareOpEx::never;
+    case dayo::core::EffectDepthFunc::less:
+        return dayo::graphics::CompareOpEx::less;
+    case dayo::core::EffectDepthFunc::equal:
+        return dayo::graphics::CompareOpEx::equal;
+    case dayo::core::EffectDepthFunc::lessEqual:
+        return dayo::graphics::CompareOpEx::lessOrEqual;
+    case dayo::core::EffectDepthFunc::greater:
+        return dayo::graphics::CompareOpEx::greater;
+    case dayo::core::EffectDepthFunc::notEqual:
+        return dayo::graphics::CompareOpEx::notEqual;
+    case dayo::core::EffectDepthFunc::greaterEqual:
+        return dayo::graphics::CompareOpEx::greaterOrEqual;
+    case dayo::core::EffectDepthFunc::always:
+        return dayo::graphics::CompareOpEx::always;
+    }
+    return std::nullopt;
+}
+
+std::optional<dayo::graphics::BlendFactorEx> oracleBlendFactor(std::string_view value) {
+    const auto key = compactPipelineValue(value);
+    if (key.empty() || key == "one")
+        return dayo::graphics::BlendFactorEx::one;
+    if (key == "zero")
+        return dayo::graphics::BlendFactorEx::zero;
+    if (key == "srccolor")
+        return dayo::graphics::BlendFactorEx::srcColor;
+    if (key == "invsrccolor")
+        return dayo::graphics::BlendFactorEx::oneMinusSrcColor;
+    if (key == "destcolor")
+        return dayo::graphics::BlendFactorEx::dstColor;
+    if (key == "invdestcolor")
+        return dayo::graphics::BlendFactorEx::oneMinusDstColor;
+    if (key == "srcalpha")
+        return dayo::graphics::BlendFactorEx::srcAlpha;
+    if (key == "invsrcalpha")
+        return dayo::graphics::BlendFactorEx::oneMinusSrcAlpha;
+    if (key == "destalpha")
+        return dayo::graphics::BlendFactorEx::dstAlpha;
+    if (key == "invdestalpha")
+        return dayo::graphics::BlendFactorEx::oneMinusDstAlpha;
+    if (key == "srcalphasaturate")
+        return dayo::graphics::BlendFactorEx::srcAlphaSaturate;
+    return std::nullopt;
+}
+
+std::optional<dayo::graphics::BlendOpEx> oracleBlendOp(std::string_view value) {
+    const auto key = compactPipelineValue(value);
+    if (key.empty() || key == "add")
+        return dayo::graphics::BlendOpEx::add;
+    if (key == "subtract")
+        return dayo::graphics::BlendOpEx::subtract;
+    if (key == "revsubtract")
+        return dayo::graphics::BlendOpEx::reverseSubtract;
+    if (key == "min")
+        return dayo::graphics::BlendOpEx::min;
+    if (key == "max")
+        return dayo::graphics::BlendOpEx::max;
+    return std::nullopt;
+}
+
+bool validatePipelineOracle(const dayo::fx::FxProgram& program,
+                            const std::vector<dayo::graphics::GraphicsPipelineDescEx>& descriptors,
+                            std::string* error) {
+    std::size_t descriptorIndex = 0;
+    const auto fail = [error](std::string message) {
+        if (error != nullptr)
+            *error = std::move(message);
+        return false;
+    };
+    for (const auto& dispatch : program.passes) {
+        if (dispatch.kind != dayo::fx::FxOpKind::raster && dispatch.kind != dayo::fx::FxOpKind::postprocess)
+            continue;
+        if (descriptorIndex >= descriptors.size())
+            return fail("pipeline oracle did not record graphics pass: " + dispatch.name);
+        const auto& descriptor = descriptors[descriptorIndex++];
+        std::size_t expectedColors = 0;
+        if (const auto* raster = std::get_if<dayo::fx::FxRasterDispatch>(&dispatch.executable); raster != nullptr)
+            expectedColors = raster->colorAttachments.size();
+        else if (const auto* postprocess = std::get_if<dayo::fx::FxPostProcessDispatch>(&dispatch.executable);
+                 postprocess != nullptr)
+            expectedColors = postprocess->colorAttachments.size();
+        if (expectedColors == 0) {
+            expectedColors = static_cast<std::size_t>(std::count_if(
+                dispatch.resources.begin(), dispatch.resources.end(), [](const auto& resource) {
+                    return resource.write && resource.role == dayo::fx::FxResourceRole::colorAttachment;
+                }));
+        }
+        const auto hasDepth = std::ranges::any_of(dispatch.resources, [](const auto& resource) {
+            return resource.write && resource.role == dayo::fx::FxResourceRole::depthAttachment;
+        });
+        if (expectedColors == 0 && !hasDepth)
+            expectedColors = 1;
+        if (descriptor.colorFormats.size() != expectedColors)
+            return fail("pipeline oracle color attachment count mismatch: " + dispatch.name);
+        if (descriptor.depthFormat.has_value() != hasDepth)
+            return fail("pipeline oracle depth attachment mismatch: " + dispatch.name);
+        if (descriptor.depthOnly != (expectedColors == 0 && hasDepth))
+            return fail("pipeline oracle depth-only flag mismatch: " + dispatch.name);
+
+        const auto* raster = std::get_if<dayo::fx::FxRasterDispatch>(&dispatch.executable);
+        if (raster == nullptr)
+            continue;
+        if (descriptor.rasterizer.cullMode != *oracleCullMode(raster->graphics.rasterizer.cullMode))
+            return fail("pipeline oracle cull mode mismatch: " + dispatch.name);
+        const auto expectedDepthTest = hasDepth && raster->graphics.depthStencil.depthEnable;
+        const auto expectedDepthWrite = expectedDepthTest && raster->graphics.depthStencil.depthWrite;
+        if (descriptor.depthStencil.depthTest != expectedDepthTest ||
+            descriptor.depthStencil.depthWrite != expectedDepthWrite ||
+            descriptor.depthStencil.depthCompare != *oracleCompareOp(raster->graphics.depthStencil.depthFunc))
+            return fail("pipeline oracle depth state mismatch: " + dispatch.name);
+        if (descriptor.blendAttachments.size() != descriptor.colorFormats.size())
+            return fail("pipeline oracle blend attachment count mismatch: " + dispatch.name);
+        for (std::size_t index = 0; index < raster->graphics.blend.size(); ++index) {
+            if (index >= descriptor.blendAttachments.size())
+                return fail("pipeline oracle blend state is missing: " + dispatch.name);
+            const auto& source = raster->graphics.blend[index];
+            const auto& actual = descriptor.blendAttachments[index];
+            if (actual.enabled != source.enabled || actual.srcColor != *oracleBlendFactor(source.srcColor) ||
+                actual.dstColor != *oracleBlendFactor(source.dstColor) ||
+                actual.colorOp != *oracleBlendOp(source.colorOp) ||
+                actual.srcAlpha != *oracleBlendFactor(source.srcAlpha) ||
+                actual.dstAlpha != *oracleBlendFactor(source.dstAlpha) ||
+                actual.alphaOp != *oracleBlendOp(source.alphaOp))
+                return fail("pipeline oracle blend state mismatch: " + dispatch.name);
+        }
+    }
+    if (descriptorIndex != descriptors.size())
+        return fail("pipeline oracle recorded an unexpected graphics pass");
+    return true;
+}
+
+bool buildPipelineOracle(const dayo::fx::FxProgram& program, const dayo::fx::FxShaderCompiler& shaderCompiler,
+                         std::string* error) {
+    PipelineOracleDevice device;
+    dayo::graphics::FxPipelineRuntime runtime;
+    const auto layout = dayo::graphics::handles::PipelineLayoutHandle{1, 1};
+    if (!runtime.build(
+        device, program, shaderCompiler,
+        [layout](const dayo::fx::FxDispatch&) -> std::optional<dayo::graphics::handles::PipelineLayoutHandle> {
+            return layout;
+        },
+        error, dayo::graphics::kNativeFxResourceSet))
+        return false;
+    return validatePipelineOracle(program, device.graphicsPipelines, error);
+}
+
 void appendShaderRequest(const std::filesystem::path& sourceDirectory, const std::filesystem::path& effectPath,
                          const dayo::fx::FxProgram& program, const dayo::fx::FxDispatch& dispatch,
                          const dayo::core::EffectPass& pass,
@@ -112,12 +349,14 @@ void appendShaderRequest(const std::filesystem::path& sourceDirectory, const std
     if (entryPoint.empty())
         return;
     dayo::fx::FxShaderCompileRequest request;
-    request.hlsl = normalizeUpstreamIncludes(dayo::fx::makeNativeFxShaderSource(
-        program, dispatch, dayo::graphics::kNativeFxResourceSet));
+    const auto effectDirectory = effectPath.parent_path();
+    request.hlsl = dayo::fx::normalizeFxShaderIncludes(
+        dayo::fx::makeNativeFxShaderSource(program, dispatch, dayo::graphics::kNativeFxResourceSet),
+        effectDirectory.empty() ? std::filesystem::path{"."} : effectDirectory);
     request.sourcePath = effectPath;
     request.entryPoint = std::move(entryPoint);
     request.stage = stage;
-    request.macros = pass.macros;
+    request.macros = dispatch.macros;
     request.macros.push_back(passMacro(pass.name));
     request.includeDirectories = shaderIncludeDirectories(sourceDirectory, effectPath);
     try {
@@ -137,8 +376,12 @@ UpstreamScanResult scanUpstreamGraphs(const std::filesystem::path& sourceDirecto
     const bool dxc = shaderCompiler.executable().filename() == "dxc" ||
                      shaderCompiler.executable().filename() == "dxc.exe";
     const bool compileShaders = shaderCompiler.available() && dxc;
-    if (!compileShaders)
-        std::cerr << "WARN: DXC unavailable; upstream graph shader probes skipped\n";
+    if (!compileShaders) {
+        if (upstreamShaderProbesRequired())
+            result.failures.emplace_back("DXC is required for upstream shader probes but is unavailable");
+        else
+            std::cerr << "WARN: DXC unavailable; upstream graph shader probes skipped\n";
+    }
 
     for (const auto& path : files) {
         try {
@@ -146,8 +389,8 @@ UpstreamScanResult scanUpstreamGraphs(const std::filesystem::path& sourceDirecto
             const auto linked = compiler.link(graph);
             const auto program = compiler.compile(linked);
             std::string pipelineError;
-            if (!compiler.buildPipelines(program, &pipelineError))
-                throw std::runtime_error(pipelineError);
+            if (compileShaders && !buildPipelineOracle(program, shaderCompiler, &pipelineError))
+                throw std::runtime_error(pipelineError.empty() ? "FX pipeline oracle failed" : pipelineError);
             const auto plan = compiler.plan(program, context);
             if (plan.ordered.size() != program.passes.size())
                 throw std::runtime_error("FX plan lost a dispatch");
@@ -363,6 +606,10 @@ bool checkAbiSpirvProbe(const std::filesystem::path& sourceDirectory) {
     dayo::fx::FxShaderCompiler compiler;
     const bool dxc = compiler.executable().filename() == "dxc" || compiler.executable().filename() == "dxc.exe";
     if (!compiler.available() || !dxc) {
+        if (upstreamShaderProbesRequired()) {
+            std::cerr << "FAIL: DXC unavailable; upstream ABI SPIR-V probe is required\n";
+            return false;
+        }
         std::cerr << "WARN: DXC unavailable; upstream ABI SPIR-V probe skipped\n";
         return true;
     }
@@ -372,6 +619,7 @@ bool checkAbiSpirvProbe(const std::filesystem::path& sourceDirectory) {
     request.stage = dayo::fx::FxShaderStage::compute;
     request.includeDirectories = {sourceDirectory / "hlsl"};
     request.hlsl = R"HLSL(#include "resources_pp.hlsli"
+using namespace Dayo;
 [numthreads(1, 1, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
@@ -479,7 +727,8 @@ int main() {
                         std::ranges::any_of(
                             subayaiEffect.passes,
                             [](const auto& pass) { return pass.type == dayo::core::EffectPassType::raytracing; }) &&
-                        subayaiEffect.hlsl.find("resources.hlsli") != std::string::npos &&
+                        subayaiEffect.hlslPrefix.find("resources.hlsli") != std::string::npos &&
+                        subayaiEffect.materialDescriptor.has_value() &&
                         !subayaiEffect.controllers.empty(),
                     "Subayai Jsonnet expansion");
         const auto subayaiRaster =
@@ -569,6 +818,21 @@ float4 PS() : SV_TARGET { return 1; }
             rejectedUnsupportedBlend = true;
         }
         ok &= check(rejectedUnsupportedBlend, "YRZFX rejects blend factors without a native pipeline contract");
+        bool rejectedUnsupportedBlendFactor = false;
+        try {
+            auto invalid = fixture;
+            const auto marker = invalid.find("\"srcBlend\":\"one\"");
+            if (marker == std::string::npos)
+                throw std::runtime_error("blend fixture marker is missing");
+            invalid.replace(marker, std::string_view{"\"srcBlend\":\"one\""}.size(),
+                            "\"srcBlend\":\"blendfactor\"");
+            static_cast<void>(dayo::core::loadEffectGraphFromText("invalid-blend-fixture.fxdayo", invalid));
+        } catch (const std::runtime_error& exception) {
+            rejectedUnsupportedBlendFactor = std::string_view(exception.what()).find("blend factor") !=
+                                            std::string_view::npos;
+        }
+        ok &= check(rejectedUnsupportedBlendFactor,
+                    "YRZFX rejects blend factors without a native Vulkan mapping");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: effect graph: " << exception.what() << '\n';
         ok = false;
