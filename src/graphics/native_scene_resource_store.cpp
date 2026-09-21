@@ -1,5 +1,7 @@
 #include "graphics/native_scene_resource_store.hpp"
 
+#include "graphics/dayo_host_resources.hpp"
+
 #include <algorithm>
 #include <array>
 #include <exception>
@@ -150,6 +152,32 @@ bool NativeSceneResourceStore::replaceScalars(const NativeSceneResourceBindings&
     bindings_.controllerConstants = bufferOrPlaceholder(overrides.controllerConstants);
     bindings_.textureTable = bufferOrPlaceholder(overrides.textureTable);
     bindings_.passConstants = bufferOrPlaceholder(overrides.passConstants);
+    bindings_.hostResourceMask = 0;
+    const auto mark = [this](DayoSemantic semantic, bool present) {
+        if (present)
+            bindings_.hostResourceMask |= dayoSemanticBit(semantic);
+    };
+    mark(DayoSemantic::RTOutput, overrides.rtOutput.valid());
+    mark(DayoSemantic::OIDNBuf, overrides.oidnBuffer.valid());
+    mark(DayoSemantic::NormalDepth, overrides.normalDepth.valid());
+    mark(DayoSemantic::GBuffer1, overrides.gbuffer1.valid());
+    mark(DayoSemantic::GBuffer2, overrides.gbuffer2.valid());
+    mark(DayoSemantic::TLAS, overrides.tlas.valid());
+    mark(DayoSemantic::Model2Mat, overrides.modelToMaterial.valid());
+    mark(DayoSemantic::Mat2Model, overrides.materialToModel.valid());
+    mark(DayoSemantic::Peekaboo, overrides.peekaboo.valid());
+    mark(DayoSemantic::MatSelected, overrides.materialSelected.valid());
+    mark(DayoSemantic::Skybox, overrides.skybox.valid());
+    mark(DayoSemantic::Skywalker, overrides.skywalker.valid());
+    mark(DayoSemantic::SkywalkerRow, overrides.skywalkerRow.valid());
+    mark(DayoSemantic::SkyboxSH, overrides.skyboxSh.valid());
+    mark(DayoSemantic::ScreenBMP, overrides.screenBmp.valid());
+    mark(DayoSemantic::CloneCount, overrides.cloneCount.valid());
+    mark(DayoSemantic::ScreenTexture, overrides.screenTexture.valid());
+    mark(DayoSemantic::ViewCB, overrides.viewConstants.valid());
+    mark(DayoSemantic::ControllerCB, overrides.controllerConstants.valid());
+    mark(DayoSemantic::TextureTable, overrides.textureTable.valid());
+    mark(DayoSemantic::CBuff1, overrides.passConstants.valid());
     return true;
 }
 

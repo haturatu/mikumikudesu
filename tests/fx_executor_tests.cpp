@@ -11,6 +11,7 @@
 #include "graphics/fx_executor.hpp"
 #include "graphics/fx_pipeline_runtime.hpp"
 #include "graphics/fx_resource_runtime.hpp"
+#include "graphics/dayo_host_resources.hpp"
 #include "graphics/native_fx_runtime.hpp"
 #include "graphics/native_scene_bindings.hpp"
 
@@ -531,6 +532,35 @@ bool testTypedBufferResourceExecution() {
     bool ok = check(stats.compute == 1, "executor runs a buffer-only typed pass");
     ok &= check(commands.trace == std::vector<std::string>{"descriptorEx", "bindEx", "dispatch:8x8x1"},
                 "buffer-only typed pass skips image transitions");
+    return ok;
+}
+
+bool testDayoHostResourceProvider() {
+    dayo::graphics::NativeSceneResourceBindings bindings;
+    bindings.rtOutput = {1, 1};
+    bindings.screenBmp = {2, 1};
+    bindings.viewConstants = {3, 1};
+    bindings.controllerConstants = {4, 1};
+    bindings.hostResourceMask = dayo::graphics::dayoSemanticBit(dayo::graphics::DayoSemantic::RTOutput) |
+                                dayo::graphics::dayoSemanticBit(dayo::graphics::DayoSemantic::ScreenBMP) |
+                                dayo::graphics::dayoSemanticBit(dayo::graphics::DayoSemantic::ViewCB) |
+                                dayo::graphics::dayoSemanticBit(dayo::graphics::DayoSemantic::ControllerCB);
+    const dayo::graphics::DayoHostResourceProvider provider(bindings);
+    const std::array required{dayo::graphics::DayoSemantic::RTOutput, dayo::graphics::DayoSemantic::ViewCB,
+                              dayo::graphics::DayoSemantic::ControllerCB};
+    std::string error;
+    bool ok = check(provider.require(required, &error) && error.empty(),
+                    "host provider requires real upstream semantics");
+    ok &= check(provider.resolve("YRZFX_ControllerCB").has_value(),
+                "host provider accepts canonical controller binding alias");
+    const std::array missing{dayo::graphics::DayoSemantic::GBuffer1};
+    ok &= check(!provider.require(missing, &error) && error.find("GBuffer1") != std::string::npos,
+                "host provider rejects absent semantics instead of returning placeholders");
+    auto placeholderOnly = bindings;
+    placeholderOnly.hostResourceMask = 0;
+    ok &= check(!dayo::graphics::DayoHostResourceProvider(placeholderOnly).resolve(dayo::graphics::DayoSemantic::RTOutput)
+                     .has_value(),
+                "valid placeholder handles do not satisfy an unmarked semantic");
     return ok;
 }
 
@@ -1453,6 +1483,7 @@ int main() {
     ok &= testRasterModelTargetIndexedDraws();
     ok &= testDepthOnlyRasterExecution();
     ok &= testTypedBufferResourceExecution();
+    ok &= testDayoHostResourceProvider();
     ok &= testPreviewReferencePath();
     ok &= testSchedulerOrder();
     ok &= testCloneUnification();

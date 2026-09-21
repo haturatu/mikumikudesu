@@ -43,6 +43,12 @@ struct NativeSceneResourceBindings {
     std::span<const handles::BufferHandle> faceWalkers{};
     std::span<const handles::BufferHandle> previousVertices{};
     std::span<const handles::BufferHandle> rawVertices{};
+
+    // CPU-side presence metadata for DayoHostResourceProvider. A valid
+    // handle alone is not proof that a semantic is backed by a real scene
+    // resource because NativeSceneResourceStore deliberately owns valid
+    // placeholder handles.
+    std::uint64_t hostResourceMask{};
 };
 
 // Converts scene-owned handles into complete descriptor sets for native FX.
