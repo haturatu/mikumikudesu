@@ -14,10 +14,6 @@ void setError(std::string* error, std::string value) {
         *error = std::move(value);
 }
 
-[[nodiscard]] std::array<float, 16> identityMatrix() noexcept {
-    return {1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F};
-}
-
 [[nodiscard]] std::uint32_t narrowSample(std::uint64_t sample) noexcept {
     return sample > std::numeric_limits<std::uint32_t>::max() ? std::numeric_limits<std::uint32_t>::max()
                                                               : static_cast<std::uint32_t>(sample);
@@ -28,8 +24,8 @@ void setError(std::string* error, std::string value) {
 NativeViewConstants makeNativeViewConstants(const fx::FxFrameContext& context, std::uint32_t modelCount,
                                             std::uint32_t totalMaterialCount) noexcept {
     NativeViewConstants result;
-    result.viewMatrix = identityMatrix();
-    result.projectionMatrix = identityMatrix();
+    result.viewMatrix = context.camera.view;
+    result.projectionMatrix = context.camera.projection;
     result.cameraFlags = {context.camera.perspective ? 1 : 0, 0};
     result.modelCounts = {modelCount, totalMaterialCount};
     const auto frameTime = context.frame / 30.0F;
@@ -37,6 +33,16 @@ NativeViewConstants makeNativeViewConstants(const fx::FxFrameContext& context, s
     result.output = {context.renderWidth, context.renderHeight, narrowSample(context.sample), 1};
     result.lightColor = context.lighting.color;
     result.lightDirection = context.lighting.direction;
+    result.selfShadowMode = context.host.selfShadowMode;
+    result.selfShadowDistance = context.host.selfShadowDistance;
+    result.screenBmpMode = context.host.screenBmpMode;
+    result.backgroundMode = context.host.backgroundMode;
+    result.backgroundTransparent = context.host.backgroundTransparent ? 1 : 0;
+    result.denoiserEnabled = context.host.denoiserEnabled ? 1 : 0;
+    result.onStart = context.host.onStart ? 1 : 0;
+    result.onLoadSkybox = context.host.onLoadSkybox ? 1 : 0;
+    result.onResize = context.host.onResize ? 1 : 0;
+    result.onLoad = context.host.onLoad ? 1 : 0;
     return result;
 }
 

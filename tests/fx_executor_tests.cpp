@@ -13,7 +13,9 @@
 #include "graphics/fx_pipeline_runtime.hpp"
 #include "graphics/fx_resource_runtime.hpp"
 #include "graphics/native_fx_runtime.hpp"
+#include "graphics/native_frame_constants.hpp"
 #include "graphics/native_scene_bindings.hpp"
+#include "graphics/native_screen_runtime.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -253,6 +255,9 @@ struct MockCommands final : public dayo::graphics::CommandList {
     }
     void generateMipmapsEx(dayo::graphics::handles::TextureHandle) override {
         trace.emplace_back("mipmapEx");
+    }
+    void transferBarrierEx() override {
+        trace.emplace_back("transferBarrierEx");
     }
     void bindDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle, std::uint32_t) override {
         trace.emplace_back("descriptorEx");
@@ -562,6 +567,49 @@ bool testDayoHostResourceProvider() {
                      .resolve(dayo::graphics::DayoSemantic::RTOutput)
                      .has_value(),
                 "valid placeholder handles do not satisfy an unmarked semantic");
+    return ok;
+}
+
+bool testViewConstantsAndScreenHistory() {
+    MockDevice device;
+    auto context = testContext();
+    context.camera.view[0] = 2.0F;
+    context.camera.projection[5] = 3.0F;
+    context.host.selfShadowMode = 2;
+    context.host.selfShadowDistance = 4.0F;
+    context.host.screenBmpMode = 1;
+    context.host.backgroundMode = 3;
+    context.host.backgroundTransparent = true;
+    context.host.denoiserEnabled = true;
+    context.host.onResize = true;
+    const auto view = dayo::graphics::makeNativeViewConstants(context, 4, 8);
+    bool ok = check(view.viewMatrix[0] == 2.0F && view.projectionMatrix[5] == 3.0F,
+                    "ViewCB uses frame camera matrices");
+    ok &= check(view.selfShadowMode == 2 && view.selfShadowDistance == 4.0F && view.screenBmpMode == 1 &&
+                    view.backgroundMode == 3 && view.backgroundTransparent == 1 && view.denoiserEnabled == 1 &&
+                    view.onResize == 1,
+                "ViewCB carries upstream host frame flags");
+
+    dayo::graphics::NativeScreenRuntime screen;
+    std::string error;
+    ok &= check(screen.initialize(device, {64, 32, 1}, &error) && screen.ready() && error.empty(),
+                "screen runtime allocates persistent per-slot resources");
+    const auto screenBmp = screen.screenBmp();
+    const auto screenTexture = screen.screenTexture();
+    const auto previousFrame = screen.previousFrame();
+    ok &= check(screenBmp.valid() && screenTexture.valid() && previousFrame.valid() && screenBmp != screenTexture &&
+                    screenTexture != previousFrame,
+                "ScreenBMP ScreenTexture and PreviousFrame stay distinct");
+    dayo::graphics::NativeSceneResourceBindings bindings;
+    screen.bindScreenSemantics(bindings);
+    ok &= check(bindings.screenBmp == screenBmp && bindings.screenTexture == screenTexture &&
+                    (bindings.hostResourceMask & dayo::graphics::dayoSemanticBit(
+                        dayo::graphics::DayoSemantic::ScreenBMP)) != 0,
+                "screen runtime exposes strict ScreenBMP semantics");
+    MockCommands commands;
+    screen.rotatePreviousFrame(commands, {99, 1});
+    ok &= check(commands.trace == std::vector<std::string>{"transferBarrierEx", "copyEx"},
+                "screen runtime rotates final output into persistent history");
     return ok;
 }
 
@@ -1485,6 +1533,7 @@ int main() {
     ok &= testDepthOnlyRasterExecution();
     ok &= testTypedBufferResourceExecution();
     ok &= testDayoHostResourceProvider();
+    ok &= testViewConstantsAndScreenHistory();
     ok &= testPreviewReferencePath();
     ok &= testSchedulerOrder();
     ok &= testCloneUnification();

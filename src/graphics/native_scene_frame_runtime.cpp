@@ -1,5 +1,7 @@
 #include "graphics/native_scene_frame_runtime.hpp"
 
+#include "graphics/dayo_host_resources.hpp"
+
 #include <algorithm>
 #include <exception>
 #include <stdexcept>
@@ -87,6 +89,9 @@ bool NativeSceneFrameRuntime::sync(const fx::FxFrameContext& context, NativeScen
     resources.viewConstants = constants_.viewBuffer();
     resources.controllerConstants = controllers_.buffer();
     resources.passConstants = constants_.passBuffer();
+    resources.hostResourceMask |= dayoSemanticBit(DayoSemantic::ViewCB) |
+                                  dayoSemanticBit(DayoSemantic::ControllerCB) |
+                                  dayoSemanticBit(DayoSemantic::CBuff1);
     return scene_.sync(resources, error);
 }
 
