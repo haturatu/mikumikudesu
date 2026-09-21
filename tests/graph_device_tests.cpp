@@ -117,6 +117,7 @@ int main() {
                                  dayo::graphics::PixelFormat::rgba16Float,
                                  dayo::graphics::PixelFormat::rgba16Float};
         pipeline.depthFormat = dayo::graphics::PixelFormat::depth32Float;
+        pipeline.depthOnly = true;
         pipeline.rasterizer.cullMode = dayo::graphics::CullModeEx::front;
         pipeline.depthStencil.depthTest = true;
         pipeline.depthStencil.depthWrite = false;
@@ -127,8 +128,14 @@ int main() {
         pipeline.blendAttachments.front().dstColor = dayo::graphics::BlendFactorEx::oneMinusSrcAlpha;
         ok &= check(pipeline.colorFormats.size() == 3 && pipeline.depthFormat.has_value() &&
                         pipeline.rasterizer.cullMode == dayo::graphics::CullModeEx::front &&
-                        !pipeline.depthStencil.depthWrite && pipeline.blendAttachments.front().enabled,
+                        !pipeline.depthStencil.depthWrite && pipeline.depthOnly && pipeline.blendAttachments.front().enabled,
                     "native graphics descriptor represents MRT/DSV state");
+
+        dayo::graphics::GraphicsPipelineDescEx depthOnly;
+        depthOnly.depthOnly = true;
+        depthOnly.depthFormat = dayo::graphics::PixelFormat::depth32Float;
+        ok &= check(depthOnly.colorFormats.empty() && depthOnly.depthFormat.has_value(),
+                    "native graphics descriptor represents depth-only rendering");
 
         dayo::graphics::RenderingInfoEx rendering;
         rendering.extent = {1280, 720, 1};

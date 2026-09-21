@@ -336,6 +336,10 @@ struct GraphicsPipelineDescEx {
     PixelFormat colorFormat{PixelFormat::rgba16Float};
     std::vector<PixelFormat> colorFormats;
     std::optional<PixelFormat> depthFormat;
+    // A depth-only dynamic-rendering pipeline has no color attachment
+    // formats. Keep the legacy colorFormat field for old callers while
+    // making that intent explicit to backends.
+    bool depthOnly{};
     RasterizerStateEx rasterizer;
     DepthStencilStateEx depthStencil;
     std::vector<BlendAttachmentStateEx> blendAttachments;

@@ -4489,10 +4489,12 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
     if (!hasVertex || !hasFragment)
         throw std::invalid_argument("graphics pipeline requires vertex and fragment shaders");
     std::vector<PixelFormat> colorFormats = desc.colorFormats;
-    if (colorFormats.empty())
+    if (colorFormats.empty() && !desc.depthOnly)
         colorFormats.push_back(desc.colorFormat);
-    if (colorFormats.empty())
-        throw std::invalid_argument("native graphics pipeline requires at least one color attachment format");
+    if (colorFormats.empty() && !desc.depthOnly)
+        throw std::invalid_argument("native graphics pipeline requires a color or depth attachment format");
+    if (desc.depthOnly && !desc.depthFormat.has_value())
+        throw std::invalid_argument("depth-only graphics pipeline requires a depth attachment format");
     std::vector<VkFormat> vkColorFormats;
     vkColorFormats.reserve(colorFormats.size());
     for (const auto format : colorFormats) {
@@ -5457,12 +5459,13 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, handles::
 void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const RenderingInfoEx& info) {
     if (commandBuffer == VK_NULL_HANDLE)
         throw std::invalid_argument("typed rendering requires a command buffer");
-    if (info.colors.empty())
-        throw std::invalid_argument("typed rendering requires at least one color attachment");
+    if (info.colors.empty() && !info.depth.has_value())
+        throw std::invalid_argument("typed rendering requires a color or depth attachment");
 
-    const auto firstIt = typedTextures_.find(info.colors.front().texture);
-    if (firstIt == typedTextures_.end() || !typedTextureHandles_.isAlive(info.colors.front().texture))
-        throw std::invalid_argument("typed rendering color attachment references a stale texture handle");
+    const auto extentTexture = info.colors.empty() ? info.depth->texture : info.colors.front().texture;
+    const auto firstIt = typedTextures_.find(extentTexture);
+    if (firstIt == typedTextures_.end() || !typedTextureHandles_.isAlive(extentTexture))
+        throw std::invalid_argument("typed rendering attachment references a stale texture handle");
     const auto& firstDescription = firstIt->second.desc;
     const Extent3D requestedExtent = info.extent.width == 0 || info.extent.height == 0
                                          ? firstDescription.extent
