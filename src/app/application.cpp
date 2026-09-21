@@ -331,6 +331,9 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         scene_.clearDirty(core::DirtyFlag::lighting);
     }
     const auto lightSampling = nativeLightSampling_.table();
+    const auto* scheduleModel = selectedModel();
+    scheduledEffects_ = effectScheduler_.schedule(
+        scene_.effects(), scheduleModel == nullptr ? core::ModelExecutionOrder{} : scheduleModel->order);
     try {
         std::string modelError;
         if (!nativeSceneModelData_.empty() &&
@@ -560,6 +563,8 @@ void Application::resetProjectRuntimeState() {
     nativeSceneModelData_.clear();
     nativeLightSampling_.clear();
     nativeLightPowers_.clear();
+    reloadedEffectId_.reset();
+    scheduledEffects_.clear();
     nativeDeformVersion_ = 0;
     mediaSeconds_ = 0.0;
     uploadedVideoFrame_ = -1;
@@ -752,7 +757,10 @@ int Application::run() {
         if (effectReloader_) {
             std::string reloadError;
             if (effectReloader_->poll(&reloadError) && effectReloader_->current() != nullptr) {
-                scene_.setEffect(*effectReloader_->current());
+                if (reloadedEffectId_.has_value())
+                    static_cast<void>(scene_.removeEffect(*reloadedEffectId_));
+                const auto owner = effectControllerModel_;
+                reloadedEffectId_ = scene_.addEffect(*effectReloader_->current(), owner);
                 requestRenderer(requestedRenderer_);
                 log::info("Hot reloaded effect graph");
             } else if (!reloadError.empty()) {
@@ -1220,11 +1228,12 @@ void Application::handleAsset(const std::filesystem::path& path) {
             static_cast<void>(effectReloader_->poll());
             if (effectReloader_->current() == nullptr)
                 throw std::runtime_error("effect graph is empty");
-            scene_.setEffect(*effectReloader_->current());
+            const auto graph = *effectReloader_->current();
             if (!effectControllerModel_.has_value()) {
                 if (const auto* owner = selectedModel(); owner != nullptr)
                     effectControllerModel_ = owner->id;
             }
+            reloadedEffectId_ = scene_.addEffect(graph, effectControllerModel_);
             auto filename = path.filename().string();
             std::ranges::transform(filename, filename.begin(),
                                    [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
@@ -1234,8 +1243,8 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 requestedRenderer_ = graphics::RendererKind::bdpt;
             }
             requestRenderer(requestedRenderer_);
-            lastAsset_ = "Effect " + path.filename().string() + " — " + std::to_string(scene_.effect()->passes.size()) +
-                         " passes, " + std::to_string(scene_.effect()->textures.size()) + " textures";
+            lastAsset_ = "Effect " + path.filename().string() + " — " + std::to_string(graph.passes.size()) +
+                         " passes, " + std::to_string(graph.textures.size()) + " textures";
             log::info("Loaded effect graph: ", lastAsset_);
             projectAssets_.push_back({"effect", std::filesystem::absolute(path)});
         } catch (const std::exception& exception) {

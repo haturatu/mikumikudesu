@@ -13,6 +13,7 @@
 #include "core/task_scheduler.hpp"
 #include "core/video_export.hpp"
 #include "fx/fx_frame.hpp"
+#include "fx/fx_scheduler.hpp"
 #include "graphics/device.hpp"
 #include "graphics/native_renderer.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
@@ -150,9 +151,12 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::vector<core::ProjectAsset> projectAssets_;
     std::optional<std::filesystem::path> currentProjectPath_;
     std::optional<core::EffectHotReloader> effectReloader_;
+    std::optional<core::EffectId> reloadedEffectId_;
     // The single-effect compatibility path captures the owner when the
     // effect is loaded. Controller (self) must not follow UI selection later.
     std::optional<core::ModelId> effectControllerModel_;
+    fx::FrameEffectScheduler effectScheduler_;
+    std::vector<fx::ScheduledFx> scheduledEffects_;
     core::PreviewNormalization normalization_;
     float cameraYaw_{};
     float cameraPitch_{};
