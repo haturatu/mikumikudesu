@@ -303,13 +303,17 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
         case dayo::fx::FxOpKind::oidn:
             if (!prepareUtilityPass(dispatch))
                 break;
-            if (!resources.executeOidn)
+            if (!resources.executeOidn && !resources.executeOidnWithResolver)
                 throw std::logic_error("VulkanFxExecutor: OIDN pass has no host denoiser");
             {
                 const auto* oidn = std::get_if<dayo::fx::FxOidnDispatch>(&dispatch.executable);
                 if (oidn == nullptr)
                     throw std::logic_error("VulkanFxExecutor: OIDN pass has no typed dispatch: " + dispatch.name);
-                if (!resources.executeOidn(*oidn, context, commands))
+                const auto oidnExecuted = resources.executeOidnWithResolver
+                                          ? resources.executeOidnWithResolver(*oidn, context, commands,
+                                                                              resources.resolveTypedResource)
+                                          : resources.executeOidn(*oidn, context, commands);
+                if (!oidnExecuted)
                     throw std::logic_error("VulkanFxExecutor: OIDN host execution failed: " + dispatch.name);
                 ++stats.oidn;
                 executed = true;

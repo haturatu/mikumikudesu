@@ -51,6 +51,8 @@ struct FxExecutionResources {
     using PassHook = std::function<void(const dayo::fx::FxDispatch&, CommandList&)>;
     using OidnExecutor =
         std::function<bool(const dayo::fx::FxOidnDispatch&, const dayo::fx::FxFrameContext&, CommandList&)>;
+    using OidnExecutorWithResolver = std::function<bool(
+        const dayo::fx::FxOidnDispatch&, const dayo::fx::FxFrameContext&, CommandList&, const TypedResourceResolver&)>;
     // Material-level scene draw ranges are optional so existing fullscreen and
     // synthetic Preview plans continue to use the legacy draw command.
     std::span<const NativeSceneDraw> sceneDraws{};
@@ -65,6 +67,7 @@ struct FxExecutionResources {
     PassHook beforePass;
     PassHook afterPass;
     OidnExecutor executeOidn;
+    OidnExecutorWithResolver executeOidnWithResolver;
     TextureResolver resolveTexture;
     // Generic resource providers keep shader compilation and descriptor
     // allocation backend-specific while making the command contract explicit.
