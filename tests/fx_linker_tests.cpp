@@ -199,7 +199,9 @@ int main() {
                     "clearUav preserves legacy type");
         ok &= check(toEffectPassType(FxPassOp{FxMipmapGenOp{}}) == EffectPassType::mipmap,
                     "mipmapGen preserves legacy type");
-        ok &= check(toEffectPassType(FxPassOp{FxOidnOp{}}) == EffectPassType::unknown, "oidn is utility");
+        ok &= check(toEffectPassType(FxPassOp{FxOidnOp{}}) == EffectPassType::oidn, "oidn maps to host operation");
+        ok &= check(std::holds_alternative<FxOidnOp>(fxPassOpFromEffectPassType(EffectPassType::oidn)),
+                    "oidn preserves typed operation");
         ok &= check(std::string(fxPassOpTypeName(FxPassOp{FxCopyOp{}})) == "copy", "op type name copy");
         ok &= check(defaultCategoryForOp(FxPassOp{FxPostProcessOp{}}) == FxCategory::postprocess,
                     "postprocess op defaults to postprocess");
@@ -227,6 +229,22 @@ int main() {
                     "copy preserves legacy input/output contract");
         const auto copyRoundTrip = fxPassFromEffectPass(copyLegacy, FxCategory::postprocess);
         ok &= check(std::holds_alternative<FxCopyOp>(copyRoundTrip.op), "copy round-trips through EffectPass");
+
+        const FxPass oidn{.name = "Denoise",
+                          .category = FxCategory::postprocess,
+                          .op = FxPassOp{FxOidnOp{.input = "Beauty",
+                                                 .albedo = "Albedo",
+                                                 .normal = "Normal",
+                                                 .output = "Denoised"}}};
+        const auto oidnLegacy = effectPassFromFxPass(oidn);
+        ok &= check(oidnLegacy.type == EffectPassType::oidn && oidnLegacy.oidnInput == "Beauty" &&
+                        oidnLegacy.oidnAlbedo == "Albedo" && oidnLegacy.oidnNormal == "Normal" &&
+                        oidnLegacy.oidnOutput == "Denoised",
+                    "oidn preserves host input and output semantics");
+        const auto oidnRoundTrip = fxPassFromEffectPass(oidnLegacy, FxCategory::postprocess);
+        ok &= check(std::holds_alternative<FxOidnOp>(oidnRoundTrip.op) &&
+                        std::get<FxOidnOp>(oidnRoundTrip.op).normal == "Normal",
+                    "oidn round-trips through EffectPass");
     }
 
     // RasterModelTarget semantic resolution.

@@ -79,6 +79,8 @@ struct FxMipmapGenOp {
 
 struct FxOidnOp {
     std::string input;
+    std::string albedo;
+    std::string normal;
     std::string output;
 };
 
@@ -100,9 +102,8 @@ struct FxPass {
 // case-insensitive). Throws std::runtime_error on unknown semantics.
 [[nodiscard]] RasterModelTarget resolveRasterModelTarget(std::string_view semantic);
 
-// EffectPassType interop preserves raster, postprocess, compute, raytracing,
-// copy, clear, and mipmap operations. OIDN remains FX-only and is rejected
-// when converted to the legacy representation.
+// EffectPassType interop preserves shader, utility, and host OIDN operations
+// without collapsing a known operation to unknown.
 [[nodiscard]] EffectPassType toEffectPassType(const FxPassOp& op) noexcept;
 [[nodiscard]] FxPassOp fxPassOpFromEffectPassType(EffectPassType type);
 [[nodiscard]] const char* fxPassOpTypeName(const FxPassOp& op) noexcept;

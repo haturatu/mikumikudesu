@@ -18,7 +18,7 @@ enum class RasterModelTarget : std::uint8_t;
 
 namespace dayo::core {
 
-enum class EffectPassType { rasterizer, postprocess, compute, raytracing, copy, clear, mipmap, unknown };
+enum class EffectPassType { rasterizer, postprocess, compute, raytracing, copy, clear, mipmap, oidn, unknown };
 
 struct EffectSize {
     std::string base;
@@ -137,6 +137,13 @@ struct EffectPass {
     std::vector<EffectAttachment> unorderedAccess;
     EffectAttachment depth;
     EffectGraphicsState graphics;
+    // OIDN is a host operation rather than a shader pass. The explicit names
+    // preserve the upstream operation even when the graph has no RTV/UAV
+    // declaration for the host-owned output.
+    std::string oidnInput;
+    std::string oidnAlbedo;
+    std::string oidnNormal;
+    std::string oidnOutput;
     EffectSize outputSize;
     float outputWidthRatio{1.0F};
     float outputHeightRatio{1.0F};
@@ -224,6 +231,7 @@ struct EffectExecutionStats {
     std::size_t rasterPasses{};
     std::size_t computePasses{};
     std::size_t rayTracingPasses{};
+    std::size_t oidnPasses{};
     std::size_t barriers{};
 };
 

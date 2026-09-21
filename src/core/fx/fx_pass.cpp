@@ -119,6 +119,8 @@ EffectPassType toEffectPassType(const FxPassOp& op) noexcept {
                 return EffectPassType::clear;
             else if constexpr (std::is_same_v<T, FxMipmapGenOp>)
                 return EffectPassType::mipmap;
+            else if constexpr (std::is_same_v<T, FxOidnOp>)
+                return EffectPassType::oidn;
             else
                 return EffectPassType::unknown;
         },
@@ -141,6 +143,8 @@ FxPassOp fxPassOpFromEffectPassType(EffectPassType type) {
         return FxPassOp{FxClearRtvOp{}};
     case EffectPassType::mipmap:
         return FxPassOp{FxMipmapGenOp{}};
+    case EffectPassType::oidn:
+        return FxPassOp{FxOidnOp{}};
     case EffectPassType::unknown:
         throw std::runtime_error("unsupported unknown FX pass type");
     }
@@ -262,6 +266,25 @@ FxPass fxPassFromEffectPass(const EffectPass& pass, FxCategory category) {
             throw std::runtime_error("mipmap pass requires one target: " + pass.name);
         break;
     }
+    case EffectPassType::oidn: {
+        FxOidnOp op;
+        op.input = pass.oidnInput;
+        op.albedo = pass.oidnAlbedo;
+        op.normal = pass.oidnNormal;
+        op.output = pass.oidnOutput;
+        if (op.input.empty() && !pass.inputs.empty())
+            op.input = pass.inputs.front().name;
+        if (op.albedo.empty() && pass.inputs.size() > 1)
+            op.albedo = pass.inputs[1].name;
+        if (op.normal.empty() && pass.inputs.size() > 2)
+            op.normal = pass.inputs[2].name;
+        if (op.output.empty() && pass.renderTargets.size() == 1)
+            op.output = pass.renderTargets.front().name;
+        if (op.output.empty() && pass.unorderedAccess.size() == 1)
+            op.output = pass.unorderedAccess.front().name;
+        out.op = std::move(op);
+        break;
+    }
     case EffectPassType::unknown:
         throw std::runtime_error("unsupported unknown FX pass type: " + pass.name);
     }
@@ -280,7 +303,7 @@ EffectPass effectPassFromFxPass(const FxPass& pass) {
             return std::is_same_v<T, FxRasterOp> || std::is_same_v<T, FxPostProcessOp> ||
                    std::is_same_v<T, FxComputeOp> || std::is_same_v<T, FxRayTracingOp> || std::is_same_v<T, FxCopyOp> ||
                    std::is_same_v<T, FxClearRtvOp> || std::is_same_v<T, FxClearUavOp> ||
-                   std::is_same_v<T, FxMipmapGenOp>;
+                   std::is_same_v<T, FxMipmapGenOp> || std::is_same_v<T, FxOidnOp>;
         },
         pass.op);
     if (!legacyEquivalent)
@@ -341,6 +364,21 @@ EffectPass effectPassFromFxPass(const FxPass& pass) {
                 out.type = EffectPassType::mipmap;
                 out.renderTargets.push_back(
                     EffectAttachment{.name = concrete.texture, .clear = false, .clearValue = {}});
+            } else if constexpr (std::is_same_v<T, FxOidnOp>) {
+                out.type = EffectPassType::oidn;
+                out.oidnInput = concrete.input;
+                out.oidnAlbedo = concrete.albedo;
+                out.oidnNormal = concrete.normal;
+                out.oidnOutput = concrete.output;
+                if (!concrete.input.empty())
+                    out.inputs.push_back(EffectAttachment{.name = concrete.input, .clear = false, .clearValue = {}});
+                if (!concrete.albedo.empty())
+                    out.inputs.push_back(EffectAttachment{.name = concrete.albedo, .clear = false, .clearValue = {}});
+                if (!concrete.normal.empty())
+                    out.inputs.push_back(EffectAttachment{.name = concrete.normal, .clear = false, .clearValue = {}});
+                if (!concrete.output.empty())
+                    out.renderTargets.push_back(
+                        EffectAttachment{.name = concrete.output, .clear = false, .clearValue = {}});
             }
         },
         pass.op);

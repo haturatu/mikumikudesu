@@ -7,6 +7,7 @@
 #include <charconv>
 #include <fstream>
 #include <iterator>
+#include <ranges>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -38,6 +39,8 @@ EffectPassType passType(std::string_view value) {
         return EffectPassType::clear;
     if (value == "mipmap" || value == "mipmapGen")
         return EffectPassType::mipmap;
+    if (value == "oidn")
+        return EffectPassType::oidn;
     return EffectPassType::unknown;
 }
 #endif
@@ -420,6 +423,12 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
                 pass.inputs = attachments(value, "readResources");
             pass.renderTargets = attachments(value, "RTV");
             pass.unorderedAccess = attachments(value, "UAV");
+            if (pass.type == EffectPassType::oidn) {
+                pass.oidnInput = value.value("input", value.value("beauty", ""));
+                pass.oidnAlbedo = value.value("albedo", "");
+                pass.oidnNormal = value.value("normal", "");
+                pass.oidnOutput = value.value("output", "");
+            }
             if (const auto target = value.find("target"); target != value.end() && target->is_string()) {
                 if (pass.unorderedAccess.empty() &&
                     (pass.type == EffectPassType::clear || pass.type == EffectPassType::mipmap))
@@ -482,34 +491,68 @@ CompiledEffect compileEffectGraph(const EffectGraph& graph) {
             .maxAttributeSize = pass.maxAttributeSize,
             .maxRecursionDepth = pass.maxRecursionDepth,
         };
-        for (const auto& input : pass.inputs) {
-            if (input.name.empty())
-                continue;
-            compiled.resources.push_back({input.name, false});
-            if (writers.contains(input.name))
-                compiled.barriers.push_back("read-after-write:" + input.name);
-        }
-        for (const auto& input : pass.renderTargets) {
-            if (input.name.empty())
-                continue;
-            compiled.resources.push_back({input.name, true});
-            if (writers.contains(input.name))
-                compiled.barriers.push_back("write-after-write:" + input.name);
-            writers[input.name] = true;
-        }
-        for (const auto& input : pass.unorderedAccess) {
-            if (input.name.empty())
-                continue;
-            compiled.resources.push_back({input.name, true});
-            if (writers.contains(input.name))
-                compiled.barriers.push_back("uav:" + input.name);
-            writers[input.name] = true;
-        }
-        if (!pass.depth.name.empty()) {
-            compiled.resources.push_back({pass.depth.name, pass.depth.clear});
-            if (writers.contains(pass.depth.name))
-                compiled.barriers.push_back("depth:" + pass.depth.name);
-            writers[pass.depth.name] = true;
+        if (pass.type == EffectPassType::oidn) {
+            const auto hasResource = [&](std::string_view name, bool write) {
+                return std::ranges::any_of(compiled.resources, [&](const EffectResourceBinding& resource) {
+                    return resource.resource == name && resource.write == write;
+                });
+            };
+            const auto addRead = [&](std::string_view name) {
+                if (name.empty() || hasResource(name, false))
+                    return;
+                compiled.resources.push_back({std::string(name), false});
+                if (writers.contains(std::string(name)))
+                    compiled.barriers.push_back("read-after-write:" + std::string(name));
+            };
+            const auto addWrite = [&](std::string_view name) {
+                if (name.empty() || hasResource(name, true))
+                    return;
+                compiled.resources.push_back({std::string(name), true});
+                if (writers.contains(std::string(name)))
+                    compiled.barriers.push_back("write-after-write:" + std::string(name));
+                writers[std::string(name)] = true;
+            };
+            for (const auto& input : pass.inputs)
+                addRead(input.name);
+            addRead(pass.oidnInput);
+            addRead(pass.oidnAlbedo);
+            addRead(pass.oidnNormal);
+            std::string output = pass.oidnOutput;
+            if (output.empty() && pass.renderTargets.size() == 1)
+                output = pass.renderTargets.front().name;
+            if (output.empty() && pass.unorderedAccess.size() == 1)
+                output = pass.unorderedAccess.front().name;
+            addWrite(output);
+        } else {
+            for (const auto& input : pass.inputs) {
+                if (input.name.empty())
+                    continue;
+                compiled.resources.push_back({input.name, false});
+                if (writers.contains(input.name))
+                    compiled.barriers.push_back("read-after-write:" + input.name);
+            }
+            for (const auto& input : pass.renderTargets) {
+                if (input.name.empty())
+                    continue;
+                compiled.resources.push_back({input.name, true});
+                if (writers.contains(input.name))
+                    compiled.barriers.push_back("write-after-write:" + input.name);
+                writers[input.name] = true;
+            }
+            for (const auto& input : pass.unorderedAccess) {
+                if (input.name.empty())
+                    continue;
+                compiled.resources.push_back({input.name, true});
+                if (writers.contains(input.name))
+                    compiled.barriers.push_back("uav:" + input.name);
+                writers[input.name] = true;
+            }
+            if (!pass.depth.name.empty()) {
+                compiled.resources.push_back({pass.depth.name, pass.depth.clear});
+                if (writers.contains(pass.depth.name))
+                    compiled.barriers.push_back("depth:" + pass.depth.name);
+                writers[pass.depth.name] = true;
+            }
         }
         result.passes.push_back(std::move(compiled));
     }
@@ -526,6 +569,8 @@ EffectExecutionStats EffectExecutor::execute(const CompiledEffect& effect, const
             ++stats.computePasses;
         } else if (pass.type == EffectPassType::raytracing) {
             ++stats.rayTracingPasses;
+        } else if (pass.type == EffectPassType::oidn) {
+            ++stats.oidnPasses;
         }
         if (callback)
             callback(pass);
@@ -577,6 +622,8 @@ const char* toString(EffectPassType type) noexcept {
         return "clear";
     case EffectPassType::mipmap:
         return "mipmap";
+    case EffectPassType::oidn:
+        return "oidn";
     case EffectPassType::unknown:
         return "unknown";
     }
