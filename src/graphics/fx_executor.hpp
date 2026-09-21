@@ -45,10 +45,12 @@ struct FxExecutionResources {
     using PushConstantResolver =
         std::function<std::vector<std::byte>(const dayo::fx::FxDispatch&, const dayo::fx::FxFrameContext&)>;
     using ConditionEvaluator = std::function<bool(std::span<const std::string>, const dayo::fx::FxFrameContext&)>;
+    using PassConstantsUpdater = std::function<void(CommandList&, const NativeSceneDraw&)>;
     // Material-level scene draw ranges are optional so existing fullscreen and
     // synthetic Preview plans continue to use the legacy draw command.
     std::span<const NativeSceneDraw> sceneDraws{};
     std::optional<std::uint32_t> rasterControllerModel;
+    PassConstantsUpdater updatePassConstants;
     TextureResolver resolveTexture;
     // Generic resource providers keep shader compilation and descriptor
     // allocation backend-specific while making the command contract explicit.

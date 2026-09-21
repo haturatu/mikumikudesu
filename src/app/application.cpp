@@ -162,6 +162,7 @@ bool Application::ensureNativeSceneRuntime(bool restartRenderer, std::string* er
     const bool wasNative = nativeRenderer_.status().nativeReady;
     nativeSceneFrame_.reset();
     nativeSceneResources_.reset();
+    nativeSceneDraws_.clear();
     try {
         std::string runtimeError;
         if (!nativeSceneResources_.initialize(*device_, counts, &runtimeError))
@@ -370,9 +371,59 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         sceneResources.rawVertices = modelResources.rawVertices;
         if (!nativeSceneResources_.compose(sceneResources, &sceneError))
             throw std::runtime_error(sceneError.empty() ? "native scene resource composition failed" : sceneError);
+        nativeSceneDraws_.clear();
+        for (std::size_t modelIndex = 0; modelIndex < nativeSceneModelData_.size(); ++modelIndex) {
+            if (modelIndex >= nativeGeometry_.size() || modelIndex >= modelResources.vertexBuffers.size() ||
+                modelIndex >= modelResources.indexBuffers.size())
+                throw std::runtime_error("native scene draw table is out of sync with model resources");
+            const auto& model = nativeSceneModelData_[modelIndex];
+            const auto& geometry = nativeGeometry_[modelIndex];
+            for (std::size_t materialIndex = 0; materialIndex < model.materialFaces.size(); ++materialIndex) {
+                const auto& range = model.materialFaces[materialIndex];
+                if (range.count == 0)
+                    continue;
+                const auto firstIndex = static_cast<std::uint64_t>(range.start) * 3U;
+                const auto indexCount = static_cast<std::uint64_t>(range.count) * 3U;
+                if (firstIndex > std::numeric_limits<std::uint32_t>::max() ||
+                    indexCount > std::numeric_limits<std::uint32_t>::max())
+                    throw std::overflow_error("native scene draw range exceeds indexed draw limits");
+                nativeSceneDraws_.push_back({.vertexBuffer = modelResources.vertexBuffers[modelIndex],
+                                             .indexBuffer = modelResources.indexBuffers[modelIndex],
+                                             .modelIndex = geometry.modelIndex,
+                                             .materialIndex = static_cast<std::uint32_t>(materialIndex),
+                                             .firstIndex = static_cast<std::uint32_t>(firstIndex),
+                                             .indexCount = static_cast<std::uint32_t>(indexCount),
+                                             .instanceCount = geometry.cloneCount,
+                                             .firstInstance = 0,
+                                             .vertexOffset = 0,
+                                             .buffer = false,
+                                             .rasterizeOrder = geometry.rasterizeOrder,
+                                             .deformIndex = geometry.deformIndex,
+                                             .deformOrder = geometry.deformOrder});
+            }
+        }
         if (!nativeSceneFrame_.sync(frameContext, nativeSceneResources_.bindings(), {}, &sceneError))
             throw std::runtime_error(sceneError.empty() ? "native scene frame synchronization failed" : sceneError);
-        return nativeRenderer_.recordFrame(commands, frameContext, nativeDirty, materials, lightSampling, {});
+        graphics::FxExecutionResources executionResources;
+        executionResources.sceneDraws = nativeSceneDraws_;
+        for (const auto& geometry : nativeGeometry_) {
+            if (geometry.modelId == frameContext.currentModel) {
+                executionResources.rasterControllerModel = geometry.modelIndex;
+                break;
+            }
+        }
+        executionResources.updatePassConstants = [this](graphics::CommandList& commandList,
+                                                         const graphics::NativeSceneDraw& draw) {
+            const graphics::NativeScenePassConstants pass{.modelIndex = draw.modelIndex,
+                                                           .rasterizeOrder = draw.rasterizeOrder,
+                                                           .deformIndex = draw.deformIndex,
+                                                           .deformOrder = draw.deformOrder};
+            std::string passError;
+            if (!nativeSceneFrame_.updatePassConstants(commandList, pass, &passError))
+                throw std::runtime_error(passError.empty() ? "native CBuff1 update failed" : passError);
+        };
+        return nativeRenderer_.recordFrame(commands, frameContext, nativeDirty, materials, lightSampling, {},
+                                           executionResources);
     } catch (const std::exception& exception) {
         // Keep the command buffer usable for the Preview fallback. Native
         // resources remain owned until the next renderer request, so a
@@ -1293,6 +1344,11 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         NativeModelGeometry native;
         native.meshId = static_cast<std::uint32_t>(nativeGeometry.size() + 1U);
         native.cloneCount = cloneCount;
+        native.modelId = instance.id;
+        native.modelIndex = static_cast<std::uint32_t>(nativeSceneModels.size());
+        native.rasterizeOrder = static_cast<std::uint32_t>(std::max(instance.order.raster, 0));
+        native.deformIndex = native.modelIndex;
+        native.deformOrder = static_cast<std::uint32_t>(std::max(instance.order.deform, 0));
         native.indices.assign(instance.model->indices.begin(), instance.model->indices.end());
         native.morphWeights.resize(instance.model->morphs.size(), 0.0F);
         for (std::size_t morphIndex = 0; morphIndex < native.morphWeights.size(); ++morphIndex) {

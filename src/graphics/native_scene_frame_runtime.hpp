@@ -28,6 +28,8 @@ class NativeSceneFrameRuntime {
     [[nodiscard]] bool syncViewConstants(const fx::FxFrameContext& context, std::string* error = nullptr);
     [[nodiscard]] bool sync(const fx::FxFrameContext& context, NativeSceneResourceBindings resources,
                             const NativeScenePassConstants& pass = {}, std::string* error = nullptr);
+    [[nodiscard]] bool updatePassConstants(CommandList& commands, const NativeScenePassConstants& pass,
+                                           std::string* error = nullptr);
     [[nodiscard]] bool syncControllers(std::string* error = nullptr);
     void reset() noexcept;
 

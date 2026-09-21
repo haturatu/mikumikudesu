@@ -108,6 +108,10 @@ struct NativeSceneDraw {
     std::uint32_t firstInstance{};
     std::int32_t vertexOffset{};
     bool buffer{};
+    // CBuff1 values are part of the draw contract, not global frame state.
+    std::uint32_t rasterizeOrder{};
+    std::uint32_t deformIndex{};
+    std::uint32_t deformOrder{};
 };
 
 // Converts the application's normalized Preview vertex representation to the

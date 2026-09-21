@@ -212,6 +212,8 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                 for (const auto& sceneDraw : resources.sceneDraws) {
                     if (!matchesRasterTarget(target, resources.rasterControllerModel, sceneDraw))
                         continue;
+                    if (resources.updatePassConstants)
+                        resources.updatePassConstants(commands, sceneDraw);
                     commands.drawIndexedEx({.vertexBuffer = sceneDraw.vertexBuffer,
                                             .indexBuffer = sceneDraw.indexBuffer,
                                             .firstIndex = sceneDraw.firstIndex,

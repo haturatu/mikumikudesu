@@ -108,6 +108,11 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     struct NativeModelGeometry {
         std::uint32_t meshId{};
         std::uint32_t cloneCount{1};
+        core::ModelId modelId{};
+        std::uint32_t modelIndex{};
+        std::uint32_t rasterizeOrder{};
+        std::uint32_t deformIndex{};
+        std::uint32_t deformOrder{};
         std::vector<graphics::PreviewVertex> baseVertices;
         std::vector<graphics::PreviewBoneTransform> bones;
         std::vector<graphics::PreviewMorphDelta> morphDeltas;
@@ -116,6 +121,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
         std::vector<graphics::NativeDeformedVertex> deformedVertices;
     };
     std::vector<NativeModelGeometry> nativeGeometry_;
+    std::vector<graphics::NativeSceneDraw> nativeSceneDraws_;
     graphics::NativeSceneModelRuntime nativeSceneModelRuntime_;
     std::vector<graphics::NativeSceneModelData> nativeSceneModelData_;
     graphics::LightSamplingService nativeLightSampling_;

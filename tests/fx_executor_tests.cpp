@@ -445,6 +445,11 @@ bool testRasterModelTargetIndexedDraws() {
     dayo::graphics::FxExecutionResources resources;
     resources.sceneDraws = draws;
     resources.rasterControllerModel = 7;
+    std::vector<std::uint32_t> passModels;
+    resources.updatePassConstants = [&passModels](dayo::graphics::CommandList&,
+                                                  const dayo::graphics::NativeSceneDraw& draw) {
+        passModels.push_back(draw.modelIndex);
+    };
     resources.resolveTypedPipeline = [](const dayo::fx::FxDispatch&) {
         return std::optional<dayo::graphics::handles::PipelineHandle>{{20, 1}};
     };
@@ -459,6 +464,8 @@ bool testRasterModelTargetIndexedDraws() {
                     return entry.starts_with("drawIndexedEx:");
                 }) == 2,
                 "raster executor records one indexed draw per matching material range");
+    ok &= check(passModels == std::vector<std::uint32_t>{7, 7},
+                "raster executor updates per-draw pass constants before indexed draws");
     ok &= check(dayo::graphics::matchesRasterTarget(dayo::core::fx::RasterModelTarget::self, 7, draws[0]) &&
                     !dayo::graphics::matchesRasterTarget(dayo::core::fx::RasterModelTarget::self, 7, draws[1]) &&
                     dayo::graphics::matchesRasterTarget(dayo::core::fx::RasterModelTarget::other, 7, draws[1]),
