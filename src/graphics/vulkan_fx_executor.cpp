@@ -25,20 +25,23 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             throw std::logic_error("VulkanFxExecutor: pass resource is unavailable: " + resource.name);
         return *handle;
     };
-    const auto resolveTyped = [&](const dayo::fx::FxDispatch::ResourceUse& resource) -> handles::TextureHandle {
-        if (resource.name.empty())
+    const auto resolveTypedName = [&](std::string_view name) -> handles::TextureHandle {
+        if (name.empty())
             throw std::logic_error("VulkanFxExecutor: pass resource has an empty typed binding");
         if (resources.resolveTypedTexture) {
-            const auto handle = resources.resolveTypedTexture(resource.name);
+            const auto handle = resources.resolveTypedTexture(name);
             if (handle.has_value())
                 return *handle;
         }
         if (resources.resolveTypedResource) {
-            const auto binding = resources.resolveTypedResource(resource.name);
+            const auto binding = resources.resolveTypedResource(name);
             if (binding.has_value() && binding->texture.valid())
                 return binding->texture;
         }
-        throw std::logic_error("VulkanFxExecutor: typed pass resource is unavailable: " + resource.name);
+        throw std::logic_error("VulkanFxExecutor: typed pass resource is unavailable: " + std::string(name));
+    };
+    const auto resolveTyped = [&](const dayo::fx::FxDispatch::ResourceUse& resource) -> handles::TextureHandle {
+        return resolveTypedName(resource.name);
     };
     const auto resolveTypedWriteTarget = [&](const dayo::fx::FxDispatch& dispatch) -> handles::TextureHandle {
         for (const auto& resource : dispatch.resources) {
@@ -106,6 +109,41 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             commands.bindDescriptorSetEx(*descriptorSet);
         }
     };
+    const auto beginTypedRendering = [&](const dayo::fx::FxDispatch& dispatch) {
+        if (const auto* raster = std::get_if<dayo::fx::FxRasterDispatch>(&dispatch.executable);
+            raster != nullptr && !raster->colorAttachments.empty()) {
+            RenderingInfoEx info;
+            info.extent = {context.renderWidth, context.renderHeight, 1};
+            info.colors.reserve(raster->colorAttachments.size());
+            for (const auto& attachment : raster->colorAttachments) {
+                info.colors.push_back({.texture = resolveTypedName(attachment.name),
+                                       .clear = attachment.clear,
+                                       .clearColor = attachment.clearValue.color});
+            }
+            if (raster->depthAttachment.has_value()) {
+                const auto& attachment = *raster->depthAttachment;
+                info.depth = DepthAttachmentEx{.texture = resolveTypedName(attachment.name),
+                                               .clear = attachment.clear,
+                                               .clearDepth = attachment.clearValue.depth};
+            }
+            commands.beginRenderingEx(info);
+            return;
+        }
+        if (const auto* postprocess = std::get_if<dayo::fx::FxPostProcessDispatch>(&dispatch.executable);
+            postprocess != nullptr && !postprocess->colorAttachments.empty()) {
+            RenderingInfoEx info;
+            info.extent = {context.renderWidth, context.renderHeight, 1};
+            info.colors.reserve(postprocess->colorAttachments.size());
+            for (const auto& attachment : postprocess->colorAttachments) {
+                info.colors.push_back({.texture = resolveTypedName(attachment.name),
+                                       .clear = attachment.clear,
+                                       .clearColor = attachment.clearValue.color});
+            }
+            commands.beginRenderingEx(info);
+            return;
+        }
+        commands.beginRenderingEx(resolveTypedWriteTarget(dispatch));
+    };
     const auto prepareShaderPass = [&](const dayo::fx::FxDispatch& dispatch, bool beginRendering) {
         if (!dispatch.conditions.empty()) {
             if (!resources.evaluateConditions)
@@ -117,7 +155,7 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
         prepareResources(dispatch);
         if (resources.resolveTypedPipeline) {
             if (beginRendering)
-                commands.beginRenderingEx(resolveTypedWriteTarget(dispatch));
+                beginTypedRendering(dispatch);
             const auto pipeline = resources.resolveTypedPipeline(dispatch);
             if (!pipeline.has_value())
                 throw std::logic_error("VulkanFxExecutor: typed pipeline is unavailable: " + dispatch.name);
@@ -167,7 +205,27 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
         case dayo::fx::FxOpKind::raster:
             if (!prepareShaderPass(dispatch, true))
                 break;
-            commands.draw(static_cast<std::uint32_t>(context.clonedVertexCount), context.cloneCount);
+            if (!resources.sceneDraws.empty()) {
+                const auto* raster = std::get_if<dayo::fx::FxRasterDispatch>(&dispatch.executable);
+                const auto target = raster == nullptr ? dayo::core::fx::RasterModelTarget::all
+                                                      : raster->graphics.modelTarget;
+                for (const auto& sceneDraw : resources.sceneDraws) {
+                    if (!matchesRasterTarget(target, resources.rasterControllerModel, sceneDraw))
+                        continue;
+                    commands.drawIndexedEx({.vertexBuffer = sceneDraw.vertexBuffer,
+                                            .indexBuffer = sceneDraw.indexBuffer,
+                                            .firstIndex = sceneDraw.firstIndex,
+                                            .indexCount = sceneDraw.indexCount,
+                                            .vertexOffset = sceneDraw.vertexOffset,
+                                            .firstInstance = sceneDraw.firstInstance,
+                                            .instanceCount = sceneDraw.instanceCount,
+                                            .modelIndex = sceneDraw.modelIndex,
+                                            .materialIndex = sceneDraw.materialIndex});
+                    ++stats.indexedDraws;
+                }
+            } else {
+                commands.draw(static_cast<std::uint32_t>(context.clonedVertexCount), context.cloneCount);
+            }
             if (resources.resolveTypedPipeline)
                 commands.endRenderingEx();
             ++stats.raster;

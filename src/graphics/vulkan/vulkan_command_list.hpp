@@ -22,6 +22,7 @@ class VulkanCommandList final : public CommandList {
     void transition(TextureHandle) override;
     void bindPipeline(PipelineHandle) override;
     void draw(std::uint32_t vertexCount, std::uint32_t instanceCount = 1) override;
+    void drawIndexedEx(const IndexedDrawEx& draw) override;
     void dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) override;
     void traceRays(std::uint32_t width, std::uint32_t height) override;
     void traceRays(handles::ShaderBindingTableHandle sbt, std::uint32_t width, std::uint32_t height,

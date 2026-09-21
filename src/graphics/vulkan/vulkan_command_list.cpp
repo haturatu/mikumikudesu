@@ -24,6 +24,12 @@ void VulkanCommandList::draw(std::uint32_t vertexCount, std::uint32_t instanceCo
     vkCmdDraw(commandBuffer_, vertexCount, instanceCount, 0, 0);
 }
 
+void VulkanCommandList::drawIndexedEx(const IndexedDrawEx& draw) {
+    if (device_ == nullptr)
+        throw std::logic_error("typed indexed draw requires a Vulkan device");
+    device_->recordDrawIndexed(commandBuffer_, draw);
+}
+
 void VulkanCommandList::dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) {
     vkCmdDispatch(commandBuffer_, x, y, z);
 }

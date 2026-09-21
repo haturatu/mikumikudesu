@@ -5230,6 +5230,30 @@ void VulkanDevice::recordBindPipeline(VkCommandBuffer commandBuffer, handles::Pi
     vkCmdBindPipeline(commandBuffer, it->second.bindPoint, it->second.pipeline);
 }
 
+void VulkanDevice::recordDrawIndexed(VkCommandBuffer commandBuffer, const IndexedDrawEx& draw) {
+    if (commandBuffer == VK_NULL_HANDLE)
+        throw std::invalid_argument("typed indexed draw requires a command buffer");
+    if (!draw.vertexBuffer.valid() || !draw.indexBuffer.valid() || draw.indexCount == 0 || draw.instanceCount == 0)
+        throw std::invalid_argument("typed indexed draw has invalid buffers or counts");
+    const auto vertexIt = typedBuffers_.find(draw.vertexBuffer);
+    const auto indexIt = typedBuffers_.find(draw.indexBuffer);
+    if (vertexIt == typedBuffers_.end() || !typedBufferHandles_.isAlive(draw.vertexBuffer) ||
+        indexIt == typedBuffers_.end() || !typedBufferHandles_.isAlive(draw.indexBuffer))
+        throw std::invalid_argument("typed indexed draw references a stale buffer handle");
+    if ((toBits(vertexIt->second.desc.usage) & toBits(ResourceUsage::vertexRead)) == 0U ||
+        (toBits(indexIt->second.desc.usage) & toBits(ResourceUsage::indexRead)) == 0U)
+        throw std::invalid_argument("typed indexed draw buffers do not have vertex/index usage");
+    const auto requiredIndexBytes = static_cast<std::uint64_t>(draw.firstIndex) * sizeof(std::uint32_t) +
+                                    static_cast<std::uint64_t>(draw.indexCount) * sizeof(std::uint32_t);
+    if (requiredIndexBytes > indexIt->second.desc.size)
+        throw std::out_of_range("typed indexed draw exceeds its index buffer");
+    const VkDeviceSize vertexOffset = 0;
+    vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexIt->second.resource.buffer, &vertexOffset);
+    vkCmdBindIndexBuffer(commandBuffer, indexIt->second.resource.buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(commandBuffer, draw.indexCount, draw.instanceCount, draw.firstIndex, draw.vertexOffset,
+                     draw.firstInstance);
+}
+
 VkImageLayout VulkanDevice::typedTextureFinalLayout(const TypedTexture& texture) noexcept {
     return layoutForUsage(texture.desc.usage);
 }
