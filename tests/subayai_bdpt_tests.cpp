@@ -3,6 +3,7 @@
 #include "core/scene.hpp"
 #include "graphics/bdpt_accumulation.hpp"
 #include "graphics/bdpt_runtime.hpp"
+#include "graphics/dayo_host_resources.hpp"
 #include "graphics/device.hpp"
 #include "graphics/native_controller_runtime.hpp"
 #include "graphics/native_frame_constants.hpp"
