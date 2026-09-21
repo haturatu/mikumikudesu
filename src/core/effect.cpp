@@ -166,9 +166,7 @@ bool knownBlendFactor(std::string_view value) {
     const auto key = compactKey(value);
     return key == "zero" || key == "one" || key == "srccolor" || key == "invsrccolor" || key == "srcalpha" ||
            key == "invsrcalpha" || key == "destalpha" || key == "invdestalpha" || key == "destcolor" ||
-           key == "invdestcolor" || key == "srcalphasaturate" || key == "blendfactor" ||
-           key == "invblendfactor" || key == "src1color" || key == "invsrc1color" || key == "src1alpha" ||
-           key == "invsrc1alpha";
+           key == "invdestcolor" || key == "srcalphasaturate";
 }
 
 bool knownBlendOp(std::string_view value) {
