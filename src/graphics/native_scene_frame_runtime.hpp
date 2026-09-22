@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/fx/fx_controller_resolver.hpp"
 #include "fx/fx_frame.hpp"
 #include "graphics/native_controller_runtime.hpp"
 #include "graphics/native_frame_constants.hpp"
@@ -31,6 +32,9 @@ class NativeSceneFrameRuntime {
     [[nodiscard]] bool updatePassConstants(CommandList& commands, const NativeScenePassConstants& pass,
                                            std::string* error = nullptr);
     [[nodiscard]] bool syncControllers(std::string* error = nullptr);
+    [[nodiscard]] bool syncControllers(std::span<const core::EffectController> declarations,
+                                       const core::fx::SceneEvaluationSnapshot& snapshot, core::ModelId self,
+                                       std::string* error = nullptr);
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
