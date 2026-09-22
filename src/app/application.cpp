@@ -385,7 +385,9 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         if (!ensureNativeSceneRuntime(true, &sceneError))
             throw std::runtime_error(sceneError.empty() ? "native scene runtime synchronization failed" : sceneError);
         const graphics::Extent3D screenExtent{target.width, target.height, 1};
-        if (!nativeScreenRuntime_.ready() || !nativeScreenRuntime_.matchesExtent(screenExtent)) {
+        const bool nativeResizeEvent =
+            !nativeScreenRuntime_.ready() || !nativeScreenRuntime_.matchesExtent(screenExtent);
+        if (nativeResizeEvent) {
             if (!nativeScreenRuntime_.initialize(*device_, screenExtent, &sceneError))
                 throw std::runtime_error(sceneError.empty() ? "native screen runtime initialization failed"
                                                             : sceneError);
@@ -463,7 +465,10 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
             synchronizeGeometry(bdptRuntime);
         if (!tlas.valid())
             throw std::runtime_error("native scene runtime requires a synchronized TLAS");
-        const auto frameContext = makeNativeFrameContext(target);
+        auto frameContext = makeNativeFrameContext(target);
+        frameContext.host.onResize = nativeResizeEvent;
+        frameContext.host.onModelChanged = scene_.dirty(core::DirtyFlag::geometry);
+        frameContext.host.onMaterialChanged = scene_.dirty(core::DirtyFlag::material);
         auto sceneResources = nativeSceneResources_.bindings();
         const auto modelResources = nativeSceneModelRuntime_.bindings();
         std::vector<graphics::NativeSceneDerivedModel> derivedModels;

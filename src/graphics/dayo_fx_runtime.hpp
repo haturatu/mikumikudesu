@@ -1,5 +1,6 @@
 #pragma once
 
+#include "fx/fx_condition_runtime.hpp"
 #include "graphics/dayo_host_resources.hpp"
 #include "graphics/native_fx_runtime.hpp"
 
@@ -99,6 +100,10 @@ class DayoFxRuntime {
   private:
     NativeFxRuntime runtime_;
     std::vector<FxExternalResourceProvider*> providers_;
+    mutable fx::FxConditionRuntime conditionRuntime_;
+    mutable bool hasExecuted_{};
+    mutable std::uint32_t lastRenderWidth_{};
+    mutable std::uint32_t lastRenderHeight_{};
 };
 
 } // namespace dayo::graphics

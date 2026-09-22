@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/fx/fx_size.hpp"
 #include "fx/fx_compiler.hpp"
 #include "graphics/device.hpp"
 
@@ -28,6 +29,7 @@ class FxResourceStore {
         handles::SamplerHandle sampler{};
         Extent3D extent{};
         PixelFormat format{PixelFormat::rgba8Unorm};
+        std::uint32_t dimension{2};
         // Compatibility-only physical slot used by the old single-set API.
         // Per-pass descriptors never consult these fields.
         DescriptorKind legacyDescriptorKind{DescriptorKind::sampledImage};
@@ -88,7 +90,7 @@ class FxPassDescriptorRuntime {
 // runtime deliberately keeps resource names and descriptor bindings together
 // so a hot-reloaded program cannot accidentally resolve a name against the
 // previous program's allocation.
-class FxResourceRuntime {
+class FxResourceRuntime : public core::fx::FxResourceTable {
   public:
     struct ResolvedTexture {
         handles::TextureHandle handle{};
@@ -138,6 +140,7 @@ class FxResourceRuntime {
         return descriptorLayoutDesc_;
     }
     [[nodiscard]] std::optional<Extent3D> extent(std::string_view name) const;
+    [[nodiscard]] std::optional<core::fx::FxExtent> find(std::string_view name) const override;
     [[nodiscard]] const FxResourceStore& store() const noexcept {
         return store_;
     }

@@ -41,6 +41,8 @@ struct FxHostFrameState {
     bool onLoadSkybox{};
     bool onResize{};
     bool onLoad{};
+    bool onModelChanged{};
+    bool onMaterialChanged{};
 };
 
 // Frame-boundary ABI shared by compiler/plan, executor, and preview path.

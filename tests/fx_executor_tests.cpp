@@ -1,5 +1,6 @@
 #include "core/fx/fx_controller_resolver.hpp"
 #include "fx/fx_catalog.hpp"
+#include "fx/fx_condition_runtime.hpp"
 #include "fx/fx_compiler.hpp"
 #include "fx/fx_frame.hpp"
 #include "fx/fx_preview_path.hpp"
@@ -1260,6 +1261,29 @@ bool testFxControllerResolver() {
     return ok;
 }
 
+bool testFxConditionRuntime() {
+    dayo::fx::FxConditionRuntime runtime;
+    dayo::core::fx::FakeFxResourceTable resourceTable;
+    resourceTable.add("Probe", {.x = 4, .y = 2, .z = 1, .dimension = 2});
+    auto context = testContext();
+    context.frame = 5.75F;
+    context.host.onResize = true;
+    context.host.onModelChanged = true;
+    const std::vector<std::string> conditions = {
+        "frame if FRAME >= 5", "resize if DEFAULT_RTSIZE.x == 64", "modelChanged if Probe.x == 4"};
+    bool ok = check(runtime.evaluate(conditions, context, &resourceTable),
+                    "condition runtime combines frame events, predicates, and resource extents");
+    context.frame = 4.0F;
+    ok &= check(!runtime.evaluate(conditions, context, &resourceTable),
+                "condition runtime rejects a false expression predicate");
+    context.frame = 5.0F;
+    context.host.onResize = false;
+    ok &= check(!runtime.evaluate(conditions, context, &resourceTable),
+                "condition runtime rejects an inactive event");
+    ok &= check(runtime.evaluate({}, context), "empty condition list is unconditional");
+    return ok;
+}
+
 bool testPreviewReferencePath() {
     const auto plan = dayo::fx::buildPreviewReferencePlan(testContext());
     bool ok = true;
@@ -1693,11 +1717,18 @@ bool testFxResourceRuntimeMaterializesDeclarations() {
                 "FX resource runtime resolves buffers and samplers");
     const auto colorExtent = runtime.extent("Color");
     const auto volumeExtent = runtime.extent("Volume");
+    const auto colorSymbolExtent = runtime.find("Color");
+    const auto volumeSymbolExtent = runtime.find("Volume");
+    const auto bufferSymbolExtent = runtime.find("Lights");
     ok &= check(colorExtent.has_value() && colorExtent->width == 64 && colorExtent->height == 32,
                 "FX resource runtime resolves absolute 2D extents");
     ok &= check(volumeExtent.has_value() && volumeExtent->width == 8 && volumeExtent->height == 4 &&
                     volumeExtent->depth == 2,
                 "FX resource runtime resolves absolute 3D extents");
+    ok &= check(colorSymbolExtent.has_value() && colorSymbolExtent->dimension == 2 &&
+                    volumeSymbolExtent.has_value() && volumeSymbolExtent->dimension == 3 &&
+                    bufferSymbolExtent.has_value() && bufferSymbolExtent->dimension == 1,
+                "FX resource runtime exposes dimension-preserving expression symbols");
     ok &= check(runtime.descriptorLayout().valid() && runtime.descriptorSet().valid() &&
                     runtime.descriptorLayoutDesc().bindings.size() == 4 && device.descriptorBindings_.size() == 4,
                 "FX resource runtime allocates one typed descriptor set");
@@ -1779,6 +1810,7 @@ bool testNativeFxRuntimeRefreshesFrameResources() {
     dispatch.kind = dayo::fx::FxOpKind::compute;
     dispatch.executable = dayo::fx::FxComputeDispatch{"main"};
     dispatch.resources.push_back({"Output", true});
+    dispatch.conditions.push_back("frame if FRAME >= 12");
     program.passes.push_back(std::move(dispatch));
 
     const auto firstContext = dayo::fx::makeFxFrameContext(12.0F, 3, 4, 2, 1, 0, 3, 1, 1, 1);
@@ -1786,18 +1818,18 @@ bool testNativeFxRuntimeRefreshesFrameResources() {
     const std::array sharedLayouts{dayo::graphics::handles::DescriptorSetLayoutHandle{700, 1}};
     const std::array sharedSets{dayo::graphics::handles::DescriptorSetHandle{800, 1}};
     MockDevice device;
-    dayo::graphics::NativeFxRuntime runtime;
+    dayo::graphics::DayoFxRuntime runtime;
     std::string error;
     bool ok = check(runtime.initializeForFrame(device, std::move(program), compiler, firstContext, sharedLayouts,
                                                &error, sharedSets),
                     "native FX runtime initializes against the first frame context");
-    const auto firstExtent = runtime.resources().extent("Output");
+    const auto firstExtent = runtime.nativeRuntime().resources().extent("Output");
     ok &= check(firstExtent.has_value() && firstExtent->width == 4 && firstExtent->height == 2,
                 "native FX runtime uses the first frame dimensions");
     ok &= check(runtime.refresh(firstContext, &error), "native FX runtime reuses unchanged frame resources");
     const auto allocationsBeforeRefresh = device.textureDescs_.size();
     ok &= check(runtime.refresh(secondContext, &error), "native FX runtime refreshes changed frame resources");
-    const auto secondExtent = runtime.resources().extent("Output");
+    const auto secondExtent = runtime.nativeRuntime().resources().extent("Output");
     ok &= check(secondExtent.has_value() && secondExtent->width == 8 && secondExtent->height == 4,
                 "native FX runtime rebuilds render-size-dependent resources");
     ok &= check(device.textureDescs_.size() == allocationsBeforeRefresh + 1,
@@ -1820,8 +1852,12 @@ bool testNativeFxRuntimeRefreshesFrameResources() {
     };
     auto frame = runtime.prepareFrame(secondContext);
     MockCommands commands;
+    frame.context.frame = 11.0F;
+    const auto skipped = runtime.execute(frame, commands, resources);
+    ok &= check(skipped.compute == 0, "Dayo FX runtime skips a pass whose expression condition is false");
+    frame.context.frame = 12.0F;
     const auto stats = runtime.execute(frame, commands, resources);
-    ok &= check(stats.compute == 1, "native FX runtime executes after a resource refresh");
+    ok &= check(stats.compute == 1, "Dayo FX runtime evaluates and executes a satisfied pass condition");
     const auto descriptorCount =
         static_cast<std::size_t>(std::count(commands.trace.begin(), commands.trace.end(), std::string{"descriptorEx"}));
     ok &= check(descriptorCount == 2, "native FX runtime appends its resource set to shared descriptor bindings");
@@ -2244,6 +2280,7 @@ int main() {
     ok &= testNativeSceneDerivedResources();
     ok &= testViewConstantsAndScreenHistory();
     ok &= testFxControllerResolver();
+    ok &= testFxConditionRuntime();
     ok &= testPreviewReferencePath();
     ok &= testSchedulerOrder();
     ok &= testCloneUnification();

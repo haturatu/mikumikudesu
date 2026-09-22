@@ -524,6 +524,7 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                                                .sampler = {},
                                                .extent = resolved,
                                                .format = format,
+                                               .dimension = 2,
                                                .legacyDescriptorKind = textureDescriptorKind(declaration.view, format),
                                                .legacyBinding = binding};
             resource.texture = device.createTextureEx(description);
@@ -567,6 +568,7 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                                                .sampler = {},
                                                .extent = resolved,
                                                .format = format,
+                                               .dimension = 3,
                                                .legacyDescriptorKind = textureDescriptorKind(declaration.view, format),
                                                .legacyBinding = binding};
             resource.texture = device.createTextureEx(description);
@@ -606,6 +608,7 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                                                .sampler = {},
                                                .extent = resolved,
                                                .format = PixelFormat::rgba8Unorm,
+                                               .dimension = resolvedFx.dimension,
                                                .legacyDescriptorKind = bufferDescriptorKind(declaration.view),
                                                .legacyBinding = binding};
             resource.buffer = device.createBufferEx(description);
@@ -627,6 +630,7 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                                                .sampler = {},
                                                .extent = {},
                                                .format = PixelFormat::rgba8Unorm,
+                                               .dimension = 0,
                                                .legacyDescriptorKind = DescriptorKind::sampler,
                                                .legacyBinding = binding};
             resource.sampler = device.createSamplerEx(samplerDesc(declaration));
@@ -744,6 +748,16 @@ std::optional<Extent3D> FxResourceRuntime::extent(std::string_view name) const {
     if (resource == nullptr || resource->kind == FxResourceStore::Kind::sampler)
         return std::nullopt;
     return resource->extent;
+}
+
+std::optional<core::fx::FxExtent> FxResourceRuntime::find(std::string_view name) const {
+    const auto* resource = store_.find(name);
+    if (resource == nullptr || resource->kind == FxResourceStore::Kind::sampler)
+        return std::nullopt;
+    return core::fx::FxExtent{.x = resource->extent.width,
+                              .y = resource->extent.height,
+                              .z = resource->extent.depth,
+                              .dimension = resource->dimension};
 }
 
 std::optional<FxResourceRuntime::ResolvedTexture>
