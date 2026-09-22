@@ -11,6 +11,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace dayo::graphics {
@@ -96,6 +97,7 @@ class NativeFxRuntime {
     fx::FxNativeShaderSourceOptions sourceOptions_;
     FxResourceRuntime resources_;
     FxPipelineRuntime pipelines_;
+    std::unordered_map<std::string, handles::PipelineLayoutHandle> passPipelineLayouts_;
     handles::PipelineLayoutHandle pipelineLayout_{};
     std::uint32_t resourceSetIndex_{};
     std::optional<fx::FxFrameContext> resourceContext_;

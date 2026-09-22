@@ -5,6 +5,7 @@
 #include "fx/fx_document.hpp"
 #include "fx/fx_frame.hpp"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -12,6 +13,8 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -54,6 +57,10 @@ struct FxRasterDispatch {
     core::EffectGraphicsState graphics;
     std::vector<core::EffectAttachment> colorAttachments;
     std::optional<core::EffectAttachment> depthAttachment;
+    core::EffectRasterSource rasterSource{core::EffectRasterSource::scene};
+    core::EffectVertexLayout vertexLayout;
+    std::string vertexBuffer;
+    std::string indexBuffer;
 };
 
 struct FxPostProcessDispatch {
@@ -90,16 +97,25 @@ using FxExecutable = std::variant<FxRasterDispatch, FxPostProcessDispatch, FxCom
                                   FxOidnDispatch, FxUtilityDispatch>;
 
 struct FxDispatch {
-    std::string name;
-    FxOpKind kind{FxOpKind::raster};
-    std::string shader;
-    std::uint32_t widthRatioNumerator{1};
-    std::uint32_t widthRatioDenominator{1};
     struct ResourceUse {
         std::string name;
         bool write{};
         FxResourceRole role{FxResourceRole::sampled};
     };
+    FxDispatch() = default;
+    FxDispatch(std::string passName, FxOpKind passKind, std::string passShader, std::uint32_t widthNumerator,
+               std::uint32_t widthDenominator, std::vector<ResourceUse> passResources,
+               std::vector<std::string> passConditions, FxExecutable passExecutable,
+               std::vector<std::string> passMacros)
+        : name(std::move(passName)), kind(passKind), shader(std::move(passShader)),
+          widthRatioNumerator(widthNumerator), widthRatioDenominator(widthDenominator),
+          resources(std::move(passResources)), conditions(std::move(passConditions)),
+          executable(std::move(passExecutable)), macros(std::move(passMacros)) {}
+    std::string name;
+    FxOpKind kind{FxOpKind::raster};
+    std::string shader;
+    std::uint32_t widthRatioNumerator{1};
+    std::uint32_t widthRatioDenominator{1};
     std::vector<ResourceUse> resources;
     // Conditions remain attached to the dispatch until the frame executor
     // evaluates them; compiling them away would make conditional passes run
@@ -111,7 +127,83 @@ struct FxDispatch {
     FxExecutable executable{FxRasterDispatch{}};
     std::vector<std::string> macros;
     core::fx::FxCategory category{core::fx::FxCategory::render};
+    std::array<std::uint32_t, 3> numThreads{};
+    core::EffectSize outputSize;
+    float outputWidthRatio{1.0F};
+    float outputHeightRatio{1.0F};
+    core::EffectFunctionalPassKind functionalKind{core::EffectFunctionalPassKind::none};
+    core::EffectFunctionalDispatch functional;
 };
+
+enum class FxDescriptorClass : std::uint8_t {
+    sampledImage,
+    storageImage,
+    storageBuffer,
+    sampler,
+    accelerationStructure,
+};
+
+[[nodiscard]] constexpr std::uint32_t fxDescriptorBindingBase(FxDescriptorClass descriptorClass) noexcept {
+    switch (descriptorClass) {
+    case FxDescriptorClass::storageImage:
+        return 0;
+    case FxDescriptorClass::storageBuffer:
+        return 16;
+    case FxDescriptorClass::sampledImage:
+    case FxDescriptorClass::accelerationStructure:
+        return 16;
+    case FxDescriptorClass::sampler:
+        return 32;
+    }
+    return 0;
+}
+
+[[nodiscard]] constexpr char fxDescriptorRegister(FxDescriptorClass descriptorClass, bool writable = false) noexcept {
+    switch (descriptorClass) {
+    case FxDescriptorClass::storageImage:
+        return 'u';
+    case FxDescriptorClass::storageBuffer:
+        return writable ? 'u' : 't';
+    case FxDescriptorClass::sampledImage:
+    case FxDescriptorClass::accelerationStructure:
+        return 't';
+    case FxDescriptorClass::sampler:
+        return 's';
+    }
+    return 't';
+}
+
+[[nodiscard]] constexpr std::uint32_t fxDescriptorBindingBaseForUse(FxDescriptorClass descriptorClass,
+                                                                     bool writable) noexcept {
+    return descriptorClass == FxDescriptorClass::storageBuffer && writable ? 0U
+                                                                             : fxDescriptorBindingBase(descriptorClass);
+}
+
+struct FxLogicalBinding {
+    std::string resource;
+    FxDescriptorClass descriptorClass{FxDescriptorClass::sampledImage};
+    std::uint32_t set{};
+    // `binding` is the physical Vulkan binding. Shader generation derives the
+    // HLSL register index from the descriptor class and this shared value.
+    std::uint32_t binding{};
+    std::uint32_t count{1};
+    bool writable{};
+};
+
+struct FxPassBindingPlan {
+    std::vector<FxLogicalBinding> bindings;
+
+    [[nodiscard]] const FxLogicalBinding* find(std::string_view resource) const noexcept {
+        for (const auto& binding : bindings)
+            if (binding.resource == resource)
+                return &binding;
+        return nullptr;
+    }
+};
+
+struct FxProgram;
+[[nodiscard]] FxPassBindingPlan planPassBindings(const FxProgram& program, const FxDispatch& dispatch,
+                                                 std::uint32_t resourceSet);
 
 struct FxProgram {
     std::string label;
@@ -130,10 +222,39 @@ struct FxProgram {
     std::uint64_t sourceVersion{};
     std::filesystem::path sourcePath;
     std::optional<core::EffectMaterialDescriptor> materialDescriptor;
+    std::vector<std::string> memos;
+    std::uint32_t globalVarSize{};
+    std::string rawYrzfx;
     std::string hlslPrefix;
     std::string generatedCode;
     std::string hlsl;
     core::fx::FxCategory category{core::fx::FxCategory::render};
+};
+
+struct FxExtent3D {
+    std::uint32_t width{};
+    std::uint32_t height{1};
+    std::uint32_t depth{1};
+    std::uint32_t dimension{1};
+};
+
+struct FxResolvedRasterTarget {
+    std::vector<std::string> colors;
+    std::optional<std::string> depth;
+    std::optional<std::string> vertexBuffer;
+    std::optional<std::string> indexBuffer;
+    std::uint32_t vertexCount{};
+    std::uint32_t indexCount{};
+};
+
+struct FxResolvedPass {
+    std::size_t sourceIndex{};
+    FxExtent3D outputExtent{};
+    FxExtent3D dispatchGroups{1, 1, 1};
+    std::array<std::uint32_t, 3> numThreads{};
+    FxPassBindingPlan bindings;
+    bool enabled{true};
+    std::optional<FxResolvedRasterTarget> raster;
 };
 
 struct FxRequiredFeatures {
@@ -148,6 +269,7 @@ struct FxRequiredFeatures {
 
 struct FxFramePlan {
     std::vector<FxDispatch> ordered;
+    std::vector<FxResolvedPass> resolved;
     std::uint64_t programGeneration{};
     std::uint32_t renderWidth{};
     std::uint32_t renderHeight{};

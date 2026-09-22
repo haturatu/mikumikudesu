@@ -6,6 +6,7 @@
 #include "core/motion.hpp"
 #include "fx/fx_compiler.hpp"
 #include "fx/fx_frame.hpp"
+#include "fx/fx_runtime_requirements.hpp"
 #include "fx/fx_shader_compiler.hpp"
 #include "fx/fx_shader_source.hpp"
 #include "graphics/fx_pipeline_runtime.hpp"
@@ -96,6 +97,7 @@ struct UpstreamScanResult {
     std::size_t graphCount{};
     std::size_t passCount{};
     std::size_t shaderCount{};
+    std::map<dayo::fx::FxRuntimeFeature, std::size_t> featureCounts;
     std::vector<std::string> failures;
 };
 
@@ -370,7 +372,7 @@ UpstreamScanResult scanUpstreamGraphs(const std::filesystem::path& sourceDirecto
     UpstreamScanResult result;
     const auto files = upstreamFxFiles(sourceDirectory);
     dayo::fx::FxCompiler compiler;
-    const auto context = dayo::fx::makeFxFrameContext(0.0F, 0, 64, 64, 0, 0, 0, 0, 1, 1);
+    const auto context = dayo::fx::makeFxFrameContext(0.0F, 0, 64, 64, 0, 0, 4096, 16, 1, 1);
     dayo::fx::FxShaderCompiler shaderCompiler;
     const bool dxc =
         shaderCompiler.executable().filename() == "dxc" || shaderCompiler.executable().filename() == "dxc.exe";
@@ -393,6 +395,8 @@ UpstreamScanResult scanUpstreamGraphs(const std::filesystem::path& sourceDirecto
             const auto plan = compiler.plan(program, context);
             if (plan.ordered.size() != program.passes.size())
                 throw std::runtime_error("FX plan lost a dispatch");
+            for (const auto feature : dayo::fx::analyzeRuntimeRequirements(program).features)
+                ++result.featureCounts[feature];
             ++result.graphCount;
             result.passCount += program.passes.size();
             for (const auto& dispatch : program.passes) {
@@ -701,6 +705,9 @@ int main() {
         ok &= check(scan.failures.empty(), "all pinned upstream FX metadata and shader probes pass");
         std::cout << "INFO: upstream oracle validated " << scan.graphCount << " graphs, " << scan.passCount
                   << " dispatches, and " << scan.shaderCount << " shader probes\n";
+        for (const auto& [feature, count] : scan.featureCounts)
+            std::cout << "INFO: upstream runtime requirement " << dayo::fx::toString(feature) << " appears in "
+                      << count << " graphs\n";
         for (const auto& failure : scan.failures)
             std::cerr << "FAIL: upstream oracle: " << failure << '\n';
     } catch (const std::exception& exception) {
@@ -798,6 +805,64 @@ float4 PS() : SV_TARGET { return 1; }
                         fixturePass.renderTargets.front().clearValue.color[1] == 0.5F &&
                         fixturePass.depth.clearValue.depth == 0.25F,
                     "YRZFX graphics state fixture");
+        ok &= check(fixtureEffect.rawYrzfx.find("Fixture") != std::string::npos,
+                    "YRZFX source section is retained verbatim in the graph");
+
+        const std::string runtimeFixture = R"FX([YRZFX]
+{
+  fx: {
+    category: "postprocess",
+    memos: ["SkyboxSampler", "unknown-capability"],
+    globalVarSize: 16,
+    meshCloning: {count: 4},
+    controllers: [{name:"gain", controllerName:"(self)", item:"gain", type:"float", description:"gain control", slider:{min:0.1, max:4, step:0.1, default:1, log:true}}],
+    samplers: [{name:"Linear", filter:"ANISOTROPIC", addressU:"CLAMP", addressV:"MIRROR", addressW:"BORDER", mipLodBias:1, maxAnisotropy:8, comparisonFunc:"LESS", borderColor:"OPAQUE_WHITE", minLod:2, maxLod:10}],
+    buffers: [
+      {name:"Vertices", type:"Vertex", elemSize:16, view:"SRV", size:{absolute:true, width:4, dimension:1}},
+      {name:"Indices", type:"uint", view:"UAV", size:{absolute:true, width:6, dimension:1}}
+    ],
+    passes: [
+      {name:"Compute", type:"compute", computeShader:"CS", numthreads:{x:4}, outputSize:{base:"DEFAULT_RTSIZE", ratio:{x:0.5, y:0.25}}},
+      {name:"BufferDraw", type:"rasterizer", vertexShader:"VS", pixelShader:"PS", rasterModelTarget:"buffer", rasterVB:"Vertices", rasterIB:"Indices", layout:[{semanticName:"POSITION", semanticIndex:0, format:"R32G32B32_FLOAT", inputSlot:0, alignedByteOffset:0}]},
+      {name:"Clear", type:"clearRTV", target:"Output", value:{x:0.25, y:0.5, z:0.75, w:1}}
+    ]
+  }
+}
+[HLSL]
+void CS() {}
+)FX";
+        const auto runtimeGraph = dayo::core::loadEffectGraphFromText("runtime-metadata.fxdayo", runtimeFixture);
+        ok &= check(runtimeGraph.rawYrzfx.find("unknown-capability") != std::string::npos &&
+                        runtimeGraph.memos.size() == 2 && runtimeGraph.globalVarSize == 16 &&
+                        runtimeGraph.meshCloneCount == 4,
+                    "effect graph preserves memos, global variable size, clone count, and raw source");
+        ok &= check(runtimeGraph.controllers.size() == 1 && runtimeGraph.controllers[0].slider.has_value() &&
+                        runtimeGraph.controllers[0].slider->logarithmic &&
+                        runtimeGraph.controllers[0].description == "gain control" &&
+                        runtimeGraph.samplers.size() == 1 && runtimeGraph.samplers[0].maxAnisotropy == 8 &&
+                        runtimeGraph.samplers[0].addressModeW == dayo::core::FxAddressMode::border &&
+                        runtimeGraph.samplers[0].comparisonFunc == dayo::core::FxCompareOp::less &&
+                        runtimeGraph.samplers[0].borderColor == dayo::core::FxBorderColor::opaqueWhite,
+                    "controller slider and complete sampler metadata survive parsing");
+        ok &= check(runtimeGraph.passes.size() == 3 && runtimeGraph.passes[0].numThreads ==
+                                                           std::array<std::uint32_t, 3>{4, 0, 0} &&
+                        runtimeGraph.buffers.size() == 2 && runtimeGraph.buffers[1].elementSize == 4 &&
+                        runtimeGraph.passes[1].rasterSource == dayo::core::EffectRasterSource::buffer &&
+                        runtimeGraph.passes[1].rasterVertexBuffer == "Vertices" &&
+                        runtimeGraph.passes[1].rasterIndexBuffer == "Indices" &&
+                        runtimeGraph.passes[1].vertexLayout.attributes.size() == 1 &&
+                        runtimeGraph.passes[1].vertexLayout.attributes[0].semanticName == "POSITION" &&
+                        runtimeGraph.passes[2].functionalKind == dayo::core::EffectFunctionalPassKind::clearRtv &&
+                        runtimeGraph.passes[2].functional.clearValue.color[1] == 0.5F,
+                    "compute size, buffer raster layout, and functional clear metadata survive parsing");
+        const auto runtimeProgram = dayo::fx::FxCompiler{}.compile(runtimeGraph);
+        const auto required = dayo::fx::analyzeRuntimeRequirements(runtimeProgram);
+        ok &= check(required.contains(dayo::fx::FxRuntimeFeature::globalVariables) &&
+                        required.contains(dayo::fx::FxRuntimeFeature::meshCloning) &&
+                        required.contains(dayo::fx::FxRuntimeFeature::fullSamplerState) &&
+                        required.contains(dayo::fx::FxRuntimeFeature::bufferRaster) &&
+                        required.contains(dayo::fx::FxRuntimeFeature::functionalClearRtv),
+                    "runtime feature analyzer inventories parsed upstream requirements");
         bool rejectedUnknown = false;
         try {
             auto invalid = fixture;

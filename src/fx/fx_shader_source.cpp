@@ -321,7 +321,7 @@ void appendControllerBlock(std::ostringstream& output, const FxProgram& program,
 }
 
 void appendTextureDeclarations(std::ostringstream& output, const FxProgram& program, const FxDispatch& dispatch,
-                               std::uint32_t resourceSet, std::uint32_t& sampledBinding, std::uint32_t& uavBinding) {
+                               std::uint32_t resourceSet, const FxPassBindingPlan& bindings) {
     for (const auto& texture : program.textures) {
         const auto write = dispatchWrites(dispatch, texture.name);
         const auto color = dispatchUsesAsColor(dispatch, texture.name);
@@ -329,7 +329,10 @@ void appendTextureDeclarations(std::ostringstream& output, const FxProgram& prog
             output << "Texture2D<" << elementType(texture.format) << "> " << identifier(texture.name) << ";\n";
             continue;
         }
-        const auto binding = write ? uavBinding++ : sampledBinding++;
+        const auto* planned = bindings.find(texture.name);
+        if (planned == nullptr)
+            throw std::logic_error("FX binding plan omitted texture: " + texture.name);
+        const auto binding = planned->binding - fxDescriptorBindingBaseForUse(planned->descriptorClass, write);
         output << (write ? "RWTexture2D<" : "Texture2D<") << elementType(texture.format) << "> "
                << identifier(texture.name) << " : register(" << (write ? 'u' : 't') << binding
                << resourceSetSuffix(resourceSet) << ");\n";
@@ -341,7 +344,10 @@ void appendTextureDeclarations(std::ostringstream& output, const FxProgram& prog
             output << "Texture3D<" << elementType(texture.format) << "> " << identifier(texture.name) << ";\n";
             continue;
         }
-        const auto binding = write ? uavBinding++ : sampledBinding++;
+        const auto* planned = bindings.find(texture.name);
+        if (planned == nullptr)
+            throw std::logic_error("FX binding plan omitted 3D texture: " + texture.name);
+        const auto binding = planned->binding - fxDescriptorBindingBaseForUse(planned->descriptorClass, write);
         output << (write ? "RWTexture3D<" : "Texture3D<") << elementType(texture.format) << "> "
                << identifier(texture.name) << " : register(" << (write ? 'u' : 't') << binding
                << resourceSetSuffix(resourceSet) << ");\n";
@@ -349,10 +355,13 @@ void appendTextureDeclarations(std::ostringstream& output, const FxProgram& prog
 }
 
 void appendBufferDeclarations(std::ostringstream& output, const FxProgram& program, const FxDispatch& dispatch,
-                              std::uint32_t resourceSet, std::uint32_t& sampledBinding, std::uint32_t& uavBinding) {
+                              std::uint32_t resourceSet, const FxPassBindingPlan& bindings) {
     for (const auto& buffer : program.buffers) {
         const auto write = dispatchWrites(dispatch, buffer.name);
-        const auto binding = write ? uavBinding++ : sampledBinding++;
+        const auto* planned = bindings.find(buffer.name);
+        if (planned == nullptr)
+            throw std::logic_error("FX binding plan omitted buffer: " + buffer.name);
+        const auto binding = planned->binding - fxDescriptorBindingBaseForUse(planned->descriptorClass, write);
         const auto type = buffer.type.empty() ? std::string_view{"uint"} : std::string_view{buffer.type};
         output << (write ? "RWStructuredBuffer<" : "StructuredBuffer<") << type << "> " << identifier(buffer.name)
                << " : register(" << (write ? 'u' : 't') << binding << resourceSetSuffix(resourceSet) << ");\n";
@@ -360,11 +369,14 @@ void appendBufferDeclarations(std::ostringstream& output, const FxProgram& progr
 }
 
 void appendSamplerDeclarations(std::ostringstream& output, const FxProgram& program, std::uint32_t resourceSet,
-                               std::uint32_t& binding) {
+                               const FxPassBindingPlan& bindings) {
     for (const auto& sampler : program.samplers) {
+        const auto* planned = bindings.find(sampler.name);
+        if (planned == nullptr)
+            throw std::logic_error("FX binding plan omitted sampler: " + sampler.name);
+        const auto binding = planned->binding - fxDescriptorBindingBase(planned->descriptorClass);
         output << "SamplerState " << identifier(sampler.name) << " : register(s" << binding
                << resourceSetSuffix(resourceSet) << ");\n";
-        ++binding;
     }
 }
 
@@ -481,13 +493,19 @@ std::string makeNativeFxShaderSource(const FxProgram& program, const FxDispatch&
     appendControllerBlock(output, program, options.controllerDeclarations);
     appendLegacyCompatibilityDeclarations(output, program);
     output << "#ifdef " << passMacro(dispatch.name) << "\n";
+    const auto bindings = planPassBindings(program, dispatch, resourceSet);
     std::uint32_t sampledBinding = 0;
-    std::uint32_t uavBinding = 0;
-    std::uint32_t samplerBinding = 0;
-    appendTextureDeclarations(output, program, dispatch, resourceSet, sampledBinding, uavBinding);
-    appendBufferDeclarations(output, program, dispatch, resourceSet, sampledBinding, uavBinding);
+    for (const auto& binding : bindings.bindings) {
+        if (binding.descriptorClass == FxDescriptorClass::sampledImage ||
+            (binding.descriptorClass == FxDescriptorClass::storageBuffer && !binding.writable)) {
+            const auto registerIndex = binding.binding - fxDescriptorBindingBaseForUse(binding.descriptorClass, false);
+            sampledBinding = std::max(sampledBinding, registerIndex + 1U);
+        }
+    }
+    appendTextureDeclarations(output, program, dispatch, resourceSet, bindings);
+    appendBufferDeclarations(output, program, dispatch, resourceSet, bindings);
     appendMaterialDeclarations(output, program, dispatch, resourceSet, sampledBinding);
-    appendSamplerDeclarations(output, program, resourceSet, samplerBinding);
+    appendSamplerDeclarations(output, program, resourceSet, bindings);
     output << "#endif\n";
     output << program.generatedCode;
     if (!program.generatedCode.empty() && program.generatedCode.back() != '\n')

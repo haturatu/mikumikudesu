@@ -248,6 +248,7 @@ add_library(
   src/fx/fx_compiler.cpp
   src/fx/fx_preview_path.cpp
   src/fx/fx_resource_registry.cpp
+  src/fx/fx_runtime_requirements.cpp
   src/fx/fx_scheduler.cpp
   src/fx/fx_shader_compiler.cpp
   src/fx/fx_shader_cache.cpp
