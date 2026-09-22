@@ -17,11 +17,13 @@
 #include "graphics/native_frame_constants.hpp"
 #include "graphics/native_fx_runtime.hpp"
 #include "graphics/native_scene_bindings.hpp"
+#include "graphics/native_scene_derived_runtime.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/native_screen_runtime.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -135,8 +137,16 @@ struct MockDevice final : public dayo::graphics::Device {
     void uploadTextureEx(dayo::graphics::handles::TextureHandle, std::span<const std::uint8_t> bytes, std::uint32_t,
                          std::uint32_t) override {
         uploadedTextureBytes_ = bytes.size();
+        ++textureUploads_;
+    }
+    void uploadBufferEx(dayo::graphics::handles::BufferHandle handle, std::span<const std::byte> bytes,
+                        std::size_t offset) override {
+        bufferUploads_.push_back({handle, std::vector<std::byte>(bytes.begin(), bytes.end()), offset});
     }
     void clearTextureEx(dayo::graphics::handles::TextureHandle, const std::array<float, 4>&) override {}
+    void clearBufferEx(dayo::graphics::handles::BufferHandle, std::uint32_t) override {
+        ++bufferClears_;
+    }
     void generateMipmapsEx(dayo::graphics::handles::TextureHandle) override {
         ++generatedMipmaps_;
     }
@@ -198,6 +208,11 @@ struct MockDevice final : public dayo::graphics::Device {
     void destroyShaderBindingTable(dayo::graphics::handles::ShaderBindingTableHandle) override {
         ++destroyedSbt_;
     }
+    struct BufferUpload {
+        dayo::graphics::handles::BufferHandle handle{};
+        std::vector<std::byte> bytes;
+        std::size_t offset{};
+    };
     dayo::graphics::DeviceCapabilities capabilities_;
     dayo::graphics::GraphicsConvention convention_;
     std::uint32_t nextTypedHandle_{1};
@@ -211,7 +226,10 @@ struct MockDevice final : public dayo::graphics::Device {
     std::size_t destroyedDescriptorSets_{};
     std::size_t destroyedPipelineLayouts_{};
     std::size_t uploadedTextureBytes_{};
+    std::size_t textureUploads_{};
+    std::size_t bufferClears_{};
     std::size_t generatedMipmaps_{};
+    std::vector<BufferUpload> bufferUploads_;
     std::vector<dayo::graphics::TextureResourceDesc> textureDescs_;
     std::vector<dayo::graphics::BufferResourceDesc> bufferDescs_;
     std::vector<dayo::graphics::SamplerResourceDesc> samplerDescs_;
@@ -822,6 +840,75 @@ bool testDayoHostResourceProvider() {
                      .resolve(dayo::graphics::DayoSemantic::RTOutput)
                      .has_value(),
                 "valid placeholder handles do not satisfy an unmarked semantic");
+    return ok;
+}
+
+bool testNativeSceneDerivedResources() {
+    using dayo::graphics::NativeSceneDerivedModel;
+    const std::array models{
+        NativeSceneDerivedModel{
+            .materialCount = 2, .textureBase = 12, .cloneCount = 3, .selectedMaterial = 1, .visible = true},
+        NativeSceneDerivedModel{
+            .materialCount = 1, .textureBase = 20, .cloneCount = 0, .selectedMaterial = -1, .visible = false}};
+    const auto data = dayo::graphics::makeNativeSceneDerivedData(models);
+    bool ok = check(data.modelToMaterial == std::vector<std::array<std::uint32_t, 2>>{{0, 2}, {2, 1}},
+                    "Model2Mat preserves material prefix ranges");
+    ok &= check(data.materialToModel == std::vector<std::uint32_t>{0, 0, 1}, "Mat2Model follows scene model order");
+    ok &= check(data.peekaboo == std::vector<std::int32_t>{1, 0}, "Peekaboo preserves model visibility");
+    ok &= check(data.materialSelected == std::vector<std::int32_t>{0, 1, 0},
+                "MatSelected marks the selected local material");
+    ok &= check(data.cloneCount == std::vector<std::uint32_t>{3, 1}, "CloneCount is clamped to at least one");
+    ok &= check(data.textureTable == std::vector<std::uint32_t>{12, 20},
+                "TextureTable preserves flattened per-model offsets");
+
+    const auto empty = dayo::graphics::makeNativeSceneDerivedData({});
+    ok &= check(empty.modelToMaterial.size() == 1 && empty.materialToModel.size() == 1 &&
+                    empty.cloneCount == std::vector<std::uint32_t>{1},
+                "empty scenes retain valid one-element structured-buffer data");
+
+    MockDevice device;
+    std::vector<dayo::core::ImageRgba8> images;
+    images.push_back({2, 1, std::vector<std::uint8_t>(8, 127)});
+    images.emplace_back();
+    dayo::graphics::NativeSceneDerivedRuntime runtime;
+    std::string error;
+    ok &= check(runtime.initialize(device, images, &error) && error.empty(),
+                "scene-derived runtime uploads real and fallback PMX textures");
+    ok &= check(runtime.textures().size() == 2 && runtime.textures()[0] != runtime.textures()[1] &&
+                    device.textureUploads_ == 2,
+                "missing PMX image slots keep their table index through a white fallback");
+    ok &= check(runtime.sync(models, {8, 4, 1}, &error) && error.empty() && device.bufferUploads_.size() == 6,
+                "scene-derived runtime uploads lookup tables and allocates output resources");
+    ok &= check(device.textureDescs_.size() >= 6 &&
+                    device.textureDescs_.back().format == dayo::graphics::PixelFormat::r32g32Float &&
+                    device.textureDescs_.back().extent.width == 8 && device.textureDescs_.back().extent.height == 4,
+                "size-dependent GBuffer resources use the requested output extent and typed format");
+    ok &= check(device.bufferClears_ == dayo::graphics::kNativeFramesInFlight,
+                "new OIDN buffers are initialized before the first effect invocation");
+    if (device.bufferUploads_.size() >= 1) {
+        std::array<std::uint32_t, 2> firstModelRange{};
+        const auto& bytes = device.bufferUploads_.front().bytes;
+        if (bytes.size() >= sizeof(firstModelRange))
+            std::memcpy(firstModelRange.data(), bytes.data(), sizeof(firstModelRange));
+        ok &=
+            check(firstModelRange == std::array<std::uint32_t, 2>{0, 2}, "GPU Model2Mat upload matches the CPU table");
+    } else {
+        ok &= check(false, "GPU Model2Mat upload was recorded");
+    }
+    dayo::graphics::NativeSceneResourceBindings bindings;
+    runtime.apply(bindings);
+    ok &= check(bindings.modelToMaterial.valid() && bindings.materialToModel.valid() && bindings.cloneCount.valid() &&
+                    bindings.textureTable.valid() && bindings.textures.size() == 2 && bindings.rtOutput.valid() &&
+                    bindings.oidnBuffer.valid() && bindings.normalDepth.valid() && bindings.gbuffer1.valid() &&
+                    bindings.gbuffer2.valid(),
+                "derived GPU handles connect to canonical scene bindings");
+    const auto previousTextureCount = device.textureDescs_.size();
+    ok &= check(runtime.sync(models, {16, 8, 1}, &error) && error.empty() &&
+                    device.textureDescs_.size() == previousTextureCount + 4 * dayo::graphics::kNativeFramesInFlight,
+                "render-size changes recreate the scene output set for each in-flight frame");
+    runtime.reset();
+    ok &= check(device.destroyedTextures_ == device.textureDescs_.size(),
+                "scene-derived runtime releases owned PMX, fallback, and output textures");
     return ok;
 }
 
@@ -1929,6 +2016,7 @@ int main() {
     ok &= testOidnHostExecution();
     ok &= testTypedBufferResourceExecution();
     ok &= testDayoHostResourceProvider();
+    ok &= testNativeSceneDerivedResources();
     ok &= testViewConstantsAndScreenHistory();
     ok &= testFxControllerResolver();
     ok &= testPreviewReferencePath();

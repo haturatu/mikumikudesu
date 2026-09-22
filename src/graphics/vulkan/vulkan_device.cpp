@@ -172,6 +172,8 @@ VkFormat toVkFormat(PixelFormat format) {
         return VK_FORMAT_R32_SFLOAT;
     case PixelFormat::r32g32Float:
         return VK_FORMAT_R32G32_SFLOAT;
+    case PixelFormat::r32g32Uint:
+        return VK_FORMAT_R32G32_UINT;
     case PixelFormat::rgba8Unorm:
         return VK_FORMAT_R8G8B8A8_UNORM;
     case PixelFormat::rgba8Srgb:
@@ -5103,6 +5105,24 @@ void VulkanDevice::clearBufferEx(handles::BufferHandle buffer, std::uint32_t val
         throw std::invalid_argument("typed buffer clear requires a four-byte-aligned buffer");
     submitImmediate([&](VkCommandBuffer commandBuffer) {
         vkCmdFillBuffer(commandBuffer, it->second.resource.buffer, 0, it->second.resource.size, value);
+        const VkBufferMemoryBarrier2 visible{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = it->second.resource.buffer,
+            .offset = 0,
+            .size = it->second.resource.size,
+        };
+        const VkDependencyInfo dependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .bufferMemoryBarrierCount = 1,
+            .pBufferMemoryBarriers = &visible,
+        };
+        vkCmdPipelineBarrier2(commandBuffer, &dependency);
     });
 }
 
