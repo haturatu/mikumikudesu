@@ -166,7 +166,8 @@ handles::TextureHandle NativeScreenRuntime::previousFrame() const noexcept {
     return previousFrame_;
 }
 
-void NativeScreenRuntime::prepareFrame(CommandList& commands, NativeScreenSource source, bool enabled) {
+void NativeScreenRuntime::prepareFrame(CommandList& commands, NativeScreenSource source, bool enabled,
+                                       NativeScreenCrop crop) {
     if (!ready())
         throw std::logic_error("native screen runtime is not ready");
     commands.transferBarrierEx();
@@ -174,7 +175,24 @@ void NativeScreenRuntime::prepareFrame(CommandList& commands, NativeScreenSource
     if (!enabled || source == NativeScreenSource::white) {
         commands.clearTextureEx(screenBmp_, {1.0F, 1.0F, 1.0F, 1.0F});
     } else if (source == NativeScreenSource::previousFrame) {
-        commands.copyTextureEx(previousFrame_, screenBmp_);
+        if (crop == NativeScreenCrop::none) {
+            commands.copyTextureEx(previousFrame_, screenBmp_);
+        } else {
+            const auto width = extent_.width;
+            const auto height = extent_.height;
+            std::uint32_t croppedWidth = width;
+            std::uint32_t croppedHeight = height;
+            if (static_cast<std::uint64_t>(width) * 3U > static_cast<std::uint64_t>(height) * 4U)
+                croppedWidth = static_cast<std::uint32_t>(static_cast<std::uint64_t>(height) * 4U / 3U);
+            else
+                croppedHeight = static_cast<std::uint32_t>(static_cast<std::uint64_t>(width) * 3U / 4U);
+            croppedWidth = std::max(1U, croppedWidth);
+            croppedHeight = std::max(1U, croppedHeight);
+            const auto left = (width - croppedWidth) / 2U;
+            const auto top = (height - croppedHeight) / 2U;
+            commands.blitTextureEx(previousFrame_, screenBmp_,
+                                   {left, top, left + croppedWidth, top + croppedHeight});
+        }
     }
 }
 

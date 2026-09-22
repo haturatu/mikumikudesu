@@ -21,13 +21,13 @@ void setError(std::string* error, std::string value) {
 
 } // namespace
 
-NativeViewConstants makeNativeViewConstants(const fx::FxFrameContext& context, std::uint32_t modelCount,
+NativeViewConstants makeNativeViewConstants(const fx::FxFrameContext& context,
                                             std::uint32_t totalMaterialCount) noexcept {
     NativeViewConstants result;
     result.viewMatrix = context.camera.view;
     result.projectionMatrix = context.camera.projection;
     result.cameraFlags = {context.camera.perspective ? 1 : 0, 0};
-    result.modelCounts = {modelCount, totalMaterialCount};
+    result.modelCounts = {context.modelCount, totalMaterialCount};
     const auto frameTime = context.frame / 30.0F;
     result.frameTimes = {frameTime, 0.0F, frameTime, 0.0F};
     result.output = {context.renderWidth, context.renderHeight, narrowSample(context.sample), 1};

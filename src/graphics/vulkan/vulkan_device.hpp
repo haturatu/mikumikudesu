@@ -326,6 +326,9 @@ class VulkanDevice final : public Device {
                                  VkImageLayout nextLayout);
     void recordCopyTexture(VkCommandBuffer commandBuffer, handles::TextureHandle source,
                            handles::TextureHandle destination);
+    void recordBlitTexture(VkCommandBuffer commandBuffer, handles::TextureHandle source,
+                           handles::TextureHandle destination, std::array<std::uint32_t, 4> sourceRect);
+    void flushCommandBufferForHostReadback(VkCommandBuffer commandBuffer);
     void recordClearTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture,
                             const std::array<float, 4>& value);
     void recordGenerateMipmaps(VkCommandBuffer commandBuffer, handles::TextureHandle texture);

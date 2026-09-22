@@ -284,6 +284,7 @@ fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTar
                                            model == nullptr ? 0U : model->id, modelIndex, animatedVertexCount_,
                                            totalMaterials, sceneCloneCount, effectCloneCount, cameraWithMatrices,
                                            lighting);
+    context.modelCount = static_cast<std::uint32_t>(nativeSceneModelData_.size());
     const auto& background = scene_.background();
     context.host.backgroundTransparent = background.mode == core::BackgroundMode::alpha;
     context.host.screenBmpMode = !background.enabled || background.screenSource == core::ScreenTextureSource::white
@@ -368,7 +369,10 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
             if (!nativeScreenRuntime_.uploadScreenBmp(*nativeBackground, crop, &sceneError))
                 throw std::runtime_error(sceneError.empty() ? "native ScreenBMP upload failed" : sceneError);
         }
-        nativeScreenRuntime_.prepareFrame(commands, screenSource, backgroundState.enabled);
+        nativeScreenRuntime_.prepareFrame(
+            commands, screenSource, backgroundState.enabled,
+            backgroundState.crop == core::ScreenCropMode::crop4x3 ? graphics::NativeScreenCrop::crop4x3
+                                                                 : graphics::NativeScreenCrop::none);
         std::vector<graphics::NativeGeometryMeshUpload> geometryUploads;
         std::vector<graphics::WorldInstance> worldInstances;
         graphics::handles::AccelerationStructureHandle tlas;

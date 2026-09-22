@@ -531,6 +531,9 @@ class CommandList {
     virtual void copyTextureEx(handles::TextureHandle, handles::TextureHandle) {
         throw std::logic_error("Typed command-list texture copy is not implemented by this backend");
     }
+    virtual void blitTextureEx(handles::TextureHandle, handles::TextureHandle, std::array<std::uint32_t, 4>) {
+        throw std::logic_error("Typed command-list texture blit is not implemented by this backend");
+    }
     virtual void clearTextureEx(handles::TextureHandle) {
         throw std::logic_error("Typed command-list texture clear is not implemented by this backend");
     }
@@ -548,6 +551,12 @@ class CommandList {
     // this path never submits or waits on a transfer-only command buffer.
     virtual void uploadBufferEx(handles::BufferHandle, std::span<const std::byte>, std::size_t = 0) {
         throw std::logic_error("Typed command-list buffer upload is not implemented by this backend");
+    }
+    // Ends and submits the recorded GPU work, waits for its fence, then
+    // resumes recording on the same command list. CPU readback hosts use
+    // this boundary before issuing immediate transfers on another context.
+    virtual void flushAndWaitForHostReadbackEx() {
+        throw std::logic_error("Host readback boundary is not implemented by this backend");
     }
     virtual void bindPipelineEx(handles::PipelineHandle) {
         throw std::logic_error("Typed command-list pipelines are not implemented by this backend");

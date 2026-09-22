@@ -4887,6 +4887,24 @@ void VulkanDevice::recordUploadBuffer(VkCommandBuffer commandBuffer, handles::Bu
     auto& staging = allocateNativeUploadBuffer(*frame, bytes.size(), 4);
     const auto stagingOffset = staging.offset - bytes.size();
     std::memcpy(static_cast<std::byte*>(staging.mapped) + stagingOffset, bytes.data(), bytes.size());
+    const VkBufferMemoryBarrier2 priorReaders{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = destinationIt->second.resource.buffer,
+        .offset = offset,
+        .size = bytes.size(),
+    };
+    const VkDependencyInfo priorDependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .bufferMemoryBarrierCount = 1,
+        .pBufferMemoryBarriers = &priorReaders,
+    };
+    vkCmdPipelineBarrier2(commandBuffer, &priorDependency);
     const VkBufferCopy copy{.srcOffset = stagingOffset, .dstOffset = offset, .size = bytes.size()};
     vkCmdCopyBuffer(commandBuffer, staging.buffer, destinationIt->second.resource.buffer, 1, &copy);
     const VkBufferMemoryBarrier2 visible{
@@ -5337,6 +5355,87 @@ void VulkanDevice::recordCopyTexture(VkCommandBuffer commandBuffer, handles::Tex
                    static_cast<std::uint32_t>(regions.size()), regions.data());
     recordTextureTransition(commandBuffer, source, typedTextureFinalLayout(sourceIt->second));
     recordTextureTransition(commandBuffer, destination, typedTextureFinalLayout(destinationIt->second));
+}
+
+void VulkanDevice::recordBlitTexture(VkCommandBuffer commandBuffer, handles::TextureHandle source,
+                                     handles::TextureHandle destination, std::array<std::uint32_t, 4> sourceRect) {
+    const auto sourceIt = typedTextures_.find(source);
+    const auto destinationIt = typedTextures_.find(destination);
+    if (source == destination || sourceIt == typedTextures_.end() || destinationIt == typedTextures_.end() ||
+        !typedTextureHandles_.isAlive(source) || !typedTextureHandles_.isAlive(destination))
+        throw std::invalid_argument("typed texture blit requires two live, distinct textures");
+    const auto& src = sourceIt->second.desc;
+    const auto& dst = destinationIt->second.desc;
+    if (src.dimension != TextureDimension::d2 || dst.dimension != TextureDimension::d2 || src.format != dst.format ||
+        src.format == PixelFormat::depth32Float || src.extent.depth != 1 || dst.extent.depth != 1 ||
+        src.mipLevels != 1 || dst.mipLevels != 1 || src.arrayLayers != 1 || dst.arrayLayers != 1 ||
+        sourceRect[0] >= sourceRect[2] || sourceRect[1] >= sourceRect[3] ||
+        sourceRect[2] > src.extent.width || sourceRect[3] > src.extent.height ||
+        (toBits(src.usage) & toBits(ResourceUsage::transferSrc)) == 0U ||
+        (toBits(dst.usage) & toBits(ResourceUsage::transferDst)) == 0U)
+        throw std::invalid_argument("typed texture blit has incompatible resources or source rectangle");
+    VkFormatProperties2 properties{.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
+    vkGetPhysicalDeviceFormatProperties2(physicalDevice_, toVkFormat(src.format), &properties);
+    const auto features = properties.formatProperties.optimalTilingFeatures;
+    if ((features & VK_FORMAT_FEATURE_BLIT_SRC_BIT) == 0U || (features & VK_FORMAT_FEATURE_BLIT_DST_BIT) == 0U)
+        throw std::runtime_error("ScreenBMP crop requires Vulkan blit support for its texture format");
+    const auto filter = (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0U
+                            ? VK_FILTER_LINEAR
+                            : VK_FILTER_NEAREST;
+    recordTextureTransition(commandBuffer, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    recordTextureTransition(commandBuffer, destination, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    const VkImageBlit region{
+        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .srcOffsets = {{static_cast<std::int32_t>(sourceRect[0]), static_cast<std::int32_t>(sourceRect[1]), 0},
+                       {static_cast<std::int32_t>(sourceRect[2]), static_cast<std::int32_t>(sourceRect[3]), 1}},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstOffsets = {{0, 0, 0},
+                       {static_cast<std::int32_t>(dst.extent.width), static_cast<std::int32_t>(dst.extent.height), 1}},
+    };
+    vkCmdBlitImage(commandBuffer, sourceIt->second.resource.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   destinationIt->second.resource.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, filter);
+    recordTextureTransition(commandBuffer, source, typedTextureFinalLayout(sourceIt->second));
+    recordTextureTransition(commandBuffer, destination, typedTextureFinalLayout(destinationIt->second));
+}
+
+void VulkanDevice::flushCommandBufferForHostReadback(VkCommandBuffer commandBuffer) {
+    if (frameForCommandBuffer(commandBuffer) == nullptr)
+        throw std::invalid_argument("host readback boundary requires an active frame command buffer");
+    check(vkEndCommandBuffer(commandBuffer), "end command buffer for host readback");
+
+    const auto uploadWaitValue = uploadContext_->lastSubmittedValue();
+    const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    const VkTimelineSemaphoreSubmitInfo timelineWait{
+        .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+        .waitSemaphoreValueCount = uploadWaitValue == 0 ? 0U : 1U,
+        .pWaitSemaphoreValues = uploadWaitValue == 0 ? nullptr : &uploadWaitValue,
+    };
+    const VkSubmitInfo submit{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext = uploadWaitValue == 0 ? nullptr : &timelineWait,
+        .waitSemaphoreCount = uploadWaitValue == 0 ? 0U : 1U,
+        .pWaitSemaphores = uploadWaitValue == 0 ? nullptr : &timelineSemaphore_,
+        .pWaitDstStageMask = uploadWaitValue == 0 ? nullptr : &waitStage,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &commandBuffer,
+    };
+    VkFence fence = VK_NULL_HANDLE;
+    const VkFenceCreateInfo fenceInfo{.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    check(vkCreateFence(device_, &fenceInfo, nullptr, &fence), "create host readback fence");
+    try {
+        check(vkQueueSubmit(queue_, 1, &submit, fence), "submit GPU work before host readback");
+        check(vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX), "wait for host readback fence");
+        check(vkResetCommandBuffer(commandBuffer, 0), "reset command buffer after host readback");
+        const VkCommandBufferBeginInfo beginInfo{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        };
+        check(vkBeginCommandBuffer(commandBuffer, &beginInfo), "resume command buffer after host readback");
+    } catch (...) {
+        vkDestroyFence(device_, fence, nullptr);
+        throw;
+    }
+    vkDestroyFence(device_, fence, nullptr);
 }
 
 void VulkanDevice::recordClearTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture,

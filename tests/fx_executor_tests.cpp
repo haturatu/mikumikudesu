@@ -251,6 +251,11 @@ struct MockCommands final : public dayo::graphics::CommandList {
     void copyTextureEx(dayo::graphics::handles::TextureHandle, dayo::graphics::handles::TextureHandle) override {
         trace.emplace_back("copyEx");
     }
+    void blitTextureEx(dayo::graphics::handles::TextureHandle, dayo::graphics::handles::TextureHandle,
+                       std::array<std::uint32_t, 4> sourceRect) override {
+        trace.push_back("blitEx:" + std::to_string(sourceRect[0]) + ":" + std::to_string(sourceRect[1]) + ":" +
+                        std::to_string(sourceRect[2]) + ":" + std::to_string(sourceRect[3]));
+    }
     void clearTextureEx(dayo::graphics::handles::TextureHandle) override {
         trace.emplace_back("clearEx");
     }
@@ -583,8 +588,11 @@ bool testViewConstantsAndScreenHistory() {
     context.host.backgroundTransparent = true;
     context.host.denoiserEnabled = true;
     context.host.onResize = true;
-    const auto view = dayo::graphics::makeNativeViewConstants(context, 4, 8);
-    bool ok = check(view.viewMatrix[0] == 2.0F && view.projectionMatrix[5] == 3.0F,
+    context.modelCount = 4;
+    context.cloneCount = 9;
+    const auto view = dayo::graphics::makeNativeViewConstants(context, 8);
+    bool ok = check(view.viewMatrix[0] == 2.0F && view.projectionMatrix[5] == 3.0F &&
+                        view.modelCounts[0] == 4 && view.modelCounts[1] == 8,
                     "ViewCB uses frame camera matrices");
     ok &= check(view.selfShadowMode == 2 && view.selfShadowDistance == 4.0F && view.screenBmpMode == 1 &&
                     view.backgroundMode == 3 && view.backgroundTransparent == 1 && view.denoiserEnabled == 1 &&
@@ -611,6 +619,11 @@ bool testViewConstantsAndScreenHistory() {
     screen.rotatePreviousFrame(commands, {99, 1});
     ok &= check(commands.trace == std::vector<std::string>{"transferBarrierEx", "copyEx"},
                 "screen runtime rotates final output into persistent history");
+    commands.trace.clear();
+    screen.prepareFrame(commands, dayo::graphics::NativeScreenSource::previousFrame, true,
+                        dayo::graphics::NativeScreenCrop::crop4x3);
+    ok &= check(commands.trace == std::vector<std::string>{"transferBarrierEx", "copyEx", "blitEx:11:0:53:32"},
+                "previous-frame ScreenBMP applies the same 4:3 crop as external backgrounds");
     return ok;
 }
 

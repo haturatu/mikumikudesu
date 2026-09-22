@@ -49,12 +49,15 @@ class VulkanCommandList final : public CommandList {
     void buildTlasEx(handles::AccelerationStructureHandle tlas, std::span<const AccelerationInstanceDesc> instances,
                      bool update) override;
     void copyTextureEx(handles::TextureHandle source, handles::TextureHandle destination) override;
+    void blitTextureEx(handles::TextureHandle source, handles::TextureHandle destination,
+                       std::array<std::uint32_t, 4> sourceRect) override;
     void clearTextureEx(handles::TextureHandle texture) override;
     void clearTextureEx(handles::TextureHandle texture, const std::array<float, 4>& value) override;
     void generateMipmapsEx(handles::TextureHandle texture) override;
     void copyBufferEx(handles::BufferHandle source, handles::BufferHandle destination) override;
     void uploadBufferEx(handles::BufferHandle destination, std::span<const std::byte> bytes,
                         std::size_t offset = 0) override;
+    void flushAndWaitForHostReadbackEx() override;
 
     void bindRayTracingPipeline(handles::PipelineHandle pipeline) noexcept {
         pipeline_ = pipeline;

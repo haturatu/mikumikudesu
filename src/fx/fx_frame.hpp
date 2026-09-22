@@ -57,6 +57,7 @@ struct FxFrameContext {
     std::uint32_t renderHeight{};
     std::uint64_t currentModel{};
     std::uint32_t modelIndex{};
+    std::uint32_t modelCount{};
     std::size_t vertexCount{};
     std::size_t totalMaterial{};
     std::uint32_t cloneCount{1};

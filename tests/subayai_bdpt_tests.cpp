@@ -1654,8 +1654,9 @@ int main() {
     // independently of the native scene descriptor-set population.
     {
         MockNativeDevice device;
-        const auto context = dayo::fx::makeFxFrameContext(30.0F, 7, 640, 360, 11, 2, 12, 4, 1, 1);
-        const auto view = dayo::graphics::makeNativeViewConstants(context, 3, 4);
+        auto context = dayo::fx::makeFxFrameContext(30.0F, 7, 640, 360, 11, 2, 12, 4, 1, 1);
+        context.modelCount = 3;
+        const auto view = dayo::graphics::makeNativeViewConstants(context, 4);
         const dayo::graphics::NativeScenePassConstants pass{
             .modelIndex = 2, .rasterizeOrder = 1, .deformIndex = 2, .deformOrder = 0};
         dayo::graphics::NativeFrameConstantsRuntime runtime;

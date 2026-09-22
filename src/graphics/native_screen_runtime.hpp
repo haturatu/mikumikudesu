@@ -45,7 +45,8 @@ class NativeScreenRuntime {
     // Prepares the host resources for a new frame. ScreenTexture always starts
     // from the previous completed effect-chain output. ScreenBMP is either
     // the same history, a previously uploaded external image, or white.
-    void prepareFrame(CommandList& commands, NativeScreenSource source, bool enabled = true);
+    void prepareFrame(CommandList& commands, NativeScreenSource source, bool enabled = true,
+                      NativeScreenCrop crop = NativeScreenCrop::none);
 
     // Uploads an RGBA8 source into the fixed-size native ScreenBMP texture.
     // Crop is applied before resampling so the resulting image has the same

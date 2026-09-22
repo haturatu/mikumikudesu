@@ -173,6 +173,13 @@ void VulkanCommandList::copyTextureEx(handles::TextureHandle source, handles::Te
     device_->recordCopyTexture(commandBuffer_, source, destination);
 }
 
+void VulkanCommandList::blitTextureEx(handles::TextureHandle source, handles::TextureHandle destination,
+                                      std::array<std::uint32_t, 4> sourceRect) {
+    if (device_ == nullptr)
+        throw std::logic_error("typed texture blit requires a Vulkan device");
+    device_->recordBlitTexture(commandBuffer_, source, destination, sourceRect);
+}
+
 void VulkanCommandList::clearTextureEx(handles::TextureHandle texture) {
     clearTextureEx(texture, {0.0F, 0.0F, 0.0F, 0.0F});
 }
@@ -200,6 +207,13 @@ void VulkanCommandList::uploadBufferEx(handles::BufferHandle destination, std::s
     if (device_ == nullptr)
         throw std::logic_error("typed command-list buffer upload requires a Vulkan device");
     device_->recordUploadBuffer(commandBuffer_, destination, bytes, offset);
+}
+
+void VulkanCommandList::flushAndWaitForHostReadbackEx() {
+    if (device_ == nullptr || !renderingTargets_.empty())
+        throw std::logic_error("host readback requires an idle Vulkan rendering scope");
+    device_->flushCommandBufferForHostReadback(commandBuffer_);
+    pipeline_ = {};
 }
 
 } // namespace dayo::graphics
