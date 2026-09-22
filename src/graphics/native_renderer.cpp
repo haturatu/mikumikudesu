@@ -213,6 +213,19 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
     const auto descriptorSets = sceneFrameRuntime_->descriptorSets();
     std::optional<NativeFrameOutput> lastOutput;
     for (std::size_t index = 0; index < effects.size(); ++index) {
+        const NativeEffectModel* ownerModel = nullptr;
+        auto effectContext = context;
+        if (!publishToScreen) {
+            if (!effects[index].controllerModel.has_value())
+                throw std::runtime_error("deform FX has no controller model owner");
+            const auto model = std::ranges::find_if(resources.effectModels, [&](const NativeEffectModel& candidate) {
+                return candidate.modelId == *effects[index].controllerModel;
+            });
+            if (model == resources.effectModels.end() || !resources.updateEffectPassConstants)
+                throw std::runtime_error("deform FX owner has no native model pass constants");
+            ownerModel = &*model;
+            effectContext = makeDeformFxFrameContext(context, *ownerModel, effects[index].graph.meshCloneCount);
+        }
         auto& entry = runtimes[index];
         if (!entry) {
             auto program = fx::FxCompiler{}.compile(effects[index].graph);
@@ -225,12 +238,12 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
             std::string error;
             fx::FxNativeShaderSourceOptions sourceOptions;
             sourceOptions.controllerDeclarations = effects[index].graph.controllers;
-            if (!entry->runtime.initializeForFrame(*device_, std::move(program), fx::FxShaderCompiler{}, context,
+            if (!entry->runtime.initializeForFrame(*device_, std::move(program), fx::FxShaderCompiler{}, effectContext,
                                                    layouts, &error, descriptorSets, std::move(sourceOptions)))
                 throw std::runtime_error(error.empty() ? "generic Dayo FX initialization failed" : error);
         } else {
             std::string error;
-            if (!entry->runtime.refresh(context, &error))
+            if (!entry->runtime.refresh(effectContext, &error))
                 throw std::runtime_error(error.empty() ? "generic Dayo FX refresh failed" : error);
         }
 
@@ -262,23 +275,15 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
             throw std::runtime_error("generic Dayo FX frame descriptor set allocation failed");
         std::vector<handles::DescriptorSetHandle> effectSets(descriptorSets.begin(), descriptorSets.end());
         effectSets[0] = frameSet;
-        auto frame = entry->runtime.prepareFrame(context, effectSets);
+        auto frame = entry->runtime.prepareFrame(effectContext, effectSets);
         auto stageResources = resources;
         // Deform/postprocess graphs own their fullscreen or compute dispatches;
         // material indexed draws belong only to the renderer graph.
         stageResources.sceneDraws = {};
         stageResources.rasterControllerModel.reset();
         stageResources.updatePassConstants = {};
-        if (!publishToScreen) {
-            if (!effects[index].controllerModel.has_value())
-                throw std::runtime_error("deform FX has no controller model owner");
-            const auto model = std::ranges::find_if(resources.effectModels, [&](const NativeEffectModel& candidate) {
-                return candidate.modelId == *effects[index].controllerModel;
-            });
-            if (model == resources.effectModels.end() || !resources.updateEffectPassConstants)
-                throw std::runtime_error("deform FX owner has no native model pass constants");
-            resources.updateEffectPassConstants(commands, *model);
-        }
+        if (ownerModel != nullptr)
+            resources.updateEffectPassConstants(commands, *ownerModel);
         if (!stageResources.defaultColorTarget.valid() && hostResourceProvider_.has_value()) {
             if (const auto output = hostResourceProvider_->resolve(DayoSemantic::RTOutput);
                 output.has_value() && output->texture.valid())

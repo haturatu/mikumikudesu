@@ -466,6 +466,9 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
             const auto& geometry = nativeGeometry_[modelIndex];
             nativeEffectModels_.push_back({.modelId = geometry.modelId,
                                            .modelIndex = geometry.modelIndex,
+                                           .vertexCount = geometry.baseVertices.size(),
+                                           .materialCount = model.materials.size(),
+                                           .cloneCount = geometry.cloneCount,
                                            .rasterizeOrder = geometry.rasterizeOrder,
                                            .deformIndex = geometry.deformIndex,
                                            .deformOrder = geometry.deformOrder});
