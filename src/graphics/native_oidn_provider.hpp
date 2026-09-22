@@ -14,9 +14,9 @@
 namespace dayo::graphics {
 
 // Host adapter for the upstream OIDN operation. The generic executor owns
-// pass ordering; this class only translates typed textures to the existing
-// bounded CPU/GPU denoiser runtime and writes the result back to the declared
-// output texture.
+// pass ordering; this class translates typed beauty textures or the canonical
+// NativeSceneOidnInput structured buffer to the bounded CPU/GPU denoiser
+// runtime and writes the result back to the declared output texture.
 class NativeOidnProvider {
   public:
     NativeOidnProvider() = default;

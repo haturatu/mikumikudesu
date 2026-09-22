@@ -16,7 +16,9 @@
 #include "graphics/fx_resource_runtime.hpp"
 #include "graphics/native_frame_constants.hpp"
 #include "graphics/native_fx_runtime.hpp"
+#include "graphics/native_oidn_provider.hpp"
 #include "graphics/native_scene_bindings.hpp"
+#include "graphics/native_scene_data.hpp"
 #include "graphics/native_scene_derived_runtime.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/native_screen_runtime.hpp"
@@ -134,14 +136,23 @@ struct MockDevice final : public dayo::graphics::Device {
         if (handle.valid())
             ++destroyedSamplers_;
     }
-    void uploadTextureEx(dayo::graphics::handles::TextureHandle, std::span<const std::uint8_t> bytes, std::uint32_t,
-                         std::uint32_t) override {
+    void uploadTextureEx(dayo::graphics::handles::TextureHandle handle, std::span<const std::uint8_t> bytes,
+                         std::uint32_t, std::uint32_t) override {
+        lastUploadedTexture_ = handle;
         uploadedTextureBytes_ = bytes.size();
+        uploadedTextureData_.assign(bytes.begin(), bytes.end());
         ++textureUploads_;
     }
     void uploadBufferEx(dayo::graphics::handles::BufferHandle handle, std::span<const std::byte> bytes,
                         std::size_t offset) override {
         bufferUploads_.push_back({handle, std::vector<std::byte>(bytes.begin(), bytes.end()), offset});
+    }
+    std::vector<std::byte> readbackBufferEx(dayo::graphics::handles::BufferHandle handle, std::size_t offset,
+                                            std::size_t size) override {
+        lastBufferReadbackHandle_ = handle;
+        lastBufferReadbackOffset_ = offset;
+        lastBufferReadbackSize_ = size;
+        return bufferReadbackBytes_;
     }
     void clearTextureEx(dayo::graphics::handles::TextureHandle, const std::array<float, 4>&) override {}
     void clearBufferEx(dayo::graphics::handles::BufferHandle, std::uint32_t) override {
@@ -227,6 +238,12 @@ struct MockDevice final : public dayo::graphics::Device {
     std::size_t destroyedPipelineLayouts_{};
     std::size_t uploadedTextureBytes_{};
     std::size_t textureUploads_{};
+    dayo::graphics::handles::TextureHandle lastUploadedTexture_{};
+    std::vector<std::uint8_t> uploadedTextureData_;
+    dayo::graphics::handles::BufferHandle lastBufferReadbackHandle_{};
+    std::size_t lastBufferReadbackOffset_{};
+    std::size_t lastBufferReadbackSize_{};
+    std::vector<std::byte> bufferReadbackBytes_;
     std::size_t bufferClears_{};
     std::size_t generatedMipmaps_{};
     std::vector<BufferUpload> bufferUploads_;
@@ -301,6 +318,9 @@ struct MockCommands final : public dayo::graphics::CommandList {
     }
     void transferBarrierEx() override {
         trace.emplace_back("transferBarrierEx");
+    }
+    void flushAndWaitForHostReadbackEx() override {
+        trace.emplace_back("flushAndWaitForHostReadbackEx");
     }
     void memoryBarrierEx() override {
         trace.emplace_back("memoryBarrierEx");
@@ -906,6 +926,56 @@ bool testOidnHostExecution() {
         rejected = true;
     }
     ok &= check(rejected, "OIDN dispatch fails explicitly when no host denoiser is installed");
+    return ok;
+}
+
+bool testOidnStructuredBufferInput() {
+    MockDevice device;
+    const std::array<dayo::graphics::NativeSceneOidnInput, 2> inputSamples = {
+        dayo::graphics::NativeSceneOidnInput{.color = {0.25F, 0.5F, 0.75F},
+                                             .albedo = {0.1F, 0.2F, 0.3F},
+                                             .normal = {0.4F, 0.5F, 0.6F}},
+        dayo::graphics::NativeSceneOidnInput{.color = {1.0F, 0.75F, 0.5F},
+                                             .albedo = {0.6F, 0.7F, 0.8F},
+                                             .normal = {0.9F, 1.0F, 0.1F}},
+    };
+    const auto inputBytes = std::as_bytes(std::span(inputSamples));
+    device.bufferReadbackBytes_.assign(inputBytes.begin(), inputBytes.end());
+
+    dayo::graphics::NativeOidnProvider provider(device);
+    auto context = testContext();
+    context.renderWidth = 2;
+    context.renderHeight = 1;
+    const dayo::fx::FxOidnDispatch dispatch{
+        .input = "OIDNBuf", .albedo = "", .normal = "", .output = "Denoised"};
+    const dayo::graphics::FxExecutionResources::TypedResourceResolver resolve =
+        [](std::string_view name) -> std::optional<dayo::graphics::FxExecutionResources::TypedResource> {
+        if (name == "OIDNBuf")
+            return dayo::graphics::FxExecutionResources::TypedResource{.buffer = {31, 1}};
+        if (name == "Denoised")
+            return dayo::graphics::FxExecutionResources::TypedResource{.texture = {32, 1}};
+        return std::nullopt;
+    };
+    MockCommands commands;
+    std::string error;
+    const auto executed = provider.execute(dispatch, context, commands, resolve, &error);
+    bool ok = check(executed, "OIDN host accepts NativeSceneOidnInput structured-buffer input");
+    ok &= check(device.lastBufferReadbackHandle_ == dayo::graphics::handles::BufferHandle{31, 1} &&
+                    device.lastBufferReadbackOffset_ == 0 &&
+                    device.lastBufferReadbackSize_ == inputSamples.size() * sizeof(inputSamples.front()),
+                "OIDN host reads exactly the interleaved scene input buffer extent");
+    ok &= check(std::ranges::find(commands.trace, "flushAndWaitForHostReadbackEx") != commands.trace.end() &&
+                    device.lastUploadedTexture_ == dayo::graphics::handles::TextureHandle{32, 1} &&
+                    device.uploadedTextureBytes_ == inputSamples.size() * 8U,
+                "OIDN buffer path flushes GPU writes and uploads the processed output texture");
+    if (provider.runtime().lastPath() == dayo::core::DenoiserPath::passthrough) {
+        const auto firstRed = static_cast<std::uint16_t>(device.uploadedTextureData_[0]) |
+                              static_cast<std::uint16_t>(device.uploadedTextureData_[1] << 8U);
+        const auto secondRed = static_cast<std::uint16_t>(device.uploadedTextureData_[8]) |
+                               static_cast<std::uint16_t>(device.uploadedTextureData_[9] << 8U);
+        ok &= check(firstRed == 0x3400U && secondRed == 0x3c00U,
+                    "OIDN unavailable passthrough preserves the structured buffer beauty channel");
+    }
     return ok;
 }
 
@@ -2153,6 +2223,7 @@ int main() {
     ok &= testFxVertexBufferRasterExecution();
     ok &= testDepthOnlyRasterExecution();
     ok &= testOidnHostExecution();
+    ok &= testOidnStructuredBufferInput();
     ok &= testTypedBufferResourceExecution();
     ok &= testDayoHostResourceProvider();
     ok &= testNativeSceneDerivedResources();
