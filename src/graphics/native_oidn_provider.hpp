@@ -4,8 +4,8 @@
 #include "fx/fx_compiler.hpp"
 #include "graphics/fx_executor.hpp"
 
-#include <optional>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -35,10 +35,10 @@ class NativeOidnProvider {
     }
 
   private:
-    [[nodiscard]] static std::vector<float> decodeRgb(std::span<const std::uint8_t> bytes,
-                                                       std::uint32_t width, std::uint32_t height);
-    [[nodiscard]] static std::vector<std::uint8_t> encodeRgba16(std::span<const float> rgb,
-                                                                std::uint32_t width, std::uint32_t height);
+    [[nodiscard]] static std::vector<float> decodeRgb(std::span<const std::uint8_t> bytes, std::uint32_t width,
+                                                      std::uint32_t height);
+    [[nodiscard]] static std::vector<std::uint8_t> encodeRgba16(std::span<const float> rgb, std::uint32_t width,
+                                                                std::uint32_t height);
     [[nodiscard]] static float halfToFloat(std::uint16_t value) noexcept;
     [[nodiscard]] static std::uint16_t floatToHalf(float value) noexcept;
     static void setError(std::string* error, std::string message);

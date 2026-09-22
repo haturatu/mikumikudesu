@@ -56,7 +56,7 @@ std::uint16_t NativeOidnProvider::floatToHalf(float value) noexcept {
     if (exponent >= 31)
         return static_cast<std::uint16_t>(sign | 0x7c00U | (mantissa != 0 ? 0x0200U : 0U));
     return static_cast<std::uint16_t>(sign | (static_cast<std::uint32_t>(exponent) << 10U) |
-                                       ((mantissa + 0x1000U) >> 13U));
+                                      ((mantissa + 0x1000U) >> 13U));
 }
 
 std::vector<float> NativeOidnProvider::decodeRgb(std::span<const std::uint8_t> bytes, std::uint32_t width,
@@ -162,9 +162,11 @@ bool NativeOidnProvider::execute(const fx::FxOidnDispatch& dispatch, const fx::F
         std::vector<float> albedoValues;
         std::vector<float> normalValues;
         if (albedo.valid())
-            albedoValues = decodeRgb(device_->readbackTextureEx(albedo, 0, 0), context.renderWidth, context.renderHeight);
+            albedoValues =
+                decodeRgb(device_->readbackTextureEx(albedo, 0, 0), context.renderWidth, context.renderHeight);
         if (normal.valid())
-            normalValues = decodeRgb(device_->readbackTextureEx(normal, 0, 0), context.renderWidth, context.renderHeight);
+            normalValues =
+                decodeRgb(device_->readbackTextureEx(normal, 0, 0), context.renderWidth, context.renderHeight);
         std::vector<float> denoised(beauty.size());
         const core::DenoiserExecuteArgs args{.width = context.renderWidth,
                                              .height = context.renderHeight,

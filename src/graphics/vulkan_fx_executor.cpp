@@ -309,10 +309,10 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                 const auto* oidn = std::get_if<dayo::fx::FxOidnDispatch>(&dispatch.executable);
                 if (oidn == nullptr)
                     throw std::logic_error("VulkanFxExecutor: OIDN pass has no typed dispatch: " + dispatch.name);
-                const auto oidnExecuted = resources.executeOidnWithResolver
-                                          ? resources.executeOidnWithResolver(*oidn, context, commands,
-                                                                              resources.resolveTypedResource)
-                                          : resources.executeOidn(*oidn, context, commands);
+                const auto oidnExecuted =
+                    resources.executeOidnWithResolver
+                        ? resources.executeOidnWithResolver(*oidn, context, commands, resources.resolveTypedResource)
+                        : resources.executeOidn(*oidn, context, commands);
                 if (!oidnExecuted)
                     throw std::logic_error("VulkanFxExecutor: OIDN host execution failed: " + dispatch.name);
                 ++stats.oidn;

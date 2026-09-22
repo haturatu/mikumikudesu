@@ -260,8 +260,8 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
             const auto appendUnique = [&](std::string_view name, bool write) {
                 if (name.empty())
                     return;
-                const auto duplicate = std::ranges::find_if(
-                    dispatch.resources, [&](const FxDispatch::ResourceUse& resource) {
+                const auto duplicate =
+                    std::ranges::find_if(dispatch.resources, [&](const FxDispatch::ResourceUse& resource) {
                         return resource.name == name && resource.write == write;
                     });
                 if (duplicate == dispatch.resources.end())

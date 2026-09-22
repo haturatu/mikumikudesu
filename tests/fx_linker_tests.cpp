@@ -230,12 +230,10 @@ int main() {
         const auto copyRoundTrip = fxPassFromEffectPass(copyLegacy, FxCategory::postprocess);
         ok &= check(std::holds_alternative<FxCopyOp>(copyRoundTrip.op), "copy round-trips through EffectPass");
 
-        const FxPass oidn{.name = "Denoise",
-                          .category = FxCategory::postprocess,
-                          .op = FxPassOp{FxOidnOp{.input = "Beauty",
-                                                 .output = "Denoised",
-                                                 .albedo = "Albedo",
-                                                 .normal = "Normal"}}};
+        const FxPass oidn{
+            .name = "Denoise",
+            .category = FxCategory::postprocess,
+            .op = FxPassOp{FxOidnOp{.input = "Beauty", .output = "Denoised", .albedo = "Albedo", .normal = "Normal"}}};
         const auto oidnLegacy = effectPassFromFxPass(oidn);
         ok &= check(oidnLegacy.type == EffectPassType::oidn && oidnLegacy.oidnInput == "Beauty" &&
                         oidnLegacy.oidnAlbedo == "Albedo" && oidnLegacy.oidnNormal == "Normal" &&

@@ -86,9 +86,8 @@ struct FxOidnDispatch {
 
 struct FxUtilityDispatch {};
 
-using FxExecutable =
-    std::variant<FxRasterDispatch, FxPostProcessDispatch, FxComputeDispatch, FxRayTracingDispatch, FxOidnDispatch,
-                 FxUtilityDispatch>;
+using FxExecutable = std::variant<FxRasterDispatch, FxPostProcessDispatch, FxComputeDispatch, FxRayTracingDispatch,
+                                  FxOidnDispatch, FxUtilityDispatch>;
 
 struct FxDispatch {
     std::string name;

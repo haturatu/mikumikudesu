@@ -548,15 +548,16 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
             if (!nativeSceneFrame_.updatePassConstants(commandList, pass, &passError))
                 throw std::runtime_error(passError.empty() ? "native deform CBuff1 update failed" : passError);
         };
-        executionResources.executeOidnWithResolver = [this](
-            const fx::FxOidnDispatch& dispatch, const fx::FxFrameContext& context, graphics::CommandList& commandList,
-            const graphics::FxExecutionResources::TypedResourceResolver& resolve) {
-            std::string oidnError;
-            if (nativeOidnProvider_.execute(dispatch, context, commandList, resolve, &oidnError))
-                return true;
-            log::warn("Native OIDN pass failed: ", oidnError);
-            return false;
-        };
+        executionResources.executeOidnWithResolver =
+            [this](const fx::FxOidnDispatch& dispatch, const fx::FxFrameContext& context,
+                   graphics::CommandList& commandList,
+                   const graphics::FxExecutionResources::TypedResourceResolver& resolve) {
+                std::string oidnError;
+                if (nativeOidnProvider_.execute(dispatch, context, commandList, resolve, &oidnError))
+                    return true;
+                log::warn("Native OIDN pass failed: ", oidnError);
+                return false;
+            };
         auto output = nativeRenderer_.recordFrame(commands, frameContext, nativeDirty, materials, lightSampling, {},
                                                   executionResources);
         if (output.has_value())
