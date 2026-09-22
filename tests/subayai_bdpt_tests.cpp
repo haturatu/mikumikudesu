@@ -3,6 +3,7 @@
 #include "core/scene.hpp"
 #include "graphics/bdpt_accumulation.hpp"
 #include "graphics/bdpt_runtime.hpp"
+#include "graphics/dayo_host_resources.hpp"
 #include "graphics/device.hpp"
 #include "graphics/native_controller_runtime.hpp"
 #include "graphics/native_frame_constants.hpp"
@@ -1757,6 +1758,7 @@ int main() {
         ok &= check(store.initialize(device, counts, &error) && store.ready(),
                     "native scene resource store initializes fallback resources without a TLAS");
         const auto& fallback = store.bindings();
+        const auto fallbackRtOutput = fallback.rtOutput;
         ok &= check(!fallback.tlas.valid() && fallback.rtOutput.valid() && fallback.oidnBuffer.valid() &&
                         fallback.textures.size() == 2 && fallback.textures[0].valid(),
                     "native scene resource store keeps TLAS empty while filling fixed placeholders");
@@ -1776,6 +1778,13 @@ int main() {
         ok &= check(store.bindings().tlas == overrides.tlas && store.bindings().rtOutput == overrides.rtOutput &&
                         store.bindings().textures[0] == textures[0] && store.bindings().textures[1] == textures[1],
                     "native scene resource store retains owned array and scalar overrides");
+
+        auto placeholderOverride = overrides;
+        placeholderOverride.rtOutput = fallbackRtOutput;
+        ok &= check(store.compose(placeholderOverride, &error) &&
+                        (store.bindings().hostResourceMask &
+                         dayo::graphics::dayoSemanticBit(dayo::graphics::DayoSemantic::RTOutput)) == 0,
+                    "native scene resource store does not mark its placeholder as a real host semantic");
 
         auto invalid = overrides;
         invalid.textures = std::span<const dayo::graphics::handles::TextureHandle>(textures.data(), 1);

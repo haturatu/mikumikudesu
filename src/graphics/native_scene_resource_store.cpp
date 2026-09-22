@@ -1,5 +1,7 @@
 #include "graphics/native_scene_resource_store.hpp"
 
+#include "graphics/dayo_host_resources.hpp"
+
 #include <algorithm>
 #include <array>
 #include <exception>
@@ -150,6 +152,38 @@ bool NativeSceneResourceStore::replaceScalars(const NativeSceneResourceBindings&
     bindings_.controllerConstants = bufferOrPlaceholder(overrides.controllerConstants);
     bindings_.textureTable = bufferOrPlaceholder(overrides.textureTable);
     bindings_.passConstants = bufferOrPlaceholder(overrides.passConstants);
+    bindings_.hostResourceMask = 0;
+    const auto mark = [this](DayoSemantic semantic, bool present) {
+        if (present)
+            bindings_.hostResourceMask |= dayoSemanticBit(semantic);
+    };
+    const auto realTexture = [this](handles::TextureHandle value) {
+        return value.valid() && value != placeholderTexture_;
+    };
+    const auto realBuffer = [this](handles::BufferHandle value) {
+        return value.valid() && value != placeholderBuffer_;
+    };
+    mark(DayoSemantic::RTOutput, realTexture(overrides.rtOutput));
+    mark(DayoSemantic::OIDNBuf, realBuffer(overrides.oidnBuffer));
+    mark(DayoSemantic::NormalDepth, realTexture(overrides.normalDepth));
+    mark(DayoSemantic::GBuffer1, realTexture(overrides.gbuffer1));
+    mark(DayoSemantic::GBuffer2, realTexture(overrides.gbuffer2));
+    mark(DayoSemantic::TLAS, overrides.tlas.valid());
+    mark(DayoSemantic::Model2Mat, realBuffer(overrides.modelToMaterial));
+    mark(DayoSemantic::Mat2Model, realBuffer(overrides.materialToModel));
+    mark(DayoSemantic::Peekaboo, realBuffer(overrides.peekaboo));
+    mark(DayoSemantic::MatSelected, realBuffer(overrides.materialSelected));
+    mark(DayoSemantic::Skybox, realTexture(overrides.skybox));
+    mark(DayoSemantic::Skywalker, realBuffer(overrides.skywalker));
+    mark(DayoSemantic::SkywalkerRow, realBuffer(overrides.skywalkerRow));
+    mark(DayoSemantic::SkyboxSH, realBuffer(overrides.skyboxSh));
+    mark(DayoSemantic::ScreenBMP, realTexture(overrides.screenBmp));
+    mark(DayoSemantic::CloneCount, realBuffer(overrides.cloneCount));
+    mark(DayoSemantic::ScreenTexture, realTexture(overrides.screenTexture));
+    mark(DayoSemantic::ViewCB, realBuffer(overrides.viewConstants));
+    mark(DayoSemantic::ControllerCB, realBuffer(overrides.controllerConstants));
+    mark(DayoSemantic::TextureTable, realBuffer(overrides.textureTable));
+    mark(DayoSemantic::CBuff1, realBuffer(overrides.passConstants));
     return true;
 }
 
