@@ -466,9 +466,10 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         }
         if (!nativeSceneFrame_.sync(frameContext, nativeSceneResources_.bindings(), {}, &sceneError))
             throw std::runtime_error(sceneError.empty() ? "native scene frame synchronization failed" : sceneError);
-        if (const auto* program = nativeRenderer_.program(); program != nullptr &&
+        if (const auto* program = nativeRenderer_.program();
+            program != nullptr &&
             !nativeSceneFrame_.syncControllers(program->controllers, evaluatedModels_,
-                                                effectControllerModel_.value_or(frameContext.currentModel), &sceneError))
+                                               effectControllerModel_.value_or(frameContext.currentModel), &sceneError))
             throw std::runtime_error(sceneError.empty() ? "native FX controller synchronization failed" : sceneError);
         graphics::FxExecutionResources executionResources;
         executionResources.sceneDraws = nativeSceneDraws_;

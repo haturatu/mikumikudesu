@@ -4,8 +4,8 @@
 
 #include <algorithm>
 #include <exception>
-#include <type_traits>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 namespace dayo::graphics {
@@ -159,7 +159,8 @@ bool NativeSceneFrameRuntime::syncControllers(std::span<const core::EffectContro
                 },
                 value);
             if (!applied)
-                throw std::runtime_error("controller value does not match generated cbuffer field: " + declaration.name);
+                throw std::runtime_error("controller value does not match generated cbuffer field: " +
+                                         declaration.name);
         }
     } catch (const std::exception& exception) {
         setError(error, std::string("native controller resolution failed: ") + exception.what());

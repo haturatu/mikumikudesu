@@ -35,8 +35,7 @@ using FxControllerValue = std::variant<bool, std::int32_t, std::uint32_t, float,
 // controller values coherent with the geometry evaluated for the same frame.
 class FxControllerResolver {
   public:
-    [[nodiscard]] FxControllerValue resolve(const EffectController& controller,
-                                            const SceneEvaluationSnapshot& snapshot,
+    [[nodiscard]] FxControllerValue resolve(const EffectController& controller, const SceneEvaluationSnapshot& snapshot,
                                             dayo::core::ModelId self) const;
 };
 

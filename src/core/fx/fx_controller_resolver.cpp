@@ -22,7 +22,7 @@ std::string controllerType(const EffectController& controller) {
 }
 
 const EvaluatedModelState& targetModel(const EffectController& controller, const SceneEvaluationSnapshot& snapshot,
-                                      dayo::core::ModelId self) {
+                                       dayo::core::ModelId self) {
     const auto target = lower(controller.controllerName);
     if (target.empty() || target == "(self)") {
         const auto found = std::find_if(snapshot.models.begin(), snapshot.models.end(),
@@ -65,8 +65,8 @@ FxControllerValue morphValue(std::string_view type, float weight, std::string_vi
         return static_cast<std::int32_t>(std::lround(weight));
     if (type == "uint")
         return weight <= 0.0F ? 0U : static_cast<std::uint32_t>(std::lround(weight));
-    throw std::runtime_error("FX morph controller type is unsupported for '" + std::string(item) + "': " +
-                             std::string(type));
+    throw std::runtime_error("FX morph controller type is unsupported for '" + std::string(item) +
+                             "': " + std::string(type));
 }
 
 FxControllerValue boneValue(std::string_view type, const mmd::AnimatedModelFrame::BoneTransform& bone,
@@ -82,7 +82,7 @@ FxControllerValue boneValue(std::string_view type, const mmd::AnimatedModelFrame
     if (type == "float4x4") {
         auto quaternion = bone.rotation;
         const auto length = std::sqrt(quaternion[0] * quaternion[0] + quaternion[1] * quaternion[1] +
-                                       quaternion[2] * quaternion[2] + quaternion[3] * quaternion[3]);
+                                      quaternion[2] * quaternion[2] + quaternion[3] * quaternion[3]);
         if (!std::isfinite(length) || length <= 0.000001F)
             quaternion = {0.0F, 0.0F, 0.0F, 1.0F};
         else {
@@ -98,32 +98,29 @@ FxControllerValue boneValue(std::string_view type, const mmd::AnimatedModelFrame
         const auto zz = z * z;
         // This is the row-vector form used by the upstream HLSL helpers. The
         // translation remains in the final row, matching float4x4 * ABI.
-        return std::array<float, 16>{1.0F - 2.0F * (yy + zz), 2.0F * (x * y + z * w),
-                                    2.0F * (x * z - y * w), 0.0F,
-                                    2.0F * (x * y - z * w), 1.0F - 2.0F * (xx + zz),
-                                    2.0F * (y * z + x * w), 0.0F,
-                                    2.0F * (x * z + y * w), 2.0F * (y * z - x * w),
-                                    1.0F - 2.0F * (xx + yy), 0.0F,
-                                    bone.translation[0], bone.translation[1], bone.translation[2], 1.0F};
+        return std::array<float, 16>{1.0F - 2.0F * (yy + zz), 2.0F * (x * y + z * w),  2.0F * (x * z - y * w),  0.0F,
+                                     2.0F * (x * y - z * w),  1.0F - 2.0F * (xx + zz), 2.0F * (y * z + x * w),  0.0F,
+                                     2.0F * (x * z + y * w),  2.0F * (y * z - x * w),  1.0F - 2.0F * (xx + yy), 0.0F,
+                                     bone.translation[0],     bone.translation[1],     bone.translation[2],     1.0F};
     }
-    throw std::runtime_error("FX bone controller type is unsupported for '" + std::string(item) + "': " +
-                             std::string(type));
+    throw std::runtime_error("FX bone controller type is unsupported for '" + std::string(item) +
+                             "': " + std::string(type));
 }
 
 } // namespace
 
 FxControllerValue FxControllerResolver::resolve(const EffectController& controller,
-                                                 const SceneEvaluationSnapshot& snapshot,
-                                                 dayo::core::ModelId self) const {
+                                                const SceneEvaluationSnapshot& snapshot,
+                                                dayo::core::ModelId self) const {
     const auto& model = targetModel(controller, snapshot, self);
     const auto morphs = findNames(model.morphNames, controller.item);
     const auto bones = findNames(model.boneNames, controller.item);
     if (morphs.size() + bones.size() == 0)
-        throw std::runtime_error("FX controller item is not present in model '" + model.displayName + "': " +
-                                 controller.item);
+        throw std::runtime_error("FX controller item is not present in model '" + model.displayName +
+                                 "': " + controller.item);
     if (morphs.size() + bones.size() != 1)
-        throw std::runtime_error("FX controller item is ambiguous in model '" + model.displayName + "': " +
-                                 controller.item);
+        throw std::runtime_error("FX controller item is ambiguous in model '" + model.displayName +
+                                 "': " + controller.item);
     const auto type = controllerType(controller);
     if (!morphs.empty()) {
         const auto index = morphs.front();
