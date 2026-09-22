@@ -214,6 +214,44 @@ LogicOpEx logicOp(core::FxLogicOp operation) {
     return static_cast<LogicOpEx>(operation);
 }
 
+VertexInputRateEx vertexInputRate(core::EffectVertexInputRate rate) {
+    switch (rate) {
+    case core::EffectVertexInputRate::vertex:
+        return VertexInputRateEx::vertex;
+    case core::EffectVertexInputRate::instance:
+        return VertexInputRateEx::instance;
+    }
+    throw std::invalid_argument("unsupported FX vertex input rate");
+}
+
+VertexInputFormatEx vertexInputFormat(core::EffectVertexFormat format) {
+    switch (format) {
+    case core::EffectVertexFormat::r32Float:
+        return VertexInputFormatEx::r32Sfloat;
+    case core::EffectVertexFormat::r32g32Float:
+        return VertexInputFormatEx::r32g32Sfloat;
+    case core::EffectVertexFormat::r32g32b32Float:
+        return VertexInputFormatEx::r32g32b32Sfloat;
+    case core::EffectVertexFormat::r32g32b32a32Float:
+        return VertexInputFormatEx::r32g32b32a32Sfloat;
+    }
+    throw std::invalid_argument("unsupported FX vertex input format");
+}
+
+std::uint32_t vertexInputFormatSize(VertexInputFormatEx format) {
+    switch (format) {
+    case VertexInputFormatEx::r32Sfloat:
+        return 4;
+    case VertexInputFormatEx::r32g32Sfloat:
+        return 8;
+    case VertexInputFormatEx::r32g32b32Sfloat:
+        return 12;
+    case VertexInputFormatEx::r32g32b32a32Sfloat:
+        return 16;
+    }
+    throw std::invalid_argument("unsupported FX vertex input format");
+}
+
 std::string compact(std::string_view value) {
     std::string result;
     for (const auto character : value) {
@@ -328,6 +366,37 @@ GraphicsPipelineDescEx graphicsPipelineDescriptor(const fx::FxProgram& program, 
         descriptor.colorFormats.push_back(PixelFormat::rgba16Float);
     const auto* graphics = std::get_if<fx::FxRasterDispatch>(&dispatch.executable);
     if (graphics != nullptr) {
+        descriptor.vertexBindings.reserve(graphics->vertexLayout.bindings.size());
+        for (const auto& binding : graphics->vertexLayout.bindings) {
+            if (binding.stride == 0 ||
+                std::ranges::any_of(descriptor.vertexBindings, [&](const auto& candidate) {
+                    return candidate.binding == binding.binding;
+                }))
+                throw std::invalid_argument("FX vertex input binding has a zero stride or duplicate slot: " +
+                                            dispatch.name);
+            descriptor.vertexBindings.push_back(
+                {.binding = binding.binding, .stride = binding.stride, .rate = vertexInputRate(binding.rate)});
+        }
+        descriptor.vertexAttributes.reserve(graphics->vertexLayout.attributes.size());
+        for (const auto& attribute : graphics->vertexLayout.attributes) {
+            if (std::ranges::any_of(descriptor.vertexAttributes, [&](const auto& candidate) {
+                    return candidate.location == attribute.location;
+                }))
+                throw std::invalid_argument("FX vertex input attributes have duplicate locations: " + dispatch.name);
+            const auto format = vertexInputFormat(attribute.format);
+            const auto binding = std::ranges::find_if(descriptor.vertexBindings, [&](const auto& candidate) {
+                return candidate.binding == attribute.binding;
+            });
+            if (binding == descriptor.vertexBindings.end())
+                throw std::invalid_argument("FX vertex input attribute references an undeclared binding: " +
+                                            dispatch.name);
+            if (static_cast<std::uint64_t>(attribute.offset) + vertexInputFormatSize(format) > binding->stride)
+                throw std::invalid_argument("FX vertex input attribute exceeds its binding stride: " + dispatch.name);
+            descriptor.vertexAttributes.push_back({.location = attribute.location,
+                                                   .binding = attribute.binding,
+                                                   .format = format,
+                                                   .offset = attribute.offset});
+        }
         descriptor.rasterizer.cullMode = cullMode(graphics->graphics.rasterizer.cullMode);
         descriptor.rasterizer.frontFace = frontFace(graphics->graphics.rasterizer.frontFace);
         descriptor.depthStencil.depthTest =
@@ -369,6 +438,12 @@ GraphicsPipelineDescEx graphicsPipelineDescriptor(const fx::FxProgram& program, 
 }
 
 } // namespace
+
+GraphicsPipelineDescEx makeGraphicsPipelineDescriptor(const fx::FxProgram& program, const fx::FxDispatch& dispatch,
+                                                      handles::PipelineLayoutHandle layout,
+                                                      std::vector<handles::ShaderHandle> shaders) {
+    return graphicsPipelineDescriptor(program, dispatch, layout, std::move(shaders));
+}
 
 FxPipelineRuntime::~FxPipelineRuntime() {
     reset();
@@ -462,7 +537,7 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                     compileShader(device, program, dispatch, raster->pixelShader, fx::FxShaderStage::fragment, compiler,
                                   entry, resourceSet, sourceOptions);
                 entry.pipeline = device.createGraphicsPipelineEx(
-                    graphicsPipelineDescriptor(program, dispatch, *layout, {vertex, pixel}));
+                    makeGraphicsPipelineDescriptor(program, dispatch, *layout, {vertex, pixel}));
                 break;
             }
             case fx::FxOpKind::postprocess: {
@@ -477,7 +552,7 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                     compileShader(device, program, dispatch, postprocess->pixelShader, fx::FxShaderStage::fragment,
                                   compiler, entry, resourceSet, sourceOptions);
                 entry.pipeline = device.createGraphicsPipelineEx(
-                    graphicsPipelineDescriptor(program, dispatch, *layout, {fullscreenVertex, pixel}));
+                    makeGraphicsPipelineDescriptor(program, dispatch, *layout, {fullscreenVertex, pixel}));
                 break;
             }
             case fx::FxOpKind::compute: {

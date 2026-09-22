@@ -240,6 +240,8 @@ struct MockDevice final : public dayo::graphics::Device {
 
 struct MockCommands final : public dayo::graphics::CommandList {
     std::vector<std::string> trace;
+    std::vector<dayo::graphics::IndexedDrawEx> indexedDraws;
+    std::vector<dayo::graphics::VertexDrawEx> vertexBufferDraws;
     void transition(dayo::graphics::TextureHandle) override {
         trace.emplace_back("transition");
     }
@@ -250,7 +252,13 @@ struct MockCommands final : public dayo::graphics::CommandList {
         trace.push_back("draw:" + std::to_string(vertexCount) + "x" + std::to_string(instanceCount));
     }
     void drawIndexedEx(const dayo::graphics::IndexedDrawEx& draw) override {
+        indexedDraws.push_back(draw);
         trace.push_back("drawIndexedEx:" + std::to_string(draw.modelIndex) + ":" + std::to_string(draw.materialIndex));
+    }
+    void drawVertexBufferEx(const dayo::graphics::VertexDrawEx& draw) override {
+        vertexBufferDraws.push_back(draw);
+        trace.push_back("drawVertexBufferEx:" + std::to_string(draw.vertexCount) + "x" +
+                        std::to_string(draw.instanceCount) + ":" + std::to_string(draw.vertexBuffers.size()));
     }
     void drawIndexedBufferlessEx(dayo::graphics::handles::BufferHandle, std::uint32_t indexCount,
                                  std::uint32_t instanceCount) override {
@@ -687,6 +695,136 @@ bool testBufferlessIndexRasterExecution() {
                 "FX rasterIB counts a vertex-bufferless indexed draw");
     ok &= check(std::ranges::find(commands.trace, "drawIndexedBufferlessEx:6x4") != commands.trace.end(),
                 "FX rasterIB records the vertex-bufferless indexed draw with the clone count");
+    return ok;
+}
+
+bool testFxVertexBufferRasterExecution() {
+    using namespace dayo;
+    using namespace graphics;
+    core::EffectBuffer vertices;
+    vertices.name = "VertexData";
+    vertices.elementSize = 32;
+    vertices.size.absolute = true;
+    vertices.size.dimension = 1;
+    vertices.size.width = 4;
+    core::EffectBuffer indices;
+    indices.name = "IndexData";
+    indices.elementSize = sizeof(std::uint32_t);
+    indices.size.absolute = true;
+    indices.size.dimension = 1;
+    indices.size.width = 6;
+
+    fx::FxProgram program;
+    program.buffers = {vertices, indices};
+    fx::FxDispatch dispatch;
+    dispatch.name = "particle-buffer-raster";
+    dispatch.kind = fx::FxOpKind::raster;
+    dispatch.resources = {{"Color", true, fx::FxResourceRole::colorAttachment}};
+    fx::FxRasterDispatch raster;
+    raster.vertexShader = "VS";
+    raster.pixelShader = "PS";
+    raster.graphics.modelTarget = core::fx::RasterModelTarget::buffer;
+    raster.rasterSource = core::EffectRasterSource::buffer;
+    raster.vertexBuffer = "VertexData";
+    raster.indexBuffer = "IndexData";
+    raster.colorAttachments.push_back({.name = "Color", .clear = false, .clearValue = {}});
+    raster.vertexLayout.bindings.push_back({.binding = 0, .stride = 32, .rate = core::EffectVertexInputRate::vertex});
+    raster.vertexLayout.attributes.push_back({.location = 0,
+                                              .binding = 0,
+                                              .format = core::EffectVertexFormat::r32g32b32Float,
+                                              .offset = 0,
+                                              .semanticName = {},
+                                              .semanticIndex = 0,
+                                              .formatName = {}});
+    raster.vertexLayout.attributes.push_back({.location = 1,
+                                              .binding = 0,
+                                              .format = core::EffectVertexFormat::r32g32Float,
+                                              .offset = 12,
+                                              .semanticName = {},
+                                              .semanticIndex = 0,
+                                              .formatName = {}});
+    dispatch.executable = raster;
+    program.passes.push_back(dispatch);
+
+    FxExecutionResources resources;
+    resources.resolveTypedPipeline = [](const fx::FxDispatch&) {
+        return std::optional<handles::PipelineHandle>{{30, 1}};
+    };
+    resources.resolveTypedTexture = [](std::string_view name) {
+        return name == "Color" ? std::optional<handles::TextureHandle>{{43, 1}} : std::nullopt;
+    };
+    resources.resolveTypedResource = [](std::string_view name) -> std::optional<FxExecutionResources::TypedResource> {
+        if (name == "VertexData")
+            return FxExecutionResources::TypedResource{.buffer = {41, 1}};
+        if (name == "IndexData")
+            return FxExecutionResources::TypedResource{.buffer = {42, 1}};
+        if (name == "Color")
+            return FxExecutionResources::TypedResource{.texture = {43, 1}};
+        return std::nullopt;
+    };
+
+    const auto context = testContext();
+    const auto plan = fx::FxCompiler{}.plan(program, context);
+    MockCommands commands;
+    MockDevice device;
+    const auto stats = VulkanFxExecutor(device).execute(plan, commands, context, resources);
+    bool ok = check(plan.resolved[0].raster.has_value() && plan.resolved[0].raster->vertexCount == 4 &&
+                        plan.resolved[0].raster->indexCount == 6,
+                    "FX rasterVB/rasterIB resolve their declared element counts");
+    ok &= check(stats.raster == 1 && stats.indexedDraws == 1 && commands.indexedDraws.size() == 1,
+                "FX vertex/index buffer raster emits a typed indexed draw");
+    if (!commands.indexedDraws.empty()) {
+        const auto& draw = commands.indexedDraws.front();
+        ok &= check(draw.vertexBuffer == handles::BufferHandle{41, 1} &&
+                        draw.indexBuffer == handles::BufferHandle{42, 1} && draw.indexCount == 6 &&
+                        draw.instanceCount == context.cloneCount && draw.vertexBuffers.size() == 1 &&
+                        draw.vertexBuffers.front().binding == 0,
+                    "FX indexed buffer raster binds its vertex stream and clone instances");
+    }
+
+    raster.indexBuffer.clear();
+    dispatch.executable = raster;
+    program.passes = {dispatch};
+    const auto vertexOnlyPlan = fx::FxCompiler{}.plan(program, context);
+    MockCommands vertexOnlyCommands;
+    const auto vertexOnlyStats =
+        VulkanFxExecutor(device).execute(vertexOnlyPlan, vertexOnlyCommands, context, resources);
+    ok &= check(vertexOnlyStats.vertexBufferDraws == 1 && vertexOnlyCommands.vertexBufferDraws.size() == 1 &&
+                    vertexOnlyCommands.vertexBufferDraws.front().vertexCount == 4 &&
+                    vertexOnlyCommands.vertexBufferDraws.front().instanceCount == context.cloneCount,
+                "FX rasterVB without rasterIB emits a typed vertex-buffer draw");
+
+    auto layoutRaster = raster;
+    layoutRaster.vertexLayout.bindings.push_back(
+        {.binding = 1, .stride = 16, .rate = core::EffectVertexInputRate::instance});
+    layoutRaster.vertexLayout.attributes.push_back({.location = 2,
+                                                    .binding = 1,
+                                                    .format = core::EffectVertexFormat::r32g32b32a32Float,
+                                                    .offset = 0,
+                                                    .semanticName = {},
+                                                    .semanticIndex = 0,
+                                                    .formatName = {}});
+    auto layoutDispatch = dispatch;
+    layoutDispatch.executable = layoutRaster;
+    const auto pipeline = makeGraphicsPipelineDescriptor(program, layoutDispatch, {7, 1}, {});
+    ok &= check(pipeline.vertexBindings.size() == 2 && pipeline.vertexBindings[0].stride == 32 &&
+                    pipeline.vertexBindings[1].rate == VertexInputRateEx::instance &&
+                    pipeline.vertexAttributes.size() == 3 &&
+                    pipeline.vertexAttributes[0].format == VertexInputFormatEx::r32g32b32Sfloat &&
+                    pipeline.vertexAttributes[1].format == VertexInputFormatEx::r32g32Sfloat &&
+                    pipeline.vertexAttributes[1].offset == 12 &&
+                    pipeline.vertexAttributes[2].format == VertexInputFormatEx::r32g32b32a32Sfloat,
+                "FX vertex layout maps to backend-neutral pipeline input descriptions");
+    auto invalidRaster = layoutRaster;
+    invalidRaster.vertexLayout.attributes.front().offset = 24;
+    dispatch.executable = invalidRaster;
+    bool invalidLayoutRejected = false;
+    try {
+        static_cast<void>(makeGraphicsPipelineDescriptor(program, dispatch, {7, 1}, {}));
+    } catch (const std::invalid_argument&) {
+        invalidLayoutRejected = true;
+    }
+    ok &= check(invalidLayoutRejected, "FX vertex input attributes cannot exceed their declared stride");
     return ok;
 }
 
@@ -2012,6 +2150,7 @@ int main() {
     ok &= testResolvedPassPlanning();
     ok &= testRasterModelTargetIndexedDraws();
     ok &= testBufferlessIndexRasterExecution();
+    ok &= testFxVertexBufferRasterExecution();
     ok &= testDepthOnlyRasterExecution();
     ok &= testOidnHostExecution();
     ok &= testTypedBufferResourceExecution();

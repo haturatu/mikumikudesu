@@ -251,6 +251,20 @@ using SamplerHandle = std::uint64_t;
 using ShaderHandle = std::uint64_t;
 using AccelerationStructureHandle = std::uint64_t;
 
+struct VertexBufferBindingEx {
+    std::uint32_t binding{};
+    handles::BufferHandle buffer{};
+    std::size_t offset{};
+};
+
+struct VertexDrawEx {
+    std::vector<VertexBufferBindingEx> vertexBuffers;
+    std::uint32_t vertexCount{};
+    std::uint32_t instanceCount{1};
+    std::uint32_t firstVertex{};
+    std::uint32_t firstInstance{};
+};
+
 struct IndexedDrawEx {
     handles::BufferHandle vertexBuffer{};
     handles::BufferHandle indexBuffer{};
@@ -261,6 +275,9 @@ struct IndexedDrawEx {
     std::uint32_t instanceCount{1};
     std::uint32_t modelIndex{};
     std::uint32_t materialIndex{};
+    // Empty preserves the original single stream at binding zero. FX buffer
+    // raster can bind one physical resource at each declared input slot.
+    std::vector<VertexBufferBindingEx> vertexBuffers;
 };
 
 enum class ShaderStageMask : std::uint32_t {
@@ -317,6 +334,21 @@ enum class BlendFactorEx : std::uint8_t {
     srcAlphaSaturate
 };
 enum class BlendOpEx : std::uint8_t { add, subtract, reverseSubtract, min, max };
+enum class VertexInputRateEx : std::uint8_t { vertex, instance };
+enum class VertexInputFormatEx : std::uint8_t { r32Sfloat, r32g32Sfloat, r32g32b32Sfloat, r32g32b32a32Sfloat };
+
+struct VertexBindingDescEx {
+    std::uint32_t binding{};
+    std::uint32_t stride{};
+    VertexInputRateEx rate{VertexInputRateEx::vertex};
+};
+
+struct VertexAttributeDescEx {
+    std::uint32_t location{};
+    std::uint32_t binding{};
+    VertexInputFormatEx format{VertexInputFormatEx::r32g32b32Sfloat};
+    std::uint32_t offset{};
+};
 
 struct RasterizerStateEx {
     CullModeEx cullMode{CullModeEx::back};
@@ -371,6 +403,8 @@ struct GraphicsPipelineDescEx {
     bool logicOpEnable{};
     LogicOpEx logicOp{LogicOpEx::copy};
     std::vector<BlendAttachmentStateEx> blendAttachments;
+    std::vector<VertexBindingDescEx> vertexBindings;
+    std::vector<VertexAttributeDescEx> vertexAttributes;
 };
 
 struct RenderingAttachmentEx {
@@ -525,6 +559,9 @@ class CommandList {
     virtual void draw(std::uint32_t vertexCount, std::uint32_t instanceCount = 1) = 0;
     virtual void drawIndexedEx(const IndexedDrawEx&) {
         throw std::logic_error("Typed indexed draws are not implemented by this backend");
+    }
+    virtual void drawVertexBufferEx(const VertexDrawEx&) {
+        throw std::logic_error("Typed vertex-buffer draws are not implemented by this backend");
     }
     virtual void drawIndexedBufferlessEx(handles::BufferHandle, std::uint32_t, std::uint32_t = 1) {
         throw std::logic_error("Typed vertex-bufferless indexed draws are not implemented by this backend");

@@ -190,6 +190,44 @@ VkFormat toVkFormat(PixelFormat format) {
     return VK_FORMAT_UNDEFINED;
 }
 
+VkFormat toVkFormat(VertexInputFormatEx format) {
+    switch (format) {
+    case VertexInputFormatEx::r32Sfloat:
+        return VK_FORMAT_R32_SFLOAT;
+    case VertexInputFormatEx::r32g32Sfloat:
+        return VK_FORMAT_R32G32_SFLOAT;
+    case VertexInputFormatEx::r32g32b32Sfloat:
+        return VK_FORMAT_R32G32B32_SFLOAT;
+    case VertexInputFormatEx::r32g32b32a32Sfloat:
+        return VK_FORMAT_R32G32B32A32_SFLOAT;
+    }
+    return VK_FORMAT_UNDEFINED;
+}
+
+std::uint32_t vertexInputFormatSize(VertexInputFormatEx format) {
+    switch (format) {
+    case VertexInputFormatEx::r32Sfloat:
+        return 4;
+    case VertexInputFormatEx::r32g32Sfloat:
+        return 8;
+    case VertexInputFormatEx::r32g32b32Sfloat:
+        return 12;
+    case VertexInputFormatEx::r32g32b32a32Sfloat:
+        return 16;
+    }
+    throw std::invalid_argument("unsupported vertex input format");
+}
+
+VkVertexInputRate toVkVertexInputRate(VertexInputRateEx rate) {
+    switch (rate) {
+    case VertexInputRateEx::vertex:
+        return VK_VERTEX_INPUT_RATE_VERTEX;
+    case VertexInputRateEx::instance:
+        return VK_VERTEX_INPUT_RATE_INSTANCE;
+    }
+    throw std::invalid_argument("unsupported vertex input rate");
+}
+
 VkCullModeFlags toVkCullMode(CullModeEx mode) {
     switch (mode) {
     case CullModeEx::none:
@@ -4617,8 +4655,45 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
             .colorWriteMask = static_cast<VkColorComponentFlags>(state.colorWriteMask),
         });
     }
+    if (desc.vertexBindings.size() > physicalProperties_.limits.maxVertexInputBindings ||
+        desc.vertexAttributes.size() > physicalProperties_.limits.maxVertexInputAttributes)
+        throw std::invalid_argument("graphics pipeline vertex input exceeds device binding/attribute limits");
+    std::vector<VkVertexInputBindingDescription> vertexBindings;
+    vertexBindings.reserve(desc.vertexBindings.size());
+    std::unordered_set<std::uint32_t> vertexBindingIds;
+    for (const auto& binding : desc.vertexBindings) {
+        if (binding.binding >= physicalProperties_.limits.maxVertexInputBindings || binding.stride == 0 ||
+            binding.stride > physicalProperties_.limits.maxVertexInputBindingStride ||
+            !vertexBindingIds.insert(binding.binding).second)
+            throw std::invalid_argument("graphics pipeline has an invalid or duplicate vertex input binding");
+        vertexBindings.push_back({.binding = binding.binding,
+                                  .stride = binding.stride,
+                                  .inputRate = toVkVertexInputRate(binding.rate)});
+    }
+    std::vector<VkVertexInputAttributeDescription> vertexAttributes;
+    vertexAttributes.reserve(desc.vertexAttributes.size());
+    std::unordered_set<std::uint32_t> vertexAttributeLocations;
+    for (const auto& attribute : desc.vertexAttributes) {
+        const auto binding = std::ranges::find_if(
+            desc.vertexBindings, [&](const auto& candidate) { return candidate.binding == attribute.binding; });
+        const auto format = toVkFormat(attribute.format);
+        if (binding == desc.vertexBindings.end() || format == VK_FORMAT_UNDEFINED ||
+            attribute.location >= physicalProperties_.limits.maxVertexInputAttributes ||
+            attribute.offset > physicalProperties_.limits.maxVertexInputAttributeOffset ||
+            static_cast<std::uint64_t>(attribute.offset) + vertexInputFormatSize(attribute.format) > binding->stride ||
+            !vertexAttributeLocations.insert(attribute.location).second)
+            throw std::invalid_argument("graphics pipeline has an invalid or duplicate vertex input attribute");
+        vertexAttributes.push_back({.location = attribute.location,
+                                    .binding = attribute.binding,
+                                    .format = format,
+                                    .offset = attribute.offset});
+    }
     const VkPipelineVertexInputStateCreateInfo vertexInput{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = static_cast<std::uint32_t>(vertexBindings.size()),
+        .pVertexBindingDescriptions = vertexBindings.data(),
+        .vertexAttributeDescriptionCount = static_cast<std::uint32_t>(vertexAttributes.size()),
+        .pVertexAttributeDescriptions = vertexAttributes.data(),
     };
     const VkPipelineInputAssemblyStateCreateInfo inputAssembly{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -5383,25 +5458,57 @@ void VulkanDevice::recordBindPipeline(VkCommandBuffer commandBuffer, handles::Pi
 void VulkanDevice::recordDrawIndexed(VkCommandBuffer commandBuffer, const IndexedDrawEx& draw) {
     if (commandBuffer == VK_NULL_HANDLE)
         throw std::invalid_argument("typed indexed draw requires a command buffer");
-    if (!draw.vertexBuffer.valid() || !draw.indexBuffer.valid() || draw.indexCount == 0 || draw.instanceCount == 0)
+    if ((draw.vertexBuffers.empty() && !draw.vertexBuffer.valid()) || !draw.indexBuffer.valid() ||
+        draw.indexCount == 0 || draw.instanceCount == 0)
         throw std::invalid_argument("typed indexed draw has invalid buffers or counts");
-    const auto vertexIt = typedBuffers_.find(draw.vertexBuffer);
     const auto indexIt = typedBuffers_.find(draw.indexBuffer);
-    if (vertexIt == typedBuffers_.end() || !typedBufferHandles_.isAlive(draw.vertexBuffer) ||
-        indexIt == typedBuffers_.end() || !typedBufferHandles_.isAlive(draw.indexBuffer))
+    if (indexIt == typedBuffers_.end() || !typedBufferHandles_.isAlive(draw.indexBuffer))
         throw std::invalid_argument("typed indexed draw references a stale buffer handle");
-    if ((toBits(vertexIt->second.desc.usage) & toBits(ResourceUsage::vertexRead)) == 0U ||
-        (toBits(indexIt->second.desc.usage) & toBits(ResourceUsage::indexRead)) == 0U)
-        throw std::invalid_argument("typed indexed draw buffers do not have vertex/index usage");
+    if ((toBits(indexIt->second.desc.usage) & toBits(ResourceUsage::indexRead)) == 0U)
+        throw std::invalid_argument("typed indexed draw index buffer lacks index usage");
+    auto vertexBindings = draw.vertexBuffers;
+    if (vertexBindings.empty())
+        vertexBindings.push_back({.binding = 0, .buffer = draw.vertexBuffer});
+    std::unordered_set<std::uint32_t> boundSlots;
+    for (const auto& binding : vertexBindings) {
+        const auto vertexIt = typedBuffers_.find(binding.buffer);
+        if (!binding.buffer.valid() || binding.binding >= physicalProperties_.limits.maxVertexInputBindings ||
+            !boundSlots.insert(binding.binding).second || vertexIt == typedBuffers_.end() ||
+            !typedBufferHandles_.isAlive(binding.buffer))
+            throw std::invalid_argument("typed indexed draw has an invalid or duplicate vertex binding");
+        if ((toBits(vertexIt->second.desc.usage) & toBits(ResourceUsage::vertexRead)) == 0U ||
+            binding.offset >= vertexIt->second.desc.size)
+            throw std::invalid_argument("typed indexed draw vertex buffer lacks vertex usage or has an invalid offset");
+        const VkDeviceSize vertexOffset = binding.offset;
+        vkCmdBindVertexBuffers(commandBuffer, binding.binding, 1, &vertexIt->second.resource.buffer, &vertexOffset);
+    }
     const auto requiredIndexBytes = static_cast<std::uint64_t>(draw.firstIndex) * sizeof(std::uint32_t) +
                                     static_cast<std::uint64_t>(draw.indexCount) * sizeof(std::uint32_t);
     if (requiredIndexBytes > indexIt->second.desc.size)
         throw std::out_of_range("typed indexed draw exceeds its index buffer");
-    const VkDeviceSize vertexOffset = 0;
-    vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexIt->second.resource.buffer, &vertexOffset);
     vkCmdBindIndexBuffer(commandBuffer, indexIt->second.resource.buffer, 0, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(commandBuffer, draw.indexCount, draw.instanceCount, draw.firstIndex, draw.vertexOffset,
                      draw.firstInstance);
+}
+
+void VulkanDevice::recordDrawVertexBuffer(VkCommandBuffer commandBuffer, const VertexDrawEx& draw) {
+    if (commandBuffer == VK_NULL_HANDLE || draw.vertexCount == 0 || draw.instanceCount == 0 ||
+        draw.vertexBuffers.empty())
+        throw std::invalid_argument("typed vertex-buffer draw has invalid buffers or counts");
+    std::unordered_set<std::uint32_t> boundSlots;
+    for (const auto& binding : draw.vertexBuffers) {
+        const auto vertexIt = typedBuffers_.find(binding.buffer);
+        if (!binding.buffer.valid() || binding.binding >= physicalProperties_.limits.maxVertexInputBindings ||
+            !boundSlots.insert(binding.binding).second || vertexIt == typedBuffers_.end() ||
+            !typedBufferHandles_.isAlive(binding.buffer))
+            throw std::invalid_argument("typed vertex-buffer draw has an invalid or duplicate vertex binding");
+        if ((toBits(vertexIt->second.desc.usage) & toBits(ResourceUsage::vertexRead)) == 0U ||
+            binding.offset >= vertexIt->second.desc.size)
+            throw std::invalid_argument("typed vertex-buffer draw buffer lacks vertex usage or has an invalid offset");
+        const VkDeviceSize vertexOffset = binding.offset;
+        vkCmdBindVertexBuffers(commandBuffer, binding.binding, 1, &vertexIt->second.resource.buffer, &vertexOffset);
+    }
+    vkCmdDraw(commandBuffer, draw.vertexCount, draw.instanceCount, draw.firstVertex, draw.firstInstance);
 }
 
 void VulkanDevice::recordDrawIndexedBufferless(VkCommandBuffer commandBuffer, handles::BufferHandle indexBuffer,

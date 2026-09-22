@@ -30,6 +30,12 @@ void VulkanCommandList::drawIndexedEx(const IndexedDrawEx& draw) {
     device_->recordDrawIndexed(commandBuffer_, draw);
 }
 
+void VulkanCommandList::drawVertexBufferEx(const VertexDrawEx& draw) {
+    if (device_ == nullptr)
+        throw std::logic_error("typed vertex-buffer draw requires a Vulkan device");
+    device_->recordDrawVertexBuffer(commandBuffer_, draw);
+}
+
 void VulkanCommandList::drawIndexedBufferlessEx(handles::BufferHandle indexBuffer, std::uint32_t indexCount,
                                                 std::uint32_t instanceCount) {
     if (device_ == nullptr)

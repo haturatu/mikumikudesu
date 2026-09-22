@@ -14,6 +14,11 @@
 
 namespace dayo::graphics {
 
+[[nodiscard]] GraphicsPipelineDescEx makeGraphicsPipelineDescriptor(const fx::FxProgram& program,
+                                                                    const fx::FxDispatch& dispatch,
+                                                                    handles::PipelineLayoutHandle layout,
+                                                                    std::vector<handles::ShaderHandle> shaders);
+
 // Materializes a compiled FX program into typed Vulkan shader/pipeline/SBT
 // handles. Descriptor and push-constant layouts remain owned by the renderer
 // because the FX graph cannot infer application-specific resource bindings.
