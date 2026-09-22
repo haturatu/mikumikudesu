@@ -124,12 +124,24 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
         else
             dispatch.shader = pass.vertexShader;
         switch (pass.type) {
-        case core::EffectPassType::rasterizer:
-            dispatch.executable = FxRasterDispatch{pass.vertexShader, pass.pixelShader};
+        case core::EffectPassType::rasterizer: {
+            FxRasterDispatch raster;
+            raster.vertexShader = pass.vertexShader;
+            raster.pixelShader = pass.pixelShader;
+            raster.graphics = pass.graphics;
+            raster.colorAttachments = pass.renderTargets;
+            if (!pass.depth.name.empty())
+                raster.depthAttachment = pass.depth;
+            dispatch.executable = std::move(raster);
             break;
-        case core::EffectPassType::postprocess:
-            dispatch.executable = FxPostProcessDispatch{pass.pixelShader};
+        }
+        case core::EffectPassType::postprocess: {
+            FxPostProcessDispatch postprocess;
+            postprocess.pixelShader = pass.pixelShader;
+            postprocess.colorAttachments = pass.renderTargets;
+            dispatch.executable = std::move(postprocess);
             break;
+        }
         case core::EffectPassType::compute:
             dispatch.executable = FxComputeDispatch{pass.computeShader};
             break;
@@ -158,11 +170,11 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
         }
         const auto appendInput = [&](const core::EffectAttachment& attachment) {
             if (!attachment.name.empty())
-                dispatch.resources.push_back({attachment.name, false});
+                dispatch.resources.push_back({attachment.name, false, FxResourceRole::sampled});
         };
-        const auto appendOutput = [&](const core::EffectAttachment& attachment) {
+        const auto appendOutput = [&](const core::EffectAttachment& attachment, FxResourceRole role) {
             if (!attachment.name.empty())
-                dispatch.resources.push_back({attachment.name, true});
+                dispatch.resources.push_back({attachment.name, true, role});
         };
         const auto appendUtilityTarget = [&](std::string_view kind) {
             std::size_t targetCount = 0;
@@ -185,7 +197,9 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
             }
             if (targetCount != 1 || target == nullptr)
                 throw std::runtime_error("FX " + std::string(kind) + " pass requires one write target");
-            appendOutput(*target);
+            const auto role = !pass.depth.name.empty() && target == &pass.depth ? FxResourceRole::depthAttachment
+                                                                                  : FxResourceRole::storage;
+            appendOutput(*target, role);
         };
         switch (pass.type) {
         case core::EffectPassType::copy:
@@ -207,11 +221,11 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
             for (const auto& attachment : pass.inputs)
                 appendInput(attachment);
             for (const auto& attachment : pass.renderTargets)
-                appendOutput(attachment);
+                appendOutput(attachment, FxResourceRole::colorAttachment);
             for (const auto& attachment : pass.unorderedAccess)
-                appendOutput(attachment);
+                appendOutput(attachment, FxResourceRole::storage);
             if (!pass.depth.name.empty())
-                appendOutput(pass.depth);
+                appendOutput(pass.depth, FxResourceRole::depthAttachment);
             break;
         case core::EffectPassType::unknown:
             throw std::runtime_error("unsupported FX pass '" + pass.name + "': unknown type");

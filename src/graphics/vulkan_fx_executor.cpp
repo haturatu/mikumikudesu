@@ -42,6 +42,12 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
     };
     const auto resolveTypedWriteTarget = [&](const dayo::fx::FxDispatch& dispatch) -> handles::TextureHandle {
         for (const auto& resource : dispatch.resources) {
+            if (resource.write && resource.role == dayo::fx::FxResourceRole::colorAttachment)
+                return resolveTyped(resource);
+        }
+        // Preserve the legacy synthetic Preview plans, whose resources predate
+        // explicit roles. Real YRZFX programs always mark their RTVs above.
+        for (const auto& resource : dispatch.resources) {
             if (resource.write)
                 return resolveTyped(resource);
         }
