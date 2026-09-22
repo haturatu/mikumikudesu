@@ -473,6 +473,36 @@ bool testRasterModelTargetIndexedDraws() {
     return ok;
 }
 
+bool testDepthOnlyRasterExecution() {
+    MockDevice device;
+    dayo::graphics::VulkanFxExecutor executor(device);
+    MockCommands commands;
+    dayo::fx::FxDispatch dispatch;
+    dispatch.name = "depth-only";
+    dispatch.kind = dayo::fx::FxOpKind::raster;
+    dayo::fx::FxRasterDispatch raster;
+    raster.vertexShader = "VS";
+    raster.depthAttachment = dayo::core::EffectAttachment{.name = "Depth", .clear = true, .clearValue = {}};
+    dispatch.executable = raster;
+    dispatch.resources = {{"Depth", true, dayo::fx::FxResourceRole::depthAttachment}};
+    dayo::fx::FxProgram program;
+    program.passes.push_back(dispatch);
+    dayo::graphics::FxExecutionResources resources;
+    resources.resolveTypedPipeline = [](const dayo::fx::FxDispatch&) {
+        return std::optional<dayo::graphics::handles::PipelineHandle>{{20, 1}};
+    };
+    resources.resolveTypedTexture = [](std::string_view name)
+        -> std::optional<dayo::graphics::handles::TextureHandle> {
+        return name == "Depth" ? std::optional<dayo::graphics::handles::TextureHandle>{{21, 1}}
+                               : std::nullopt;
+    };
+    const auto plan = dayo::fx::FxCompiler{}.plan(program, testContext());
+    const auto stats = executor.execute(plan, commands, testContext(), resources);
+    return check(stats.raster == 1 &&
+                     std::ranges::find(commands.trace, "beginRenderingInfoEx:0") != commands.trace.end() &&
+                     std::ranges::find(commands.trace, "beginRenderingEx") == commands.trace.end(),
+                 "depth-only raster pass begins typed rendering with zero color attachments");
+}
 bool testTypedBufferResourceExecution() {
     MockDevice device;
     dayo::graphics::VulkanFxExecutor executor(device);
@@ -1425,6 +1455,7 @@ int main() {
     }
     ok &= testMockTraceMatches();
     ok &= testRasterModelTargetIndexedDraws();
+    ok &= testDepthOnlyRasterExecution();
     ok &= testTypedBufferResourceExecution();
     ok &= testPreviewReferencePath();
     ok &= testSchedulerOrder();

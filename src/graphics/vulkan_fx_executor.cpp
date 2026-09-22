@@ -111,7 +111,7 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
     };
     const auto beginTypedRendering = [&](const dayo::fx::FxDispatch& dispatch) {
         if (const auto* raster = std::get_if<dayo::fx::FxRasterDispatch>(&dispatch.executable);
-            raster != nullptr && !raster->colorAttachments.empty()) {
+            raster != nullptr && (!raster->colorAttachments.empty() || raster->depthAttachment.has_value())) {
             RenderingInfoEx info;
             info.extent = {context.renderWidth, context.renderHeight, 1};
             info.colors.reserve(raster->colorAttachments.size());
