@@ -21,15 +21,16 @@ std::string controllerType(const EffectController& controller) {
     return type.empty() ? "float" : type;
 }
 
-const EvaluatedModelState& targetModel(const EffectController& controller, const SceneEvaluationSnapshot& snapshot,
-                                       dayo::core::ModelId self) {
+std::vector<const EvaluatedModelState*> targetModels(const EffectController& controller,
+                                                     const SceneEvaluationSnapshot& snapshot,
+                                                     dayo::core::ModelId self) {
     const auto target = lower(controller.controllerName);
     if (target.empty() || target == "(self)") {
         const auto found = std::find_if(snapshot.models.begin(), snapshot.models.end(),
                                         [self](const auto& model) { return model.id == self; });
         if (found == snapshot.models.end())
             throw std::runtime_error("FX controller self model is not present in the evaluation snapshot");
-        return *found;
+        return {&*found};
     }
 
     std::vector<const EvaluatedModelState*> matches;
@@ -42,9 +43,7 @@ const EvaluatedModelState& targetModel(const EffectController& controller, const
     }
     if (matches.empty())
         throw std::runtime_error("FX controller target model is not present: " + controller.controllerName);
-    if (matches.size() != 1)
-        throw std::runtime_error("FX controller target model is ambiguous: " + controller.controllerName);
-    return *matches.front();
+    return matches;
 }
 
 std::vector<std::size_t> findNames(const std::vector<std::string>& names, std::string_view item) {
@@ -67,6 +66,31 @@ FxControllerValue morphValue(std::string_view type, float weight, std::string_vi
         return weight <= 0.0F ? 0U : static_cast<std::uint32_t>(std::lround(weight));
     throw std::runtime_error("FX morph controller type is unsupported for '" + std::string(item) +
                              "': " + std::string(type));
+}
+
+FxControllerValue boneValue(std::string_view type, const mmd::AnimatedModelFrame::BoneTransform& bone,
+                            std::string_view item);
+
+FxControllerValue resolveModelItem(const EffectController& controller, const EvaluatedModelState& model,
+                                   std::string_view type) {
+    const auto morphs = findNames(model.morphNames, controller.item);
+    const auto bones = findNames(model.boneNames, controller.item);
+    if (morphs.size() + bones.size() == 0)
+        throw std::runtime_error("FX controller item is not present in model '" + model.displayName +
+                                 "': " + controller.item);
+    if (morphs.size() + bones.size() != 1)
+        throw std::runtime_error("FX controller item is ambiguous in model '" + model.displayName +
+                                 "': " + controller.item);
+    if (!morphs.empty()) {
+        const auto index = morphs.front();
+        if (index >= model.morphWeights.size())
+            throw std::runtime_error("FX morph controller has no evaluated weight: " + controller.item);
+        return morphValue(type, model.morphWeights[index], controller.item);
+    }
+    const auto index = bones.front();
+    if (index >= model.bones.size())
+        throw std::runtime_error("FX bone controller has no evaluated pose: " + controller.item);
+    return boneValue(type, model.bones[index], controller.item);
 }
 
 FxControllerValue boneValue(std::string_view type, const mmd::AnimatedModelFrame::BoneTransform& bone,
@@ -112,26 +136,28 @@ FxControllerValue boneValue(std::string_view type, const mmd::AnimatedModelFrame
 FxControllerValue FxControllerResolver::resolve(const EffectController& controller,
                                                 const SceneEvaluationSnapshot& snapshot,
                                                 dayo::core::ModelId self) const {
-    const auto& model = targetModel(controller, snapshot, self);
-    const auto morphs = findNames(model.morphNames, controller.item);
-    const auto bones = findNames(model.boneNames, controller.item);
-    if (morphs.size() + bones.size() == 0)
-        throw std::runtime_error("FX controller item is not present in model '" + model.displayName +
-                                 "': " + controller.item);
-    if (morphs.size() + bones.size() != 1)
-        throw std::runtime_error("FX controller item is ambiguous in model '" + model.displayName +
-                                 "': " + controller.item);
+    auto values = resolveArray(controller, snapshot, self, 1);
+    return values.front();
+}
+
+std::vector<FxControllerValue> FxControllerResolver::resolveArray(const EffectController& controller,
+                                                                  const SceneEvaluationSnapshot& snapshot,
+                                                                  dayo::core::ModelId self,
+                                                                  std::size_t arrayCapacity) const {
+    if (arrayCapacity == 0)
+        throw std::invalid_argument("FX controller array capacity must be non-zero");
+    const auto models = targetModels(controller, snapshot, self);
+    if (arrayCapacity == 1 && models.size() != 1)
+        throw std::runtime_error("FX controller target model is ambiguous: " + controller.controllerName);
+    if (models.size() > arrayCapacity)
+        throw std::runtime_error("FX controller target count exceeds its declared array size: " +
+                                 controller.controllerName);
     const auto type = controllerType(controller);
-    if (!morphs.empty()) {
-        const auto index = morphs.front();
-        if (index >= model.morphWeights.size())
-            throw std::runtime_error("FX morph controller has no evaluated weight: " + controller.item);
-        return morphValue(type, model.morphWeights[index], controller.item);
-    }
-    const auto index = bones.front();
-    if (index >= model.bones.size())
-        throw std::runtime_error("FX bone controller has no evaluated pose: " + controller.item);
-    return boneValue(type, model.bones[index], controller.item);
+    std::vector<FxControllerValue> values;
+    values.reserve(models.size());
+    for (const auto* model : models)
+        values.push_back(resolveModelItem(controller, *model, type));
+    return values;
 }
 
 } // namespace dayo::core::fx

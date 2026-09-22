@@ -145,10 +145,21 @@ template <std::size_t N> bool writeArray(std::byte* destination, const std::arra
 } // namespace
 
 const NativeControllerField* NativeControllerLayout::find(std::string_view name) const noexcept {
+    const auto bracket = name.find('[');
+    if (bracket != std::string_view::npos)
+        name = name.substr(0, bracket);
+    const auto normalized = identifier(name);
     const auto found = std::find_if(fields.begin(), fields.end(), [name](const auto& field) {
-        return field.name == name || field.name == identifier(name);
+        return field.name == name;
     });
-    return found == fields.end() ? nullptr : &*found;
+    if (found != fields.end())
+        return &*found;
+    const auto normalizedFound = std::find_if(fields.begin(), fields.end(), [&normalized](const auto& field) {
+        return field.name == normalized;
+    });
+    if (normalizedFound != fields.end())
+        return &*normalizedFound;
+    return nullptr;
 }
 
 NativeControllerLayout makeNativeControllerLayout(std::span<const core::EffectController> controllers) {
@@ -192,6 +203,10 @@ NativeControllerLayout makeNativeControllerLayout(std::span<const core::EffectCo
 
 NativeControllerBlock::NativeControllerBlock(NativeControllerLayout layout)
     : layout_(std::move(layout)), bytes_(layout_.byteSize, std::byte{0}) {}
+
+void NativeControllerBlock::clear() noexcept {
+    std::fill(bytes_.begin(), bytes_.end(), std::byte{0});
+}
 
 std::byte* NativeControllerBlock::element(const NativeControllerField& field, std::size_t arrayIndex) noexcept {
     if (arrayIndex >= field.arrayCount ||

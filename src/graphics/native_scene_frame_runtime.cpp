@@ -131,32 +131,39 @@ bool resolveNativeControllerBlock(NativeControllerBlock& block, std::span<const 
         error->clear();
     const core::fx::FxControllerResolver resolver;
     try {
+        block.clear();
         for (const auto& declaration : declarations) {
-            const auto value = resolver.resolve(declaration, snapshot, self);
-            const auto applied = std::visit(
-                [&block, &declaration](const auto& candidate) {
-                    using Value = std::decay_t<decltype(candidate)>;
-                    if constexpr (std::is_same_v<Value, bool>)
-                        return block.setBool(declaration.name, candidate);
-                    else if constexpr (std::is_same_v<Value, std::int32_t>)
-                        return block.setInt(declaration.name, candidate);
-                    else if constexpr (std::is_same_v<Value, std::uint32_t>)
-                        return block.setUInt(declaration.name, candidate);
-                    else if constexpr (std::is_same_v<Value, float>)
-                        return block.setFloat(declaration.name, candidate);
-                    else if constexpr (std::is_same_v<Value, std::array<float, 2>>)
-                        return block.setFloat2(declaration.name, candidate);
-                    else if constexpr (std::is_same_v<Value, std::array<float, 3>>)
-                        return block.setFloat3(declaration.name, candidate);
-                    else if constexpr (std::is_same_v<Value, std::array<float, 4>>)
-                        return block.setFloat4(declaration.name, candidate);
-                    else
-                        return block.setMatrix4x4(declaration.name, candidate);
-                },
-                value);
-            if (!applied)
-                throw std::runtime_error("controller value does not match generated cbuffer field: " +
+            const auto* field = block.layout().find(declaration.name);
+            if (field == nullptr)
+                throw std::runtime_error("controller declaration is missing from generated cbuffer: " +
                                          declaration.name);
+            const auto values = resolver.resolveArray(declaration, snapshot, self, field->arrayCount);
+            for (std::size_t arrayIndex = 0; arrayIndex < values.size(); ++arrayIndex) {
+                const auto applied = std::visit(
+                    [&block, &declaration, arrayIndex](const auto& candidate) {
+                        using Value = std::decay_t<decltype(candidate)>;
+                        if constexpr (std::is_same_v<Value, bool>)
+                            return block.setBool(declaration.name, candidate, arrayIndex);
+                        else if constexpr (std::is_same_v<Value, std::int32_t>)
+                            return block.setInt(declaration.name, candidate, arrayIndex);
+                        else if constexpr (std::is_same_v<Value, std::uint32_t>)
+                            return block.setUInt(declaration.name, candidate, arrayIndex);
+                        else if constexpr (std::is_same_v<Value, float>)
+                            return block.setFloat(declaration.name, candidate, arrayIndex);
+                        else if constexpr (std::is_same_v<Value, std::array<float, 2>>)
+                            return block.setFloat2(declaration.name, candidate, arrayIndex);
+                        else if constexpr (std::is_same_v<Value, std::array<float, 3>>)
+                            return block.setFloat3(declaration.name, candidate, arrayIndex);
+                        else if constexpr (std::is_same_v<Value, std::array<float, 4>>)
+                            return block.setFloat4(declaration.name, candidate, arrayIndex);
+                        else
+                            return block.setMatrix4x4(declaration.name, candidate, arrayIndex);
+                    },
+                    values[arrayIndex]);
+                if (!applied)
+                    throw std::runtime_error("controller value does not match generated cbuffer field: " +
+                                             declaration.name);
+            }
         }
     } catch (const std::exception& exception) {
         setError(error, std::string("native controller resolution failed: ") + exception.what());
