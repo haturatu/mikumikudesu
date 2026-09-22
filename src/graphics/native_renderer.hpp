@@ -11,6 +11,7 @@
 #include "graphics/subayai_runtime.hpp"
 
 #include <optional>
+#include <array>
 #include <memory>
 #include <span>
 #include <string>
@@ -61,7 +62,15 @@ class NativeRendererCoordinator {
                 const EnvironmentGpuResult& environment, const FxExecutionResources& resources = {});
 
   private:
-    using GenericRuntimeList = std::vector<std::unique_ptr<DayoFxRuntime>>;
+    struct GenericEffectRuntime {
+        Device* device{};
+        DayoFxRuntime runtime;
+        NativeControllerRuntime controller;
+        std::optional<NativeControllerBlock> block;
+        std::array<handles::DescriptorSetHandle, kNativeFramesInFlight> frameSets{};
+        ~GenericEffectRuntime();
+    };
+    using GenericRuntimeList = std::vector<std::unique_ptr<GenericEffectRuntime>>;
 
     [[nodiscard]] std::optional<NativeFrameOutput>
     executeGenericEffects(std::span<const core::SceneEffectInstance> effects, GenericRuntimeList& runtimes,
@@ -74,6 +83,7 @@ class NativeRendererCoordinator {
     IEnvironmentBackend* environmentBackend_{};
     NativeSceneFrameRuntime* sceneFrameRuntime_{};
     std::optional<DayoHostResourceProvider> hostResourceProvider_;
+    NativeSceneResourceBindings hostBindings_;
     DayoSceneHostProvider sceneHostProvider_;
     Device* device_{};
     std::vector<core::SceneEffectInstance> deformEffects_;

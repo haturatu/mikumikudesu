@@ -130,6 +130,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     };
     std::vector<NativeModelGeometry> nativeGeometry_;
     std::vector<graphics::NativeSceneDraw> nativeSceneDraws_;
+    std::vector<graphics::NativeEffectModel> nativeEffectModels_;
     graphics::NativeSceneModelRuntime nativeSceneModelRuntime_;
     std::vector<graphics::NativeSceneModelData> nativeSceneModelData_;
     graphics::LightSamplingService nativeLightSampling_;

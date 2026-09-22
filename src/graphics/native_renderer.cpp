@@ -67,6 +67,20 @@ NativeRendererStatus decideNativeRendererForInitialization(const DeviceCapabilit
     return result;
 }
 
+NativeRendererCoordinator::GenericEffectRuntime::~GenericEffectRuntime() {
+    runtime.reset();
+    if (device != nullptr) {
+        for (const auto set : frameSets) {
+            if (!set.valid())
+                continue;
+            try {
+                device->destroyDescriptorSetEx(set);
+            } catch (...) {
+            }
+        }
+    }
+}
+
 NativeRendererStatus NativeRendererCoordinator::prepare(Device& device, RendererKind requested,
                                                         const core::EffectGraph& graph) {
     return prepare(device, requested, fx::FxCompiler{}.compile(graph));
@@ -118,6 +132,7 @@ void NativeRendererCoordinator::setSceneFrameRuntime(NativeSceneFrameRuntime* ru
 }
 
 void NativeRendererCoordinator::setHostResourceBindings(const NativeSceneResourceBindings& bindings) noexcept {
+    hostBindings_ = bindings;
     hostResourceProvider_.emplace(bindings);
     sceneHostProvider_.setProvider(*hostResourceProvider_);
     subayai_.setExternalResourceProvider(&sceneHostProvider_);
@@ -200,44 +215,79 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
     const auto descriptorSets = sceneFrameRuntime_->descriptorSets();
     std::optional<NativeFrameOutput> lastOutput;
     for (std::size_t index = 0; index < effects.size(); ++index) {
-        auto& runtime = runtimes[index];
-        if (!runtime) {
+        auto& entry = runtimes[index];
+        if (!entry) {
             auto program = fx::FxCompiler{}.compile(effects[index].graph);
-            runtime = std::make_unique<DayoFxRuntime>();
-            runtime->addProvider(sceneHostProvider_);
+            entry = std::make_unique<GenericEffectRuntime>();
+            entry->device = device_;
+            if (!entry->controller.initialize(*device_, effects[index].graph.controllers))
+                throw std::runtime_error("generic Dayo FX controller buffer initialization failed");
+            entry->block.emplace(entry->controller.layout());
+            entry->runtime.addProvider(sceneHostProvider_);
             std::string error;
             fx::FxNativeShaderSourceOptions sourceOptions;
-            sourceOptions.controllerDeclarations = controllerDeclarations_;
-            if (!runtime->initializeForFrame(*device_, std::move(program), fx::FxShaderCompiler{}, context, layouts,
-                                             &error, descriptorSets, std::move(sourceOptions)))
+            sourceOptions.controllerDeclarations = effects[index].graph.controllers;
+            if (!entry->runtime.initializeForFrame(*device_, std::move(program), fx::FxShaderCompiler{}, context,
+                                                   layouts, &error, descriptorSets, std::move(sourceOptions)))
                 throw std::runtime_error(error.empty() ? "generic Dayo FX initialization failed" : error);
         } else {
             std::string error;
-            if (!runtime->refresh(context, &error))
+            if (!entry->runtime.refresh(context, &error))
                 throw std::runtime_error(error.empty() ? "generic Dayo FX refresh failed" : error);
         }
 
-        auto frame = runtime->prepareFrame(context, descriptorSets);
-        if (evaluationSnapshot_ != nullptr && !effects[index].graph.controllers.empty()) {
+        if (!effects[index].graph.controllers.empty()) {
+            if (evaluationSnapshot_ == nullptr)
+                throw std::runtime_error("generic Dayo FX controller evaluation is unavailable");
             std::string error;
-            const auto owner = effects[index].controllerModel.value_or(context.currentModel);
-            if (!sceneFrameRuntime_->syncControllers(effects[index].graph.controllers, *evaluationSnapshot_, owner,
-                                                     &error))
+            const auto owner = effects[index].controllerModel.value_or(0);
+            if (!resolveNativeControllerBlock(*entry->block, effects[index].graph.controllers, *evaluationSnapshot_,
+                                              owner, &error))
                 throw std::runtime_error(error.empty() ? "generic Dayo FX controller synchronization failed" : error);
         }
+        std::string controllerError;
+        if (!entry->controller.sync(*device_, entry->block->bytes(), &controllerError))
+            throw std::runtime_error(controllerError.empty() ? "generic Dayo FX controller upload failed"
+                                                       : controllerError);
+        if (!hostBindings_.viewConstants.valid() || !hostBindings_.controllerConstants.valid())
+            throw std::runtime_error("generic Dayo FX host frame bindings are incomplete");
+        auto effectBindings = hostBindings_;
+        effectBindings.controllerConstants = entry->controller.buffer();
+        auto frameBindings = nativeSceneFrameDescriptorBindings(effectBindings);
+        const auto slot = device_->currentFrameSlot() % kNativeFramesInFlight;
+        auto& frameSet = entry->frameSets[slot];
+        if (frameSet.valid())
+            device_->updateDescriptorSetEx(frameSet, frameBindings);
+        else
+            frameSet = device_->allocateDescriptorSetEx(layouts[0], frameBindings);
+        if (!frameSet.valid())
+            throw std::runtime_error("generic Dayo FX frame descriptor set allocation failed");
+        std::vector<handles::DescriptorSetHandle> effectSets(descriptorSets.begin(), descriptorSets.end());
+        effectSets[0] = frameSet;
+        auto frame = entry->runtime.prepareFrame(context, effectSets);
         auto stageResources = resources;
         // Deform/postprocess graphs own their fullscreen or compute dispatches;
         // material indexed draws belong only to the renderer graph.
         stageResources.sceneDraws = {};
         stageResources.rasterControllerModel.reset();
         stageResources.updatePassConstants = {};
+        if (!publishToScreen) {
+            if (!effects[index].controllerModel.has_value())
+                throw std::runtime_error("deform FX has no controller model owner");
+            const auto model = std::ranges::find_if(resources.effectModels, [&](const NativeEffectModel& candidate) {
+                return candidate.modelId == *effects[index].controllerModel;
+            });
+            if (model == resources.effectModels.end() || !resources.updateEffectPassConstants)
+                throw std::runtime_error("deform FX owner has no native model pass constants");
+            resources.updateEffectPassConstants(commands, *model);
+        }
         if (!stageResources.defaultColorTarget.valid() && hostResourceProvider_.has_value()) {
             if (const auto output = hostResourceProvider_->resolve(DayoSemantic::RTOutput);
                 output.has_value() && output->texture.valid())
                 stageResources.defaultColorTarget = output->texture;
         }
-        static_cast<void>(runtime->execute(frame, commands, stageResources));
-        auto output = runtime->output(frame);
+        static_cast<void>(entry->runtime.execute(frame, commands, stageResources));
+        auto output = entry->runtime.output(frame);
         if (!output.has_value() && stageResources.defaultColorTarget.valid()) {
             output = NativeFrameOutput{.texture = stageResources.defaultColorTarget,
                                        .extent = {context.renderWidth, context.renderHeight, 1},

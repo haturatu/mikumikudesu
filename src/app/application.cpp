@@ -138,25 +138,8 @@ bool Application::ensureNativeSceneRuntime(bool restartRenderer, std::string* er
         return false;
     }
     std::vector<core::EffectController> controllerDeclarations;
-    const auto appendControllers = [&controllerDeclarations](const core::EffectGraph& graph) {
-        for (const auto& controller : graph.controllers) {
-            const auto found = std::ranges::find_if(
-                controllerDeclarations, [&controller](const auto& candidate) { return candidate.name == controller.name; });
-            if (found == controllerDeclarations.end()) {
-                controllerDeclarations.push_back(controller);
-                continue;
-            }
-            if (found->type != controller.type || found->controllerName != controller.controllerName ||
-                found->item != controller.item)
-                throw std::runtime_error("native FX controller declaration conflicts: " + controller.name);
-        }
-    };
     if (scene_.effects().renderer.has_value())
-        appendControllers(scene_.effects().renderer->graph);
-    for (const auto& effect : scene_.effects().deform)
-        appendControllers(effect.graph);
-    for (const auto& effect : scene_.effects().postprocess)
-        appendControllers(effect.graph);
+        controllerDeclarations = scene_.effects().renderer->graph.controllers;
     const auto sameControllers = [](std::span<const core::EffectController> left,
                                     std::span<const core::EffectController> right) {
         if (left.size() != right.size())
@@ -196,6 +179,7 @@ bool Application::ensureNativeSceneRuntime(bool restartRenderer, std::string* er
     nativeSceneFrame_.reset();
     nativeSceneResources_.reset();
     nativeSceneDraws_.clear();
+    nativeEffectModels_.clear();
     try {
         std::string runtimeError;
         if (!nativeSceneResources_.initialize(*device_, counts, &runtimeError))
@@ -473,12 +457,18 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         if (!nativeSceneResources_.compose(sceneResources, &sceneError))
             throw std::runtime_error(sceneError.empty() ? "native scene resource composition failed" : sceneError);
         nativeSceneDraws_.clear();
+        nativeEffectModels_.clear();
         for (std::size_t modelIndex = 0; modelIndex < nativeSceneModelData_.size(); ++modelIndex) {
             if (modelIndex >= nativeGeometry_.size() || modelIndex >= modelResources.vertexBuffers.size() ||
                 modelIndex >= modelResources.indexBuffers.size())
                 throw std::runtime_error("native scene draw table is out of sync with model resources");
             const auto& model = nativeSceneModelData_[modelIndex];
             const auto& geometry = nativeGeometry_[modelIndex];
+            nativeEffectModels_.push_back({.modelId = geometry.modelId,
+                                           .modelIndex = geometry.modelIndex,
+                                           .rasterizeOrder = geometry.rasterizeOrder,
+                                           .deformIndex = geometry.deformIndex,
+                                           .deformOrder = geometry.deformOrder});
             for (std::size_t materialIndex = 0; materialIndex < model.materialFaces.size(); ++materialIndex) {
                 const auto& range = model.materialFaces[materialIndex];
                 if (range.count == 0)
@@ -524,6 +514,7 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         nativeRenderer_.setHostResourceBindings(hostBindings);
         graphics::FxExecutionResources executionResources;
         executionResources.sceneDraws = nativeSceneDraws_;
+        executionResources.effectModels = nativeEffectModels_;
         const auto controllerModel =
             scene_.effects().renderer.has_value() && scene_.effects().renderer->controllerModel.has_value()
                 ? *scene_.effects().renderer->controllerModel
@@ -543,6 +534,16 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
             std::string passError;
             if (!nativeSceneFrame_.updatePassConstants(commandList, pass, &passError))
                 throw std::runtime_error(passError.empty() ? "native CBuff1 update failed" : passError);
+        };
+        executionResources.updateEffectPassConstants = [this](graphics::CommandList& commandList,
+                                                               const graphics::NativeEffectModel& model) {
+            const graphics::NativeScenePassConstants pass{.modelIndex = model.modelIndex,
+                                                           .rasterizeOrder = model.rasterizeOrder,
+                                                           .deformIndex = model.deformIndex,
+                                                           .deformOrder = model.deformOrder};
+            std::string passError;
+            if (!nativeSceneFrame_.updatePassConstants(commandList, pass, &passError))
+                throw std::runtime_error(passError.empty() ? "native deform CBuff1 update failed" : passError);
         };
         auto output = nativeRenderer_.recordFrame(commands, frameContext, nativeDirty, materials, lightSampling, {},
                                                   executionResources);

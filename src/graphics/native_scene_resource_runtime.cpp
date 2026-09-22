@@ -37,6 +37,44 @@ bool requireCount(std::size_t actual, std::uint32_t expected, std::string_view n
 
 } // namespace
 
+std::vector<DescriptorBindingEx>
+nativeSceneFrameDescriptorBindings(const NativeSceneResourceBindings& resources) {
+    const auto legacyGBuffer = resources.gbuffer.valid() ? resources.gbuffer : resources.gbuffer1;
+    std::vector<DescriptorBindingEx> frame;
+    frame.reserve(20);
+    const auto addTexture = [&frame](NativeSceneRegisterClass registerClass, std::uint32_t index,
+                                     handles::TextureHandle handle) {
+        frame.push_back({.slot = nativeSceneBinding(registerClass, index), .arrayElement = 0, .texture = handle});
+    };
+    const auto addBuffer = [&frame](NativeSceneRegisterClass registerClass, std::uint32_t index,
+                                    handles::BufferHandle handle) {
+        frame.push_back({.slot = nativeSceneBinding(registerClass, index), .arrayElement = 0, .buffer = handle});
+    };
+    addTexture(NativeSceneRegisterClass::uav, 0, resources.rtOutput);
+    addBuffer(NativeSceneRegisterClass::uav, 1, resources.oidnBuffer);
+    addTexture(NativeSceneRegisterClass::uav, 2, resources.normalDepth);
+    addTexture(NativeSceneRegisterClass::uav, 3, resources.gbuffer1);
+    addTexture(NativeSceneRegisterClass::uav, 4, resources.gbuffer2);
+    addBuffer(NativeSceneRegisterClass::uniform, 0, resources.viewConstants);
+    addBuffer(NativeSceneRegisterClass::uniform, 1, resources.controllerConstants);
+    frame.push_back({.slot = nativeSceneBinding(NativeSceneRegisterClass::sampled, 0),
+                     .arrayElement = 0,
+                     .accelerationStructure = resources.tlas});
+    addBuffer(NativeSceneRegisterClass::sampled, 1, resources.modelToMaterial);
+    addBuffer(NativeSceneRegisterClass::sampled, 2, resources.materialToModel);
+    addBuffer(NativeSceneRegisterClass::sampled, 3, resources.peekaboo);
+    addBuffer(NativeSceneRegisterClass::sampled, 4, resources.materialSelected);
+    addTexture(NativeSceneRegisterClass::sampled, 5, resources.skybox);
+    addBuffer(NativeSceneRegisterClass::sampled, 6, resources.skywalker);
+    addBuffer(NativeSceneRegisterClass::sampled, 7, resources.skywalkerRow);
+    addBuffer(NativeSceneRegisterClass::sampled, 8, resources.skyboxSh);
+    addTexture(NativeSceneRegisterClass::sampled, 9, resources.screenBmp);
+    addBuffer(NativeSceneRegisterClass::sampled, 10, resources.cloneCount);
+    addTexture(NativeSceneRegisterClass::sampled, 11, resources.screenTexture);
+    addTexture(NativeSceneRegisterClass::sampled, 12, legacyGBuffer);
+    return frame;
+}
+
 bool NativeSceneResourceRuntime::sync(const NativeSceneResourceBindings& resources, std::string* error) {
     if (error != nullptr)
         error->clear();
@@ -88,38 +126,7 @@ bool NativeSceneResourceRuntime::sync(const NativeSceneResourceBindings& resourc
         !checkHandle(valid(resources.previousVertices), "PreVB") || !checkHandle(valid(resources.rawVertices), "RawVB"))
         return false;
 
-    std::vector<DescriptorBindingEx> frame;
-    frame.reserve(20);
-    const auto addTexture = [&frame](NativeSceneRegisterClass registerClass, std::uint32_t index,
-                                     handles::TextureHandle handle) {
-        frame.push_back({.slot = nativeSceneBinding(registerClass, index), .arrayElement = 0, .texture = handle});
-    };
-    const auto addBuffer = [&frame](NativeSceneRegisterClass registerClass, std::uint32_t index,
-                                    handles::BufferHandle handle) {
-        frame.push_back({.slot = nativeSceneBinding(registerClass, index), .arrayElement = 0, .buffer = handle});
-    };
-    addTexture(NativeSceneRegisterClass::uav, 0, resources.rtOutput);
-    addBuffer(NativeSceneRegisterClass::uav, 1, resources.oidnBuffer);
-    addTexture(NativeSceneRegisterClass::uav, 2, resources.normalDepth);
-    addTexture(NativeSceneRegisterClass::uav, 3, resources.gbuffer1);
-    addTexture(NativeSceneRegisterClass::uav, 4, resources.gbuffer2);
-    addBuffer(NativeSceneRegisterClass::uniform, 0, resources.viewConstants);
-    addBuffer(NativeSceneRegisterClass::uniform, 1, resources.controllerConstants);
-    frame.push_back({.slot = nativeSceneBinding(NativeSceneRegisterClass::sampled, 0),
-                     .arrayElement = 0,
-                     .accelerationStructure = resources.tlas});
-    addBuffer(NativeSceneRegisterClass::sampled, 1, resources.modelToMaterial);
-    addBuffer(NativeSceneRegisterClass::sampled, 2, resources.materialToModel);
-    addBuffer(NativeSceneRegisterClass::sampled, 3, resources.peekaboo);
-    addBuffer(NativeSceneRegisterClass::sampled, 4, resources.materialSelected);
-    addTexture(NativeSceneRegisterClass::sampled, 5, resources.skybox);
-    addBuffer(NativeSceneRegisterClass::sampled, 6, resources.skywalker);
-    addBuffer(NativeSceneRegisterClass::sampled, 7, resources.skywalkerRow);
-    addBuffer(NativeSceneRegisterClass::sampled, 8, resources.skyboxSh);
-    addTexture(NativeSceneRegisterClass::sampled, 9, resources.screenBmp);
-    addBuffer(NativeSceneRegisterClass::sampled, 10, resources.cloneCount);
-    addTexture(NativeSceneRegisterClass::sampled, 11, resources.screenTexture);
-    addTexture(NativeSceneRegisterClass::sampled, 12, legacyGBuffer);
+    auto frame = nativeSceneFrameDescriptorBindings(resources);
     if (!bindings_.bind(NativeSceneDescriptorSet::frame, frame, error))
         return false;
 

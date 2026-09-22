@@ -8,6 +8,14 @@
 
 namespace dayo::graphics {
 
+struct NativeEffectModel {
+    std::uint64_t modelId{};
+    std::uint32_t modelIndex{};
+    std::uint32_t rasterizeOrder{};
+    std::uint32_t deformIndex{};
+    std::uint32_t deformOrder{};
+};
+
 // Applies the upstream rasterModelTarget contract to one material draw range.
 // self/other are intentionally false when no controller model is supplied:
 // silently drawing every model would make a missing controller look valid.

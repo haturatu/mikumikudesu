@@ -4,6 +4,7 @@
 
 #include <span>
 #include <string>
+#include <vector>
 
 namespace dayo::graphics {
 
@@ -52,6 +53,9 @@ struct NativeSceneResourceBindings {
     // placeholder handles.
     std::uint64_t hostResourceMask{};
 };
+
+[[nodiscard]] std::vector<DescriptorBindingEx>
+nativeSceneFrameDescriptorBindings(const NativeSceneResourceBindings& resources);
 
 // Converts scene-owned handles into complete descriptor sets for native FX.
 // The runtime arrays must match NativeSceneDescriptorCounts exactly; callers
