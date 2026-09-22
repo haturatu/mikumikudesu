@@ -22,6 +22,9 @@ namespace {
     case FxSizeExpr::Rounding::nearest:
         rounded = std::llround(scaled);
         break;
+    case FxSizeExpr::Rounding::truncate:
+        rounded = static_cast<long long>(scaled);
+        break;
     case FxSizeExpr::Rounding::floor:
         rounded = static_cast<long long>(std::floor(scaled));
         break;
@@ -159,7 +162,8 @@ FxExtent FxSizeResolver::resolve(const FxSizeExpr& expr, const FxEvalContext& co
         y = resolveAxis(expr.yExpr, baseY, expr.heightRatio, expr.rounding, "y", context, table, profile,
                         allowPowQuirk);
     if (dimension >= 3)
-        z = resolveAxis(expr.zExpr, baseZ, 1.0F, expr.rounding, "z", context, table, profile, allowPowQuirk);
+        z = resolveAxis(expr.zExpr, baseZ, expr.depthRatio, expr.rounding, "z", context, table, profile,
+                        allowPowQuirk);
 
     // 7. overflow validation
     if (dimension == 1) {
