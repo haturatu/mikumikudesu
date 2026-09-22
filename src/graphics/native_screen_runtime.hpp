@@ -63,7 +63,7 @@ class NativeScreenRuntime {
     // history rotation operation.
     void rotatePreviousFrame(CommandList& commands, handles::TextureHandle currentFinal);
 
-    // Adds only the three screen semantics owned by this runtime. Other host
+    // Adds screen/history semantics owned by this runtime. Other host
     // bindings remain untouched.
     void bindScreenSemantics(NativeSceneResourceBindings& bindings) const noexcept;
 

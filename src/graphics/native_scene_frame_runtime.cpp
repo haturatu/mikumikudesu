@@ -124,38 +124,34 @@ bool NativeSceneFrameRuntime::syncControllers(std::string* error) {
     return controllers_.sync(*device_, controllerBlock_->bytes(), error);
 }
 
-bool NativeSceneFrameRuntime::syncControllers(std::span<const core::EffectController> declarations,
-                                              const core::fx::SceneEvaluationSnapshot& snapshot, core::ModelId self,
-                                              std::string* error) {
+bool resolveNativeControllerBlock(NativeControllerBlock& block, std::span<const core::EffectController> declarations,
+                                  const core::fx::SceneEvaluationSnapshot& snapshot, core::ModelId self,
+                                  std::string* error) {
     if (error != nullptr)
         error->clear();
-    if (!ready() || !controllerBlock_.has_value()) {
-        setError(error, "native controller constants are not initialized");
-        return false;
-    }
     const core::fx::FxControllerResolver resolver;
     try {
         for (const auto& declaration : declarations) {
             const auto value = resolver.resolve(declaration, snapshot, self);
             const auto applied = std::visit(
-                [this, &declaration](const auto& candidate) {
+                [&block, &declaration](const auto& candidate) {
                     using Value = std::decay_t<decltype(candidate)>;
                     if constexpr (std::is_same_v<Value, bool>)
-                        return controllerBlock_->setBool(declaration.name, candidate);
+                        return block.setBool(declaration.name, candidate);
                     else if constexpr (std::is_same_v<Value, std::int32_t>)
-                        return controllerBlock_->setInt(declaration.name, candidate);
+                        return block.setInt(declaration.name, candidate);
                     else if constexpr (std::is_same_v<Value, std::uint32_t>)
-                        return controllerBlock_->setUInt(declaration.name, candidate);
+                        return block.setUInt(declaration.name, candidate);
                     else if constexpr (std::is_same_v<Value, float>)
-                        return controllerBlock_->setFloat(declaration.name, candidate);
+                        return block.setFloat(declaration.name, candidate);
                     else if constexpr (std::is_same_v<Value, std::array<float, 2>>)
-                        return controllerBlock_->setFloat2(declaration.name, candidate);
+                        return block.setFloat2(declaration.name, candidate);
                     else if constexpr (std::is_same_v<Value, std::array<float, 3>>)
-                        return controllerBlock_->setFloat3(declaration.name, candidate);
+                        return block.setFloat3(declaration.name, candidate);
                     else if constexpr (std::is_same_v<Value, std::array<float, 4>>)
-                        return controllerBlock_->setFloat4(declaration.name, candidate);
+                        return block.setFloat4(declaration.name, candidate);
                     else
-                        return controllerBlock_->setMatrix4x4(declaration.name, candidate);
+                        return block.setMatrix4x4(declaration.name, candidate);
                 },
                 value);
             if (!applied)
@@ -169,7 +165,18 @@ bool NativeSceneFrameRuntime::syncControllers(std::span<const core::EffectContro
         setError(error, "native controller resolution failed");
         return false;
     }
-    return syncControllers(error);
+    return true;
+}
+
+bool NativeSceneFrameRuntime::syncControllers(std::span<const core::EffectController> declarations,
+                                              const core::fx::SceneEvaluationSnapshot& snapshot, core::ModelId self,
+                                              std::string* error) {
+    if (!ready() || !controllerBlock_.has_value()) {
+        setError(error, "native controller constants are not initialized");
+        return false;
+    }
+    return resolveNativeControllerBlock(*controllerBlock_, declarations, snapshot, self, error) &&
+           syncControllers(error);
 }
 
 void NativeSceneFrameRuntime::reset() noexcept {

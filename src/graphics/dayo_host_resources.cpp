@@ -26,6 +26,8 @@ std::string_view toString(DayoSemantic semantic) noexcept {
         return "GBuffer1";
     case DayoSemantic::GBuffer2:
         return "GBuffer2";
+    case DayoSemantic::GBuffer:
+        return "GBuffer";
     case DayoSemantic::TLAS:
         return "TLAS";
     case DayoSemantic::Model2Mat:
@@ -64,12 +66,12 @@ std::string_view toString(DayoSemantic semantic) noexcept {
 
 std::optional<DayoSemantic> dayoSemanticFromString(std::string_view name) noexcept {
     constexpr std::array semantics{
-        DayoSemantic::RTOutput,      DayoSemantic::OIDNBuf,     DayoSemantic::NormalDepth,  DayoSemantic::GBuffer1,
-        DayoSemantic::GBuffer2,      DayoSemantic::TLAS,        DayoSemantic::Model2Mat,    DayoSemantic::Mat2Model,
-        DayoSemantic::Peekaboo,      DayoSemantic::MatSelected, DayoSemantic::Skybox,       DayoSemantic::Skywalker,
-        DayoSemantic::SkywalkerRow,  DayoSemantic::SkyboxSH,    DayoSemantic::ScreenBMP,    DayoSemantic::CloneCount,
-        DayoSemantic::ScreenTexture, DayoSemantic::ViewCB,      DayoSemantic::ControllerCB, DayoSemantic::TextureTable,
-        DayoSemantic::CBuff1,
+        DayoSemantic::RTOutput,     DayoSemantic::OIDNBuf,       DayoSemantic::NormalDepth, DayoSemantic::GBuffer1,
+        DayoSemantic::GBuffer2,     DayoSemantic::GBuffer,       DayoSemantic::TLAS,        DayoSemantic::Model2Mat,
+        DayoSemantic::Mat2Model,    DayoSemantic::Peekaboo,      DayoSemantic::MatSelected, DayoSemantic::Skybox,
+        DayoSemantic::Skywalker,    DayoSemantic::SkywalkerRow,  DayoSemantic::SkyboxSH,    DayoSemantic::ScreenBMP,
+        DayoSemantic::CloneCount,   DayoSemantic::ScreenTexture, DayoSemantic::ViewCB,      DayoSemantic::ControllerCB,
+        DayoSemantic::TextureTable, DayoSemantic::CBuff1,
     };
     for (const auto semantic : semantics) {
         if (name == toString(semantic))
@@ -99,6 +101,9 @@ std::optional<DayoResourceBinding> DayoHostResourceProvider::resolve(DayoSemanti
         break;
     case DayoSemantic::GBuffer2:
         result.texture = bindings_->gbuffer2;
+        break;
+    case DayoSemantic::GBuffer:
+        result.texture = bindings_->gbuffer;
         break;
     case DayoSemantic::TLAS:
         result.accelerationStructure = bindings_->tlas;

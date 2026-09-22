@@ -4,6 +4,7 @@
 
 #include <span>
 #include <string>
+#include <vector>
 
 namespace dayo::graphics {
 
@@ -16,6 +17,8 @@ struct NativeSceneResourceBindings {
     handles::TextureHandle normalDepth{};
     handles::TextureHandle gbuffer1{};
     handles::TextureHandle gbuffer2{};
+    // Compatibility sampled view used by older postprocess FX.
+    handles::TextureHandle gbuffer{};
     handles::AccelerationStructureHandle tlas{};
     handles::BufferHandle modelToMaterial{};
     handles::BufferHandle materialToModel{};
@@ -50,6 +53,9 @@ struct NativeSceneResourceBindings {
     // placeholder handles.
     std::uint64_t hostResourceMask{};
 };
+
+[[nodiscard]] std::vector<DescriptorBindingEx>
+nativeSceneFrameDescriptorBindings(const NativeSceneResourceBindings& resources);
 
 // Converts scene-owned handles into complete descriptor sets for native FX.
 // The runtime arrays must match NativeSceneDescriptorCounts exactly; callers

@@ -137,6 +137,19 @@ bool Application::ensureNativeSceneRuntime(bool restartRenderer, std::string* er
             *error = "native scene model count exceeds descriptor limits";
         return false;
     }
+    std::vector<core::EffectController> controllerDeclarations;
+    if (scene_.effects().renderer.has_value())
+        controllerDeclarations = scene_.effects().renderer->graph.controllers;
+    const auto sameControllers = [](std::span<const core::EffectController> left,
+                                    std::span<const core::EffectController> right) {
+        if (left.size() != right.size())
+            return false;
+        return std::ranges::equal(left, right, [](const auto& lhs, const auto& rhs) {
+            return lhs.name == rhs.name && lhs.controllerName == rhs.controllerName && lhs.item == rhs.item &&
+                   lhs.type == rhs.type;
+        });
+    };
+    nativeRenderer_.setControllerDeclarations(controllerDeclarations);
     const auto modelCount = static_cast<std::uint32_t>(std::max<std::size_t>(1, nativeSceneModelData_.size()));
     const graphics::NativeSceneDescriptorCounts counts{.textures = 1,
                                                        .vertexBuffers = modelCount,
@@ -156,7 +169,8 @@ bool Application::ensureNativeSceneRuntime(bool restartRenderer, std::string* er
     };
     if (nativeSceneFrame_.ready() && nativeSceneResources_.ready() &&
         sameCounts(nativeSceneFrame_.resources().counts(), counts) &&
-        sameCounts(nativeSceneResources_.counts(), counts)) {
+        sameCounts(nativeSceneResources_.counts(), counts) &&
+        sameControllers(nativeControllerDeclarations_, controllerDeclarations)) {
         nativeRenderer_.setSceneFrameRuntime(&nativeSceneFrame_);
         return true;
     }
@@ -165,13 +179,15 @@ bool Application::ensureNativeSceneRuntime(bool restartRenderer, std::string* er
     nativeSceneFrame_.reset();
     nativeSceneResources_.reset();
     nativeSceneDraws_.clear();
+    nativeEffectModels_.clear();
     try {
         std::string runtimeError;
         if (!nativeSceneResources_.initialize(*device_, counts, &runtimeError))
             throw std::runtime_error(runtimeError.empty() ? "native scene resource store initialization failed"
                                                           : runtimeError);
-        if (!nativeSceneFrame_.initialize(*device_, scene_.effect()->controllers, counts, &runtimeError))
+        if (!nativeSceneFrame_.initialize(*device_, controllerDeclarations, counts, &runtimeError))
             throw std::runtime_error(runtimeError.empty() ? "native scene frame initialization failed" : runtimeError);
+        nativeControllerDeclarations_ = controllerDeclarations;
         nativeRenderer_.setSceneFrameRuntime(&nativeSceneFrame_);
     } catch (const std::exception& exception) {
         nativeSceneFrame_.reset();
@@ -217,6 +233,7 @@ void Application::requestRenderer(graphics::RendererKind renderer) {
             nativeRenderer_.setSceneFrameRuntime(&nativeSceneFrame_);
         }
         const auto status = nativeRenderer_.prepare(*device_, renderer, *scene_.effect());
+        nativeRenderer_.setEffectStack(scene_.effects());
         device_->setNativeRendererAvailability(status.nativeReady && status.active == graphics::RendererKind::subayai,
                                                status.nativeReady && status.active == graphics::RendererKind::bdpt);
         device_->selectRenderer(status.active);
@@ -336,6 +353,7 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
             const auto* model = scene_.model(id);
             return model == nullptr ? std::nullopt : std::optional<core::ModelExecutionOrder>{model->order};
         });
+    nativeRenderer_.setEffectSchedule(scheduledEffects_);
     try {
         std::string modelError;
         if (!nativeSceneModelData_.empty() &&
@@ -439,12 +457,21 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         if (!nativeSceneResources_.compose(sceneResources, &sceneError))
             throw std::runtime_error(sceneError.empty() ? "native scene resource composition failed" : sceneError);
         nativeSceneDraws_.clear();
+        nativeEffectModels_.clear();
         for (std::size_t modelIndex = 0; modelIndex < nativeSceneModelData_.size(); ++modelIndex) {
             if (modelIndex >= nativeGeometry_.size() || modelIndex >= modelResources.vertexBuffers.size() ||
                 modelIndex >= modelResources.indexBuffers.size())
                 throw std::runtime_error("native scene draw table is out of sync with model resources");
             const auto& model = nativeSceneModelData_[modelIndex];
             const auto& geometry = nativeGeometry_[modelIndex];
+            nativeEffectModels_.push_back({.modelId = geometry.modelId,
+                                           .modelIndex = geometry.modelIndex,
+                                           .vertexCount = geometry.baseVertices.size(),
+                                           .materialCount = model.materials.size(),
+                                           .cloneCount = geometry.cloneCount,
+                                           .rasterizeOrder = geometry.rasterizeOrder,
+                                           .deformIndex = geometry.deformIndex,
+                                           .deformOrder = geometry.deformOrder});
             for (std::size_t materialIndex = 0; materialIndex < model.materialFaces.size(); ++materialIndex) {
                 const auto& range = model.materialFaces[materialIndex];
                 if (range.count == 0)
@@ -480,8 +507,17 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                                                    : 0,
                                                &sceneError))
             throw std::runtime_error(sceneError.empty() ? "native FX controller synchronization failed" : sceneError);
+        auto hostBindings = nativeSceneResources_.bindings();
+        hostBindings.viewConstants = nativeSceneFrame_.constants().viewBuffer();
+        hostBindings.controllerConstants = nativeSceneFrame_.controllers().buffer();
+        hostBindings.passConstants = nativeSceneFrame_.constants().passBuffer();
+        hostBindings.hostResourceMask |= graphics::dayoSemanticBit(graphics::DayoSemantic::ViewCB) |
+                                         graphics::dayoSemanticBit(graphics::DayoSemantic::ControllerCB) |
+                                         graphics::dayoSemanticBit(graphics::DayoSemantic::CBuff1);
+        nativeRenderer_.setHostResourceBindings(hostBindings);
         graphics::FxExecutionResources executionResources;
         executionResources.sceneDraws = nativeSceneDraws_;
+        executionResources.effectModels = nativeEffectModels_;
         const auto controllerModel =
             scene_.effects().renderer.has_value() && scene_.effects().renderer->controllerModel.has_value()
                 ? *scene_.effects().renderer->controllerModel
@@ -501,6 +537,16 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
             std::string passError;
             if (!nativeSceneFrame_.updatePassConstants(commandList, pass, &passError))
                 throw std::runtime_error(passError.empty() ? "native CBuff1 update failed" : passError);
+        };
+        executionResources.updateEffectPassConstants = [this](graphics::CommandList& commandList,
+                                                              const graphics::NativeEffectModel& model) {
+            const graphics::NativeScenePassConstants pass{.modelIndex = model.modelIndex,
+                                                          .rasterizeOrder = model.rasterizeOrder,
+                                                          .deformIndex = model.deformIndex,
+                                                          .deformOrder = model.deformOrder};
+            std::string passError;
+            if (!nativeSceneFrame_.updatePassConstants(commandList, pass, &passError))
+                throw std::runtime_error(passError.empty() ? "native deform CBuff1 update failed" : passError);
         };
         auto output = nativeRenderer_.recordFrame(commands, frameContext, nativeDirty, materials, lightSampling, {},
                                                   executionResources);
@@ -546,6 +592,7 @@ void Application::resetProjectRuntimeState() {
     videoRangeInitialized_ = false;
     scene_.clearProjectState();
     evaluatedModels_.models.clear();
+    nativeControllerDeclarations_.clear();
     nativeRenderer_.reset();
     nativeSceneFrame_.reset();
     nativeSceneResources_.reset();
@@ -600,6 +647,7 @@ int Application::run() {
     auto window = platform::createWindow(windowOptions);
     auto device = graphics::createVulkanDevice(*window, options_.validation);
     device_ = device.get();
+    nativeRenderer_.setEvaluationSnapshot(&evaluatedModels_);
     std::unique_ptr<graphics::NativeEnvironmentBackend> environmentBackend;
     const graphics::EnvironmentPassBindings environmentBindings{
         .equirectToCubePipeline = device_->nativeEnvironmentEquirectPipeline(),

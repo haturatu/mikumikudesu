@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/effect.hpp"
 #include "fx/fx_compiler.hpp"
 
 #include <cstdint>
@@ -31,6 +32,10 @@ struct FxNativeShaderSourceOptions {
     // material structure. They are emitted before resource declarations.
     std::string preamble;
     std::vector<FxNativeShaderResource> resources;
+    // Effect stacks share one host ControllerCB. When this is populated, all
+    // generated shaders use the same declaration order and therefore the same
+    // cbuffer offsets, while each effect still updates only its own fields.
+    std::vector<core::EffectController> controllerDeclarations;
 };
 
 // Builds the source consumed by the native shader compiler. The original FX

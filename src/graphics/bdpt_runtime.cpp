@@ -85,7 +85,7 @@ bool BdptRuntime::initialize(Device& device, fx::FxProgram program, std::string*
 }
 
 void BdptRuntime::reset() noexcept {
-    nativeFx_.reset();
+    dayoFx_.reset();
     geometry_.reset();
     bindings_.reset();
     lightRuntime_.reset();
@@ -245,6 +245,7 @@ BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::Dir
         std::vector<handles::DescriptorSetLayoutHandle> sharedLayouts;
         std::vector<handles::DescriptorSetHandle> sharedSets;
         fx::FxNativeShaderSourceOptions sourceOptions;
+        sourceOptions.controllerDeclarations = controllerDeclarations_;
         sourceOptions.preamble = "struct YRZ_BdptAliasEntry { float probability; uint alias; };\n";
         if (sceneFrame_ != nullptr) {
             if (!sceneFrame_->descriptorSetsReady())
@@ -298,14 +299,15 @@ BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::Dir
                                                .descriptorSet = index});
         });
         std::string nativeError;
-        static_cast<void>(nativeFx_.initializeForFrame(*device_, program_, fx::FxShaderCompiler{}, context,
-                                                       sharedLayouts, &nativeError, sharedSets,
-                                                       std::move(sourceOptions)));
-    } else if (nativeFx_.ready()) {
+        if (externalResourceProvider_ != nullptr)
+            dayoFx_.addProvider(*externalResourceProvider_);
+        static_cast<void>(dayoFx_.initializeForFrame(*device_, program_, fx::FxShaderCompiler{}, context, sharedLayouts,
+                                                     &nativeError, sharedSets, std::move(sourceOptions)));
+    } else if (dayoFx_.ready()) {
         std::string nativeError;
-        static_cast<void>(nativeFx_.refresh(context, &nativeError));
+        static_cast<void>(dayoFx_.refresh(context, &nativeError));
     }
-    if (nativeFx_.ready()) {
+    if (dayoFx_.ready()) {
         std::vector<handles::DescriptorSetHandle> frameSharedSets;
         if (sceneFrame_) {
             const auto sets = sceneFrame_->descriptorSets();
@@ -319,7 +321,7 @@ BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::Dir
         append(bindings_.layouts().lightSampling, bindings_.lightSamplingSet());
         append(descriptorLayout_, descriptorSets_[device_->currentFrameSlot() % kNativeFramesInFlight]);
         append(geometry_.descriptorLayout(), geometry_.descriptorSet());
-        frame.nativeFx = nativeFx_.prepareFrame(context, frameSharedSets);
+        frame.nativeFx = dayoFx_.prepareFrame(context, frameSharedSets);
     }
     return frame;
 }
@@ -334,7 +336,7 @@ VulkanFxExecutor::Stats BdptRuntime::execute(BdptFrame& frame, CommandList& comm
         commands.memoryBarrierEx();
     }
     if (frame.nativeFx.has_value())
-        return nativeFx_.execute(*frame.nativeFx, commands, resources);
+        return dayoFx_.execute(*frame.nativeFx, commands, resources);
     auto nativeResources = resources;
     if ((frame.descriptorSet.valid() || frame.lightSamplingDescriptorSet.valid() ||
          frame.geometryDescriptorSet.valid()) &&
@@ -357,8 +359,8 @@ VulkanFxExecutor::Stats BdptRuntime::execute(BdptFrame& frame, CommandList& comm
 }
 
 std::optional<NativeFrameOutput> BdptRuntime::output(const BdptFrame& frame) const {
-    if (frame.nativeFx.has_value() && nativeFx_.ready()) {
-        if (const auto output = nativeFx_.output(*frame.nativeFx); output.has_value())
+    if (frame.nativeFx.has_value() && dayoFx_.ready()) {
+        if (const auto output = dayoFx_.output(*frame.nativeFx); output.has_value())
             return output;
     }
     if (!frame.gpu.accumulation.valid())

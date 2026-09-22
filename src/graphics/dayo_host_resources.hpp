@@ -16,6 +16,7 @@ enum class DayoSemantic : std::uint8_t {
     NormalDepth,
     GBuffer1,
     GBuffer2,
+    GBuffer,
     TLAS,
     Model2Mat,
     Mat2Model,

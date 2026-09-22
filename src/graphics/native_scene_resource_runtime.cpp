@@ -37,57 +37,10 @@ bool requireCount(std::size_t actual, std::uint32_t expected, std::string_view n
 
 } // namespace
 
-bool NativeSceneResourceRuntime::sync(const NativeSceneResourceBindings& resources, std::string* error) {
-    if (error != nullptr)
-        error->clear();
-    if (!ready()) {
-        setError(error, "native scene resource runtime is not initialized");
-        return false;
-    }
-    const auto& counts = this->counts();
-    if (!requireCount(resources.textures.size(), counts.textures, "textures", error) ||
-        !requireCount(resources.vertexBuffers.size(), counts.vertexBuffers, "vertex buffers", error) ||
-        !requireCount(resources.indexBuffers.size(), counts.indexBuffers, "index buffers", error) ||
-        !requireCount(resources.materials.size(), counts.materials, "materials", error) ||
-        !requireCount(resources.faces.size(), counts.faces, "faces", error) ||
-        !requireCount(resources.materialFaces.size(), counts.materialFaces, "material faces", error) ||
-        !requireCount(resources.faceWalkers.size(), counts.faceWalkers, "face walkers", error) ||
-        !requireCount(resources.previousVertices.size(), counts.previousVertices, "previous vertices", error) ||
-        !requireCount(resources.rawVertices.size(), counts.rawVertices, "raw vertices", error))
-        return false;
-
-    const auto checkHandle = [error](bool condition, std::string_view name) {
-        if (condition)
-            return true;
-        setError(error, "native scene resource is unavailable: " + std::string(name));
-        return false;
-    };
-    if (!checkHandle(resources.rtOutput.valid(), "RTOutput") || !checkHandle(resources.oidnBuffer.valid(), "OIDNBuf") ||
-        !checkHandle(resources.normalDepth.valid(), "NormalDepth") ||
-        !checkHandle(resources.gbuffer1.valid(), "GBuffer1") || !checkHandle(resources.gbuffer2.valid(), "GBuffer2") ||
-        !checkHandle(resources.tlas.valid(), "TLAS") || !checkHandle(resources.modelToMaterial.valid(), "Model2Mat") ||
-        !checkHandle(resources.materialToModel.valid(), "Mat2Model") ||
-        !checkHandle(resources.peekaboo.valid(), "Peekaboo") ||
-        !checkHandle(resources.materialSelected.valid(), "MatSelected") ||
-        !checkHandle(resources.skybox.valid(), "Skybox") || !checkHandle(resources.skywalker.valid(), "Skywalker") ||
-        !checkHandle(resources.skywalkerRow.valid(), "SkywalkerRow") ||
-        !checkHandle(resources.skyboxSh.valid(), "SkyboxSH") ||
-        !checkHandle(resources.screenBmp.valid(), "ScreenBMP") ||
-        !checkHandle(resources.cloneCount.valid(), "CloneCount") ||
-        !checkHandle(resources.screenTexture.valid(), "ScreenTexture") ||
-        !checkHandle(resources.viewConstants.valid(), "ViewCB") ||
-        !checkHandle(resources.controllerConstants.valid(), "YRZFX_ControllerCB") ||
-        !checkHandle(resources.textureTable.valid(), "TextureTable") ||
-        !checkHandle(resources.passConstants.valid(), "CBuff1") ||
-        !checkHandle(valid(resources.textures), "Textures") || !checkHandle(valid(resources.vertexBuffers), "VB") ||
-        !checkHandle(valid(resources.indexBuffers), "IB") || !checkHandle(valid(resources.materials), "MMDMaterials") ||
-        !checkHandle(valid(resources.faces), "Faces") || !checkHandle(valid(resources.materialFaces), "Mat2face") ||
-        !checkHandle(valid(resources.faceWalkers), "FaceWalker") ||
-        !checkHandle(valid(resources.previousVertices), "PreVB") || !checkHandle(valid(resources.rawVertices), "RawVB"))
-        return false;
-
+std::vector<DescriptorBindingEx> nativeSceneFrameDescriptorBindings(const NativeSceneResourceBindings& resources) {
+    const auto legacyGBuffer = resources.gbuffer.valid() ? resources.gbuffer : resources.gbuffer1;
     std::vector<DescriptorBindingEx> frame;
-    frame.reserve(19);
+    frame.reserve(20);
     const auto addTexture = [&frame](NativeSceneRegisterClass registerClass, std::uint32_t index,
                                      handles::TextureHandle handle) {
         frame.push_back({.slot = nativeSceneBinding(registerClass, index), .arrayElement = 0, .texture = handle});
@@ -117,6 +70,62 @@ bool NativeSceneResourceRuntime::sync(const NativeSceneResourceBindings& resourc
     addTexture(NativeSceneRegisterClass::sampled, 9, resources.screenBmp);
     addBuffer(NativeSceneRegisterClass::sampled, 10, resources.cloneCount);
     addTexture(NativeSceneRegisterClass::sampled, 11, resources.screenTexture);
+    addTexture(NativeSceneRegisterClass::sampled, 12, legacyGBuffer);
+    return frame;
+}
+
+bool NativeSceneResourceRuntime::sync(const NativeSceneResourceBindings& resources, std::string* error) {
+    if (error != nullptr)
+        error->clear();
+    if (!ready()) {
+        setError(error, "native scene resource runtime is not initialized");
+        return false;
+    }
+    const auto& counts = this->counts();
+    const auto legacyGBuffer = resources.gbuffer.valid() ? resources.gbuffer : resources.gbuffer1;
+    if (!requireCount(resources.textures.size(), counts.textures, "textures", error) ||
+        !requireCount(resources.vertexBuffers.size(), counts.vertexBuffers, "vertex buffers", error) ||
+        !requireCount(resources.indexBuffers.size(), counts.indexBuffers, "index buffers", error) ||
+        !requireCount(resources.materials.size(), counts.materials, "materials", error) ||
+        !requireCount(resources.faces.size(), counts.faces, "faces", error) ||
+        !requireCount(resources.materialFaces.size(), counts.materialFaces, "material faces", error) ||
+        !requireCount(resources.faceWalkers.size(), counts.faceWalkers, "face walkers", error) ||
+        !requireCount(resources.previousVertices.size(), counts.previousVertices, "previous vertices", error) ||
+        !requireCount(resources.rawVertices.size(), counts.rawVertices, "raw vertices", error))
+        return false;
+
+    const auto checkHandle = [error](bool condition, std::string_view name) {
+        if (condition)
+            return true;
+        setError(error, "native scene resource is unavailable: " + std::string(name));
+        return false;
+    };
+    if (!checkHandle(resources.rtOutput.valid(), "RTOutput") || !checkHandle(resources.oidnBuffer.valid(), "OIDNBuf") ||
+        !checkHandle(resources.normalDepth.valid(), "NormalDepth") ||
+        !checkHandle(resources.gbuffer1.valid(), "GBuffer1") || !checkHandle(resources.gbuffer2.valid(), "GBuffer2") ||
+        !checkHandle(legacyGBuffer.valid(), "GBuffer") || !checkHandle(resources.tlas.valid(), "TLAS") ||
+        !checkHandle(resources.modelToMaterial.valid(), "Model2Mat") ||
+        !checkHandle(resources.materialToModel.valid(), "Mat2Model") ||
+        !checkHandle(resources.peekaboo.valid(), "Peekaboo") ||
+        !checkHandle(resources.materialSelected.valid(), "MatSelected") ||
+        !checkHandle(resources.skybox.valid(), "Skybox") || !checkHandle(resources.skywalker.valid(), "Skywalker") ||
+        !checkHandle(resources.skywalkerRow.valid(), "SkywalkerRow") ||
+        !checkHandle(resources.skyboxSh.valid(), "SkyboxSH") ||
+        !checkHandle(resources.screenBmp.valid(), "ScreenBMP") ||
+        !checkHandle(resources.cloneCount.valid(), "CloneCount") ||
+        !checkHandle(resources.screenTexture.valid(), "ScreenTexture") ||
+        !checkHandle(resources.viewConstants.valid(), "ViewCB") ||
+        !checkHandle(resources.controllerConstants.valid(), "YRZFX_ControllerCB") ||
+        !checkHandle(resources.textureTable.valid(), "TextureTable") ||
+        !checkHandle(resources.passConstants.valid(), "CBuff1") ||
+        !checkHandle(valid(resources.textures), "Textures") || !checkHandle(valid(resources.vertexBuffers), "VB") ||
+        !checkHandle(valid(resources.indexBuffers), "IB") || !checkHandle(valid(resources.materials), "MMDMaterials") ||
+        !checkHandle(valid(resources.faces), "Faces") || !checkHandle(valid(resources.materialFaces), "Mat2face") ||
+        !checkHandle(valid(resources.faceWalkers), "FaceWalker") ||
+        !checkHandle(valid(resources.previousVertices), "PreVB") || !checkHandle(valid(resources.rawVertices), "RawVB"))
+        return false;
+
+    auto frame = nativeSceneFrameDescriptorBindings(resources);
     if (!bindings_.bind(NativeSceneDescriptorSet::frame, frame, error))
         return false;
 

@@ -98,6 +98,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     graphics::NativeScreenRuntime nativeScreenRuntime_;
     core::Scene scene_;
     core::fx::SceneEvaluationSnapshot evaluatedModels_;
+    std::vector<core::EffectController> nativeControllerDeclarations_;
     core::TaskScheduler taskScheduler_;
     core::FrameScratch frameScratch_;
     core::FrameProfiler frameProfiler_;
@@ -129,6 +130,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     };
     std::vector<NativeModelGeometry> nativeGeometry_;
     std::vector<graphics::NativeSceneDraw> nativeSceneDraws_;
+    std::vector<graphics::NativeEffectModel> nativeEffectModels_;
     graphics::NativeSceneModelRuntime nativeSceneModelRuntime_;
     std::vector<graphics::NativeSceneModelData> nativeSceneModelData_;
     graphics::LightSamplingService nativeLightSampling_;

@@ -9,6 +9,7 @@
 #include "fx/fx_shader_source.hpp"
 #include "fx/fx_texture_cache.hpp"
 #include "fx/fx_watcher.hpp"
+#include "graphics/dayo_fx_runtime.hpp"
 #include "graphics/dayo_host_resources.hpp"
 #include "graphics/fx_executor.hpp"
 #include "graphics/fx_pipeline_runtime.hpp"
@@ -16,6 +17,7 @@
 #include "graphics/native_frame_constants.hpp"
 #include "graphics/native_fx_runtime.hpp"
 #include "graphics/native_scene_bindings.hpp"
+#include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/native_screen_runtime.hpp"
 
 #include <algorithm>
@@ -414,6 +416,20 @@ bool testMockTraceMatches() {
                   graphicsCommands.trace == std::vector<std::string>{"transitionEx", "descriptorEx", "beginRenderingEx",
                                                                      "bindEx", "draw:3x1", "endRenderingEx"},
               "typed graphics executor brackets postprocess draws with a render target");
+    std::size_t beforePasses = 0;
+    std::size_t afterPasses = 0;
+    auto hookResources = testResources();
+    hookResources.beforePass = [&beforePasses](const dayo::fx::FxDispatch&, dayo::graphics::CommandList&) {
+        ++beforePasses;
+    };
+    hookResources.afterPass = [&afterPasses](const dayo::fx::FxDispatch&, dayo::graphics::CommandList&) {
+        ++afterPasses;
+    };
+    dayo::fx::FxProgram hookProgram;
+    hookProgram.passes.push_back({"hooked", dayo::fx::FxOpKind::compute, {}, 1, 1, {{"Input", false}}, {}, {}, {}});
+    const auto hookPlan = dayo::fx::FxCompiler{}.plan(hookProgram, testContext());
+    static_cast<void>(executor.execute(hookPlan, graphicsCommands, testContext(), hookResources));
+    ok &= check(beforePasses == 1 && afterPasses == 1, "FX pass hooks run around executed generic passes");
     return ok;
 }
 
@@ -558,11 +574,17 @@ bool testDayoHostResourceProvider() {
                                 dayo::graphics::dayoSemanticBit(dayo::graphics::DayoSemantic::ViewCB) |
                                 dayo::graphics::dayoSemanticBit(dayo::graphics::DayoSemantic::ControllerCB);
     const dayo::graphics::DayoHostResourceProvider provider(bindings);
+    bool ok = true;
+    dayo::graphics::DayoSceneHostProvider sceneProvider(provider);
+    ok &= check(sceneProvider.supports("RTOutput") && sceneProvider.resolve("RTOutput", testContext()).texture.valid(),
+                "generic Dayo runtime accepts the canonical scene provider");
+    dayo::graphics::DayoFxRuntime genericRuntime;
+    genericRuntime.addProvider(sceneProvider);
+    ok &= check(genericRuntime.providerCount() == 1, "generic Dayo runtime owns provider registration only");
     const std::array required{dayo::graphics::DayoSemantic::RTOutput, dayo::graphics::DayoSemantic::ViewCB,
                               dayo::graphics::DayoSemantic::ControllerCB};
     std::string error;
-    bool ok =
-        check(provider.require(required, &error) && error.empty(), "host provider requires real upstream semantics");
+    ok &= check(provider.require(required, &error) && error.empty(), "host provider requires real upstream semantics");
     ok &= check(provider.resolve("YRZFX_ControllerCB").has_value(),
                 "host provider accepts canonical controller binding alias");
     const std::array missing{dayo::graphics::DayoSemantic::GBuffer1};
@@ -614,7 +636,10 @@ bool testViewConstantsAndScreenHistory() {
     screen.bindScreenSemantics(bindings);
     ok &= check(
         bindings.screenBmp == screenBmp && bindings.screenTexture == screenTexture &&
-            (bindings.hostResourceMask & dayo::graphics::dayoSemanticBit(dayo::graphics::DayoSemantic::ScreenBMP)) != 0,
+            (bindings.hostResourceMask & dayo::graphics::dayoSemanticBit(dayo::graphics::DayoSemantic::ScreenBMP)) !=
+                0 &&
+            bindings.rtOutput == previousFrame &&
+            (bindings.hostResourceMask & dayo::graphics::dayoSemanticBit(dayo::graphics::DayoSemantic::RTOutput)) != 0,
         "screen runtime exposes strict ScreenBMP semantics");
     MockCommands commands;
     screen.rotatePreviousFrame(commands, {99, 1});
@@ -657,7 +682,33 @@ bool testFxControllerResolver() {
                 "controller resolver preserves bone quaternion rotation in float4x4");
     auto duplicate = model;
     duplicate.id = 12;
+    duplicate.morphWeights = {0.25F};
     snapshot.models.push_back(duplicate);
+    const std::array effectControllers{
+        dayo::core::EffectController{.name = "Exposure", .controllerName = "(self)", .item = "Smile", .type = "float"}};
+    dayo::graphics::NativeControllerBlock first(dayo::graphics::makeNativeControllerLayout(effectControllers));
+    dayo::graphics::NativeControllerBlock second(dayo::graphics::makeNativeControllerLayout(effectControllers));
+    std::string controllerError;
+    ok &= check(
+        dayo::graphics::resolveNativeControllerBlock(first, effectControllers, snapshot, 11, &controllerError) &&
+            dayo::graphics::resolveNativeControllerBlock(second, effectControllers, snapshot, 12, &controllerError) &&
+            !std::ranges::equal(first.bytes(), second.bytes()),
+        "identical controller names resolve independently for two effect owners");
+    dayo::graphics::NativeSceneResourceBindings firstBindings;
+    firstBindings.controllerConstants = {101, 1};
+    auto secondBindings = firstBindings;
+    secondBindings.controllerConstants = {102, 1};
+    const auto firstFrame = dayo::graphics::nativeSceneFrameDescriptorBindings(firstBindings);
+    const auto secondFrame = dayo::graphics::nativeSceneFrameDescriptorBindings(secondBindings);
+    const auto controllerSlot =
+        dayo::graphics::nativeSceneBinding(dayo::graphics::NativeSceneRegisterClass::uniform, 1);
+    const auto firstDescriptor = std::ranges::find_if(
+        firstFrame, [controllerSlot](const auto& binding) { return binding.slot == controllerSlot; });
+    const auto secondDescriptor = std::ranges::find_if(
+        secondFrame, [controllerSlot](const auto& binding) { return binding.slot == controllerSlot; });
+    ok &= check(firstDescriptor != firstFrame.end() && secondDescriptor != secondFrame.end() &&
+                    firstDescriptor->buffer != secondDescriptor->buffer,
+                "effect-local frame descriptor sets bind distinct ControllerCB buffers");
     ok &= check(
         [&] {
             try {
@@ -1465,7 +1516,7 @@ bool testFxPipelineRuntime() {
     dayo::core::EffectBuffer nativeData;
     nativeData.name = "NativeData";
     nativeData.type = "float4";
-    nativeData.view = "UAV";
+    nativeData.view = "SRV";
     nativeData.elementSize = 16;
     nativeData.size.absolute = true;
     nativeData.size.width = 1;
@@ -1499,7 +1550,7 @@ bool testFxPipelineRuntime() {
     bool ok = check(generated.find("YRZFX_ControllerCB") != std::string::npos &&
                         generated.find("NativeOutput : register(u0, space7)") != std::string::npos &&
                         generated.find("NativeInput : register(t0, space7)") != std::string::npos &&
-                        generated.find("NativeData : register(u1, space7)") != std::string::npos &&
+                        generated.find("NativeData : register(t1, space7)") != std::string::npos &&
                         generated.find("NativeSampler : register(s0, space7)") != std::string::npos &&
                         generated.find("SharedValues : register(t0, space3)") != std::string::npos,
                     "native FX source emits disjoint typed and renderer-shared register classes");

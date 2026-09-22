@@ -2,8 +2,10 @@
 
 #include "core/log.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <ranges>
 #include <unordered_set>
 #include <vector>
 
@@ -54,6 +56,8 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             if (resource.write)
                 return resolveTyped(resource);
         }
+        if (resources.defaultColorTarget.valid())
+            return resources.defaultColorTarget;
         throw std::logic_error("VulkanFxExecutor: graphics pass has no writable color target: " + dispatch.name);
     };
     const auto prepareResources = [&](const dayo::fx::FxDispatch& dispatch) {
@@ -142,7 +146,12 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             commands.beginRenderingEx(info);
             return;
         }
-        commands.beginRenderingEx(resolveTypedWriteTarget(dispatch));
+        const auto target = resolveTypedWriteTarget(dispatch);
+        const auto hasExplicitTarget = std::ranges::any_of(
+            dispatch.resources, [](const dayo::fx::FxDispatch::ResourceUse& resource) { return resource.write; });
+        if (!hasExplicitTarget && resources.defaultColorTarget.valid())
+            commands.transitionEx(target);
+        commands.beginRenderingEx(target);
     };
     const auto prepareShaderPass = [&](const dayo::fx::FxDispatch& dispatch, bool beginRendering) {
         if (!dispatch.conditions.empty()) {
@@ -152,6 +161,8 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                     std::span<const std::string>(dispatch.conditions.data(), dispatch.conditions.size()), context))
                 return false;
         }
+        if (resources.beforePass)
+            resources.beforePass(dispatch, commands);
         prepareResources(dispatch);
         if (resources.resolveTypedPipeline) {
             if (beginRendering)
@@ -188,6 +199,8 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                     std::span<const std::string>(dispatch.conditions.data(), dispatch.conditions.size()), context))
                 return false;
         }
+        if (resources.beforePass)
+            resources.beforePass(dispatch, commands);
         prepareResources(dispatch);
         return true;
     };
@@ -201,6 +214,7 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
     };
     for (const auto& dispatch : plan.ordered) {
         dayo::log::debug("VulkanFxExecutor pass ", dispatch.name, " kind ", dayo::fx::toString(dispatch.kind));
+        bool executed = false;
         switch (dispatch.kind) {
         case dayo::fx::FxOpKind::raster:
             if (!prepareShaderPass(dispatch, true))
@@ -231,6 +245,7 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             if (resources.resolveTypedPipeline)
                 commands.endRenderingEx();
             ++stats.raster;
+            executed = true;
             break;
         case dayo::fx::FxOpKind::postprocess:
             if (!prepareShaderPass(dispatch, true))
@@ -239,12 +254,14 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             if (resources.resolveTypedPipeline)
                 commands.endRenderingEx();
             ++stats.postprocess;
+            executed = true;
             break;
         case dayo::fx::FxOpKind::compute:
             if (!prepareShaderPass(dispatch, false))
                 break;
             commands.dispatch((context.renderWidth + 7U) / 8U, (context.renderHeight + 7U) / 8U, 1);
             ++stats.compute;
+            executed = true;
             break;
         case dayo::fx::FxOpKind::copy:
             if (!prepareUtilityPass(dispatch))
@@ -257,6 +274,7 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                 commands.copyTexture(resolve(dispatch.resources[0]), resolve(dispatch.resources[1]));
             }
             ++stats.copy;
+            executed = true;
             break;
         case dayo::fx::FxOpKind::clear:
             if (!prepareUtilityPass(dispatch))
@@ -268,6 +286,7 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             else
                 commands.clearTexture(resolve(dispatch.resources[0]));
             ++stats.clear;
+            executed = true;
             break;
         case dayo::fx::FxOpKind::mipmap:
             if (!prepareUtilityPass(dispatch))
@@ -279,10 +298,13 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             else
                 commands.generateMipmaps(resolve(dispatch.resources[0]));
             ++stats.mipmap;
+            executed = true;
             break;
         case dayo::fx::FxOpKind::raytracing:
             if (!evaluateConditions(dispatch))
                 break;
+            if (resources.beforePass)
+                resources.beforePass(dispatch, commands);
             if (!resources.resolveTypedPipeline || !resources.resolveShaderBindingTable)
                 throw FxRaytracingUnsupported(dispatch.name);
             {
@@ -301,9 +323,12 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                 }
                 commands.traceRaysEx(*pipeline, *sbt, context.renderWidth, context.renderHeight, 1);
                 ++stats.rayTracing;
+                executed = true;
             }
             break;
         }
+        if (executed && resources.afterPass)
+            resources.afterPass(dispatch, commands);
     }
     return stats;
 }

@@ -1,4 +1,5 @@
 #include "fx/fx_compiler.hpp"
+#include "graphics/fx_raster_semantics.hpp"
 #include "graphics/native_renderer.hpp"
 
 #include <iostream>
@@ -30,6 +31,19 @@ dayo::graphics::DeviceCapabilities capableSubayai() {
 
 int main() {
     bool ok = true;
+
+    const auto sceneContext = dayo::fx::makeFxFrameContext(12.0F, 3, 640, 480, 7, 0, 100, 2, 1, 1);
+    const dayo::graphics::NativeEffectModel modelA{
+        .modelId = 7, .modelIndex = 0, .vertexCount = 100, .materialCount = 2, .cloneCount = 1};
+    const dayo::graphics::NativeEffectModel modelB{
+        .modelId = 8, .modelIndex = 1, .vertexCount = 250, .materialCount = 5, .cloneCount = 2};
+    const auto deformContext = dayo::graphics::makeDeformFxFrameContext(sceneContext, modelB, 4);
+    ok &= check(sceneContext.currentModel == modelA.modelId && sceneContext.vertexCount == modelA.vertexCount,
+                "scene frame context remains based on the selected model");
+    ok &= check(deformContext.currentModel == modelB.modelId && deformContext.modelIndex == modelB.modelIndex &&
+                    deformContext.vertexCount == 250 && deformContext.totalMaterial == 5 &&
+                    deformContext.cloneCount == 4 && deformContext.clonedVertexCount == 1000,
+                "deform frame context uses its owner and effect clone count");
 
     dayo::fx::FxRequiredFeatures compute;
     const auto computeDecision =
