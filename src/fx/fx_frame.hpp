@@ -7,17 +7,40 @@
 
 namespace dayo::fx {
 
+inline constexpr std::array<float, 16> kIdentityFxMatrix{
+    1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F,
+};
+
 struct FxCameraState {
     std::array<float, 3> position{};
     std::array<float, 3> rotation{};
     float distance{3.0F};
     float verticalFovRadians{0.785398163F};
     bool perspective{true};
+    // The application owns camera evaluation and supplies the final matrices
+    // at the frame boundary. Identity is only the safe default for callers
+    // that do not yet expose camera matrices.
+    std::array<float, 16> view{kIdentityFxMatrix};
+    std::array<float, 16> projection{kIdentityFxMatrix};
+    std::array<float, 16> viewProjection{kIdentityFxMatrix};
 };
 
 struct FxLightingState {
     std::array<float, 3> direction{-0.5F, -1.0F, 0.5F};
     std::array<float, 3> color{0.6F, 0.6F, 0.6F};
+};
+
+struct FxHostFrameState {
+    std::int32_t selfShadowMode{};
+    float selfShadowDistance{};
+    std::int32_t screenBmpMode{};
+    std::int32_t backgroundMode{};
+    bool backgroundTransparent{};
+    bool denoiserEnabled{};
+    bool onStart{};
+    bool onLoadSkybox{};
+    bool onResize{};
+    bool onLoad{};
 };
 
 // Frame-boundary ABI shared by compiler/plan, executor, and preview path.
@@ -31,12 +54,14 @@ struct FxFrameContext {
     std::uint32_t renderHeight{};
     std::uint64_t currentModel{};
     std::uint32_t modelIndex{};
+    std::uint32_t modelCount{};
     std::size_t vertexCount{};
     std::size_t totalMaterial{};
     std::uint32_t cloneCount{1};
     std::size_t clonedVertexCount{};
     FxCameraState camera;
     FxLightingState lighting;
+    FxHostFrameState host;
 };
 
 // Scene cloneCount and effect meshCloneCount unification. The renderer must

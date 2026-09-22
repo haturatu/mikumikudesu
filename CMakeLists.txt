@@ -261,9 +261,11 @@ add_library(
   dayo_graphics
   src/graphics/bdpt_accumulation.cpp
   src/graphics/bdpt_runtime.cpp
+  src/graphics/camera_matrices.cpp
   src/graphics/dayo_host_resources.cpp
   src/graphics/device.cpp
   src/graphics/native_renderer.cpp
+  src/graphics/native_screen_runtime.cpp
   src/graphics/native_controller_runtime.cpp
   src/graphics/native_scene_frame_runtime.cpp
   src/graphics/native_scene_data.cpp

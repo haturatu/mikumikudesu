@@ -1,5 +1,7 @@
 #include "app/application.hpp"
 
+#include "graphics/camera_matrices.hpp"
+
 #include "core/animation.hpp"
 #include "core/asset.hpp"
 #include "core/denoiser.hpp"
@@ -229,14 +231,44 @@ void Application::requestRenderer(graphics::RendererKind renderer) {
     }
 }
 
-fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTargetDesc& target) const {
+fx::FxCameraState Application::makeSceneCameraState() const {
     const auto* model = selectedModel();
     const auto* motion =
         scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
     fx::FxCameraState camera;
     camera.rotation = {cameraPitch_, cameraYaw_, 0.0F};
     camera.distance = cameraDistance_;
+    if (!manualCamera_ && motion != nullptr && !motion->cameras.empty()) {
+        const auto evaluated = core::evaluateCamera(*motion, animationFrame_);
+        const auto normalization = model != nullptr ? model->normalization : normalization_;
+        for (std::size_t axis = 0; axis < 3; ++axis)
+            camera.position[axis] = (evaluated.position[axis] - normalization.center[axis]) * normalization.scale;
+        camera.rotation = evaluated.rotation;
+        camera.distance = std::max(std::abs(evaluated.distance) * normalization.scale, 0.4F);
+        camera.verticalFovRadians = std::clamp(evaluated.viewAngle, 1.0F, 179.0F) * 0.01745329252F;
+        camera.perspective = evaluated.perspective;
+    }
+    return camera;
+}
+
+fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTargetDesc& target) const {
+    const auto* model = selectedModel();
+    const auto* motion =
+        scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
+    const auto camera = makeSceneCameraState();
+    const auto matrices =
+        graphics::makeSceneCameraMatrices(camera, target.width, target.height,
+                                          device_ == nullptr ? graphics::GraphicsConvention{} : device_->convention());
+    auto cameraWithMatrices = camera;
+    cameraWithMatrices.view = matrices.view;
+    cameraWithMatrices.projection = matrices.projection;
+    cameraWithMatrices.viewProjection = matrices.viewProjection;
     fx::FxLightingState lighting;
+    if (motion != nullptr && !motion->lights.empty()) {
+        const auto evaluated = core::evaluateLight(*motion, animationFrame_);
+        lighting.direction = evaluated.position;
+        lighting.color = evaluated.color;
+    }
     std::uint32_t modelIndex = 0;
     std::size_t totalMaterials = 0;
     for (std::size_t index = 0; index < scene_.models().size(); ++index) {
@@ -246,25 +278,21 @@ fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTar
         if (instance.visible && instance.model != nullptr)
             totalMaterials += instance.model->materials.size();
     }
-    if (!manualCamera_ && motion != nullptr && !motion->cameras.empty()) {
-        const auto evaluated = core::evaluateCamera(*motion, animationFrame_);
-        camera.position = evaluated.position;
-        camera.rotation = evaluated.rotation;
-        camera.distance = evaluated.distance;
-        camera.verticalFovRadians = std::clamp(evaluated.viewAngle, 1.0F, 179.0F) * 0.01745329252F;
-        camera.perspective = evaluated.perspective;
-    }
-    if (motion != nullptr && !motion->lights.empty()) {
-        const auto evaluated = core::evaluateLight(*motion, animationFrame_);
-        lighting.direction = evaluated.position;
-        lighting.color = evaluated.color;
-    }
     const auto* program = nativeRenderer_.program();
     const auto sceneCloneCount = model == nullptr ? 1U : model->cloneCount;
     const auto effectCloneCount = program == nullptr ? 1U : program->meshCloneCount;
-    return fx::makeFxFrameContext(animationFrame_, scene_.accumulatedSamples(), target.width, target.height,
-                                  model == nullptr ? 0U : model->id, modelIndex, animatedVertexCount_, totalMaterials,
-                                  sceneCloneCount, effectCloneCount, camera, lighting);
+    auto context =
+        fx::makeFxFrameContext(animationFrame_, scene_.accumulatedSamples(), target.width, target.height,
+                               model == nullptr ? 0U : model->id, modelIndex, animatedVertexCount_, totalMaterials,
+                               sceneCloneCount, effectCloneCount, cameraWithMatrices, lighting);
+    context.modelCount = static_cast<std::uint32_t>(nativeSceneModelData_.size());
+    const auto& background = scene_.background();
+    context.host.backgroundTransparent = background.mode == core::BackgroundMode::alpha;
+    context.host.screenBmpMode =
+        !background.enabled || background.screenSource == core::ScreenTextureSource::white ? 0 : 1;
+    context.host.backgroundMode =
+        !background.enabled || background.screenSource == core::ScreenTextureSource::white ? 2 : 1;
+    return context;
 }
 
 std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphics::CommandList& commands,
@@ -311,6 +339,39 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         std::string sceneError;
         if (!ensureNativeSceneRuntime(true, &sceneError))
             throw std::runtime_error(sceneError.empty() ? "native scene runtime synchronization failed" : sceneError);
+        const graphics::Extent3D screenExtent{target.width, target.height, 1};
+        if (!nativeScreenRuntime_.ready() || !nativeScreenRuntime_.matchesExtent(screenExtent)) {
+            if (!nativeScreenRuntime_.initialize(*device_, screenExtent, &sceneError))
+                throw std::runtime_error(sceneError.empty() ? "native screen runtime initialization failed"
+                                                            : sceneError);
+        }
+        const auto& backgroundState = scene_.background();
+        auto screenSource = graphics::NativeScreenSource::previousFrame;
+        std::optional<core::ImageRgba8> nativeBackground;
+        if (!backgroundState.enabled || backgroundState.screenSource == core::ScreenTextureSource::white) {
+            screenSource = graphics::NativeScreenSource::white;
+        } else if (backgroundState.screenSource == core::ScreenTextureSource::backgroundImage &&
+                   backgroundState.image.has_value()) {
+            nativeBackground = backgroundState.image;
+            screenSource = graphics::NativeScreenSource::external;
+        } else if (backgroundState.screenSource == core::ScreenTextureSource::backgroundVideo) {
+            auto* media = scene_.media();
+            if (media != nullptr && media->info().hasVideo)
+                nativeBackground = media->decodeVideoFrame(mediaSeconds_);
+            if (nativeBackground.has_value())
+                screenSource = graphics::NativeScreenSource::external;
+        }
+        if (nativeBackground.has_value()) {
+            const auto crop = backgroundState.crop == core::ScreenCropMode::crop4x3
+                                  ? graphics::NativeScreenCrop::crop4x3
+                                  : graphics::NativeScreenCrop::none;
+            if (!nativeScreenRuntime_.uploadScreenBmp(*nativeBackground, crop, &sceneError))
+                throw std::runtime_error(sceneError.empty() ? "native ScreenBMP upload failed" : sceneError);
+        }
+        nativeScreenRuntime_.prepareFrame(commands, screenSource, backgroundState.enabled,
+                                          backgroundState.crop == core::ScreenCropMode::crop4x3
+                                              ? graphics::NativeScreenCrop::crop4x3
+                                              : graphics::NativeScreenCrop::none);
         std::vector<graphics::NativeGeometryMeshUpload> geometryUploads;
         std::vector<graphics::WorldInstance> worldInstances;
         graphics::handles::AccelerationStructureHandle tlas;
@@ -369,6 +430,7 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         sceneResources.faceWalkers = modelResources.faceWalkers;
         sceneResources.previousVertices = modelResources.previousVertices;
         sceneResources.rawVertices = modelResources.rawVertices;
+        nativeScreenRuntime_.bindScreenSemantics(sceneResources);
         if (!nativeSceneResources_.compose(sceneResources, &sceneError))
             throw std::runtime_error(sceneError.empty() ? "native scene resource composition failed" : sceneError);
         nativeSceneDraws_.clear();
@@ -422,8 +484,11 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
             if (!nativeSceneFrame_.updatePassConstants(commandList, pass, &passError))
                 throw std::runtime_error(passError.empty() ? "native CBuff1 update failed" : passError);
         };
-        return nativeRenderer_.recordFrame(commands, frameContext, nativeDirty, materials, lightSampling, {},
-                                           executionResources);
+        auto output = nativeRenderer_.recordFrame(commands, frameContext, nativeDirty, materials, lightSampling, {},
+                                                  executionResources);
+        if (output.has_value())
+            nativeScreenRuntime_.publishFrame(commands, output->texture);
+        return output;
     } catch (const std::exception& exception) {
         // Keep the command buffer usable for the Preview fallback. Native
         // resources remain owned until the next renderer request, so a
@@ -465,6 +530,7 @@ void Application::resetProjectRuntimeState() {
     nativeRenderer_.reset();
     nativeSceneFrame_.reset();
     nativeSceneResources_.reset();
+    nativeScreenRuntime_.reset();
     if (device_ != nullptr) {
         device_->setNativeRendererAvailability(false, false);
         device_->clearPreviewResources();
@@ -532,6 +598,7 @@ int Application::run() {
         nativeRenderer_.reset();
         nativeSceneFrame_.reset();
         nativeSceneResources_.reset();
+        nativeScreenRuntime_.reset();
         nativeSceneModelRuntime_.reset();
         nativeRenderer_.setEnvironmentBackend(nullptr);
         device_ = nullptr;
@@ -1677,23 +1744,15 @@ void Application::refreshPreviewScene() {
                            ? graphics::PreviewScene::ScreenCrop::crop4x3
                            : graphics::PreviewScene::ScreenCrop::none;
     scene.backgroundEnabled = scene_.background().enabled;
-    scene.cameraRotation[0] = cameraPitch_;
-    scene.cameraRotation[1] = cameraYaw_;
-    scene.cameraDistance = cameraDistance_;
+    const auto cameraState = makeSceneCameraState();
+    std::copy(cameraState.rotation.begin(), cameraState.rotation.end(), scene.cameraRotation);
+    scene.cameraDistance = cameraState.distance;
+    std::copy(cameraState.position.begin(), cameraState.position.end(), scene.target);
+    scene.verticalFovRadians = cameraState.verticalFovRadians;
+    scene.perspective = cameraState.perspective;
     scene.debugMaterial = previewDebugMaterial_;
     scene.debugFlags = previewDebugFlags_;
     scene.outlineEnabled = previewOutlineEnabled_;
-    if (!manualCamera_ && motion != nullptr && !motion->cameras.empty()) {
-        const auto camera = core::evaluateCamera(*motion, animationFrame_);
-        std::copy(camera.rotation.begin(), camera.rotation.end(), scene.cameraRotation);
-        const auto normalization = model != nullptr ? model->normalization : normalization_;
-        scene.cameraDistance = std::max(std::abs(camera.distance) * normalization.scale, 0.4F);
-        for (std::size_t axis = 0; axis < 3; ++axis) {
-            scene.target[axis] = (camera.position[axis] - normalization.center[axis]) * normalization.scale;
-        }
-        scene.verticalFovRadians = std::clamp(camera.viewAngle, 1.0F, 179.0F) * 0.01745329252F;
-        scene.perspective = camera.perspective;
-    }
     if (motion != nullptr && !motion->lights.empty()) {
         const auto light = core::evaluateLight(*motion, animationFrame_);
         std::copy(light.position.begin(), light.position.end(), scene.lightDirection);

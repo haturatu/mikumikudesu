@@ -58,7 +58,7 @@ static_assert(alignof(NativeScenePassConstants) == 16);
 // Supplies the fields that are derivable from the backend-neutral FX frame.
 // Matrices and event/system flags stay explicit in NativeViewConstants so the
 // application can replace the identity defaults when it owns those values.
-[[nodiscard]] NativeViewConstants makeNativeViewConstants(const fx::FxFrameContext& context, std::uint32_t modelCount,
+[[nodiscard]] NativeViewConstants makeNativeViewConstants(const fx::FxFrameContext& context,
                                                           std::uint32_t totalMaterialCount) noexcept;
 
 // Owns the persistent uniform buffers for ViewCB and CBuff1. Controller
