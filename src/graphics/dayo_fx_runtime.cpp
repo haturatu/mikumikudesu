@@ -75,10 +75,9 @@ NativeFxFrame DayoFxRuntime::prepareFrame(const fx::FxFrameContext& context,
 VulkanFxExecutor::Stats DayoFxRuntime::execute(NativeFxFrame& frame, CommandList& commands,
                                                const FxExecutionResources& resources) const {
     const bool firstInvocation = !hasExecuted_;
-    const bool resized = firstInvocation || lastRenderWidth_ != frame.context.renderWidth ||
-                         lastRenderHeight_ != frame.context.renderHeight;
+    const bool resized = hasExecuted_ && (lastRenderWidth_ != frame.context.renderWidth ||
+                                          lastRenderHeight_ != frame.context.renderHeight);
     frame.context.host.onLoad = frame.context.host.onLoad || firstInvocation;
-    frame.context.host.onStart = frame.context.host.onStart || firstInvocation;
     frame.context.host.onResize = frame.context.host.onResize || resized;
     auto nativeResources = resources;
     if (!nativeResources.evaluateConditions) {

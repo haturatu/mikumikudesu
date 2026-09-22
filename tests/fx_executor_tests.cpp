@@ -1811,7 +1811,19 @@ bool testNativeFxRuntimeRefreshesFrameResources() {
     dispatch.executable = dayo::fx::FxComputeDispatch{"main"};
     dispatch.resources.push_back({"Output", true});
     dispatch.conditions.push_back("frame if FRAME >= 12");
-    program.passes.push_back(std::move(dispatch));
+    program.passes.push_back(dispatch);
+    auto startDispatch = dispatch;
+    startDispatch.name = "start-pass";
+    startDispatch.conditions = {"start"};
+    program.passes.push_back(std::move(startDispatch));
+    auto resizeDispatch = dispatch;
+    resizeDispatch.name = "resize-pass";
+    resizeDispatch.conditions = {"resize"};
+    program.passes.push_back(std::move(resizeDispatch));
+    auto loadDispatch = dispatch;
+    loadDispatch.name = "load-pass";
+    loadDispatch.conditions = {"load"};
+    program.passes.push_back(std::move(loadDispatch));
 
     const auto firstContext = dayo::fx::makeFxFrameContext(12.0F, 3, 4, 2, 1, 0, 3, 1, 1, 1);
     const auto secondContext = dayo::fx::makeFxFrameContext(12.0F, 3, 8, 4, 1, 0, 3, 1, 1, 1);
@@ -1853,14 +1865,26 @@ bool testNativeFxRuntimeRefreshesFrameResources() {
     auto frame = runtime.prepareFrame(secondContext);
     MockCommands commands;
     frame.context.frame = 11.0F;
-    const auto skipped = runtime.execute(frame, commands, resources);
-    ok &= check(skipped.compute == 0, "Dayo FX runtime skips a pass whose expression condition is false");
+    const auto firstInvocation = runtime.execute(frame, commands, resources);
+    ok &= check(firstInvocation.compute == 1,
+                "Dayo FX runtime raises OnLoad on first use without synthesizing OnStart or OnResize");
+    frame = runtime.prepareFrame(secondContext);
     frame.context.frame = 12.0F;
-    const auto stats = runtime.execute(frame, commands, resources);
-    ok &= check(stats.compute == 1, "Dayo FX runtime evaluates and executes a satisfied pass condition");
+    const auto frameInvocation = runtime.execute(frame, commands, resources);
+    ok &= check(frameInvocation.compute == 1,
+                "Dayo FX runtime evaluates the frame predicate without repeating one-shot events");
+    frame = runtime.prepareFrame(secondContext);
+    frame.context.host.onStart = true;
+    const auto startInvocation = runtime.execute(frame, commands, resources);
+    ok &= check(startInvocation.compute == 2, "Dayo FX runtime honors the host playback-start event");
+    frame = runtime.prepareFrame(secondContext);
+    frame.context.host.onStart = false;
+    frame.context.host.onResize = true;
+    const auto resizeInvocation = runtime.execute(frame, commands, resources);
+    ok &= check(resizeInvocation.compute == 2, "Dayo FX runtime honors the host resize event");
     const auto descriptorCount =
         static_cast<std::size_t>(std::count(commands.trace.begin(), commands.trace.end(), std::string{"descriptorEx"}));
-    ok &= check(descriptorCount == 2, "native FX runtime appends its resource set to shared descriptor bindings");
+    ok &= check(descriptorCount == 12, "native FX runtime binds the shared and effect resource sets per pass");
     runtime.reset();
     return ok;
 }

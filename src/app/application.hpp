@@ -73,7 +73,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void requestRenderer(graphics::RendererKind renderer);
     [[nodiscard]] bool ensureNativeSceneRuntime(bool restartRenderer, std::string* error = nullptr);
     [[nodiscard]] fx::FxCameraState makeSceneCameraState() const;
-    [[nodiscard]] fx::FxFrameContext makeNativeFrameContext(const graphics::RenderTargetDesc& target) const;
+    [[nodiscard]] fx::FxFrameContext makeNativeFrameContext(const graphics::RenderTargetDesc& target);
     [[nodiscard]] std::optional<graphics::NativeFrameOutput>
     recordNativeFrame(graphics::CommandList& commands, const graphics::RenderTargetDesc& target);
     void setAudioExportDestinationForSource(const std::filesystem::path& source);
@@ -146,6 +146,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     float animationFrame_{};
     int uploadedAnimationFrame_{-1};
     bool playing_{true};
+    bool nativePlaybackWasActive_{};
+    bool nativeOnStartPending_{true};
     bool repeat_{true};
     float playbackSpeed_{1.0F};
     float audioVolume_{1.0F};
