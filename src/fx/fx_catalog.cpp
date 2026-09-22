@@ -1,43 +1,45 @@
 #include "fx/fx_catalog.hpp"
 
+#include "core/effect.hpp"
+#include "core/log.hpp"
+
 #include <filesystem>
+#include <stdexcept>
 #include <system_error>
 
 namespace dayo::fx {
 
-const char* toString(FxCategory category) noexcept {
-    switch (category) {
-    case FxCategory::renderer:
+const char* toString(FxCatalogGroup group) noexcept {
+    switch (group) {
+    case FxCatalogGroup::rendererDirectory:
         return "renderer";
-    case FxCategory::postprocess:
+    case FxCatalogGroup::postprocessDirectory:
         return "postprocess";
-    case FxCategory::particle:
+    case FxCatalogGroup::particleDirectory:
         return "particle";
-    case FxCategory::sample:
+    case FxCatalogGroup::sampleDirectory:
         return "sample";
-    case FxCategory::unknown:
-        return "unknown";
     }
-    return "unknown";
+    return "renderer";
 }
 
-FxCategory fxCategoryFromString(std::string_view name) noexcept {
+FxCatalogGroup fxCatalogGroupFromString(std::string_view name) noexcept {
     if (name == "renderer")
-        return FxCategory::renderer;
+        return FxCatalogGroup::rendererDirectory;
     if (name == "postprocess")
-        return FxCategory::postprocess;
+        return FxCatalogGroup::postprocessDirectory;
     if (name == "particle")
-        return FxCategory::particle;
+        return FxCatalogGroup::particleDirectory;
     if (name == "sample")
-        return FxCategory::sample;
-    return FxCategory::unknown;
+        return FxCatalogGroup::sampleDirectory;
+    return FxCatalogGroup::rendererDirectory;
 }
 
 void EffectCatalog::add(FxCatalogEntry entry) {
     entries_.push_back(std::move(entry));
 }
 
-void EffectCatalog::scanDirectory(const std::filesystem::path& directory, FxCategory category, bool recursive) {
+void EffectCatalog::scanDirectory(const std::filesystem::path& directory, FxCatalogGroup group, bool recursive) {
     std::error_code error;
     if (!std::filesystem::exists(directory, error))
         return;
@@ -48,8 +50,18 @@ void EffectCatalog::scanDirectory(const std::filesystem::path& directory, FxCate
             return;
         FxCatalogEntry entry;
         entry.name = file.path().stem().string();
-        entry.category = category;
+        entry.group = group;
         entry.path = file.path();
+        try {
+            const auto graph = core::loadEffectGraph(file.path());
+            entry.executionCategory = core::fx::fxCategoryFromString(graph.category);
+        } catch (const std::exception& exception) {
+            // A catalog entry without an upstream category is unsafe to
+            // schedule. Keep the scan useful for editors by skipping only the
+            // invalid entry and reporting the reason on the warning stream.
+            log::warn("fx catalog: skipping ", file.path().string(), ": ", exception.what());
+            return;
+        }
         entries_.push_back(std::move(entry));
     };
     if (recursive) {
@@ -68,19 +80,19 @@ void EffectCatalog::scanDirectory(const std::filesystem::path& directory, FxCate
 }
 
 void EffectCatalog::scanRenderer(const std::filesystem::path& directory) {
-    scanDirectory(directory, FxCategory::renderer, false);
+    scanDirectory(directory, FxCatalogGroup::rendererDirectory, false);
 }
 
 void EffectCatalog::scanPostProcess(const std::filesystem::path& directory) {
-    scanDirectory(directory, FxCategory::postprocess, true);
+    scanDirectory(directory, FxCatalogGroup::postprocessDirectory, true);
 }
 
 void EffectCatalog::scanParticle(const std::filesystem::path& directory) {
-    scanDirectory(directory, FxCategory::particle, false);
+    scanDirectory(directory, FxCatalogGroup::particleDirectory, false);
 }
 
 void EffectCatalog::scanSample(const std::filesystem::path& directory) {
-    scanDirectory(directory, FxCategory::sample, false);
+    scanDirectory(directory, FxCatalogGroup::sampleDirectory, false);
 }
 
 void EffectCatalog::scanAll(const std::filesystem::path& root) {
@@ -90,10 +102,10 @@ void EffectCatalog::scanAll(const std::filesystem::path& root) {
     scanSample(root / "sample");
 }
 
-std::vector<FxCatalogEntry> EffectCatalog::find(FxCategory category) const {
+std::vector<FxCatalogEntry> EffectCatalog::find(FxCatalogGroup group) const {
     std::vector<FxCatalogEntry> result;
     for (const auto& entry : entries_) {
-        if (entry.category == category)
+        if (entry.group == group)
             result.push_back(entry);
     }
     return result;
