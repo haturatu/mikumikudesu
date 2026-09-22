@@ -1,7 +1,7 @@
 #include "graphics/native_renderer.hpp"
 
-#include <sstream>
 #include <ranges>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -177,19 +177,17 @@ void NativeRendererCoordinator::setEffectSchedule(std::span<const fx::ScheduledF
         effects = std::move(ordered);
         runtimes.clear();
     };
-    reorder(deformEffects_, deformRuntimes_, [](fx::FrameStage stage) {
-        return stage == fx::FrameStage::deform;
-    });
-    reorder(postprocessEffects_, postprocessRuntimes_, [](fx::FrameStage stage) {
-        return stage == fx::FrameStage::postPre || stage == fx::FrameStage::postPost;
-    });
+    reorder(deformEffects_, deformRuntimes_, [](fx::FrameStage stage) { return stage == fx::FrameStage::deform; });
+    reorder(postprocessEffects_, postprocessRuntimes_,
+            [](fx::FrameStage stage) { return stage == fx::FrameStage::postPre || stage == fx::FrameStage::postPost; });
 }
 
 void NativeRendererCoordinator::setControllerDeclarations(std::span<const core::EffectController> declarations) {
-    const auto same = std::ranges::equal(controllerDeclarations_, declarations, [](const auto& left, const auto& right) {
-        return left.name == right.name && left.controllerName == right.controllerName && left.item == right.item &&
-               left.type == right.type;
-    });
+    const auto same =
+        std::ranges::equal(controllerDeclarations_, declarations, [](const auto& left, const auto& right) {
+            return left.name == right.name && left.controllerName == right.controllerName && left.item == right.item &&
+                   left.type == right.type;
+        });
     if (same)
         return;
     controllerDeclarations_.assign(declarations.begin(), declarations.end());
@@ -248,7 +246,7 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
         std::string controllerError;
         if (!entry->controller.sync(*device_, entry->block->bytes(), &controllerError))
             throw std::runtime_error(controllerError.empty() ? "generic Dayo FX controller upload failed"
-                                                       : controllerError);
+                                                             : controllerError);
         if (!hostBindings_.viewConstants.valid() || !hostBindings_.controllerConstants.valid())
             throw std::runtime_error("generic Dayo FX host frame bindings are incomplete");
         auto effectBindings = hostBindings_;
@@ -366,8 +364,8 @@ NativeRendererCoordinator::recordFrame(CommandList& commands, const fx::FxFrameC
         commands.transferBarrierEx();
         commands.copyTextureEx(rendererOutput->texture, screen->texture);
     }
-    if (const auto postOutput = executeGenericEffects(postprocessEffects_, postprocessRuntimes_, commands, context,
-                                                      resources, true);
+    if (const auto postOutput =
+            executeGenericEffects(postprocessEffects_, postprocessRuntimes_, commands, context, resources, true);
         postOutput.has_value())
         return postOutput;
     return rendererOutput;

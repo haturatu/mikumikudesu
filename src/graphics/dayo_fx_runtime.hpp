@@ -27,8 +27,7 @@ class FxExternalResourceProvider {
   public:
     virtual ~FxExternalResourceProvider() = default;
     [[nodiscard]] virtual bool supports(std::string_view semantic) const = 0;
-    [[nodiscard]] virtual FxResourceBinding resolve(std::string_view semantic,
-                                                     const fx::FxFrameContext& context) = 0;
+    [[nodiscard]] virtual FxResourceBinding resolve(std::string_view semantic, const fx::FxFrameContext& context) = 0;
     virtual void beforePass(const fx::FxDispatch&, CommandList&) {}
     virtual void afterPass(const fx::FxDispatch&, CommandList&) {}
 };
@@ -45,8 +44,7 @@ class DayoSceneHostProvider final : public FxExternalResourceProvider {
     }
 
     [[nodiscard]] bool supports(std::string_view semantic) const override;
-    [[nodiscard]] FxResourceBinding resolve(std::string_view semantic,
-                                             const fx::FxFrameContext& context) override;
+    [[nodiscard]] FxResourceBinding resolve(std::string_view semantic, const fx::FxFrameContext& context) override;
 
   private:
     const DayoHostResourceProvider* provider_{};
@@ -67,8 +65,7 @@ class DayoFxRuntime {
                                   std::string* error = nullptr,
                                   std::span<const handles::DescriptorSetHandle> sharedDescriptorSets = {},
                                   fx::FxNativeShaderSourceOptions sourceOptions = {});
-    [[nodiscard]] bool initializeForFrame(Device& device, fx::FxProgram program,
-                                          const fx::FxShaderCompiler& compiler,
+    [[nodiscard]] bool initializeForFrame(Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
                                           const fx::FxFrameContext& context,
                                           std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts = {},
                                           std::string* error = nullptr,

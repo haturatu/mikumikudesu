@@ -9,15 +9,15 @@
 #include "fx/fx_shader_source.hpp"
 #include "fx/fx_texture_cache.hpp"
 #include "fx/fx_watcher.hpp"
-#include "graphics/dayo_host_resources.hpp"
 #include "graphics/dayo_fx_runtime.hpp"
+#include "graphics/dayo_host_resources.hpp"
 #include "graphics/fx_executor.hpp"
 #include "graphics/fx_pipeline_runtime.hpp"
 #include "graphics/fx_resource_runtime.hpp"
 #include "graphics/native_frame_constants.hpp"
 #include "graphics/native_fx_runtime.hpp"
-#include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/native_scene_bindings.hpp"
+#include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/native_screen_runtime.hpp"
 
 #include <algorithm>
@@ -634,13 +634,13 @@ bool testViewConstantsAndScreenHistory() {
                 "ScreenBMP ScreenTexture and PreviousFrame stay distinct");
     dayo::graphics::NativeSceneResourceBindings bindings;
     screen.bindScreenSemantics(bindings);
-    ok &= check(bindings.screenBmp == screenBmp && bindings.screenTexture == screenTexture &&
-                    (bindings.hostResourceMask & dayo::graphics::dayoSemanticBit(
-                        dayo::graphics::DayoSemantic::ScreenBMP)) != 0 &&
-                    bindings.rtOutput == previousFrame &&
-                    (bindings.hostResourceMask & dayo::graphics::dayoSemanticBit(
-                        dayo::graphics::DayoSemantic::RTOutput)) != 0,
-                "screen runtime exposes strict ScreenBMP semantics");
+    ok &= check(
+        bindings.screenBmp == screenBmp && bindings.screenTexture == screenTexture &&
+            (bindings.hostResourceMask & dayo::graphics::dayoSemanticBit(dayo::graphics::DayoSemantic::ScreenBMP)) !=
+                0 &&
+            bindings.rtOutput == previousFrame &&
+            (bindings.hostResourceMask & dayo::graphics::dayoSemanticBit(dayo::graphics::DayoSemantic::RTOutput)) != 0,
+        "screen runtime exposes strict ScreenBMP semantics");
     MockCommands commands;
     screen.rotatePreviousFrame(commands, {99, 1});
     ok &= check(commands.trace == std::vector<std::string>{"transferBarrierEx", "copyEx"},
@@ -684,33 +684,28 @@ bool testFxControllerResolver() {
     duplicate.id = 12;
     duplicate.morphWeights = {0.25F};
     snapshot.models.push_back(duplicate);
-    const std::array effectControllers{dayo::core::EffectController{
-        .name = "Exposure", .controllerName = "(self)", .item = "Smile", .type = "float"}};
-    dayo::graphics::NativeControllerBlock first(
-        dayo::graphics::makeNativeControllerLayout(effectControllers));
-    dayo::graphics::NativeControllerBlock second(
-        dayo::graphics::makeNativeControllerLayout(effectControllers));
+    const std::array effectControllers{
+        dayo::core::EffectController{.name = "Exposure", .controllerName = "(self)", .item = "Smile", .type = "float"}};
+    dayo::graphics::NativeControllerBlock first(dayo::graphics::makeNativeControllerLayout(effectControllers));
+    dayo::graphics::NativeControllerBlock second(dayo::graphics::makeNativeControllerLayout(effectControllers));
     std::string controllerError;
-    ok &= check(dayo::graphics::resolveNativeControllerBlock(first, effectControllers, snapshot, 11,
-                                                              &controllerError) &&
-                    dayo::graphics::resolveNativeControllerBlock(second, effectControllers, snapshot, 12,
-                                                                  &controllerError) &&
-                    !std::ranges::equal(first.bytes(), second.bytes()),
-                "identical controller names resolve independently for two effect owners");
+    ok &= check(
+        dayo::graphics::resolveNativeControllerBlock(first, effectControllers, snapshot, 11, &controllerError) &&
+            dayo::graphics::resolveNativeControllerBlock(second, effectControllers, snapshot, 12, &controllerError) &&
+            !std::ranges::equal(first.bytes(), second.bytes()),
+        "identical controller names resolve independently for two effect owners");
     dayo::graphics::NativeSceneResourceBindings firstBindings;
     firstBindings.controllerConstants = {101, 1};
     auto secondBindings = firstBindings;
     secondBindings.controllerConstants = {102, 1};
     const auto firstFrame = dayo::graphics::nativeSceneFrameDescriptorBindings(firstBindings);
     const auto secondFrame = dayo::graphics::nativeSceneFrameDescriptorBindings(secondBindings);
-    const auto controllerSlot = dayo::graphics::nativeSceneBinding(
-        dayo::graphics::NativeSceneRegisterClass::uniform, 1);
-    const auto firstDescriptor = std::ranges::find_if(firstFrame, [controllerSlot](const auto& binding) {
-        return binding.slot == controllerSlot;
-    });
-    const auto secondDescriptor = std::ranges::find_if(secondFrame, [controllerSlot](const auto& binding) {
-        return binding.slot == controllerSlot;
-    });
+    const auto controllerSlot =
+        dayo::graphics::nativeSceneBinding(dayo::graphics::NativeSceneRegisterClass::uniform, 1);
+    const auto firstDescriptor = std::ranges::find_if(
+        firstFrame, [controllerSlot](const auto& binding) { return binding.slot == controllerSlot; });
+    const auto secondDescriptor = std::ranges::find_if(
+        secondFrame, [controllerSlot](const auto& binding) { return binding.slot == controllerSlot; });
     ok &= check(firstDescriptor != firstFrame.end() && secondDescriptor != secondFrame.end() &&
                     firstDescriptor->buffer != secondDescriptor->buffer,
                 "effect-local frame descriptor sets bind distinct ControllerCB buffers");

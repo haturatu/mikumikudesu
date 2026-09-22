@@ -3,8 +3,8 @@
 #include <algorithm>
 #include <cctype>
 #include <limits>
-#include <sstream>
 #include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 #include <unordered_set>
@@ -101,9 +101,8 @@ namespace {
 
 void appendControllerBlock(std::ostringstream& output, const FxProgram& program,
                            std::span<const core::EffectController> sharedControllers) {
-    const auto controllers = sharedControllers.empty()
-                                 ? std::span<const core::EffectController>(program.controllers)
-                                 : sharedControllers;
+    const auto controllers =
+        sharedControllers.empty() ? std::span<const core::EffectController>(program.controllers) : sharedControllers;
     if (controllers.empty())
         return;
     output << "cbuffer YRZFX_ControllerCB : register(b1) {\n";

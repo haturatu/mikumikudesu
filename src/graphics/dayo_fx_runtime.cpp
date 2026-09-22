@@ -28,8 +28,8 @@ bool DayoFxRuntime::initialize(Device& device, fx::FxProgram program, const fx::
                                std::move(sourceOptions));
 }
 
-bool DayoFxRuntime::initializeForFrame(Device& device, fx::FxProgram program,
-                                       const fx::FxShaderCompiler& compiler, const fx::FxFrameContext& context,
+bool DayoFxRuntime::initializeForFrame(Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
+                                       const fx::FxFrameContext& context,
                                        std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts,
                                        std::string* error,
                                        std::span<const handles::DescriptorSetHandle> sharedDescriptorSets,
@@ -65,8 +65,9 @@ VulkanFxExecutor::Stats DayoFxRuntime::execute(NativeFxFrame& frame, CommandList
     auto nativeResources = resources;
     const auto existingResolver = resources.resolveTypedResource;
     const auto providers = providers_;
-    nativeResources.resolveTypedResource = [this, existingResolver, providers, &frame](std::string_view name)
-        -> std::optional<FxExecutionResources::TypedResource> {
+    nativeResources.resolveTypedResource =
+        [this, existingResolver, providers,
+         &frame](std::string_view name) -> std::optional<FxExecutionResources::TypedResource> {
         if (existingResolver) {
             const auto binding = existingResolver(name);
             if (binding.has_value())

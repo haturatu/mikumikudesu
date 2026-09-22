@@ -37,8 +37,7 @@ bool requireCount(std::size_t actual, std::uint32_t expected, std::string_view n
 
 } // namespace
 
-std::vector<DescriptorBindingEx>
-nativeSceneFrameDescriptorBindings(const NativeSceneResourceBindings& resources) {
+std::vector<DescriptorBindingEx> nativeSceneFrameDescriptorBindings(const NativeSceneResourceBindings& resources) {
     const auto legacyGBuffer = resources.gbuffer.valid() ? resources.gbuffer : resources.gbuffer1;
     std::vector<DescriptorBindingEx> frame;
     frame.reserve(20);
@@ -104,8 +103,8 @@ bool NativeSceneResourceRuntime::sync(const NativeSceneResourceBindings& resourc
     if (!checkHandle(resources.rtOutput.valid(), "RTOutput") || !checkHandle(resources.oidnBuffer.valid(), "OIDNBuf") ||
         !checkHandle(resources.normalDepth.valid(), "NormalDepth") ||
         !checkHandle(resources.gbuffer1.valid(), "GBuffer1") || !checkHandle(resources.gbuffer2.valid(), "GBuffer2") ||
-        !checkHandle(legacyGBuffer.valid(), "GBuffer") ||
-        !checkHandle(resources.tlas.valid(), "TLAS") || !checkHandle(resources.modelToMaterial.valid(), "Model2Mat") ||
+        !checkHandle(legacyGBuffer.valid(), "GBuffer") || !checkHandle(resources.tlas.valid(), "TLAS") ||
+        !checkHandle(resources.modelToMaterial.valid(), "Model2Mat") ||
         !checkHandle(resources.materialToModel.valid(), "Mat2Model") ||
         !checkHandle(resources.peekaboo.valid(), "Peekaboo") ||
         !checkHandle(resources.materialSelected.valid(), "MatSelected") ||

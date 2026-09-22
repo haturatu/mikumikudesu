@@ -243,8 +243,7 @@ void NativeScreenRuntime::bindScreenSemantics(NativeSceneResourceBindings& bindi
     // whose completed contents become PreviousFrame at publish time.
     bindings.rtOutput = previousFrame();
     bindings.hostResourceMask |= dayoSemanticBit(DayoSemantic::ScreenBMP) |
-                                 dayoSemanticBit(DayoSemantic::ScreenTexture) |
-                                 dayoSemanticBit(DayoSemantic::RTOutput);
+                                 dayoSemanticBit(DayoSemantic::ScreenTexture) | dayoSemanticBit(DayoSemantic::RTOutput);
 }
 
 void NativeScreenRuntime::reset() noexcept {

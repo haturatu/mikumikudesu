@@ -536,11 +536,11 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                 throw std::runtime_error(passError.empty() ? "native CBuff1 update failed" : passError);
         };
         executionResources.updateEffectPassConstants = [this](graphics::CommandList& commandList,
-                                                               const graphics::NativeEffectModel& model) {
+                                                              const graphics::NativeEffectModel& model) {
             const graphics::NativeScenePassConstants pass{.modelIndex = model.modelIndex,
-                                                           .rasterizeOrder = model.rasterizeOrder,
-                                                           .deformIndex = model.deformIndex,
-                                                           .deformOrder = model.deformOrder};
+                                                          .rasterizeOrder = model.rasterizeOrder,
+                                                          .deformIndex = model.deformIndex,
+                                                          .deformOrder = model.deformOrder};
             std::string passError;
             if (!nativeSceneFrame_.updatePassConstants(commandList, pass, &passError))
                 throw std::runtime_error(passError.empty() ? "native deform CBuff1 update failed" : passError);

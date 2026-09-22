@@ -137,9 +137,8 @@ bool NativeSceneResourceStore::replaceScalars(const NativeSceneResourceBindings&
     bindings_.normalDepth = textureOrPlaceholder(overrides.normalDepth);
     bindings_.gbuffer1 = textureOrPlaceholder(overrides.gbuffer1);
     bindings_.gbuffer2 = textureOrPlaceholder(overrides.gbuffer2);
-    const auto legacyGBuffer = overrides.gbuffer.valid() && overrides.gbuffer != placeholderTexture_
-                                   ? overrides.gbuffer
-                                   : overrides.gbuffer1;
+    const auto legacyGBuffer =
+        overrides.gbuffer.valid() && overrides.gbuffer != placeholderTexture_ ? overrides.gbuffer : overrides.gbuffer1;
     bindings_.gbuffer = textureOrPlaceholder(legacyGBuffer);
     bindings_.tlas = overrides.tlas;
     bindings_.modelToMaterial = bufferOrPlaceholder(overrides.modelToMaterial);

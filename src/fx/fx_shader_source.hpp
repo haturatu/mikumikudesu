@@ -1,7 +1,7 @@
 #pragma once
 
-#include "fx/fx_compiler.hpp"
 #include "core/effect.hpp"
+#include "fx/fx_compiler.hpp"
 
 #include <cstdint>
 #include <string>

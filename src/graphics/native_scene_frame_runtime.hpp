@@ -14,8 +14,8 @@ namespace dayo::graphics {
 
 [[nodiscard]] bool resolveNativeControllerBlock(NativeControllerBlock& block,
                                                 std::span<const core::EffectController> declarations,
-                                                const core::fx::SceneEvaluationSnapshot& snapshot,
-                                                core::ModelId self, std::string* error = nullptr);
+                                                const core::fx::SceneEvaluationSnapshot& snapshot, core::ModelId self,
+                                                std::string* error = nullptr);
 
 // Frame-boundary owner for the complete native scene ABI. It combines the
 // fixed descriptor spaces with the three uniform buffers whose contents must
