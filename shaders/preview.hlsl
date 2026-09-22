@@ -121,7 +121,9 @@ BoneTransform identityBone() {
 }
 
 BoneTransform getBone(int index) {
-    return index >= 0 ? boneTransforms[index] : identityBone();
+    if (index >= 0)
+        return boneTransforms[index];
+    return identityBone();
 }
 
 float3 transformPoint(BoneTransform bone, float3 value) {
