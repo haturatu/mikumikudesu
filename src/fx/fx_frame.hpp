@@ -8,10 +8,7 @@
 namespace dayo::fx {
 
 inline constexpr std::array<float, 16> kIdentityFxMatrix{
-    1.0F, 0.0F, 0.0F, 0.0F,
-    0.0F, 1.0F, 0.0F, 0.0F,
-    0.0F, 0.0F, 1.0F, 0.0F,
-    0.0F, 0.0F, 0.0F, 1.0F,
+    1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F,
 };
 
 struct FxCameraState {

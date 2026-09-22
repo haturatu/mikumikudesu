@@ -49,7 +49,7 @@ TextureResourceDesc screenTextureDesc(Extent3D extent) {
     if (exponent >= 31)
         return static_cast<std::uint16_t>(sign | 0x7c00U | (mantissa != 0 ? 0x0200U : 0U));
     return static_cast<std::uint16_t>(sign | (static_cast<std::uint32_t>(exponent) << 10U) |
-                                       ((mantissa + 0x1000U) >> 13U));
+                                      ((mantissa + 0x1000U) >> 13U));
 }
 
 [[nodiscard]] std::vector<std::uint8_t> makeRgba16Source(const core::ImageRgba8& image, Extent3D target,
@@ -83,13 +83,13 @@ TextureResourceDesc screenTextureDesc(Extent3D extent) {
         throw std::overflow_error("native ScreenBMP target image is too large");
     std::vector<std::uint8_t> result(static_cast<std::size_t>(pixelCount) * 8U);
     for (std::uint32_t y = 0; y < target.height; ++y) {
-        const auto sourceY = std::min(image.height - 1U,
-                                      static_cast<std::uint32_t>((static_cast<double>(y) + 0.5) * sourceHeight /
-                                                                     target.height + top));
+        const auto sourceY =
+            std::min(image.height - 1U,
+                     static_cast<std::uint32_t>((static_cast<double>(y) + 0.5) * sourceHeight / target.height + top));
         for (std::uint32_t x = 0; x < target.width; ++x) {
-            const auto sourceX = std::min(image.width - 1U,
-                                          static_cast<std::uint32_t>((static_cast<double>(x) + 0.5) * sourceWidth /
-                                                                         target.width + left));
+            const auto sourceX = std::min(
+                image.width - 1U,
+                static_cast<std::uint32_t>((static_cast<double>(x) + 0.5) * sourceWidth / target.width + left));
             const auto sourceOffset = (static_cast<std::size_t>(sourceY) * image.width + sourceX) * 4U;
             const auto destinationOffset = (static_cast<std::size_t>(y) * target.width + x) * 8U;
             for (std::size_t channel = 0; channel < 4; ++channel) {
@@ -190,8 +190,7 @@ void NativeScreenRuntime::prepareFrame(CommandList& commands, NativeScreenSource
             croppedHeight = std::max(1U, croppedHeight);
             const auto left = (width - croppedWidth) / 2U;
             const auto top = (height - croppedHeight) / 2U;
-            commands.blitTextureEx(previousFrame_, screenBmp_,
-                                   {left, top, left + croppedWidth, top + croppedHeight});
+            commands.blitTextureEx(previousFrame_, screenBmp_, {left, top, left + croppedWidth, top + croppedHeight});
         }
     }
 }
@@ -239,8 +238,8 @@ void NativeScreenRuntime::bindScreenSemantics(NativeSceneResourceBindings& bindi
         return;
     bindings.screenBmp = screenBmp();
     bindings.screenTexture = screenTexture();
-    bindings.hostResourceMask |= dayoSemanticBit(DayoSemantic::ScreenBMP) |
-                                 dayoSemanticBit(DayoSemantic::ScreenTexture);
+    bindings.hostResourceMask |=
+        dayoSemanticBit(DayoSemantic::ScreenBMP) | dayoSemanticBit(DayoSemantic::ScreenTexture);
 }
 
 void NativeScreenRuntime::reset() noexcept {

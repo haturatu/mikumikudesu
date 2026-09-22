@@ -21,8 +21,8 @@ using Matrix = std::array<float, 16>;
 
 } // namespace
 
-SceneCameraMatrices makeSceneCameraMatrices(const fx::FxCameraState& camera, std::uint32_t width,
-                                            std::uint32_t height, const GraphicsConvention& convention) noexcept {
+SceneCameraMatrices makeSceneCameraMatrices(const fx::FxCameraState& camera, std::uint32_t width, std::uint32_t height,
+                                            const GraphicsConvention& convention) noexcept {
     SceneCameraMatrices result;
     const auto pitch = camera.rotation[0];
     const auto yaw = camera.rotation[1];
@@ -61,18 +61,42 @@ SceneCameraMatrices makeSceneCameraMatrices(const fx::FxCameraState& camera, std
     const auto depthOffset = -farPlane * nearPlane / (farPlane - nearPlane);
     const auto ySign = convention.framebufferYFlip ? -1.0F : 1.0F;
     if (camera.perspective) {
-        result.projection = {focal / std::max(aspect, 0.001F), 0.0F, 0.0F, 0.0F,
-                             0.0F, ySign * focal, 0.0F, 0.0F,
-                             0.0F, 0.0F, depthScale, 1.0F,
-                             0.0F, 0.0F, depthOffset, 0.0F};
+        result.projection = {focal / std::max(aspect, 0.001F),
+                             0.0F,
+                             0.0F,
+                             0.0F,
+                             0.0F,
+                             ySign * focal,
+                             0.0F,
+                             0.0F,
+                             0.0F,
+                             0.0F,
+                             depthScale,
+                             1.0F,
+                             0.0F,
+                             0.0F,
+                             depthOffset,
+                             0.0F};
     } else {
         const auto halfHeight = std::max(std::abs(camera.distance), 0.1F) * std::tan(fov * 0.5F);
         const auto halfWidth = std::max(aspect * halfHeight, 0.001F);
         const auto inverseDepth = 1.0F / (farPlane - nearPlane);
-        result.projection = {1.0F / halfWidth, 0.0F, 0.0F, 0.0F,
-                             0.0F, ySign / halfHeight, 0.0F, 0.0F,
-                             0.0F, 0.0F, inverseDepth, 0.0F,
-                             0.0F, 0.0F, -nearPlane * inverseDepth, 1.0F};
+        result.projection = {1.0F / halfWidth,
+                             0.0F,
+                             0.0F,
+                             0.0F,
+                             0.0F,
+                             ySign / halfHeight,
+                             0.0F,
+                             0.0F,
+                             0.0F,
+                             0.0F,
+                             inverseDepth,
+                             0.0F,
+                             0.0F,
+                             0.0F,
+                             -nearPlane * inverseDepth,
+                             1.0F};
     }
     result.viewProjection = multiply(result.view, result.projection);
     return result;

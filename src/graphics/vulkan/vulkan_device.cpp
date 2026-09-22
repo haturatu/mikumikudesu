@@ -5369,9 +5369,8 @@ void VulkanDevice::recordBlitTexture(VkCommandBuffer commandBuffer, handles::Tex
     if (src.dimension != TextureDimension::d2 || dst.dimension != TextureDimension::d2 || src.format != dst.format ||
         src.format == PixelFormat::depth32Float || src.extent.depth != 1 || dst.extent.depth != 1 ||
         src.mipLevels != 1 || dst.mipLevels != 1 || src.arrayLayers != 1 || dst.arrayLayers != 1 ||
-        sourceRect[0] >= sourceRect[2] || sourceRect[1] >= sourceRect[3] ||
-        sourceRect[2] > src.extent.width || sourceRect[3] > src.extent.height ||
-        (toBits(src.usage) & toBits(ResourceUsage::transferSrc)) == 0U ||
+        sourceRect[0] >= sourceRect[2] || sourceRect[1] >= sourceRect[3] || sourceRect[2] > src.extent.width ||
+        sourceRect[3] > src.extent.height || (toBits(src.usage) & toBits(ResourceUsage::transferSrc)) == 0U ||
         (toBits(dst.usage) & toBits(ResourceUsage::transferDst)) == 0U)
         throw std::invalid_argument("typed texture blit has incompatible resources or source rectangle");
     VkFormatProperties2 properties{.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
@@ -5379,9 +5378,8 @@ void VulkanDevice::recordBlitTexture(VkCommandBuffer commandBuffer, handles::Tex
     const auto features = properties.formatProperties.optimalTilingFeatures;
     if ((features & VK_FORMAT_FEATURE_BLIT_SRC_BIT) == 0U || (features & VK_FORMAT_FEATURE_BLIT_DST_BIT) == 0U)
         throw std::runtime_error("ScreenBMP crop requires Vulkan blit support for its texture format");
-    const auto filter = (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0U
-                            ? VK_FILTER_LINEAR
-                            : VK_FILTER_NEAREST;
+    const auto filter =
+        (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0U ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
     recordTextureTransition(commandBuffer, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     recordTextureTransition(commandBuffer, destination, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     const VkImageBlit region{
