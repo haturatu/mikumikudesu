@@ -26,9 +26,9 @@ struct NativeEffectModel {
 // Resolve one native model's instance count from its scene value and every
 // deform effect assigned to that model. The resulting count is shared by
 // native draw, CloneCount, deform context, and acceleration-structure paths.
-[[nodiscard]] inline std::uint32_t resolveNativeModelCloneCount(
-    std::uint32_t sceneCloneCount, core::ModelId modelId,
-    std::span<const core::SceneEffectInstance> deformEffects) noexcept {
+[[nodiscard]] inline std::uint32_t
+resolveNativeModelCloneCount(std::uint32_t sceneCloneCount, core::ModelId modelId,
+                             std::span<const core::SceneEffectInstance> deformEffects) noexcept {
     auto effectCloneCount = 1U;
     for (const auto& effect : deformEffects) {
         if (effect.controllerModel.has_value() && *effect.controllerModel == modelId)

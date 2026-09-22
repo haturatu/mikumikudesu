@@ -1,7 +1,7 @@
 #include "core/fx/fx_controller_resolver.hpp"
 #include "fx/fx_catalog.hpp"
-#include "fx/fx_condition_runtime.hpp"
 #include "fx/fx_compiler.hpp"
+#include "fx/fx_condition_runtime.hpp"
 #include "fx/fx_frame.hpp"
 #include "fx/fx_preview_path.hpp"
 #include "fx/fx_scheduler.hpp"
@@ -280,8 +280,7 @@ struct MockCommands final : public dayo::graphics::CommandList {
     }
     void drawIndexedBufferlessEx(dayo::graphics::handles::BufferHandle, std::uint32_t indexCount,
                                  std::uint32_t instanceCount) override {
-        trace.push_back("drawIndexedBufferlessEx:" + std::to_string(indexCount) + "x" +
-                        std::to_string(instanceCount));
+        trace.push_back("drawIndexedBufferlessEx:" + std::to_string(indexCount) + "x" + std::to_string(instanceCount));
     }
     void dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) override {
         trace.push_back("dispatch:" + std::to_string(x) + "x" + std::to_string(y) + "x" + std::to_string(z));
@@ -469,12 +468,11 @@ bool testMockTraceMatches() {
     graphicsProgram.passes.push_back(postprocess);
     const auto graphicsPlan = dayo::fx::FxCompiler{}.plan(graphicsProgram, testContext());
     const auto graphicsStats = executor.execute(graphicsPlan, graphicsCommands, testContext(), typedResources);
-    ok &=
-        check(graphicsStats.postprocess == 1 &&
-                  graphicsCommands.trace == std::vector<std::string>{"transitionEx", "descriptorEx", "beginRenderingEx",
-                                                                     "bindEx", "draw:3x1", "endRenderingEx",
-                                                                     "memoryBarrierEx"},
-              "typed graphics executor brackets postprocess draws with a render target");
+    ok &= check(graphicsStats.postprocess == 1 &&
+                    graphicsCommands.trace == std::vector<std::string>{"transitionEx", "descriptorEx",
+                                                                       "beginRenderingEx", "bindEx", "draw:3x1",
+                                                                       "endRenderingEx", "memoryBarrierEx"},
+                "typed graphics executor brackets postprocess draws with a render target");
     std::size_t beforePasses = 0;
     std::size_t afterPasses = 0;
     auto hookResources = testResources();
@@ -507,11 +505,12 @@ bool testResolvedPassPlanning() {
     context.renderWidth = 65;
     context.renderHeight = 33;
     const auto screenPlan = compiler.plan(screenProgram, context);
-    ok &= check(screenPlan.resolved.size() == 1 && screenPlan.resolved[0].outputExtent.width == 65 &&
-                    screenPlan.resolved[0].outputExtent.height == 33 && screenPlan.resolved[0].outputExtent.dimension == 2 &&
-                    screenPlan.resolved[0].numThreads == std::array<std::uint32_t, 3>{16, 16, 1} &&
-                    screenPlan.resolved[0].dispatchGroups.width == 5 && screenPlan.resolved[0].dispatchGroups.height == 3,
-                "render compute resolves screen extent and upstream 2D numthreads defaults");
+    ok &= check(
+        screenPlan.resolved.size() == 1 && screenPlan.resolved[0].outputExtent.width == 65 &&
+            screenPlan.resolved[0].outputExtent.height == 33 && screenPlan.resolved[0].outputExtent.dimension == 2 &&
+            screenPlan.resolved[0].numThreads == std::array<std::uint32_t, 3>{16, 16, 1} &&
+            screenPlan.resolved[0].dispatchGroups.width == 5 && screenPlan.resolved[0].dispatchGroups.height == 3,
+        "render compute resolves screen extent and upstream 2D numthreads defaults");
 
     fx::FxProgram deformProgram;
     deformProgram.category = core::fx::FxCategory::deform;
@@ -698,8 +697,8 @@ bool testBufferlessIndexRasterExecution() {
     resources.resolveTypedPipeline = [](const dayo::fx::FxDispatch&) {
         return std::optional<dayo::graphics::handles::PipelineHandle>{{30, 1}};
     };
-    resources.resolveTypedResource = [](std::string_view name)
-        -> std::optional<dayo::graphics::FxExecutionResources::TypedResource> {
+    resources.resolveTypedResource =
+        [](std::string_view name) -> std::optional<dayo::graphics::FxExecutionResources::TypedResource> {
         if (name == "Indices")
             return dayo::graphics::FxExecutionResources::TypedResource{.buffer = {31, 1}};
         if (name == "Color")
@@ -712,8 +711,7 @@ bool testBufferlessIndexRasterExecution() {
     const auto stats = executor.execute(plan, commands, context, resources);
     bool ok = check(plan.resolved[0].raster.has_value() && plan.resolved[0].raster->indexCount == 6,
                     "FX rasterIB resolves its declared element count");
-    ok &= check(stats.raster == 1 && stats.indexedDraws == 1,
-                "FX rasterIB counts a vertex-bufferless indexed draw");
+    ok &= check(stats.raster == 1 && stats.indexedDraws == 1, "FX rasterIB counts a vertex-bufferless indexed draw");
     ok &= check(std::ranges::find(commands.trace, "drawIndexedBufferlessEx:6x4") != commands.trace.end(),
                 "FX rasterIB records the vertex-bufferless indexed draw with the clone count");
     return ok;
@@ -933,12 +931,10 @@ bool testOidnHostExecution() {
 bool testOidnStructuredBufferInput() {
     MockDevice device;
     const std::array<dayo::graphics::NativeSceneOidnInput, 2> inputSamples = {
-        dayo::graphics::NativeSceneOidnInput{.color = {0.25F, 0.5F, 0.75F},
-                                             .albedo = {0.1F, 0.2F, 0.3F},
-                                             .normal = {0.4F, 0.5F, 0.6F}},
-        dayo::graphics::NativeSceneOidnInput{.color = {1.0F, 0.75F, 0.5F},
-                                             .albedo = {0.6F, 0.7F, 0.8F},
-                                             .normal = {0.9F, 1.0F, 0.1F}},
+        dayo::graphics::NativeSceneOidnInput{
+            .color = {0.25F, 0.5F, 0.75F}, .albedo = {0.1F, 0.2F, 0.3F}, .normal = {0.4F, 0.5F, 0.6F}},
+        dayo::graphics::NativeSceneOidnInput{
+            .color = {1.0F, 0.75F, 0.5F}, .albedo = {0.6F, 0.7F, 0.8F}, .normal = {0.9F, 1.0F, 0.1F}},
     };
     const auto inputBytes = std::as_bytes(std::span(inputSamples));
     device.bufferReadbackBytes_.assign(inputBytes.begin(), inputBytes.end());
@@ -947,8 +943,7 @@ bool testOidnStructuredBufferInput() {
     auto context = testContext();
     context.renderWidth = 2;
     context.renderHeight = 1;
-    const dayo::fx::FxOidnDispatch dispatch{
-        .input = "OIDNBuf", .albedo = "", .normal = "", .output = "Denoised"};
+    const dayo::fx::FxOidnDispatch dispatch{.input = "OIDNBuf", .albedo = "", .normal = "", .output = "Denoised"};
     const dayo::graphics::FxExecutionResources::TypedResourceResolver resolve =
         [](std::string_view name) -> std::optional<dayo::graphics::FxExecutionResources::TypedResource> {
         if (name == "OIDNBuf")
@@ -1010,9 +1005,9 @@ bool testTypedBufferResourceExecution() {
     const auto plan = dayo::fx::FxCompiler{}.plan(program, testContext());
     const auto stats = executor.execute(plan, commands, testContext(), resources);
     bool ok = check(stats.compute == 1, "executor runs a buffer-only typed pass");
-    ok &= check(commands.trace == std::vector<std::string>{"descriptorEx", "bindEx", "dispatch:4x4x1",
-                                                            "memoryBarrierEx"},
-                "buffer-only typed pass skips image transitions");
+    ok &=
+        check(commands.trace == std::vector<std::string>{"descriptorEx", "bindEx", "dispatch:4x4x1", "memoryBarrierEx"},
+              "buffer-only typed pass skips image transitions");
     return ok;
 }
 
@@ -1094,7 +1089,7 @@ bool testNativeSceneDerivedResources() {
                 "size-dependent GBuffer resources use the requested output extent and typed format");
     ok &= check(device.bufferClears_ == dayo::graphics::kNativeFramesInFlight,
                 "new OIDN buffers are initialized before the first effect invocation");
-    if (device.bufferUploads_.size() >= 1) {
+    if (!device.bufferUploads_.empty()) {
         std::array<std::uint32_t, 2> firstModelRange{};
         const auto& bytes = device.bufferUploads_.front().bytes;
         if (bytes.size() >= sizeof(firstModelRange))
@@ -1207,16 +1202,15 @@ bool testFxControllerResolver() {
     duplicate.morphWeights = {0.25F};
     snapshot.models.push_back(duplicate);
     std::string controllerError;
-    const std::array arrayController{
-        dayo::core::EffectController{
-            .name = "Exposure[2]", .controllerName = "ToonAnime.pmx", .item = "Smile", .type = "float"}};
+    const std::array arrayController{dayo::core::EffectController{
+        .name = "Exposure[2]", .controllerName = "ToonAnime.pmx", .item = "Smile", .type = "float"}};
     dayo::graphics::NativeControllerBlock arrayBlock(dayo::graphics::makeNativeControllerLayout(arrayController));
     const bool arrayResolved =
         dayo::graphics::resolveNativeControllerBlock(arrayBlock, arrayController, snapshot, 11, &controllerError);
     const auto* exposureField = arrayBlock.layout().find("Exposure[2]");
     std::array<float, 2> exposureValues{};
     if (exposureField != nullptr) {
-        std::memcpy(&exposureValues[0], arrayBlock.bytes().data() + exposureField->offset, sizeof(float));
+        std::memcpy(exposureValues.data(), arrayBlock.bytes().data() + exposureField->offset, sizeof(float));
         std::memcpy(&exposureValues[1],
                     arrayBlock.bytes().data() + exposureField->offset + exposureField->elementStride, sizeof(float));
     }
@@ -1269,8 +1263,8 @@ bool testFxConditionRuntime() {
     context.frame = 5.75F;
     context.host.onResize = true;
     context.host.onModelChanged = true;
-    const std::vector<std::string> conditions = {
-        "frame if FRAME >= 5", "resize if DEFAULT_RTSIZE.x == 64", "modelChanged if Probe.x == 4"};
+    const std::vector<std::string> conditions = {"frame if FRAME >= 5", "resize if DEFAULT_RTSIZE.x == 64",
+                                                 "modelChanged if Probe.x == 4"};
     bool ok = check(runtime.evaluate(conditions, context, &resourceTable),
                     "condition runtime combines frame events, predicates, and resource extents");
     context.frame = 4.0F;
@@ -1278,8 +1272,7 @@ bool testFxConditionRuntime() {
                 "condition runtime rejects a false expression predicate");
     context.frame = 5.0F;
     context.host.onResize = false;
-    ok &= check(!runtime.evaluate(conditions, context, &resourceTable),
-                "condition runtime rejects an inactive event");
+    ok &= check(!runtime.evaluate(conditions, context, &resourceTable), "condition runtime rejects an inactive event");
     ok &= check(runtime.evaluate({}, context), "empty condition list is unconditional");
     return ok;
 }
@@ -1725,9 +1718,9 @@ bool testFxResourceRuntimeMaterializesDeclarations() {
     ok &= check(volumeExtent.has_value() && volumeExtent->width == 8 && volumeExtent->height == 4 &&
                     volumeExtent->depth == 2,
                 "FX resource runtime resolves absolute 3D extents");
-    ok &= check(colorSymbolExtent.has_value() && colorSymbolExtent->dimension == 2 &&
-                    volumeSymbolExtent.has_value() && volumeSymbolExtent->dimension == 3 &&
-                    bufferSymbolExtent.has_value() && bufferSymbolExtent->dimension == 1,
+    ok &= check(colorSymbolExtent.has_value() && colorSymbolExtent->dimension == 2 && volumeSymbolExtent.has_value() &&
+                    volumeSymbolExtent->dimension == 3 && bufferSymbolExtent.has_value() &&
+                    bufferSymbolExtent->dimension == 1,
                 "FX resource runtime exposes dimension-preserving expression symbols");
     ok &= check(runtime.descriptorLayout().valid() && runtime.descriptorSet().valid() &&
                     runtime.descriptorLayoutDesc().bindings.size() == 4 && device.descriptorBindings_.size() == 4,
@@ -1927,9 +1920,9 @@ bool testNativeFxRuntimeBindsResourcesAndPipelines() {
     MockCommands commands;
     const auto stats = runtime.execute(frame, commands);
     ok &= check(stats.compute == 1, "native FX runtime executes the planned compute pass");
-    ok &= check(commands.trace == std::vector<std::string>{"descriptorEx", "bindEx", "dispatch:4x4x1",
-                                                            "memoryBarrierEx"},
-                "native FX runtime binds its resource set before dispatch");
+    ok &=
+        check(commands.trace == std::vector<std::string>{"descriptorEx", "bindEx", "dispatch:4x4x1", "memoryBarrierEx"},
+              "native FX runtime binds its resource set before dispatch");
     runtime.reset();
     ok &= check(device.destroyedPipelines_ == 1 && device.destroyedShaders_ == 1 &&
                     device.destroyedDescriptorSets_ == 2 && device.destroyedDescriptorLayouts_ == 2 &&
@@ -2157,6 +2150,7 @@ bool testFxPipelineRuntime() {
     dispatch.kind = dayo::fx::FxOpKind::compute;
     dispatch.shader = "main";
     dispatch.executable = dayo::fx::FxComputeDispatch{"main"};
+    dispatch.numThreads = {8, 4, 1};
     dispatch.macros = {"NATIVE=1"};
     dispatch.resources = {{"NativeOutput", true}};
     program.passes.push_back(dispatch);
@@ -2169,12 +2163,32 @@ bool testFxPipelineRuntime() {
                                       .descriptorSet = 3});
     const auto generated = dayo::fx::makeNativeFxShaderSource(program, dispatch, 7, sharedSource);
     bool ok = check(generated.find("YRZFX_ControllerCB") != std::string::npos &&
+                        generated.find("#define YRZ_NUMTHREADS [numthreads(8,4,1)]") != std::string::npos &&
                         generated.find("NativeOutput : register(u0, space7)") != std::string::npos &&
                         generated.find("NativeInput : register(t0, space7)") != std::string::npos &&
                         generated.find("NativeData : register(t1, space7)") != std::string::npos &&
                         generated.find("NativeSampler : register(s0, space7)") != std::string::npos &&
                         generated.find("SharedValues : register(t0, space3)") != std::string::npos,
                     "native FX source emits disjoint typed and renderer-shared register classes");
+
+    auto deformDispatch = dispatch;
+    deformDispatch.category = dayo::core::fx::FxCategory::deform;
+    deformDispatch.numThreads = {};
+    const auto deformGenerated = dayo::fx::makeNativeFxShaderSource(program, deformDispatch, 7, sharedSource);
+    ok &= check(deformGenerated.find("#define YRZ_NUMTHREADS [numthreads(1024,1,1)]") != std::string::npos,
+                "native FX source uses the upstream one-dimensional default thread group");
+
+    dayo::core::EffectTexture depthTexture;
+    depthTexture.name = "ZBuf";
+    depthTexture.format = "D32_FLOAT";
+    depthTexture.view = "DSV";
+    program.textures.push_back(depthTexture);
+    auto depthDispatch = dispatch;
+    depthDispatch.resources = {{.name = "ZBuf", .write = true, .role = dayo::fx::FxResourceRole::depthAttachment}};
+    const auto depthGenerated = dayo::fx::makeNativeFxShaderSource(program, depthDispatch, 7, sharedSource);
+    ok &= check(depthGenerated.find("Texture2D<float> ZBuf;") != std::string::npos &&
+                    depthGenerated.find("ZBuf : register(") == std::string::npos,
+                "depth attachments stay out of sampled descriptor plans");
 
     dayo::graphics::FxPipelineRuntime runtime;
     std::string error;

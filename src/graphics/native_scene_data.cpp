@@ -119,7 +119,8 @@ NativeSceneModelData makeNativeSceneModelData(const mmd::PmxModel& model, std::s
         std::copy(source.uv.begin(), source.uv.end(), std::begin(raw.uv));
         raw.edge = source.edgeScale;
         for (std::size_t channel = 0; channel < source.additionalUv.size(); ++channel)
-            std::copy(source.additionalUv[channel].begin(), source.additionalUv[channel].end(), raw.exuv + channel * 4U);
+            std::copy(source.additionalUv[channel].begin(), source.additionalUv[channel].end(),
+                      raw.exuv + channel * 4U);
         result.rawVertices.push_back(raw);
     }
     result.indices = model.indices;
@@ -132,12 +133,12 @@ NativeSceneModelData makeNativeSceneModelData(const mmd::PmxModel& model, std::s
             const auto i2 = result.indices[offset + 2U];
             if (i0 >= destination.size() || i1 >= destination.size() || i2 >= destination.size())
                 throw std::invalid_argument("native scene face references a vertex outside the PMX model");
-            const auto p0 = std::array{destination[i0].position[0], destination[i0].position[1],
-                                       destination[i0].position[2]};
-            const auto p1 = std::array{destination[i1].position[0], destination[i1].position[1],
-                                       destination[i1].position[2]};
-            const auto p2 = std::array{destination[i2].position[0], destination[i2].position[1],
-                                       destination[i2].position[2]};
+            const auto p0 =
+                std::array{destination[i0].position[0], destination[i0].position[1], destination[i0].position[2]};
+            const auto p1 =
+                std::array{destination[i1].position[0], destination[i1].position[1], destination[i1].position[2]};
+            const auto p2 =
+                std::array{destination[i2].position[0], destination[i2].position[1], destination[i2].position[2]};
             const auto uv0 = std::array{destination[i0].uv[0], destination[i0].uv[1]};
             const auto uv1 = std::array{destination[i1].uv[0], destination[i1].uv[1]};
             const auto uv2 = std::array{destination[i2].uv[0], destination[i2].uv[1]};

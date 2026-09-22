@@ -21,9 +21,8 @@ std::string controllerType(const EffectController& controller) {
     return type.empty() ? "float" : type;
 }
 
-std::vector<const EvaluatedModelState*> targetModels(const EffectController& controller,
-                                                     const SceneEvaluationSnapshot& snapshot,
-                                                     dayo::core::ModelId self) {
+std::vector<const EvaluatedModelState*>
+targetModels(const EffectController& controller, const SceneEvaluationSnapshot& snapshot, dayo::core::ModelId self) {
     const auto target = lower(controller.controllerName);
     if (target.empty() || target == "(self)") {
         const auto found = std::find_if(snapshot.models.begin(), snapshot.models.end(),

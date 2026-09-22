@@ -149,14 +149,12 @@ const NativeControllerField* NativeControllerLayout::find(std::string_view name)
     if (bracket != std::string_view::npos)
         name = name.substr(0, bracket);
     const auto normalized = identifier(name);
-    const auto found = std::find_if(fields.begin(), fields.end(), [name](const auto& field) {
-        return field.name == name;
-    });
+    const auto found =
+        std::find_if(fields.begin(), fields.end(), [name](const auto& field) { return field.name == name; });
     if (found != fields.end())
         return &*found;
-    const auto normalizedFound = std::find_if(fields.begin(), fields.end(), [&normalized](const auto& field) {
-        return field.name == normalized;
-    });
+    const auto normalizedFound = std::find_if(fields.begin(), fields.end(),
+                                              [&normalized](const auto& field) { return field.name == normalized; });
     if (normalizedFound != fields.end())
         return &*normalizedFound;
     return nullptr;

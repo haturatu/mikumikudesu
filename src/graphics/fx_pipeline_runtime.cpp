@@ -368,8 +368,7 @@ GraphicsPipelineDescEx graphicsPipelineDescriptor(const fx::FxProgram& program, 
     if (graphics != nullptr) {
         descriptor.vertexBindings.reserve(graphics->vertexLayout.bindings.size());
         for (const auto& binding : graphics->vertexLayout.bindings) {
-            if (binding.stride == 0 ||
-                std::ranges::any_of(descriptor.vertexBindings, [&](const auto& candidate) {
+            if (binding.stride == 0 || std::ranges::any_of(descriptor.vertexBindings, [&](const auto& candidate) {
                     return candidate.binding == binding.binding;
                 }))
                 throw std::invalid_argument("FX vertex input binding has a zero stride or duplicate slot: " +
@@ -379,9 +378,8 @@ GraphicsPipelineDescEx graphicsPipelineDescriptor(const fx::FxProgram& program, 
         }
         descriptor.vertexAttributes.reserve(graphics->vertexLayout.attributes.size());
         for (const auto& attribute : graphics->vertexLayout.attributes) {
-            if (std::ranges::any_of(descriptor.vertexAttributes, [&](const auto& candidate) {
-                    return candidate.location == attribute.location;
-                }))
+            if (std::ranges::any_of(descriptor.vertexAttributes,
+                                    [&](const auto& candidate) { return candidate.location == attribute.location; }))
                 throw std::invalid_argument("FX vertex input attributes have duplicate locations: " + dispatch.name);
             const auto format = vertexInputFormat(attribute.format);
             const auto binding = std::ranges::find_if(descriptor.vertexBindings, [&](const auto& candidate) {

@@ -296,22 +296,38 @@ VkStencilOp toVkStencilOp(StencilOpEx operation) {
 
 VkLogicOp toVkLogicOp(LogicOpEx operation) {
     switch (operation) {
-    case LogicOpEx::clear: return VK_LOGIC_OP_CLEAR;
-    case LogicOpEx::andOp: return VK_LOGIC_OP_AND;
-    case LogicOpEx::andReverse: return VK_LOGIC_OP_AND_REVERSE;
-    case LogicOpEx::copy: return VK_LOGIC_OP_COPY;
-    case LogicOpEx::andInverted: return VK_LOGIC_OP_AND_INVERTED;
-    case LogicOpEx::noOp: return VK_LOGIC_OP_NO_OP;
-    case LogicOpEx::xorOp: return VK_LOGIC_OP_XOR;
-    case LogicOpEx::orOp: return VK_LOGIC_OP_OR;
-    case LogicOpEx::nor: return VK_LOGIC_OP_NOR;
-    case LogicOpEx::equivalence: return VK_LOGIC_OP_EQUIVALENT;
-    case LogicOpEx::invert: return VK_LOGIC_OP_INVERT;
-    case LogicOpEx::orReverse: return VK_LOGIC_OP_OR_REVERSE;
-    case LogicOpEx::copyInverted: return VK_LOGIC_OP_COPY_INVERTED;
-    case LogicOpEx::orInverted: return VK_LOGIC_OP_OR_INVERTED;
-    case LogicOpEx::nand: return VK_LOGIC_OP_NAND;
-    case LogicOpEx::set: return VK_LOGIC_OP_SET;
+    case LogicOpEx::clear:
+        return VK_LOGIC_OP_CLEAR;
+    case LogicOpEx::andOp:
+        return VK_LOGIC_OP_AND;
+    case LogicOpEx::andReverse:
+        return VK_LOGIC_OP_AND_REVERSE;
+    case LogicOpEx::copy:
+        return VK_LOGIC_OP_COPY;
+    case LogicOpEx::andInverted:
+        return VK_LOGIC_OP_AND_INVERTED;
+    case LogicOpEx::noOp:
+        return VK_LOGIC_OP_NO_OP;
+    case LogicOpEx::xorOp:
+        return VK_LOGIC_OP_XOR;
+    case LogicOpEx::orOp:
+        return VK_LOGIC_OP_OR;
+    case LogicOpEx::nor:
+        return VK_LOGIC_OP_NOR;
+    case LogicOpEx::equivalence:
+        return VK_LOGIC_OP_EQUIVALENT;
+    case LogicOpEx::invert:
+        return VK_LOGIC_OP_INVERT;
+    case LogicOpEx::orReverse:
+        return VK_LOGIC_OP_OR_REVERSE;
+    case LogicOpEx::copyInverted:
+        return VK_LOGIC_OP_COPY_INVERTED;
+    case LogicOpEx::orInverted:
+        return VK_LOGIC_OP_OR_INVERTED;
+    case LogicOpEx::nand:
+        return VK_LOGIC_OP_NAND;
+    case LogicOpEx::set:
+        return VK_LOGIC_OP_SET;
     }
     throw std::invalid_argument("unknown native logic operation");
 }
@@ -4454,9 +4470,9 @@ handles::SamplerHandle VulkanDevice::createSamplerEx(const SamplerResourceDesc& 
         .addressModeW = addressMode(desc.addressW),
         .mipLodBias = desc.mipLodBias,
         .anisotropyEnable = anisotropy ? VK_TRUE : VK_FALSE,
-        .maxAnisotropy = anisotropy
-                             ? std::min(static_cast<float>(desc.maxAnisotropy), physicalProperties_.limits.maxSamplerAnisotropy)
-                             : 1.0F,
+        .maxAnisotropy = anisotropy ? std::min(static_cast<float>(desc.maxAnisotropy),
+                                               physicalProperties_.limits.maxSamplerAnisotropy)
+                                    : 1.0F,
         .compareEnable = comparison ? VK_TRUE : VK_FALSE,
         .compareOp = toVkCompareOp(static_cast<CompareOpEx>(desc.comparison)),
         .minLod = desc.minLod,
@@ -4666,9 +4682,8 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
             binding.stride > physicalProperties_.limits.maxVertexInputBindingStride ||
             !vertexBindingIds.insert(binding.binding).second)
             throw std::invalid_argument("graphics pipeline has an invalid or duplicate vertex input binding");
-        vertexBindings.push_back({.binding = binding.binding,
-                                  .stride = binding.stride,
-                                  .inputRate = toVkVertexInputRate(binding.rate)});
+        vertexBindings.push_back(
+            {.binding = binding.binding, .stride = binding.stride, .inputRate = toVkVertexInputRate(binding.rate)});
     }
     std::vector<VkVertexInputAttributeDescription> vertexAttributes;
     vertexAttributes.reserve(desc.vertexAttributes.size());
@@ -4740,8 +4755,8 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
         .stencilTestEnable = desc.depthStencil.stencilTest ? VK_TRUE : VK_FALSE,
         .front = stencilState(desc.depthStencil.front, desc.depthStencil.stencilReadMask,
                               desc.depthStencil.stencilWriteMask),
-        .back = stencilState(desc.depthStencil.back, desc.depthStencil.stencilReadMask,
-                             desc.depthStencil.stencilWriteMask),
+        .back =
+            stencilState(desc.depthStencil.back, desc.depthStencil.stencilReadMask, desc.depthStencil.stencilWriteMask),
     };
     const std::array dynamicStates{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     const VkPipelineDynamicStateCreateInfo dynamic{
@@ -5201,8 +5216,7 @@ void VulkanDevice::clearBufferEx(handles::BufferHandle buffer, std::uint32_t val
     });
 }
 
-void VulkanDevice::recordClearBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle buffer,
-                                     std::uint32_t value) {
+void VulkanDevice::recordClearBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle buffer, std::uint32_t value) {
     const auto it = typedBuffers_.find(buffer);
     if (it == typedBuffers_.end() || !typedBufferHandles_.isAlive(buffer))
         throw std::invalid_argument("typed command-list buffer clear references a stale buffer handle");
@@ -5624,10 +5638,10 @@ void VulkanDevice::recordBlitTexture(VkCommandBuffer commandBuffer, handles::Tex
     const auto& src = sourceIt->second.desc;
     const auto& dst = destinationIt->second.desc;
     if (src.dimension != TextureDimension::d2 || dst.dimension != TextureDimension::d2 || src.format != dst.format ||
-        isDepthFormat(src.format) || src.extent.depth != 1 || dst.extent.depth != 1 ||
-        src.mipLevels != 1 || dst.mipLevels != 1 || src.arrayLayers != 1 || dst.arrayLayers != 1 ||
-        sourceRect[0] >= sourceRect[2] || sourceRect[1] >= sourceRect[3] || sourceRect[2] > src.extent.width ||
-        sourceRect[3] > src.extent.height || (toBits(src.usage) & toBits(ResourceUsage::transferSrc)) == 0U ||
+        isDepthFormat(src.format) || src.extent.depth != 1 || dst.extent.depth != 1 || src.mipLevels != 1 ||
+        dst.mipLevels != 1 || src.arrayLayers != 1 || dst.arrayLayers != 1 || sourceRect[0] >= sourceRect[2] ||
+        sourceRect[1] >= sourceRect[3] || sourceRect[2] > src.extent.width || sourceRect[3] > src.extent.height ||
+        (toBits(src.usage) & toBits(ResourceUsage::transferSrc)) == 0U ||
         (toBits(dst.usage) & toBits(ResourceUsage::transferDst)) == 0U)
         throw std::invalid_argument("typed texture blit has incompatible resources or source rectangle");
     VkFormatProperties2 properties{.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
@@ -5859,8 +5873,7 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const Ren
         const auto& description = it->second.desc;
         if (description.dimension != TextureDimension::d2 || description.extent.width != requestedExtent.width ||
             description.extent.height != requestedExtent.height || description.extent.depth != 1 ||
-            description.mipLevels != 1 || description.arrayLayers != 1 ||
-            isDepthFormat(description.format) ||
+            description.mipLevels != 1 || description.arrayLayers != 1 || isDepthFormat(description.format) ||
             (toBits(description.usage) & toBits(ResourceUsage::colorAttachment)) == 0U)
             throw std::invalid_argument("typed rendering color attachment is incompatible with the render area");
         const bool undefined = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED;
@@ -5886,8 +5899,7 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const Ren
         const auto depthBits = toBits(description.usage);
         if (description.dimension != TextureDimension::d2 || description.extent.width != requestedExtent.width ||
             description.extent.height != requestedExtent.height || description.extent.depth != 1 ||
-            description.mipLevels != 1 || description.arrayLayers != 1 ||
-            !isDepthFormat(description.format) ||
+            description.mipLevels != 1 || description.arrayLayers != 1 || !isDepthFormat(description.format) ||
             (depthBits & (toBits(ResourceUsage::depthRead) | toBits(ResourceUsage::depthWrite))) == 0U)
             throw std::invalid_argument("typed rendering depth attachment is incompatible with the render area");
         const bool undefined = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED;
@@ -5905,8 +5917,7 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const Ren
 
     const VkExtent2D extent{requestedExtent.width, requestedExtent.height};
     std::optional<VkRenderingAttachmentInfo> stencilAttachment;
-    if (info.depth.has_value() &&
-        typedTextures_.at(info.depth->texture).desc.format == PixelFormat::depth24Stencil8) {
+    if (info.depth.has_value() && typedTextures_.at(info.depth->texture).desc.format == PixelFormat::depth24Stencil8) {
         stencilAttachment = depthAttachment;
     }
     const VkRenderingInfo rendering{

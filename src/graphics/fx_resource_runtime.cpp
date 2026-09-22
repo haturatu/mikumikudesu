@@ -117,12 +117,11 @@ class ExtentTable final : public core::fx::FxResourceTable {
     if (conversion == "one")
         return "1";
     std::string result;
-    const bool scalarBase = base == "VERTEXCOUNT" || base == "CLONEDVERTEXCOUNT" || base == "TOTALMATERIAL" ||
-                            base == "TOTALMATERIALCOUNT";
+    const bool scalarBase =
+        base == "VERTEXCOUNT" || base == "CLONEDVERTEXCOUNT" || base == "TOTALMATERIAL" || base == "TOTALMATERIALCOUNT";
     for (const auto axis : std::array<char, 3>{'x', 'y', 'z'}) {
-        const bool containsAxis = std::ranges::any_of(conversion, [axis](unsigned char character) {
-            return static_cast<char>(std::tolower(character)) == axis;
-        });
+        const bool containsAxis = std::ranges::any_of(
+            conversion, [axis](unsigned char character) { return static_cast<char>(std::tolower(character)) == axis; });
         if (!containsAxis)
             continue;
         if (!result.empty())
@@ -143,8 +142,8 @@ class ExtentTable final : public core::fx::FxResourceTable {
                                                   bool defaultToRenderTarget) {
     core::fx::FxSizeExpr result;
     result.base = source.absolute ? std::string{} : source.base;
-    result.dimension = source.dimension != 0 ? source.dimension
-                                              : (!source.base.empty() && !source.absolute ? 0U : dimension);
+    result.dimension =
+        source.dimension != 0 ? source.dimension : (!source.base.empty() && !source.absolute ? 0U : dimension);
     result.widthRatio = source.absolute ? 1.0F : source.widthRatio;
     result.heightRatio = source.absolute ? 1.0F : source.heightRatio;
     result.depthRatio = source.absolute ? 1.0F : source.depthRatio;
@@ -494,12 +493,10 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                     throw std::invalid_argument("FX external texture format must be RGBA8_UNORM: " + name);
                 external = core::loadImageRgba8(externalPath(program, declaration.filename));
             }
-            const auto resolvedFx = external.has_value() && !hasExplicitSize(declaration.size)
-                                        ? core::fx::FxExtent{.x = external->width,
-                                                             .y = external->height,
-                                                             .z = 1,
-                                                             .dimension = 2}
-                                        : resolveFxExtent(declaration.size, 2, true, context, table);
+            const auto resolvedFx =
+                external.has_value() && !hasExplicitSize(declaration.size)
+                    ? core::fx::FxExtent{.x = external->width, .y = external->height, .z = 1, .dimension = 2}
+                    : resolveFxExtent(declaration.size, 2, true, context, table);
             const Extent3D resolved{resolvedFx.x, resolvedFx.y, resolvedFx.z};
             if (external.has_value() &&
                 (resolved.width != external->width || resolved.height != external->height || resolved.depth != 1))
@@ -586,8 +583,8 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                 throw std::invalid_argument("FX buffer element size is zero: " + name);
             auto bufferSize = declaration.size;
             if (!bufferSize.absolute && bufferSize.base.empty()) {
-                bufferSize.base = program.category == core::fx::FxCategory::deform ? "CLONEDVERTEXCOUNT"
-                                                                                    : "DEFAULT_RTSIZE";
+                bufferSize.base =
+                    program.category == core::fx::FxCategory::deform ? "CLONEDVERTEXCOUNT" : "DEFAULT_RTSIZE";
                 bufferSize.dimension = program.category == core::fx::FxCategory::deform ? 1U : 2U;
             }
             const auto resolvedFx = resolveFxExtent(bufferSize, 1, false, context, table);
@@ -769,7 +766,8 @@ FxResourceRuntime::resolveOutputTexture(std::span<const fx::FxDispatch> ordered)
             const auto* candidate = store_.find(resource.name);
             if (candidate == nullptr || candidate->kind != FxResourceStore::Kind::texture)
                 continue;
-            return ResolvedTexture{.handle = candidate->texture, .extent = candidate->extent, .format = candidate->format};
+            return ResolvedTexture{
+                .handle = candidate->texture, .extent = candidate->extent, .format = candidate->format};
         }
     }
     return std::nullopt;

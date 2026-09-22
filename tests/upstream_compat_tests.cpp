@@ -706,8 +706,8 @@ int main() {
         std::cout << "INFO: upstream oracle validated " << scan.graphCount << " graphs, " << scan.passCount
                   << " dispatches, and " << scan.shaderCount << " shader probes\n";
         for (const auto& [feature, count] : scan.featureCounts)
-            std::cout << "INFO: upstream runtime requirement " << dayo::fx::toString(feature) << " appears in "
-                      << count << " graphs\n";
+            std::cout << "INFO: upstream runtime requirement " << dayo::fx::toString(feature) << " appears in " << count
+                      << " graphs\n";
         for (const auto& failure : scan.failures)
             std::cerr << "FAIL: upstream oracle: " << failure << '\n';
     } catch (const std::exception& exception) {
@@ -844,8 +844,8 @@ void CS() {}
                         runtimeGraph.samplers[0].comparisonFunc == dayo::core::FxCompareOp::less &&
                         runtimeGraph.samplers[0].borderColor == dayo::core::FxBorderColor::opaqueWhite,
                     "controller slider and complete sampler metadata survive parsing");
-        ok &= check(runtimeGraph.passes.size() == 3 && runtimeGraph.passes[0].numThreads ==
-                                                           std::array<std::uint32_t, 3>{4, 0, 0} &&
+        ok &= check(runtimeGraph.passes.size() == 3 &&
+                        runtimeGraph.passes[0].numThreads == std::array<std::uint32_t, 3>{4, 0, 0} &&
                         runtimeGraph.buffers.size() == 2 && runtimeGraph.buffers[1].elementSize == 4 &&
                         runtimeGraph.passes[1].rasterSource == dayo::core::EffectRasterSource::buffer &&
                         runtimeGraph.passes[1].rasterVertexBuffer == "Vertices" &&

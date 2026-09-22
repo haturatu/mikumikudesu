@@ -482,12 +482,16 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                 throw std::overflow_error("native scene model material count exceeds 32-bit table indices");
             const auto& geometry = nativeGeometry_[modelIndex];
             const auto* instance = scene_.model(geometry.modelId);
+            std::int32_t selectedMaterial = -1;
+#if DAYO_HAS_IMGUI
+            if (selected != nullptr && selected->id == geometry.modelId)
+                selectedMaterial = uiState_.selectedMaterial;
+#endif
             derivedModels.push_back(
                 {.materialCount = static_cast<std::uint32_t>(nativeSceneModelData_[modelIndex].materials.size()),
                  .textureBase = geometry.textureBase,
                  .cloneCount = geometry.cloneCount,
-                 .selectedMaterial =
-                     selected != nullptr && selected->id == geometry.modelId ? uiState_.selectedMaterial : -1,
+                 .selectedMaterial = selectedMaterial,
                  .visible = instance != nullptr && instance->visible});
         }
         if (!nativeSceneDerivedRuntime_.sync(derivedModels, screenExtent, &sceneError))
@@ -1570,8 +1574,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             return static_cast<std::uint32_t>(value);
         }();
         const auto sceneCloneCount = std::max(instance.cloneCount, 1U);
-        const auto cloneCount = graphics::resolveNativeModelCloneCount(instance.cloneCount, instance.id,
-                                                                       scene_.effects().deform);
+        const auto cloneCount =
+            graphics::resolveNativeModelCloneCount(instance.cloneCount, instance.id, scene_.effects().deform);
         const auto baseVertex = static_cast<std::uint32_t>(vertices.size());
         const auto firstModelIndex = indexCursor;
         NativeModelGeometry native;
@@ -1720,9 +1724,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             native.deformedVertices.push_back(seed);
         }
         if (!native.baseVertices.empty() && !native.indices.empty()) {
-            auto nativeModel =
-                graphics::makeNativeSceneModelData(*instance.model, native.baseVertices, frame.materials,
-                                                    instance.normalization);
+            auto nativeModel = graphics::makeNativeSceneModelData(*instance.model, native.baseVertices, frame.materials,
+                                                                  instance.normalization);
             const auto hasLoadedPmxTexture = [&instance](std::int32_t index) {
                 return index >= 0 && static_cast<std::size_t>(index) < instance.model->textures.size() &&
                        hasLoadedTexture(instance.textures, index);

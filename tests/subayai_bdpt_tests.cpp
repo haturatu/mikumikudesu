@@ -1539,7 +1539,8 @@ int main() {
         auto evaluatedPreview = preview;
         for (auto& vertex : evaluatedPreview)
             vertex.position[0] += 5.0F;
-        const auto normalizedData = dayo::graphics::makeNativeSceneModelData(model, evaluatedPreview, {}, normalization);
+        const auto normalizedData =
+            dayo::graphics::makeNativeSceneModelData(model, evaluatedPreview, {}, normalization);
         ok &= check(normalizedData.vertices[0].position[0] == 5.0F &&
                         normalizedData.rawVertices[0].position[0] == -1.0F &&
                         normalizedData.rawVertices[1].position[0] == 1.0F,
@@ -1547,9 +1548,8 @@ int main() {
 
         const auto data = dayo::graphics::makeNativeSceneModelData(model, preview);
         ok &= check(data.vertices.size() == 4 && data.rawVertices.size() == 4 && data.indices == model.indices &&
-                        data.materials.size() == 2 &&
-                        data.faces == std::vector<std::uint32_t>{0, 1} && data.materialFaces.size() == 2 &&
-                        data.faceWalker.size() == 2,
+                        data.materials.size() == 2 && data.faces == std::vector<std::uint32_t>{0, 1} &&
+                        data.materialFaces.size() == 2 && data.faceWalker.size() == 2,
                     "native scene data expands PMX model buffers deterministically");
         ok &= check(std::abs(data.vertices[0].tangent[0] - 1.0F) < 1e-5F &&
                         std::abs(data.vertices[0].tangent[1]) < 1e-5F &&
@@ -1567,13 +1567,11 @@ int main() {
                     "native scene model runtime allocates one buffer set per model");
         const auto counts = runtime.descriptorCounts();
         const auto bindings = runtime.bindings();
-        const auto vertexUsage = std::ranges::find_if(device.typedBufferUsages, [&](const auto& entry) {
-            return entry.first == bindings.vertexBuffers.front();
-        });
-        const auto requiredVertexUsage = dayo::graphics::ResourceUsage::storageReadWrite |
-                                         dayo::graphics::ResourceUsage::vertexRead |
-                                         dayo::graphics::ResourceUsage::asBuildRead |
-                                         dayo::graphics::ResourceUsage::rayTracingRead;
+        const auto vertexUsage = std::ranges::find_if(
+            device.typedBufferUsages, [&](const auto& entry) { return entry.first == bindings.vertexBuffers.front(); });
+        const auto requiredVertexUsage =
+            dayo::graphics::ResourceUsage::storageReadWrite | dayo::graphics::ResourceUsage::vertexRead |
+            dayo::graphics::ResourceUsage::asBuildRead | dayo::graphics::ResourceUsage::rayTracingRead;
         ok &= check(counts.vertexBuffers == 1 && counts.indexBuffers == 1 && counts.materials == 1 &&
                         bindings.vertexBuffers.size() == 1 && bindings.indexBuffers.size() == 1 &&
                         bindings.materials.size() == 1 && bindings.previousVertices.size() == 1 &&
