@@ -151,14 +151,12 @@ float4 PS() : SV_TARGET { return 1; }
             const auto marker = invalid.find("\"srcBlend\":\"one\"");
             if (marker == std::string::npos)
                 throw std::runtime_error("blend fixture marker missing");
-            invalid.replace(marker, std::string("\"srcBlend\":\"one\"").size(),
-                            "\"srcBlend\":\"src1_color\"");
+            invalid.replace(marker, std::string("\"srcBlend\":\"one\"").size(), "\"srcBlend\":\"src1_color\"");
             static_cast<void>(dayo::core::loadEffectGraphFromText("unsupported-blend-fixture.fxdayo", invalid));
         } catch (const std::runtime_error&) {
             rejectedUnsupportedBlend = true;
         }
-        ok &= check(rejectedUnsupportedBlend,
-                    "YRZFX rejects blend factors without a native pipeline contract");
+        ok &= check(rejectedUnsupportedBlend, "YRZFX rejects blend factors without a native pipeline contract");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: effect graph: " << exception.what() << '\n';
         ok = false;
