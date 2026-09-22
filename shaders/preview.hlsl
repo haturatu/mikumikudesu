@@ -30,6 +30,7 @@ struct PreviewSceneConstants {
     float4 light;  // xyz direction, w framebuffer aspect
     uint materialIndex;
     uint instanceCount;
+    uint2 materialPadding;
     float4 lightColor;
     float4 viewport; // xy framebuffer size
     float4 debug; // x isolated material, y debug flags

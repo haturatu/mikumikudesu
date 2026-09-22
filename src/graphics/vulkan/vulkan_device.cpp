@@ -688,9 +688,13 @@ void VulkanDevice::queryCapabilities() {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
         .pNext = &rayPipeline,
     };
+    VkPhysicalDeviceVulkan13Features vulkan13{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        .pNext = &acceleration,
+    };
     VkPhysicalDeviceVulkan12Features vulkan12{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-        .pNext = &acceleration,
+        .pNext = &vulkan13,
     };
     VkPhysicalDeviceFeatures2 features{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
@@ -721,6 +725,8 @@ void VulkanDevice::queryCapabilities() {
     capabilities_.bufferDeviceAddress = vulkan12.bufferDeviceAddress == VK_TRUE;
     capabilities_.descriptorIndexing =
         vulkan12.runtimeDescriptorArray == VK_TRUE && vulkan12.descriptorBindingPartiallyBound == VK_TRUE;
+    scalarBlockLayoutSupported_ = vulkan12.scalarBlockLayout == VK_TRUE;
+    shaderDemoteSupported_ = vulkan13.shaderDemoteToHelperInvocation == VK_TRUE;
     previewBindlessSupported_ = vulkan12.runtimeDescriptorArray == VK_TRUE &&
                                 vulkan12.descriptorBindingVariableDescriptorCount == VK_TRUE &&
                                 features.features.shaderSampledImageArrayDynamicIndexing == VK_TRUE;
@@ -786,6 +792,7 @@ void VulkanDevice::createLogicalDevice() {
     VkPhysicalDeviceVulkan13Features vulkan13{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
         .pNext = &acceleration,
+        .shaderDemoteToHelperInvocation = shaderDemoteSupported_,
         .synchronization2 = VK_TRUE,
         .dynamicRendering = VK_TRUE,
     };
@@ -796,6 +803,7 @@ void VulkanDevice::createLogicalDevice() {
         .descriptorBindingPartiallyBound = capabilities_.descriptorIndexing,
         .descriptorBindingVariableDescriptorCount = previewBindlessSupported_,
         .runtimeDescriptorArray = capabilities_.descriptorIndexing || previewBindlessSupported_,
+        .scalarBlockLayout = scalarBlockLayoutSupported_,
         .timelineSemaphore = capabilities_.timelineSemaphore,
         .bufferDeviceAddress = capabilities_.bufferDeviceAddress,
     };
