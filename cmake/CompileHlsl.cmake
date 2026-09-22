@@ -16,6 +16,7 @@ function(dayo_compile_hlsl output_var)
       -spirv
       -fspv-target-env=vulkan1.3
       -fvk-use-dx-layout
+      -fvk-use-scalar-layout
       -enable-16bit-types
       -E
       "${ARG_ENTRY}"

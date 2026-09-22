@@ -466,6 +466,8 @@ class VulkanDevice final : public Device {
     VkDescriptorSet previewBindlessDescriptor_{};
     std::uint32_t previewBindlessTextureCapacity_{};
     bool previewBindlessSupported_{};
+    bool scalarBlockLayoutSupported_{};
+    bool shaderDemoteSupported_{};
 #if DAYO_HAS_IMGUI
     VkDescriptorPool imguiDescriptorPool_{};
     bool uiInitialized_{};

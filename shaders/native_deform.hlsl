@@ -57,7 +57,9 @@ BoneTransform identityBone() {
 }
 
 BoneTransform getBone(int index) {
-    return index >= 0 && uint(index) < deform.boneCount ? bones[index] : identityBone();
+    if (index >= 0 && uint(index) < deform.boneCount)
+        return bones[index];
+    return identityBone();
 }
 
 float3 transformPoint(BoneTransform bone, float3 value) {
@@ -226,7 +228,7 @@ SkinResult skinVertex(PreviewVertex vertex) {
     }
 }
 
-[[numthreads(64, 1, 1)]]
+[numthreads(64, 1, 1)]
 void NativeDeform(uint3 id : SV_DispatchThreadID) {
     const uint index = id.x;
     if (index >= deform.vertexCount)

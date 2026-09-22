@@ -145,7 +145,11 @@ class TemporaryDirectory {
                                      const std::filesystem::path& diagnostics) {
     std::ostringstream command;
     command << quoteShellArgument(executable.string())
-            << " -spirv -fspv-target-env=" << quoteShellArgument(request.targetEnvironment) << " -fvk-use-dx-layout -E "
+            << " -spirv -fspv-target-env=" << quoteShellArgument(request.targetEnvironment)
+            << " -fvk-use-dx-layout"
+            // Keep DXC's register classes in the same disjoint Vulkan
+            // binding ranges used by glslc and native_scene_bindings.hpp.
+            << " -fvk-u-shift 0 all -fvk-t-shift 16 all -fvk-s-shift 32 all -fvk-b-shift 48 all -E "
             << quoteShellArgument(request.entryPoint) << " -T " << FxShaderCompiler::profile(request.stage) << " -Fo "
             << quoteShellArgument(output.string());
     for (const auto& macro : request.macros)

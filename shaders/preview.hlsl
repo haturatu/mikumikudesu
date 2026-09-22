@@ -30,6 +30,7 @@ struct PreviewSceneConstants {
     float4 light;  // xyz direction, w framebuffer aspect
     uint materialIndex;
     uint instanceCount;
+    uint2 materialPadding;
     float4 lightColor;
     float4 viewport; // xy framebuffer size
     float4 debug; // x isolated material, y debug flags
@@ -121,7 +122,9 @@ BoneTransform identityBone() {
 }
 
 BoneTransform getBone(int index) {
-    return index >= 0 ? boneTransforms[index] : identityBone();
+    if (index >= 0)
+        return boneTransforms[index];
+    return identityBone();
 }
 
 float3 transformPoint(BoneTransform bone, float3 value) {

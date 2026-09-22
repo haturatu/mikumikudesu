@@ -14,7 +14,7 @@ void PrefilterCube(uint3 id : SV_DispatchThreadID) {
     if (id.x >= environment.faceSize || id.y >= environment.faceSize || id.z >= 6)
         return;
     const int2 coordinate = int2(id.xy);
-    const int2 maximum = int2(environment.faceSize) - 1;
+    const int2 maximum = int2(environment.faceSize, environment.faceSize) - 1;
     float4 value = 0.0.xxxx;
     uint samples = 0;
     [unroll]
