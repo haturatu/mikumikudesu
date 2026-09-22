@@ -87,17 +87,30 @@ void VulkanCommandList::pushConstantsEx(std::span<const std::byte> bytes) {
 void VulkanCommandList::beginRenderingEx(handles::TextureHandle target, bool clear) {
     if (device_ == nullptr)
         throw std::logic_error("typed rendering requires a Vulkan device");
-    if (renderingTarget_.valid())
+    if (!renderingTargets_.empty())
         throw std::logic_error("typed rendering is already active on this command list");
     device_->recordBeginRendering(commandBuffer_, target, clear);
-    renderingTarget_ = target;
+    renderingTargets_.push_back(target);
+}
+
+void VulkanCommandList::beginRenderingEx(const RenderingInfoEx& info) {
+    if (device_ == nullptr)
+        throw std::logic_error("typed rendering requires a Vulkan device");
+    if (!renderingTargets_.empty())
+        throw std::logic_error("typed rendering is already active on this command list");
+    device_->recordBeginRendering(commandBuffer_, info);
+    renderingTargets_.reserve(info.colors.size() + (info.depth.has_value() ? 1U : 0U));
+    for (const auto& color : info.colors)
+        renderingTargets_.push_back(color.texture);
+    if (info.depth.has_value())
+        renderingTargets_.push_back(info.depth->texture);
 }
 
 void VulkanCommandList::endRenderingEx() {
-    if (device_ == nullptr || !renderingTarget_.valid())
+    if (device_ == nullptr || renderingTargets_.empty())
         throw std::logic_error("typed rendering is not active on this command list");
-    device_->recordEndRendering(commandBuffer_, renderingTarget_);
-    renderingTarget_ = {};
+    device_->recordEndRendering(commandBuffer_, renderingTargets_);
+    renderingTargets_.clear();
 }
 
 void VulkanCommandList::memoryBarrierEx() {

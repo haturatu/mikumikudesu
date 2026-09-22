@@ -225,17 +225,174 @@ PixelFormat textureFormat(std::string_view value) {
     throw std::invalid_argument("FX graphics target format is unsupported: " + std::string(value));
 }
 
-PixelFormat graphicsTargetFormat(const fx::FxProgram& program, const fx::FxDispatch& dispatch) {
-    for (const auto& resource : dispatch.resources) {
-        if (!resource.write)
-            continue;
-        const auto texture =
-            std::find_if(program.textures.begin(), program.textures.end(),
-                         [&resource](const auto& declaration) { return declaration.name == resource.name; });
-        if (texture != program.textures.end())
-            return textureFormat(texture->format);
+CullModeEx cullMode(core::EffectCullMode mode) {
+    switch (mode) {
+    case core::EffectCullMode::none:
+        return CullModeEx::none;
+    case core::EffectCullMode::front:
+        return CullModeEx::front;
+    case core::EffectCullMode::back:
+        return CullModeEx::back;
     }
-    return PixelFormat::rgba16Float;
+    throw std::invalid_argument("unsupported FX cull mode");
+}
+
+CompareOpEx compareOp(core::EffectDepthFunc function) {
+    switch (function) {
+    case core::EffectDepthFunc::never:
+        return CompareOpEx::never;
+    case core::EffectDepthFunc::less:
+        return CompareOpEx::less;
+    case core::EffectDepthFunc::equal:
+        return CompareOpEx::equal;
+    case core::EffectDepthFunc::lessEqual:
+        return CompareOpEx::lessOrEqual;
+    case core::EffectDepthFunc::greater:
+        return CompareOpEx::greater;
+    case core::EffectDepthFunc::notEqual:
+        return CompareOpEx::notEqual;
+    case core::EffectDepthFunc::greaterEqual:
+        return CompareOpEx::greaterOrEqual;
+    case core::EffectDepthFunc::always:
+        return CompareOpEx::always;
+    }
+    throw std::invalid_argument("unsupported FX depth compare operation");
+}
+
+std::string compact(std::string_view value) {
+    std::string result;
+    for (const auto character : value) {
+        if (character != '_' && character != '-')
+            result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
+    }
+    return result;
+}
+
+BlendFactorEx blendFactor(std::string_view value) {
+    const auto key = compact(value);
+    if (key.empty() || key == "one")
+        return BlendFactorEx::one;
+    if (key == "zero")
+        return BlendFactorEx::zero;
+    if (key == "srccolor")
+        return BlendFactorEx::srcColor;
+    if (key == "invsrccolor")
+        return BlendFactorEx::oneMinusSrcColor;
+    if (key == "destcolor")
+        return BlendFactorEx::dstColor;
+    if (key == "invdestcolor")
+        return BlendFactorEx::oneMinusDstColor;
+    if (key == "srcalpha")
+        return BlendFactorEx::srcAlpha;
+    if (key == "invsrcalpha")
+        return BlendFactorEx::oneMinusSrcAlpha;
+    if (key == "destalpha")
+        return BlendFactorEx::dstAlpha;
+    if (key == "invdestalpha")
+        return BlendFactorEx::oneMinusDstAlpha;
+    if (key == "srcalphasaturate")
+        return BlendFactorEx::srcAlphaSaturate;
+    throw std::invalid_argument("unsupported FX blend factor: " + std::string(value));
+}
+
+BlendOpEx blendOp(std::string_view value) {
+    const auto key = compact(value);
+    if (key.empty() || key == "add")
+        return BlendOpEx::add;
+    if (key == "subtract")
+        return BlendOpEx::subtract;
+    if (key == "revsubtract")
+        return BlendOpEx::reverseSubtract;
+    if (key == "min")
+        return BlendOpEx::min;
+    if (key == "max")
+        return BlendOpEx::max;
+    throw std::invalid_argument("unsupported FX blend operation: " + std::string(value));
+}
+
+const core::EffectTexture* findTexture(const fx::FxProgram& program, std::string_view name) {
+    const auto found = std::find_if(program.textures.begin(), program.textures.end(),
+                                    [name](const auto& declaration) { return declaration.name == name; });
+    return found == program.textures.end() ? nullptr : &*found;
+}
+
+PixelFormat attachmentFormat(const fx::FxProgram& program, const core::EffectAttachment& attachment,
+                             bool depth) {
+    if (depth)
+        return PixelFormat::depth32Float;
+    const auto* texture = findTexture(program, attachment.name);
+    return texture == nullptr || texture->format.empty() ? PixelFormat::rgba16Float : textureFormat(texture->format);
+}
+
+std::vector<PixelFormat> graphicsTargetFormats(const fx::FxProgram& program, const fx::FxDispatch& dispatch) {
+    std::vector<PixelFormat> result;
+    if (const auto* raster = std::get_if<fx::FxRasterDispatch>(&dispatch.executable); raster != nullptr) {
+        result.reserve(raster->colorAttachments.size());
+        for (const auto& attachment : raster->colorAttachments)
+            if (!attachment.name.empty())
+                result.push_back(attachmentFormat(program, attachment, false));
+    } else if (const auto* postprocess = std::get_if<fx::FxPostProcessDispatch>(&dispatch.executable);
+               postprocess != nullptr) {
+        result.reserve(postprocess->colorAttachments.size());
+        for (const auto& attachment : postprocess->colorAttachments)
+            if (!attachment.name.empty())
+                result.push_back(attachmentFormat(program, attachment, false));
+    }
+    if (result.empty()) {
+        for (const auto& resource : dispatch.resources) {
+            if (!resource.write || resource.role != fx::FxResourceRole::colorAttachment)
+                continue;
+            const auto* texture = findTexture(program, resource.name);
+            result.push_back(texture == nullptr || texture->format.empty() ? PixelFormat::rgba16Float
+                                                                            : textureFormat(texture->format));
+        }
+    }
+    return result;
+}
+
+std::optional<PixelFormat> graphicsDepthFormat(const fx::FxProgram& program, const fx::FxDispatch& dispatch) {
+    if (const auto* raster = std::get_if<fx::FxRasterDispatch>(&dispatch.executable); raster != nullptr &&
+        raster->depthAttachment.has_value() && !raster->depthAttachment->name.empty())
+        return attachmentFormat(program, *raster->depthAttachment, true);
+    for (const auto& resource : dispatch.resources)
+        if (resource.write && resource.role == fx::FxResourceRole::depthAttachment)
+            return PixelFormat::depth32Float;
+    return std::nullopt;
+}
+
+GraphicsPipelineDescEx graphicsPipelineDescriptor(const fx::FxProgram& program, const fx::FxDispatch& dispatch,
+                                                   handles::PipelineLayoutHandle layout,
+                                                   std::vector<handles::ShaderHandle> shaders) {
+    GraphicsPipelineDescEx descriptor;
+    descriptor.layout = layout;
+    descriptor.shaders = std::move(shaders);
+    descriptor.colorFormats = graphicsTargetFormats(program, dispatch);
+    descriptor.depthFormat = graphicsDepthFormat(program, dispatch);
+    descriptor.depthOnly = descriptor.colorFormats.empty() && descriptor.depthFormat.has_value();
+    if (descriptor.colorFormats.empty() && !descriptor.depthOnly &&
+        (dispatch.kind == fx::FxOpKind::raster || dispatch.kind == fx::FxOpKind::postprocess))
+        descriptor.colorFormats.push_back(PixelFormat::rgba16Float);
+    const auto* graphics = std::get_if<fx::FxRasterDispatch>(&dispatch.executable);
+    if (graphics != nullptr) {
+        descriptor.rasterizer.cullMode = cullMode(graphics->graphics.rasterizer.cullMode);
+        descriptor.depthStencil.depthTest = descriptor.depthFormat.has_value() && graphics->graphics.depthStencil.depthEnable;
+        descriptor.depthStencil.depthWrite = descriptor.depthStencil.depthTest && graphics->graphics.depthStencil.depthWrite;
+        descriptor.depthStencil.depthCompare = compareOp(graphics->graphics.depthStencil.depthFunc);
+        if (graphics->graphics.blend.size() > descriptor.colorFormats.size())
+            throw std::invalid_argument("FX blend attachment count exceeds color attachment count");
+        descriptor.blendAttachments.resize(descriptor.colorFormats.size());
+        for (std::size_t index = 0; index < graphics->graphics.blend.size(); ++index) {
+            const auto& state = graphics->graphics.blend[index];
+            descriptor.blendAttachments[index] = {.enabled = state.enabled,
+                                                  .srcColor = blendFactor(state.srcColor),
+                                                  .dstColor = blendFactor(state.dstColor),
+                                                  .colorOp = blendOp(state.colorOp),
+                                                  .srcAlpha = blendFactor(state.srcAlpha),
+                                                  .dstAlpha = blendFactor(state.dstAlpha),
+                                                  .alphaOp = blendOp(state.alphaOp)};
+        }
+    }
+    return descriptor;
 }
 
 } // namespace
@@ -331,10 +488,8 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                 const auto pixel =
                     compileShader(device, program, dispatch, raster->pixelShader, fx::FxShaderStage::fragment, compiler,
                                   entry, resourceSet, sourceOptions);
-                entry.pipeline =
-                    device.createGraphicsPipelineEx({.layout = *layout,
-                                                     .shaders = {vertex, pixel},
-                                                     .colorFormat = graphicsTargetFormat(program, dispatch)});
+                entry.pipeline = device.createGraphicsPipelineEx(
+                    graphicsPipelineDescriptor(program, dispatch, *layout, {vertex, pixel}));
                 break;
             }
             case fx::FxOpKind::postprocess: {
@@ -348,10 +503,8 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                 const auto pixel =
                     compileShader(device, program, dispatch, postprocess->pixelShader, fx::FxShaderStage::fragment,
                                   compiler, entry, resourceSet, sourceOptions);
-                entry.pipeline =
-                    device.createGraphicsPipelineEx({.layout = *layout,
-                                                     .shaders = {fullscreenVertex, pixel},
-                                                     .colorFormat = graphicsTargetFormat(program, dispatch)});
+                entry.pipeline = device.createGraphicsPipelineEx(
+                    graphicsPipelineDescriptor(program, dispatch, *layout, {fullscreenVertex, pixel}));
                 break;
             }
             case fx::FxOpKind::compute: {

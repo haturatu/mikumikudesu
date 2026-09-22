@@ -110,6 +110,43 @@ TextureResourceDesc makePersistentDesc() {
 int main() {
     bool ok = true;
 
+    // ---- native graphics descriptors retain MRT/DSV pipeline state ----
+    {
+        dayo::graphics::GraphicsPipelineDescEx pipeline;
+        pipeline.colorFormats = {dayo::graphics::PixelFormat::rgba16Float,
+                                 dayo::graphics::PixelFormat::rgba16Float,
+                                 dayo::graphics::PixelFormat::rgba16Float};
+        pipeline.depthFormat = dayo::graphics::PixelFormat::depth32Float;
+        pipeline.depthOnly = true;
+        pipeline.rasterizer.cullMode = dayo::graphics::CullModeEx::front;
+        pipeline.depthStencil.depthTest = true;
+        pipeline.depthStencil.depthWrite = false;
+        pipeline.depthStencil.depthCompare = dayo::graphics::CompareOpEx::lessOrEqual;
+        pipeline.blendAttachments.resize(3);
+        pipeline.blendAttachments.front().enabled = true;
+        pipeline.blendAttachments.front().srcColor = dayo::graphics::BlendFactorEx::one;
+        pipeline.blendAttachments.front().dstColor = dayo::graphics::BlendFactorEx::oneMinusSrcAlpha;
+        ok &= check(pipeline.colorFormats.size() == 3 && pipeline.depthFormat.has_value() &&
+                        pipeline.rasterizer.cullMode == dayo::graphics::CullModeEx::front &&
+                        !pipeline.depthStencil.depthWrite && pipeline.depthOnly && pipeline.blendAttachments.front().enabled,
+                    "native graphics descriptor represents MRT/DSV state");
+
+        dayo::graphics::GraphicsPipelineDescEx depthOnly;
+        depthOnly.depthOnly = true;
+        depthOnly.depthFormat = dayo::graphics::PixelFormat::depth32Float;
+        ok &= check(depthOnly.colorFormats.empty() && depthOnly.depthFormat.has_value(),
+                    "native graphics descriptor represents depth-only rendering");
+
+        dayo::graphics::RenderingInfoEx rendering;
+        rendering.extent = {1280, 720, 1};
+        rendering.colors = {{.texture = {1, 1}, .clear = true, .clearColor = {0.1F, 0.2F, 0.3F, 1.0F}},
+                            {.texture = {2, 1}, .clear = false},
+                            {.texture = {3, 1}, .clear = false}};
+        rendering.depth = dayo::graphics::DepthAttachmentEx{.texture = {4, 1}, .clear = true, .clearDepth = 1.0F};
+        ok &= check(rendering.colors.size() == 3 && rendering.depth.has_value() && rendering.extent.width == 1280,
+                    "native rendering info represents MRT/DSV attachments");
+    }
+
     // ---- barrier generation: write -> read inserts a transition + dependency ----
     {
         RenderGraph graph;

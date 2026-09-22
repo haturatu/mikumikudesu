@@ -337,7 +337,9 @@ class VulkanDevice final : public Device {
     void recordPushConstants(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,
                              std::span<const std::byte> bytes);
     void recordBeginRendering(VkCommandBuffer commandBuffer, handles::TextureHandle target, bool clear);
+    void recordBeginRendering(VkCommandBuffer commandBuffer, const RenderingInfoEx& info);
     void recordEndRendering(VkCommandBuffer commandBuffer, handles::TextureHandle target);
+    void recordEndRendering(VkCommandBuffer commandBuffer, std::span<const handles::TextureHandle> targets);
     void recordMemoryBarrier(VkCommandBuffer commandBuffer);
     void recordTransferBarrier(VkCommandBuffer commandBuffer);
     void recordAccelerationStructureBarrier(VkCommandBuffer commandBuffer);
