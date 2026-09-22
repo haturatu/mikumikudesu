@@ -448,6 +448,7 @@ void Scene::setEffect(EffectGraph graph) {
 EffectId Scene::addEffect(EffectGraph graph, std::optional<ModelId> controllerModel, std::int32_t executionOrder) {
     SceneEffectInstance instance;
     instance.id = nextEffectId_++;
+    const auto id = instance.id;
     instance.source = graph.sourcePath;
     instance.graph = std::move(graph);
     instance.controllerModel = controllerModel;
@@ -466,7 +467,7 @@ EffectId Scene::addEffect(EffectGraph graph, std::optional<ModelId> controllerMo
         break;
     }
     markDirty(DirtyFlag::effect);
-    return instance.id;
+    return id;
 }
 
 bool Scene::removeEffect(EffectId id) {
