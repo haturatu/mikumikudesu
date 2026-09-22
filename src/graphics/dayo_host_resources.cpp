@@ -1,5 +1,6 @@
 #include "graphics/dayo_host_resources.hpp"
 
+#include <algorithm>
 #include <array>
 #include <utility>
 
@@ -159,13 +160,12 @@ std::optional<DayoResourceBinding> DayoHostResourceProvider::resolve(std::string
 bool DayoHostResourceProvider::require(std::span<const DayoSemantic> semantics, std::string* error) const {
     if (error != nullptr)
         error->clear();
-    for (const auto semantic : semantics) {
-        if (resolve(semantic).has_value())
-            continue;
-        setError(error, "missing real upstream host resource: " + std::string(toString(semantic)));
-        return false;
-    }
-    return true;
+    const auto missing =
+        std::ranges::find_if(semantics, [this](DayoSemantic semantic) { return !resolve(semantic).has_value(); });
+    if (missing == semantics.end())
+        return true;
+    setError(error, "missing real upstream host resource: " + std::string(toString(*missing)));
+    return false;
 }
 
 } // namespace dayo::graphics
