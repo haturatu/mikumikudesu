@@ -252,8 +252,8 @@ int main() {
         legacy.type = EffectPassType::rasterizer;
         legacy.vertexShader = "vs";
         legacy.pixelShader = "ps";
-        legacy.renderTargets = {{.name = "color", .clear = false}};
-        legacy.depth = {.name = "depth", .clear = true};
+        legacy.renderTargets = {{.name = "color", .clear = false, .clearValue = {}}};
+        legacy.depth = {.name = "depth", .clear = true, .clearValue = {}};
         const auto converted = fxPassFromEffectPass(legacy, FxCategory::render);
         ok &= check(std::holds_alternative<FxRasterOp>(converted.op), "legacy raster becomes FxRasterOp");
         ok &= check(converted.category == FxCategory::render, "explicit category survives conversion");

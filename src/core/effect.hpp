@@ -12,6 +12,10 @@
 #include <variant>
 #include <vector>
 
+namespace dayo::core::fx {
+enum class RasterModelTarget : std::uint8_t;
+}
+
 namespace dayo::core {
 
 enum class EffectPassType { rasterizer, postprocess, compute, raytracing, copy, clear, mipmap, unknown };
@@ -57,9 +61,56 @@ struct EffectSampler {
     std::string addressV{"WRAP"};
 };
 
+struct EffectClearValue {
+    std::array<float, 4> color{};
+    float depth{1.0F};
+    std::uint32_t stencil{};
+};
+
 struct EffectAttachment {
     std::string name;
     bool clear{};
+    EffectClearValue clearValue;
+};
+
+enum class EffectCullMode : std::uint8_t { none, front, back };
+
+enum class EffectDepthFunc : std::uint8_t {
+    never,
+    less,
+    equal,
+    lessEqual,
+    greater,
+    notEqual,
+    greaterEqual,
+    always,
+};
+
+struct EffectRasterizerState {
+    EffectCullMode cullMode{EffectCullMode::back};
+};
+
+struct EffectDepthStencilState {
+    bool depthEnable{true};
+    bool depthWrite{true};
+    EffectDepthFunc depthFunc{EffectDepthFunc::less};
+};
+
+struct EffectBlendAttachmentState {
+    bool enabled{};
+    std::string srcColor;
+    std::string dstColor;
+    std::string colorOp;
+    std::string srcAlpha;
+    std::string dstAlpha;
+    std::string alphaOp;
+};
+
+struct EffectGraphicsState {
+    EffectRasterizerState rasterizer;
+    EffectDepthStencilState depthStencil;
+    std::vector<EffectBlendAttachmentState> blend;
+    fx::RasterModelTarget modelTarget{static_cast<fx::RasterModelTarget>(0)};
 };
 
 struct EffectHitGroup {
@@ -85,6 +136,7 @@ struct EffectPass {
     std::vector<EffectAttachment> renderTargets;
     std::vector<EffectAttachment> unorderedAccess;
     EffectAttachment depth;
+    EffectGraphicsState graphics;
     EffectSize outputSize;
     float outputWidthRatio{1.0F};
     float outputHeightRatio{1.0F};

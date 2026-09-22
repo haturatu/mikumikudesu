@@ -17,7 +17,7 @@ namespace dayo::core::fx {
 // unknown fallbacks.
 enum class FxCategory { deform, render, postprocess };
 
-enum class RasterModelTarget { all, self, other, buffer };
+enum class RasterModelTarget : std::uint8_t { all, self, other, buffer };
 
 struct FxRasterOp {
     std::string vertexShader;
