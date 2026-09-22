@@ -234,6 +234,11 @@ struct MockCommands final : public dayo::graphics::CommandList {
     void drawIndexedEx(const dayo::graphics::IndexedDrawEx& draw) override {
         trace.push_back("drawIndexedEx:" + std::to_string(draw.modelIndex) + ":" + std::to_string(draw.materialIndex));
     }
+    void drawIndexedBufferlessEx(dayo::graphics::handles::BufferHandle, std::uint32_t indexCount,
+                                 std::uint32_t instanceCount) override {
+        trace.push_back("drawIndexedBufferlessEx:" + std::to_string(indexCount) + "x" +
+                        std::to_string(instanceCount));
+    }
     void dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) override {
         trace.push_back("dispatch:" + std::to_string(x) + "x" + std::to_string(y) + "x" + std::to_string(z));
     }
@@ -262,11 +267,17 @@ struct MockCommands final : public dayo::graphics::CommandList {
     void clearTextureEx(dayo::graphics::handles::TextureHandle) override {
         trace.emplace_back("clearEx");
     }
+    void clearTextureEx(dayo::graphics::handles::TextureHandle, const std::array<float, 4>&) override {
+        trace.emplace_back("clearEx");
+    }
     void generateMipmapsEx(dayo::graphics::handles::TextureHandle) override {
         trace.emplace_back("mipmapEx");
     }
     void transferBarrierEx() override {
         trace.emplace_back("transferBarrierEx");
+    }
+    void memoryBarrierEx() override {
+        trace.emplace_back("memoryBarrierEx");
     }
     void bindDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle, std::uint32_t) override {
         trace.emplace_back("descriptorEx");
@@ -414,7 +425,8 @@ bool testMockTraceMatches() {
     ok &=
         check(graphicsStats.postprocess == 1 &&
                   graphicsCommands.trace == std::vector<std::string>{"transitionEx", "descriptorEx", "beginRenderingEx",
-                                                                     "bindEx", "draw:3x1", "endRenderingEx"},
+                                                                     "bindEx", "draw:3x1", "endRenderingEx",
+                                                                     "memoryBarrierEx"},
               "typed graphics executor brackets postprocess draws with a render target");
     std::size_t beforePasses = 0;
     std::size_t afterPasses = 0;
@@ -430,6 +442,114 @@ bool testMockTraceMatches() {
     const auto hookPlan = dayo::fx::FxCompiler{}.plan(hookProgram, testContext());
     static_cast<void>(executor.execute(hookPlan, graphicsCommands, testContext(), hookResources));
     ok &= check(beforePasses == 1 && afterPasses == 1, "FX pass hooks run around executed generic passes");
+    return ok;
+}
+
+bool testResolvedPassPlanning() {
+    using namespace dayo;
+    const fx::FxCompiler compiler;
+    bool ok = true;
+
+    fx::FxProgram screenProgram;
+    fx::FxDispatch screenPass;
+    screenPass.name = "screen-compute";
+    screenPass.kind = fx::FxOpKind::compute;
+    screenPass.executable = fx::FxComputeDispatch{"CS"};
+    screenProgram.passes.push_back(screenPass);
+    auto context = testContext();
+    context.renderWidth = 65;
+    context.renderHeight = 33;
+    const auto screenPlan = compiler.plan(screenProgram, context);
+    ok &= check(screenPlan.resolved.size() == 1 && screenPlan.resolved[0].outputExtent.width == 65 &&
+                    screenPlan.resolved[0].outputExtent.height == 33 && screenPlan.resolved[0].outputExtent.dimension == 2 &&
+                    screenPlan.resolved[0].numThreads == std::array<std::uint32_t, 3>{16, 16, 1} &&
+                    screenPlan.resolved[0].dispatchGroups.width == 5 && screenPlan.resolved[0].dispatchGroups.height == 3,
+                "render compute resolves screen extent and upstream 2D numthreads defaults");
+
+    fx::FxProgram deformProgram;
+    deformProgram.category = core::fx::FxCategory::deform;
+    fx::FxDispatch deformPass;
+    deformPass.name = "deform-compute";
+    deformPass.kind = fx::FxOpKind::compute;
+    deformPass.category = core::fx::FxCategory::deform;
+    deformPass.executable = fx::FxComputeDispatch{"CS"};
+    deformProgram.passes.push_back(deformPass);
+    auto deformContext = testContext();
+    deformContext.vertexCount = 600;
+    deformContext.clonedVertexCount = 2400;
+    const auto deformPlan = compiler.plan(deformProgram, deformContext);
+    ok &= check(deformPlan.resolved[0].outputExtent.width == deformContext.clonedVertexCount &&
+                    deformPlan.resolved[0].outputExtent.dimension == 1 &&
+                    deformPlan.resolved[0].numThreads == std::array<std::uint32_t, 3>{1024, 1, 1} &&
+                    deformPlan.resolved[0].dispatchGroups.width == 3,
+                "deform compute resolves cloned vertex count and upstream 1D numthreads defaults");
+
+    fx::FxProgram relativeProgram;
+    core::EffectTexture source;
+    source.name = "Source";
+    source.size.absolute = true;
+    source.size.dimension = 2;
+    source.size.width = 127;
+    source.size.height = 65;
+    relativeProgram.textures.push_back(source);
+    fx::FxDispatch relativePass;
+    relativePass.name = "relative-size";
+    relativePass.kind = fx::FxOpKind::compute;
+    relativePass.outputSize.base = "Source";
+    relativePass.outputSize.widthRatio = 0.5F;
+    relativePass.outputSize.heightRatio = 0.5F;
+    relativePass.executable = fx::FxComputeDispatch{"CS"};
+    relativeProgram.passes.push_back(relativePass);
+    const auto relativePlan = compiler.plan(relativeProgram, context);
+    ok &= check(relativePlan.resolved[0].outputExtent.width == 63 && relativePlan.resolved[0].outputExtent.height == 32,
+                "relative pass output size applies upstream truncation and ratios");
+
+    fx::FxProgram explicit3dProgram;
+    fx::FxDispatch explicit3dPass;
+    explicit3dPass.name = "explicit-3d";
+    explicit3dPass.kind = fx::FxOpKind::compute;
+    explicit3dPass.numThreads = {32, 0, 0};
+    explicit3dPass.outputSize.absolute = true;
+    explicit3dPass.outputSize.dimension = 3;
+    explicit3dPass.outputSize.width = 17;
+    explicit3dPass.outputSize.height = 9;
+    explicit3dPass.outputSize.depth = 5;
+    explicit3dPass.executable = fx::FxComputeDispatch{"CS"};
+    explicit3dProgram.passes.push_back(explicit3dPass);
+    const auto explicit3dPlan = compiler.plan(explicit3dProgram, context);
+    ok &= check(explicit3dPlan.resolved[0].numThreads == std::array<std::uint32_t, 3>{32, 1, 1} &&
+                    explicit3dPlan.resolved[0].dispatchGroups.width == 1 &&
+                    explicit3dPlan.resolved[0].dispatchGroups.height == 9 &&
+                    explicit3dPlan.resolved[0].dispatchGroups.depth == 5,
+                "explicit 3D output and partially specified numthreads resolve all axes");
+
+    fx::FxProgram bindingProgram;
+    core::EffectTexture textureSrv;
+    textureSrv.name = "TexSRV";
+    core::EffectTexture textureUav;
+    textureUav.name = "TexUAV";
+    bindingProgram.textures = {textureSrv, textureUav};
+    core::EffectBuffer bufferSrv;
+    bufferSrv.name = "BufSRV";
+    core::EffectBuffer bufferUav;
+    bufferUav.name = "BufUAV";
+    bindingProgram.buffers = {bufferSrv, bufferUav};
+    core::EffectSampler sampler;
+    sampler.name = "Linear";
+    bindingProgram.samplers = {sampler};
+    fx::FxDispatch bindingPass;
+    bindingPass.resources = {{"TexSRV", false}, {"TexUAV", true}, {"BufSRV", false}, {"BufUAV", true}};
+    const auto bindings = fx::planPassBindings(bindingProgram, bindingPass, 3);
+    const auto bindingFor = [&bindings](std::string_view name) -> const fx::FxLogicalBinding* {
+        return bindings.find(name);
+    };
+    ok &= check(bindingFor("TexSRV") != nullptr && bindingFor("TexSRV")->set == 3 &&
+                    bindingFor("TexSRV")->binding == 16 && bindingFor("BufSRV") != nullptr &&
+                    bindingFor("BufSRV")->binding == 17 && bindingFor("TexUAV") != nullptr &&
+                    bindingFor("TexUAV")->binding == 0 && bindingFor("BufUAV") != nullptr &&
+                    bindingFor("BufUAV")->binding == 1 && bindingFor("Linear") != nullptr &&
+                    bindingFor("Linear")->binding == 32,
+                "pass binding plan shares HLSL t/u register namespaces across images and buffers");
     return ok;
 }
 
@@ -497,6 +617,58 @@ bool testRasterModelTargetIndexedDraws() {
                     !dayo::graphics::matchesRasterTarget(dayo::core::fx::RasterModelTarget::self, 7, draws[1]) &&
                     dayo::graphics::matchesRasterTarget(dayo::core::fx::RasterModelTarget::other, 7, draws[1]),
                 "raster target semantics distinguish self and other models");
+    return ok;
+}
+
+bool testBufferlessIndexRasterExecution() {
+    MockDevice device;
+    dayo::graphics::VulkanFxExecutor executor(device);
+    MockCommands commands;
+
+    dayo::fx::FxProgram program;
+    dayo::core::EffectBuffer indices;
+    indices.name = "Indices";
+    indices.elementSize = sizeof(std::uint32_t);
+    indices.size.absolute = true;
+    indices.size.dimension = 1;
+    indices.size.width = 6;
+    program.buffers.push_back(indices);
+
+    dayo::fx::FxDispatch dispatch;
+    dispatch.name = "particle-bufferless-raster";
+    dispatch.kind = dayo::fx::FxOpKind::raster;
+    dispatch.resources = {{"Color", true, dayo::fx::FxResourceRole::colorAttachment}};
+    dayo::fx::FxRasterDispatch raster;
+    raster.vertexShader = "VS";
+    raster.pixelShader = "PS";
+    raster.graphics.modelTarget = dayo::core::fx::RasterModelTarget::buffer;
+    raster.rasterSource = dayo::core::EffectRasterSource::vertexBufferless;
+    raster.indexBuffer = "Indices";
+    dispatch.executable = raster;
+    program.passes.push_back(dispatch);
+
+    dayo::graphics::FxExecutionResources resources;
+    resources.resolveTypedPipeline = [](const dayo::fx::FxDispatch&) {
+        return std::optional<dayo::graphics::handles::PipelineHandle>{{30, 1}};
+    };
+    resources.resolveTypedResource = [](std::string_view name)
+        -> std::optional<dayo::graphics::FxExecutionResources::TypedResource> {
+        if (name == "Indices")
+            return dayo::graphics::FxExecutionResources::TypedResource{.buffer = {31, 1}};
+        if (name == "Color")
+            return dayo::graphics::FxExecutionResources::TypedResource{.texture = {32, 1}};
+        return std::nullopt;
+    };
+
+    const auto context = testContext();
+    const auto plan = dayo::fx::FxCompiler{}.plan(program, context);
+    const auto stats = executor.execute(plan, commands, context, resources);
+    bool ok = check(plan.resolved[0].raster.has_value() && plan.resolved[0].raster->indexCount == 6,
+                    "FX rasterIB resolves its declared element count");
+    ok &= check(stats.raster == 1 && stats.indexedDraws == 1,
+                "FX rasterIB counts a vertex-bufferless indexed draw");
+    ok &= check(std::ranges::find(commands.trace, "drawIndexedBufferlessEx:6x4") != commands.trace.end(),
+                "FX rasterIB records the vertex-bufferless indexed draw with the clone count");
     return ok;
 }
 
@@ -611,7 +783,8 @@ bool testTypedBufferResourceExecution() {
     const auto plan = dayo::fx::FxCompiler{}.plan(program, testContext());
     const auto stats = executor.execute(plan, commands, testContext(), resources);
     bool ok = check(stats.compute == 1, "executor runs a buffer-only typed pass");
-    ok &= check(commands.trace == std::vector<std::string>{"descriptorEx", "bindEx", "dispatch:8x8x1"},
+    ok &= check(commands.trace == std::vector<std::string>{"descriptorEx", "bindEx", "dispatch:4x4x1",
+                                                            "memoryBarrierEx"},
                 "buffer-only typed pass skips image transitions");
     return ok;
 }
@@ -1300,10 +1473,13 @@ bool testNativeFxRuntimeRefreshesFrameResources() {
 
     const auto firstContext = dayo::fx::makeFxFrameContext(12.0F, 3, 4, 2, 1, 0, 3, 1, 1, 1);
     const auto secondContext = dayo::fx::makeFxFrameContext(12.0F, 3, 8, 4, 1, 0, 3, 1, 1, 1);
+    const std::array sharedLayouts{dayo::graphics::handles::DescriptorSetLayoutHandle{700, 1}};
+    const std::array sharedSets{dayo::graphics::handles::DescriptorSetHandle{800, 1}};
     MockDevice device;
     dayo::graphics::NativeFxRuntime runtime;
     std::string error;
-    bool ok = check(runtime.initializeForFrame(device, std::move(program), compiler, firstContext, {}, &error),
+    bool ok = check(runtime.initializeForFrame(device, std::move(program), compiler, firstContext, sharedLayouts,
+                                               &error, sharedSets),
                     "native FX runtime initializes against the first frame context");
     const auto firstExtent = runtime.resources().extent("Output");
     ok &= check(firstExtent.has_value() && firstExtent->width == 4 && firstExtent->height == 2,
@@ -1381,11 +1557,12 @@ bool testNativeFxRuntimeBindsResourcesAndPipelines() {
     MockCommands commands;
     const auto stats = runtime.execute(frame, commands);
     ok &= check(stats.compute == 1, "native FX runtime executes the planned compute pass");
-    ok &= check(commands.trace == std::vector<std::string>{"descriptorEx", "bindEx", "dispatch:8x8x1"},
+    ok &= check(commands.trace == std::vector<std::string>{"descriptorEx", "bindEx", "dispatch:4x4x1",
+                                                            "memoryBarrierEx"},
                 "native FX runtime binds its resource set before dispatch");
     runtime.reset();
     ok &= check(device.destroyedPipelines_ == 1 && device.destroyedShaders_ == 1 &&
-                    device.destroyedDescriptorSets_ == 1 && device.destroyedDescriptorLayouts_ == 1 &&
+                    device.destroyedDescriptorSets_ == 2 && device.destroyedDescriptorLayouts_ == 2 &&
                     device.destroyedPipelineLayouts_ == 1,
                 "native FX runtime tears down pipeline and resource ownership");
     return ok;
@@ -1745,7 +1922,9 @@ int main() {
         ok &= check(rejected, "legacy command-list defaults reject unsupported work");
     }
     ok &= testMockTraceMatches();
+    ok &= testResolvedPassPlanning();
     ok &= testRasterModelTargetIndexedDraws();
+    ok &= testBufferlessIndexRasterExecution();
     ok &= testDepthOnlyRasterExecution();
     ok &= testOidnHostExecution();
     ok &= testTypedBufferResourceExecution();

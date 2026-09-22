@@ -123,6 +123,8 @@ PixelFormat textureFormat(std::string_view value) {
         return PixelFormat::r32g32Float;
     if (name == "D32_FLOAT")
         return PixelFormat::depth32Float;
+    if (name == "D24_UNORM_S8_UINT" || name == "D24S8")
+        return PixelFormat::depth24Stencil8;
     throw std::invalid_argument("FX graphics target format is unsupported: " + std::string(value));
 }
 
@@ -136,6 +138,10 @@ CullModeEx cullMode(core::EffectCullMode mode) {
         return CullModeEx::back;
     }
     throw std::invalid_argument("unsupported FX cull mode");
+}
+
+FrontFaceEx frontFace(core::EffectFrontFace face) {
+    return face == core::EffectFrontFace::clockwise ? FrontFaceEx::clockwise : FrontFaceEx::counterClockwise;
 }
 
 CompareOpEx compareOp(core::EffectDepthFunc function) {
@@ -158,6 +164,54 @@ CompareOpEx compareOp(core::EffectDepthFunc function) {
         return CompareOpEx::always;
     }
     throw std::invalid_argument("unsupported FX depth compare operation");
+}
+
+CompareOpEx compareOp(core::FxCompareOp function) {
+    switch (function) {
+    case core::FxCompareOp::never:
+        return CompareOpEx::never;
+    case core::FxCompareOp::less:
+        return CompareOpEx::less;
+    case core::FxCompareOp::equal:
+        return CompareOpEx::equal;
+    case core::FxCompareOp::lessEqual:
+        return CompareOpEx::lessOrEqual;
+    case core::FxCompareOp::greater:
+        return CompareOpEx::greater;
+    case core::FxCompareOp::notEqual:
+        return CompareOpEx::notEqual;
+    case core::FxCompareOp::greaterEqual:
+        return CompareOpEx::greaterOrEqual;
+    case core::FxCompareOp::always:
+        return CompareOpEx::always;
+    }
+    throw std::invalid_argument("unsupported FX stencil compare operation");
+}
+
+StencilOpEx stencilOp(core::FxStencilOp operation) {
+    switch (operation) {
+    case core::FxStencilOp::keep:
+        return StencilOpEx::keep;
+    case core::FxStencilOp::zero:
+        return StencilOpEx::zero;
+    case core::FxStencilOp::replace:
+        return StencilOpEx::replace;
+    case core::FxStencilOp::incrementClamp:
+        return StencilOpEx::incrementClamp;
+    case core::FxStencilOp::decrementClamp:
+        return StencilOpEx::decrementClamp;
+    case core::FxStencilOp::invert:
+        return StencilOpEx::invert;
+    case core::FxStencilOp::incrementWrap:
+        return StencilOpEx::incrementWrap;
+    case core::FxStencilOp::decrementWrap:
+        return StencilOpEx::decrementWrap;
+    }
+    throw std::invalid_argument("unsupported FX stencil operation");
+}
+
+LogicOpEx logicOp(core::FxLogicOp operation) {
+    return static_cast<LogicOpEx>(operation);
 }
 
 std::string compact(std::string_view value) {
@@ -218,10 +272,10 @@ const core::EffectTexture* findTexture(const fx::FxProgram& program, std::string
 }
 
 PixelFormat attachmentFormat(const fx::FxProgram& program, const core::EffectAttachment& attachment, bool depth) {
-    if (depth)
-        return PixelFormat::depth32Float;
     const auto* texture = findTexture(program, attachment.name);
-    return texture == nullptr || texture->format.empty() ? PixelFormat::rgba16Float : textureFormat(texture->format);
+    if (texture != nullptr && !texture->format.empty())
+        return textureFormat(texture->format);
+    return depth ? PixelFormat::depth32Float : PixelFormat::rgba16Float;
 }
 
 std::vector<PixelFormat> graphicsTargetFormats(const fx::FxProgram& program, const fx::FxDispatch& dispatch) {
@@ -256,7 +310,7 @@ std::optional<PixelFormat> graphicsDepthFormat(const fx::FxProgram& program, con
         return attachmentFormat(program, *raster->depthAttachment, true);
     for (const auto& resource : dispatch.resources)
         if (resource.write && resource.role == fx::FxResourceRole::depthAttachment)
-            return PixelFormat::depth32Float;
+            return attachmentFormat(program, {.name = resource.name}, true);
     return std::nullopt;
 }
 
@@ -275,11 +329,27 @@ GraphicsPipelineDescEx graphicsPipelineDescriptor(const fx::FxProgram& program, 
     const auto* graphics = std::get_if<fx::FxRasterDispatch>(&dispatch.executable);
     if (graphics != nullptr) {
         descriptor.rasterizer.cullMode = cullMode(graphics->graphics.rasterizer.cullMode);
+        descriptor.rasterizer.frontFace = frontFace(graphics->graphics.rasterizer.frontFace);
         descriptor.depthStencil.depthTest =
             descriptor.depthFormat.has_value() && graphics->graphics.depthStencil.depthEnable;
         descriptor.depthStencil.depthWrite =
             descriptor.depthStencil.depthTest && graphics->graphics.depthStencil.depthWrite;
         descriptor.depthStencil.depthCompare = compareOp(graphics->graphics.depthStencil.depthFunc);
+        descriptor.depthStencil.stencilTest = graphics->graphics.depthStencil.stencilEnable;
+        descriptor.depthStencil.stencilReadMask = graphics->graphics.depthStencil.stencilReadMask;
+        descriptor.depthStencil.stencilWriteMask = graphics->graphics.depthStencil.stencilWriteMask;
+        const auto stencilState = [](const core::EffectDepthStencilState::StencilFace& source) {
+            return StencilOpStateEx{.fail = stencilOp(source.fail),
+                                    .pass = stencilOp(source.pass),
+                                    .depthFail = stencilOp(source.depthFail),
+                                    .compare = compareOp(source.compare)};
+        };
+        descriptor.depthStencil.front = stencilState(graphics->graphics.depthStencil.front);
+        descriptor.depthStencil.back = stencilState(graphics->graphics.depthStencil.back);
+        descriptor.alphaToCoverage = graphics->graphics.alphaToCoverage;
+        descriptor.independentBlend = graphics->graphics.independentBlend;
+        descriptor.logicOpEnable = graphics->graphics.logicOpEnable;
+        descriptor.logicOp = logicOp(graphics->graphics.logicOp);
         if (graphics->graphics.blend.size() > descriptor.colorFormats.size())
             throw std::invalid_argument("FX blend attachment count exceeds color attachment count");
         descriptor.blendAttachments.resize(descriptor.colorFormats.size());
@@ -292,6 +362,7 @@ GraphicsPipelineDescEx graphicsPipelineDescriptor(const fx::FxProgram& program, 
                                                   .srcAlpha = blendFactor(state.srcAlpha),
                                                   .dstAlpha = blendFactor(state.dstAlpha),
                                                   .alphaOp = blendOp(state.alphaOp)};
+            descriptor.blendAttachments[index].colorWriteMask = state.colorWriteMask;
         }
     }
     return descriptor;

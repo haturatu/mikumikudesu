@@ -3,6 +3,7 @@
 #include "core/log.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <ranges>
@@ -113,11 +114,11 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             commands.bindDescriptorSetEx(*descriptorSet);
         }
     };
-    const auto beginTypedRendering = [&](const dayo::fx::FxDispatch& dispatch) {
+    const auto beginTypedRendering = [&](const dayo::fx::FxDispatch& dispatch, dayo::fx::FxExtent3D outputExtent) {
         if (const auto* raster = std::get_if<dayo::fx::FxRasterDispatch>(&dispatch.executable);
             raster != nullptr && (!raster->colorAttachments.empty() || raster->depthAttachment.has_value())) {
             RenderingInfoEx info;
-            info.extent = {context.renderWidth, context.renderHeight, 1};
+            info.extent = {outputExtent.width, outputExtent.height, outputExtent.depth};
             info.colors.reserve(raster->colorAttachments.size());
             for (const auto& attachment : raster->colorAttachments) {
                 info.colors.push_back({.texture = resolveTypedName(attachment.name),
@@ -128,7 +129,8 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                 const auto& attachment = *raster->depthAttachment;
                 info.depth = DepthAttachmentEx{.texture = resolveTypedName(attachment.name),
                                                .clear = attachment.clear,
-                                               .clearDepth = attachment.clearValue.depth};
+                                               .clearDepth = attachment.clearValue.depth,
+                                               .clearStencil = attachment.clearValue.stencil};
             }
             commands.beginRenderingEx(info);
             return;
@@ -136,7 +138,7 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
         if (const auto* postprocess = std::get_if<dayo::fx::FxPostProcessDispatch>(&dispatch.executable);
             postprocess != nullptr && !postprocess->colorAttachments.empty()) {
             RenderingInfoEx info;
-            info.extent = {context.renderWidth, context.renderHeight, 1};
+            info.extent = {outputExtent.width, outputExtent.height, outputExtent.depth};
             info.colors.reserve(postprocess->colorAttachments.size());
             for (const auto& attachment : postprocess->colorAttachments) {
                 info.colors.push_back({.texture = resolveTypedName(attachment.name),
@@ -153,7 +155,8 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             commands.transitionEx(target);
         commands.beginRenderingEx(target);
     };
-    const auto prepareShaderPass = [&](const dayo::fx::FxDispatch& dispatch, bool beginRendering) {
+    const auto prepareShaderPass = [&](const dayo::fx::FxDispatch& dispatch, bool beginRendering,
+                                       dayo::fx::FxExtent3D outputExtent) {
         if (!dispatch.conditions.empty()) {
             if (!resources.evaluateConditions)
                 throw std::logic_error("VulkanFxExecutor: pass conditions have no evaluator: " + dispatch.name);
@@ -166,7 +169,7 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
         prepareResources(dispatch);
         if (resources.resolveTypedPipeline) {
             if (beginRendering)
-                beginTypedRendering(dispatch);
+                beginTypedRendering(dispatch, outputExtent);
             const auto pipeline = resources.resolveTypedPipeline(dispatch);
             if (!pipeline.has_value())
                 throw std::logic_error("VulkanFxExecutor: typed pipeline is unavailable: " + dispatch.name);
@@ -212,15 +215,42 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
         return resources.evaluateConditions(
             std::span<const std::string>(dispatch.conditions.data(), dispatch.conditions.size()), context);
     };
-    for (const auto& dispatch : plan.ordered) {
+    for (std::size_t passIndex = 0; passIndex < plan.ordered.size(); ++passIndex) {
+        const auto& dispatch = plan.ordered[passIndex];
+        const auto* resolved = passIndex < plan.resolved.size() ? &plan.resolved[passIndex] : nullptr;
+        const auto outputExtent = resolved == nullptr
+                                      ? dayo::fx::FxExtent3D{std::max(context.renderWidth, 1U),
+                                                             std::max(context.renderHeight, 1U), 1}
+                                      : resolved->outputExtent;
         dayo::log::debug("VulkanFxExecutor pass ", dispatch.name, " kind ", dayo::fx::toString(dispatch.kind));
         bool executed = false;
         switch (dispatch.kind) {
         case dayo::fx::FxOpKind::raster:
-            if (!prepareShaderPass(dispatch, true))
+            if (!prepareShaderPass(dispatch, true, outputExtent))
                 break;
-            if (!resources.sceneDraws.empty()) {
+            {
                 const auto* raster = std::get_if<dayo::fx::FxRasterDispatch>(&dispatch.executable);
+                if (raster != nullptr && raster->rasterSource != dayo::core::EffectRasterSource::scene) {
+                    if (!raster->vertexBuffer.empty())
+                        throw std::logic_error("VulkanFxExecutor: FX vertex-buffer raster input is not supported yet: " +
+                                               raster->vertexBuffer);
+                    if (!raster->indexBuffer.empty()) {
+                        if (!resources.resolveTypedResource)
+                            throw std::logic_error("VulkanFxExecutor: FX index buffer has no typed resource resolver: " +
+                                                   raster->indexBuffer);
+                        const auto indexBuffer = resources.resolveTypedResource(raster->indexBuffer);
+                        const auto indexCount = resolved != nullptr && resolved->raster.has_value()
+                                                    ? resolved->raster->indexCount
+                                                    : 0U;
+                        if (!indexBuffer.has_value() || !indexBuffer->buffer.valid() || indexCount == 0)
+                            throw std::logic_error("VulkanFxExecutor: FX index buffer is unavailable or unresolved: " +
+                                                   raster->indexBuffer);
+                        commands.drawIndexedBufferlessEx(indexBuffer->buffer, indexCount, context.cloneCount);
+                        ++stats.indexedDraws;
+                    } else {
+                        commands.draw(static_cast<std::uint32_t>(context.clonedVertexCount), context.cloneCount);
+                    }
+                } else if (!resources.sceneDraws.empty()) {
                 const auto target =
                     raster == nullptr ? dayo::core::fx::RasterModelTarget::all : raster->graphics.modelTarget;
                 for (const auto& sceneDraw : resources.sceneDraws) {
@@ -239,8 +269,9 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                                             .materialIndex = sceneDraw.materialIndex});
                     ++stats.indexedDraws;
                 }
-            } else {
-                commands.draw(static_cast<std::uint32_t>(context.clonedVertexCount), context.cloneCount);
+                } else {
+                    commands.draw(static_cast<std::uint32_t>(context.clonedVertexCount), context.cloneCount);
+                }
             }
             if (resources.resolveTypedPipeline)
                 commands.endRenderingEx();
@@ -248,7 +279,7 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             executed = true;
             break;
         case dayo::fx::FxOpKind::postprocess:
-            if (!prepareShaderPass(dispatch, true))
+            if (!prepareShaderPass(dispatch, true, outputExtent))
                 break;
             commands.draw(3, 1);
             if (resources.resolveTypedPipeline)
@@ -257,9 +288,33 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             executed = true;
             break;
         case dayo::fx::FxOpKind::compute:
-            if (!prepareShaderPass(dispatch, false))
+            if (!prepareShaderPass(dispatch, false, outputExtent))
                 break;
-            commands.dispatch((context.renderWidth + 7U) / 8U, (context.renderHeight + 7U) / 8U, 1);
+            if (resolved != nullptr) {
+                commands.dispatch(resolved->dispatchGroups.width, resolved->dispatchGroups.height,
+                                  resolved->dispatchGroups.depth);
+            } else {
+                const auto ceilDiv = [](std::uint32_t value, std::uint32_t divisor) {
+                    if (divisor == 0)
+                        throw std::logic_error("VulkanFxExecutor: compute numthreads component is zero");
+                    return value / divisor + (value % divisor == 0 ? 0U : 1U);
+                };
+                const auto dimension = outputExtent.dimension >= 1 && outputExtent.dimension <= 3
+                                           ? outputExtent.dimension
+                                           : (outputExtent.depth > 1 ? 3U : (outputExtent.height > 1 ? 2U : 1U));
+                auto threads = dispatch.numThreads;
+                if (threads[0] == 0 && threads[1] == 0 && threads[2] == 0) {
+                    threads = dimension == 1 ? std::array<std::uint32_t, 3>{1024, 1, 1}
+                                             : (dimension == 2 ? std::array<std::uint32_t, 3>{16, 16, 1}
+                                                               : std::array<std::uint32_t, 3>{8, 8, 8});
+                } else {
+                    for (auto& threadCount : threads)
+                        threadCount = std::max(threadCount, 1U);
+                }
+                commands.dispatch(ceilDiv(outputExtent.width, threads[0]),
+                                  ceilDiv(outputExtent.height, threads[1]),
+                                  ceilDiv(outputExtent.depth, threads[2]));
+            }
             ++stats.compute;
             executed = true;
             break;
@@ -269,7 +324,20 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             if (dispatch.resources.size() < 2 || dispatch.resources[0].write || !dispatch.resources[1].write)
                 throw std::logic_error("VulkanFxExecutor: copy pass requires read source and write destination");
             if (resources.resolveTypedTexture || resources.resolveTypedResource) {
-                commands.copyTextureEx(resolveTyped(dispatch.resources[0]), resolveTyped(dispatch.resources[1]));
+                if (resources.resolveTypedResource) {
+                    const auto source = resources.resolveTypedResource(dispatch.resources[0].name);
+                    const auto destination = resources.resolveTypedResource(dispatch.resources[1].name);
+                    if (!source.has_value() || !destination.has_value())
+                        throw std::logic_error("VulkanFxExecutor: typed copy resource is unavailable");
+                    if (source->buffer.valid() && destination->buffer.valid())
+                        commands.copyBufferEx(source->buffer, destination->buffer);
+                    else if (source->texture.valid() && destination->texture.valid())
+                        commands.copyTextureEx(source->texture, destination->texture);
+                    else
+                        throw std::logic_error("VulkanFxExecutor: copy source and destination kinds do not match");
+                } else {
+                    commands.copyTextureEx(resolveTyped(dispatch.resources[0]), resolveTyped(dispatch.resources[1]));
+                }
             } else {
                 commands.copyTexture(resolve(dispatch.resources[0]), resolve(dispatch.resources[1]));
             }
@@ -281,10 +349,22 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                 break;
             if (dispatch.resources.size() != 1 || !dispatch.resources[0].write)
                 throw std::logic_error("VulkanFxExecutor: clear pass requires one write target");
-            if (resources.resolveTypedTexture || resources.resolveTypedResource)
-                commands.clearTextureEx(resolveTyped(dispatch.resources[0]));
-            else
+            if (resources.resolveTypedResource) {
+                const auto target = resources.resolveTypedResource(dispatch.resources[0].name);
+                if (!target.has_value())
+                    throw std::logic_error("VulkanFxExecutor: clear target is unavailable");
+                if (target->buffer.valid()) {
+                    commands.clearBufferEx(target->buffer, 0);
+                } else if (target->texture.valid()) {
+                    commands.clearTextureEx(target->texture, dispatch.functional.clearValue.color);
+                } else {
+                    throw std::logic_error("VulkanFxExecutor: clear target must be a texture or buffer");
+                }
+            } else if (resources.resolveTypedTexture) {
+                commands.clearTextureEx(resolveTyped(dispatch.resources[0]), dispatch.functional.clearValue.color);
+            } else {
                 commands.clearTexture(resolve(dispatch.resources[0]));
+            }
             ++stats.clear;
             executed = true;
             break;
@@ -340,14 +420,21 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                     if (!constants.empty())
                         commands.pushConstantsEx(std::span<const std::byte>(constants.data(), constants.size()));
                 }
-                commands.traceRaysEx(*pipeline, *sbt, context.renderWidth, context.renderHeight, 1);
+                commands.traceRaysEx(*pipeline, *sbt, outputExtent.width, outputExtent.height, outputExtent.depth);
                 ++stats.rayTracing;
                 executed = true;
             }
             break;
         }
-        if (executed && resources.afterPass)
-            resources.afterPass(dispatch, commands);
+        const bool wroteResource = std::ranges::any_of(dispatch.resources, [](const auto& resource) {
+            return resource.write;
+        });
+        if (executed && wroteResource && resources.resolveTypedPipeline)
+            commands.memoryBarrierEx();
+        if (executed) {
+            if (resources.afterPass)
+                resources.afterPass(dispatch, commands);
+        }
     }
     return stats;
 }

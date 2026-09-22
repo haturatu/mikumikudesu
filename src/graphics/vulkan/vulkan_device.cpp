@@ -182,6 +182,8 @@ VkFormat toVkFormat(PixelFormat format) {
         return VK_FORMAT_R32G32B32A32_SFLOAT;
     case PixelFormat::depth32Float:
         return VK_FORMAT_D32_SFLOAT;
+    case PixelFormat::depth24Stencil8:
+        return VK_FORMAT_D24_UNORM_S8_UINT;
     }
     return VK_FORMAT_UNDEFINED;
 }
@@ -228,6 +230,50 @@ VkCompareOp toVkCompareOp(CompareOpEx compare) {
         return VK_COMPARE_OP_ALWAYS;
     }
     throw std::invalid_argument("unknown native depth compare operation");
+}
+
+VkStencilOp toVkStencilOp(StencilOpEx operation) {
+    switch (operation) {
+    case StencilOpEx::keep:
+        return VK_STENCIL_OP_KEEP;
+    case StencilOpEx::zero:
+        return VK_STENCIL_OP_ZERO;
+    case StencilOpEx::replace:
+        return VK_STENCIL_OP_REPLACE;
+    case StencilOpEx::incrementClamp:
+        return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+    case StencilOpEx::decrementClamp:
+        return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
+    case StencilOpEx::invert:
+        return VK_STENCIL_OP_INVERT;
+    case StencilOpEx::incrementWrap:
+        return VK_STENCIL_OP_INCREMENT_AND_WRAP;
+    case StencilOpEx::decrementWrap:
+        return VK_STENCIL_OP_DECREMENT_AND_WRAP;
+    }
+    throw std::invalid_argument("unknown native stencil operation");
+}
+
+VkLogicOp toVkLogicOp(LogicOpEx operation) {
+    switch (operation) {
+    case LogicOpEx::clear: return VK_LOGIC_OP_CLEAR;
+    case LogicOpEx::andOp: return VK_LOGIC_OP_AND;
+    case LogicOpEx::andReverse: return VK_LOGIC_OP_AND_REVERSE;
+    case LogicOpEx::copy: return VK_LOGIC_OP_COPY;
+    case LogicOpEx::andInverted: return VK_LOGIC_OP_AND_INVERTED;
+    case LogicOpEx::noOp: return VK_LOGIC_OP_NO_OP;
+    case LogicOpEx::xorOp: return VK_LOGIC_OP_XOR;
+    case LogicOpEx::orOp: return VK_LOGIC_OP_OR;
+    case LogicOpEx::nor: return VK_LOGIC_OP_NOR;
+    case LogicOpEx::equivalence: return VK_LOGIC_OP_EQUIVALENT;
+    case LogicOpEx::invert: return VK_LOGIC_OP_INVERT;
+    case LogicOpEx::orReverse: return VK_LOGIC_OP_OR_REVERSE;
+    case LogicOpEx::copyInverted: return VK_LOGIC_OP_COPY_INVERTED;
+    case LogicOpEx::orInverted: return VK_LOGIC_OP_OR_INVERTED;
+    case LogicOpEx::nand: return VK_LOGIC_OP_NAND;
+    case LogicOpEx::set: return VK_LOGIC_OP_SET;
+    }
+    throw std::invalid_argument("unknown native logic operation");
 }
 
 VkBlendFactor toVkBlendFactor(BlendFactorEx factor) {
@@ -352,6 +398,8 @@ std::uint32_t imageLayerCount(const TextureResourceDesc& desc) noexcept {
 }
 
 VkImageAspectFlags imageAspect(PixelFormat format) noexcept {
+    if (format == PixelFormat::depth24Stencil8)
+        return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
     return format == PixelFormat::depth32Float ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
 }
 
@@ -725,6 +773,9 @@ void VulkanDevice::queryCapabilities() {
     capabilities_.bufferDeviceAddress = vulkan12.bufferDeviceAddress == VK_TRUE;
     capabilities_.descriptorIndexing =
         vulkan12.runtimeDescriptorArray == VK_TRUE && vulkan12.descriptorBindingPartiallyBound == VK_TRUE;
+    capabilities_.samplerAnisotropy = features.features.samplerAnisotropy == VK_TRUE;
+    capabilities_.logicOp = features.features.logicOp == VK_TRUE;
+    capabilities_.independentBlend = features.features.independentBlend == VK_TRUE;
     scalarBlockLayoutSupported_ = vulkan12.scalarBlockLayout == VK_TRUE;
     shaderDemoteSupported_ = vulkan13.shaderDemoteToHelperInvocation == VK_TRUE;
     previewBindlessSupported_ = vulkan12.runtimeDescriptorArray == VK_TRUE &&
@@ -809,6 +860,9 @@ void VulkanDevice::createLogicalDevice() {
     };
     VkPhysicalDeviceFeatures coreFeatures{};
     coreFeatures.shaderSampledImageArrayDynamicIndexing = previewBindlessSupported_;
+    coreFeatures.samplerAnisotropy = capabilities_.samplerAnisotropy;
+    coreFeatures.logicOp = capabilities_.logicOp;
+    coreFeatures.independentBlend = capabilities_.independentBlend;
     const VkPhysicalDeviceFeatures2 features{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
         .pNext = &vulkan12,
@@ -4292,8 +4346,7 @@ handles::TextureHandle VulkanDevice::createTextureEx(const TextureResourceDesc& 
               "allocate typed texture memory");
         check(vkBindImageMemory(device_, typed.resource.image, typed.resource.memory, 0), "bind typed texture memory");
 
-        const VkImageAspectFlags aspect =
-            desc.format == PixelFormat::depth32Float ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+        const VkImageAspectFlags aspect = imageAspect(desc.format);
         const VkImageViewCreateInfo viewInfo{
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             .image = typed.resource.image,
@@ -4323,6 +4376,10 @@ handles::SamplerHandle VulkanDevice::createSamplerEx() {
 
 handles::SamplerHandle VulkanDevice::createSamplerEx(const SamplerResourceDesc& desc) {
     const auto filter = desc.filter == SamplerFilter::nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+    const bool anisotropy = desc.maxAnisotropy > 1U;
+    if (anisotropy && !capabilities_.samplerAnisotropy)
+        throw std::runtime_error("FX sampler requests anisotropy but the Vulkan device does not support it");
+    const bool comparison = desc.comparison != SamplerCompareOp::always;
     const auto addressMode = [](SamplerAddressMode mode) {
         switch (mode) {
         case SamplerAddressMode::repeat:
@@ -4336,6 +4393,17 @@ handles::SamplerHandle VulkanDevice::createSamplerEx(const SamplerResourceDesc& 
         }
         return VK_SAMPLER_ADDRESS_MODE_REPEAT;
     };
+    const auto borderColor = [](SamplerBorderColor color) {
+        switch (color) {
+        case SamplerBorderColor::transparentBlack:
+            return VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+        case SamplerBorderColor::opaqueBlack:
+            return VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+        case SamplerBorderColor::opaqueWhite:
+            return VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+        }
+        return VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+    };
     const VkSamplerCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
         .magFilter = filter,
@@ -4345,13 +4413,15 @@ handles::SamplerHandle VulkanDevice::createSamplerEx(const SamplerResourceDesc& 
         .addressModeV = addressMode(desc.addressV),
         .addressModeW = addressMode(desc.addressW),
         .mipLodBias = desc.mipLodBias,
-        .anisotropyEnable = VK_FALSE,
-        .maxAnisotropy = 1.0F,
-        .compareEnable = VK_FALSE,
-        .compareOp = VK_COMPARE_OP_ALWAYS,
+        .anisotropyEnable = anisotropy ? VK_TRUE : VK_FALSE,
+        .maxAnisotropy = anisotropy
+                             ? std::min(static_cast<float>(desc.maxAnisotropy), physicalProperties_.limits.maxSamplerAnisotropy)
+                             : 1.0F,
+        .compareEnable = comparison ? VK_TRUE : VK_FALSE,
+        .compareOp = toVkCompareOp(static_cast<CompareOpEx>(desc.comparison)),
         .minLod = desc.minLod,
         .maxLod = desc.maxLod == std::numeric_limits<float>::max() ? VK_LOD_CLAMP_NONE : desc.maxLod,
-        .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK,
+        .borderColor = borderColor(desc.borderColor),
         .unnormalizedCoordinates = VK_FALSE,
     };
     TypedSampler typed{};
@@ -4507,18 +4577,24 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
     vkColorFormats.reserve(colorFormats.size());
     for (const auto format : colorFormats) {
         const auto vkFormat = toVkFormat(format);
-        if (vkFormat == VK_FORMAT_UNDEFINED || format == PixelFormat::depth32Float)
+        if (vkFormat == VK_FORMAT_UNDEFINED || isDepthFormat(format))
             throw std::invalid_argument("native graphics pipeline color format is invalid");
         vkColorFormats.push_back(vkFormat);
     }
     VkFormat vkDepthFormat = VK_FORMAT_UNDEFINED;
     if (desc.depthFormat.has_value()) {
         vkDepthFormat = toVkFormat(*desc.depthFormat);
-        if (vkDepthFormat == VK_FORMAT_UNDEFINED || *desc.depthFormat != PixelFormat::depth32Float)
+        if (vkDepthFormat == VK_FORMAT_UNDEFINED || !isDepthFormat(*desc.depthFormat))
             throw std::invalid_argument("native graphics pipeline depth format is invalid");
     }
     if (desc.depthStencil.depthTest && vkDepthFormat == VK_FORMAT_UNDEFINED)
         throw std::invalid_argument("depth testing requires a depth attachment format");
+    if (desc.depthStencil.stencilTest && desc.depthFormat != PixelFormat::depth24Stencil8)
+        throw std::invalid_argument("stencil testing requires a stencil-capable depth attachment format");
+    if (desc.logicOpEnable && !capabilities_.logicOp)
+        throw std::runtime_error("FX pipeline requests logic operations unsupported by the Vulkan device");
+    if (desc.independentBlend && !capabilities_.independentBlend)
+        throw std::runtime_error("FX pipeline requests independent blending unsupported by the Vulkan device");
     std::vector<BlendAttachmentStateEx> blendStates(colorFormats.size());
     if (!desc.blendAttachments.empty()) {
         if (desc.blendAttachments.size() != colorFormats.size())
@@ -4536,8 +4612,7 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
             .srcAlphaBlendFactor = toVkBlendFactor(state.srcAlpha),
             .dstAlphaBlendFactor = toVkBlendFactor(state.dstAlpha),
             .alphaBlendOp = toVkBlendOp(state.alphaOp),
-            .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
-                              VK_COLOR_COMPONENT_A_BIT,
+            .colorWriteMask = static_cast<VkColorComponentFlags>(state.colorWriteMask),
         });
     }
     const VkPipelineVertexInputStateCreateInfo vertexInput{
@@ -4562,17 +4637,34 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
     const VkPipelineMultisampleStateCreateInfo multisample{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        .alphaToCoverageEnable = desc.alphaToCoverage ? VK_TRUE : VK_FALSE,
     };
     const VkPipelineColorBlendStateCreateInfo blend{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .logicOpEnable = desc.logicOpEnable ? VK_TRUE : VK_FALSE,
+        .logicOp = toVkLogicOp(desc.logicOp),
         .attachmentCount = static_cast<std::uint32_t>(vkBlendAttachments.size()),
         .pAttachments = vkBlendAttachments.data(),
+    };
+    const auto stencilState = [](const StencilOpStateEx& state, std::uint32_t readMask, std::uint32_t writeMask) {
+        return VkStencilOpState{.failOp = toVkStencilOp(state.fail),
+                                .passOp = toVkStencilOp(state.pass),
+                                .depthFailOp = toVkStencilOp(state.depthFail),
+                                .compareOp = toVkCompareOp(state.compare),
+                                .compareMask = readMask,
+                                .writeMask = writeMask,
+                                .reference = 0};
     };
     const VkPipelineDepthStencilStateCreateInfo depthStencil{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
         .depthTestEnable = desc.depthStencil.depthTest ? VK_TRUE : VK_FALSE,
         .depthWriteEnable = desc.depthStencil.depthWrite ? VK_TRUE : VK_FALSE,
         .depthCompareOp = toVkCompareOp(desc.depthStencil.depthCompare),
+        .stencilTestEnable = desc.depthStencil.stencilTest ? VK_TRUE : VK_FALSE,
+        .front = stencilState(desc.depthStencil.front, desc.depthStencil.stencilReadMask,
+                              desc.depthStencil.stencilWriteMask),
+        .back = stencilState(desc.depthStencil.back, desc.depthStencil.stencilReadMask,
+                             desc.depthStencil.stencilWriteMask),
     };
     const std::array dynamicStates{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     const VkPipelineDynamicStateCreateInfo dynamic{
@@ -5014,6 +5106,18 @@ void VulkanDevice::clearBufferEx(handles::BufferHandle buffer, std::uint32_t val
     });
 }
 
+void VulkanDevice::recordClearBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle buffer,
+                                     std::uint32_t value) {
+    const auto it = typedBuffers_.find(buffer);
+    if (it == typedBuffers_.end() || !typedBufferHandles_.isAlive(buffer))
+        throw std::invalid_argument("typed command-list buffer clear references a stale buffer handle");
+    if ((toBits(it->second.desc.usage) & toBits(ResourceUsage::transferDst)) == 0U)
+        throw std::invalid_argument("typed command-list buffer clear requires transfer-destination usage");
+    if (it->second.resource.size % 4U != 0U)
+        throw std::invalid_argument("typed command-list buffer clear requires a four-byte-aligned buffer");
+    vkCmdFillBuffer(commandBuffer, it->second.resource.buffer, 0, it->second.resource.size, value);
+}
+
 void VulkanDevice::generateMipmapsEx(handles::TextureHandle texture) {
     submitImmediate([&](VkCommandBuffer commandBuffer) { recordGenerateMipmaps(commandBuffer, texture); });
 }
@@ -5280,6 +5384,24 @@ void VulkanDevice::recordDrawIndexed(VkCommandBuffer commandBuffer, const Indexe
                      draw.firstInstance);
 }
 
+void VulkanDevice::recordDrawIndexedBufferless(VkCommandBuffer commandBuffer, handles::BufferHandle indexBuffer,
+                                               std::uint32_t indexCount, std::uint32_t instanceCount) {
+    if (commandBuffer == VK_NULL_HANDLE)
+        throw std::invalid_argument("typed vertex-bufferless indexed draw requires a command buffer");
+    if (!indexBuffer.valid() || indexCount == 0 || instanceCount == 0)
+        throw std::invalid_argument("typed vertex-bufferless indexed draw has invalid buffers or counts");
+    const auto indexIt = typedBuffers_.find(indexBuffer);
+    if (indexIt == typedBuffers_.end() || !typedBufferHandles_.isAlive(indexBuffer))
+        throw std::invalid_argument("typed vertex-bufferless indexed draw references a stale index buffer");
+    if ((toBits(indexIt->second.desc.usage) & toBits(ResourceUsage::indexRead)) == 0U)
+        throw std::invalid_argument("typed vertex-bufferless indexed draw buffer lacks index usage");
+    const auto requiredIndexBytes = static_cast<std::uint64_t>(indexCount) * sizeof(std::uint32_t);
+    if (requiredIndexBytes > indexIt->second.desc.size)
+        throw std::out_of_range("typed vertex-bufferless indexed draw exceeds its index buffer");
+    vkCmdBindIndexBuffer(commandBuffer, indexIt->second.resource.buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(commandBuffer, indexCount, instanceCount, 0, 0, 0);
+}
+
 VkImageLayout VulkanDevice::typedTextureFinalLayout(const TypedTexture& texture) noexcept {
     return layoutForUsage(texture.desc.usage);
 }
@@ -5375,7 +5497,7 @@ void VulkanDevice::recordBlitTexture(VkCommandBuffer commandBuffer, handles::Tex
     const auto& src = sourceIt->second.desc;
     const auto& dst = destinationIt->second.desc;
     if (src.dimension != TextureDimension::d2 || dst.dimension != TextureDimension::d2 || src.format != dst.format ||
-        src.format == PixelFormat::depth32Float || src.extent.depth != 1 || dst.extent.depth != 1 ||
+        isDepthFormat(src.format) || src.extent.depth != 1 || dst.extent.depth != 1 ||
         src.mipLevels != 1 || dst.mipLevels != 1 || src.arrayLayers != 1 || dst.arrayLayers != 1 ||
         sourceRect[0] >= sourceRect[2] || sourceRect[1] >= sourceRect[3] || sourceRect[2] > src.extent.width ||
         sourceRect[3] > src.extent.height || (toBits(src.usage) & toBits(ResourceUsage::transferSrc)) == 0U ||
@@ -5454,7 +5576,7 @@ void VulkanDevice::recordClearTexture(VkCommandBuffer commandBuffer, handles::Te
     recordTextureTransition(commandBuffer, texture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     const VkImageSubresourceRange range{imageAspect(it->second.desc.format), 0, it->second.desc.mipLevels, 0,
                                         imageLayerCount(it->second.desc)};
-    if (it->second.desc.format == PixelFormat::depth32Float) {
+    if (isDepthFormat(it->second.desc.format)) {
         const VkClearDepthStencilValue clear{value[0], 0};
         vkCmdClearDepthStencilImage(commandBuffer, it->second.resource.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                     &clear, 1, &range);
@@ -5470,7 +5592,7 @@ void VulkanDevice::recordGenerateMipmaps(VkCommandBuffer commandBuffer, handles:
     const auto it = typedTextures_.find(texture);
     if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(texture))
         throw std::invalid_argument("typed mipmap generation references a stale texture handle");
-    if (it->second.desc.mipLevels < 2 || it->second.desc.format == PixelFormat::depth32Float ||
+    if (it->second.desc.mipLevels < 2 || isDepthFormat(it->second.desc.format) ||
         (toBits(it->second.desc.usage) & toBits(ResourceUsage::transferSrc)) == 0U ||
         (toBits(it->second.desc.usage) & toBits(ResourceUsage::transferDst)) == 0U)
         throw std::invalid_argument("typed mipmap generation requires color transfer source/destination usage");
@@ -5611,7 +5733,7 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const Ren
         if (description.dimension != TextureDimension::d2 || description.extent.width != requestedExtent.width ||
             description.extent.height != requestedExtent.height || description.extent.depth != 1 ||
             description.mipLevels != 1 || description.arrayLayers != 1 ||
-            description.format == PixelFormat::depth32Float ||
+            isDepthFormat(description.format) ||
             (toBits(description.usage) & toBits(ResourceUsage::colorAttachment)) == 0U)
             throw std::invalid_argument("typed rendering color attachment is incompatible with the render area");
         const bool undefined = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED;
@@ -5638,12 +5760,12 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const Ren
         if (description.dimension != TextureDimension::d2 || description.extent.width != requestedExtent.width ||
             description.extent.height != requestedExtent.height || description.extent.depth != 1 ||
             description.mipLevels != 1 || description.arrayLayers != 1 ||
-            description.format != PixelFormat::depth32Float ||
+            !isDepthFormat(description.format) ||
             (depthBits & (toBits(ResourceUsage::depthRead) | toBits(ResourceUsage::depthWrite))) == 0U)
             throw std::invalid_argument("typed rendering depth attachment is incompatible with the render area");
         const bool undefined = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED;
         recordTextureTransition(commandBuffer, info.depth->texture, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-        const VkClearValue clearValue{.depthStencil = {info.depth->clearDepth, 0U}};
+        const VkClearValue clearValue{.depthStencil = {info.depth->clearDepth, info.depth->clearStencil}};
         depthAttachment = VkRenderingAttachmentInfo{
             .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
             .imageView = it->second.view,
@@ -5655,6 +5777,11 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const Ren
     }
 
     const VkExtent2D extent{requestedExtent.width, requestedExtent.height};
+    std::optional<VkRenderingAttachmentInfo> stencilAttachment;
+    if (info.depth.has_value() &&
+        typedTextures_.at(info.depth->texture).desc.format == PixelFormat::depth24Stencil8) {
+        stencilAttachment = depthAttachment;
+    }
     const VkRenderingInfo rendering{
         .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
         .renderArea = {{0, 0}, extent},
@@ -5662,6 +5789,7 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const Ren
         .colorAttachmentCount = static_cast<std::uint32_t>(colorAttachments.size()),
         .pColorAttachments = colorAttachments.data(),
         .pDepthAttachment = depthAttachment.has_value() ? &*depthAttachment : nullptr,
+        .pStencilAttachment = stencilAttachment.has_value() ? &*stencilAttachment : nullptr,
     };
     vkCmdBeginRendering(commandBuffer, &rendering);
     const VkViewport viewport{0.0F, 0.0F, static_cast<float>(extent.width), static_cast<float>(extent.height),
@@ -5685,7 +5813,7 @@ void VulkanDevice::recordEndRendering(VkCommandBuffer commandBuffer, std::span<c
         const auto it = typedTextures_.find(target);
         if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(target))
             throw std::invalid_argument("typed rendering attachment references a stale texture handle");
-        const auto expectedLayout = it->second.desc.format == PixelFormat::depth32Float
+        const auto expectedLayout = isDepthFormat(it->second.desc.format)
                                         ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
                                         : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         if (it->second.layout != expectedLayout)
