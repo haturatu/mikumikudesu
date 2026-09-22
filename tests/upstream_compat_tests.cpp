@@ -141,7 +141,7 @@ class PipelineOracleDevice final : public dayo::graphics::Device {
     void destroyShaderEx(dayo::graphics::handles::ShaderHandle) override {}
     [[nodiscard]] dayo::graphics::handles::PipelineHandle
     createGraphicsPipelineEx(const dayo::graphics::GraphicsPipelineDescEx& descriptor) override {
-        graphicsPipelines.push_back(descriptor);
+        graphicsPipelines_.push_back(descriptor);
         return {nextTypedHandle_++, 1};
     }
     [[nodiscard]] dayo::graphics::handles::PipelineHandle
@@ -153,17 +153,19 @@ class PipelineOracleDevice final : public dayo::graphics::Device {
         return {nextTypedHandle_++, 1};
     }
     void destroyPipelineEx(dayo::graphics::handles::PipelineHandle) override {}
+    [[nodiscard]] const std::vector<dayo::graphics::GraphicsPipelineDescEx>& graphicsPipelines() const noexcept {
+        return graphicsPipelines_;
+    }
     [[nodiscard]] dayo::graphics::handles::ShaderBindingTableHandle
     createShaderBindingTable(const dayo::graphics::ShaderBindingTableDesc&) override {
         return {nextTypedHandle_++, 1};
     }
     void destroyShaderBindingTable(dayo::graphics::handles::ShaderBindingTableHandle) override {}
 
+  private:
     dayo::graphics::DeviceCapabilities capabilities_;
     dayo::graphics::GraphicsConvention convention_;
-    std::vector<dayo::graphics::GraphicsPipelineDescEx> graphicsPipelines;
-
-  private:
+    std::vector<dayo::graphics::GraphicsPipelineDescEx> graphicsPipelines_;
     std::uint64_t nextLegacyHandle_{1};
     std::uint32_t nextTypedHandle_{1};
 };
@@ -336,7 +338,7 @@ bool buildPipelineOracle(const dayo::fx::FxProgram& program, const dayo::fx::FxS
             },
             error, dayo::graphics::kNativeFxResourceSet))
         return false;
-    return validatePipelineOracle(program, device.graphicsPipelines, error);
+    return validatePipelineOracle(program, device.graphicsPipelines(), error);
 }
 
 void appendShaderRequest(const std::filesystem::path& sourceDirectory, const std::filesystem::path& effectPath,
