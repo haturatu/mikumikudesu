@@ -8,10 +8,10 @@
 #include "fx/fx_shader_source.hpp"
 #include "fx/fx_texture_cache.hpp"
 #include "fx/fx_watcher.hpp"
+#include "graphics/dayo_host_resources.hpp"
 #include "graphics/fx_executor.hpp"
 #include "graphics/fx_pipeline_runtime.hpp"
 #include "graphics/fx_resource_runtime.hpp"
-#include "graphics/dayo_host_resources.hpp"
 #include "graphics/native_fx_runtime.hpp"
 #include "graphics/native_scene_bindings.hpp"
 
@@ -549,8 +549,8 @@ bool testDayoHostResourceProvider() {
     const std::array required{dayo::graphics::DayoSemantic::RTOutput, dayo::graphics::DayoSemantic::ViewCB,
                               dayo::graphics::DayoSemantic::ControllerCB};
     std::string error;
-    bool ok = check(provider.require(required, &error) && error.empty(),
-                    "host provider requires real upstream semantics");
+    bool ok =
+        check(provider.require(required, &error) && error.empty(), "host provider requires real upstream semantics");
     ok &= check(provider.resolve("YRZFX_ControllerCB").has_value(),
                 "host provider accepts canonical controller binding alias");
     const std::array missing{dayo::graphics::DayoSemantic::GBuffer1};
@@ -558,7 +558,8 @@ bool testDayoHostResourceProvider() {
                 "host provider rejects absent semantics instead of returning placeholders");
     auto placeholderOnly = bindings;
     placeholderOnly.hostResourceMask = 0;
-    ok &= check(!dayo::graphics::DayoHostResourceProvider(placeholderOnly).resolve(dayo::graphics::DayoSemantic::RTOutput)
+    ok &= check(!dayo::graphics::DayoHostResourceProvider(placeholderOnly)
+                     .resolve(dayo::graphics::DayoSemantic::RTOutput)
                      .has_value(),
                 "valid placeholder handles do not satisfy an unmarked semantic");
     return ok;
