@@ -1758,6 +1758,7 @@ int main() {
         ok &= check(store.initialize(device, counts, &error) && store.ready(),
                     "native scene resource store initializes fallback resources without a TLAS");
         const auto& fallback = store.bindings();
+        const auto fallbackRtOutput = fallback.rtOutput;
         ok &= check(!fallback.tlas.valid() && fallback.rtOutput.valid() && fallback.oidnBuffer.valid() &&
                         fallback.textures.size() == 2 && fallback.textures[0].valid(),
                     "native scene resource store keeps TLAS empty while filling fixed placeholders");
@@ -1779,7 +1780,7 @@ int main() {
                     "native scene resource store retains owned array and scalar overrides");
 
         auto placeholderOverride = overrides;
-        placeholderOverride.rtOutput = fallback.rtOutput;
+        placeholderOverride.rtOutput = fallbackRtOutput;
         ok &= check(store.compose(placeholderOverride, &error) &&
                         (store.bindings().hostResourceMask &
                          dayo::graphics::dayoSemanticBit(dayo::graphics::DayoSemantic::RTOutput)) == 0,
