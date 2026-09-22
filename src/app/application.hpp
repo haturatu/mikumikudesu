@@ -15,6 +15,7 @@
 #include "fx/fx_frame.hpp"
 #include "fx/fx_scheduler.hpp"
 #include "graphics/device.hpp"
+#include "graphics/native_oidn_provider.hpp"
 #include "graphics/native_renderer.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/native_scene_model_runtime.hpp"
@@ -96,6 +97,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     graphics::NativeSceneFrameRuntime nativeSceneFrame_;
     graphics::NativeSceneResourceStore nativeSceneResources_;
     graphics::NativeScreenRuntime nativeScreenRuntime_;
+    graphics::NativeOidnProvider nativeOidnProvider_;
     core::Scene scene_;
     core::fx::SceneEvaluationSnapshot evaluatedModels_;
     std::vector<core::EffectController> nativeControllerDeclarations_;

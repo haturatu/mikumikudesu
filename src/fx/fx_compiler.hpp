@@ -29,6 +29,7 @@ enum class FxOpKind : std::uint8_t {
     clear,
     mipmap,
     raytracing,
+    oidn,
 };
 
 [[nodiscard]] const char* toString(FxOpKind kind) noexcept;
@@ -74,10 +75,19 @@ struct FxRayTracingDispatch {
     std::uint32_t maxRecursionDepth{1};
 };
 
+struct FxOidnDispatch {
+    // input is the upstream beauty/color resource. Albedo and normal are
+    // optional auxiliary resources accepted by the OIDN RT filter.
+    std::string input;
+    std::string albedo;
+    std::string normal;
+    std::string output;
+};
+
 struct FxUtilityDispatch {};
 
-using FxExecutable =
-    std::variant<FxRasterDispatch, FxPostProcessDispatch, FxComputeDispatch, FxRayTracingDispatch, FxUtilityDispatch>;
+using FxExecutable = std::variant<FxRasterDispatch, FxPostProcessDispatch, FxComputeDispatch, FxRayTracingDispatch,
+                                  FxOidnDispatch, FxUtilityDispatch>;
 
 struct FxDispatch {
     std::string name;

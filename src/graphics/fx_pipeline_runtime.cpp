@@ -467,7 +467,7 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
     try {
         for (const auto& dispatch : program.passes) {
             if (dispatch.kind == fx::FxOpKind::copy || dispatch.kind == fx::FxOpKind::clear ||
-                dispatch.kind == fx::FxOpKind::mipmap)
+                dispatch.kind == fx::FxOpKind::mipmap || dispatch.kind == fx::FxOpKind::oidn)
                 continue;
             if (dispatch.name.empty())
                 throw std::invalid_argument("FX pipeline pass has an empty name");
@@ -568,6 +568,7 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
             case fx::FxOpKind::copy:
             case fx::FxOpKind::clear:
             case fx::FxOpKind::mipmap:
+            case fx::FxOpKind::oidn:
                 break;
             }
             entries_.emplace(dispatch.name, std::move(entry));

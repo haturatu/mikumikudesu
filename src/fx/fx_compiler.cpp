@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <ranges>
 #include <stdexcept>
 #include <utility>
 
@@ -25,6 +26,8 @@ const char* toString(FxOpKind kind) noexcept {
         return "mipmap";
     case FxOpKind::raytracing:
         return "raytracing";
+    case FxOpKind::oidn:
+        return "oidn";
     }
     return "raster";
 }
@@ -45,6 +48,8 @@ FxOpKind fxOpFromPassType(core::EffectPassType type) {
         return FxOpKind::clear;
     case core::EffectPassType::mipmap:
         return FxOpKind::mipmap;
+    case core::EffectPassType::oidn:
+        return FxOpKind::oidn;
     case core::EffectPassType::unknown:
         throw std::runtime_error("unsupported FX pass type: unknown");
     }
@@ -160,6 +165,27 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
             dispatch.executable = std::move(ray);
             break;
         }
+        case core::EffectPassType::oidn: {
+            FxOidnDispatch oidn;
+            oidn.input = pass.oidnInput;
+            oidn.albedo = pass.oidnAlbedo;
+            oidn.normal = pass.oidnNormal;
+            oidn.output = pass.oidnOutput;
+            if (oidn.input.empty() && !pass.inputs.empty())
+                oidn.input = pass.inputs.front().name;
+            if (oidn.albedo.empty() && pass.inputs.size() > 1)
+                oidn.albedo = pass.inputs[1].name;
+            if (oidn.normal.empty() && pass.inputs.size() > 2)
+                oidn.normal = pass.inputs[2].name;
+            if (oidn.output.empty() && pass.renderTargets.size() == 1)
+                oidn.output = pass.renderTargets.front().name;
+            if (oidn.output.empty() && pass.unorderedAccess.size() == 1)
+                oidn.output = pass.unorderedAccess.front().name;
+            if (oidn.input.empty() || oidn.output.empty())
+                throw std::runtime_error("FX OIDN pass requires an input and output: " + pass.name);
+            dispatch.executable = std::move(oidn);
+            break;
+        }
         case core::EffectPassType::copy:
         case core::EffectPassType::clear:
         case core::EffectPassType::mipmap:
@@ -227,6 +253,27 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
             if (!pass.depth.name.empty())
                 appendOutput(pass.depth, FxResourceRole::depthAttachment);
             break;
+        case core::EffectPassType::oidn: {
+            const auto* oidn = std::get_if<FxOidnDispatch>(&dispatch.executable);
+            if (oidn == nullptr)
+                throw std::runtime_error("FX OIDN pass has no typed dispatch: " + pass.name);
+            const auto appendUnique = [&](std::string_view name, bool write) {
+                if (name.empty())
+                    return;
+                const auto duplicate =
+                    std::ranges::find_if(dispatch.resources, [&](const FxDispatch::ResourceUse& resource) {
+                        return resource.name == name && resource.write == write;
+                    });
+                if (duplicate == dispatch.resources.end())
+                    dispatch.resources.push_back(
+                        {std::string(name), write, write ? FxResourceRole::storage : FxResourceRole::sampled});
+            };
+            appendUnique(oidn->input, false);
+            appendUnique(oidn->albedo, false);
+            appendUnique(oidn->normal, false);
+            appendUnique(oidn->output, true);
+            break;
+        }
         case core::EffectPassType::unknown:
             throw std::runtime_error("unsupported FX pass '" + pass.name + "': unknown type");
         }

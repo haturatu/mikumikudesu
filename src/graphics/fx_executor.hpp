@@ -49,6 +49,10 @@ struct FxExecutionResources {
     using PassConstantsUpdater = std::function<void(CommandList&, const NativeSceneDraw&)>;
     using EffectPassConstantsUpdater = std::function<void(CommandList&, const NativeEffectModel&)>;
     using PassHook = std::function<void(const dayo::fx::FxDispatch&, CommandList&)>;
+    using OidnExecutor =
+        std::function<bool(const dayo::fx::FxOidnDispatch&, const dayo::fx::FxFrameContext&, CommandList&)>;
+    using OidnExecutorWithResolver = std::function<bool(
+        const dayo::fx::FxOidnDispatch&, const dayo::fx::FxFrameContext&, CommandList&, const TypedResourceResolver&)>;
     // Material-level scene draw ranges are optional so existing fullscreen and
     // synthetic Preview plans continue to use the legacy draw command.
     std::span<const NativeSceneDraw> sceneDraws{};
@@ -62,6 +66,8 @@ struct FxExecutionResources {
     EffectPassConstantsUpdater updateEffectPassConstants;
     PassHook beforePass;
     PassHook afterPass;
+    OidnExecutor executeOidn;
+    OidnExecutorWithResolver executeOidnWithResolver;
     TextureResolver resolveTexture;
     // Generic resource providers keep shader compilation and descriptor
     // allocation backend-specific while making the command contract explicit.
@@ -98,6 +104,7 @@ class VulkanFxExecutor {
         std::size_t clear{};
         std::size_t mipmap{};
         std::size_t rayTracing{};
+        std::size_t oidn{};
         std::size_t indexedDraws{};
     };
 

@@ -267,6 +267,7 @@ add_library(
   src/graphics/dayo_fx_runtime.cpp
   src/graphics/device.cpp
   src/graphics/native_renderer.cpp
+  src/graphics/native_oidn_provider.cpp
   src/graphics/native_screen_runtime.cpp
   src/graphics/native_controller_runtime.cpp
   src/graphics/native_scene_frame_runtime.cpp

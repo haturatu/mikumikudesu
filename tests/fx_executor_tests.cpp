@@ -528,6 +528,59 @@ bool testDepthOnlyRasterExecution() {
                      std::ranges::find(commands.trace, "beginRenderingEx") == commands.trace.end(),
                  "depth-only raster pass begins typed rendering with zero color attachments");
 }
+bool testOidnHostExecution() {
+    MockDevice device;
+    dayo::graphics::VulkanFxExecutor executor(device);
+    dayo::fx::FxProgram program;
+    dayo::fx::FxDispatch dispatch;
+    dispatch.name = "oidn-pass";
+    dispatch.kind = dayo::fx::FxOpKind::oidn;
+    dispatch.executable =
+        dayo::fx::FxOidnDispatch{.input = "Beauty", .albedo = "Albedo", .normal = "Normal", .output = "Denoised"};
+    dispatch.resources = {{"Beauty", false}, {"Albedo", false}, {"Normal", false}, {"Denoised", true}};
+    dispatch.resources[3].role = dayo::fx::FxResourceRole::storage;
+    program.passes.push_back(dispatch);
+
+    std::vector<std::string> executedResources;
+    dayo::graphics::FxExecutionResources resources;
+    resources.resolveTypedResource =
+        [](std::string_view name) -> std::optional<dayo::graphics::FxExecutionResources::TypedResource> {
+        if (name == "Beauty")
+            return dayo::graphics::FxExecutionResources::TypedResource{.texture = {1, 1}};
+        if (name == "Albedo")
+            return dayo::graphics::FxExecutionResources::TypedResource{.texture = {2, 1}};
+        if (name == "Normal")
+            return dayo::graphics::FxExecutionResources::TypedResource{.texture = {3, 1}};
+        if (name == "Denoised")
+            return dayo::graphics::FxExecutionResources::TypedResource{.texture = {4, 1}};
+        return std::nullopt;
+    };
+    resources.executeOidn = [&executedResources](const dayo::fx::FxOidnDispatch& oidn, const dayo::fx::FxFrameContext&,
+                                                 dayo::graphics::CommandList&) {
+        executedResources = {oidn.input, oidn.albedo, oidn.normal, oidn.output};
+        return true;
+    };
+    MockCommands commands;
+    const auto plan = dayo::fx::FxCompiler{}.plan(program, testContext());
+    const auto stats = executor.execute(plan, commands, testContext(), resources);
+    bool ok = check(stats.oidn == 1 &&
+                        executedResources == std::vector<std::string>{"Beauty", "Albedo", "Normal", "Denoised"},
+                    "OIDN dispatch forwards upstream resource semantics to the host");
+    ok &= check(std::count(commands.trace.begin(), commands.trace.end(), "transitionEx") == 4,
+                "OIDN dispatch validates and transitions every typed image resource");
+
+    auto missingHost = resources;
+    missingHost.executeOidn = {};
+    bool rejected = false;
+    try {
+        static_cast<void>(executor.execute(plan, commands, testContext(), missingHost));
+    } catch (const std::logic_error&) {
+        rejected = true;
+    }
+    ok &= check(rejected, "OIDN dispatch fails explicitly when no host denoiser is installed");
+    return ok;
+}
+
 bool testTypedBufferResourceExecution() {
     MockDevice device;
     dayo::graphics::VulkanFxExecutor executor(device);
@@ -983,6 +1036,27 @@ raw_cs
                             dispatch.resources[2].role == dayo::fx::FxResourceRole::colorAttachment &&
                             dispatch.resources[3].role == dayo::fx::FxResourceRole::depthAttachment,
                         "resource roles distinguish MRT and DSV");
+    }
+
+    const auto oidnSource = R"FX([YRZFX]
+{
+  fx: {
+    category: "postprocess",
+    passes: [{name: "Denoise", type: "oidn", inputs: ["Beauty", "Albedo", "Normal"], RTV: ["Denoised"]}],
+  },
+}
+[HLSL]
+)FX";
+    const auto oidnProgram =
+        dayo::fx::FxCompiler{}.compileSource(dayo::fx::makeFxSourceDocument("oidn.fxdayo", oidnSource));
+    ok &= check(oidnProgram.passes.size() == 1 && oidnProgram.passes.front().kind == dayo::fx::FxOpKind::oidn &&
+                    oidnProgram.passes.front().resources.size() == 4,
+                "compiler preserves parsed OIDN input and output resources");
+    if (!oidnProgram.passes.empty()) {
+        const auto* oidn = std::get_if<dayo::fx::FxOidnDispatch>(&oidnProgram.passes.front().executable);
+        ok &= check(oidn != nullptr && oidn->input == "Beauty" && oidn->albedo == "Albedo" &&
+                        oidn->normal == "Normal" && oidn->output == "Denoised",
+                    "compiler builds a typed OIDN dispatch");
     }
     return ok;
 }
@@ -1673,6 +1747,7 @@ int main() {
     ok &= testMockTraceMatches();
     ok &= testRasterModelTargetIndexedDraws();
     ok &= testDepthOnlyRasterExecution();
+    ok &= testOidnHostExecution();
     ok &= testTypedBufferResourceExecution();
     ok &= testDayoHostResourceProvider();
     ok &= testViewConstantsAndScreenHistory();
