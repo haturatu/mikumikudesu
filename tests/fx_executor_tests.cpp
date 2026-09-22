@@ -1516,7 +1516,7 @@ bool testFxPipelineRuntime() {
     dayo::core::EffectBuffer nativeData;
     nativeData.name = "NativeData";
     nativeData.type = "float4";
-    nativeData.view = "UAV";
+    nativeData.view = "SRV";
     nativeData.elementSize = 16;
     nativeData.size.absolute = true;
     nativeData.size.width = 1;
