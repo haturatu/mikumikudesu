@@ -153,11 +153,10 @@ bool NativeOidnProvider::execute(const fx::FxOidnDispatch& dispatch, const fx::F
             return true;
         }
 
-        // The CPU path is intentionally bounded to one frame. Texture
-        // readback/upload is synchronous on the backend and therefore must be
-        // used only for the explicit staging fallback; GPU-capable OIDN builds
-        // can replace this body with an interop provider without changing FX.
-        device_->waitIdle();
+        // The beauty pass is still being recorded at this point. Submit and
+        // wait for that work before using the device's immediate readback and
+        // upload context, then continue recording later FX passes.
+        commands.flushAndWaitForHostReadbackEx();
         const auto beautyBytes = device_->readbackTextureEx(input, 0, 0);
         const auto beauty = decodeRgb(beautyBytes, context.renderWidth, context.renderHeight);
         std::vector<float> albedoValues;
