@@ -2,6 +2,7 @@
 #include "graphics/fx_raster_semantics.hpp"
 #include "graphics/native_renderer.hpp"
 
+#include <array>
 #include <iostream>
 #include <string_view>
 
@@ -44,6 +45,20 @@ int main() {
                     deformContext.vertexCount == 250 && deformContext.totalMaterial == 5 &&
                     deformContext.cloneCount == 4 && deformContext.clonedVertexCount == 1000,
                 "deform frame context uses its owner and effect clone count");
+
+    std::array<dayo::core::SceneEffectInstance, 3> deformEffects{};
+    deformEffects[0].controllerModel = modelB.modelId;
+    deformEffects[0].graph.meshCloneCount = 4;
+    deformEffects[1].controllerModel = modelB.modelId;
+    deformEffects[1].graph.meshCloneCount = 6;
+    deformEffects[2].controllerModel = modelA.modelId;
+    deformEffects[2].graph.meshCloneCount = 12;
+    ok &= check(dayo::graphics::resolveNativeModelCloneCount(2, modelB.modelId, deformEffects) == 6,
+                "native model clone count unifies scene count with its assigned deform effects");
+    ok &= check(dayo::graphics::resolveNativeModelCloneCount(8, modelB.modelId, deformEffects) == 8,
+                "native model clone resolution preserves a larger scene count");
+    ok &= check(dayo::graphics::resolveNativeModelCloneCount(0, 99, deformEffects) == 1,
+                "native model clone resolution defaults unassigned models to one instance");
 
     dayo::fx::FxRequiredFeatures compute;
     const auto computeDecision =

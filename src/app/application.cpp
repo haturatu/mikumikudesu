@@ -1,6 +1,7 @@
 #include "app/application.hpp"
 
 #include "graphics/camera_matrices.hpp"
+#include "graphics/fx_raster_semantics.hpp"
 
 #include "core/animation.hpp"
 #include "core/asset.hpp"
@@ -1554,7 +1555,9 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             }
             return static_cast<std::uint32_t>(value);
         }();
-        const auto cloneCount = std::max(instance.cloneCount, 1U);
+        const auto sceneCloneCount = std::max(instance.cloneCount, 1U);
+        const auto cloneCount = graphics::resolveNativeModelCloneCount(instance.cloneCount, instance.id,
+                                                                       scene_.effects().deform);
         const auto baseVertex = static_cast<std::uint32_t>(vertices.size());
         const auto firstModelIndex = indexCursor;
         NativeModelGeometry native;
@@ -1771,7 +1774,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             draw.firstIndex = firstIndex;
             draw.indexCount = sourceMaterial.indexCount;
             draw.materialIndex = static_cast<std::uint32_t>(materialCursor - 1U);
-            draw.instanceCount = cloneCount;
+            draw.instanceCount = sceneCloneCount;
             firstIndex += instance.model->materials[materialIndex].indexCount;
         }
     }

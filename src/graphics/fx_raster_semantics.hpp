@@ -1,11 +1,14 @@
 #pragma once
 
 #include "core/fx/fx_pass.hpp"
+#include "core/scene.hpp"
 #include "fx/fx_frame.hpp"
 #include "graphics/native_scene_data.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
+#include <span>
 
 namespace dayo::graphics {
 
@@ -19,6 +22,20 @@ struct NativeEffectModel {
     std::uint32_t deformIndex{};
     std::uint32_t deformOrder{};
 };
+
+// Resolve one native model's instance count from its scene value and every
+// deform effect assigned to that model. The resulting count is shared by
+// native draw, CloneCount, deform context, and acceleration-structure paths.
+[[nodiscard]] inline std::uint32_t resolveNativeModelCloneCount(
+    std::uint32_t sceneCloneCount, core::ModelId modelId,
+    std::span<const core::SceneEffectInstance> deformEffects) noexcept {
+    auto effectCloneCount = 1U;
+    for (const auto& effect : deformEffects) {
+        if (effect.controllerModel.has_value() && *effect.controllerModel == modelId)
+            effectCloneCount = std::max(effectCloneCount, effect.graph.meshCloneCount);
+    }
+    return fx::unifyMeshCloneCount(sceneCloneCount, effectCloneCount);
+}
 
 [[nodiscard]] inline fx::FxFrameContext makeDeformFxFrameContext(const fx::FxFrameContext& sceneContext,
                                                                  const NativeEffectModel& owner,
