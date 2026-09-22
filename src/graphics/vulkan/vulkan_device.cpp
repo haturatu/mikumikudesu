@@ -4528,8 +4528,8 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
             .srcAlphaBlendFactor = toVkBlendFactor(state.srcAlpha),
             .dstAlphaBlendFactor = toVkBlendFactor(state.dstAlpha),
             .alphaBlendOp = toVkBlendOp(state.alphaOp),
-            .colorWriteMask =
-                VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+            .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+                              VK_COLOR_COMPONENT_A_BIT,
         });
     }
     const VkPipelineVertexInputStateCreateInfo vertexInput{
@@ -5491,9 +5491,8 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const Ren
     if (firstIt == typedTextures_.end() || !typedTextureHandles_.isAlive(extentTexture))
         throw std::invalid_argument("typed rendering attachment references a stale texture handle");
     const auto& firstDescription = firstIt->second.desc;
-    const Extent3D requestedExtent = info.extent.width == 0 || info.extent.height == 0
-                                         ? firstDescription.extent
-                                         : info.extent;
+    const Extent3D requestedExtent =
+        info.extent.width == 0 || info.extent.height == 0 ? firstDescription.extent : info.extent;
     if (requestedExtent.width == 0 || requestedExtent.height == 0 || requestedExtent.depth != 1)
         throw std::invalid_argument("typed rendering extent is invalid");
 
@@ -5512,8 +5511,8 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const Ren
             throw std::invalid_argument("typed rendering color attachment is incompatible with the render area");
         const bool undefined = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED;
         recordTextureTransition(commandBuffer, color.texture, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        const VkClearValue clearValue{.color = {{color.clearColor[0], color.clearColor[1], color.clearColor[2],
-                                                  color.clearColor[3]}}};
+        const VkClearValue clearValue{
+            .color = {{color.clearColor[0], color.clearColor[1], color.clearColor[2], color.clearColor[3]}}};
         colorAttachments.push_back({
             .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
             .imageView = it->second.view,
@@ -5533,7 +5532,8 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const Ren
         const auto depthBits = toBits(description.usage);
         if (description.dimension != TextureDimension::d2 || description.extent.width != requestedExtent.width ||
             description.extent.height != requestedExtent.height || description.extent.depth != 1 ||
-            description.mipLevels != 1 || description.arrayLayers != 1 || description.format != PixelFormat::depth32Float ||
+            description.mipLevels != 1 || description.arrayLayers != 1 ||
+            description.format != PixelFormat::depth32Float ||
             (depthBits & (toBits(ResourceUsage::depthRead) | toBits(ResourceUsage::depthWrite))) == 0U)
             throw std::invalid_argument("typed rendering depth attachment is incompatible with the render area");
         const bool undefined = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED;
@@ -5571,8 +5571,7 @@ void VulkanDevice::recordEndRendering(VkCommandBuffer commandBuffer, handles::Te
     recordEndRendering(commandBuffer, targets);
 }
 
-void VulkanDevice::recordEndRendering(VkCommandBuffer commandBuffer,
-                                      std::span<const handles::TextureHandle> targets) {
+void VulkanDevice::recordEndRendering(VkCommandBuffer commandBuffer, std::span<const handles::TextureHandle> targets) {
     if (targets.empty())
         throw std::invalid_argument("typed rendering requires at least one attachment");
     if (commandBuffer == VK_NULL_HANDLE)

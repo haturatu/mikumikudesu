@@ -207,8 +207,8 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                 break;
             if (!resources.sceneDraws.empty()) {
                 const auto* raster = std::get_if<dayo::fx::FxRasterDispatch>(&dispatch.executable);
-                const auto target = raster == nullptr ? dayo::core::fx::RasterModelTarget::all
-                                                      : raster->graphics.modelTarget;
+                const auto target =
+                    raster == nullptr ? dayo::core::fx::RasterModelTarget::all : raster->graphics.modelTarget;
                 for (const auto& sceneDraw : resources.sceneDraws) {
                     if (!matchesRasterTarget(target, resources.rasterControllerModel, sceneDraw))
                         continue;

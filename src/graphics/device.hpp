@@ -294,16 +294,7 @@ struct PipelineDesc {
 
 enum class CullModeEx : std::uint8_t { none, front, back };
 enum class FrontFaceEx : std::uint8_t { counterClockwise, clockwise };
-enum class CompareOpEx : std::uint8_t {
-    never,
-    less,
-    equal,
-    lessOrEqual,
-    greater,
-    notEqual,
-    greaterOrEqual,
-    always
-};
+enum class CompareOpEx : std::uint8_t { never, less, equal, lessOrEqual, greater, notEqual, greaterOrEqual, always };
 enum class BlendFactorEx : std::uint8_t {
     zero,
     one,

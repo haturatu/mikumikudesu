@@ -413,11 +413,11 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
             }
         }
         executionResources.updatePassConstants = [this](graphics::CommandList& commandList,
-                                                         const graphics::NativeSceneDraw& draw) {
+                                                        const graphics::NativeSceneDraw& draw) {
             const graphics::NativeScenePassConstants pass{.modelIndex = draw.modelIndex,
-                                                           .rasterizeOrder = draw.rasterizeOrder,
-                                                           .deformIndex = draw.deformIndex,
-                                                           .deformOrder = draw.deformOrder};
+                                                          .rasterizeOrder = draw.rasterizeOrder,
+                                                          .deformIndex = draw.deformIndex,
+                                                          .deformOrder = draw.deformOrder};
             std::string passError;
             if (!nativeSceneFrame_.updatePassConstants(commandList, pass, &passError))
                 throw std::runtime_error(passError.empty() ? "native CBuff1 update failed" : passError);

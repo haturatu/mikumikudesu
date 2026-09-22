@@ -48,10 +48,10 @@ int main() {
     try {
         const auto previewEffect = dayo::core::loadEffectGraph(sourceDirectory / "renderer/Preview.fxdayo");
         ok &= check(previewEffect.passes.size() == 5 && !previewEffect.hlsl.empty(), "Preview fxdayo graph");
-        const auto previewRaster = std::ranges::find_if(
-            previewEffect.passes, [](const auto& pass) { return pass.name == "MMD"; });
-        const auto previewGBuffer = std::ranges::find_if(
-            previewEffect.passes, [](const auto& pass) { return pass.name == "GBuffer"; });
+        const auto previewRaster =
+            std::ranges::find_if(previewEffect.passes, [](const auto& pass) { return pass.name == "MMD"; });
+        const auto previewGBuffer =
+            std::ranges::find_if(previewEffect.passes, [](const auto& pass) { return pass.name == "GBuffer"; });
         ok &= check(previewRaster != previewEffect.passes.end() &&
                         previewRaster->graphics.rasterizer.cullMode == dayo::core::EffectCullMode::none &&
                         previewRaster->graphics.blend.size() == 1 && previewRaster->graphics.blend[0].enabled &&
@@ -70,11 +70,10 @@ int main() {
                         subayaiEffect.hlsl.find("resources.hlsli") != std::string::npos &&
                         !subayaiEffect.controllers.empty(),
                     "Subayai Jsonnet expansion");
-        const auto subayaiRaster = std::ranges::find_if(
-            subayaiEffect.passes, [](const auto& pass) { return pass.name == "MMD"; });
+        const auto subayaiRaster =
+            std::ranges::find_if(subayaiEffect.passes, [](const auto& pass) { return pass.name == "MMD"; });
         ok &= check(subayaiRaster != subayaiEffect.passes.end() && subayaiRaster->renderTargets.size() == 4 &&
-                        subayaiRaster->graphics.blend.size() == 4 &&
-                        subayaiRaster->graphics.depthStencil.depthWrite &&
+                        subayaiRaster->graphics.blend.size() == 4 && subayaiRaster->graphics.depthStencil.depthWrite &&
                         subayaiRaster->graphics.depthStencil.depthFunc == dayo::core::EffectDepthFunc::lessEqual,
                     "Subayai MRT/depth/blend state");
         const auto rayPass = std::ranges::find_if(

@@ -335,10 +335,12 @@ EffectPass effectPassFromFxPass(const FxPass& pass) {
                     EffectAttachment{.name = concrete.target, .clear = concrete.clear, .clearValue = {}});
             } else if constexpr (std::is_same_v<T, FxClearUavOp>) {
                 out.type = EffectPassType::clear;
-                out.unorderedAccess.push_back(EffectAttachment{.name = concrete.target, .clear = false, .clearValue = {}});
+                out.unorderedAccess.push_back(
+                    EffectAttachment{.name = concrete.target, .clear = false, .clearValue = {}});
             } else if constexpr (std::is_same_v<T, FxMipmapGenOp>) {
                 out.type = EffectPassType::mipmap;
-                out.renderTargets.push_back(EffectAttachment{.name = concrete.texture, .clear = false, .clearValue = {}});
+                out.renderTargets.push_back(
+                    EffectAttachment{.name = concrete.texture, .clear = false, .clearValue = {}});
             }
         },
         pass.op);

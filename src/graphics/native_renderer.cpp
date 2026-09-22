@@ -124,8 +124,7 @@ std::optional<NativeFrameOutput>
 NativeRendererCoordinator::recordFrame(CommandList& commands, const fx::FxFrameContext& context, core::DirtyFlag dirty,
                                        std::span<const core::MaterialParameterBlock> materials,
                                        std::span<const AliasEntry> lightSampling,
-                                       const EnvironmentGpuResult& environment,
-                                       const FxExecutionResources& resources) {
+                                       const EnvironmentGpuResult& environment, const FxExecutionResources& resources) {
     if (!status_.nativeReady)
         return std::nullopt;
     switch (status_.active) {

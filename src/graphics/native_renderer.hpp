@@ -42,12 +42,10 @@ class NativeRendererCoordinator {
     [[nodiscard]] BdptRuntime* bdpt() noexcept {
         return status_.nativeReady && status_.active == RendererKind::bdpt ? &bdpt_ : nullptr;
     }
-    [[nodiscard]] std::optional<NativeFrameOutput> recordFrame(CommandList& commands, const fx::FxFrameContext& context,
-                                                               core::DirtyFlag dirty,
-                                                               std::span<const core::MaterialParameterBlock> materials,
-                                                               std::span<const AliasEntry> lightSampling,
-                                                               const EnvironmentGpuResult& environment,
-                                                               const FxExecutionResources& resources = {});
+    [[nodiscard]] std::optional<NativeFrameOutput>
+    recordFrame(CommandList& commands, const fx::FxFrameContext& context, core::DirtyFlag dirty,
+                std::span<const core::MaterialParameterBlock> materials, std::span<const AliasEntry> lightSampling,
+                const EnvironmentGpuResult& environment, const FxExecutionResources& resources = {});
 
   private:
     NativeRendererStatus status_{};

@@ -225,8 +225,7 @@ struct MockCommands final : public dayo::graphics::CommandList {
         trace.push_back("draw:" + std::to_string(vertexCount) + "x" + std::to_string(instanceCount));
     }
     void drawIndexedEx(const dayo::graphics::IndexedDrawEx& draw) override {
-        trace.push_back("drawIndexedEx:" + std::to_string(draw.modelIndex) + ":" +
-                        std::to_string(draw.materialIndex));
+        trace.push_back("drawIndexedEx:" + std::to_string(draw.modelIndex) + ":" + std::to_string(draw.materialIndex));
     }
     void dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) override {
         trace.push_back("dispatch:" + std::to_string(x) + "x" + std::to_string(y) + "x" + std::to_string(z));
@@ -460,9 +459,8 @@ bool testRasterModelTargetIndexedDraws() {
     const auto plan = dayo::fx::FxCompiler{}.plan(program, testContext());
     const auto stats = executor.execute(plan, commands, testContext(), resources);
     bool ok = check(stats.raster == 1 && stats.indexedDraws == 2, "raster target selects matching indexed draws");
-    ok &= check(std::count_if(commands.trace.begin(), commands.trace.end(), [](const auto& entry) {
-                    return entry.starts_with("drawIndexedEx:");
-                }) == 2,
+    ok &= check(std::count_if(commands.trace.begin(), commands.trace.end(),
+                              [](const auto& entry) { return entry.starts_with("drawIndexedEx:"); }) == 2,
                 "raster executor records one indexed draw per matching material range");
     ok &= check(passModels == std::vector<std::uint32_t>{7, 7},
                 "raster executor updates per-draw pass constants before indexed draws");
@@ -491,10 +489,8 @@ bool testDepthOnlyRasterExecution() {
     resources.resolveTypedPipeline = [](const dayo::fx::FxDispatch&) {
         return std::optional<dayo::graphics::handles::PipelineHandle>{{20, 1}};
     };
-    resources.resolveTypedTexture = [](std::string_view name)
-        -> std::optional<dayo::graphics::handles::TextureHandle> {
-        return name == "Depth" ? std::optional<dayo::graphics::handles::TextureHandle>{{21, 1}}
-                               : std::nullopt;
+    resources.resolveTypedTexture = [](std::string_view name) -> std::optional<dayo::graphics::handles::TextureHandle> {
+        return name == "Depth" ? std::optional<dayo::graphics::handles::TextureHandle>{{21, 1}} : std::nullopt;
     };
     const auto plan = dayo::fx::FxCompiler{}.plan(program, testContext());
     const auto stats = executor.execute(plan, commands, testContext(), resources);

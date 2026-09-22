@@ -3,8 +3,8 @@
 #include "core/fx/fx_pass.hpp"
 
 #include <algorithm>
-#include <charconv>
 #include <cctype>
+#include <charconv>
 #include <fstream>
 #include <iterator>
 #include <sstream>
@@ -94,8 +94,7 @@ EffectClearValue clearValue(const nlohmann::json& value) {
     EffectClearValue result;
     if (!value.is_object())
         return result;
-    result.color = {value.value("x", 0.0F), value.value("y", 0.0F), value.value("z", 0.0F),
-                    value.value("w", 0.0F)};
+    result.color = {value.value("x", 0.0F), value.value("y", 0.0F), value.value("z", 0.0F), value.value("w", 0.0F)};
     result.depth = value.value("depth", 1.0F);
     result.stencil = value.value("stencil", 0U);
     return result;
