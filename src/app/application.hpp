@@ -13,6 +13,7 @@
 #include "core/task_scheduler.hpp"
 #include "core/video_export.hpp"
 #include "fx/fx_frame.hpp"
+#include "fx/fx_scheduler.hpp"
 #include "graphics/device.hpp"
 #include "graphics/native_renderer.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
@@ -28,6 +29,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace dayo::app {
@@ -149,10 +151,18 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::string lastAsset_{"Drop PMX/VMD/VPD/media files into the window"};
     std::vector<core::ProjectAsset> projectAssets_;
     std::optional<std::filesystem::path> currentProjectPath_;
-    std::optional<core::EffectHotReloader> effectReloader_;
-    // The single-effect compatibility path captures the owner when the
-    // effect is loaded. Controller (self) must not follow UI selection later.
-    std::optional<core::ModelId> effectControllerModel_;
+    struct ReloadedEffect {
+        std::filesystem::path path;
+        core::EffectId id{};
+        std::optional<core::ModelId> owner;
+        core::EffectHotReloader reloader;
+
+        ReloadedEffect(std::filesystem::path source, std::optional<core::ModelId> model)
+            : path(std::move(source)), owner(model), reloader(path) {}
+    };
+    std::vector<ReloadedEffect> reloadedEffects_;
+    fx::FrameEffectScheduler effectScheduler_;
+    std::vector<fx::ScheduledFx> scheduledEffects_;
     core::PreviewNormalization normalization_;
     float cameraYaw_{};
     float cameraPitch_{};

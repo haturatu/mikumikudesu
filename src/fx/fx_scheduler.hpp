@@ -1,7 +1,10 @@
 #pragma once
 
+#include "core/scene.hpp"
 #include "fx/fx_catalog.hpp"
 
+#include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -27,16 +30,20 @@ struct ScheduledFx {
     std::string name;
     FrameStage stage{FrameStage::renderer};
     int order{};
+    core::EffectId effectId{};
 };
 
 class FrameEffectScheduler {
   public:
+    using ModelOrderLookup = std::function<std::optional<core::ModelExecutionOrder>(core::ModelId)>;
     void setControllerEnabled(std::string name, bool enabled);
     [[nodiscard]] bool isEnabled(const std::string& name) const noexcept;
     // Build the ordered per-frame list. rendererName selects the active
     // renderer entry; empty selects the first renderer entry.
     [[nodiscard]] std::vector<ScheduledFx> schedule(const EffectCatalog& catalog,
                                                     const std::string& rendererName = {}) const;
+    [[nodiscard]] std::vector<ScheduledFx> schedule(const core::SceneEffectStack& effects,
+                                                    const ModelOrderLookup& modelOrder) const;
 
   private:
     static FrameStage stageFor(const FxCatalogEntry& entry) noexcept;
