@@ -22,10 +22,10 @@
 #include <iterator>
 #include <map>
 #include <optional>
-#include <regex>
 #include <ranges>
-#include <stdexcept>
+#include <regex>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -67,8 +67,7 @@ std::string passMacro(std::string_view name) {
         const auto byte = static_cast<unsigned char>(character);
         result.push_back(std::isalnum(byte) || character == '_' ? character : '_');
     }
-    if (result.size() == std::string_view{"YRZ_PASS_"}.size() ||
-        std::isdigit(static_cast<unsigned char>(result[9])))
+    if (result.size() == std::string_view{"YRZ_PASS_"}.size() || std::isdigit(static_cast<unsigned char>(result[9])))
         result.insert(result.begin() + 9, '_');
     return result;
 }
@@ -136,8 +135,7 @@ class PipelineOracleDevice final : public dayo::graphics::Device {
     [[nodiscard]] dayo::graphics::TextureHandle createTexture(const dayo::graphics::TextureDesc&) override {
         return nextLegacyHandle_++;
     }
-    [[nodiscard]] dayo::graphics::handles::ShaderHandle
-    createShaderEx(const dayo::graphics::ShaderDesc&) override {
+    [[nodiscard]] dayo::graphics::handles::ShaderHandle createShaderEx(const dayo::graphics::ShaderDesc&) override {
         return {nextTypedHandle_++, 1};
     }
     void destroyShaderEx(dayo::graphics::handles::ShaderHandle) override {}
@@ -277,8 +275,8 @@ bool validatePipelineOracle(const dayo::fx::FxProgram& program,
                  postprocess != nullptr)
             expectedColors = postprocess->colorAttachments.size();
         if (expectedColors == 0) {
-            expectedColors = static_cast<std::size_t>(std::count_if(
-                dispatch.resources.begin(), dispatch.resources.end(), [](const auto& resource) {
+            expectedColors = static_cast<std::size_t>(
+                std::count_if(dispatch.resources.begin(), dispatch.resources.end(), [](const auto& resource) {
                     return resource.write && resource.role == dayo::fx::FxResourceRole::colorAttachment;
                 }));
         }
@@ -332,19 +330,18 @@ bool buildPipelineOracle(const dayo::fx::FxProgram& program, const dayo::fx::FxS
     dayo::graphics::FxPipelineRuntime runtime;
     const auto layout = dayo::graphics::handles::PipelineLayoutHandle{1, 1};
     if (!runtime.build(
-        device, program, shaderCompiler,
-        [layout](const dayo::fx::FxDispatch&) -> std::optional<dayo::graphics::handles::PipelineLayoutHandle> {
-            return layout;
-        },
-        error, dayo::graphics::kNativeFxResourceSet))
+            device, program, shaderCompiler,
+            [layout](const dayo::fx::FxDispatch&) -> std::optional<dayo::graphics::handles::PipelineLayoutHandle> {
+                return layout;
+            },
+            error, dayo::graphics::kNativeFxResourceSet))
         return false;
     return validatePipelineOracle(program, device.graphicsPipelines, error);
 }
 
 void appendShaderRequest(const std::filesystem::path& sourceDirectory, const std::filesystem::path& effectPath,
                          const dayo::fx::FxProgram& program, const dayo::fx::FxDispatch& dispatch,
-                         const dayo::core::EffectPass& pass,
-                         std::string entryPoint, dayo::fx::FxShaderStage stage,
+                         const dayo::core::EffectPass& pass, std::string entryPoint, dayo::fx::FxShaderStage stage,
                          dayo::fx::FxShaderCompiler& shaderCompiler, UpstreamScanResult& result) {
     if (entryPoint.empty())
         return;
@@ -373,8 +370,8 @@ UpstreamScanResult scanUpstreamGraphs(const std::filesystem::path& sourceDirecto
     dayo::fx::FxCompiler compiler;
     const auto context = dayo::fx::makeFxFrameContext(0.0F, 0, 64, 64, 0, 0, 0, 0, 1, 1);
     dayo::fx::FxShaderCompiler shaderCompiler;
-    const bool dxc = shaderCompiler.executable().filename() == "dxc" ||
-                     shaderCompiler.executable().filename() == "dxc.exe";
+    const bool dxc =
+        shaderCompiler.executable().filename() == "dxc" || shaderCompiler.executable().filename() == "dxc.exe";
     const bool compileShaders = shaderCompiler.available() && dxc;
     if (!compileShaders) {
         if (upstreamShaderProbesRequired())
@@ -461,7 +458,8 @@ std::unordered_map<std::string, AbiBinding> readAbiBindings(const std::filesyste
     std::ifstream input(path);
     if (!input)
         throw std::runtime_error("cannot read upstream ABI header: " + path.string());
-    const std::regex declaration(R"(\b([A-Za-z_]\w*)\s*(?:\[\])?\s*:\s*register\(\s*([tubs])\s*(\d+)(?:\s*,\s*space\s*(\d+))?\s*\))");
+    const std::regex declaration(
+        R"(\b([A-Za-z_]\w*)\s*(?:\[\])?\s*:\s*register\(\s*([tubs])\s*(\d+)(?:\s*,\s*space\s*(\d+))?\s*\))");
     std::unordered_map<std::string, AbiBinding> result;
     for (std::string line; std::getline(input, line);) {
         std::smatch match;
@@ -552,8 +550,8 @@ bool checkUpstreamAbi(const std::filesystem::path& sourceDirectory) {
                              "DenoiserEnabled", "OnStart", "OnLoadSkybox", "OnResize", "OnLoad"})
         ok &= check(cbText.find(field) != std::string::npos, std::string("ViewCB field exists: ") + field);
     for (const auto field : {"struct OIDNInput", "float3 color", "float3 albedo", "float3 normal"})
-        ok &= check(dayotypesText.find(field) != std::string::npos,
-                    std::string("dayotypes OIDN field exists: ") + field);
+        ok &=
+            check(dayotypesText.find(field) != std::string::npos, std::string("dayotypes OIDN field exists: ") + field);
     return ok;
 }
 
@@ -571,8 +569,8 @@ std::string spirvString(std::span<const std::uint32_t> words, std::size_t firstW
     return result;
 }
 
-std::unordered_map<std::string, std::pair<std::uint32_t, std::uint32_t>> reflectSpirvBindings(
-    std::span<const std::uint32_t> words) {
+std::unordered_map<std::string, std::pair<std::uint32_t, std::uint32_t>>
+reflectSpirvBindings(std::span<const std::uint32_t> words) {
     std::unordered_map<std::uint32_t, std::string> names;
     std::unordered_map<std::uint32_t, std::uint32_t> bindings;
     std::unordered_map<std::uint32_t, std::uint32_t> sets;
@@ -639,18 +637,21 @@ void main(uint3 id : SV_DispatchThreadID)
             std::uint32_t binding;
         };
         const std::array expectedBindings = {
-            ExpectedProbeBinding{"RTOutput", 0, dayo::graphics::nativeSceneBinding(
-                                                   dayo::graphics::NativeSceneRegisterClass::uav, 0)},
-            ExpectedProbeBinding{"ScreenBMP", 0, dayo::graphics::nativeSceneBinding(
-                                                    dayo::graphics::NativeSceneRegisterClass::sampled, 9)},
-            ExpectedProbeBinding{"ScreenTexture", 0, dayo::graphics::nativeSceneBinding(
-                                                        dayo::graphics::NativeSceneRegisterClass::sampled, 11)},
-            ExpectedProbeBinding{"CloneCount", 0, dayo::graphics::nativeSceneBinding(
-                                                    dayo::graphics::NativeSceneRegisterClass::sampled, 10)},
-            ExpectedProbeBinding{"ViewCB", 0, dayo::graphics::nativeSceneBinding(
-                                                  dayo::graphics::NativeSceneRegisterClass::uniform, 0)},
-            ExpectedProbeBinding{"CBuff1", 1, dayo::graphics::nativeSceneBinding(
-                                                   dayo::graphics::NativeSceneRegisterClass::uniform, 0)},
+            ExpectedProbeBinding{"RTOutput", 0,
+                                 dayo::graphics::nativeSceneBinding(dayo::graphics::NativeSceneRegisterClass::uav, 0)},
+            ExpectedProbeBinding{
+                "ScreenBMP", 0,
+                dayo::graphics::nativeSceneBinding(dayo::graphics::NativeSceneRegisterClass::sampled, 9)},
+            ExpectedProbeBinding{
+                "ScreenTexture", 0,
+                dayo::graphics::nativeSceneBinding(dayo::graphics::NativeSceneRegisterClass::sampled, 11)},
+            ExpectedProbeBinding{
+                "CloneCount", 0,
+                dayo::graphics::nativeSceneBinding(dayo::graphics::NativeSceneRegisterClass::sampled, 10)},
+            ExpectedProbeBinding{
+                "ViewCB", 0, dayo::graphics::nativeSceneBinding(dayo::graphics::NativeSceneRegisterClass::uniform, 0)},
+            ExpectedProbeBinding{
+                "CBuff1", 1, dayo::graphics::nativeSceneBinding(dayo::graphics::NativeSceneRegisterClass::uniform, 0)},
         };
         for (const auto& expected : expectedBindings) {
             const auto found = reflected.find(expected.name);
@@ -728,8 +729,7 @@ int main() {
                             subayaiEffect.passes,
                             [](const auto& pass) { return pass.type == dayo::core::EffectPassType::raytracing; }) &&
                         subayaiEffect.hlslPrefix.find("resources.hlsli") != std::string::npos &&
-                        subayaiEffect.materialDescriptor.has_value() &&
-                        !subayaiEffect.controllers.empty(),
+                        subayaiEffect.materialDescriptor.has_value() && !subayaiEffect.controllers.empty(),
                     "Subayai Jsonnet expansion");
         const auto subayaiRaster =
             std::ranges::find_if(subayaiEffect.passes, [](const auto& pass) { return pass.name == "MMD"; });
@@ -824,15 +824,13 @@ float4 PS() : SV_TARGET { return 1; }
             const auto marker = invalid.find("\"srcBlend\":\"one\"");
             if (marker == std::string::npos)
                 throw std::runtime_error("blend fixture marker is missing");
-            invalid.replace(marker, std::string_view{"\"srcBlend\":\"one\""}.size(),
-                            "\"srcBlend\":\"blendfactor\"");
+            invalid.replace(marker, std::string_view{"\"srcBlend\":\"one\""}.size(), "\"srcBlend\":\"blendfactor\"");
             static_cast<void>(dayo::core::loadEffectGraphFromText("invalid-blend-fixture.fxdayo", invalid));
         } catch (const std::runtime_error& exception) {
-            rejectedUnsupportedBlendFactor = std::string_view(exception.what()).find("blend factor") !=
-                                            std::string_view::npos;
+            rejectedUnsupportedBlendFactor =
+                std::string_view(exception.what()).find("blend factor") != std::string_view::npos;
         }
-        ok &= check(rejectedUnsupportedBlendFactor,
-                    "YRZFX rejects blend factors without a native Vulkan mapping");
+        ok &= check(rejectedUnsupportedBlendFactor, "YRZFX rejects blend factors without a native Vulkan mapping");
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: effect graph: " << exception.what() << '\n';
         ok = false;

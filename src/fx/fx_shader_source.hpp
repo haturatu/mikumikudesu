@@ -51,7 +51,6 @@ struct FxNativeShaderSourceOptions {
 // HLSL compiler. MikuMikuDayo assets are authored on a case-insensitive file
 // system, while the Linux host is not; production and compatibility probes
 // must therefore use this same source transformation.
-[[nodiscard]] std::string normalizeFxShaderIncludes(std::string_view source,
-                                                     const std::filesystem::path& directory);
+[[nodiscard]] std::string normalizeFxShaderIncludes(std::string_view source, const std::filesystem::path& directory);
 
 } // namespace dayo::fx

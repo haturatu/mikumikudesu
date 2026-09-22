@@ -339,8 +339,8 @@ handles::ShaderHandle FxPipelineRuntime::compileShader(Device& device, const fx:
 
     const auto sourceDirectory =
         program.sourcePath.empty() ? std::filesystem::path{"."} : program.sourcePath.parent_path();
-    request.hlsl = fx::normalizeFxShaderIncludes(
-        generatedSource, sourceDirectory.empty() ? std::filesystem::path{"."} : sourceDirectory);
+    request.hlsl = fx::normalizeFxShaderIncludes(generatedSource, sourceDirectory.empty() ? std::filesystem::path{"."}
+                                                                                          : sourceDirectory);
     request.sourcePath = program.sourcePath;
     request.entryPoint = std::string(entryPoint);
     request.stage = stage;

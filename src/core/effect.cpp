@@ -428,8 +428,7 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
             }
             pass.macros = strings(value, "macros");
             if (const auto threads = value.find("numthreads"); threads != value.end() && threads->is_object()) {
-                pass.numThreads = {std::max(1U, threads->value("x", 1U)),
-                                   std::max(1U, threads->value("y", 1U)),
+                pass.numThreads = {std::max(1U, threads->value("x", 1U)), std::max(1U, threads->value("y", 1U)),
                                    std::max(1U, threads->value("z", 1U))};
             }
             pass.conditions = strings(value, "conditions");
@@ -440,7 +439,7 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
             pass.unorderedAccess = attachments(value, "UAV");
             if (pass.type == EffectPassType::copy) {
                 const auto appendStringAttachment = [&](std::vector<EffectAttachment>& target,
-                                                         std::initializer_list<std::string_view> names) {
+                                                        std::initializer_list<std::string_view> names) {
                     if (!target.empty())
                         return;
                     for (const auto name : names) {

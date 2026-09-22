@@ -122,11 +122,11 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
         dispatch.conditions = pass.conditions;
         dispatch.macros = pass.macros;
         if (pass.type == core::EffectPassType::compute &&
-            std::ranges::none_of(dispatch.macros, [](const std::string& macro) {
-                return macro.starts_with("YRZ_NUMTHREADS=");
-            })) {
+            std::ranges::none_of(dispatch.macros,
+                                 [](const std::string& macro) { return macro.starts_with("YRZ_NUMTHREADS="); })) {
             dispatch.macros.push_back("YRZ_NUMTHREADS=[numthreads(" + std::to_string(pass.numThreads[0]) + "," +
-                                      std::to_string(pass.numThreads[1]) + "," + std::to_string(pass.numThreads[2]) + ")]");
+                                      std::to_string(pass.numThreads[1]) + "," + std::to_string(pass.numThreads[2]) +
+                                      ")]");
         }
         if (!pass.computeShader.empty())
             dispatch.shader = pass.computeShader;

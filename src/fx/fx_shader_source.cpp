@@ -125,8 +125,7 @@ struct MaterialTemplate {
     return std::string(value.substr(first, last - first));
 }
 
-[[nodiscard]] std::optional<std::pair<std::string, std::size_t>> materialToken(std::string_view value,
-                                                                                  char prefix) {
+[[nodiscard]] std::optional<std::pair<std::string, std::size_t>> materialToken(std::string_view value, char prefix) {
     if (value.size() < 3 || value[0] != prefix || value[1] != '.')
         return std::nullopt;
     std::size_t end = 2;
@@ -164,13 +163,13 @@ struct MaterialTemplate {
         if (right.empty())
             continue;
         if (const auto token = materialToken(left, 'f'); token.has_value()) {
-            result.values.push_back({token->first + (token->second == 1 ? "" : std::to_string(token->second)),
-                                     identifier(right)});
+            result.values.push_back(
+                {token->first + (token->second == 1 ? "" : std::to_string(token->second)), identifier(right)});
             continue;
         }
         if (const auto token = materialToken(left, 'i'); token.has_value()) {
-            result.values.push_back({token->first + (token->second == 1 ? "" : std::to_string(token->second)),
-                                     identifier(right)});
+            result.values.push_back(
+                {token->first + (token->second == 1 ? "" : std::to_string(token->second)), identifier(right)});
             continue;
         }
         if (left.starts_with("_T") || left.starts_with("_V")) {
@@ -216,9 +215,8 @@ struct MaterialTemplate {
 }
 
 void appendLegacyCompatibilityDeclarations(std::ostringstream& output, const FxProgram& program) {
-    const auto hasLocalGBuffer = std::ranges::any_of(program.textures, [](const auto& texture) {
-        return texture.name == "GBuffer";
-    });
+    const auto hasLocalGBuffer =
+        std::ranges::any_of(program.textures, [](const auto& texture) { return texture.name == "GBuffer"; });
     if (!hasLocalGBuffer &&
         (containsIdentifier(program.hlslPrefix, "GBuffer") || containsIdentifier(program.hlsl, "GBuffer")))
         output << "Texture2D<float4> GBuffer : register(t12, space0);\n";
@@ -275,9 +273,8 @@ void appendMaterialDeclarations(std::ostringstream& output, const FxProgram& pro
             continue;
         output << "    result.has" << field.name << " = (" << identifier(name) << "_tex[tidx + " << textureIndex
                << "] != 0xffffffff);\n"
-               << "    result." << field.name << " = " << identifier(name)
-               << "_texture[NonUniformResourceIndex(" << identifier(name) << "_tex[tidx + " << textureIndex
-               << "])];\n";
+               << "    result." << field.name << " = " << identifier(name) << "_texture[NonUniformResourceIndex("
+               << identifier(name) << "_tex[tidx + " << textureIndex << "])];\n";
         ++textureIndex;
     }
     output << "    return result;\n}\n";
@@ -293,9 +290,8 @@ void appendMaterialDeclarations(std::ostringstream& output, const FxProgram& pro
         }
         output << "    result.has" << field.name << " = (" << identifier(name) << "_tex3D[tidx + " << textureIndex
                << "] != 0xffffffff);\n"
-               << "    result." << field.name << " = " << identifier(name)
-               << "_texture3D[NonUniformResourceIndex(" << identifier(name) << "_tex3D[tidx + " << textureIndex
-               << "])];\n";
+               << "    result." << field.name << " = " << identifier(name) << "_texture3D[NonUniformResourceIndex("
+               << identifier(name) << "_tex3D[tidx + " << textureIndex << "])];\n";
         ++textureIndex;
     }
     output << "    return result;\n}\n";
@@ -398,7 +394,7 @@ void appendSharedDeclarations(std::ostringstream& output, const FxNativeShaderSo
 }
 
 [[nodiscard]] std::optional<std::filesystem::path> resolveIncludeCaseDirect(const std::filesystem::path& directory,
-                                                                              std::string_view include) {
+                                                                            std::string_view include) {
     const std::filesystem::path requested(include);
     if (requested.is_absolute())
         return std::nullopt;
@@ -441,7 +437,7 @@ void appendSharedDeclarations(std::ostringstream& output, const FxNativeShaderSo
 }
 
 [[nodiscard]] std::optional<std::filesystem::path> resolveIncludeCase(const std::filesystem::path& directory,
-                                                                        std::string_view include) {
+                                                                      std::string_view include) {
     if (const auto direct = resolveIncludeCaseDirect(directory, include); direct.has_value())
         return direct;
 
@@ -513,15 +509,15 @@ std::string normalizeFxShaderIncludes(std::string_view source, const std::filesy
         const auto includeStartDelimiter = includeStart == std::string_view::npos
                                                ? std::string_view::npos
                                                : line.find_first_of("\"<", includeStart + 8);
-        const auto closingDelimiter = includeStartDelimiter == std::string_view::npos
-                                          ? '\0'
-                                          : line[includeStartDelimiter] == '<' ? '>' : '"';
+        const auto closingDelimiter = includeStartDelimiter == std::string_view::npos ? '\0'
+                                      : line[includeStartDelimiter] == '<'            ? '>'
+                                                                                      : '"';
         const auto includeEndDelimiter = includeStartDelimiter == std::string_view::npos
                                              ? std::string_view::npos
                                              : line.find(closingDelimiter, includeStartDelimiter + 1);
         if (includeStartDelimiter != std::string_view::npos && includeEndDelimiter != std::string_view::npos) {
-            const auto include = line.substr(includeStartDelimiter + 1,
-                                             includeEndDelimiter - includeStartDelimiter - 1);
+            const auto include =
+                line.substr(includeStartDelimiter + 1, includeEndDelimiter - includeStartDelimiter - 1);
             const auto resolved = resolveIncludeCase(directory, include);
             if (resolved.has_value()) {
                 const auto absoluteDirectory = std::filesystem::absolute(directory, error).lexically_normal();
