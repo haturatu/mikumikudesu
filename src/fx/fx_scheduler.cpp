@@ -3,6 +3,7 @@
 #include "core/fx/fx_pass.hpp"
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace dayo::fx {
 
@@ -123,9 +124,17 @@ std::vector<ScheduledFx> FrameEffectScheduler::schedule(const EffectCatalog& cat
 }
 
 std::vector<ScheduledFx> FrameEffectScheduler::schedule(const core::SceneEffectStack& effects,
-                                                        const core::ModelExecutionOrder& modelOrder) const {
+                                                        const ModelOrderLookup& modelOrder) const {
     std::vector<ScheduledFx> result;
-    result.push_back({"deform", FrameStage::deform, modelOrder.deform});
+    result.push_back({"deform", FrameStage::deform, 0});
+    const auto ownerOrder = [&modelOrder](const core::SceneEffectInstance& effect) {
+        if (!effect.controllerModel.has_value() || !modelOrder)
+            return core::ModelExecutionOrder{};
+        const auto order = modelOrder(*effect.controllerModel);
+        if (!order.has_value())
+            throw std::invalid_argument("FX controller model is missing from the scene");
+        return *order;
+    };
     const auto nameFor = [](const core::SceneEffectInstance& effect) {
         const auto stem = effect.source.stem().string();
         return stem.empty() ? "effect-" + std::to_string(effect.id) : stem;
@@ -133,17 +142,18 @@ std::vector<ScheduledFx> FrameEffectScheduler::schedule(const core::SceneEffectS
     for (const auto& effect : effects.deform) {
         const auto name = nameFor(effect);
         if (isEnabled(name))
-            result.push_back({name, FrameStage::deform, effect.executionOrder});
+            result.push_back({name, FrameStage::deform, effect.executionOrder + ownerOrder(effect).deform, effect.id});
     }
     if (effects.renderer.has_value()) {
         const auto name = nameFor(*effects.renderer);
         if (isEnabled(name))
-            result.push_back({name, FrameStage::renderer, modelOrder.raster});
+            result.push_back({name, FrameStage::renderer, effects.renderer->executionOrder, effects.renderer->id});
     }
     for (const auto& effect : effects.postprocess) {
         const auto name = nameFor(effect);
         if (isEnabled(name))
-            result.push_back({name, FrameStage::postPre, effect.executionOrder + modelOrder.postprocess});
+            result.push_back({name, FrameStage::postPre, effect.executionOrder + ownerOrder(effect).postprocess,
+                              effect.id});
     }
     const auto rank = [](FrameStage stage) {
         switch (stage) {

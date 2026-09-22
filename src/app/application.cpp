@@ -331,9 +331,11 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         scene_.clearDirty(core::DirtyFlag::lighting);
     }
     const auto lightSampling = nativeLightSampling_.table();
-    const auto* scheduleModel = selectedModel();
-    scheduledEffects_ = effectScheduler_.schedule(
-        scene_.effects(), scheduleModel == nullptr ? core::ModelExecutionOrder{} : scheduleModel->order);
+    scheduledEffects_ = effectScheduler_.schedule(scene_.effects(), [this](core::ModelId id)
+        -> std::optional<core::ModelExecutionOrder> {
+        const auto* model = scene_.model(id);
+        return model == nullptr ? std::nullopt : std::optional<core::ModelExecutionOrder>{model->order};
+    });
     try {
         std::string modelError;
         if (!nativeSceneModelData_.empty() &&
@@ -472,12 +474,20 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         if (const auto* program = nativeRenderer_.program();
             program != nullptr &&
             !nativeSceneFrame_.syncControllers(program->controllers, evaluatedModels_,
-                                               effectControllerModel_.value_or(frameContext.currentModel), &sceneError))
+                                                scene_.effects().renderer.has_value() &&
+                                                        scene_.effects().renderer->controllerModel.has_value()
+                                                    ? *scene_.effects().renderer->controllerModel
+                                                    : 0,
+                                                &sceneError))
             throw std::runtime_error(sceneError.empty() ? "native FX controller synchronization failed" : sceneError);
         graphics::FxExecutionResources executionResources;
         executionResources.sceneDraws = nativeSceneDraws_;
+        const auto controllerModel = scene_.effects().renderer.has_value() &&
+                                             scene_.effects().renderer->controllerModel.has_value()
+                                         ? *scene_.effects().renderer->controllerModel
+                                         : core::ModelId{};
         for (const auto& geometry : nativeGeometry_) {
-            if (geometry.modelId == frameContext.currentModel) {
+            if (geometry.modelId == controllerModel) {
                 executionResources.rasterControllerModel = geometry.modelIndex;
                 break;
             }
@@ -536,7 +546,6 @@ void Application::resetProjectRuntimeState() {
     videoRangeInitialized_ = false;
     scene_.clearProjectState();
     evaluatedModels_.models.clear();
-    effectControllerModel_.reset();
     nativeRenderer_.reset();
     nativeSceneFrame_.reset();
     nativeSceneResources_.reset();
@@ -545,7 +554,7 @@ void Application::resetProjectRuntimeState() {
         device_->setNativeRendererAvailability(false, false);
         device_->clearPreviewResources();
     }
-    effectReloader_.reset();
+    reloadedEffects_.clear();
     audioPlayer_.stop();
     audioSource_.clear();
     audioDestination_.fill('\0');
@@ -563,7 +572,6 @@ void Application::resetProjectRuntimeState() {
     nativeSceneModelData_.clear();
     nativeLightSampling_.clear();
     nativeLightPowers_.clear();
-    reloadedEffectId_.reset();
     scheduledEffects_.clear();
     nativeDeformVersion_ = 0;
     mediaSeconds_ = 0.0;
@@ -754,15 +762,13 @@ int Application::run() {
             refreshPreviewScene();
         }
         auto* media = scene_.media();
-        if (effectReloader_) {
+        for (auto& effect : reloadedEffects_) {
             std::string reloadError;
-            if (effectReloader_->poll(&reloadError) && effectReloader_->current() != nullptr) {
-                if (reloadedEffectId_.has_value())
-                    static_cast<void>(scene_.removeEffect(*reloadedEffectId_));
-                const auto owner = effectControllerModel_;
-                reloadedEffectId_ = scene_.addEffect(*effectReloader_->current(), owner);
+            if (effect.reloader.poll(&reloadError) && effect.reloader.current() != nullptr) {
+                static_cast<void>(scene_.removeEffect(effect.id));
+                effect.id = scene_.addEffect(*effect.reloader.current(), effect.owner);
                 requestRenderer(requestedRenderer_);
-                log::info("Hot reloaded effect graph");
+                log::info("Hot reloaded effect graph: ", effect.path.string());
             } else if (!reloadError.empty()) {
                 log::warn("FX hot reload deferred: ", reloadError);
             }
@@ -1224,16 +1230,15 @@ void Application::handleAsset(const std::filesystem::path& path) {
     }
     if (kind == core::AssetKind::effect) {
         try {
-            effectReloader_.emplace(path);
-            static_cast<void>(effectReloader_->poll());
-            if (effectReloader_->current() == nullptr)
+            const auto owner = selectedModel() == nullptr ? std::nullopt
+                                                           : std::optional<core::ModelId>{selectedModel()->id};
+            ReloadedEffect reloaded(path, owner);
+            static_cast<void>(reloaded.reloader.poll());
+            if (reloaded.reloader.current() == nullptr)
                 throw std::runtime_error("effect graph is empty");
-            const auto graph = *effectReloader_->current();
-            if (!effectControllerModel_.has_value()) {
-                if (const auto* owner = selectedModel(); owner != nullptr)
-                    effectControllerModel_ = owner->id;
-            }
-            reloadedEffectId_ = scene_.addEffect(graph, effectControllerModel_);
+            const auto graph = *reloaded.reloader.current();
+            reloaded.id = scene_.addEffect(graph, owner);
+            reloadedEffects_.push_back(std::move(reloaded));
             auto filename = path.filename().string();
             std::ranges::transform(filename, filename.begin(),
                                    [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
