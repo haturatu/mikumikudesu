@@ -85,6 +85,7 @@ bool NativeSceneModelRuntime::sameLayout(Device& device, std::span<const NativeS
            std::all_of(models.begin(), models.end(), [&](const auto& model) {
                const auto index = static_cast<std::size_t>(&model - models.data());
                return byteSize(model.vertices) == vertexBytes_[index] &&
+                      byteSize(model.rawVertices) == rawVertexBytes_[index] &&
                       byteSize(model.indices) == indexBytes_[index] &&
                       byteSize(model.materials) == materialBytes_[index] &&
                       byteSize(model.faces) == faceBytes_[index] &&
@@ -108,6 +109,7 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
     try {
         device_ = &device;
         vertexBytes_.reserve(models.size());
+        rawVertexBytes_.reserve(models.size());
         indexBytes_.reserve(models.size());
         materialBytes_.reserve(models.size());
         faceBytes_.reserve(models.size());
@@ -115,7 +117,10 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
         faceWalkerBytes_.reserve(models.size());
 
         for (const auto& model : models) {
+            if (model.rawVertices.size() != model.vertices.size())
+                throw std::invalid_argument("native scene RawVB vertex count does not match the evaluated stream");
             vertexBytes_.push_back(byteSize(model.vertices));
+            rawVertexBytes_.push_back(byteSize(model.rawVertices));
             indexBytes_.push_back(byteSize(model.indices));
             materialBytes_.push_back(byteSize(model.materials));
             faceBytes_.push_back(byteSize(model.faces));
@@ -127,6 +132,7 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
             frame.vertices.reserve(models.size());
             frame.previousVertices.reserve(models.size());
             frame.rawVertices.reserve(models.size());
+            frame.rawVertexStaging.reserve(models.size());
             frame.vertexStaging.reserve(models.size());
             frame.indices.reserve(models.size());
             frame.indexStaging.reserve(models.size());
@@ -151,7 +157,7 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
                            "previous vertices"));
                 frame.vertexStaging.push_back(
                     createStaging(device, std::span<const NativeSceneVertex>(model.vertices), "vertex staging"));
-                frame.rawVertices.push_back(upload(device, std::span<const NativeSceneVertex>(model.vertices),
+                frame.rawVertices.push_back(upload(device, std::span<const NativeSceneVertex>(model.rawVertices),
                                                    ResourceUsage::storageRead | ResourceUsage::rayTracingRead,
                                                    "raw vertices"));
                 frame.indices.push_back(upload(device, std::span<const std::uint32_t>(model.indices),
@@ -170,6 +176,7 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
                                                    ResourceUsage::storageRead | ResourceUsage::rayTracingRead,
                                                    "face walkers"));
                 frame.indexStaging.push_back({});
+                frame.rawVertexStaging.push_back({});
                 frame.materialStaging.push_back({});
                 frame.faceStaging.push_back({});
                 frame.materialFaceStaging.push_back({});
@@ -210,6 +217,9 @@ bool NativeSceneModelRuntime::update(Device& device, std::span<const NativeScene
                 if (!model.vertices.empty())
                     device.uploadBufferEx(frame.vertices[index],
                                           std::as_bytes(std::span<const NativeSceneVertex>(model.vertices)), 0);
+                if (topologyChanged && !model.rawVertices.empty())
+                    device.uploadBufferEx(frame.rawVertices[index],
+                                          std::as_bytes(std::span<const NativeSceneVertex>(model.rawVertices)), 0);
                 if (topologyChanged && !model.indices.empty())
                     device.uploadBufferEx(frame.indices[index],
                                           std::as_bytes(std::span<const std::uint32_t>(model.indices)), 0);
@@ -302,8 +312,10 @@ bool NativeSceneModelRuntime::updateFrame(Device& device, CommandList& commands,
                               topologyChanged, "material face staging");
             const bool faceWalkerChanged = copyIfChanged(frame.faceWalkerStaging, frame.faceWalkers[index],
                                                          model.faceWalker, topologyChanged, "face walker staging");
+            const bool rawVerticesChanged = copyIfChanged(frame.rawVertexStaging, frame.rawVertices[index],
+                                                          model.rawVertices, topologyChanged, "raw vertex staging");
             recordedTransfer = recordedTransfer || indicesChanged || materialsChanged || facesChanged ||
-                               materialFacesChanged || faceWalkerChanged;
+                               materialFacesChanged || faceWalkerChanged || rawVerticesChanged;
             frame.staticGenerations[index] = {model.topologyGeneration, model.materialGeneration};
         }
         if (recordedTransfer)
@@ -357,6 +369,7 @@ void NativeSceneModelRuntime::reset() noexcept {
             destroy(*device, frame.vertices);
             destroy(*device, frame.previousVertices);
             destroy(*device, frame.rawVertices);
+            destroy(*device, frame.rawVertexStaging);
             destroy(*device, frame.vertexStaging);
             destroy(*device, frame.indices);
             destroy(*device, frame.indexStaging);
@@ -373,6 +386,7 @@ void NativeSceneModelRuntime::reset() noexcept {
         frameResources_ = {};
     }
     vertexBytes_.clear();
+    rawVertexBytes_.clear();
     indexBytes_.clear();
     materialBytes_.clear();
     faceBytes_.clear();

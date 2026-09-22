@@ -91,7 +91,8 @@ NativeSceneMaterial makeNativeSceneMaterial(const mmd::PmxMaterial& material,
 }
 
 NativeSceneModelData makeNativeSceneModelData(const mmd::PmxModel& model, std::span<const PreviewVertex> vertices,
-                                              std::span<const mmd::AnimatedModelFrame::Material> animatedMaterials) {
+                                              std::span<const mmd::AnimatedModelFrame::Material> animatedMaterials,
+                                              mmd::PreviewNormalization normalization) {
     if (vertices.size() != model.vertices.size())
         throw std::invalid_argument("native scene vertex count does not match PMX model");
     if (model.indices.size() % 3U != 0)
@@ -101,51 +102,68 @@ NativeSceneModelData makeNativeSceneModelData(const mmd::PmxModel& model, std::s
 
     NativeSceneModelData result;
     result.vertices.reserve(vertices.size());
+    result.rawVertices.reserve(model.vertices.size());
     for (std::size_t index = 0; index < vertices.size(); ++index) {
         auto converted = makeNativeSceneVertex(vertices[index]);
         for (std::size_t channel = 0; channel < model.vertices[index].additionalUv.size(); ++channel)
             std::copy(model.vertices[index].additionalUv[channel].begin(),
                       model.vertices[index].additionalUv[channel].end(), converted.exuv + channel * 4U);
         result.vertices.push_back(converted);
+
+        const auto& source = model.vertices[index];
+        NativeSceneVertex raw;
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            raw.position[axis] = (source.position[axis] - normalization.center[axis]) * normalization.scale;
+            raw.normal[axis] = source.normal[axis];
+        }
+        std::copy(source.uv.begin(), source.uv.end(), std::begin(raw.uv));
+        raw.edge = source.edgeScale;
+        for (std::size_t channel = 0; channel < source.additionalUv.size(); ++channel)
+            std::copy(source.additionalUv[channel].begin(), source.additionalUv[channel].end(), raw.exuv + channel * 4U);
+        result.rawVertices.push_back(raw);
     }
     result.indices = model.indices;
 
-    std::vector<Vec3> tangents(result.vertices.size());
-    for (std::size_t offset = 0; offset < result.indices.size(); offset += 3U) {
-        const auto i0 = result.indices[offset];
-        const auto i1 = result.indices[offset + 1U];
-        const auto i2 = result.indices[offset + 2U];
-        if (i0 >= result.vertices.size() || i1 >= result.vertices.size() || i2 >= result.vertices.size())
-            throw std::invalid_argument("native scene face references a vertex outside the PMX model");
-        const auto p0 = std::array{result.vertices[i0].position[0], result.vertices[i0].position[1],
-                                   result.vertices[i0].position[2]};
-        const auto p1 = std::array{result.vertices[i1].position[0], result.vertices[i1].position[1],
-                                   result.vertices[i1].position[2]};
-        const auto p2 = std::array{result.vertices[i2].position[0], result.vertices[i2].position[1],
-                                   result.vertices[i2].position[2]};
-        const auto uv0 = std::array{result.vertices[i0].uv[0], result.vertices[i0].uv[1]};
-        const auto uv1 = std::array{result.vertices[i1].uv[0], result.vertices[i1].uv[1]};
-        const auto uv2 = std::array{result.vertices[i2].uv[0], result.vertices[i2].uv[1]};
-        const auto edge1 = subtract(p1, p0);
-        const auto edge2 = subtract(p2, p0);
-        const auto duv1 = subtract(uv1, uv0);
-        const auto duv2 = subtract(uv2, uv0);
-        const auto determinant = duv1[0] * duv2[1] - duv1[1] * duv2[0];
-        if (std::abs(determinant) <= 1e-8F)
-            continue;
-        const auto scale = 1.0F / determinant;
-        const Vec3 tangent{(edge1[0] * duv2[1] - edge2[0] * duv1[1]) * scale,
-                           (edge1[1] * duv2[1] - edge2[1] * duv1[1]) * scale,
-                           (edge1[2] * duv2[1] - edge2[2] * duv1[1]) * scale};
-        for (const auto index : {i0, i1, i2})
-            for (std::size_t axis = 0; axis < 3; ++axis)
-                tangents[index][axis] += tangent[axis];
-    }
-    for (std::size_t index = 0; index < result.vertices.size(); ++index) {
-        const Vec3 fallback{1.0F, 0.0F, 0.0F};
-        const auto tangent = normalize(tangents[index], fallback);
-        std::copy(tangent.begin(), tangent.end(), std::begin(result.vertices[index].tangent));
-    }
+    const auto calculateTangents = [&result](std::vector<NativeSceneVertex>& destination) {
+        std::vector<Vec3> tangents(destination.size());
+        for (std::size_t offset = 0; offset < result.indices.size(); offset += 3U) {
+            const auto i0 = result.indices[offset];
+            const auto i1 = result.indices[offset + 1U];
+            const auto i2 = result.indices[offset + 2U];
+            if (i0 >= destination.size() || i1 >= destination.size() || i2 >= destination.size())
+                throw std::invalid_argument("native scene face references a vertex outside the PMX model");
+            const auto p0 = std::array{destination[i0].position[0], destination[i0].position[1],
+                                       destination[i0].position[2]};
+            const auto p1 = std::array{destination[i1].position[0], destination[i1].position[1],
+                                       destination[i1].position[2]};
+            const auto p2 = std::array{destination[i2].position[0], destination[i2].position[1],
+                                       destination[i2].position[2]};
+            const auto uv0 = std::array{destination[i0].uv[0], destination[i0].uv[1]};
+            const auto uv1 = std::array{destination[i1].uv[0], destination[i1].uv[1]};
+            const auto uv2 = std::array{destination[i2].uv[0], destination[i2].uv[1]};
+            const auto edge1 = subtract(p1, p0);
+            const auto edge2 = subtract(p2, p0);
+            const auto duv1 = subtract(uv1, uv0);
+            const auto duv2 = subtract(uv2, uv0);
+            const auto determinant = duv1[0] * duv2[1] - duv1[1] * duv2[0];
+            if (std::abs(determinant) <= 1e-8F)
+                continue;
+            const auto scale = 1.0F / determinant;
+            const Vec3 tangent{(edge1[0] * duv2[1] - edge2[0] * duv1[1]) * scale,
+                               (edge1[1] * duv2[1] - edge2[1] * duv1[1]) * scale,
+                               (edge1[2] * duv2[1] - edge2[2] * duv1[1]) * scale};
+            for (const auto index : {i0, i1, i2})
+                for (std::size_t axis = 0; axis < 3; ++axis)
+                    tangents[index][axis] += tangent[axis];
+        }
+        for (std::size_t index = 0; index < destination.size(); ++index) {
+            const Vec3 fallback{1.0F, 0.0F, 0.0F};
+            const auto tangent = normalize(tangents[index], fallback);
+            std::copy(tangent.begin(), tangent.end(), std::begin(destination[index].tangent));
+        }
+    };
+    calculateTangents(result.vertices);
+    calculateTangents(result.rawVertices);
 
     result.materials.reserve(model.materials.size());
     for (std::size_t index = 0; index < model.materials.size(); ++index) {

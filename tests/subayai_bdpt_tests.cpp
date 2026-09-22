@@ -1533,8 +1533,21 @@ int main() {
                       std::begin(preview[index].normal));
             std::copy(model.vertices[index].uv.begin(), model.vertices[index].uv.end(), std::begin(preview[index].uv));
         }
+        mmd::PreviewNormalization normalization;
+        normalization.center = {0.5F, 0.5F, 0.0F};
+        normalization.scale = 2.0F;
+        auto evaluatedPreview = preview;
+        for (auto& vertex : evaluatedPreview)
+            vertex.position[0] += 5.0F;
+        const auto normalizedData = dayo::graphics::makeNativeSceneModelData(model, evaluatedPreview, {}, normalization);
+        ok &= check(normalizedData.vertices[0].position[0] == 5.0F &&
+                        normalizedData.rawVertices[0].position[0] == -1.0F &&
+                        normalizedData.rawVertices[1].position[0] == 1.0F,
+                    "native scene data separates evaluated vertices from normalized PMX bind pose");
+
         const auto data = dayo::graphics::makeNativeSceneModelData(model, preview);
-        ok &= check(data.vertices.size() == 4 && data.indices == model.indices && data.materials.size() == 2 &&
+        ok &= check(data.vertices.size() == 4 && data.rawVertices.size() == 4 && data.indices == model.indices &&
+                        data.materials.size() == 2 &&
                         data.faces == std::vector<std::uint32_t>{0, 1} && data.materialFaces.size() == 2 &&
                         data.faceWalker.size() == 2,
                     "native scene data expands PMX model buffers deterministically");
@@ -1595,8 +1608,8 @@ int main() {
                     "native scene model runtime preserves the preceding vertex stream");
         const auto raw = device.readbackBufferEx(rawBuffer, 0, sizeof(dayo::graphics::NativeSceneVertex));
         std::memcpy(&firstVertex, raw.data(), sizeof(firstVertex));
-        ok &= check(std::abs(firstVertex.position[0] - data.vertices[0].position[0]) < 1e-6F,
-                    "native scene model runtime keeps the raw vertex stream immutable");
+        ok &= check(std::abs(firstVertex.position[0] - data.rawVertices[0].position[0]) < 1e-6F,
+                    "native scene model runtime uploads immutable PMX bind-pose vertices to RawVB");
 
         updatedModels[0].vertices[0].position[0] = 3.0F;
         MockNativeSceneCommands frameCommands(device);
