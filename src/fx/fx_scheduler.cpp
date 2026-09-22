@@ -152,8 +152,8 @@ std::vector<ScheduledFx> FrameEffectScheduler::schedule(const core::SceneEffectS
     for (const auto& effect : effects.postprocess) {
         const auto name = nameFor(effect);
         if (isEnabled(name))
-            result.push_back({name, FrameStage::postPre, effect.executionOrder + ownerOrder(effect).postprocess,
-                              effect.id});
+            result.push_back(
+                {name, FrameStage::postPre, effect.executionOrder + ownerOrder(effect).postprocess, effect.id});
     }
     const auto rank = [](FrameStage stage) {
         switch (stage) {

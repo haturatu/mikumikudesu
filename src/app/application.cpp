@@ -331,11 +331,11 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         scene_.clearDirty(core::DirtyFlag::lighting);
     }
     const auto lightSampling = nativeLightSampling_.table();
-    scheduledEffects_ = effectScheduler_.schedule(scene_.effects(), [this](core::ModelId id)
-        -> std::optional<core::ModelExecutionOrder> {
-        const auto* model = scene_.model(id);
-        return model == nullptr ? std::nullopt : std::optional<core::ModelExecutionOrder>{model->order};
-    });
+    scheduledEffects_ = effectScheduler_.schedule(
+        scene_.effects(), [this](core::ModelId id) -> std::optional<core::ModelExecutionOrder> {
+            const auto* model = scene_.model(id);
+            return model == nullptr ? std::nullopt : std::optional<core::ModelExecutionOrder>{model->order};
+        });
     try {
         std::string modelError;
         if (!nativeSceneModelData_.empty() &&
@@ -474,18 +474,18 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         if (const auto* program = nativeRenderer_.program();
             program != nullptr &&
             !nativeSceneFrame_.syncControllers(program->controllers, evaluatedModels_,
-                                                scene_.effects().renderer.has_value() &&
-                                                        scene_.effects().renderer->controllerModel.has_value()
-                                                    ? *scene_.effects().renderer->controllerModel
-                                                    : 0,
-                                                &sceneError))
+                                               scene_.effects().renderer.has_value() &&
+                                                       scene_.effects().renderer->controllerModel.has_value()
+                                                   ? *scene_.effects().renderer->controllerModel
+                                                   : 0,
+                                               &sceneError))
             throw std::runtime_error(sceneError.empty() ? "native FX controller synchronization failed" : sceneError);
         graphics::FxExecutionResources executionResources;
         executionResources.sceneDraws = nativeSceneDraws_;
-        const auto controllerModel = scene_.effects().renderer.has_value() &&
-                                             scene_.effects().renderer->controllerModel.has_value()
-                                         ? *scene_.effects().renderer->controllerModel
-                                         : core::ModelId{};
+        const auto controllerModel =
+            scene_.effects().renderer.has_value() && scene_.effects().renderer->controllerModel.has_value()
+                ? *scene_.effects().renderer->controllerModel
+                : core::ModelId{};
         for (const auto& geometry : nativeGeometry_) {
             if (geometry.modelId == controllerModel) {
                 executionResources.rasterControllerModel = geometry.modelIndex;
@@ -1230,8 +1230,8 @@ void Application::handleAsset(const std::filesystem::path& path) {
     }
     if (kind == core::AssetKind::effect) {
         try {
-            const auto owner = selectedModel() == nullptr ? std::nullopt
-                                                           : std::optional<core::ModelId>{selectedModel()->id};
+            const auto owner =
+                selectedModel() == nullptr ? std::nullopt : std::optional<core::ModelId>{selectedModel()->id};
             ReloadedEffect reloaded(path, owner);
             static_cast<void>(reloaded.reloader.poll());
             if (reloaded.reloader.current() == nullptr)

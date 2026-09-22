@@ -1,6 +1,6 @@
 #include "core/scene.hpp"
-#include "core/log.hpp"
 #include "core/fx/fx_pass.hpp"
+#include "core/log.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -445,17 +445,15 @@ void Scene::setEffect(EffectGraph graph) {
     static_cast<void>(addEffect(std::move(graph)));
 }
 
-EffectId Scene::addEffect(EffectGraph graph, std::optional<ModelId> controllerModel,
-                          std::int32_t executionOrder) {
+EffectId Scene::addEffect(EffectGraph graph, std::optional<ModelId> controllerModel, std::int32_t executionOrder) {
     SceneEffectInstance instance;
     instance.id = nextEffectId_++;
     instance.source = graph.sourcePath;
     instance.graph = std::move(graph);
     instance.controllerModel = controllerModel;
     instance.executionOrder = executionOrder;
-    const auto category = instance.graph.category.empty()
-                              ? fx::FxCategory::render
-                              : fx::fxCategoryFromString(instance.graph.category);
+    const auto category =
+        instance.graph.category.empty() ? fx::FxCategory::render : fx::fxCategoryFromString(instance.graph.category);
     switch (category) {
     case fx::FxCategory::deform:
         effects_.deform.push_back(std::move(instance));
@@ -478,7 +476,8 @@ bool Scene::removeEffect(EffectId id) {
         return true;
     }
     const auto remove = [id](auto& effects) {
-        const auto found = std::find_if(effects.begin(), effects.end(), [id](const auto& effect) { return effect.id == id; });
+        const auto found =
+            std::find_if(effects.begin(), effects.end(), [id](const auto& effect) { return effect.id == id; });
         if (found == effects.end())
             return false;
         effects.erase(found);

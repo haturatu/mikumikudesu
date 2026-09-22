@@ -750,14 +750,14 @@ bool testSchedulerOrder() {
     const auto deformId = scene.addEffect(std::move(deform), 7, 2);
     static_cast<void>(scene.addEffect(std::move(renderer), 7, 0));
     static_cast<void>(scene.addEffect(std::move(post), 8, 5));
-    const auto stacked = scheduler.schedule(scene.effects(), [](dayo::core::ModelId id)
-        -> std::optional<dayo::core::ModelExecutionOrder> {
-        if (id == 7)
-            return dayo::core::ModelExecutionOrder{.deform = 1};
-        if (id == 8)
-            return dayo::core::ModelExecutionOrder{.postprocess = 10};
-        return std::nullopt;
-    });
+    const auto stacked = scheduler.schedule(
+        scene.effects(), [](dayo::core::ModelId id) -> std::optional<dayo::core::ModelExecutionOrder> {
+            if (id == 7)
+                return dayo::core::ModelExecutionOrder{.deform = 1};
+            if (id == 8)
+                return dayo::core::ModelExecutionOrder{.postprocess = 10};
+            return std::nullopt;
+        });
     ok &= check(stacked.size() == 5 && stacked[1].name == "Cloth" && stacked[1].effectId == deformId &&
                     stacked[2].name == "Preview" && stacked[2].effectId != 0 && stacked[3].name == "ACESTonemap" &&
                     stacked[3].effectId != 0 && stacked[3].stage == dayo::fx::FrameStage::postPre &&
