@@ -320,6 +320,7 @@ class VulkanDevice final : public Device {
                                    VkImageLayout finalLayout, VkPipelineStageFlags2 finalStage,
                                    VkAccessFlags2 finalAccess, bool initialized, VkExtent2D extent);
     void recordBindPipeline(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline);
+    void recordDrawIndexed(VkCommandBuffer commandBuffer, const IndexedDrawEx& draw);
     void recordTransitionTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture);
     void recordTextureTransition(VkCommandBuffer commandBuffer, handles::TextureHandle texture,
                                  VkImageLayout nextLayout);

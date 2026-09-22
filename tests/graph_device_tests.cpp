@@ -113,11 +113,10 @@ int main() {
     // ---- native graphics descriptors retain MRT/DSV pipeline state ----
     {
         dayo::graphics::GraphicsPipelineDescEx pipeline;
-        pipeline.colorFormats = {dayo::graphics::PixelFormat::rgba16Float,
-                                 dayo::graphics::PixelFormat::rgba16Float,
+        pipeline.colorFormats = {dayo::graphics::PixelFormat::rgba16Float, dayo::graphics::PixelFormat::rgba16Float,
                                  dayo::graphics::PixelFormat::rgba16Float};
         pipeline.depthFormat = dayo::graphics::PixelFormat::depth32Float;
-        pipeline.depthOnly = true;
+        pipeline.depthOnly = false;
         pipeline.rasterizer.cullMode = dayo::graphics::CullModeEx::front;
         pipeline.depthStencil.depthTest = true;
         pipeline.depthStencil.depthWrite = false;
@@ -128,7 +127,8 @@ int main() {
         pipeline.blendAttachments.front().dstColor = dayo::graphics::BlendFactorEx::oneMinusSrcAlpha;
         ok &= check(pipeline.colorFormats.size() == 3 && pipeline.depthFormat.has_value() &&
                         pipeline.rasterizer.cullMode == dayo::graphics::CullModeEx::front &&
-                        !pipeline.depthStencil.depthWrite && pipeline.depthOnly && pipeline.blendAttachments.front().enabled,
+                        !pipeline.depthStencil.depthWrite && !pipeline.depthOnly &&
+                        pipeline.blendAttachments.front().enabled,
                     "native graphics descriptor represents MRT/DSV state");
 
         dayo::graphics::GraphicsPipelineDescEx depthOnly;

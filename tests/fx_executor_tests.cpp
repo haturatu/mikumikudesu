@@ -224,6 +224,9 @@ struct MockCommands final : public dayo::graphics::CommandList {
     void draw(std::uint32_t vertexCount, std::uint32_t instanceCount) override {
         trace.push_back("draw:" + std::to_string(vertexCount) + "x" + std::to_string(instanceCount));
     }
+    void drawIndexedEx(const dayo::graphics::IndexedDrawEx& draw) override {
+        trace.push_back("drawIndexedEx:" + std::to_string(draw.modelIndex) + ":" + std::to_string(draw.materialIndex));
+    }
     void dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) override {
         trace.push_back("dispatch:" + std::to_string(x) + "x" + std::to_string(y) + "x" + std::to_string(z));
     }
@@ -264,6 +267,9 @@ struct MockCommands final : public dayo::graphics::CommandList {
     }
     void beginRenderingEx(dayo::graphics::handles::TextureHandle, bool) override {
         trace.emplace_back("beginRenderingEx");
+    }
+    void beginRenderingEx(const dayo::graphics::RenderingInfoEx& info) override {
+        trace.push_back("beginRenderingInfoEx:" + std::to_string(info.colors.size()));
     }
     void endRenderingEx() override {
         trace.emplace_back("endRenderingEx");
@@ -398,6 +404,101 @@ bool testMockTraceMatches() {
     return ok;
 }
 
+bool testRasterModelTargetIndexedDraws() {
+    MockDevice device;
+    dayo::graphics::VulkanFxExecutor executor(device);
+    MockCommands commands;
+
+    dayo::fx::FxDispatch dispatch;
+    dispatch.name = "indexed-raster";
+    dispatch.kind = dayo::fx::FxOpKind::raster;
+    dayo::fx::FxRasterDispatch raster;
+    raster.vertexShader = "VS";
+    raster.pixelShader = "PS";
+    raster.graphics.modelTarget = dayo::core::fx::RasterModelTarget::self;
+    dispatch.executable = raster;
+    dispatch.resources = {{"Color", true, dayo::fx::FxResourceRole::colorAttachment}};
+    dayo::fx::FxProgram program;
+    program.passes.push_back(dispatch);
+
+    const std::array<dayo::graphics::NativeSceneDraw, 3> draws = {
+        dayo::graphics::NativeSceneDraw{.vertexBuffer = {10, 1},
+                                        .indexBuffer = {11, 1},
+                                        .modelIndex = 7,
+                                        .materialIndex = 2,
+                                        .firstIndex = 12,
+                                        .indexCount = 36},
+        dayo::graphics::NativeSceneDraw{.vertexBuffer = {10, 1},
+                                        .indexBuffer = {11, 1},
+                                        .modelIndex = 8,
+                                        .materialIndex = 3,
+                                        .firstIndex = 48,
+                                        .indexCount = 12},
+        dayo::graphics::NativeSceneDraw{.vertexBuffer = {10, 1},
+                                        .indexBuffer = {11, 1},
+                                        .modelIndex = 7,
+                                        .materialIndex = 4,
+                                        .firstIndex = 60,
+                                        .indexCount = 6},
+    };
+    dayo::graphics::FxExecutionResources resources;
+    resources.sceneDraws = draws;
+    resources.rasterControllerModel = 7;
+    std::vector<std::uint32_t> passModels;
+    resources.updatePassConstants = [&passModels](dayo::graphics::CommandList&,
+                                                  const dayo::graphics::NativeSceneDraw& draw) {
+        passModels.push_back(draw.modelIndex);
+    };
+    resources.resolveTypedPipeline = [](const dayo::fx::FxDispatch&) {
+        return std::optional<dayo::graphics::handles::PipelineHandle>{{20, 1}};
+    };
+    resources.resolveTypedTexture = [](std::string_view) {
+        return std::optional<dayo::graphics::handles::TextureHandle>{{21, 1}};
+    };
+
+    const auto plan = dayo::fx::FxCompiler{}.plan(program, testContext());
+    const auto stats = executor.execute(plan, commands, testContext(), resources);
+    bool ok = check(stats.raster == 1 && stats.indexedDraws == 2, "raster target selects matching indexed draws");
+    ok &= check(std::count_if(commands.trace.begin(), commands.trace.end(),
+                              [](const auto& entry) { return entry.starts_with("drawIndexedEx:"); }) == 2,
+                "raster executor records one indexed draw per matching material range");
+    ok &= check(passModels == std::vector<std::uint32_t>{7, 7},
+                "raster executor updates per-draw pass constants before indexed draws");
+    ok &= check(dayo::graphics::matchesRasterTarget(dayo::core::fx::RasterModelTarget::self, 7, draws[0]) &&
+                    !dayo::graphics::matchesRasterTarget(dayo::core::fx::RasterModelTarget::self, 7, draws[1]) &&
+                    dayo::graphics::matchesRasterTarget(dayo::core::fx::RasterModelTarget::other, 7, draws[1]),
+                "raster target semantics distinguish self and other models");
+    return ok;
+}
+
+bool testDepthOnlyRasterExecution() {
+    MockDevice device;
+    dayo::graphics::VulkanFxExecutor executor(device);
+    MockCommands commands;
+    dayo::fx::FxDispatch dispatch;
+    dispatch.name = "depth-only";
+    dispatch.kind = dayo::fx::FxOpKind::raster;
+    dayo::fx::FxRasterDispatch raster;
+    raster.vertexShader = "VS";
+    raster.depthAttachment = dayo::core::EffectAttachment{.name = "Depth", .clear = true, .clearValue = {}};
+    dispatch.executable = raster;
+    dispatch.resources = {{"Depth", true, dayo::fx::FxResourceRole::depthAttachment}};
+    dayo::fx::FxProgram program;
+    program.passes.push_back(dispatch);
+    dayo::graphics::FxExecutionResources resources;
+    resources.resolveTypedPipeline = [](const dayo::fx::FxDispatch&) {
+        return std::optional<dayo::graphics::handles::PipelineHandle>{{20, 1}};
+    };
+    resources.resolveTypedTexture = [](std::string_view name) -> std::optional<dayo::graphics::handles::TextureHandle> {
+        return name == "Depth" ? std::optional<dayo::graphics::handles::TextureHandle>{{21, 1}} : std::nullopt;
+    };
+    const auto plan = dayo::fx::FxCompiler{}.plan(program, testContext());
+    const auto stats = executor.execute(plan, commands, testContext(), resources);
+    return check(stats.raster == 1 &&
+                     std::ranges::find(commands.trace, "beginRenderingInfoEx:0") != commands.trace.end() &&
+                     std::ranges::find(commands.trace, "beginRenderingEx") == commands.trace.end(),
+                 "depth-only raster pass begins typed rendering with zero color attachments");
+}
 bool testTypedBufferResourceExecution() {
     MockDevice device;
     dayo::graphics::VulkanFxExecutor executor(device);
@@ -1349,6 +1450,8 @@ int main() {
         ok &= check(rejected, "legacy command-list defaults reject unsupported work");
     }
     ok &= testMockTraceMatches();
+    ok &= testRasterModelTargetIndexedDraws();
+    ok &= testDepthOnlyRasterExecution();
     ok &= testTypedBufferResourceExecution();
     ok &= testPreviewReferencePath();
     ok &= testSchedulerOrder();

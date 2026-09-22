@@ -93,6 +93,27 @@ struct NativeSceneModelData {
     std::uint64_t materialGeneration{1};
 };
 
+// One material range of one evaluated model. The typed vertex/index buffers
+// are carried with the range so the generic FX executor can draw models that
+// are owned by different scene resources without guessing from the first
+// writable texture or buffer.
+struct NativeSceneDraw {
+    handles::BufferHandle vertexBuffer{};
+    handles::BufferHandle indexBuffer{};
+    std::uint32_t modelIndex{};
+    std::uint32_t materialIndex{};
+    std::uint32_t firstIndex{};
+    std::uint32_t indexCount{};
+    std::uint32_t instanceCount{1};
+    std::uint32_t firstInstance{};
+    std::int32_t vertexOffset{};
+    bool buffer{};
+    // CBuff1 values are part of the draw contract, not global frame state.
+    std::uint32_t rasterizeOrder{};
+    std::uint32_t deformIndex{};
+    std::uint32_t deformOrder{};
+};
+
 // Converts the application's normalized Preview vertex representation to the
 // upstream vertex ABI. The optional tangent is reconstructed from the local
 // triangle/index data; additional UV channels are zero because Preview does

@@ -1,0 +1,30 @@
+#pragma once
+
+#include "core/fx/fx_pass.hpp"
+#include "graphics/native_scene_data.hpp"
+
+#include <cstdint>
+#include <optional>
+
+namespace dayo::graphics {
+
+// Applies the upstream rasterModelTarget contract to one material draw range.
+// self/other are intentionally false when no controller model is supplied:
+// silently drawing every model would make a missing controller look valid.
+[[nodiscard]] inline bool matchesRasterTarget(core::fx::RasterModelTarget target,
+                                              std::optional<std::uint32_t> controllerModel,
+                                              const NativeSceneDraw& draw) noexcept {
+    switch (target) {
+    case core::fx::RasterModelTarget::all:
+        return true;
+    case core::fx::RasterModelTarget::self:
+        return controllerModel.has_value() && draw.modelIndex == *controllerModel;
+    case core::fx::RasterModelTarget::other:
+        return controllerModel.has_value() && draw.modelIndex != *controllerModel;
+    case core::fx::RasterModelTarget::buffer:
+        return draw.buffer;
+    }
+    return false;
+}
+
+} // namespace dayo::graphics

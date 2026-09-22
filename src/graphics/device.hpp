@@ -248,6 +248,18 @@ using SamplerHandle = std::uint64_t;
 using ShaderHandle = std::uint64_t;
 using AccelerationStructureHandle = std::uint64_t;
 
+struct IndexedDrawEx {
+    handles::BufferHandle vertexBuffer{};
+    handles::BufferHandle indexBuffer{};
+    std::uint32_t firstIndex{};
+    std::uint32_t indexCount{};
+    std::int32_t vertexOffset{};
+    std::uint32_t firstInstance{};
+    std::uint32_t instanceCount{1};
+    std::uint32_t modelIndex{};
+    std::uint32_t materialIndex{};
+};
+
 enum class ShaderStageMask : std::uint32_t {
     none = 0,
     vertex = 1U << 0U,
@@ -282,16 +294,7 @@ struct PipelineDesc {
 
 enum class CullModeEx : std::uint8_t { none, front, back };
 enum class FrontFaceEx : std::uint8_t { counterClockwise, clockwise };
-enum class CompareOpEx : std::uint8_t {
-    never,
-    less,
-    equal,
-    lessOrEqual,
-    greater,
-    notEqual,
-    greaterOrEqual,
-    always
-};
+enum class CompareOpEx : std::uint8_t { never, less, equal, lessOrEqual, greater, notEqual, greaterOrEqual, always };
 enum class BlendFactorEx : std::uint8_t {
     zero,
     one,
@@ -494,6 +497,9 @@ class CommandList {
     virtual void transition(TextureHandle texture) = 0;
     virtual void bindPipeline(PipelineHandle pipeline) = 0;
     virtual void draw(std::uint32_t vertexCount, std::uint32_t instanceCount = 1) = 0;
+    virtual void drawIndexedEx(const IndexedDrawEx&) {
+        throw std::logic_error("Typed indexed draws are not implemented by this backend");
+    }
     virtual void dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) = 0;
     virtual void traceRays(std::uint32_t width, std::uint32_t height) = 0;
     virtual void traceRays(handles::ShaderBindingTableHandle sbt, std::uint32_t width, std::uint32_t height,

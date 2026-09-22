@@ -316,8 +316,7 @@ const core::EffectTexture* findTexture(const fx::FxProgram& program, std::string
     return found == program.textures.end() ? nullptr : &*found;
 }
 
-PixelFormat attachmentFormat(const fx::FxProgram& program, const core::EffectAttachment& attachment,
-                             bool depth) {
+PixelFormat attachmentFormat(const fx::FxProgram& program, const core::EffectAttachment& attachment, bool depth) {
     if (depth)
         return PixelFormat::depth32Float;
     const auto* texture = findTexture(program, attachment.name);
@@ -344,15 +343,15 @@ std::vector<PixelFormat> graphicsTargetFormats(const fx::FxProgram& program, con
                 continue;
             const auto* texture = findTexture(program, resource.name);
             result.push_back(texture == nullptr || texture->format.empty() ? PixelFormat::rgba16Float
-                                                                            : textureFormat(texture->format));
+                                                                           : textureFormat(texture->format));
         }
     }
     return result;
 }
 
 std::optional<PixelFormat> graphicsDepthFormat(const fx::FxProgram& program, const fx::FxDispatch& dispatch) {
-    if (const auto* raster = std::get_if<fx::FxRasterDispatch>(&dispatch.executable); raster != nullptr &&
-        raster->depthAttachment.has_value() && !raster->depthAttachment->name.empty())
+    if (const auto* raster = std::get_if<fx::FxRasterDispatch>(&dispatch.executable);
+        raster != nullptr && raster->depthAttachment.has_value() && !raster->depthAttachment->name.empty())
         return attachmentFormat(program, *raster->depthAttachment, true);
     for (const auto& resource : dispatch.resources)
         if (resource.write && resource.role == fx::FxResourceRole::depthAttachment)
@@ -361,8 +360,8 @@ std::optional<PixelFormat> graphicsDepthFormat(const fx::FxProgram& program, con
 }
 
 GraphicsPipelineDescEx graphicsPipelineDescriptor(const fx::FxProgram& program, const fx::FxDispatch& dispatch,
-                                                   handles::PipelineLayoutHandle layout,
-                                                   std::vector<handles::ShaderHandle> shaders) {
+                                                  handles::PipelineLayoutHandle layout,
+                                                  std::vector<handles::ShaderHandle> shaders) {
     GraphicsPipelineDescEx descriptor;
     descriptor.layout = layout;
     descriptor.shaders = std::move(shaders);
@@ -375,8 +374,10 @@ GraphicsPipelineDescEx graphicsPipelineDescriptor(const fx::FxProgram& program, 
     const auto* graphics = std::get_if<fx::FxRasterDispatch>(&dispatch.executable);
     if (graphics != nullptr) {
         descriptor.rasterizer.cullMode = cullMode(graphics->graphics.rasterizer.cullMode);
-        descriptor.depthStencil.depthTest = descriptor.depthFormat.has_value() && graphics->graphics.depthStencil.depthEnable;
-        descriptor.depthStencil.depthWrite = descriptor.depthStencil.depthTest && graphics->graphics.depthStencil.depthWrite;
+        descriptor.depthStencil.depthTest =
+            descriptor.depthFormat.has_value() && graphics->graphics.depthStencil.depthEnable;
+        descriptor.depthStencil.depthWrite =
+            descriptor.depthStencil.depthTest && graphics->graphics.depthStencil.depthWrite;
         descriptor.depthStencil.depthCompare = compareOp(graphics->graphics.depthStencil.depthFunc);
         if (graphics->graphics.blend.size() > descriptor.colorFormats.size())
             throw std::invalid_argument("FX blend attachment count exceeds color attachment count");

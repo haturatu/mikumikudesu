@@ -124,20 +124,20 @@ std::optional<NativeFrameOutput>
 NativeRendererCoordinator::recordFrame(CommandList& commands, const fx::FxFrameContext& context, core::DirtyFlag dirty,
                                        std::span<const core::MaterialParameterBlock> materials,
                                        std::span<const AliasEntry> lightSampling,
-                                       const EnvironmentGpuResult& environment) {
+                                       const EnvironmentGpuResult& environment, const FxExecutionResources& resources) {
     if (!status_.nativeReady)
         return std::nullopt;
     switch (status_.active) {
     case RendererKind::subayai: {
         auto frame = subayai_.prepareFrame(context, materials, lightSampling, environment);
         subayai_.recordEnvironment(commands);
-        const auto stats = subayai_.execute(frame, commands);
+        const auto stats = subayai_.execute(frame, commands, resources);
         static_cast<void>(stats);
         return subayai_.output(frame);
     }
     case RendererKind::bdpt: {
         auto frame = bdpt_.prepareFrame(context, dirty, lightSampling);
-        const auto stats = bdpt_.execute(frame, commands);
+        const auto stats = bdpt_.execute(frame, commands, resources);
         static_cast<void>(stats);
         return bdpt_.output(frame);
     }

@@ -90,6 +90,27 @@ bool NativeSceneFrameRuntime::sync(const fx::FxFrameContext& context, NativeScen
     return scene_.sync(resources, error);
 }
 
+bool NativeSceneFrameRuntime::updatePassConstants(CommandList& commands, const NativeScenePassConstants& pass,
+                                                  std::string* error) {
+    if (error != nullptr)
+        error->clear();
+    if (!ready()) {
+        setError(error, "native scene frame runtime is not initialized");
+        return false;
+    }
+    try {
+        const auto buffer = constants_.passBuffer();
+        commands.uploadBufferEx(buffer, std::as_bytes(std::span<const NativeScenePassConstants>(&pass, 1)), 0);
+    } catch (const std::exception& exception) {
+        setError(error, std::string("native CBuff1 command-list upload failed: ") + exception.what());
+        return false;
+    } catch (...) {
+        setError(error, "native CBuff1 command-list upload failed");
+        return false;
+    }
+    return true;
+}
+
 bool NativeSceneFrameRuntime::syncControllers(std::string* error) {
     if (error != nullptr)
         error->clear();

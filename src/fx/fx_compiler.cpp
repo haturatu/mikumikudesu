@@ -198,7 +198,7 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
             if (targetCount != 1 || target == nullptr)
                 throw std::runtime_error("FX " + std::string(kind) + " pass requires one write target");
             const auto role = !pass.depth.name.empty() && target == &pass.depth ? FxResourceRole::depthAttachment
-                                                                                  : FxResourceRole::storage;
+                                                                                : FxResourceRole::storage;
             appendOutput(*target, role);
         };
         switch (pass.type) {

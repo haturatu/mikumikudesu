@@ -4528,8 +4528,8 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
             .srcAlphaBlendFactor = toVkBlendFactor(state.srcAlpha),
             .dstAlphaBlendFactor = toVkBlendFactor(state.dstAlpha),
             .alphaBlendOp = toVkBlendOp(state.alphaOp),
-            .colorWriteMask =
-                VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+            .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+                              VK_COLOR_COMPONENT_A_BIT,
         });
     }
     const VkPipelineVertexInputStateCreateInfo vertexInput{
@@ -5230,6 +5230,30 @@ void VulkanDevice::recordBindPipeline(VkCommandBuffer commandBuffer, handles::Pi
     vkCmdBindPipeline(commandBuffer, it->second.bindPoint, it->second.pipeline);
 }
 
+void VulkanDevice::recordDrawIndexed(VkCommandBuffer commandBuffer, const IndexedDrawEx& draw) {
+    if (commandBuffer == VK_NULL_HANDLE)
+        throw std::invalid_argument("typed indexed draw requires a command buffer");
+    if (!draw.vertexBuffer.valid() || !draw.indexBuffer.valid() || draw.indexCount == 0 || draw.instanceCount == 0)
+        throw std::invalid_argument("typed indexed draw has invalid buffers or counts");
+    const auto vertexIt = typedBuffers_.find(draw.vertexBuffer);
+    const auto indexIt = typedBuffers_.find(draw.indexBuffer);
+    if (vertexIt == typedBuffers_.end() || !typedBufferHandles_.isAlive(draw.vertexBuffer) ||
+        indexIt == typedBuffers_.end() || !typedBufferHandles_.isAlive(draw.indexBuffer))
+        throw std::invalid_argument("typed indexed draw references a stale buffer handle");
+    if ((toBits(vertexIt->second.desc.usage) & toBits(ResourceUsage::vertexRead)) == 0U ||
+        (toBits(indexIt->second.desc.usage) & toBits(ResourceUsage::indexRead)) == 0U)
+        throw std::invalid_argument("typed indexed draw buffers do not have vertex/index usage");
+    const auto requiredIndexBytes = static_cast<std::uint64_t>(draw.firstIndex) * sizeof(std::uint32_t) +
+                                    static_cast<std::uint64_t>(draw.indexCount) * sizeof(std::uint32_t);
+    if (requiredIndexBytes > indexIt->second.desc.size)
+        throw std::out_of_range("typed indexed draw exceeds its index buffer");
+    const VkDeviceSize vertexOffset = 0;
+    vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexIt->second.resource.buffer, &vertexOffset);
+    vkCmdBindIndexBuffer(commandBuffer, indexIt->second.resource.buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(commandBuffer, draw.indexCount, draw.instanceCount, draw.firstIndex, draw.vertexOffset,
+                     draw.firstInstance);
+}
+
 VkImageLayout VulkanDevice::typedTextureFinalLayout(const TypedTexture& texture) noexcept {
     return layoutForUsage(texture.desc.usage);
 }
@@ -5467,9 +5491,8 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const Ren
     if (firstIt == typedTextures_.end() || !typedTextureHandles_.isAlive(extentTexture))
         throw std::invalid_argument("typed rendering attachment references a stale texture handle");
     const auto& firstDescription = firstIt->second.desc;
-    const Extent3D requestedExtent = info.extent.width == 0 || info.extent.height == 0
-                                         ? firstDescription.extent
-                                         : info.extent;
+    const Extent3D requestedExtent =
+        info.extent.width == 0 || info.extent.height == 0 ? firstDescription.extent : info.extent;
     if (requestedExtent.width == 0 || requestedExtent.height == 0 || requestedExtent.depth != 1)
         throw std::invalid_argument("typed rendering extent is invalid");
 
@@ -5488,8 +5511,8 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const Ren
             throw std::invalid_argument("typed rendering color attachment is incompatible with the render area");
         const bool undefined = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED;
         recordTextureTransition(commandBuffer, color.texture, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        const VkClearValue clearValue{.color = {{color.clearColor[0], color.clearColor[1], color.clearColor[2],
-                                                  color.clearColor[3]}}};
+        const VkClearValue clearValue{
+            .color = {{color.clearColor[0], color.clearColor[1], color.clearColor[2], color.clearColor[3]}}};
         colorAttachments.push_back({
             .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
             .imageView = it->second.view,
@@ -5509,7 +5532,8 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const Ren
         const auto depthBits = toBits(description.usage);
         if (description.dimension != TextureDimension::d2 || description.extent.width != requestedExtent.width ||
             description.extent.height != requestedExtent.height || description.extent.depth != 1 ||
-            description.mipLevels != 1 || description.arrayLayers != 1 || description.format != PixelFormat::depth32Float ||
+            description.mipLevels != 1 || description.arrayLayers != 1 ||
+            description.format != PixelFormat::depth32Float ||
             (depthBits & (toBits(ResourceUsage::depthRead) | toBits(ResourceUsage::depthWrite))) == 0U)
             throw std::invalid_argument("typed rendering depth attachment is incompatible with the render area");
         const bool undefined = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED;
@@ -5547,8 +5571,7 @@ void VulkanDevice::recordEndRendering(VkCommandBuffer commandBuffer, handles::Te
     recordEndRendering(commandBuffer, targets);
 }
 
-void VulkanDevice::recordEndRendering(VkCommandBuffer commandBuffer,
-                                      std::span<const handles::TextureHandle> targets) {
+void VulkanDevice::recordEndRendering(VkCommandBuffer commandBuffer, std::span<const handles::TextureHandle> targets) {
     if (targets.empty())
         throw std::invalid_argument("typed rendering requires at least one attachment");
     if (commandBuffer == VK_NULL_HANDLE)
