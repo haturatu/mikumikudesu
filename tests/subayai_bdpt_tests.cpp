@@ -1691,6 +1691,7 @@ int main() {
         MockNativeDevice device;
         auto context = dayo::fx::makeFxFrameContext(30.0F, 7, 640, 360, 11, 2, 12, 4, 1, 1);
         context.modelCount = 3;
+        context.sampleCount = 8;
         const auto view = dayo::graphics::makeNativeViewConstants(context, 4);
         const dayo::graphics::NativeScenePassConstants pass{
             .modelIndex = 2, .rasterizeOrder = 1, .deformIndex = 2, .deformOrder = 0};
@@ -1704,7 +1705,7 @@ int main() {
         dayo::graphics::NativeScenePassConstants uploadedPass{};
         std::memcpy(&uploadedView, viewBytes.data(), sizeof(uploadedView));
         std::memcpy(&uploadedPass, passBytes.data(), sizeof(uploadedPass));
-        ok &= check(uploadedView.output == std::array<std::uint32_t, 4>{640, 360, 7, 1} &&
+        ok &= check(uploadedView.output == std::array<std::uint32_t, 4>{640, 360, 7, 8} &&
                         uploadedView.modelCounts == std::array<std::uint32_t, 2>{3, 4} &&
                         uploadedView.cameraFlags[0] == (context.camera.perspective ? 1 : 0),
                     "native ViewCB preserves frame dimensions, sample, and scene counts");

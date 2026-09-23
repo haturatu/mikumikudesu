@@ -1199,6 +1199,8 @@ bool testViewConstantsAndScreenHistory() {
     auto context = testContext();
     context.camera.view[0] = 2.0F;
     context.camera.projection[5] = 3.0F;
+    context.sample = 3;
+    context.sampleCount = 8;
     context.host.selfShadowMode = 2;
     context.host.selfShadowDistance = 4.0F;
     context.host.screenBmpMode = 1;
@@ -1213,6 +1215,8 @@ bool testViewConstantsAndScreenHistory() {
     bool ok = check(view.viewMatrix[0] == 2.0F && view.projectionMatrix[5] == 3.0F && view.modelCounts[0] == 4 &&
                         view.modelCounts[1] == 8,
                     "ViewCB uses frame camera matrices");
+    ok &= check(view.output[2] == 3 && view.output[3] == 8,
+                "ViewCB carries zero-based sample index and samples per frame");
     ok &= check(view.selfShadowMode == 2 && view.selfShadowDistance == 4.0F && view.screenBmpMode == 1 &&
                     view.backgroundMode == 3 && view.backgroundTransparent == 1 && view.denoiserEnabled == 1 &&
                     view.playing == 1 && view.onResize == 1,
