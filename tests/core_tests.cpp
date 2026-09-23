@@ -60,6 +60,12 @@ int main() {
     using dayo::core::AssetKind;
     bool ok = true;
     {
+        const std::array priorities{2, -1, 2, 0};
+        const auto order = dayo::core::stableMotionEvaluationOrder(priorities);
+        ok &= check(order == std::vector<std::size_t>{1, 3, 0, 2},
+                    "motion evaluation follows configured order and preserves ties");
+    }
+    {
         const auto ddsPath = std::filesystem::temp_directory_path() / "mikumikudesu-dds-budget-test.dds";
         std::array<std::uint8_t, 128> ddsHeader{};
         const auto putLe32 = [&](std::size_t offset, std::uint32_t value) {

@@ -10,7 +10,6 @@
 #include "core/profiling.hpp"
 #include "core/project.hpp"
 #include "core/scene.hpp"
-#include "core/task_scheduler.hpp"
 #include "core/video_export.hpp"
 #include "fx/fx_frame.hpp"
 #include "fx/fx_scheduler.hpp"
@@ -106,7 +105,6 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     core::Scene scene_;
     core::fx::SceneEvaluationSnapshot evaluatedModels_;
     std::vector<core::EffectController> nativeControllerDeclarations_;
-    core::TaskScheduler taskScheduler_;
     core::FrameScratch frameScratch_;
     core::FrameProfiler frameProfiler_;
     core::CommandHistory history_;

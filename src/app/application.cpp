@@ -1509,7 +1509,14 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     }
     {
         auto animation = frameProfiler_.measure(core::ProfileSection::animation);
-        taskScheduler_.parallelFor(evaluated.size(), [&](std::size_t index) {
+        std::vector<std::int32_t> motionOrderValues;
+        motionOrderValues.reserve(evaluated.size());
+        for (const auto& model : evaluated)
+            motionOrderValues.push_back(model.instance->order.motion);
+        const auto motionOrder = core::stableMotionEvaluationOrder(motionOrderValues);
+        // Upstream evaluates models in motion order. Keep this sequential: a
+        // later model may depend on state produced by an earlier model.
+        for (const auto index : motionOrder) {
             auto& current = evaluated[index];
             const auto& instance = *current.instance;
             current.frame = instance.animator->evaluate(animationFrame_, deltaSeconds, current.gpuSkinning);
@@ -1521,7 +1528,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                 instance.softBody->apply(current.frame.vertices);
             }
             core::normalizeForPreview(current.frame.vertices, instance.normalization);
-        });
+        }
         animation.finish();
     }
     for (auto& evaluatedModel : evaluated) {
@@ -2622,9 +2629,11 @@ void Application::buildInspectorPanel() {
         }
     }
     if (uiState_.workspace == ui::Workspace::debug && ImGui::CollapsingHeader("Evaluation Order (experimental)")) {
-        ImGui::TextDisabled("Not applied by the renderer or saved in projects.");
+        ImGui::TextDisabled(
+            "Motion order is applied to animation evaluation; other orders and project persistence are pending.");
+        if (ImGui::DragInt("Motion", &model->order.motion, 1.0F, 0, 1024))
+            scene_.markDirty(core::DirtyFlag::geometry);
         ImGui::BeginDisabled();
-        ImGui::DragInt("Motion", &model->order.motion, 1.0F, 0, 1024);
         ImGui::DragInt("Deform", &model->order.deform, 1.0F, 0, 1024);
         ImGui::DragInt("Postprocess", &model->order.postprocess, 1.0F, 0, 1024);
         ImGui::DragInt("Raster", &model->order.raster, 1.0F, 0, 1024);
