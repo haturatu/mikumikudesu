@@ -100,16 +100,6 @@ bool NativeFxRuntime::refresh(const fx::FxFrameContext& context, std::string* er
 bool NativeFxRuntime::buildForContext(const fx::FxFrameContext& context, std::string* error) {
     try {
         const auto framePlan = fx::FxCompiler{}.plan(program_, context);
-        for (std::size_t index = 0; index < program_.passes.size() && index < framePlan.resolved.size(); ++index) {
-            auto& dispatch = program_.passes[index];
-            if (dispatch.kind != fx::FxOpKind::compute)
-                continue;
-            std::erase_if(dispatch.macros,
-                          [](const std::string& macro) { return macro.starts_with("YRZ_NUMTHREADS="); });
-            const auto& threads = framePlan.resolved[index].numThreads;
-            dispatch.macros.push_back("YRZ_NUMTHREADS=[numthreads(" + std::to_string(threads[0]) + "," +
-                                      std::to_string(threads[1]) + "," + std::to_string(threads[2]) + ")]");
-        }
         resourceSetIndex_ = static_cast<std::uint32_t>(sharedLayouts_.size());
         if (!resources_.initialize(*device_, program_, context, error, resourceSetIndex_))
             throw std::runtime_error(error != nullptr && !error->empty() ? *error
@@ -132,7 +122,7 @@ bool NativeFxRuntime::buildForContext(const fx::FxFrameContext& context, std::st
                 pipelineLayout_ = layout;
         }
         if (!pipelines_.build(
-                *device_, program_, compiler_,
+                *device_, program_, framePlan, compiler_,
                 [this](const fx::FxDispatch& dispatch) -> std::optional<handles::PipelineLayoutHandle> {
                     const auto found = passPipelineLayouts_.find(dispatch.name);
                     if (found == passPipelineLayouts_.end())
