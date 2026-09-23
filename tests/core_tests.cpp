@@ -325,8 +325,8 @@ int main() {
         project.upstreamDocumentJson =
             R"({"rootFuture":7,"MikuMikuDayo":{"futureField":{"keep":42},"editor":{"futureSetting":"keep"},"models":[{"futureModel":"keep"}],"fxinfo":[{"id":1,"filename":"effect.fxdayo","futureEffect":"keep"}]}})";
         project.embeddedVmdayo = {0x56, 0x4D, 0x44, 0x01};
-        project.assets.push_back({"pmx", std::filesystem::absolute("model.pmx")});
-        project.assets.push_back({"vmd", std::filesystem::absolute("motion.vmd")});
+        project.assets.emplace_back("pmx", std::filesystem::absolute("model.pmx"));
+        project.assets.emplace_back("vmd", std::filesystem::absolute("motion.vmd"));
         dayo::core::ProjectAsset effect{"effect", std::filesystem::absolute("effect.fxdayo")};
         effect.ownerModelIndex = 0;
         effect.upstreamId = 1;

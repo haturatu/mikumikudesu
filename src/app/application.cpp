@@ -1260,7 +1260,7 @@ void Application::loadEffectAsset(const std::filesystem::path& path, std::option
         return asset.kind == "effect" && std::filesystem::absolute(asset.path).lexically_normal() == normalizedPath;
     });
     if (projectEffect == projectAssets_.end())
-        projectAssets_.push_back({"effect", normalizedPath});
+        projectAssets_.emplace_back("effect", normalizedPath);
 }
 
 void Application::handleAsset(const std::filesystem::path& path) {
@@ -1416,7 +1416,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             refreshAnimatedMesh(false);
             refreshPreviewScene();
             lastAsset_ = "VMdayo " + path.filename().string();
-            projectAssets_.push_back({"vmdayo", std::filesystem::absolute(path)});
+            projectAssets_.emplace_back("vmdayo", std::filesystem::absolute(path));
             log::info("Loaded VMdayo motion: ", path.string());
         } catch (const std::exception& exception) {
             lastAsset_ = "VMdayo error: " + std::string(exception.what());
@@ -1453,7 +1453,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             }
             lastAsset_ = "Image " + path.filename().string() + " — " + std::to_string(image.width) + "x" +
                          std::to_string(image.height);
-            projectAssets_.push_back({"image", std::filesystem::absolute(path)});
+            projectAssets_.emplace_back("image", std::filesystem::absolute(path));
             log::info("Loaded image: ", lastAsset_);
         } catch (const std::exception& exception) {
             lastAsset_ = "Image error: " + std::string(exception.what());
@@ -1465,7 +1465,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
         try {
             const auto modelId = scene_.addModel(path);
             scene_.selectModel(modelId);
-            projectAssets_.push_back({"pmx", std::filesystem::absolute(path)});
+            projectAssets_.emplace_back("pmx", std::filesystem::absolute(path));
             if (scene_.models().empty() || scene_.selectedModelId() != modelId)
                 throw std::logic_error("PMX model was not retained in the scene");
             log::info("PMX scene state: models=", scene_.models().size(), " selected=", scene_.selectedModelId());
@@ -1551,8 +1551,8 @@ void Application::handleAsset(const std::filesystem::path& path) {
             lastAsset_ =
                 std::string(core::toString(kind)) + " — " + std::to_string(media->info().durationSeconds) + " s";
             log::info("Loaded media: ", lastAsset_, " (", path.string(), ")");
-            projectAssets_.push_back(
-                {kind == core::AssetKind::audio ? "audio" : "video", std::filesystem::absolute(path)});
+            projectAssets_.emplace_back(kind == core::AssetKind::audio ? "audio" : "video",
+                                        std::filesystem::absolute(path));
         } catch (const std::exception& exception) {
             lastAsset_ = "Media error: " + std::string(exception.what());
             log::warn(lastAsset_);
@@ -1586,7 +1586,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
                              " morph keys, " + std::to_string(lastFrame) + " frames";
             }
             log::info("Loaded motion: ", lastAsset_, " (", path.string(), ")");
-            projectAssets_.push_back({"vmd", std::filesystem::absolute(path)});
+            projectAssets_.emplace_back("vmd", std::filesystem::absolute(path));
         } catch (const std::exception& exception) {
             lastAsset_ = "VMD error: " + std::string(exception.what());
             log::warn(lastAsset_);
@@ -1601,7 +1601,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             const auto* pose = selectedModel()->pose.get();
             lastAsset_ = "VPD pose — " + std::to_string(pose->bones.size()) + " bones";
             log::info("Loaded pose: ", lastAsset_, " (", path.string(), ")");
-            projectAssets_.push_back({"vpd", std::filesystem::absolute(path)});
+            projectAssets_.emplace_back("vpd", std::filesystem::absolute(path));
         } catch (const std::exception& exception) {
             lastAsset_ = "VPD error: " + std::string(exception.what());
             log::warn(lastAsset_);
