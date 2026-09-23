@@ -33,7 +33,16 @@ enum class PixelFormat : std::uint8_t {
 
 enum class SamplerFilter : std::uint8_t { nearest, linear };
 enum class SamplerAddressMode : std::uint8_t { repeat, clampToEdge, mirroredRepeat, clampToBorder };
-enum class SamplerCompareOp : std::uint8_t { never, less, equal, lessOrEqual, greater, notEqual, greaterOrEqual, always };
+enum class SamplerCompareOp : std::uint8_t {
+    never,
+    less,
+    equal,
+    lessOrEqual,
+    greater,
+    notEqual,
+    greaterOrEqual,
+    always
+};
 enum class SamplerBorderColor : std::uint8_t { transparentBlack, opaqueBlack, opaqueWhite };
 
 struct SamplerResourceDesc {
