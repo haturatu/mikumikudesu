@@ -167,8 +167,8 @@ bool createsD24S8StencilPipeline(dayo::graphics::VulkanDevice& device) {
     dayo::fx::FxRasterDispatch raster;
     raster.vertexShader = "VS";
     raster.pixelShader = "PS";
-    raster.colorAttachments.push_back({.name = "Color"});
-    raster.depthAttachment = dayo::core::EffectAttachment{.name = "Depth"};
+    raster.colorAttachments.push_back({.name = "Color", .clear = false, .clearValue = {}});
+    raster.depthAttachment = dayo::core::EffectAttachment{.name = "Depth", .clear = false, .clearValue = {}};
     raster.graphics.depthStencil.depthEnable = true;
     raster.graphics.depthStencil.stencilEnable = true;
     dayo::fx::FxDispatch dispatch;
@@ -190,7 +190,9 @@ bool createsD24S8StencilPipeline(dayo::graphics::VulkanDevice& device) {
         &error);
     runtime.reset();
     device.destroyPipelineLayoutEx(layout);
-    return check(built, error.empty() ? "D24S8 stencil pipeline is valid under Vulkan validation" : error);
+    if (!built)
+        std::cerr << "FAIL: D24S8 stencil pipeline is invalid under Vulkan validation: " << error << '\n';
+    return built;
 }
 
 dayo::core::ImageRgba8 renderCase(dayo::graphics::VulkanDevice& device, std::span<const PreviewVertex> vertices,
