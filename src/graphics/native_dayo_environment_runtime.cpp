@@ -111,6 +111,7 @@ std::vector<DayoEnvironmentDispatch> buildDayoEnvironmentDispatchPlan(Extent3D e
         throw std::overflow_error("Dayo environment dimensions exceed 32-bit shader indexing");
 
     std::vector<DayoEnvironmentDispatch> result;
+    result.reserve(buildSkyboxSampler ? 6U : 2U);
     if (buildSkyboxSampler) {
         result.push_back(
             {DayoEnvironmentPass::skyLuminance, {ceilDiv(extent.width, 16), ceilDiv(extent.height, 16), 1}});
