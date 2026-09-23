@@ -1,7 +1,7 @@
 #include "fx/fx_compiler.hpp"
 
-#include "core/log.hpp"
 #include "core/fx/fx_size.hpp"
+#include "core/log.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -55,8 +55,8 @@ class FrameExtentTable final : public core::fx::FxResourceTable {
                                                    const FrameExtentTable& table) {
     core::fx::FxSizeExpr expression;
     expression.base = source.absolute ? std::string{} : source.base;
-    expression.dimension = source.dimension != 0 ? source.dimension
-                                                  : (!source.base.empty() && !source.absolute ? 0U : defaultDimension);
+    expression.dimension =
+        source.dimension != 0 ? source.dimension : (!source.base.empty() && !source.absolute ? 0U : defaultDimension);
     expression.widthRatio = source.absolute ? 1.0F : source.widthRatio;
     expression.heightRatio = source.absolute ? 1.0F : source.heightRatio;
     expression.depthRatio = source.absolute ? 1.0F : source.depthRatio;
@@ -65,7 +65,7 @@ class FrameExtentTable final : public core::fx::FxResourceTable {
     else if (source.rounding == "round")
         expression.rounding = core::fx::FxSizeExpr::Rounding::nearest;
     else if (source.rounding == "ceil")
-    expression.rounding = core::fx::FxSizeExpr::Rounding::ceil;
+        expression.rounding = core::fx::FxSizeExpr::Rounding::ceil;
     else
         throw std::invalid_argument("unsupported YRZFX size rounding mode: " + source.rounding);
     const auto conversion = [](std::string_view base, std::string_view conv) {
@@ -75,9 +75,8 @@ class FrameExtentTable final : public core::fx::FxResourceTable {
         const bool scalarBase = base == "VERTEXCOUNT" || base == "CLONEDVERTEXCOUNT" || base == "TOTALMATERIAL" ||
                                 base == "TOTALMATERIALCOUNT";
         for (const char axis : std::array<char, 3>{'x', 'y', 'z'}) {
-            const bool containsAxis = std::ranges::any_of(conv, [axis](unsigned char character) {
-                return static_cast<char>(std::tolower(character)) == axis;
-            });
+            const bool containsAxis = std::ranges::any_of(
+                conv, [axis](unsigned char character) { return static_cast<char>(std::tolower(character)) == axis; });
             if (!containsAxis)
                 continue;
             if (!result.empty())
@@ -136,8 +135,7 @@ class FrameExtentTable final : public core::fx::FxResourceTable {
 }
 
 [[nodiscard]] std::optional<FxExtent3D> declaredExtent(const FxProgram& program, std::string_view name,
-                                                      const FxFrameContext& context,
-                                                      const FrameExtentTable& table) {
+                                                       const FxFrameContext& context, const FrameExtentTable& table) {
     for (const auto& texture : program.textures)
         if (texture.name == name)
             return fromFxExtent(resolveEffectSize(texture.size, 2, true, context, table));
@@ -198,8 +196,7 @@ class FrameExtentTable final : public core::fx::FxResourceTable {
 }
 
 [[nodiscard]] std::uint32_t rasterBufferElementCount(const FxProgram& program, std::string_view name,
-                                                     const FxFrameContext& context,
-                                                     const FrameExtentTable& table) {
+                                                     const FxFrameContext& context, const FrameExtentTable& table) {
     const auto extent = declaredExtent(program, name, context, table);
     if (!extent.has_value())
         throw std::invalid_argument("FX raster buffer is not declared: " + std::string(name));
@@ -220,8 +217,7 @@ FxPassBindingPlan planPassBindings(const FxProgram& program, const FxDispatch& d
     std::uint32_t samplerBinding = 0;
     const auto isTexture = [&program](std::string_view name) {
         return std::ranges::any_of(program.textures, [name](const auto& resource) { return resource.name == name; }) ||
-               std::ranges::any_of(program.textures3D,
-                                   [name](const auto& resource) { return resource.name == name; });
+               std::ranges::any_of(program.textures3D, [name](const auto& resource) { return resource.name == name; });
     };
     const auto isBuffer = [&program](std::string_view name) {
         return std::ranges::any_of(program.buffers, [name](const auto& resource) { return resource.name == name; });
@@ -230,8 +226,8 @@ FxPassBindingPlan planPassBindings(const FxProgram& program, const FxDispatch& d
         return std::ranges::any_of(program.samplers, [name](const auto& resource) { return resource.name == name; });
     };
     const auto useFor = [&dispatch](std::string_view name) -> const FxDispatch::ResourceUse* {
-        const auto found = std::ranges::find_if(dispatch.resources,
-                                                [name](const auto& use) { return use.name == name; });
+        const auto found =
+            std::ranges::find_if(dispatch.resources, [name](const auto& use) { return use.name == name; });
         return found == dispatch.resources.end() ? nullptr : &*found;
     };
     const auto append = [&](std::string_view name, bool sampler) {
@@ -239,8 +235,8 @@ FxPassBindingPlan planPassBindings(const FxProgram& program, const FxDispatch& d
             return;
         const auto* use = useFor(name);
         const bool writable = use != nullptr && use->write;
-        if (use != nullptr && (use->role == FxResourceRole::colorAttachment ||
-                               use->role == FxResourceRole::depthAttachment))
+        if (use != nullptr &&
+            (use->role == FxResourceRole::colorAttachment || use->role == FxResourceRole::depthAttachment))
             return;
         FxDescriptorClass descriptorClass{};
         if (sampler || isSampler(name)) {
@@ -592,8 +588,8 @@ FxFramePlan FxCompiler::plan(const FxProgram& program, const FxFrameContext& con
     framePlan.renderWidth = context.renderWidth;
     framePlan.renderHeight = context.renderHeight;
     FrameExtentTable extents;
-    const auto addDeclaredSize = [&](std::string_view name, const core::EffectSize& size,
-                                     std::uint32_t dimension, bool screenDefault) {
+    const auto addDeclaredSize = [&](std::string_view name, const core::EffectSize& size, std::uint32_t dimension,
+                                     bool screenDefault) {
         const auto extent = resolveEffectSize(size, dimension, screenDefault, context, extents);
         extents.add(std::string(name), extent);
     };
@@ -619,8 +615,8 @@ FxFramePlan FxCompiler::plan(const FxProgram& program, const FxFrameContext& con
         resolved.raster = rasterTarget(dispatch);
         if (resolved.raster.has_value()) {
             if (resolved.raster->vertexBuffer.has_value())
-                resolved.raster->vertexCount = rasterBufferElementCount(
-                    program, *resolved.raster->vertexBuffer, context, extents);
+                resolved.raster->vertexCount =
+                    rasterBufferElementCount(program, *resolved.raster->vertexBuffer, context, extents);
             if (resolved.raster->indexBuffer.has_value()) {
                 const auto declaration = std::ranges::find_if(
                     program.buffers, [&](const auto& buffer) { return buffer.name == *resolved.raster->indexBuffer; });
@@ -630,8 +626,8 @@ FxFramePlan FxCompiler::plan(const FxProgram& program, const FxFrameContext& con
                 if (declaration->elementSize != sizeof(std::uint32_t))
                     throw std::invalid_argument("FX raster index buffer must use 32-bit elements: " +
                                                 declaration->name);
-                resolved.raster->indexCount = rasterBufferElementCount(
-                    program, *resolved.raster->indexBuffer, context, extents);
+                resolved.raster->indexCount =
+                    rasterBufferElementCount(program, *resolved.raster->indexBuffer, context, extents);
             }
         }
 
@@ -675,8 +671,8 @@ FxFramePlan FxCompiler::plan(const FxProgram& program, const FxFrameContext& con
             if (explicitSize.heightRatio == 1.0F && dispatch.outputHeightRatio != 1.0F)
                 explicitSize.heightRatio = dispatch.outputHeightRatio;
             if (!explicitSize.absolute && explicitSize.base.empty()) {
-                explicitSize.base = dispatch.category == core::fx::FxCategory::deform ? "CLONEDVERTEXCOUNT"
-                                                                                     : "DEFAULT_RTSIZE";
+                explicitSize.base =
+                    dispatch.category == core::fx::FxCategory::deform ? "CLONEDVERTEXCOUNT" : "DEFAULT_RTSIZE";
                 if (explicitSize.dimension == 0)
                     explicitSize.dimension = dispatch.category == core::fx::FxCategory::deform ? 1U : 2U;
             }

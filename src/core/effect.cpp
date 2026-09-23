@@ -35,8 +35,7 @@ EffectPassType passType(std::string_view value) {
         return EffectPassType::raytracing;
     if (value == "copy")
         return EffectPassType::copy;
-    if (value == "clear" || value == "clearRtv" || value == "clearRTV" || value == "clearUav" ||
-        value == "clearUAV")
+    if (value == "clear" || value == "clearRtv" || value == "clearRTV" || value == "clearUav" || value == "clearUAV")
         return EffectPassType::clear;
     if (value == "mipmap" || value == "mipmapGen" || value == "mipmapgen")
         return EffectPassType::mipmap;
@@ -276,14 +275,22 @@ FxStencilOp stencilOp(std::string_view value) {
 FxLogicOp logicOp(std::string_view value) {
     const auto key = compactKey(value);
     constexpr std::pair<std::string_view, FxLogicOp> values[] = {
-        {"clear", FxLogicOp::clear},       {"and", FxLogicOp::andOp},
-        {"andreverse", FxLogicOp::andReverse}, {"copy", FxLogicOp::copy},
-        {"andinverted", FxLogicOp::andInverted}, {"noop", FxLogicOp::noOp},
-        {"xor", FxLogicOp::xorOp},         {"or", FxLogicOp::orOp},
-        {"nor", FxLogicOp::nor},           {"equivalence", FxLogicOp::equivalence},
-        {"invert", FxLogicOp::invert},     {"orreverse", FxLogicOp::orReverse},
-        {"copyinverted", FxLogicOp::copyInverted}, {"orinverted", FxLogicOp::orInverted},
-        {"nand", FxLogicOp::nand},         {"set", FxLogicOp::set},
+        {"clear", FxLogicOp::clear},
+        {"and", FxLogicOp::andOp},
+        {"andreverse", FxLogicOp::andReverse},
+        {"copy", FxLogicOp::copy},
+        {"andinverted", FxLogicOp::andInverted},
+        {"noop", FxLogicOp::noOp},
+        {"xor", FxLogicOp::xorOp},
+        {"or", FxLogicOp::orOp},
+        {"nor", FxLogicOp::nor},
+        {"equivalence", FxLogicOp::equivalence},
+        {"invert", FxLogicOp::invert},
+        {"orreverse", FxLogicOp::orReverse},
+        {"copyinverted", FxLogicOp::copyInverted},
+        {"orinverted", FxLogicOp::orInverted},
+        {"nand", FxLogicOp::nand},
+        {"set", FxLogicOp::set},
     };
     for (const auto& [name, valueEnum] : values)
         if (key == name)
@@ -302,7 +309,7 @@ FxBorderColor borderColor(std::string_view value) {
 
 EffectVertexInputRate vertexInputRate(std::string_view value) {
     return compactKey(value).find("instance") != std::string::npos ? EffectVertexInputRate::instance
-                                                                     : EffectVertexInputRate::vertex;
+                                                                   : EffectVertexInputRate::vertex;
 }
 
 EffectVertexFormat vertexFormat(std::string_view value) {
@@ -504,21 +511,21 @@ EffectVertexLayout vertexLayout(const nlohmann::json& pass) {
             continue;
         const auto slot = value.value("inputSlot", 0U);
         const auto rate = vertexInputRate(value.value("inputSlotClass", "PER_VERTEX_DATA"));
-        const auto binding = std::ranges::find_if(result.bindings, [slot](const auto& item) {
-            return item.binding == slot;
-        });
+        const auto binding =
+            std::ranges::find_if(result.bindings, [slot](const auto& item) { return item.binding == slot; });
         if (binding == result.bindings.end())
             result.bindings.push_back({slot, 0U, rate});
         const auto formatName = value.value("format", "UNKNOWN");
         const auto semantic = value.value("semanticName", "");
         const auto semanticIndex = value.value("semanticIndex", 0U);
-        result.attributes.push_back({.location = location++,
-                                     .binding = slot,
-                                     .format = vertexFormat(formatName),
-                                     .offset = value.value("alignedByteOffset", std::numeric_limits<std::uint32_t>::max()),
-                                     .semanticName = semantic,
-                                     .semanticIndex = semanticIndex,
-                                     .formatName = formatName});
+        result.attributes.push_back(
+            {.location = location++,
+             .binding = slot,
+             .format = vertexFormat(formatName),
+             .offset = value.value("alignedByteOffset", std::numeric_limits<std::uint32_t>::max()),
+             .semanticName = semantic,
+             .semanticIndex = semanticIndex,
+             .formatName = formatName});
     }
     return result;
 }
@@ -597,7 +604,8 @@ EffectSampler sampler(const nlohmann::json& value) {
     result.addressModeV = addressMode(result.addressV);
     result.addressModeW = addressMode(result.addressW);
     result.mipLodBias = value.value("mipLodBias", 0.0F);
-    result.maxAnisotropy = std::max(1U, value.value("maxAnisotropy", result.filterKind == FxFilter::anisotropic ? 16U : 1U));
+    result.maxAnisotropy =
+        std::max(1U, value.value("maxAnisotropy", result.filterKind == FxFilter::anisotropic ? 16U : 1U));
     if (const auto compare = value.find("comparisonFunc"); compare != value.end() && compare->is_string())
         result.comparisonFunc = compareOp(compare->get<std::string>());
     if (const auto border = value.find("borderColor"); border != value.end() && border->is_string())
@@ -641,7 +649,8 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
     // that predecessor separate so generated declarations can be inserted
     // after the includes and before the executable shader body.
     graph.hlslPrefix = source.substr(0, jsonStart);
-    graph.rawYrzfx = std::string(source.substr(jsonStart + jsonMarker.size(), hlslStart - jsonStart - jsonMarker.size()));
+    graph.rawYrzfx =
+        std::string(source.substr(jsonStart + jsonMarker.size(), hlslStart - jsonStart - jsonMarker.size()));
     graph.hlsl = source.substr(hlslStart + hlslMarker.size());
 #if DAYO_HAS_JSONNET
     const auto jsonText =
@@ -695,8 +704,7 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
     }
     if (const auto values = fx.find("controllers"); values != fx.end() && values->is_array()) {
         for (const auto& value : *values)
-            if (value.is_object())
-            {
+            if (value.is_object()) {
                 EffectController controller;
                 controller.name = value.value("name", "");
                 controller.controllerName = value.value("controllerName", "");
@@ -722,8 +730,8 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
             else if (typeKey == "clearrtv")
                 pass.functionalKind = EffectFunctionalPassKind::clearRtv;
             else if (typeKey == "clearuav" || typeKey == "clear")
-                pass.functionalKind = typeKey == "clearrtv" ? EffectFunctionalPassKind::clearRtv
-                                                               : EffectFunctionalPassKind::clearUav;
+                pass.functionalKind =
+                    typeKey == "clearrtv" ? EffectFunctionalPassKind::clearRtv : EffectFunctionalPassKind::clearUav;
             else if (typeKey == "mipmapgen" || typeKey == "mipmap")
                 pass.functionalKind = EffectFunctionalPassKind::mipmapGen;
             pass.vertexShader = value.value("vertexShader", "");
@@ -797,8 +805,8 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
             pass.rasterVertexBuffer = value.value("rasterVB", "");
             pass.rasterIndexBuffer = value.value("rasterIB", "");
             if (pass.graphics.modelTarget == fx::RasterModelTarget::buffer)
-                pass.rasterSource = pass.rasterVertexBuffer.empty() ? EffectRasterSource::vertexBufferless
-                                                                     : EffectRasterSource::buffer;
+                pass.rasterSource =
+                    pass.rasterVertexBuffer.empty() ? EffectRasterSource::vertexBufferless : EffectRasterSource::buffer;
             if (const auto source = value.find("rasterSource"); source != value.end() && source->is_string()) {
                 const auto sourceKey = compactKey(source->get<std::string>());
                 if (sourceKey == "buffer" || sourceKey == "vertexbuffer")
