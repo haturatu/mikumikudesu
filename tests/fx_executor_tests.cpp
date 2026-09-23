@@ -1,4 +1,5 @@
 #include "core/fx/fx_controller_resolver.hpp"
+#include "core/fx/fx_material.hpp"
 #include "fx/fx_catalog.hpp"
 #include "fx/fx_compiler.hpp"
 #include "fx/fx_condition_runtime.hpp"
@@ -619,6 +620,20 @@ bool testResolvedPassPlanning() {
                     depthAttachmentSource.find("Depth : register(") == std::string::npos &&
                     depthSampleSource.find("Texture2D<float> Depth : register(t0") != std::string::npos,
                 "D24S8 attachment stays unbound and is emitted as a sampled float texture in a later pass");
+
+    fx::FxProgram materialShaderProgram;
+    materialShaderProgram.materialDescriptor =
+        core::EffectMaterialDescriptor{.name = "Surface", .templatePath = {}, .defaultFile = {}};
+    materialShaderProgram.materialSchema = core::fx::parseMaterialTemplateSchema(
+        "f.1 : Roughness\n_T0 : Albedo\n_V2 : Volume\nRoughness : 0.5\n", "Surface");
+    fx::FxDispatch materialShaderPass;
+    materialShaderPass.name = "material-shader";
+    const auto materialShader = fx::makeNativeFxShaderSource(materialShaderProgram, materialShaderPass, 0);
+    ok &= check(materialShader.find("result.Albedo = Surface_texture[NonUniformResourceIndex(result.hasAlbedo ? "
+                                    "SurfaceTextureIndex_Albedo : 0)];") != std::string::npos &&
+                    materialShader.find("result.Volume = Surface_texture3D[NonUniformResourceIndex(result.hasVolume ? "
+                                        "SurfaceTextureIndex_Volume : 0)];") != std::string::npos,
+                "MatDesc accessors select descriptor zero when a logical texture slot is unbound");
 
     fx::FxProgram bindingProgram;
     core::EffectTexture textureSrv;

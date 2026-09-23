@@ -12,6 +12,7 @@
 #include <functional>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <system_error>
 #include <type_traits>
@@ -1145,6 +1146,127 @@ MaterialStructuredBufferData packMaterialStructuredBuffer(const MaterialStructur
             storeMaterialField(record + expected.offset, expected.schema, actual.value);
         }
     }
+    return result;
+}
+
+MaterialGpuTableData makeMaterialGpuTableData(const MaterialTemplateSchema& schema,
+                                              std::span<const MaterialGpuTableModel> models) {
+    MaterialGpuTableData result;
+    std::uint32_t textureSlotCount = 0;
+    for (const auto& texture : schema.textures) {
+        if (texture.index == std::numeric_limits<std::uint32_t>::max())
+            throw std::overflow_error("FX material texture index cannot be represented as a slot count");
+        textureSlotCount = std::max(textureSlotCount, texture.index + 1U);
+    }
+    result.textureSlotCount = textureSlotCount;
+
+    std::map<std::string, MaterialTextureDesc> textures2D;
+    std::map<std::string, MaterialTextureDesc> textures3D;
+    std::vector<MaterialGpuTableMaterial> materials;
+    result.materialIndices.reserve(models.size());
+    std::size_t totalTextureEntries = 0;
+    for (const auto& model : models) {
+        if (materials.size() > std::numeric_limits<std::uint32_t>::max())
+            throw std::overflow_error("FX material row index exceeds 32-bit table indices");
+        result.materialIndices.push_back(static_cast<std::uint32_t>(materials.size()));
+        if (model.materials.size() > std::numeric_limits<std::size_t>::max() - materials.size())
+            throw std::overflow_error("FX material row count overflow");
+        materials.insert(materials.end(), model.materials.begin(), model.materials.end());
+        if (textureSlotCount != 0 &&
+            model.materials.size() > (std::numeric_limits<std::size_t>::max() - totalTextureEntries) /
+                                         static_cast<std::size_t>(textureSlotCount))
+            throw std::overflow_error("FX material texture table size overflow");
+        totalTextureEntries += model.materials.size() * static_cast<std::size_t>(textureSlotCount);
+    }
+    if (materials.size() > std::numeric_limits<std::uint32_t>::max())
+        throw std::overflow_error("FX material row count exceeds 32-bit table indices");
+
+    const auto rememberTexture = [&](const MaterialGpuTableMaterial& material,
+                                     const MaterialTextureSchema& textureSchema) {
+        if (material.binding == nullptr || material.evaluated == nullptr)
+            throw std::invalid_argument("FX material table contains a null binding or evaluated value");
+        const auto& plan = *material.binding;
+        if (plan.orderedTextures.size() != schema.textures.size())
+            throw std::invalid_argument("FX material texture plan does not match its ordered schema");
+        const auto field = std::find_if(
+            plan.orderedTextures.begin(), plan.orderedTextures.end(),
+            [&textureSchema](const auto& candidate) { return candidate.schema.name == textureSchema.name; });
+        if (field == plan.orderedTextures.end() || field->schema.index != textureSchema.index ||
+            field->schema.dimension != textureSchema.dimension || field->schema.mipmapped != textureSchema.mipmapped)
+            throw std::invalid_argument("FX material texture plan has a mismatched schema field: " +
+                                        textureSchema.name);
+        if (!field->physicalTextureIndex.has_value())
+            return;
+        if (*field->physicalTextureIndex >= plan.layout.uniqueTextures.size())
+            throw std::invalid_argument("FX material texture plan has an invalid physical texture index: " +
+                                        textureSchema.name);
+        const auto& descriptor = plan.layout.uniqueTextures[*field->physicalTextureIndex];
+        if (descriptor.dimension != textureSchema.dimension || descriptor.mipmapped != textureSchema.mipmapped)
+            throw std::invalid_argument("FX material physical texture does not match its schema: " +
+                                        textureSchema.name);
+        auto& catalog = textureSchema.dimension == MaterialTextureDimension::twoD ? textures2D : textures3D;
+        catalog.try_emplace(textureKeyString(makeTextureKey(descriptor)), descriptor);
+    };
+    for (const auto& material : materials)
+        for (const auto& texture : schema.textures)
+            rememberTexture(material, texture);
+
+    if (textures2D.size() > std::numeric_limits<std::uint32_t>::max() ||
+        textures3D.size() > std::numeric_limits<std::uint32_t>::max())
+        throw std::overflow_error("FX material physical texture count exceeds 32-bit descriptor indices");
+    std::map<std::string, std::uint32_t> indices2D;
+    std::map<std::string, std::uint32_t> indices3D;
+    const auto materializeCatalog = [](const auto& source, auto& destination, auto& indices) {
+        destination.reserve(source.size());
+        std::uint32_t index = 0;
+        for (const auto& [key, descriptor] : source) {
+            indices.emplace(key, index++);
+            destination.push_back(descriptor);
+        }
+    };
+    materializeCatalog(textures2D, result.textures2D, indices2D);
+    materializeCatalog(textures3D, result.textures3D, indices3D);
+
+    result.textureIndices2D.assign(totalTextureEntries, kMissingMaterialTextureIndex);
+    result.textureIndices3D.assign(totalTextureEntries, kMissingMaterialTextureIndex);
+    std::vector<EvaluatedMaterialBinding> evaluatedValues;
+    evaluatedValues.reserve(materials.size());
+    const auto layout = makeMaterialStructuredBufferLayout(schema);
+    std::size_t materialIndex = 0;
+    for (const auto& model : models) {
+        for (const auto& material : model.materials) {
+            if (material.binding == nullptr || material.evaluated == nullptr)
+                throw std::invalid_argument("FX material table contains a null binding or evaluated value");
+            if (material.binding->orderedTextures.size() != schema.textures.size())
+                throw std::invalid_argument("FX material texture plan does not match its ordered schema");
+            const auto base = materialIndex * static_cast<std::size_t>(textureSlotCount);
+            for (const auto& textureSchema : schema.textures) {
+                const auto field = std::find_if(
+                    material.binding->orderedTextures.begin(), material.binding->orderedTextures.end(),
+                    [&textureSchema](const auto& candidate) { return candidate.schema.name == textureSchema.name; });
+                if (field == material.binding->orderedTextures.end() || field->schema.index != textureSchema.index ||
+                    field->schema.dimension != textureSchema.dimension ||
+                    field->schema.mipmapped != textureSchema.mipmapped)
+                    throw std::invalid_argument("FX material texture plan has a mismatched schema field: " +
+                                                textureSchema.name);
+                if (!field->physicalTextureIndex.has_value())
+                    continue;
+                const auto& descriptor = material.binding->layout.uniqueTextures[*field->physicalTextureIndex];
+                const auto key = textureKeyString(makeTextureKey(descriptor));
+                const auto& indices = textureSchema.dimension == MaterialTextureDimension::twoD ? indices2D : indices3D;
+                const auto physical = indices.find(key);
+                if (physical == indices.end())
+                    throw std::logic_error("FX material physical texture is absent from its table catalog");
+                auto& destinations = textureSchema.dimension == MaterialTextureDimension::twoD
+                                         ? result.textureIndices2D
+                                         : result.textureIndices3D;
+                destinations[base + textureSchema.index] = physical->second;
+            }
+            evaluatedValues.push_back(*material.evaluated);
+            ++materialIndex;
+        }
+    }
+    result.values = packMaterialStructuredBuffer(layout, evaluatedValues);
     return result;
 }
 
