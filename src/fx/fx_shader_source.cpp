@@ -174,6 +174,8 @@ void appendMaterialDeclarations(std::ostringstream& output, const FxProgram& pro
     const auto& material = parseMaterialTemplate(program, fallbackMaterial);
     const auto& name = program.materialDescriptor->name;
     output << "struct " << identifier(name) << "Value {\n";
+    if (material.fields.empty())
+        output << "    uint _DayoEmpty;\n";
     for (const auto& field : material.fields) {
         const auto type = field.type == core::fx::MaterialFieldType::floatingPoint ? "float" : "int";
         output << "    " << type;

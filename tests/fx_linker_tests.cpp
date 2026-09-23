@@ -347,8 +347,20 @@ int main() {
                         table.textureIndices3D[1] != table.textureIndices3D[5] &&
                         table.textureIndices3D[9] == kMissingMaterialTextureIndex,
                     "MatDesc logical indices map to physical arrays with an explicit missing sentinel");
-        ok &= check(table.values.count == 3 && table.values.bytes.size() == 48,
-                    "MatDesc value rows stay aligned with model/material lookup tables");
+        ok &= check(table.values.count == 3 && table.values.bytes.size() == 12,
+                    "MatDesc value rows use the DXC storage stride and align with lookup tables");
+
+        const auto textureOnlySchema = parseMaterialTemplateSchema("_T0 : Albedo\n", "TextureOnly");
+        MaterialInstance textureOnlyInstance;
+        textureOnlyInstance.templateName = "TextureOnly";
+        const auto textureOnlyPlan = linkMaterial(textureOnlySchema, &textureOnlyInstance);
+        const auto textureOnlyValues = evaluateMaterialValues(textureOnlyPlan, FxEvalContext{});
+        const std::array textureOnlyMaterials{MaterialGpuTableMaterial{&textureOnlyPlan, &textureOnlyValues}};
+        const std::array textureOnlyModels{MaterialGpuTableModel{textureOnlyMaterials}};
+        const auto textureOnlyTable = makeMaterialGpuTableData(textureOnlySchema, textureOnlyModels);
+        ok &= check(textureOnlyTable.values.count == 1 && textureOnlyTable.values.layout.fields.empty() &&
+                        textureOnlyTable.values.bytes.size() == sizeof(std::uint32_t),
+                    "texture-only MatDesc produces a valid private value row in the GPU table");
     }
 
     // Alias folding: shared / ref / shareTags collapse to canonical ids.
