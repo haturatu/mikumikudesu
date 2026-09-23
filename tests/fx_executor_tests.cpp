@@ -91,6 +91,9 @@ struct MockDevice final : public dayo::graphics::Device {
     dayo::graphics::RendererKind activeRenderer() const noexcept override {
         return dayo::graphics::RendererKind::preview;
     }
+    std::size_t currentFrameSlot() const noexcept override {
+        return currentFrameSlot_;
+    }
     dayo::graphics::handles::ShaderHandle nativeFullscreenVertexShader() const noexcept override {
         return {900, 1};
     }
@@ -230,6 +233,7 @@ struct MockDevice final : public dayo::graphics::Device {
     };
     dayo::graphics::DeviceCapabilities capabilities_;
     dayo::graphics::GraphicsConvention convention_;
+    std::size_t currentFrameSlot_{};
     std::uint32_t nextTypedHandle_{1};
     std::size_t destroyedShaders_{};
     std::size_t destroyedPipelines_{};
@@ -1590,6 +1594,7 @@ bool testFxMaterialGpuRuntimeOwnsTablesAndTextures() {
     table.values.bytes.resize(32, std::byte{0x2A});
 
     MockDevice device;
+    device.currentFrameSlot_ = dayo::graphics::kNativeFramesInFlight - 1U;
     bool ok = false;
     {
         dayo::graphics::FxMaterialGpuRuntime runtime;
@@ -1616,11 +1621,14 @@ bool testFxMaterialGpuRuntimeOwnsTablesAndTextures() {
                         (dayo::graphics::toBits(device.textureDescs_[2].usage) &
                          dayo::graphics::toBits(dayo::graphics::ResourceUsage::transferSrc)) != 0U,
                     "MatDesc GPU runtime allocates dimension-matched fallback, 2D, and DDS volume textures");
-        ok &= check(device.bufferDescs_.size() == dayo::graphics::kNativeFramesInFlight * 4 &&
-                        device.bufferUploads_.size() == 4 && device.bufferUploads_[0].bytes.size() == 8 &&
-                        device.bufferUploads_[1].bytes.size() == 8 && device.bufferUploads_[2].bytes.size() == 8 &&
-                        device.bufferUploads_[3].bytes.size() == 32,
-                    "MatDesc GPU runtime uploads all table arrays to frame-safe structured buffers");
+        const auto frameUploadCount = 4U * dayo::graphics::kNativeFramesInFlight;
+        ok &=
+            check(device.bufferDescs_.size() == frameUploadCount && device.bufferUploads_.size() == frameUploadCount &&
+                      device.bufferUploads_[0].bytes.size() == 8 && device.bufferUploads_[1].bytes.size() == 8 &&
+                      device.bufferUploads_[2].bytes.size() == 8 && device.bufferUploads_[3].bytes.size() == 32,
+                  "new MatDesc buffers upload every frame slot before becoming ready");
+        ok &= check(runtime.bindings().materialIndices == device.bufferUploads_[device.currentFrameSlot_ * 4U].handle,
+                    "MatDesc bindings select the initialized current frame slot");
         std::uint32_t uploadedTextureIndex = 0;
         std::uint32_t uploadedMissingIndex = 0;
         std::memcpy(&uploadedTextureIndex, device.bufferUploads_[1].bytes.data(), sizeof(uploadedTextureIndex));
@@ -1636,12 +1644,36 @@ bool testFxMaterialGpuRuntimeOwnsTablesAndTextures() {
 
         const auto texturesBeforeResync = device.textureDescs_.size();
         const auto buffersBeforeResync = device.bufferDescs_.size();
+        const auto uploadsBeforeResync = device.bufferUploads_.size();
+        device.currentFrameSlot_ = 0;
         ok &= check(runtime.sync(device, table, &error) && device.textureDescs_.size() == texturesBeforeResync &&
-                        device.bufferDescs_.size() == buffersBeforeResync && device.bufferUploads_.size() == 8,
-                    "unchanged MatDesc catalog reuses physical textures and uploads the next frame table");
+                        device.bufferDescs_.size() == buffersBeforeResync &&
+                        device.bufferUploads_.size() == uploadsBeforeResync + 4U,
+                    "unchanged MatDesc buffers upload only the active frame slot");
+
+        auto grownTable = table;
+        grownTable.values.layout.stride = 32;
+        grownTable.values.bytes.resize(grownTable.values.count * grownTable.values.layout.stride, std::byte{0x5A});
+        device.currentFrameSlot_ = dayo::graphics::kNativeFramesInFlight - 1U;
+        std::array<dayo::graphics::handles::BufferHandle, dayo::graphics::kNativeFramesInFlight> oldSlotHandles{};
+        for (std::size_t slot = 0; slot < dayo::graphics::kNativeFramesInFlight; ++slot)
+            oldSlotHandles[slot] = device.bufferUploads_[slot * 4U].handle;
+        const auto buffersBeforeGrowth = device.bufferDescs_.size();
+        const auto uploadsBeforeGrowth = device.bufferUploads_.size();
+        ok &= check(runtime.sync(device, grownTable, &error) &&
+                        device.bufferDescs_.size() == buffersBeforeGrowth + frameUploadCount &&
+                        device.bufferUploads_.size() == uploadsBeforeGrowth + frameUploadCount,
+                    "MatDesc buffer growth reallocates and initializes every frame slot");
+        for (std::size_t slot = 0; slot < dayo::graphics::kNativeFramesInFlight; ++slot)
+            ok &= check(device.bufferUploads_[uploadsBeforeGrowth + slot * 4U].handle != oldSlotHandles[slot],
+                        "MatDesc growth replaces each frame slot with its initialized allocation");
+        ok &= check(runtime.bindings().materialIndices ==
+                        device.bufferUploads_[uploadsBeforeGrowth + device.currentFrameSlot_ * 4U].handle,
+                    "reallocated MatDesc bindings refer to the initialized active slot");
     }
-    ok &= check(device.destroyedTextures_ == 4 && device.destroyedBuffers_ == dayo::graphics::kNativeFramesInFlight * 4,
-                "MatDesc GPU runtime releases every owned texture and frame-slot buffer");
+    ok &= check(device.destroyedTextures_ == 4 &&
+                    device.destroyedBuffers_ == 2U * 4U * dayo::graphics::kNativeFramesInFlight,
+                "MatDesc GPU runtime releases old and current frame-slot buffers after growth");
 
     auto invalidTable = table;
     invalidTable.textureIndices2D[0] = 1U;
