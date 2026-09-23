@@ -6,6 +6,7 @@
 #include "fx/fx_scheduler.hpp"
 #include "graphics/bdpt_runtime.hpp"
 #include "graphics/dayo_fx_runtime.hpp"
+#include "graphics/deformer_resource_registry.hpp"
 #include "graphics/native_renderer_requirements.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/output_sample_accumulator.hpp"
@@ -61,6 +62,9 @@ class NativeRendererCoordinator {
     [[nodiscard]] const NativeRendererStatus& status() const noexcept {
         return status_;
     }
+    [[nodiscard]] const DeformerResourceRegistry& deformerResources() const noexcept {
+        return deformerResources_;
+    }
     [[nodiscard]] const fx::FxProgram* program() const noexcept;
     [[nodiscard]] SubayaiRuntime* subayai() noexcept {
         return status_.nativeReady && status_.active == RendererKind::subayai ? &subayai_ : nullptr;
@@ -106,6 +110,7 @@ class NativeRendererCoordinator {
     GenericRuntimeList deformRuntimes_;
     GenericRuntimeList postprocessRuntimes_;
     OutputSampleAccumulator outputSamples_;
+    DeformerResourceRegistry deformerResources_;
     const core::fx::SceneEvaluationSnapshot* evaluationSnapshot_{};
 };
 

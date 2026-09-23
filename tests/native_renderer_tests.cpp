@@ -1,5 +1,6 @@
 #include "core/image_hdr.hpp"
 #include "fx/fx_compiler.hpp"
+#include "graphics/deformer_resource_registry.hpp"
 #include "graphics/fx_raster_semantics.hpp"
 #include "graphics/native_fx_pending_events.hpp"
 #include "graphics/native_renderer.hpp"
@@ -37,6 +38,49 @@ dayo::graphics::DeviceCapabilities capableSubayai() {
 
 int main() {
     bool ok = true;
+
+    dayo::graphics::FxResourceStore exportedStore;
+    dayo::graphics::FxResourceStore::Resource exportedTexture{
+        .name = "OutBuf",
+        .kind = dayo::graphics::FxResourceStore::Kind::texture,
+        .texture = {4, 2},
+        .extent = {32, 16, 1},
+        .format = dayo::graphics::PixelFormat::rgba16Float,
+        .dimension = 2,
+    };
+    ok &= check(exportedStore.add(exportedTexture), "deformer resource fixture enters physical store");
+    dayo::graphics::DeformerResourceRegistry deformerResources;
+    deformerResources.publish(7, 101, exportedStore);
+    auto exported = deformerResources.resolve(7, "OutBuf");
+    ok &= check(exported.status == dayo::graphics::DeformerResourceRegistry::LookupStatus::unique &&
+                    exported.value.has_value() && exported.value->resource.texture == exportedTexture.texture,
+                "deformer registry publishes a non-owning physical resource handle");
+    const auto initialGeneration = exported.value.has_value() ? exported.value->generation : 0;
+    deformerResources.publish(7, 101, exportedStore);
+    exported = deformerResources.resolve(7, "OutBuf");
+    ok &= check(exported.value.has_value() && exported.value->generation == initialGeneration,
+                "unchanged deformer exports preserve their runtime generation");
+
+    dayo::graphics::FxResourceStore otherStore;
+    exportedTexture.texture = {8, 1};
+    ok &= check(otherStore.add(exportedTexture), "second deformer resource fixture enters physical store");
+    deformerResources.publish(7, 102, otherStore);
+    exported = deformerResources.resolve(7, "OutBuf");
+    ok &= check(exported.status == dayo::graphics::DeformerResourceRegistry::LookupStatus::ambiguous &&
+                    !exported.value.has_value(),
+                "same-named resources from multiple deformers are reported as ambiguous");
+    deformerResources.invalidateEffect(102);
+    exported = deformerResources.resolve(7, "OutBuf");
+    ok &= check(exported.status == dayo::graphics::DeformerResourceRegistry::LookupStatus::unique,
+                "hot-reload invalidation removes only the selected effect exports");
+    exportedTexture.texture = {9, 3};
+    dayo::graphics::FxResourceStore reloadedStore;
+    ok &= check(reloadedStore.add(exportedTexture), "reloaded deformer fixture enters physical store");
+    deformerResources.publish(7, 101, reloadedStore);
+    exported = deformerResources.resolve(7, "OutBuf");
+    ok &= check(exported.value.has_value() && exported.value->generation > initialGeneration &&
+                    exported.value->resource.texture == exportedTexture.texture,
+                "changed physical handles receive a fresh resource generation");
 
     dayo::graphics::Rgba16fSampleAccumulator sampleAccumulator;
     sampleAccumulator.begin({1, 1, 1}, 2);

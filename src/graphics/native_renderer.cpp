@@ -148,6 +148,7 @@ void NativeRendererCoordinator::setEffectStack(const core::SceneEffectStack& eff
     postprocessEffects_ = effects.postprocess;
     deformRuntimes_.clear();
     postprocessRuntimes_.clear();
+    deformerResources_.clear();
 }
 
 void NativeRendererCoordinator::setEffectSchedule(std::span<const fx::ScheduledFx> schedule) {
@@ -177,13 +178,18 @@ void NativeRendererCoordinator::setEffectSchedule(std::span<const fx::ScheduledF
                                  return left.id == right.id;
                              });
         if (!changed)
-            return;
+            return false;
         effects = std::move(ordered);
         runtimes.clear();
+        return true;
     };
-    reorder(deformEffects_, deformRuntimes_, [](fx::FrameStage stage) { return stage == fx::FrameStage::deform; });
-    reorder(postprocessEffects_, postprocessRuntimes_,
-            [](fx::FrameStage stage) { return stage == fx::FrameStage::postPre || stage == fx::FrameStage::postPost; });
+    const auto deformChanged =
+        reorder(deformEffects_, deformRuntimes_, [](fx::FrameStage stage) { return stage == fx::FrameStage::deform; });
+    static_cast<void>(reorder(postprocessEffects_, postprocessRuntimes_, [](fx::FrameStage stage) {
+        return stage == fx::FrameStage::postPre || stage == fx::FrameStage::postPost;
+    }));
+    if (deformChanged)
+        deformerResources_.clear();
 }
 
 void NativeRendererCoordinator::setControllerDeclarations(std::span<const core::EffectController> declarations) {
@@ -199,6 +205,7 @@ void NativeRendererCoordinator::setControllerDeclarations(std::span<const core::
     bdpt_.setControllerDeclarations(controllerDeclarations_);
     deformRuntimes_.clear();
     postprocessRuntimes_.clear();
+    deformerResources_.clear();
 }
 
 std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffects(
@@ -294,6 +301,10 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
                 stageResources.defaultColorTarget = output->texture;
         }
         static_cast<void>(entry->runtime.execute(frame, commands, stageResources));
+        if (ownerModel != nullptr && effects[index].controllerModel.has_value()) {
+            deformerResources_.publish(*effects[index].controllerModel, effects[index].id,
+                                       entry->runtime.nativeRuntime().resources().store());
+        }
         auto output = entry->runtime.output(frame);
         if (!output.has_value() && stageResources.defaultColorTarget.valid()) {
             output = NativeFrameOutput{.texture = stageResources.defaultColorTarget,
@@ -395,6 +406,7 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
 void NativeRendererCoordinator::reset() noexcept {
     deformRuntimes_.clear();
     postprocessRuntimes_.clear();
+    deformerResources_.clear();
     outputSamples_.reset();
     deformEffects_.clear();
     postprocessEffects_.clear();

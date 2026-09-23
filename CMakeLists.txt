@@ -268,6 +268,7 @@ add_library(
   src/graphics/camera_matrices.cpp
   src/graphics/dayo_host_resources.cpp
   src/graphics/dayo_fx_runtime.cpp
+  src/graphics/deformer_resource_registry.cpp
   src/graphics/device.cpp
   src/graphics/native_renderer.cpp
   src/graphics/native_oidn_provider.cpp
