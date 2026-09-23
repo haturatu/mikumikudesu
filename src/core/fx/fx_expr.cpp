@@ -655,12 +655,8 @@ FxScalar evaluateFunctionImpl(std::string_view name, std::span<const FxScalar> a
             throw std::runtime_error(std::string(name) + "() expects " + std::to_string(count) + " arguments");
     };
     if (name == "min" || name == "max") {
-        if (arguments.size() < 2)
-            throw std::runtime_error(std::string(name) + "() expects at least 2 arguments");
-        double result = value(0);
-        for (std::size_t index = 1; index < arguments.size(); ++index)
-            result = name == "min" ? std::fmin(result, value(index)) : std::fmax(result, value(index));
-        return FxScalar{result};
+        require(2);
+        return FxScalar{name == "min" ? std::fmin(value(0), value(1)) : std::fmax(value(0), value(1))};
     }
     if (name == "sin" || name == "cos" || name == "tan" || name == "asin" || name == "acos" || name == "atan" ||
         name == "sinh" || name == "cosh" || name == "tanh" || name == "exp" || name == "log" || name == "sqrt" ||
