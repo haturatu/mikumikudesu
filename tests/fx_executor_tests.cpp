@@ -979,12 +979,10 @@ bool testOidnHostExecution() {
 bool testOidnStructuredBufferInput() {
     MockDevice device;
     const std::array<dayo::graphics::NativeSceneOidnInput, 2> inputSamples = {
-        dayo::graphics::NativeSceneOidnInput{.color = {0.25F, 0.5F, 0.75F},
-                                             .albedo = {0.1F, 0.2F, 0.3F},
-                                             .normal = {0.4F, 0.5F, 0.6F}},
-        dayo::graphics::NativeSceneOidnInput{.color = {1.0F, 0.75F, 0.5F},
-                                             .albedo = {0.6F, 0.7F, 0.8F},
-                                             .normal = {0.9F, 1.0F, 0.1F}},
+        dayo::graphics::NativeSceneOidnInput{
+            .color = {0.25F, 0.5F, 0.75F}, .albedo = {0.1F, 0.2F, 0.3F}, .normal = {0.4F, 0.5F, 0.6F}},
+        dayo::graphics::NativeSceneOidnInput{
+            .color = {1.0F, 0.75F, 0.5F}, .albedo = {0.6F, 0.7F, 0.8F}, .normal = {0.9F, 1.0F, 0.1F}},
     };
     const auto inputBytes = std::as_bytes(std::span(inputSamples));
     device.bufferReadbackBytes_.assign(inputBytes.begin(), inputBytes.end());
@@ -993,8 +991,7 @@ bool testOidnStructuredBufferInput() {
     auto context = testContext();
     context.renderWidth = 2;
     context.renderHeight = 1;
-    const dayo::fx::FxOidnDispatch dispatch{
-        .input = "OIDNBuf", .albedo = "", .normal = "", .output = "Denoised"};
+    const dayo::fx::FxOidnDispatch dispatch{.input = "OIDNBuf", .albedo = "", .normal = "", .output = "Denoised"};
     const dayo::graphics::FxExecutionResources::TypedResourceResolver resolve =
         [](std::string_view name) -> std::optional<dayo::graphics::FxExecutionResources::TypedResource> {
         if (name == "OIDNBuf")
@@ -1281,16 +1278,15 @@ bool testFxControllerResolver() {
     duplicate.morphWeights = {0.25F};
     snapshot.models.push_back(duplicate);
     std::string controllerError;
-    const std::array arrayController{
-        dayo::core::EffectController{
-            .name = "Exposure[2]", .controllerName = "ToonAnime.pmx", .item = "Smile", .type = "float"}};
+    const std::array arrayController{dayo::core::EffectController{
+        .name = "Exposure[2]", .controllerName = "ToonAnime.pmx", .item = "Smile", .type = "float"}};
     dayo::graphics::NativeControllerBlock arrayBlock(dayo::graphics::makeNativeControllerLayout(arrayController));
     const bool arrayResolved =
         dayo::graphics::resolveNativeControllerBlock(arrayBlock, arrayController, snapshot, 11, &controllerError);
     const auto* exposureField = arrayBlock.layout().find("Exposure[2]");
     std::array<float, 2> exposureValues{};
     if (exposureField != nullptr) {
-        std::memcpy(&exposureValues[0], arrayBlock.bytes().data() + exposureField->offset, sizeof(float));
+        std::memcpy(exposureValues.data(), arrayBlock.bytes().data() + exposureField->offset, sizeof(float));
         std::memcpy(&exposureValues[1],
                     arrayBlock.bytes().data() + exposureField->offset + exposureField->elementStride, sizeof(float));
     }
