@@ -17,6 +17,7 @@
 #include "graphics/device.hpp"
 #include "graphics/native_oidn_provider.hpp"
 #include "graphics/native_renderer.hpp"
+#include "graphics/native_scene_derived_runtime.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/native_scene_model_runtime.hpp"
 #include "graphics/native_scene_resource_store.hpp"
@@ -96,6 +97,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     graphics::NativeRendererCoordinator nativeRenderer_;
     graphics::NativeSceneFrameRuntime nativeSceneFrame_;
     graphics::NativeSceneResourceStore nativeSceneResources_;
+    graphics::NativeSceneDerivedRuntime nativeSceneDerivedRuntime_;
     graphics::NativeScreenRuntime nativeScreenRuntime_;
     graphics::NativeOidnProvider nativeOidnProvider_;
     core::Scene scene_;
@@ -120,6 +122,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
         std::uint32_t cloneCount{1};
         core::ModelId modelId{};
         std::uint32_t modelIndex{};
+        std::uint32_t textureBase{};
         std::uint32_t rasterizeOrder{};
         std::uint32_t deformIndex{};
         std::uint32_t deformOrder{};

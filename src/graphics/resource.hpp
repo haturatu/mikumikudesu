@@ -23,6 +23,7 @@ enum class PixelFormat : std::uint8_t {
     r16g16Float,
     r32Float,
     r32g32Float,
+    r32g32Uint,
     rgba8Unorm,
     rgba8Srgb,
     rgba16Float,
@@ -298,6 +299,7 @@ struct PhysicalResourceRequirements {
     case PixelFormat::r32Float:
         return 4;
     case PixelFormat::r32g32Float:
+    case PixelFormat::r32g32Uint:
         return 8;
     case PixelFormat::rgba8Unorm:
     case PixelFormat::rgba8Srgb:

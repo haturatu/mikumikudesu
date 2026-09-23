@@ -76,7 +76,14 @@ bool hasLoadedTexture(const std::vector<core::ImageRgba8>& textures, std::int32_
     if (index < 0 || static_cast<std::size_t>(index) >= textures.size())
         return false;
     const auto& texture = textures[static_cast<std::size_t>(index)];
-    return texture.width != 0 && texture.height != 0 && !texture.pixels.empty();
+    if (texture.width == 0 || texture.height == 0)
+        return false;
+    const auto width = static_cast<std::size_t>(texture.width);
+    const auto height = static_cast<std::size_t>(texture.height);
+    if (width > std::numeric_limits<std::size_t>::max() / height)
+        return false;
+    const auto pixelCount = width * height;
+    return pixelCount <= std::numeric_limits<std::size_t>::max() / 4U && texture.pixels.size() == pixelCount * 4U;
 }
 
 core::Float3 normalizePreviewPoint(const core::Float3& point, const core::PreviewNormalization& normalization) {
@@ -137,6 +144,11 @@ bool Application::ensureNativeSceneRuntime(bool restartRenderer, std::string* er
             *error = "native scene model count exceeds descriptor limits";
         return false;
     }
+    if (textures_.size() > std::numeric_limits<std::uint32_t>::max()) {
+        if (error != nullptr)
+            *error = "native scene texture count exceeds descriptor limits";
+        return false;
+    }
     std::vector<core::EffectController> controllerDeclarations;
     if (scene_.effects().renderer.has_value())
         controllerDeclarations = scene_.effects().renderer->graph.controllers;
@@ -151,15 +163,16 @@ bool Application::ensureNativeSceneRuntime(bool restartRenderer, std::string* er
     };
     nativeRenderer_.setControllerDeclarations(controllerDeclarations);
     const auto modelCount = static_cast<std::uint32_t>(std::max<std::size_t>(1, nativeSceneModelData_.size()));
-    const graphics::NativeSceneDescriptorCounts counts{.textures = 1,
-                                                       .vertexBuffers = modelCount,
-                                                       .indexBuffers = modelCount,
-                                                       .materials = modelCount,
-                                                       .faces = modelCount,
-                                                       .materialFaces = modelCount,
-                                                       .faceWalkers = modelCount,
-                                                       .previousVertices = modelCount,
-                                                       .rawVertices = modelCount};
+    const graphics::NativeSceneDescriptorCounts counts{
+        .textures = static_cast<std::uint32_t>(std::max<std::size_t>(1, textures_.size())),
+        .vertexBuffers = modelCount,
+        .indexBuffers = modelCount,
+        .materials = modelCount,
+        .faces = modelCount,
+        .materialFaces = modelCount,
+        .faceWalkers = modelCount,
+        .previousVertices = modelCount,
+        .rawVertices = modelCount};
     const auto sameCounts = [](const auto& left, const auto& right) {
         return left.textures == right.textures && left.vertexBuffers == right.vertexBuffers &&
                left.indexBuffers == right.indexBuffers && left.materials == right.materials &&
@@ -171,6 +184,8 @@ bool Application::ensureNativeSceneRuntime(bool restartRenderer, std::string* er
         sameCounts(nativeSceneFrame_.resources().counts(), counts) &&
         sameCounts(nativeSceneResources_.counts(), counts) &&
         sameControllers(nativeControllerDeclarations_, controllerDeclarations)) {
+        if (!nativeSceneDerivedRuntime_.ready() && !nativeSceneDerivedRuntime_.initialize(*device_, textures_, error))
+            return false;
         nativeRenderer_.setSceneFrameRuntime(&nativeSceneFrame_);
         return true;
     }
@@ -178,12 +193,16 @@ bool Application::ensureNativeSceneRuntime(bool restartRenderer, std::string* er
     const bool wasNative = nativeRenderer_.status().nativeReady;
     nativeSceneFrame_.reset();
     nativeSceneResources_.reset();
+    nativeSceneDerivedRuntime_.reset();
     nativeSceneDraws_.clear();
     nativeEffectModels_.clear();
     try {
         std::string runtimeError;
         if (!nativeSceneResources_.initialize(*device_, counts, &runtimeError))
             throw std::runtime_error(runtimeError.empty() ? "native scene resource store initialization failed"
+                                                          : runtimeError);
+        if (!nativeSceneDerivedRuntime_.initialize(*device_, textures_, &runtimeError))
+            throw std::runtime_error(runtimeError.empty() ? "native scene derived runtime initialization failed"
                                                           : runtimeError);
         if (!nativeSceneFrame_.initialize(*device_, controllerDeclarations, counts, &runtimeError))
             throw std::runtime_error(runtimeError.empty() ? "native scene frame initialization failed" : runtimeError);
@@ -192,12 +211,14 @@ bool Application::ensureNativeSceneRuntime(bool restartRenderer, std::string* er
     } catch (const std::exception& exception) {
         nativeSceneFrame_.reset();
         nativeSceneResources_.reset();
+        nativeSceneDerivedRuntime_.reset();
         if (error != nullptr)
             *error = exception.what();
         return false;
     } catch (...) {
         nativeSceneFrame_.reset();
         nativeSceneResources_.reset();
+        nativeSceneDerivedRuntime_.reset();
         if (error != nullptr)
             *error = "native scene runtime initialization failed";
         return false;
@@ -444,6 +465,31 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         const auto frameContext = makeNativeFrameContext(target);
         auto sceneResources = nativeSceneResources_.bindings();
         const auto modelResources = nativeSceneModelRuntime_.bindings();
+        std::vector<graphics::NativeSceneDerivedModel> derivedModels;
+        derivedModels.reserve(nativeSceneModelData_.size());
+        for (std::size_t modelIndex = 0; modelIndex < nativeSceneModelData_.size(); ++modelIndex) {
+            if (modelIndex >= nativeGeometry_.size())
+                throw std::runtime_error("native scene derived model table is out of sync with geometry");
+            if (nativeSceneModelData_[modelIndex].materials.size() > std::numeric_limits<std::uint32_t>::max())
+                throw std::overflow_error("native scene model material count exceeds 32-bit table indices");
+            const auto& geometry = nativeGeometry_[modelIndex];
+            const auto* instance = scene_.model(geometry.modelId);
+            std::int32_t selectedMaterial = -1;
+#if DAYO_HAS_IMGUI
+            if (const auto* selected = scene_.selectedModel(); selected != nullptr && selected->id == geometry.modelId)
+                selectedMaterial = uiState_.selectedMaterial;
+#endif
+            derivedModels.push_back(
+                {.materialCount = static_cast<std::uint32_t>(nativeSceneModelData_[modelIndex].materials.size()),
+                 .textureBase = geometry.textureBase,
+                 .cloneCount = geometry.cloneCount,
+                 .selectedMaterial = selectedMaterial,
+                 .visible = instance != nullptr && instance->visible});
+        }
+        if (!nativeSceneDerivedRuntime_.sync(derivedModels, screenExtent, &sceneError))
+            throw std::runtime_error(sceneError.empty() ? "native scene derived resource synchronization failed"
+                                                        : sceneError);
+        nativeSceneDerivedRuntime_.apply(sceneResources);
         sceneResources.tlas = tlas;
         sceneResources.vertexBuffers = modelResources.vertexBuffers;
         sceneResources.indexBuffers = modelResources.indexBuffers;
@@ -606,6 +652,7 @@ void Application::resetProjectRuntimeState() {
     nativeRenderer_.reset();
     nativeSceneFrame_.reset();
     nativeSceneResources_.reset();
+    nativeSceneDerivedRuntime_.reset();
     nativeScreenRuntime_.reset();
     if (device_ != nullptr) {
         device_->setNativeRendererAvailability(false, false);
@@ -677,6 +724,7 @@ int Application::run() {
         nativeRenderer_.reset();
         nativeSceneFrame_.reset();
         nativeSceneResources_.reset();
+        nativeSceneDerivedRuntime_.reset();
         nativeScreenRuntime_.reset();
         nativeSceneModelRuntime_.reset();
         nativeRenderer_.setEnvironmentBackend(nullptr);
@@ -1517,6 +1565,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         native.cloneCount = cloneCount;
         native.modelId = instance.id;
         native.modelIndex = static_cast<std::uint32_t>(nativeSceneModels.size());
+        native.textureBase = static_cast<std::uint32_t>(textureBase);
         native.rasterizeOrder = static_cast<std::uint32_t>(std::max(instance.order.raster, 0));
         native.deformIndex = native.modelIndex;
         native.deformOrder = static_cast<std::uint32_t>(std::max(instance.order.deform, 0));
@@ -1659,6 +1708,18 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         if (!native.baseVertices.empty() && !native.indices.empty()) {
             auto nativeModel =
                 graphics::makeNativeSceneModelData(*instance.model, native.baseVertices, frame.materials);
+            const auto hasLoadedPmxTexture = [&instance](std::int32_t index) {
+                return index >= 0 && static_cast<std::size_t>(index) < instance.model->textures.size() &&
+                       hasLoadedTexture(instance.textures, index);
+            };
+            for (std::size_t materialIndex = 0; materialIndex < instance.model->materials.size(); ++materialIndex) {
+                const auto& source = instance.model->materials[materialIndex];
+                auto& linked = nativeModel.materials[materialIndex];
+                if (!hasLoadedPmxTexture(source.textureIndex))
+                    linked.tex = -1;
+                if (!hasLoadedPmxTexture(source.sphereTextureIndex))
+                    linked.spTex = -1;
+            }
             nativeModel.topologyGeneration = scene_.topologyGeneration();
             nativeModel.materialGeneration = nativeMaterialGeneration_;
             nativeSceneModels.push_back(std::move(nativeModel));
@@ -1776,6 +1837,7 @@ void Application::refreshPreviewTextures() {
     for (const auto& instance : scene_.models()) {
         textures_.insert(textures_.end(), instance.textures.begin(), instance.textures.end());
     }
+    nativeSceneDerivedRuntime_.reset();
     std::vector<graphics::PreviewTexture> previewTextures;
     previewTextures.reserve(textures_.size());
     for (const auto& texture : textures_) {

@@ -173,6 +173,8 @@ VkFormat toVkFormat(PixelFormat format) {
         return VK_FORMAT_R32_SFLOAT;
     case PixelFormat::r32g32Float:
         return VK_FORMAT_R32G32_SFLOAT;
+    case PixelFormat::r32g32Uint:
+        return VK_FORMAT_R32G32_UINT;
     case PixelFormat::rgba8Unorm:
         return VK_FORMAT_R8G8B8A8_UNORM;
     case PixelFormat::rgba8Srgb:
