@@ -39,6 +39,10 @@ pointのdispatch group、memoによるpass選択を検証します。Windows 1.3
 Subayai用cubemap prefilterとは別経路です。テストはdispatch計画とmip別render targetを検証しますが、
 Windows 1.30とのGPU数値比較はまだ行っていません。その他のmemoと`globalVarSize`はruntime対応済みとは扱いません。
 
+`.dayo`の`EditorInfo`は1.30 sourceで定義された全フィールドをproject DTOと両方のJSON sectionへ保持します。
+repeat、audio volume/offset、floor collision、録画範囲など、desuに対応する設定はruntimeへ適用します。
+その他のupstream editor settingはload/saveで保持しますが、同じUIや描画動作を実装したことを意味しません。
+
 ## Windows fixtureの受け入れ条件
 
 Windows 1.30実行環境での保存・再読込は今回のLinux検証に含みません。

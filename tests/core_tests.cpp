@@ -323,6 +323,33 @@ int main() {
         project.editor.outputWidth = 2560;
         project.editor.outputHeight = 1440;
         project.editor.animationSpeed = 1.5F;
+        project.editor.skyboxFile = std::filesystem::absolute("environment.dds");
+        project.editor.floorCollision = false;
+        project.editor.animationStart = 3;
+        project.editor.animationEnd = 240;
+        project.editor.animationRepeat = true;
+        project.editor.wavFile = std::filesystem::absolute("music.wav");
+        project.editor.wavVolume = 0.65F;
+        project.editor.wavOffset = 1.25;
+        project.editor.recordStart = 4;
+        project.editor.recordEnd = 12;
+        project.editor.outputFile = std::filesystem::absolute("movie.mp4");
+        project.editor.movieFile = std::filesystem::absolute("background.mp4");
+        project.editor.totalEditTime = 123456U;
+        project.editor.startFromFrame = true;
+        project.editor.moveFrameToStopped = true;
+        project.editor.physicsMode = 0;
+        project.editor.interleave = 2;
+        project.editor.accumulate = false;
+        project.editor.alwaysSolve = true;
+        project.editor.screenBMPMode = 2;
+        project.editor.backgroundMode = 3;
+        project.editor.backgroundTransparent = true;
+        project.editor.denoiserEnabled = true;
+        project.editor.syncCamera = true;
+        project.editor.showRigidBodies = true;
+        project.editor.showInfo = false;
+        project.editor.freeCamera = true;
         project.upstreamDocumentJson =
             R"({"rootFuture":7,"MikuMikuDayo":{"futureField":{"keep":42},"editor":{"futureSetting":"keep"},"models":[{"futureModel":"keep"}],"fxinfo":[{"id":1,"filename":"effect.fxdayo","futureEffect":"keep"}]}})";
         project.embeddedVmdayo = {0x56, 0x4D, 0x44, 0x01};
@@ -345,7 +372,7 @@ int main() {
         const auto loaded = dayo::core::loadProject(projectPath);
         ok &= check(loaded.renderer == "subayai" && loaded.frame == 42.5F && !loaded.playing,
                     ".dayo project settings round trip");
-        ok &= check(loaded.assets.size() == 3 && loaded.assets[0].path.is_absolute() &&
+        ok &= check(loaded.assets.size() == 5 && loaded.assets[0].path.is_absolute() &&
                         loaded.assets[2].ownerModelIndex == 0 && loaded.assets[2].upstreamId == 1 &&
                         loaded.assets[2].materialSourceFiles == effect.materialSourceFiles,
                     ".dayo effect owner and MatDesc source round trip");
@@ -355,6 +382,19 @@ int main() {
                         loaded.editor.motionBlur && loaded.editor.outputWidth == 2560 &&
                         loaded.editor.animationSpeed == 1.5F,
                     ".dayo model order/material metadata and editor output settings round trip");
+        ok &= check(
+            loaded.editor.skyboxFile.filename() == "environment.dds" && !loaded.editor.floorCollision &&
+                loaded.editor.animationStart == 3 && loaded.editor.animationEnd == 240 &&
+                loaded.editor.animationRepeat && loaded.editor.wavFile.filename() == "music.wav" &&
+                loaded.editor.wavVolume == 0.65F && loaded.editor.wavOffset == 1.25 && loaded.editor.recordStart == 4 &&
+                loaded.editor.recordEnd == 12 && loaded.editor.outputFile.filename() == "movie.mp4" &&
+                loaded.editor.movieFile.filename() == "background.mp4" && loaded.editor.totalEditTime == 123456U &&
+                loaded.editor.startFromFrame && loaded.editor.moveFrameToStopped && loaded.editor.physicsMode == 0 &&
+                loaded.editor.interleave == 2 && !loaded.editor.accumulate && loaded.editor.alwaysSolve &&
+                loaded.editor.screenBMPMode == 2 && loaded.editor.backgroundMode == 3 &&
+                loaded.editor.backgroundTransparent && loaded.editor.denoiserEnabled && loaded.editor.syncCamera &&
+                loaded.editor.showRigidBodies && !loaded.editor.showInfo && loaded.editor.freeCamera,
+            ".dayo MikuMikuDayo 1.30 editor settings round trip");
         ok &= check(loaded.version == 3, ".dayo v3 writer");
         ok &= check(loaded.embeddedVmdayo == project.embeddedVmdayo, ".dayo embedded VMdayo payload");
         project.embeddedVmdayo.clear();
@@ -427,7 +467,13 @@ int main() {
             std::ofstream combined(projectPath, std::ios::binary | std::ios::trunc);
             combined << "[MikuMikuDayo]\n"
                         "{\"MikuMikuDayo\":{\"ver\":3,\"assetPath\":\".\","
-                        "\"editor\":{\"frame\":18,\"samplesPerFrame\":7,\"motionOrder\":[0]},"
+                        "\"editor\":{\"frame\":18,\"samplesPerFrame\":7,\"motionOrder\":[0],"
+                        "\"animationStart\":2,\"animationEnd\":90,\"animationRepeat\":true,"
+                        "\"floorCollision\":false,\"wavVolume\":0.5,\"wavOffset\":1.5,"
+                        "\"recordStart\":3,\"recordEnd\":100,\"physicsMode\":0,\"interleave\":4,"
+                        "\"accumulate\":false,\"alwaysSolve\":true,\"screenBMPMode\":2,"
+                        "\"backgroundMode\":3,\"backgroundTransparent\":true,\"denoiserEnabled\":true,"
+                        "\"syncCamera\":true,\"showRigidBodies\":true,\"showInfo\":false,\"freeCamera\":true},"
                         "\"models\":[{\"id\":42,\"filename\":\"merged.pmx\","
                         "\"bones\":[\"root\"],\"morphs\":[\"smile\"],\"materials\":[\"skin\"]}],"
                         "\"fxinfo\":[{\"id\":42,\"filename\":\"deform.fxdayo\","
@@ -441,7 +487,16 @@ int main() {
                         combined.editor.outputWidth == 1234 && combined.models.size() == 1 &&
                         combined.models[0].upstreamId == 42 && combined.models[0].source.filename() == "merged.pmx" &&
                         combined.assets.size() == 2 && combined.assets[1].ownerModelIndex == 0 &&
-                        combined.assets[1].upstreamId == 42,
+                        combined.assets[1].upstreamId == 42 && combined.editor.animationStart == 2 &&
+                        combined.editor.animationEnd == 90 && combined.editor.animationRepeat &&
+                        !combined.editor.floorCollision && combined.editor.wavVolume == 0.5F &&
+                        combined.editor.wavOffset == 1.5 && combined.editor.recordStart == 3 &&
+                        combined.editor.recordEnd == 100 && combined.editor.physicsMode == 0 &&
+                        combined.editor.interleave == 4 && !combined.editor.accumulate && combined.editor.alwaysSolve &&
+                        combined.editor.screenBMPMode == 2 && combined.editor.backgroundMode == 3 &&
+                        combined.editor.backgroundTransparent && combined.editor.denoiserEnabled &&
+                        combined.editor.syncCamera && combined.editor.showRigidBodies && !combined.editor.showInfo &&
+                        combined.editor.freeCamera,
                     ".dayo native extension merges upstream state instead of hiding it");
         dayo::core::saveProject(projectPath, combined);
         const auto combinedRoundTrip = dayo::core::loadProject(projectPath);
