@@ -632,6 +632,9 @@ class CommandList {
     virtual void clearBufferEx(handles::BufferHandle, std::uint32_t) {
         throw std::logic_error("Typed command-list buffer clear is not implemented by this backend");
     }
+    virtual void clearBufferEx(handles::BufferHandle, const std::array<float, 4>&) {
+        throw std::logic_error("Typed command-list four-component buffer clear is not implemented by this backend");
+    }
     virtual void generateMipmapsEx(handles::TextureHandle) {
         throw std::logic_error("Typed command-list mipmap generation is not implemented by this backend");
     }
@@ -970,6 +973,9 @@ class Device {
     }
     virtual void clearBufferEx(handles::BufferHandle, std::uint32_t) {
         throw std::logic_error("Typed buffer clear is not implemented by this backend");
+    }
+    virtual void clearBufferEx(handles::BufferHandle, const std::array<float, 4>&) {
+        throw std::logic_error("Typed four-component buffer clear is not implemented by this backend");
     }
     virtual void generateMipmapsEx(handles::TextureHandle) {
         throw std::logic_error("Typed mipmap generation is not implemented by this backend");

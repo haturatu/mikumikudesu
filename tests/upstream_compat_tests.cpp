@@ -328,13 +328,13 @@ bool validatePipelineOracle(const dayo::fx::FxProgram& program,
     return true;
 }
 
-bool buildPipelineOracle(const dayo::fx::FxProgram& program, const dayo::fx::FxShaderCompiler& shaderCompiler,
-                         std::string* error) {
+bool buildPipelineOracle(const dayo::fx::FxProgram& program, const dayo::fx::FxFramePlan& framePlan,
+                         const dayo::fx::FxShaderCompiler& shaderCompiler, std::string* error) {
     PipelineOracleDevice device;
     dayo::graphics::FxPipelineRuntime runtime;
     const auto layout = dayo::graphics::handles::PipelineLayoutHandle{1, 1};
     if (!runtime.build(
-            device, program, shaderCompiler,
+            device, program, framePlan, shaderCompiler,
             [layout](const dayo::fx::FxDispatch&) -> std::optional<dayo::graphics::handles::PipelineLayoutHandle> {
                 return layout;
             },
@@ -345,14 +345,15 @@ bool buildPipelineOracle(const dayo::fx::FxProgram& program, const dayo::fx::FxS
 
 void appendShaderRequest(const std::filesystem::path& sourceDirectory, const std::filesystem::path& effectPath,
                          const dayo::fx::FxProgram& program, const dayo::fx::FxDispatch& dispatch,
-                         const dayo::core::EffectPass& pass, std::string entryPoint, dayo::fx::FxShaderStage stage,
+                         const dayo::fx::FxResolvedPass& resolved, const dayo::core::EffectPass& pass,
+                         std::string entryPoint, dayo::fx::FxShaderStage stage,
                          dayo::fx::FxShaderCompiler& shaderCompiler, UpstreamScanResult& result) {
     if (entryPoint.empty())
         return;
     dayo::fx::FxShaderCompileRequest request;
     const auto effectDirectory = effectPath.parent_path();
     request.hlsl = dayo::fx::normalizeFxShaderIncludes(
-        dayo::fx::makeNativeFxShaderSource(program, dispatch, dayo::graphics::kNativeFxResourceSet),
+        dayo::fx::makeNativeFxShaderSource(program, dispatch, dayo::graphics::kNativeFxResourceSet, {}, &resolved),
         effectDirectory.empty() ? std::filesystem::path{"."} : effectDirectory);
     request.sourcePath = effectPath;
     request.entryPoint = std::move(entryPoint);
@@ -389,10 +390,10 @@ UpstreamScanResult scanUpstreamGraphs(const std::filesystem::path& sourceDirecto
             const auto graph = dayo::core::loadEffectGraph(path);
             const auto linked = compiler.link(graph);
             const auto program = compiler.compile(linked);
-            std::string pipelineError;
-            if (compileShaders && !buildPipelineOracle(program, shaderCompiler, &pipelineError))
-                throw std::runtime_error(pipelineError.empty() ? "FX pipeline oracle failed" : pipelineError);
             const auto plan = compiler.plan(program, context);
+            std::string pipelineError;
+            if (compileShaders && !buildPipelineOracle(program, plan, shaderCompiler, &pipelineError))
+                throw std::runtime_error(pipelineError.empty() ? "FX pipeline oracle failed" : pipelineError);
             if (plan.ordered.size() != program.passes.size())
                 throw std::runtime_error("FX plan lost a dispatch");
             for (const auto feature : dayo::fx::analyzeRuntimeRequirements(program).features)
@@ -409,34 +410,37 @@ UpstreamScanResult scanUpstreamGraphs(const std::filesystem::path& sourceDirecto
             for (std::size_t passIndex = 0; passIndex < graph.passes.size(); ++passIndex) {
                 const auto& pass = graph.passes[passIndex];
                 const auto& dispatch = program.passes[passIndex];
+                const auto& resolved = plan.resolved[passIndex];
                 switch (pass.type) {
                 case dayo::core::EffectPassType::rasterizer:
                 case dayo::core::EffectPassType::postprocess:
-                    appendShaderRequest(sourceDirectory, path, program, dispatch, pass, pass.vertexShader,
+                    appendShaderRequest(sourceDirectory, path, program, dispatch, resolved, pass, pass.vertexShader,
                                         dayo::fx::FxShaderStage::vertex, shaderCompiler, result);
-                    appendShaderRequest(sourceDirectory, path, program, dispatch, pass, pass.pixelShader,
+                    appendShaderRequest(sourceDirectory, path, program, dispatch, resolved, pass, pass.pixelShader,
                                         dayo::fx::FxShaderStage::fragment, shaderCompiler, result);
                     break;
                 case dayo::core::EffectPassType::compute:
-                    appendShaderRequest(sourceDirectory, path, program, dispatch, pass, pass.computeShader,
+                    appendShaderRequest(sourceDirectory, path, program, dispatch, resolved, pass, pass.computeShader,
                                         dayo::fx::FxShaderStage::compute, shaderCompiler, result);
                     break;
                 case dayo::core::EffectPassType::raytracing:
-                    appendShaderRequest(sourceDirectory, path, program, dispatch, pass, pass.rayGenerationShader,
-                                        dayo::fx::FxShaderStage::rayGeneration, shaderCompiler, result);
+                    appendShaderRequest(sourceDirectory, path, program, dispatch, resolved, pass,
+                                        pass.rayGenerationShader, dayo::fx::FxShaderStage::rayGeneration,
+                                        shaderCompiler, result);
                     for (const auto& shader : pass.missShaders)
-                        appendShaderRequest(sourceDirectory, path, program, dispatch, pass, shader,
+                        appendShaderRequest(sourceDirectory, path, program, dispatch, resolved, pass, shader,
                                             dayo::fx::FxShaderStage::miss, shaderCompiler, result);
                     for (const auto& group : pass.hitGroups) {
-                        appendShaderRequest(sourceDirectory, path, program, dispatch, pass, group.closestHit,
+                        appendShaderRequest(sourceDirectory, path, program, dispatch, resolved, pass, group.closestHit,
                                             dayo::fx::FxShaderStage::closestHit, shaderCompiler, result);
-                        appendShaderRequest(sourceDirectory, path, program, dispatch, pass, group.anyHit,
+                        appendShaderRequest(sourceDirectory, path, program, dispatch, resolved, pass, group.anyHit,
                                             dayo::fx::FxShaderStage::anyHit, shaderCompiler, result);
-                        appendShaderRequest(sourceDirectory, path, program, dispatch, pass, group.intersection,
-                                            dayo::fx::FxShaderStage::intersection, shaderCompiler, result);
+                        appendShaderRequest(sourceDirectory, path, program, dispatch, resolved, pass,
+                                            group.intersection, dayo::fx::FxShaderStage::intersection, shaderCompiler,
+                                            result);
                     }
                     for (const auto& shader : pass.callableShaders)
-                        appendShaderRequest(sourceDirectory, path, program, dispatch, pass, shader,
+                        appendShaderRequest(sourceDirectory, path, program, dispatch, resolved, pass, shader,
                                             dayo::fx::FxShaderStage::callable, shaderCompiler, result);
                     break;
                 case dayo::core::EffectPassType::copy:
