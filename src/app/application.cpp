@@ -143,6 +143,48 @@ bool hasEffectMemo(const core::SceneEffectStack& effects, const fx::FxProgram* r
     return std::ranges::any_of(rendererProgram->memos, [&](const std::string& memo) { return equalMemo(memo); });
 }
 
+std::optional<std::filesystem::path> findDayoHlslDirectory(const core::SceneEffectStack& effects,
+                                                           const fx::FxProgram* rendererProgram) {
+    std::vector<std::filesystem::path> sources;
+    if (rendererProgram != nullptr && !rendererProgram->sourcePath.empty())
+        sources.push_back(rendererProgram->sourcePath);
+    const auto appendSources = [&sources](const auto& instances) {
+        for (const auto& instance : instances) {
+            if (!instance.source.empty())
+                sources.push_back(instance.source);
+            if (!instance.graph.sourcePath.empty())
+                sources.push_back(instance.graph.sourcePath);
+        }
+    };
+    appendSources(effects.deform);
+    appendSources(effects.postprocess);
+    if (effects.renderer.has_value()) {
+        sources.push_back(effects.renderer->source);
+        sources.push_back(effects.renderer->graph.sourcePath);
+    }
+
+    std::error_code error;
+    for (const auto& source : sources) {
+        if (source.empty())
+            continue;
+        auto directory = source.parent_path();
+        while (!directory.empty()) {
+            const auto hlsl = directory / "hlsl";
+            error.clear();
+            const bool hasPdf = std::filesystem::is_regular_file(hlsl / "system" / "skyboxPDF.hlsl", error);
+            error.clear();
+            const bool hasSh = std::filesystem::is_regular_file(hlsl / "system" / "skyboxSH.hlsl", error);
+            if (hasPdf && hasSh)
+                return std::filesystem::absolute(hlsl).lexically_normal();
+            const auto parent = directory.parent_path();
+            if (parent == directory)
+                break;
+            directory = parent;
+        }
+    }
+    return std::nullopt;
+}
+
 #if DAYO_HAS_IMGUI
 const char* workspaceSuffix(ui::Workspace workspace) noexcept {
     switch (workspace) {
@@ -404,9 +446,15 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
             {.source = background.imagePath->string(), .exposure = 1.0F, .version = sourceVersion}));
         const auto& environment = nativeRenderer_.environment();
         if (environment.skybox.valid()) {
+            const auto hlslDirectory = findDayoHlslDirectory(scene_.effects(), nativeRenderer_.program());
+            if (!hlslDirectory.has_value())
+                throw std::runtime_error("cannot locate the pinned MikuMikuDayo hlsl/system environment shaders for "
+                                         "the active effect stack");
             std::string environmentError;
             const bool buildSkyboxSampler = hasEffectMemo(scene_.effects(), nativeRenderer_.program(), "skyboxsampler");
-            if (!nativeDayoEnvironmentRuntime_.sync(*device_, environment.skybox, *background.imagePath, sourceVersion,
+            const graphics::Extent3D extent{background.image->width, background.image->height, 1};
+            if (!nativeDayoEnvironmentRuntime_.sync(*device_, commands, environment.skybox, extent,
+                                                    *background.imagePath, sourceVersion, *hlslDirectory,
                                                     buildSkyboxSampler, &environmentError))
                 throw std::runtime_error(environmentError.empty() ? "canonical Dayo environment sync failed"
                                                                   : environmentError);

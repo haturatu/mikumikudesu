@@ -1058,52 +1058,36 @@ int main() {
                         backend.lastTlasInstances[1].flags == 1 && backend.lastTlasInstances[2].instanceId == 2,
                     "TLAS expands each world instance independently");
     }
-    // The canonical 1.30 environment resources use exact source HLSL layouts
-    // and luminance/solid-angle distributions.
+    // The canonical 1.30 environment resources use the upstream HLSL pass
+    // sequence and exact StructuredBuffer layouts.
     {
-        const auto makeImage = [](std::array<float, 8> values) {
-            std::vector<float> samples(4U * 2U * 4U, 1.0F);
-            for (std::size_t pixel = 0; pixel < values.size(); ++pixel) {
-                samples[pixel * 4U] = values[pixel];
-                samples[pixel * 4U + 1U] = values[pixel];
-                samples[pixel * 4U + 2U] = values[pixel];
-                samples[pixel * 4U + 3U] = 1.0F;
-            }
-            dayo::core::ImageData image{.width = 4,
-                                        .height = 2,
-                                        .channels = 4,
-                                        .type = dayo::core::PixelType::float32,
-                                        .space = dayo::core::ColorSpace::linear,
-                                        .bytes = std::vector<std::uint8_t>(samples.size() * sizeof(float))};
-            std::memcpy(image.bytes.data(), samples.data(), image.bytes.size());
-            return image;
-        };
-        const auto cpu = dayo::graphics::buildDayoEnvironmentCpuResources(
-            makeImage({0.0F, 0.0F, 1.0F, 3.0F, 4.0F, 0.0F, 0.0F, 0.0F}), true);
-        ok &= check(cpu.skywalker.size() == 8 && cpu.skywalkerRow.size() == 2,
-                    "Dayo Skywalker buffers use one Walker entry per pixel and row");
-        ok &= check(std::abs(cpu.skywalker[2].pdf - 0.25F) < 1e-6F && std::abs(cpu.skywalker[3].pdf - 0.75F) < 1e-6F &&
-                        std::abs(cpu.skywalker[4].pdf - 1.0F) < 1e-6F,
-                    "Dayo Walker PDFs follow luminance weights and per-row conditional distributions");
-        ok &=
-            check(std::abs(cpu.skywalkerRow[0].pdf - 0.5F) < 1e-6F && std::abs(cpu.skywalkerRow[1].pdf - 0.5F) < 1e-6F,
-                  "Dayo row Walker PDF includes equirectangular solid-angle weighting");
-        const auto noSampler = dayo::graphics::buildDayoEnvironmentCpuResources(
-            makeImage({0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F}), false);
-        ok &= check(noSampler.skywalker.size() == 1 && noSampler.skywalkerRow.size() == 1 &&
-                        noSampler.skywalker[0].pair == UINT32_MAX && noSampler.skywalker[0].probability == 1.0F &&
-                        noSampler.skywalker[0].pdf == 1.0F,
-                    "missing SkyboxSampler memo uses initialized one-element host buffers");
-        const auto uniform = dayo::graphics::buildDayoEnvironmentCpuResources(
-            makeImage({1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F}), false);
-        const float expectedConstant = 0.282095F * (std::sin(std::numbers::pi_v<float> / 4.0F) * 2.0F) *
-                                       std::numbers::pi_v<float> * std::numbers::pi_v<float>;
-        ok &= check(std::abs(uniform.skyboxSh.coefficients[0][0] - expectedConstant) < 1e-5F &&
-                        std::abs(uniform.skyboxSh.coefficients[0][3] - expectedConstant) < 1e-5F,
-                    "Dayo SH uses the 1.30 Z-up basis and nine float4 storage layout");
         ok &= check(sizeof(dayo::graphics::DayoWalkerAlias) == 12 &&
                         sizeof(dayo::graphics::DayoSphericalHarmonics) == 144,
                     "canonical Dayo environment structures match upstream structured-buffer strides");
+        const auto withSampler = dayo::graphics::buildDayoEnvironmentDispatchPlan({2048, 1024, 1}, true);
+        const std::array expectedPasses{
+            dayo::graphics::DayoEnvironmentPass::skyLuminance, dayo::graphics::DayoEnvironmentPass::skyLuminanceRow,
+            dayo::graphics::DayoEnvironmentPass::skyWalkin,    dayo::graphics::DayoEnvironmentPass::skyWalkinRow,
+            dayo::graphics::DayoEnvironmentPass::shComboX,     dayo::graphics::DayoEnvironmentPass::shComboY};
+        const std::array<std::array<std::uint32_t, 3>, 6> expectedGroups{
+            std::array<std::uint32_t, 3>{128, 64, 1}, {8, 1, 1}, {8, 1, 1}, {1, 1, 1}, {32, 1, 1}, {1, 1, 1}};
+        bool dispatchMatches = withSampler.size() == expectedPasses.size();
+        for (std::size_t index = 0; dispatchMatches && index < withSampler.size(); ++index)
+            dispatchMatches =
+                withSampler[index].pass == expectedPasses[index] && withSampler[index].groups == expectedGroups[index];
+        ok &= check(dispatchMatches, "Dayo environment dispatch matches all six pinned 1.30 compute entries");
+        const auto withoutSampler = dayo::graphics::buildDayoEnvironmentDispatchPlan({2048, 1024, 1}, false);
+        ok &= check(withoutSampler.size() == 2 &&
+                        withoutSampler[0].pass == dayo::graphics::DayoEnvironmentPass::shComboX &&
+                        withoutSampler[1].pass == dayo::graphics::DayoEnvironmentPass::shComboY,
+                    "SkyboxSampler memo gates only the four upstream alias-table passes");
+        bool invalidExtentRejected = false;
+        try {
+            static_cast<void>(dayo::graphics::buildDayoEnvironmentDispatchPlan({1024, 512, 2}, true));
+        } catch (const std::invalid_argument&) {
+            invalidExtentRejected = true;
+        }
+        ok &= check(invalidExtentRejected, "Dayo environment rejects non-2D source extents");
         dayo::graphics::NativeSceneResourceBindings bindings;
         bindings.skybox = {1, 1};
         bindings.skywalker = {2, 1};

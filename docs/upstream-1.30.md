@@ -30,9 +30,9 @@ installも同じ一覧を使い、拡張子による除外を行わず、第三�
 
 固定した1.30 sourceの`resources.hlsli`/`yrztypes.hlsli`に合わせ、`Dayo::Skybox`は線形の2:1
 `Texture2D<float4>`、`Skywalker`/`SkywalkerRow`は12-byte Walker要素、`SkyboxSH`は9個の`float4`
-としてscene descriptorへ渡します。`SkyboxSampler` memoがある場合は同梱`skyboxPDF.hlsl`の輝度・立体角・
-alias-table式をCPU側で再現し、`skyboxSH.hlsl`のZ-up係数を計算します。CPU fixtureでABI strideと代表的な
-分布・係数を検証しますが、Windows 1.30とのGPU数値比較はまだ行っていません。
+としてscene descriptorへ渡します。環境分布とSHはC++へ移植せず、同梱`hlsl/system/skyboxPDF.hlsl`と
+`skyboxSH.hlsl`のentry pointをDXCでSPIR-V化してGPU上で実行します。テストではABI stride、pass順、各entry
+pointのdispatch group、memoによるpass選択を検証します。Windows 1.30とのGPU数値比較はまだ行っていません。
 
 `SkyboxPrefilter`はこの経路では未対応です。上流は元の2D equirectangular textureをmip付きでprefilter
 するため、Subayai用のcubemap prefilterを代用してはいけません。その他のmemoと`globalVarSize`も
