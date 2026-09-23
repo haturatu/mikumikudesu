@@ -284,6 +284,7 @@ struct MockCommands final : public dayo::graphics::CommandList {
     std::vector<std::string> trace;
     std::vector<dayo::graphics::IndexedDrawEx> indexedDraws;
     std::vector<dayo::graphics::VertexDrawEx> vertexBufferDraws;
+    std::vector<std::uint32_t> descriptorSetIndices_;
     void transition(dayo::graphics::TextureHandle) override {
         trace.emplace_back("transition");
     }
@@ -353,8 +354,9 @@ struct MockCommands final : public dayo::graphics::CommandList {
     void memoryBarrierEx() override {
         trace.emplace_back("memoryBarrierEx");
     }
-    void bindDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle, std::uint32_t) override {
+    void bindDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle, std::uint32_t setIndex) override {
         trace.emplace_back("descriptorEx");
+        descriptorSetIndices_.push_back(setIndex);
     }
     void bindPipelineEx(dayo::graphics::handles::PipelineHandle) override {
         trace.emplace_back("bindEx");
@@ -2559,6 +2561,76 @@ bool testNativeFxRuntimeBindsFixedSceneSets() {
     return ok;
 }
 
+bool testNativeFxRuntimeExecutesMatDescDescriptorSets() {
+    dayo::fx::FxShaderCompiler compiler;
+    if (!compiler.available())
+        return true;
+
+    dayo::fx::FxProgram program;
+    program.sourcePath = "native-matdesc-runtime.fxdayo";
+    program.materialDescriptor =
+        dayo::core::EffectMaterialDescriptor{.name = "Surface", .templatePath = {}, .defaultFile = {}};
+    program.materialSchema =
+        dayo::core::fx::parseMaterialTemplateSchema("f.1 : Roughness\n_T0 : Albedo\n_V1 : Volume\n", "Surface");
+    dayo::core::EffectTexture output;
+    output.name = "Output";
+    output.view = "UAV";
+    output.size.absolute = true;
+    output.size.width = 1;
+    output.size.height = 1;
+    program.textures.push_back(std::move(output));
+    program.hlsl = "#ifdef YRZ_PASS_matdesc\n"
+                   "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) { Output[id.xy] = "
+                   "float4(0, 0, 0, 1); }\n"
+                   "#endif\n";
+    dayo::fx::FxDispatch dispatch;
+    dispatch.name = "matdesc";
+    dispatch.kind = dayo::fx::FxOpKind::compute;
+    dispatch.executable = dayo::fx::FxComputeDispatch{"main"};
+    dispatch.numThreads = {1, 1, 1};
+    dispatch.resources.push_back({"Output", true});
+    program.passes.push_back(dispatch);
+
+    dayo::core::fx::MaterialGpuTableData table;
+    table.textureSlotCount = 2;
+    table.materialIndices = {0U};
+    table.textureIndices2D = {dayo::core::fx::kMissingMaterialTextureIndex,
+                              dayo::core::fx::kMissingMaterialTextureIndex};
+    table.textureIndices3D = {dayo::core::fx::kMissingMaterialTextureIndex,
+                              dayo::core::fx::kMissingMaterialTextureIndex};
+    table.values.layout.stride = sizeof(std::uint32_t);
+    table.values.count = 1;
+    table.values.bytes.resize(sizeof(std::uint32_t), std::byte{0});
+
+    MockDevice device;
+    dayo::graphics::FxMaterialGpuRuntime materialRuntime;
+    dayo::graphics::NativeFxRuntime runtime;
+    dayo::fx::FxNativeShaderSourceOptions sourceOptions;
+    sourceOptions.preamble = "#define NonUniformResourceIndex(value) (value)\n";
+    std::string error;
+    bool ok = check(materialRuntime.sync(device, table, &error), "MatDesc native test prepares GPU table resources");
+    ok &= check(runtime.initializeForFrame(device, std::move(program), compiler, testContext(), {}, &error, {},
+                                           sourceOptions, &materialRuntime),
+                "native FX pipeline initializes with generated MatDesc texture accessors");
+    if (!ok) {
+        if (!error.empty())
+            std::cerr << "Native MatDesc runtime error: " << error << '\n';
+        return false;
+    }
+    ok &= check(device.pipelineLayoutDesc_.setLayouts.size() == 2 &&
+                    std::ranges::all_of(device.pipelineLayoutDesc_.setLayouts,
+                                        [](const auto layout) { return layout.valid(); }),
+                "native MatDesc pipeline layout includes contiguous main and 3D descriptor sets");
+    auto frame = runtime.prepareFrame(testContext());
+    MockCommands commands;
+    const auto stats = runtime.execute(frame, commands);
+    ok &= check(stats.compute == 1 && commands.descriptorSetIndices_ == std::vector<std::uint32_t>{0U, 1U},
+                "native FX binds MatDesc main and secondary 3D sets at their shader set indices");
+    runtime.reset();
+    materialRuntime.reset();
+    return ok;
+}
+
 bool testShaderCacheKeys() {
     dayo::fx::FxShaderCache cache;
     dayo::fx::FxShaderKey base;
@@ -2774,17 +2846,42 @@ bool testFxPipelineRuntime() {
     const auto materialTemplatePath = directory / "material-template.txt";
     {
         std::ofstream materialTemplate(materialTemplatePath);
-        materialTemplate << "_T2m : AlbedoMap\n_T0m : NormalMap\n_V1 : VolumeMap\n";
+        materialTemplate << "f.1 : Roughness\n_T2m : AlbedoMap\n_T0m : NormalMap\n_V1 : VolumeMap\n";
     }
     auto materialProgram = program;
     materialProgram.materialDescriptor = dayo::core::EffectMaterialDescriptor{
         .name = "Surface", .templatePath = "material-template.txt", .defaultFile = {}};
+    materialProgram.hlsl = "#ifdef YRZ_PASS_deform\n"
+                           "[numthreads(8, 4, 1)] void main(uint3 id : SV_DispatchThreadID) { "
+                           "NativeOutput[id.xy] = float4(0, 0, 0, 1); }\n"
+                           "#endif\n";
     const auto materialGenerated = dayo::fx::makeNativeFxShaderSource(materialProgram, dispatch, 7, sharedSource);
     ok &= check(materialGenerated.find("uint tidx = imat * 3;") != std::string::npos &&
                     materialGenerated.find("_tex[tidx + 2]") != std::string::npos &&
                     materialGenerated.find("_tex[tidx + 0]") != std::string::npos &&
-                    materialGenerated.find("_tex3D[tidx + 1]") != std::string::npos,
+                    materialGenerated.find("_tex3D[tidx + 1]") != std::string::npos &&
+                    materialGenerated.find("SurfaceTexture result;\n") != std::string::npos &&
+                    materialGenerated.find("SurfaceTexture result = (SurfaceTexture)0;") == std::string::npos,
                 "MatDesc HLSL uses declared texture slots rather than declaration traversal order");
+    dayo::fx::FxShaderCompileRequest materialCompileRequest;
+    materialCompileRequest.sourcePath = directory / "matdesc-generated.hlsl";
+    materialCompileRequest.entryPoint = "main";
+    materialCompileRequest.stage = dayo::fx::FxShaderStage::compute;
+    materialCompileRequest.includeDirectories.push_back(directory);
+    materialCompileRequest.hlsl = "#define YRZ_PASS_deform 1\n"
+                                  "#define NonUniformResourceIndex(value) (value)\n" +
+                                  materialGenerated;
+    const auto materialArtifact = compiler.compile(materialCompileRequest);
+    ok &= check(!materialArtifact.spirv.empty() && materialArtifact.spirv.front() == 0x07230203U,
+                "generated MatDesc HLSL with 2D and 3D texture objects compiles to SPIR-V");
+    auto twoDimensionalMaterialProgram = materialProgram;
+    twoDimensionalMaterialProgram.materialSchema =
+        dayo::core::fx::parseMaterialTemplateSchema("f.1 : Roughness\n_T0 : Albedo\n", "Surface");
+    const auto twoDimensionalMaterialSource =
+        dayo::fx::makeNativeFxShaderSource(twoDimensionalMaterialProgram, dispatch, 7, sharedSource);
+    ok &= check(twoDimensionalMaterialSource.find("struct SurfaceTexture3D") == std::string::npos &&
+                    twoDimensionalMaterialSource.find("GetSurfaceTexture3D") == std::string::npos,
+                "MatDesc shader generation omits empty texture-object structs and accessors");
 
     auto deformDispatch = dispatch;
     deformDispatch.category = dayo::core::fx::FxCategory::deform;
@@ -2966,6 +3063,7 @@ int main() {
     ok &= testNativeFxRuntimeRefreshesFrameResources();
     ok &= testNativeFxRuntimeBindsResourcesAndPipelines();
     ok &= testNativeFxRuntimeBindsFixedSceneSets();
+    ok &= testNativeFxRuntimeExecutesMatDescDescriptorSets();
     ok &= testShaderCacheKeys();
     try {
         ok &= testRealShaderCompilation();
