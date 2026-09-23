@@ -60,8 +60,8 @@ registerはpass binding planから生成し、Texture3D descriptorは独立し�
 `FxMaterialGpuRuntime`はfallbackをdescriptor index 0へ予約し、dedup済み2D/3D textureとframe-slot別の4つのstructured bufferを生成・更新します。
 `NativeFxRuntime`/`DayoFxRuntime`はこれらをper-pass descriptor setへ結び、2D/3D descriptor array長とsecondary setを構築し、buffer再確保時にdescriptorを更新できます。
 画像は現在RGBA8へdecodeし、DDS 2D/3Dと通常画像のmipmapを扱います。renderer/material instanceからの本番呼び出し、
-`screen.bmp`およびdeformer resourceのMatDesc参照はまだend-to-end未完了です。なお、現状の生成HLSLがtexture objectを含むstructを返す形はローカルのHLSL→SPIR-V compileで失敗するため、
-texture付きMatDescのshader loweringと実pipeline compileは別途修正・検証が必要です。
+`screen.bmp`およびdeformer resourceのMatDesc参照はまだend-to-end未完了です。2D/3D texture objectを含むMatDesc getterの生成HLSLは、
+aggregate zero-initializationを避けるfield-wise loweringを行い、compile fixtureでSPIR-V生成まで確認します。
 
 ## Windows fixtureの受け入れ条件
 
