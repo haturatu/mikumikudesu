@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <stdexcept>
 
 namespace dayo::graphics {
 
@@ -23,16 +24,21 @@ struct NativeEffectModel {
     std::uint32_t deformOrder{};
 };
 
-// Resolve one native model's instance count from its scene value and every
-// deform effect assigned to that model. The resulting count is shared by
-// native draw, CloneCount, deform context, and acceleration-structure paths.
-[[nodiscard]] inline std::uint32_t resolveNativeModelCloneCount(
-    std::uint32_t sceneCloneCount, core::ModelId modelId,
-    std::span<const core::SceneEffectInstance> deformEffects) noexcept {
+// Resolve one native model's instance count from its scene value and its
+// single assigned deform effect. Chained/multiple deformers have no upstream
+// 1.30 clone-count contract, so reject them instead of inventing max semantics.
+[[nodiscard]] inline std::uint32_t
+resolveNativeModelCloneCount(std::uint32_t sceneCloneCount, core::ModelId modelId,
+                             std::span<const core::SceneEffectInstance> deformEffects) {
     auto effectCloneCount = 1U;
+    bool hasAssignedDeformer = false;
     for (const auto& effect : deformEffects) {
-        if (effect.controllerModel.has_value() && *effect.controllerModel == modelId)
-            effectCloneCount = std::max(effectCloneCount, effect.graph.meshCloneCount);
+        if (!effect.controllerModel.has_value() || *effect.controllerModel != modelId)
+            continue;
+        if (hasAssignedDeformer)
+            throw std::logic_error("multiple deform effects target one model; YRZFX 1.30 chain semantics are unknown");
+        hasAssignedDeformer = true;
+        effectCloneCount = effect.graph.meshCloneCount;
     }
     return fx::unifyMeshCloneCount(sceneCloneCount, effectCloneCount);
 }
