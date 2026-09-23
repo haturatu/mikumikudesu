@@ -378,7 +378,8 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
         const auto templatePath = descriptor.templatePath.is_absolute()
                                       ? descriptor.templatePath
                                       : graph.sourcePath.parent_path() / descriptor.templatePath;
-        auto schema = core::fx::loadMaterialTemplateSchema(templatePath, descriptor.name);
+        auto schema =
+            core::fx::loadMaterialTemplateSchema(templatePath, descriptor.name, graph.sourcePath.parent_path());
         if (!descriptor.defaultFile.empty()) {
             const auto defaultFile = descriptor.defaultFile.is_absolute()
                                          ? descriptor.defaultFile
