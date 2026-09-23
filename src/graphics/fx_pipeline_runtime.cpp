@@ -460,10 +460,13 @@ handles::ShaderHandle FxPipelineRuntime::compileShader(Device& device, const fx:
 
     fx::FxShaderKey key;
     fx::FxShaderCompileRequest request;
-    // Effects that opt into the upstream global-variable ABI need DXC's
-    // explicit -fvk-bind-globals mapping. Keep glslc available for shaders
-    // that do not declare that ABI, including legacy and synthetic effects.
-    request.requireDxcForNativeFxAbi = program.globalVarSizeSpecified;
+    // HLSL standalone globals become an implicit $Globals cbuffer whether or
+    // not the effect explicitly declares globalVarSize. Effects using the
+    // controller ABI bind the host global buffer at b2, so their shaders must
+    // use DXC's explicit -fvk-bind-globals mapping. Keep glslc available for
+    // synthetic/legacy effects that do not consume this ABI.
+    request.requireDxcForNativeFxAbi =
+        program.globalVarSizeSpecified || !program.controllers.empty() || !sourceOptions.controllerDeclarations.empty();
     request.macros = dispatch.macros;
     request.macros.push_back(passMacro(dispatch.name));
     const auto generatedSource = fx::makeNativeFxShaderSource(program, dispatch, resourceSet, sourceOptions, &resolved);

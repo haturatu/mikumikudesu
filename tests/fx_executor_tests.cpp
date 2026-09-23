@@ -2439,9 +2439,10 @@ bool testFxPipelineRuntime() {
     program.sourcePath = directory / "pipeline-runtime.fxdayo";
     program.hlsl = "#include \"constants.hlsli\"\n"
                    "#include \"subayai/hlsl/casesensitive.hlsli\"\n"
+                   "float Exposure;\n"
                    "#ifdef YRZ_PASS_deform\n"
                    "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) { NativeOutput[id.xy] = "
-                   "float4(Gain + TEST_CASE_SENSITIVE_VALUE, 0, 0, 1); }\n"
+                   "float4(Gain + Exposure + TEST_CASE_SENSITIVE_VALUE, 0, 0, 1); }\n"
                    "#endif\n";
     dayo::fx::FxDispatch dispatch;
     dispatch.name = "deform";
@@ -2517,6 +2518,21 @@ bool testFxPipelineRuntime() {
     runtime.reset();
     ok &= check(device.destroyedPipelines_ == 1 && device.destroyedShaders_ == 1,
                 "FX pipeline runtime destroys owned Vulkan objects");
+
+    dayo::fx::FxShaderCompiler glslcCompiler{"glslc"};
+    if (glslcCompiler.available()) {
+        dayo::graphics::FxPipelineRuntime glslcRuntime;
+        std::string glslcError;
+        const bool glslcBuilt = glslcRuntime.build(
+            device, program, glslcCompiler,
+            [](const dayo::fx::FxDispatch&) {
+                return std::optional<dayo::graphics::handles::PipelineLayoutHandle>{{1, 1}};
+            },
+            &glslcError, 7, sharedSource);
+        ok &= check(!program.globalVarSizeSpecified && !program.controllers.empty() && !glslcBuilt &&
+                        glslcError.find("require DXC") != std::string::npos,
+                    "native FX with controllers rejects glslc for standalone globals when globalVarSize is omitted");
+    }
 
     dayo::fx::FxDispatch postprocess;
     postprocess.name = "postprocess";
