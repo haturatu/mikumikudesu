@@ -4,6 +4,7 @@
 #include <array>
 #include <cctype>
 #include <string>
+#include <system_error>
 
 namespace dayo::core {
 namespace {
@@ -12,12 +13,16 @@ template <std::size_t N> bool contains(const std::array<std::string_view, N>& va
     return std::find(values.begin(), values.end(), value) != values.end();
 }
 
+std::string lowercase(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+    return value;
+}
+
 } // namespace
 
 AssetKind classifyAsset(const std::filesystem::path& path) {
-    auto extension = path.extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const auto extension = lowercase(path.extension().string());
 
     if (extension == ".pmx")
         return AssetKind::pmx;
@@ -42,6 +47,34 @@ AssetKind classifyAsset(const std::filesystem::path& path) {
     if (contains(video, extension))
         return AssetKind::video;
     return AssetKind::unknown;
+}
+
+std::optional<std::filesystem::path> findAssociatedEffect(const std::filesystem::path& modelPath) {
+    const auto directory = modelPath.parent_path().empty() ? std::filesystem::path{"."} : modelPath.parent_path();
+    auto conventionalPath = modelPath;
+    conventionalPath.replace_extension(".fxdayo");
+    std::error_code error;
+    if (std::filesystem::is_regular_file(conventionalPath, error) && !error)
+        return conventionalPath;
+
+    error.clear();
+    std::filesystem::directory_iterator iterator(directory, error);
+    const std::filesystem::directory_iterator end;
+    if (error)
+        return std::nullopt;
+    const auto modelStem = lowercase(modelPath.stem().string());
+    for (; iterator != end; iterator.increment(error)) {
+        if (error)
+            break;
+        const auto& candidate = *iterator;
+        if (lowercase(candidate.path().extension().string()) != ".fxdayo" ||
+            lowercase(candidate.path().stem().string()) != modelStem)
+            continue;
+        error.clear();
+        if (candidate.is_regular_file(error) && !error)
+            return candidate.path();
+    }
+    return std::nullopt;
 }
 
 std::string_view toString(AssetKind kind) noexcept {

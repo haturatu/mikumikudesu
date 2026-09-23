@@ -77,6 +77,15 @@ struct ModelExecutionOrder {
     std::int32_t raster{};
 };
 
+struct ModelParticipation {
+    bool evaluateAnimation{true};
+    bool deform{};
+    bool rasterize{};
+    bool acceleration{};
+    bool controller{};
+    bool postprocessLauncher{};
+};
+
 using EffectId = std::uint64_t;
 
 struct SceneEffectInstance {
@@ -113,12 +122,20 @@ struct ModelInstance {
     std::unique_ptr<VpdPose> pose;
     std::vector<ImageRgba8> textures;
     bool visible{true};
+    // Evaluated from attached VMD/VMdayo visibility keys every frame.
+    bool animationVisible{true};
+    // Cached from immutable PMX positions when the model is loaded.
+    bool upstreamDrawable{true};
     std::uint32_t cloneCount{1};
     ModelExecutionOrder order;
     std::vector<MaterialEditorState> materialSettings;
     PreviewNormalization normalization;
     std::string displayName;
 };
+
+[[nodiscard]] bool isUpstreamDrawableModel(const PmxModel& model) noexcept;
+[[nodiscard]] ModelParticipation resolveModelParticipation(const ModelInstance& model,
+                                                           const SceneEffectStack& effects) noexcept;
 
 struct Timeline {
     float frame{};
