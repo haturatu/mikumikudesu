@@ -39,6 +39,7 @@ struct FxHostFrameState {
     std::int32_t screenBmpMode{};
     std::int32_t backgroundMode{};
     bool backgroundTransparent{};
+    bool playing{};
     bool denoiserEnabled{};
     bool onStart{};
     bool onLoadSkybox{};

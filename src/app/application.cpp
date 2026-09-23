@@ -290,7 +290,8 @@ fx::FxCameraState Application::makeSceneCameraState() const {
     return camera;
 }
 
-fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTargetDesc& target) {
+fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTargetDesc& target,
+                                                       const fx::FxHostFrameState& invocationEvents) {
     const auto* model = selectedModel();
     const auto* motion =
         scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
@@ -331,6 +332,13 @@ fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTar
         !background.enabled || background.screenSource == core::ScreenTextureSource::white ? 0 : 1;
     context.host.backgroundMode =
         !background.enabled || background.screenSource == core::ScreenTextureSource::white ? 2 : 1;
+    context.host.playing = playing_;
+    context.host.onStart = invocationEvents.onStart;
+    context.host.onResize = invocationEvents.onResize;
+    context.host.onModelChanged = invocationEvents.onModelChanged;
+    context.host.onMaterialChanged = invocationEvents.onMaterialChanged;
+    graphics::populateNativeViewExpressionSymbols(
+        context, graphics::makeNativeViewConstants(context, static_cast<std::uint32_t>(context.totalMaterial)));
     return context;
 }
 
@@ -466,11 +474,11 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
             synchronizeGeometry(bdptRuntime);
         if (!tlas.valid())
             throw std::runtime_error("native scene runtime requires a synchronized TLAS");
-        auto frameContext = makeNativeFrameContext(target);
-        frameContext.host.onStart = nativeOnStartPending_;
-        frameContext.host.onResize = nativeResizeEvent;
-        frameContext.host.onModelChanged = nativeFxPendingEvents_.modelChanged;
-        frameContext.host.onMaterialChanged = nativeFxPendingEvents_.materialChanged;
+        auto frameContext =
+            makeNativeFrameContext(target, {.onStart = nativeOnStartPending_,
+                                            .onResize = nativeResizeEvent,
+                                            .onModelChanged = nativeFxPendingEvents_.modelChanged,
+                                            .onMaterialChanged = nativeFxPendingEvents_.materialChanged});
         auto sceneResources = nativeSceneResources_.bindings();
         const auto modelResources = nativeSceneModelRuntime_.bindings();
         std::vector<graphics::NativeSceneDerivedModel> derivedModels;

@@ -3,12 +3,14 @@
 #include "core/fx/fx_size.hpp"
 #include "core/fx/fx_symbol.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <numbers>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -33,6 +35,86 @@ template <typename F> bool expectThrows(const F& fn, std::string_view message) {
     }
     std::cerr << "FAIL: " << message << " (no exception)\n";
     return false;
+}
+
+bool testUpstreamExpressionFunctionTable() {
+    using namespace dayo::core::fx;
+    struct FunctionCase {
+        std::string_view name;
+        std::vector<double> arguments;
+        double expected;
+    };
+    const std::vector<FunctionCase> cases{
+        {"sin", {0.5}, std::sin(0.5)},
+        {"cos", {0.5}, std::cos(0.5)},
+        {"tan", {0.5}, std::tan(0.5)},
+        {"asin", {0.5}, std::asin(0.5)},
+        {"acos", {0.5}, std::acos(0.5)},
+        {"atan", {0.5}, std::atan(0.5)},
+        {"atan2", {0.5, 2.0}, std::atan2(0.5, 2.0)},
+        {"sinh", {0.5}, std::sinh(0.5)},
+        {"cosh", {0.5}, std::cosh(0.5)},
+        {"tanh", {0.5}, std::tanh(0.5)},
+        {"exp", {0.5}, std::exp(0.5)},
+        {"log", {2.0}, std::numbers::ln2_v<double>},
+        {"sqrt", {4.0}, 2.0},
+        {"exp2", {3.0}, 8.0},
+        {"log2", {8.0}, 3.0},
+        {"log10", {100.0}, 2.0},
+        {"pow", {2.0, 3.0}, 8.0},
+        {"abs", {-3.0}, 3.0},
+        {"floor", {-1.25}, -2.0},
+        {"ceil", {-1.25}, -1.0},
+        {"trunc", {-1.25}, -1.0},
+        {"round", {1.5}, 2.0},
+        {"frac", {-0.25}, 0.75},
+        {"fmod", {-5.5, 2.0}, -1.5},
+        {"mod", {-5.5, 2.0}, 0.5},
+        {"sign", {-0.5}, -1.0},
+        {"degrees", {std::numbers::pi_v<double> / 2.0}, 90.0},
+        {"radians", {180.0}, std::numbers::pi_v<double>},
+        {"min", {2.0, 5.0}, 2.0},
+        {"max", {2.0, 5.0}, 5.0},
+        {"clamp", {3.0, 0.0, 2.0}, 2.0},
+        {"saturate", {1.5}, 1.0},
+        {"lerp", {2.0, 6.0, 0.25}, 3.0},
+        {"step", {2.0, 1.0}, 1.0},
+        {"smoothstep", {0.0, 1.0, 0.25}, 0.15625},
+        {"bit", {10.0, 1.0}, 1.0},
+        {"hsvR", {0.0, 1.0, 1.0}, 1.0},
+        {"hsvG", {0.0, 1.0, 1.0}, 0.0},
+        {"hsvB", {0.0, 1.0, 1.0}, 0.0},
+        {"select", {1.0, 8.0, 3.0}, 8.0},
+        {"hash", {3.0}, 0.23746797442436218},
+        {"noise", {1.25}, 0.3484097719192505},
+    };
+
+    bool ok = check(cases.size() == 42, "Expr.ixx function table covers the pinned 42-function inventory");
+    for (const auto& test : cases) {
+        std::vector<FxScalar> arguments;
+        arguments.reserve(test.arguments.size());
+        for (const auto argument : test.arguments)
+            arguments.emplace_back(argument);
+        ok &= check(isSupportedFxFunction(test.name), std::string(test.name) + " is in the supported inventory");
+        ok &= expectDouble(fxToDouble(evaluateFxFunction(test.name, arguments)), test.expected,
+                           std::string("Expr.ixx representative: ") + std::string(test.name), 1e-6);
+        const std::vector<FxScalar> missingArguments(test.arguments.size() - 1, FxScalar{0.0});
+        ok &= expectThrows([&] { static_cast<void>(evaluateFxFunction(test.name, missingArguments)); },
+                           std::string("Expr.ixx arity enforced: ") + std::string(test.name));
+        auto extraArguments = arguments;
+        extraArguments.emplace_back(0.0);
+        ok &= expectThrows([&] { static_cast<void>(evaluateFxFunction(test.name, extraArguments)); },
+                           std::string("Expr.ixx rejects excess arguments: ") + std::string(test.name));
+    }
+
+    const std::array<FxScalar, 3> variadicMaximum{FxScalar{1.0}, FxScalar{5.0}, FxScalar{3.0}};
+    ok &= expectThrows([&] { static_cast<void>(evaluateFxFunction("max", variadicMaximum)); },
+                       "Expr.ixx max has exactly two arguments");
+    ok &= expectDouble(fxToDouble(evaluateFxFunction("smoothstep", std::array<FxScalar, 3>{0.0, 0.0, 0.0})), 0.0,
+                       "Expr.ixx smoothstep equal-edge behavior");
+    ok &= expectDouble(fxToDouble(evaluateFxFunction("step", std::array<FxScalar, 2>{1.0, 1.0})), 1.0,
+                       "Expr.ixx step includes equality");
+    return ok;
 }
 
 } // namespace
@@ -63,7 +145,8 @@ int main() {
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("10%3"), ctx)), 1.0, "modulo");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("min(3,5)"), ctx)), 3.0, "min");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("max(3,5)"), ctx)), 5.0, "max");
-    ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("max(1,5,3)"), ctx)), 5.0, "max variadic");
+    ok &= expectThrows([&] { static_cast<void>(evaluateFxExpr(parseFxExpr("max(1,5,3)"), ctx)); },
+                       "Expr.ixx max rejects variadic arguments");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("frac(Time/40)"), ctx)), 0.125,
                        "MikuMikuDayo material Time expression");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("pi"), ctx)), std::numbers::pi_v<double>,
@@ -79,6 +162,7 @@ int main() {
     ok &= check(isSupportedFxFunction("frac") && isSupportedFxFunction("noise") &&
                     !isSupportedFxFunction("notAnExprFunction"),
                 "Expr.ixx function inventory");
+    ok &= testUpstreamExpressionFunctionTable();
 
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("DEFAULT_RTSIZE.x"), ctx)), 1280.0, "DEFAULT_RTSIZE.x");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("DEFAULT_RTSIZE.y"), ctx)), 720.0, "DEFAULT_RTSIZE.y");
