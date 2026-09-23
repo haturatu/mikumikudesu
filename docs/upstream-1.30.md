@@ -19,6 +19,7 @@ installも同じ一覧を使い、拡張子による除外を行わず、第三�
 | 2. データ・solver互換 | Windows 1.30保存fixtureの往復、camera/external parent/制限IKの数値比較 | データ形式は実装済み、実機検証は未実施 |
 | 3. FX 1.30契約 | buffer/size expression、pow、CloneCount/CLONEDVERTEXCOUNT、MatDesc、resource allocation、RT hit groupの接続 | IR/parser/planner、MatDesc scene table/per-pass descriptor path、host screen.bmp・deformer texture参照、typed executorは実装済み。effect-local/shared texture解決と上流全FXのruntime検証は未完了 |
 | 4. Subayai/BDPT実行 | Vulkan BLAS/TLAS/SBT、各pass実行器、native frame/output bridge、RT対応GPUでの画像比較 | runtime接続・feature fallback・CPU/Mock検証は実装済み、RT対応GPUでの画像比較は未実施 |
+| 5. FX Debug | resource/pass/controllerの実行時inspect、texture preview/dump | graph metadata inspectorは実装済み。native GPU resource snapshot、readback preview/dumpは未完了 |
 
 `nativeSubayai`/`nativeBdpt`は起動時のGPU capability、選択したFX graphの要求feature、native runtimeの
 初期化結果をすべて満たした場合だけ有効になります。Previewのclone複製は、上流FXが参照する
