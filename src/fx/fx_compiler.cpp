@@ -373,6 +373,21 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
         program.category = core::fx::fxCategoryFromString(graph.category);
     program.sourcePath = graph.sourcePath;
     program.materialDescriptor = graph.materialDescriptor;
+    if (graph.materialDescriptor.has_value()) {
+        const auto& descriptor = *graph.materialDescriptor;
+        const auto templatePath = descriptor.templatePath.is_absolute()
+                                      ? descriptor.templatePath
+                                      : graph.sourcePath.parent_path() / descriptor.templatePath;
+        auto schema =
+            core::fx::loadMaterialTemplateSchema(templatePath, descriptor.name, graph.sourcePath.parent_path());
+        if (!descriptor.defaultFile.empty()) {
+            const auto defaultFile = descriptor.defaultFile.is_absolute()
+                                         ? descriptor.defaultFile
+                                         : graph.sourcePath.parent_path() / descriptor.defaultFile;
+            core::fx::loadMaterialDefaultFile(schema, defaultFile);
+        }
+        program.materialSchema = std::move(schema);
+    }
     program.hlslPrefix = graph.hlslPrefix;
     program.generatedCode = graph.generatedCode;
     program.hlsl = graph.hlsl;

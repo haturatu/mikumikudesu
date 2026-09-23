@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/effect.hpp"
+#include "core/fx/fx_material.hpp"
 #include "core/fx/fx_pass.hpp"
 #include "fx/fx_document.hpp"
 #include "fx/fx_frame.hpp"
@@ -220,6 +221,7 @@ struct FxProgram {
     std::uint64_t sourceVersion{};
     std::filesystem::path sourcePath;
     std::optional<core::EffectMaterialDescriptor> materialDescriptor;
+    std::optional<core::fx::MaterialTemplateSchema> materialSchema;
     std::vector<std::string> memos;
     std::uint32_t globalVarSize{};
     std::string rawYrzfx;
