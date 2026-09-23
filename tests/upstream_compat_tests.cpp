@@ -99,8 +99,22 @@ struct UpstreamScanResult {
     std::size_t passCount{};
     std::size_t shaderCount{};
     std::map<dayo::fx::FxRuntimeFeature, std::size_t> featureCounts;
+    std::uint32_t maxVertexInputSlotCount{};
+    std::uint32_t maxVertexInputSlotIndex{};
+    std::vector<dayo::core::EffectVertexFormat> vertexInputFormats;
     std::vector<std::string> failures;
 };
+
+bool isSupportedVertexInputFormat(dayo::core::EffectVertexFormat format) {
+    switch (format) {
+    case dayo::core::EffectVertexFormat::r32Float:
+    case dayo::core::EffectVertexFormat::r32g32Float:
+    case dayo::core::EffectVertexFormat::r32g32b32Float:
+    case dayo::core::EffectVertexFormat::r32g32b32a32Float:
+        return true;
+    }
+    return false;
+}
 
 class PipelineOracleDevice final : public dayo::graphics::Device {
   public:
@@ -397,8 +411,16 @@ UpstreamScanResult scanUpstreamGraphs(const std::filesystem::path& sourceDirecto
                 throw std::runtime_error(pipelineError.empty() ? "FX pipeline oracle failed" : pipelineError);
             if (plan.ordered.size() != program.passes.size())
                 throw std::runtime_error("FX plan lost a dispatch");
-            for (const auto feature : dayo::fx::analyzeRuntimeRequirements(program).features)
+            const auto requirements = dayo::fx::analyzeRuntimeRequirements(program);
+            for (const auto feature : requirements.features)
                 ++result.featureCounts[feature];
+            result.maxVertexInputSlotCount =
+                std::max(result.maxVertexInputSlotCount, requirements.maxVertexInputSlotCount);
+            result.maxVertexInputSlotIndex =
+                std::max(result.maxVertexInputSlotIndex, requirements.maxVertexInputSlotIndex);
+            for (const auto format : requirements.vertexInputFormats)
+                if (std::ranges::find(result.vertexInputFormats, format) == result.vertexInputFormats.end())
+                    result.vertexInputFormats.push_back(format);
             ++result.graphCount;
             result.passCount += program.passes.size();
             for (const auto& dispatch : program.passes) {
@@ -708,8 +730,37 @@ int main() {
         const auto scan = scanUpstreamGraphs(sourceDirectory);
         ok &= check(scan.graphCount == expectedGraphCount, "all pinned upstream FX graphs compile and link");
         ok &= check(scan.failures.empty(), "all pinned upstream FX metadata and shader probes pass");
+        ok &= check(scan.maxVertexInputSlotIndex < 16 &&
+                        std::ranges::all_of(scan.vertexInputFormats, isSupportedVertexInputFormat),
+                    "pinned upstream vertex input slots and formats fit the implemented Vulkan inventory");
         std::cout << "INFO: upstream oracle validated " << scan.graphCount << " graphs, " << scan.passCount
                   << " dispatches, and " << scan.shaderCount << " shader probes\n";
+        if (scan.vertexInputFormats.empty())
+            std::cout << "INFO: upstream vertex input inventory has no declared vertex layouts\n";
+        else
+            std::cout << "INFO: upstream vertex input inventory uses at most " << scan.maxVertexInputSlotCount
+                      << " slots (highest slot index " << scan.maxVertexInputSlotIndex << "); formats=";
+        if (!scan.vertexInputFormats.empty()) {
+            for (std::size_t index = 0; index < scan.vertexInputFormats.size(); ++index) {
+                if (index != 0)
+                    std::cout << ',';
+                switch (scan.vertexInputFormats[index]) {
+                case dayo::core::EffectVertexFormat::r32Float:
+                    std::cout << "R32_FLOAT";
+                    break;
+                case dayo::core::EffectVertexFormat::r32g32Float:
+                    std::cout << "R32G32_FLOAT";
+                    break;
+                case dayo::core::EffectVertexFormat::r32g32b32Float:
+                    std::cout << "R32G32B32_FLOAT";
+                    break;
+                case dayo::core::EffectVertexFormat::r32g32b32a32Float:
+                    std::cout << "R32G32B32A32_FLOAT";
+                    break;
+                }
+            }
+            std::cout << '\n';
+        }
         for (const auto& [feature, count] : scan.featureCounts)
             std::cout << "INFO: upstream runtime requirement " << dayo::fx::toString(feature) << " appears in " << count
                       << " graphs\n";
@@ -875,7 +926,10 @@ void CS() {}
                         required.contains(dayo::fx::FxRuntimeFeature::meshCloning) &&
                         required.contains(dayo::fx::FxRuntimeFeature::fullSamplerState) &&
                         required.contains(dayo::fx::FxRuntimeFeature::bufferRaster) &&
-                        required.contains(dayo::fx::FxRuntimeFeature::functionalClearRtv),
+                        required.contains(dayo::fx::FxRuntimeFeature::functionalClearRtv) &&
+                        required.maxVertexInputSlotCount == 1 && required.maxVertexInputSlotIndex == 0 &&
+                        required.vertexInputFormats ==
+                            std::vector<dayo::core::EffectVertexFormat>{dayo::core::EffectVertexFormat::r32g32b32Float},
                     "runtime feature analyzer inventories parsed upstream requirements");
         bool rejectedUnknown = false;
         try {

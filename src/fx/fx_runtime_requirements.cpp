@@ -140,6 +140,13 @@ FxRuntimeRequirements analyzeRuntimeRequirements(const FxProgram& program) {
                 result.add(FxRuntimeFeature::alphaToCoverage);
             if (!raster->vertexLayout.bindings.empty() || !raster->vertexLayout.attributes.empty())
                 result.add(FxRuntimeFeature::vertexLayout);
+            result.maxVertexInputSlotCount = std::max(result.maxVertexInputSlotCount,
+                                                      static_cast<std::uint32_t>(raster->vertexLayout.bindings.size()));
+            for (const auto& binding : raster->vertexLayout.bindings)
+                result.maxVertexInputSlotIndex = std::max(result.maxVertexInputSlotIndex, binding.binding);
+            for (const auto& attribute : raster->vertexLayout.attributes)
+                if (std::ranges::find(result.vertexInputFormats, attribute.format) == result.vertexInputFormats.end())
+                    result.vertexInputFormats.push_back(attribute.format);
             if (raster->rasterSource == core::EffectRasterSource::buffer)
                 result.add(FxRuntimeFeature::bufferRaster);
             if (!raster->graphics.blend.empty()) {
