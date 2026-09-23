@@ -215,13 +215,15 @@ bool BdptRuntime::ensureResources(std::uint32_t width, std::uint32_t height, std
 
 BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::DirtyFlag dirty,
                                     std::span<const AliasEntry> lightSampling,
-                                    std::span<const FxMaterialSceneModel> materialModels) {
+                                    std::span<const FxMaterialSceneModel> materialModels,
+                                    const FxMaterialTextureResolver& textureResolver) {
     if (!ready_ || device_ == nullptr)
         throw std::logic_error("BDPT runtime is not initialized");
     const FxMaterialGpuRuntime* materialGpuRuntime = nullptr;
     if (program_.materialSchema.has_value()) {
         std::string materialError;
-        if (!materialSceneRuntime_.sync(*device_, *program_.materialSchema, materialModels, context, &materialError))
+        if (!materialSceneRuntime_.sync(*device_, *program_.materialSchema, materialModels, context, &materialError,
+                                        textureResolver))
             throw std::runtime_error(materialError.empty() ? "BDPT MatDesc synchronization failed" : materialError);
         materialGpuRuntime = &materialSceneRuntime_.gpuRuntime();
         if (materialSceneRuntime_.descriptorLayoutChanged() && nativeAttempted_) {

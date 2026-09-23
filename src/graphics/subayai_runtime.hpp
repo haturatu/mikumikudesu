@@ -98,7 +98,8 @@ class SubayaiRuntime {
                                             std::span<const core::MaterialParameterBlock> materials,
                                             std::span<const AliasEntry> lightSampling,
                                             const EnvironmentGpuResult& environment,
-                                            std::span<const FxMaterialSceneModel> materialModels = {});
+                                            std::span<const FxMaterialSceneModel> materialModels = {},
+                                            const FxMaterialTextureResolver& textureResolver = {});
     [[nodiscard]] VulkanFxExecutor::Stats execute(SubayaiFrame& frame, CommandList& commands,
                                                   const FxExecutionResources& resources = {}) const;
     [[nodiscard]] std::optional<NativeFrameOutput> output(const SubayaiFrame& frame) const;

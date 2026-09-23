@@ -202,13 +202,15 @@ SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
                                           std::span<const core::MaterialParameterBlock> materials,
                                           std::span<const AliasEntry> lightSampling,
                                           const EnvironmentGpuResult& environment,
-                                          std::span<const FxMaterialSceneModel> materialModels) {
+                                          std::span<const FxMaterialSceneModel> materialModels,
+                                          const FxMaterialTextureResolver& textureResolver) {
     if (!ready_ || device_ == nullptr)
         throw std::logic_error("Subayai runtime is not initialized");
     const FxMaterialGpuRuntime* materialGpuRuntime = nullptr;
     if (program_.materialSchema.has_value()) {
         std::string materialError;
-        if (!materialSceneRuntime_.sync(*device_, *program_.materialSchema, materialModels, context, &materialError))
+        if (!materialSceneRuntime_.sync(*device_, *program_.materialSchema, materialModels, context, &materialError,
+                                        textureResolver))
             throw std::runtime_error(materialError.empty() ? "Subayai MatDesc synchronization failed" : materialError);
         materialGpuRuntime = &materialSceneRuntime_.gpuRuntime();
         if (materialSceneRuntime_.descriptorLayoutChanged() && nativeAttempted_) {

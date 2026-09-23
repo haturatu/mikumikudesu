@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <ranges>
 #include <stdexcept>
 #include <string_view>
@@ -34,6 +35,20 @@ void setError(std::string* error, std::string value) {
         (value[2] == '/' || value[2] == '\\'))
         return false;
     return true;
+}
+
+[[nodiscard]] bool isScreenBmpToken(std::string_view value) {
+    std::string normalized(value);
+    for (auto& character : normalized) {
+        if (character == '\\')
+            character = '/';
+        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+    }
+    return normalized == "screen.bmp";
+}
+
+[[nodiscard]] bool isFileLikeTextureToken(std::string_view value) noexcept {
+    return value.find('.') != std::string_view::npos;
 }
 
 [[nodiscard]] bool sameSchema(const core::fx::MaterialTemplateSchema& left,
@@ -280,7 +295,7 @@ bool FxMaterialSceneRuntime::link(const core::fx::MaterialTemplateSchema& schema
 
 bool FxMaterialSceneRuntime::sync(Device& device, const core::fx::MaterialTemplateSchema& schema,
                                   std::span<const FxMaterialSceneModel> models, const fx::FxFrameContext& context,
-                                  std::string* error) {
+                                  std::string* error, const FxMaterialTextureResolver& textureResolver) {
     if (error != nullptr)
         error->clear();
     descriptorLayoutChanged_ = false;
@@ -294,11 +309,14 @@ bool FxMaterialSceneRuntime::sync(Device& device, const core::fx::MaterialTempla
             totalMaterials += model.materials.size();
         }
         std::vector<core::fx::EvaluatedMaterialBinding> evaluated;
+        std::vector<core::fx::MaterialBindingPlan> frameBindings;
         std::vector<core::fx::MaterialGpuTableMaterial> materialRefs;
         std::vector<core::fx::MaterialGpuTableModel> tableModels;
         evaluated.reserve(totalMaterials);
+        frameBindings.reserve(totalMaterials);
         materialRefs.reserve(totalMaterials);
         tableModels.reserve(models_.size());
+        std::map<std::string, FxMaterialExternalTexture> externalTextureMap;
         for (std::size_t modelIndex = 0; modelIndex < models_.size(); ++modelIndex) {
             const auto& model = models_[modelIndex];
             const auto start = materialRefs.size();
@@ -307,18 +325,51 @@ bool FxMaterialSceneRuntime::sync(Device& device, const core::fx::MaterialTempla
                 throw std::logic_error("MatDesc scene models changed order while the table was being evaluated");
             const auto evalContext = evaluationContext(context, input);
             for (const auto& material : model.materials) {
-                evaluated.push_back(core::fx::evaluateMaterialValues(material.binding, evalContext));
-                materialRefs.push_back({.binding = &material.binding, .evaluated = &evaluated.back()});
+                auto binding = material.binding;
+                for (auto& texture : binding.orderedTextures) {
+                    if (texture.path.empty() || !texture.physicalTextureIndex.has_value())
+                        continue;
+                    std::optional<FxMaterialExternalTexture> external;
+                    if (textureResolver)
+                        external = textureResolver(model.id, texture.schema, texture.path);
+                    if (external.has_value()) {
+                        if (external->identity.empty() || !external->texture.valid() ||
+                            external->dimension != texture.schema.dimension)
+                            throw std::invalid_argument(
+                                "MatDesc texture resolver returned an invalid external texture: " + texture.path);
+                        auto& descriptor = binding.layout.uniqueTextures.at(*texture.physicalTextureIndex);
+                        descriptor.externalId = external->identity;
+                        const auto [found, inserted] = externalTextureMap.emplace(external->identity, *external);
+                        if (!inserted && (found->second.texture != external->texture ||
+                                          found->second.dimension != external->dimension ||
+                                          found->second.generation != external->generation))
+                            throw std::logic_error("MatDesc external texture identity resolved inconsistently: " +
+                                                   external->identity);
+                    } else if (isScreenBmpToken(texture.path) || !isFileLikeTextureToken(texture.path)) {
+                        // Upstream resource tokens without a file-like dot resolve to a shared/deformer resource;
+                        // if no provider owns the token, the material receives its dimension-correct dummy texture.
+                        texture.physicalTextureIndex.reset();
+                    }
+                }
+                evaluated.push_back(core::fx::evaluateMaterialValues(binding, evalContext));
+                frameBindings.push_back(std::move(binding));
+                materialRefs.push_back({.binding = &frameBindings.back(), .evaluated = &evaluated.back()});
             }
             tableModels.push_back({.materials = std::span<const core::fx::MaterialGpuTableMaterial>(materialRefs)
                                                     .subspan(start, model.materials.size())});
         }
         const auto table = core::fx::makeMaterialGpuTableData(schema, tableModels);
+        std::vector<FxMaterialExternalTexture> externalTextures;
+        externalTextures.reserve(externalTextureMap.size());
+        for (auto& [identity, texture] : externalTextureMap) {
+            static_cast<void>(identity);
+            externalTextures.push_back(std::move(texture));
+        }
         const bool wasReady = gpuRuntime_.ready();
         const auto previousBindings = gpuRuntime_.bindings();
         const auto previous2DCount = previousBindings.textures2D.size();
         const auto previous3DCount = previousBindings.textures3D.size();
-        if (!gpuRuntime_.sync(device, table, error))
+        if (!gpuRuntime_.sync(device, table, error, externalTextures))
             return false;
         const auto currentBindings = gpuRuntime_.bindings();
         descriptorLayoutChanged_ = wasReady && (previous2DCount != currentBindings.textures2D.size() ||

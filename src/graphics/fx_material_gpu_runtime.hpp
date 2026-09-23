@@ -21,6 +21,13 @@ struct FxMaterialGpuBindings {
     std::span<const handles::TextureHandle> textures3D;
 };
 
+struct FxMaterialExternalTexture {
+    std::string identity;
+    handles::TextureHandle texture{};
+    core::fx::MaterialTextureDimension dimension{core::fx::MaterialTextureDimension::twoD};
+    std::uint64_t generation{};
+};
+
 // Owns GPU storage and sampled textures for one generic MatDesc table. The
 // pass binding plan supplies descriptor locations; this owner supplies the
 // physical resources and keeps dynamic table buffers frame-slot safe.
@@ -32,7 +39,8 @@ class FxMaterialGpuRuntime {
     FxMaterialGpuRuntime(const FxMaterialGpuRuntime&) = delete;
     FxMaterialGpuRuntime& operator=(const FxMaterialGpuRuntime&) = delete;
 
-    [[nodiscard]] bool sync(Device& device, const core::fx::MaterialGpuTableData& table, std::string* error = nullptr);
+    [[nodiscard]] bool sync(Device& device, const core::fx::MaterialGpuTableData& table, std::string* error = nullptr,
+                            std::span<const FxMaterialExternalTexture> externalTextures = {});
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept;
@@ -55,7 +63,9 @@ class FxMaterialGpuRuntime {
 
     [[nodiscard]] bool ensureFallbackTextures(std::string* error);
     [[nodiscard]] bool ensureTextureCatalog(std::span<const core::fx::MaterialTextureDesc> textures,
-                                            core::fx::MaterialTextureDimension dimension, std::string* error);
+                                            core::fx::MaterialTextureDimension dimension,
+                                            std::span<const FxMaterialExternalTexture> externalTextures,
+                                            std::string* error);
     [[nodiscard]] bool ensureTableBuffers(const core::fx::MaterialGpuTableData& table, bool& recreated,
                                           std::string* error);
     [[nodiscard]] bool uploadFrame(const core::fx::MaterialGpuTableData& table, std::size_t frameSlot,
