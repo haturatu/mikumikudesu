@@ -450,7 +450,7 @@ std::vector<FxExpr> materialValueExpressions(const MaterialFieldSchema& field, c
             result.push_back(materialLiteral(FxScalar{static_cast<std::int64_t>(component)}));
     };
     std::visit(
-        [&result, &append](const auto& typed) {
+        [&append](const auto& typed) {
             using Value = std::remove_cvref_t<decltype(typed)>;
             if constexpr (std::is_same_v<Value, float> || std::is_same_v<Value, std::int32_t>) {
                 append(typed);
