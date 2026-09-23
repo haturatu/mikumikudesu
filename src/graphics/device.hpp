@@ -298,10 +298,33 @@ struct PipelineDesc {
 enum class CullModeEx : std::uint8_t { none, front, back };
 enum class FrontFaceEx : std::uint8_t { counterClockwise, clockwise };
 enum class CompareOpEx : std::uint8_t { never, less, equal, lessOrEqual, greater, notEqual, greaterOrEqual, always };
-enum class StencilOpEx : std::uint8_t { keep, zero, replace, incrementClamp, decrementClamp, invert, incrementWrap, decrementWrap };
+enum class StencilOpEx : std::uint8_t {
+    keep,
+    zero,
+    replace,
+    incrementClamp,
+    decrementClamp,
+    invert,
+    incrementWrap,
+    decrementWrap
+};
 enum class LogicOpEx : std::uint8_t {
-    clear, andOp, andReverse, copy, andInverted, noOp, xorOp, orOp, nor, equivalence, invert, orReverse,
-    copyInverted, orInverted, nand, set
+    clear,
+    andOp,
+    andReverse,
+    copy,
+    andInverted,
+    noOp,
+    xorOp,
+    orOp,
+    nor,
+    equivalence,
+    invert,
+    orReverse,
+    copyInverted,
+    orInverted,
+    nand,
+    set
 };
 enum class BlendFactorEx : std::uint8_t {
     zero,
@@ -571,6 +594,9 @@ class CommandList {
     }
     virtual void clearBufferEx(handles::BufferHandle, std::uint32_t) {
         throw std::logic_error("Typed command-list buffer clear is not implemented by this backend");
+    }
+    virtual void clearBufferEx(handles::BufferHandle, const std::array<float, 4>&) {
+        throw std::logic_error("Typed command-list four-component buffer clear is not implemented by this backend");
     }
     virtual void generateMipmapsEx(handles::TextureHandle) {
         throw std::logic_error("Typed command-list mipmap generation is not implemented by this backend");
@@ -910,6 +936,9 @@ class Device {
     }
     virtual void clearBufferEx(handles::BufferHandle, std::uint32_t) {
         throw std::logic_error("Typed buffer clear is not implemented by this backend");
+    }
+    virtual void clearBufferEx(handles::BufferHandle, const std::array<float, 4>&) {
+        throw std::logic_error("Typed four-component buffer clear is not implemented by this backend");
     }
     virtual void generateMipmapsEx(handles::TextureHandle) {
         throw std::logic_error("Typed mipmap generation is not implemented by this backend");

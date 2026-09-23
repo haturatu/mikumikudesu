@@ -203,6 +203,12 @@ void VulkanCommandList::clearBufferEx(handles::BufferHandle buffer, std::uint32_
     device_->recordClearBuffer(commandBuffer_, buffer, value);
 }
 
+void VulkanCommandList::clearBufferEx(handles::BufferHandle buffer, const std::array<float, 4>& value) {
+    if (device_ == nullptr)
+        throw std::logic_error("typed buffer clear requires a Vulkan device");
+    device_->recordClearBuffer(commandBuffer_, buffer, value);
+}
+
 void VulkanCommandList::generateMipmapsEx(handles::TextureHandle texture) {
     if (device_ == nullptr)
         throw std::logic_error("typed mipmap generation requires a Vulkan device");
