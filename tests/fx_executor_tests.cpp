@@ -2317,6 +2317,21 @@ bool testFxPipelineRuntime() {
                         generated.find("SharedValues : register(t0, space3)") != std::string::npos,
                     "native FX source emits disjoint typed and renderer-shared register classes");
 
+    const auto materialTemplatePath = directory / "material-template.txt";
+    {
+        std::ofstream materialTemplate(materialTemplatePath);
+        materialTemplate << "_T2m : AlbedoMap\n_T0m : NormalMap\n_V1 : VolumeMap\n";
+    }
+    auto materialProgram = program;
+    materialProgram.materialDescriptor = dayo::core::EffectMaterialDescriptor{
+        .name = "Surface", .templatePath = "material-template.txt", .defaultFile = {}};
+    const auto materialGenerated = dayo::fx::makeNativeFxShaderSource(materialProgram, dispatch, 7, sharedSource);
+    ok &= check(materialGenerated.find("uint tidx = imat * 3;") != std::string::npos &&
+                    materialGenerated.find("_tex[tidx + 2]") != std::string::npos &&
+                    materialGenerated.find("_tex[tidx + 0]") != std::string::npos &&
+                    materialGenerated.find("_tex3D[tidx + 1]") != std::string::npos,
+                "MatDesc HLSL uses declared texture slots rather than declaration traversal order");
+
     auto deformDispatch = dispatch;
     deformDispatch.category = dayo::core::fx::FxCategory::deform;
     deformDispatch.numThreads = {};

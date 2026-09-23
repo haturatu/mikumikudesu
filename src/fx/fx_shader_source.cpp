@@ -1,9 +1,10 @@
 #include "fx/fx_shader_source.hpp"
 
+#include "core/fx/fx_material.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
-#include <fstream>
 #include <limits>
 #include <optional>
 #include <ranges>
@@ -101,90 +102,14 @@ namespace {
     return identifier(name.substr(0, bracket));
 }
 
-struct MaterialValueField {
-    std::string type;
-    std::string name;
-};
-
-struct MaterialTextureField {
-    std::string name;
-    bool volume{};
-};
-
-struct MaterialTemplate {
-    std::vector<MaterialValueField> values;
-    std::vector<MaterialTextureField> textures;
-};
-
-[[nodiscard]] std::string trim(std::string_view value) {
-    std::size_t first = 0;
-    while (first < value.size() && std::isspace(static_cast<unsigned char>(value[first])))
-        ++first;
-    std::size_t last = value.size();
-    while (last > first && std::isspace(static_cast<unsigned char>(value[last - 1])))
-        --last;
-    return std::string(value.substr(first, last - first));
-}
-
-[[nodiscard]] std::optional<std::pair<std::string, std::size_t>> materialToken(std::string_view value, char prefix) {
-    if (value.size() < 3 || value[0] != prefix || value[1] != '.')
-        return std::nullopt;
-    std::size_t end = 2;
-    while (end < value.size() && std::isdigit(static_cast<unsigned char>(value[end])))
-        ++end;
-    if (end == 2)
-        return std::nullopt;
-    const auto components = static_cast<std::size_t>(std::stoul(std::string(value.substr(2, end - 2))));
-    if (components == 0 || components > 4)
-        throw std::runtime_error("upstream material field component count is out of range: " + std::string(value));
-    return std::pair<std::string, std::size_t>{prefix == 'f' ? "float" : "int", components};
-}
-
-[[nodiscard]] MaterialTemplate parseMaterialTemplate(const FxProgram& program) {
-    MaterialTemplate result;
+[[nodiscard]] core::fx::MaterialTemplateSchema parseMaterialTemplate(const FxProgram& program) {
     if (!program.materialDescriptor.has_value())
-        return result;
+        return {};
     const auto& descriptor = *program.materialDescriptor;
     const auto path = descriptor.templatePath.is_absolute()
                           ? descriptor.templatePath
                           : program.sourcePath.parent_path() / descriptor.templatePath;
-    std::ifstream input(path);
-    if (!input)
-        throw std::runtime_error("cannot open upstream material template: " + path.string());
-    for (std::string line; std::getline(input, line);) {
-        if (!line.empty() && line.front() == '\xEF')
-            line.erase(0, std::min<std::size_t>(3, line.size()));
-        if (const auto comment = line.find('#'); comment != std::string::npos)
-            line.resize(comment);
-        const auto separator = line.find(':');
-        if (separator == std::string::npos)
-            continue;
-        const auto left = trim(std::string_view(line).substr(0, separator));
-        const auto right = trim(std::string_view(line).substr(separator + 1));
-        if (right.empty())
-            continue;
-        if (const auto token = materialToken(left, 'f'); token.has_value()) {
-            result.values.push_back(
-                {token->first + (token->second == 1 ? "" : std::to_string(token->second)), identifier(right)});
-            continue;
-        }
-        if (const auto token = materialToken(left, 'i'); token.has_value()) {
-            result.values.push_back(
-                {token->first + (token->second == 1 ? "" : std::to_string(token->second)), identifier(right)});
-            continue;
-        }
-        if (left.starts_with("_T") || left.starts_with("_V")) {
-            const bool volume = left[1] == 'V';
-            std::size_t offset = 2;
-            const auto start = offset;
-            while (offset < left.size() && std::isdigit(static_cast<unsigned char>(left[offset])))
-                ++offset;
-            if (offset == start || (offset != left.size() && left.substr(offset) != "m"))
-                throw std::runtime_error("invalid upstream material texture declaration: " + left);
-            result.textures.push_back({identifier(right), volume});
-        }
-    }
-    return result;
+    return core::fx::loadMaterialTemplateSchema(path, descriptor.name);
 }
 
 [[nodiscard]] bool dispatchWrites(const FxDispatch& dispatch, std::string_view name) {
@@ -236,17 +161,22 @@ void appendMaterialDeclarations(std::ostringstream& output, const FxProgram& pro
     const auto material = parseMaterialTemplate(program);
     const auto& name = program.materialDescriptor->name;
     output << "struct " << identifier(name) << "Value {\n";
-    for (const auto& field : material.values)
-        output << "    " << field.type << ' ' << field.name << ";\n";
+    for (const auto& field : material.fields) {
+        const auto type = field.type == core::fx::MaterialFieldType::floatingPoint ? "float" : "int";
+        output << "    " << type;
+        if (field.components > 1)
+            output << field.components;
+        output << ' ' << field.name << ";\n";
+    }
     output << "};\n";
     output << "struct " << identifier(name) << "Texture {\n";
     for (const auto& field : material.textures)
-        if (!field.volume)
+        if (field.dimension == core::fx::MaterialTextureDimension::twoD)
             output << "    bool has" << field.name << "; Texture2D<float4> " << field.name << ";\n";
     output << "};\n";
     output << "struct " << identifier(name) << "Texture3D {\n";
     for (const auto& field : material.textures)
-        if (field.volume)
+        if (field.dimension == core::fx::MaterialTextureDimension::threeD)
             output << "    bool has" << field.name << "; Texture3D<float4> " << field.name << ";\n";
     output << "};\n";
 
@@ -255,6 +185,9 @@ void appendMaterialDeclarations(std::ostringstream& output, const FxProgram& pro
     const auto texture3dIndexBinding = sampledBinding++;
     const auto valueBinding = sampledBinding++;
     const auto textureBinding = sampledBinding++;
+    std::uint32_t textureSlotCount = 0;
+    for (const auto& field : material.textures)
+        textureSlotCount = std::max(textureSlotCount, field.index + 1U);
     output << "StructuredBuffer<uint> " << identifier(name) << "_idx : register(t" << indexBinding
            << resourceSetSuffix(resourceSet) << ");\n";
     output << "StructuredBuffer<uint> " << identifier(name) << "_tex : register(t" << textureIndexBinding
@@ -273,33 +206,27 @@ void appendMaterialDeclarations(std::ostringstream& output, const FxProgram& pro
     output << identifier(name) << "Texture Get" << identifier(name) << "Texture(uint ID, uint subID) {\n"
            << "    " << identifier(name) << "Texture result = (" << identifier(name) << "Texture)0;\n"
            << "    uint imat = " << identifier(name) << "_idx[ID] + subID;\n"
-           << "    uint tidx = imat * " << material.textures.size() << ";\n";
-    std::size_t textureIndex = 0;
+           << "    uint tidx = imat * " << textureSlotCount << ";\n";
     for (const auto& field : material.textures) {
-        if (field.volume)
+        if (field.dimension == core::fx::MaterialTextureDimension::threeD)
             continue;
-        output << "    result.has" << field.name << " = (" << identifier(name) << "_tex[tidx + " << textureIndex
+        output << "    result.has" << field.name << " = (" << identifier(name) << "_tex[tidx + " << field.index
                << "] != 0xffffffff);\n"
                << "    result." << field.name << " = " << identifier(name) << "_texture[NonUniformResourceIndex("
-               << identifier(name) << "_tex[tidx + " << textureIndex << "])];\n";
-        ++textureIndex;
+               << identifier(name) << "_tex[tidx + " << field.index << "])];\n";
     }
     output << "    return result;\n}\n";
     output << identifier(name) << "Texture3D Get" << identifier(name) << "Texture3D(uint ID, uint subID) {\n"
            << "    " << identifier(name) << "Texture3D result = (" << identifier(name) << "Texture3D)0;\n"
            << "    uint imat = " << identifier(name) << "_idx[ID] + subID;\n"
-           << "    uint tidx = imat * " << material.textures.size() << ";\n";
-    textureIndex = 0;
+           << "    uint tidx = imat * " << textureSlotCount << ";\n";
     for (const auto& field : material.textures) {
-        if (!field.volume) {
-            ++textureIndex;
+        if (field.dimension == core::fx::MaterialTextureDimension::twoD)
             continue;
-        }
-        output << "    result.has" << field.name << " = (" << identifier(name) << "_tex3D[tidx + " << textureIndex
+        output << "    result.has" << field.name << " = (" << identifier(name) << "_tex3D[tidx + " << field.index
                << "] != 0xffffffff);\n"
                << "    result." << field.name << " = " << identifier(name) << "_texture3D[NonUniformResourceIndex("
-               << identifier(name) << "_tex3D[tidx + " << textureIndex << "])];\n";
-        ++textureIndex;
+               << identifier(name) << "_tex3D[tidx + " << field.index << "])];\n";
     }
     output << "    return result;\n}\n";
     static_cast<void>(dispatch);

@@ -3,6 +3,8 @@
 #include "core/fx/fx_pass.hpp"
 
 #include <iostream>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 #include <variant>
 
@@ -34,6 +36,51 @@ int main() {
     using dayo::core::EffectPass;
     using dayo::core::EffectPassType;
     bool ok = true;
+
+    // Upstream MatDesc declarations are retained in source order so generated
+    // HLSL and subsequent GPU packing share one ABI schema.
+    {
+        const std::string source = "\xEF\xBB\xBF"
+                                   "i.1 : Category\n"
+                                   "f.3 : Emission\n"
+                                   "_T0m : NormalMap\n"
+                                   "_V1 : VolumeMap\n"
+                                   "Category : glass\n"
+                                   "_E Category : default=0, glass=1\n";
+        const auto schema = parseMaterialTemplateSchema(source, "Subayai");
+        ok &= check(schema.name == "Subayai" && schema.sourceText == source,
+                    "material schema preserves its name and complete source document");
+        ok &= check(schema.fields.size() == 2 && schema.fields[0].name == "Category" &&
+                        schema.fields[0].type == MaterialFieldType::signedInteger && schema.fields[0].components == 1 &&
+                        schema.fields[1].name == "Emission" &&
+                        schema.fields[1].type == MaterialFieldType::floatingPoint && schema.fields[1].components == 3,
+                    "material value fields preserve declaration order, scalar type, and vector width");
+        ok &= check(schema.textures.size() == 2 && schema.textures[0].name == "NormalMap" &&
+                        schema.textures[0].index == 0 && schema.textures[0].mipmapped &&
+                        schema.textures[0].dimension == MaterialTextureDimension::twoD &&
+                        schema.textures[1].name == "VolumeMap" && schema.textures[1].index == 1 &&
+                        schema.textures[1].dimension == MaterialTextureDimension::threeD,
+                    "material texture declarations retain source indices, mip policy, and dimension");
+        bool rejectedWidth = false;
+        try {
+            static_cast<void>(parseMaterialTemplateSchema("f.5 : Invalid\n"));
+        } catch (const std::invalid_argument&) {
+            rejectedWidth = true;
+        }
+        ok &= check(rejectedWidth, "material schema rejects unsupported field widths");
+        const auto rejects = [](std::string_view invalidSource) {
+            try {
+                static_cast<void>(parseMaterialTemplateSchema(invalidSource));
+            } catch (const std::invalid_argument&) {
+                return true;
+            }
+            return false;
+        };
+        ok &= check(rejects("f.1 : Shared\ni.1 : Shared\n"),
+                    "material schema rejects duplicate field names across scalar types");
+        ok &= check(rejects("_T0 : Surface\n_V1 : Surface\n"),
+                    "material schema rejects duplicate texture names across dimensions");
+    }
 
     // Alias folding: shared / ref / shareTags collapse to canonical ids.
     {
