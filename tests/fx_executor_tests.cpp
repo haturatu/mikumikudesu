@@ -1168,7 +1168,7 @@ bool testNativeSceneDerivedResources() {
                 "size-dependent GBuffer resources use the requested output extent and typed format");
     ok &= check(device.bufferClears_ == dayo::graphics::kNativeFramesInFlight,
                 "new OIDN buffers are initialized before the first effect invocation");
-    if (device.bufferUploads_.size() >= 1) {
+    if (!device.bufferUploads_.empty()) {
         std::array<std::uint32_t, 2> firstModelRange{};
         const auto& bytes = device.bufferUploads_.front().bytes;
         if (bytes.size() >= sizeof(firstModelRange))
