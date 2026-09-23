@@ -105,10 +105,7 @@ std::vector<std::string> splitMaterialList(std::string_view text) {
         if (quote != '\0') {
             if (!escaped && character == quote)
                 quote = '\0';
-            if (!escaped && character == '\\')
-                escaped = true;
-            else
-                escaped = false;
+            escaped = !escaped && character == '\\';
         } else if (character == '\'' || character == '"') {
             quote = character;
         } else if (character == '(') {
@@ -139,10 +136,7 @@ std::string_view stripMaterialComment(std::string_view line) noexcept {
         if (quote != '\0') {
             if (!escaped && character == quote)
                 quote = '\0';
-            if (!escaped && character == '\\')
-                escaped = true;
-            else
-                escaped = false;
+            escaped = !escaped && character == '\\';
         } else if (character == '\'' || character == '"') {
             quote = character;
         } else if (character == '#') {
