@@ -162,8 +162,7 @@ FxExtent FxSizeResolver::resolve(const FxSizeExpr& expr, const FxEvalContext& co
         y = resolveAxis(expr.yExpr, baseY, expr.heightRatio, expr.rounding, "y", context, table, profile,
                         allowPowQuirk);
     if (dimension >= 3)
-        z = resolveAxis(expr.zExpr, baseZ, expr.depthRatio, expr.rounding, "z", context, table, profile,
-                        allowPowQuirk);
+        z = resolveAxis(expr.zExpr, baseZ, expr.depthRatio, expr.rounding, "z", context, table, profile, allowPowQuirk);
 
     // 7. overflow validation
     if (dimension == 1) {

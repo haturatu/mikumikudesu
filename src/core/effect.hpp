@@ -33,8 +33,16 @@ enum class FxCompareOp : std::uint8_t {
     greaterEqual,
     always,
 };
-enum class FxStencilOp : std::uint8_t { keep, zero, replace, incrementClamp, decrementClamp, invert, incrementWrap,
-                                        decrementWrap };
+enum class FxStencilOp : std::uint8_t {
+    keep,
+    zero,
+    replace,
+    incrementClamp,
+    decrementClamp,
+    invert,
+    incrementWrap,
+    decrementWrap
+};
 enum class FxLogicOp : std::uint8_t {
     clear,
     andOp,
