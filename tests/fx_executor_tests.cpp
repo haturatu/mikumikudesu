@@ -979,12 +979,10 @@ bool testOidnHostExecution() {
 bool testOidnStructuredBufferInput() {
     MockDevice device;
     const std::array<dayo::graphics::NativeSceneOidnInput, 2> inputSamples = {
-        dayo::graphics::NativeSceneOidnInput{.color = {0.25F, 0.5F, 0.75F},
-                                             .albedo = {0.1F, 0.2F, 0.3F},
-                                             .normal = {0.4F, 0.5F, 0.6F}},
-        dayo::graphics::NativeSceneOidnInput{.color = {1.0F, 0.75F, 0.5F},
-                                             .albedo = {0.6F, 0.7F, 0.8F},
-                                             .normal = {0.9F, 1.0F, 0.1F}},
+        dayo::graphics::NativeSceneOidnInput{
+            .color = {0.25F, 0.5F, 0.75F}, .albedo = {0.1F, 0.2F, 0.3F}, .normal = {0.4F, 0.5F, 0.6F}},
+        dayo::graphics::NativeSceneOidnInput{
+            .color = {1.0F, 0.75F, 0.5F}, .albedo = {0.6F, 0.7F, 0.8F}, .normal = {0.9F, 1.0F, 0.1F}},
     };
     const auto inputBytes = std::as_bytes(std::span(inputSamples));
     device.bufferReadbackBytes_.assign(inputBytes.begin(), inputBytes.end());
@@ -993,8 +991,7 @@ bool testOidnStructuredBufferInput() {
     auto context = testContext();
     context.renderWidth = 2;
     context.renderHeight = 1;
-    const dayo::fx::FxOidnDispatch dispatch{
-        .input = "OIDNBuf", .albedo = "", .normal = "", .output = "Denoised"};
+    const dayo::fx::FxOidnDispatch dispatch{.input = "OIDNBuf", .albedo = "", .normal = "", .output = "Denoised"};
     const dayo::graphics::FxExecutionResources::TypedResourceResolver resolve =
         [](std::string_view name) -> std::optional<dayo::graphics::FxExecutionResources::TypedResource> {
         if (name == "OIDNBuf")
