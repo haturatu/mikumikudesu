@@ -52,7 +52,8 @@ class FxMaterialGpuRuntime {
     [[nodiscard]] bool ensureFallbackTextures(std::string* error);
     [[nodiscard]] bool ensureTextureCatalog(std::span<const core::fx::MaterialTextureDesc> textures,
                                             core::fx::MaterialTextureDimension dimension, std::string* error);
-    [[nodiscard]] bool ensureTableBuffers(const core::fx::MaterialGpuTableData& table, std::string* error);
+    [[nodiscard]] bool ensureTableBuffers(const core::fx::MaterialGpuTableData& table, bool& recreated,
+                                          std::string* error);
     [[nodiscard]] bool uploadFrame(const core::fx::MaterialGpuTableData& table, std::size_t frameSlot,
                                    std::string* error);
     void destroyBuffers(std::span<FrameBuffers> buffers) noexcept;

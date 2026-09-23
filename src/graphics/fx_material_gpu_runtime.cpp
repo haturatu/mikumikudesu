@@ -232,14 +232,22 @@ bool FxMaterialGpuRuntime::sync(Device& device, const core::fx::MaterialGpuTable
     }
     device_ = &device;
     try {
+        bool buffersRecreated = false;
         if (!ensureFallbackTextures(error) ||
             !ensureTextureCatalog(table.textures2D, core::fx::MaterialTextureDimension::twoD, error) ||
             !ensureTextureCatalog(table.textures3D, core::fx::MaterialTextureDimension::threeD, error) ||
-            !ensureTableBuffers(table, error))
+            !ensureTableBuffers(table, buffersRecreated, error))
             throw std::runtime_error(error != nullptr && !error->empty() ? *error : "MatDesc GPU sync failed");
-        const auto slot = device.currentFrameSlot() % kNativeFramesInFlight;
-        if (!uploadFrame(table, slot, error))
-            throw std::runtime_error(error != nullptr && !error->empty() ? *error : "MatDesc table upload failed");
+        if (buffersRecreated) {
+            for (std::size_t slot = 0; slot < kNativeFramesInFlight; ++slot)
+                if (!uploadFrame(table, slot, error))
+                    throw std::runtime_error(error != nullptr && !error->empty() ? *error
+                                                                                 : "MatDesc table upload failed");
+        } else {
+            const auto slot = device.currentFrameSlot() % kNativeFramesInFlight;
+            if (!uploadFrame(table, slot, error))
+                throw std::runtime_error(error != nullptr && !error->empty() ? *error : "MatDesc table upload failed");
+        }
     } catch (const std::exception& exception) {
         if (error != nullptr && error->empty())
             *error = exception.what();
@@ -314,7 +322,9 @@ bool FxMaterialGpuRuntime::ensureTextureCatalog(std::span<const core::fx::Materi
     return true;
 }
 
-bool FxMaterialGpuRuntime::ensureTableBuffers(const core::fx::MaterialGpuTableData& table, std::string* error) {
+bool FxMaterialGpuRuntime::ensureTableBuffers(const core::fx::MaterialGpuTableData& table, bool& recreated,
+                                              std::string* error) {
+    recreated = false;
     if (table.values.layout.stride == 0) {
         if (error != nullptr)
             *error = "MatDesc value layout has a zero stride";
@@ -363,6 +373,7 @@ bool FxMaterialGpuRuntime::ensureTableBuffers(const core::fx::MaterialGpuTableDa
     }
     destroyBuffers(frameBuffers_);
     frameBuffers_ = created;
+    recreated = true;
     return true;
 }
 
