@@ -109,7 +109,7 @@ namespace {
     const auto path = descriptor.templatePath.is_absolute()
                           ? descriptor.templatePath
                           : program.sourcePath.parent_path() / descriptor.templatePath;
-    auto schema = core::fx::loadMaterialTemplateSchema(path, descriptor.name);
+    auto schema = core::fx::loadMaterialTemplateSchema(path, descriptor.name, program.sourcePath.parent_path());
     if (!descriptor.defaultFile.empty()) {
         const auto defaults = descriptor.defaultFile.is_absolute()
                                   ? descriptor.defaultFile
