@@ -2,7 +2,9 @@
 #include "core/fx/fx_material.hpp"
 #include "core/fx/fx_pass.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -47,6 +49,7 @@ int main() {
                                    "i.1 : Mode\n"
                                    "_T0m : NormalMap\n"
                                    "_V1 : VolumeMap\n"
+                                   "_TNormalMap : \"template-normal.png\"\n"
                                    "Category : glass\n"
                                    "Mode : on\n"
                                    "_E Category : default=0, glass=1\n"
@@ -66,20 +69,60 @@ int main() {
                         schema.textures[1].name == "VolumeMap" && schema.textures[1].index == 1 &&
                         schema.textures[1].dimension == MaterialTextureDimension::threeD,
                     "material texture declarations retain source indices, mip policy, and dimension");
+        ok &= check(schema.templateTextureAssignments.size() == 1 &&
+                        schema.templateTextureAssignments[0].field == "NormalMap" &&
+                        schema.templateTextureAssignments[0].path == "template-normal.png" &&
+                        schema.templateTextureAssignments[0].index == 0,
+                    "template texture default resolves to its declared indexed texture");
         const auto* category = schema.defaults.find("Category");
         const auto* mode = schema.defaults.find("Mode");
         ok &= check(category != nullptr && std::get<std::int32_t>(*category) == 1 && mode != nullptr &&
                         std::get<std::int32_t>(*mode) == 1,
                     "template defaults resolve both explicit and implicit enum values");
         auto overlaid = schema;
-        const std::string defaults = "Category : default\nEmission : 1, 2, 3\n";
-        applyMaterialDefaultFile(overlaid, defaults);
-        const auto* overlaidCategory = overlaid.defaults.find("Category");
-        const auto* overlaidEmission = overlaid.defaults.find("Emission");
-        ok &= check(overlaid.defaultFileSourceText == defaults && overlaidCategory != nullptr &&
-                        std::get<std::int32_t>(*overlaidCategory) == 0 && overlaidEmission != nullptr &&
-                        std::get<std::array<float, 3>>(*overlaidEmission) == std::array<float, 3>{1, 2, 3},
-                    "default-file values overlay template defaults without losing their source text");
+        const std::string defaults = "Category : default\n"
+                                     "Emission : 1, 0.5*2, frac(Time/40)\n"
+                                     "_TNormalMap : \"normal.png\"\n"
+                                     "_VVolumeMap : smoke.dds\n";
+        applyMaterialDefaultFile(overlaid, defaults, "materials");
+        const auto& annotation = overlaid.defaultFileAnnotation;
+        const auto value = std::find_if(annotation.values.begin(), annotation.values.end(),
+                                        [](const auto& item) { return item.field == "Emission"; });
+        const auto categoryExpression = std::find_if(annotation.values.begin(), annotation.values.end(),
+                                                     [](const auto& item) { return item.field == "Category"; });
+        const auto normal = std::find_if(annotation.textures.begin(), annotation.textures.end(),
+                                         [](const auto& item) { return item.field == "NormalMap"; });
+        const auto volume = std::find_if(annotation.textures.begin(), annotation.textures.end(),
+                                         [](const auto& item) { return item.field == "VolumeMap"; });
+        const auto* templateCategory = overlaid.defaults.find("Category");
+        FxEvalContext expressionContext;
+        expressionContext.time = 10.0;
+        ok &= check(overlaid.defaultFileSourceText == defaults && value != annotation.values.end() &&
+                        value->source == "1, 0.5*2, frac(Time/40)" && value->components.size() == 3 &&
+                        std::abs(fxToDouble(evaluateFxExpr(value->components[1], expressionContext)) - 1.0) < 1.0e-6 &&
+                        std::abs(fxToDouble(evaluateFxExpr(value->components[2], expressionContext)) - 0.25) < 1.0e-6 &&
+                        categoryExpression != annotation.values.end() && categoryExpression->components.size() == 1 &&
+                        fxToInt(evaluateFxExpr(categoryExpression->components[0], expressionContext)) == 0 &&
+                        templateCategory != nullptr && std::get<std::int32_t>(*templateCategory) == 1 &&
+                        normal != annotation.textures.end() && normal->path == "normal.png" && normal->index == 0 &&
+                        normal->mipmapped && normal->baseDirectory == "materials" &&
+                        volume != annotation.textures.end() && volume->dimension == MaterialTextureDimension::threeD &&
+                        volume->path == "smoke.dds" && volume->index == 1 && volume->baseDirectory == "materials",
+                    "default-file annotations retain expressions and indexed 2D/3D texture assignments");
+        bool rejectedTemplateExpression = false;
+        try {
+            static_cast<void>(parseMaterialTemplateSchema("f.1 : Roughness\nRoughness : 0.5*2\n"));
+        } catch (const std::invalid_argument&) {
+            rejectedTemplateExpression = true;
+        }
+        ok &= check(rejectedTemplateExpression, "template defaults reject expressions per upstream MatDesc rules");
+        bool rejectedUnknownTexture = false;
+        try {
+            applyMaterialDefaultFile(overlaid, "_TUnknown : unknown.png\n");
+        } catch (const std::invalid_argument&) {
+            rejectedUnknownTexture = true;
+        }
+        ok &= check(rejectedUnknownTexture, "default-file rejects undeclared texture assignments");
         bool rejectedWidth = false;
         try {
             static_cast<void>(parseMaterialTemplateSchema("f.5 : Invalid\n"));

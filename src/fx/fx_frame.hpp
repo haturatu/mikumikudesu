@@ -1,9 +1,12 @@
 #pragma once
 
+#include "core/fx/fx_expr.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 
 namespace dayo::fx {
 
@@ -51,6 +54,7 @@ struct FxHostFrameState {
 // never reaches back into Scene mid-frame.
 struct FxFrameContext {
     float frame{};
+    double time{};
     std::uint64_t sample{};
     std::uint32_t renderWidth{};
     std::uint32_t renderHeight{};
@@ -61,6 +65,8 @@ struct FxFrameContext {
     std::size_t totalMaterial{};
     std::uint32_t cloneCount{1};
     std::size_t clonedVertexCount{};
+    // Scalar host/controller values exposed to upstream FX expressions by name.
+    std::unordered_map<std::string, core::fx::FxScalar> expressionSymbols;
     FxCameraState camera;
     FxLightingState lighting;
     FxHostFrameState host;
@@ -91,6 +97,7 @@ struct FxFrameContext {
                                                        FxLightingState lighting = {}) {
     FxFrameContext context;
     context.frame = frame;
+    context.time = static_cast<double>(frame) / 30.0;
     context.sample = sample;
     context.renderWidth = renderWidth;
     context.renderHeight = renderHeight;

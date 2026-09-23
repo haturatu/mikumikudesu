@@ -47,6 +47,8 @@ class FrameExtentTable final : public core::fx::FxResourceTable {
     result.clonedVertexCount = fxSizeContextValue(context.clonedVertexCount);
     result.frameIndex = static_cast<std::int64_t>(context.frame);
     result.sampleIndex = fxSizeContextValue(static_cast<std::size_t>(context.sample));
+    result.time = context.time;
+    result.namedSymbols = context.expressionSymbols;
     return result;
 }
 
