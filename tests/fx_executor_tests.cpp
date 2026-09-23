@@ -635,6 +635,18 @@ bool testResolvedPassPlanning() {
                                         "SurfaceTextureIndex_Volume : 0)];") != std::string::npos,
                 "MatDesc accessors select descriptor zero when a logical texture slot is unbound");
 
+    fx::FxProgram textureOnlyMaterialProgram;
+    textureOnlyMaterialProgram.materialDescriptor =
+        core::EffectMaterialDescriptor{.name = "TextureOnly", .templatePath = {}, .defaultFile = {}};
+    textureOnlyMaterialProgram.materialSchema = core::fx::parseMaterialTemplateSchema("_T0 : Albedo\n", "TextureOnly");
+    fx::FxDispatch textureOnlyMaterialPass;
+    textureOnlyMaterialPass.name = "texture-only-material";
+    const auto textureOnlyMaterialShader =
+        fx::makeNativeFxShaderSource(textureOnlyMaterialProgram, textureOnlyMaterialPass, 0);
+    ok &= check(textureOnlyMaterialShader.find("struct TextureOnlyValue {\n    uint _DayoEmpty;\n};") !=
+                    std::string::npos,
+                "texture-only MatDesc emits a private value record compatible with its GPU table stride");
+
     fx::FxProgram bindingProgram;
     core::EffectTexture textureSrv;
     textureSrv.name = "TexSRV";
