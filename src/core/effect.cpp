@@ -537,8 +537,9 @@ EffectSlider slider(const nlohmann::json& value) {
     result.minimum = value.value("min", value.value("minimum", 0.0F));
     result.maximum = value.value("max", value.value("maximum", 1.0F));
     result.step = value.value("step", 0.0F);
-    result.defaultValue = value.value("default", value.value("defaultValue", result.minimum));
+    result.defaultValue = value.value("default", value.value("defaultValue", 0.0F));
     result.logarithmic = value.value("log", value.value("logarithmic", false));
+    result.integer = value.value("int", false);
     return result;
 }
 
@@ -711,6 +712,9 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
                 controller.item = value.value("item", "");
                 controller.type = value.value("type", "");
                 controller.description = value.value("description", "");
+                controller.descriptions = strings(value, "desc");
+                if (controller.description.empty() && !controller.descriptions.empty())
+                    controller.description = controller.descriptions.front();
                 if (const auto metadata = value.find("slider"); metadata != value.end())
                     controller.slider = slider(*metadata);
                 else if (value.contains("min") || value.contains("max"))

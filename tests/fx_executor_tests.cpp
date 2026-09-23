@@ -1293,16 +1293,45 @@ bool testFxControllerResolver() {
     model.bones.push_back({.rotation = {0.0F, 0.0F, 0.0F, 1.0F}, .translation = {1.0F, 2.0F, 3.0F}});
     snapshot.models.push_back(model);
     dayo::core::fx::FxControllerResolver resolver;
-    const auto morph =
-        resolver.resolve({.name = "Gain", .controllerName = "(self)", .item = "Smile", .type = "float"}, snapshot, 11);
+    const auto morph = resolver.resolve(
+        {.name = "Gain", .controllerName = "(self)", .item = "Smile", .type = "float", .descriptions = {}}, snapshot,
+        11);
     const auto bone = resolver.resolve(
-        {.name = "Position", .controllerName = "ToonAnime.pmx", .item = "arm", .type = "float3"}, snapshot, 11);
+        {.name = "Position", .controllerName = "ToonAnime.pmx", .item = "arm", .type = "float3", .descriptions = {}},
+        snapshot, 11);
     bool ok = check(std::get<float>(morph) == 0.75F, "controller resolver reads evaluated morph weight");
     ok &= check(std::get<std::array<float, 3>>(bone) == std::array<float, 3>{1.0F, 2.0F, 3.0F},
                 "controller resolver reads evaluated bone translation");
+
+    dayo::core::SceneEffectStack effectStack;
+    dayo::core::SceneEffectInstance effect;
+    effect.controllerModel = 11;
+    effect.graph.controllers.push_back({.name = "SmileWeight",
+                                        .controllerName = "(self)",
+                                        .item = "Smile",
+                                        .type = "float",
+                                        .slider = dayo::core::EffectSlider{.minimum = -2.0F,
+                                                                           .maximum = 3.0F,
+                                                                           .step = 0.25F,
+                                                                           .defaultValue = 1.0F,
+                                                                           .logarithmic = true,
+                                                                           .integer = false},
+                                        .description = "Smile amount",
+                                        .descriptions = {"Smile amount", "笑顔の強さ"}});
+    effectStack.deform.push_back(std::move(effect));
+    dayo::core::ModelInstance uiModel;
+    uiModel.id = 11;
+    const auto uiMetadata = dayo::core::fx::resolveFxMorphControllerUi(effectStack, uiModel, "Smile");
+    ok &= check(uiMetadata.has_value() && uiMetadata->slider.has_value() && uiMetadata->slider->minimum == -2.0F &&
+                    uiMetadata->slider->maximum == 3.0F && uiMetadata->slider->step == 0.25F &&
+                    uiMetadata->slider->defaultValue == 1.0F && uiMetadata->slider->logarithmic &&
+                    uiMetadata->descriptions == std::vector<std::string>{"Smile amount", "笑顔の強さ"},
+                "morph controller UI resolver preserves slider and localized descriptions");
+
     snapshot.models.front().bones.front().rotation = {0.0F, 0.0F, 0.70710677F, 0.70710677F};
     const auto boneMatrix = resolver.resolve(
-        {.name = "Transform", .controllerName = "(self)", .item = "arm", .type = "float4x4"}, snapshot, 11);
+        {.name = "Transform", .controllerName = "(self)", .item = "arm", .type = "float4x4", .descriptions = {}},
+        snapshot, 11);
     const auto& matrix = std::get<std::array<float, 16>>(boneMatrix);
     ok &= check(std::abs(matrix[1] - 1.0F) < 0.0001F && std::abs(matrix[4] + 1.0F) < 0.0001F && matrix[12] == 1.0F &&
                     matrix[13] == 2.0F && matrix[14] == 3.0F,
@@ -1312,8 +1341,11 @@ bool testFxControllerResolver() {
     duplicate.morphWeights = {0.25F};
     snapshot.models.push_back(duplicate);
     std::string controllerError;
-    const std::array arrayController{dayo::core::EffectController{
-        .name = "Exposure[2]", .controllerName = "ToonAnime.pmx", .item = "Smile", .type = "float"}};
+    const std::array arrayController{dayo::core::EffectController{.name = "Exposure[2]",
+                                                                  .controllerName = "ToonAnime.pmx",
+                                                                  .item = "Smile",
+                                                                  .type = "float",
+                                                                  .descriptions = {}}};
     dayo::graphics::NativeControllerBlock arrayBlock(dayo::graphics::makeNativeControllerLayout(arrayController));
     const bool arrayResolved =
         dayo::graphics::resolveNativeControllerBlock(arrayBlock, arrayController, snapshot, 11, &controllerError);
@@ -1326,8 +1358,8 @@ bool testFxControllerResolver() {
     }
     ok &= check(arrayResolved && exposureValues == std::array<float, 2>{0.75F, 0.25F},
                 "controller arrays resolve same-name PMX models in scene order");
-    const std::array effectControllers{
-        dayo::core::EffectController{.name = "Exposure", .controllerName = "(self)", .item = "Smile", .type = "float"}};
+    const std::array effectControllers{dayo::core::EffectController{
+        .name = "Exposure", .controllerName = "(self)", .item = "Smile", .type = "float", .descriptions = {}}};
     dayo::graphics::NativeControllerBlock first(dayo::graphics::makeNativeControllerLayout(effectControllers));
     dayo::graphics::NativeControllerBlock second(dayo::graphics::makeNativeControllerLayout(effectControllers));
     ok &= check(
@@ -1353,9 +1385,12 @@ bool testFxControllerResolver() {
     ok &= check(
         [&] {
             try {
-                static_cast<void>(resolver.resolve(
-                    {.name = "Ambiguous", .controllerName = "ToonAnime.pmx", .item = "Smile", .type = "float"},
-                    snapshot, 11));
+                static_cast<void>(resolver.resolve({.name = "Ambiguous",
+                                                    .controllerName = "ToonAnime.pmx",
+                                                    .item = "Smile",
+                                                    .type = "float",
+                                                    .descriptions = {}},
+                                                   snapshot, 11));
             } catch (const std::runtime_error&) {
                 return true;
             }
@@ -2266,7 +2301,7 @@ bool testFxPipelineRuntime() {
     }
     MockDevice device;
     dayo::fx::FxProgram program;
-    program.controllers = {{"Gain", "controller.pmx", "Gain", "float"}};
+    program.controllers = {{"Gain", "controller.pmx", "Gain", "float", {}, {}, {}}};
     dayo::core::EffectTexture outputTexture;
     outputTexture.name = "NativeOutput";
     outputTexture.format = "R8G8B8A8_UNORM";

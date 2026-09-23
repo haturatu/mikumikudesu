@@ -975,7 +975,7 @@ float4 PS() : SV_TARGET { return 1; }
     memos: ["SkyboxSampler", "unknown-capability"],
     globalVarSize: 16,
     meshCloning: {count: 4},
-    controllers: [{name:"gain", controllerName:"(self)", item:"gain", type:"float", description:"gain control", slider:{min:0.1, max:4, step:0.1, default:1, log:true}}],
+    controllers: [{name:"gain", controllerName:"(self)", item:"gain", type:"float", description:"gain control", desc:["English desc", "日本語説明"], slider:{min:0.1, max:4, step:0.1, default:1, log:true, int:true}}],
     samplers: [{name:"Linear", filter:"ANISOTROPIC", addressU:"CLAMP", addressV:"MIRROR", addressW:"BORDER", mipLodBias:1, maxAnisotropy:8, comparisonFunc:"LESS", borderColor:"OPAQUE_WHITE", minLod:2, maxLod:10}],
     buffers: [
       {name:"Vertices", type:"Vertex", elemSize:16, view:"SRV", size:{absolute:true, width:4, dimension:1}},
@@ -996,14 +996,16 @@ void CS() {}
                         runtimeGraph.memos.size() == 2 && runtimeGraph.globalVarSize == 16 &&
                         runtimeGraph.meshCloneCount == 4,
                     "effect graph preserves memos, global variable size, clone count, and raw source");
-        ok &= check(runtimeGraph.controllers.size() == 1 && runtimeGraph.controllers[0].slider.has_value() &&
-                        runtimeGraph.controllers[0].slider->logarithmic &&
-                        runtimeGraph.controllers[0].description == "gain control" &&
-                        runtimeGraph.samplers.size() == 1 && runtimeGraph.samplers[0].maxAnisotropy == 8 &&
-                        runtimeGraph.samplers[0].addressModeW == dayo::core::FxAddressMode::border &&
-                        runtimeGraph.samplers[0].comparisonFunc == dayo::core::FxCompareOp::less &&
-                        runtimeGraph.samplers[0].borderColor == dayo::core::FxBorderColor::opaqueWhite,
-                    "controller slider and complete sampler metadata survive parsing");
+        ok &= check(
+            runtimeGraph.controllers.size() == 1 && runtimeGraph.controllers[0].slider.has_value() &&
+                runtimeGraph.controllers[0].slider->logarithmic && runtimeGraph.controllers[0].slider->integer &&
+                runtimeGraph.controllers[0].description == "gain control" &&
+                runtimeGraph.controllers[0].descriptions == std::vector<std::string>{"English desc", "日本語説明"} &&
+                runtimeGraph.samplers.size() == 1 && runtimeGraph.samplers[0].maxAnisotropy == 8 &&
+                runtimeGraph.samplers[0].addressModeW == dayo::core::FxAddressMode::border &&
+                runtimeGraph.samplers[0].comparisonFunc == dayo::core::FxCompareOp::less &&
+                runtimeGraph.samplers[0].borderColor == dayo::core::FxBorderColor::opaqueWhite,
+            "controller slider and complete sampler metadata survive parsing");
         ok &= check(runtimeGraph.passes.size() == 3 &&
                         runtimeGraph.passes[0].numThreads == std::array<std::uint32_t, 3>{4, 0, 0} &&
                         runtimeGraph.buffers.size() == 2 && runtimeGraph.buffers[1].elementSize == 4 &&

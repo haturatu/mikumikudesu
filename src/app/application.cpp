@@ -6,6 +6,7 @@
 #include "core/animation.hpp"
 #include "core/asset.hpp"
 #include "core/denoiser.hpp"
+#include "core/fx/fx_controller_resolver.hpp"
 #include "core/image.hpp"
 #include "core/log.hpp"
 #include "core/model_execution.hpp"
@@ -39,6 +40,61 @@
 
 namespace dayo::app {
 namespace {
+
+#if DAYO_HAS_IMGUI
+void drawMorphWeightControl(float& value, const std::optional<core::fx::FxMorphControllerUi>& metadata) {
+    const core::EffectSlider* slider =
+        metadata.has_value() && metadata->slider.has_value() ? &*metadata->slider : nullptr;
+    float minimum = slider != nullptr ? slider->minimum : 0.0F;
+    float maximum = slider != nullptr ? slider->maximum : 1.0F;
+    if (!std::isfinite(minimum) || !std::isfinite(maximum) || maximum <= minimum) {
+        minimum = 0.0F;
+        maximum = 1.0F;
+    }
+    ImGuiSliderFlags flags = 0;
+    if (slider != nullptr && slider->logarithmic)
+        flags |= ImGuiSliderFlags_Logarithmic;
+
+    bool changed = false;
+    if (slider != nullptr && slider->integer) {
+        const auto intMin = static_cast<int>(std::clamp(std::ceil(static_cast<double>(minimum)),
+                                                        static_cast<double>(std::numeric_limits<int>::min()),
+                                                        static_cast<double>(std::numeric_limits<int>::max())));
+        const auto intMax = static_cast<int>(std::clamp(std::floor(static_cast<double>(maximum)),
+                                                        static_cast<double>(std::numeric_limits<int>::min()),
+                                                        static_cast<double>(std::numeric_limits<int>::max())));
+        if (intMin <= intMax) {
+            int integerValue = static_cast<int>(std::clamp(std::round(static_cast<double>(value)),
+                                                           static_cast<double>(intMin), static_cast<double>(intMax)));
+            changed = ImGui::SliderInt("Weight", &integerValue, intMin, intMax, "%d", flags);
+            value = static_cast<float>(integerValue);
+        } else {
+            changed = ImGui::SliderFloat("Weight", &value, minimum, maximum, "%.3f", flags);
+        }
+    } else {
+        changed = ImGui::SliderFloat("Weight", &value, minimum, maximum, "%.3f", flags);
+    }
+
+    if (changed && slider != nullptr && slider->step > 0.0F && std::isfinite(slider->step)) {
+        value = minimum + std::round((value - minimum) / slider->step) * slider->step;
+        value = std::clamp(value, minimum, maximum);
+        if (slider->integer)
+            value = std::round(value);
+    }
+
+    if (metadata.has_value() && !metadata->descriptions.empty() && ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        for (const auto& description : metadata->descriptions)
+            ImGui::TextWrapped("%s", description.c_str());
+        ImGui::EndTooltip();
+    }
+    if (slider != nullptr && ImGui::BeginPopupContextItem("morph-weight-options")) {
+        if (ImGui::MenuItem("Reset to controller default"))
+            value = std::clamp(slider->defaultValue, minimum, maximum);
+        ImGui::EndPopup();
+    }
+}
+#endif
 
 double sceneTimelineFps(const core::Scene& scene) noexcept {
     const auto value = static_cast<double>(scene.timeline().fps);
@@ -2874,7 +2930,9 @@ void Application::buildInspectorPanel() {
                 }
                 ImGui::EndCombo();
             }
-            ImGui::SliderFloat("Weight", &editedMorphWeight_, 0.0F, 1.0F);
+            const auto morphUi = core::fx::resolveFxMorphControllerUi(
+                scene_.effects(), *model, morphs[static_cast<std::size_t>(selectedMorph_)].name);
+            drawMorphWeightControl(editedMorphWeight_, morphUi);
             if (ImGui::Button("Register Morph Key")) {
                 const auto before = model->motion ? *model->motion : core::VmdMotion{};
                 const auto outputModelName = before.modelName.empty() ? model->displayName : before.modelName;
@@ -3760,7 +3818,9 @@ void Application::buildEditorUi() {
                     }
                     ImGui::EndCombo();
                 }
-                ImGui::SliderFloat("Weight", &editedMorphWeight_, 0.0F, 1.0F);
+                const auto morphUi = core::fx::resolveFxMorphControllerUi(
+                    scene_.effects(), *model, morphs[static_cast<std::size_t>(selectedMorph_)].name);
+                drawMorphWeightControl(editedMorphWeight_, morphUi);
                 if (ImGui::Button("Register morph")) {
                     const core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
                     auto document = core::toMotionDocument(before);

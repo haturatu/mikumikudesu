@@ -114,6 +114,7 @@ struct EffectSlider {
     float step{};
     float defaultValue{};
     bool logarithmic{};
+    bool integer{};
 };
 
 struct EffectSampler {
@@ -296,6 +297,7 @@ struct EffectController {
     std::string type;
     std::optional<EffectSlider> slider{};
     std::string description{};
+    std::vector<std::string> descriptions;
 };
 
 struct EffectMaterialDescriptor {
