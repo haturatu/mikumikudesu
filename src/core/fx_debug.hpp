@@ -16,7 +16,9 @@ struct FxDebugResourceSnapshot {
     std::string view;
     std::string shared;
     std::string filename;
+    std::string type;
     std::string sizeBase;
+    std::vector<std::string> conditions;
     std::uint32_t width{};
     std::uint32_t height{1};
     std::uint32_t depth{1};
