@@ -2,6 +2,7 @@
 #include "core/fx/fx_material.hpp"
 #include "core/fx/fx_pass.hpp"
 
+#include <array>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -43,17 +44,21 @@ int main() {
         const std::string source = "\xEF\xBB\xBF"
                                    "i.1 : Category\n"
                                    "f.3 : Emission\n"
+                                   "i.1 : Mode\n"
                                    "_T0m : NormalMap\n"
                                    "_V1 : VolumeMap\n"
                                    "Category : glass\n"
-                                   "_E Category : default=0, glass=1\n";
+                                   "Mode : on\n"
+                                   "_E Category : default=0, glass=1\n"
+                                   "_E : Mode : off, on\n";
         const auto schema = parseMaterialTemplateSchema(source, "Subayai");
         ok &= check(schema.name == "Subayai" && schema.sourceText == source,
                     "material schema preserves its name and complete source document");
-        ok &= check(schema.fields.size() == 2 && schema.fields[0].name == "Category" &&
+        ok &= check(schema.fields.size() == 3 && schema.fields[0].name == "Category" &&
                         schema.fields[0].type == MaterialFieldType::signedInteger && schema.fields[0].components == 1 &&
                         schema.fields[1].name == "Emission" &&
-                        schema.fields[1].type == MaterialFieldType::floatingPoint && schema.fields[1].components == 3,
+                        schema.fields[1].type == MaterialFieldType::floatingPoint && schema.fields[1].components == 3 &&
+                        schema.fields[2].name == "Mode",
                     "material value fields preserve declaration order, scalar type, and vector width");
         ok &= check(schema.textures.size() == 2 && schema.textures[0].name == "NormalMap" &&
                         schema.textures[0].index == 0 && schema.textures[0].mipmapped &&
@@ -61,6 +66,20 @@ int main() {
                         schema.textures[1].name == "VolumeMap" && schema.textures[1].index == 1 &&
                         schema.textures[1].dimension == MaterialTextureDimension::threeD,
                     "material texture declarations retain source indices, mip policy, and dimension");
+        const auto* category = schema.defaults.find("Category");
+        const auto* mode = schema.defaults.find("Mode");
+        ok &= check(category != nullptr && std::get<std::int32_t>(*category) == 1 && mode != nullptr &&
+                        std::get<std::int32_t>(*mode) == 1,
+                    "template defaults resolve both explicit and implicit enum values");
+        auto overlaid = schema;
+        const std::string defaults = "Category : default\nEmission : 1, 2, 3\n";
+        applyMaterialDefaultFile(overlaid, defaults);
+        const auto* overlaidCategory = overlaid.defaults.find("Category");
+        const auto* overlaidEmission = overlaid.defaults.find("Emission");
+        ok &= check(overlaid.defaultFileSourceText == defaults && overlaidCategory != nullptr &&
+                        std::get<std::int32_t>(*overlaidCategory) == 0 && overlaidEmission != nullptr &&
+                        std::get<std::array<float, 3>>(*overlaidEmission) == std::array<float, 3>{1, 2, 3},
+                    "default-file values overlay template defaults without losing their source text");
         bool rejectedWidth = false;
         try {
             static_cast<void>(parseMaterialTemplateSchema("f.5 : Invalid\n"));

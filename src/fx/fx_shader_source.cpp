@@ -108,7 +108,14 @@ namespace {
     const auto path = descriptor.templatePath.is_absolute()
                           ? descriptor.templatePath
                           : program.sourcePath.parent_path() / descriptor.templatePath;
-    return core::fx::loadMaterialTemplateSchema(path, descriptor.name);
+    auto schema = core::fx::loadMaterialTemplateSchema(path, descriptor.name);
+    if (!descriptor.defaultFile.empty()) {
+        const auto defaults = descriptor.defaultFile.is_absolute()
+                                  ? descriptor.defaultFile
+                                  : program.sourcePath.parent_path() / descriptor.defaultFile;
+        core::fx::loadMaterialDefaultFile(schema, defaults);
+    }
+    return schema;
 }
 
 [[nodiscard]] bool dispatchWrites(const FxDispatch& dispatch, std::string_view name) {

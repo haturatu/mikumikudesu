@@ -27,6 +27,16 @@ struct MaterialTextureSchema {
     bool mipmapped{};
 };
 
+struct MaterialEnumValue {
+    std::string name;
+    std::int32_t value{};
+};
+
+struct MaterialEnumSchema {
+    std::string field;
+    std::vector<MaterialEnumValue> values;
+};
+
 // Ordered schema for an upstream MatDesc template. sourceText retains
 // directives, defaults, enum declarations, comments, and unknown extensions
 // until their runtime semantics are implemented.
@@ -34,12 +44,17 @@ struct MaterialTemplateSchema {
     std::string name;
     std::vector<MaterialFieldSchema> fields;
     std::vector<MaterialTextureSchema> textures;
+    std::vector<MaterialEnumSchema> enums;
+    MaterialParameterBlock defaults;
     std::string sourceText;
+    std::string defaultFileSourceText;
 };
 
 [[nodiscard]] MaterialTemplateSchema parseMaterialTemplateSchema(std::string_view source, std::string name = {});
 [[nodiscard]] MaterialTemplateSchema loadMaterialTemplateSchema(const std::filesystem::path& path,
                                                                 std::string name = {});
+void applyMaterialDefaultFile(MaterialTemplateSchema& schema, std::string_view source);
+void loadMaterialDefaultFile(MaterialTemplateSchema& schema, const std::filesystem::path& path);
 
 // Linker-only material layer built on top of MaterialParameterBlock.
 // No GPU work happens here: this layer folds resource aliases into
