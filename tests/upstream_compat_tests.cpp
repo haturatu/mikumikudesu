@@ -578,10 +578,40 @@ bool checkUpstreamAbi(const std::filesystem::path& sourceDirectory) {
         ok &= check(expectedBinding == dayo::graphics::nativeSceneBinding(item.nativeClass, actual.registerIndex),
                     std::string("native binding map covers ") + std::string(item.name));
     }
-    for (const auto field : {"ViewMatrix", "ProjectionMatrix", "ModelCount", "TotalMaterialCount", "Resolution",
-                             "SelfShadowMode", "ScreenBMPMode", "BackgroundMode", "BackgroundTransparent",
-                             "DenoiserEnabled", "OnStart", "OnLoadSkybox", "OnResize", "OnLoad"})
-        ok &= check(cbText.find(field) != std::string::npos, std::string("ViewCB field exists: ") + field);
+    for (const auto field : {"ViewMatrix",
+                             "ProjectionMatrix",
+                             "ModelCount",
+                             "TotalMaterialCount",
+                             "Time",
+                             "DTime",
+                             "FrameTime",
+                             "DFrameTime",
+                             "RealTime",
+                             "DRealTime",
+                             "MouseDown",
+                             "MouseClicked",
+                             "MousePos",
+                             "Playing",
+                             "Resolution",
+                             "iSample",
+                             "SamplesPerFrame",
+                             "LightColor",
+                             "SelfShadowMode",
+                             "LightDirection",
+                             "SelfShadowDistance",
+                             "SceneRadius",
+                             "ScreenBMPMode",
+                             "BackgroundMode",
+                             "BackgroundTransparent",
+                             "MaterialHighLight",
+                             "DenoiserEnabled",
+                             "OnStart",
+                             "OnLoadSkybox",
+                             "OnResize",
+                             "OnLoad"}) {
+        const std::regex declaration("\\b(?:int|uint|float)(?:[234])?(?:x[234])?\\s+" + std::string(field) + "\\s*;");
+        ok &= check(std::regex_search(cbText, declaration), std::string("ViewCB declaration exists: ") + field);
+    }
     for (const auto field : {"struct OIDNInput", "float3 color", "float3 albedo", "float3 normal"})
         ok &=
             check(dayotypesText.find(field) != std::string::npos, std::string("dayotypes OIDN field exists: ") + field);

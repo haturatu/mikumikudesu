@@ -61,6 +61,11 @@ static_assert(alignof(NativeScenePassConstants) == 16);
 [[nodiscard]] NativeViewConstants makeNativeViewConstants(const fx::FxFrameContext& context,
                                                           std::uint32_t totalMaterialCount) noexcept;
 
+// Mirrors scalar and scalar-component identifiers declared by the pinned
+// hlsl/cb.hlsli into the expression context. Values are read from the same
+// ViewCB payload that is uploaded to the GPU.
+void populateNativeViewExpressionSymbols(fx::FxFrameContext& context, const NativeViewConstants& view);
+
 // Owns the persistent uniform buffers for ViewCB and CBuff1. Controller
 // constants are deliberately separate: their generated layout is effect
 // specific and will be bound by the FX controller runtime.
