@@ -57,7 +57,9 @@ MatDescのordered value payloadは、生成HLSLのfield宣言順とDXCのDirectX
 CPU側ではモデル→material base index、明示logical slotから2D/3D別physical texture indexへの変換、texture dedup tableまで構築します。
 生成HLSLは未割当slotでdescriptor index 0へfallbackし、`hasTexture`をfalseにします。generic `_idx`/`_tex`/`_tex3D`/`_value`
 registerはpass binding planから生成し、Texture3D descriptorは独立したsecondary setの`t0`へ置きます。
-これらのdescriptorとbindless textureを実GPU resourceへ結ぶruntime、`screen.bmp`およびdeformer resourceのMatDesc参照はまだend-to-end未完了です。
+`FxMaterialGpuRuntime`はfallbackをdescriptor index 0へ予約し、dedup済み2D/3D textureとframe-slot別の4つのstructured bufferを生成・更新します。
+画像は現在RGBA8へdecodeし、DDS 2D/3Dと通常画像のmipmapを扱います。pass descriptor setへの割当、renderer/material instanceからの呼び出し、
+`screen.bmp`およびdeformer resourceのMatDesc参照はまだend-to-end未完了です。
 
 ## Windows fixtureの受け入れ条件
 
