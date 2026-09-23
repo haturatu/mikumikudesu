@@ -460,6 +460,7 @@ handles::ShaderHandle FxPipelineRuntime::compileShader(Device& device, const fx:
 
     fx::FxShaderKey key;
     fx::FxShaderCompileRequest request;
+    request.requireDxcForNativeFxAbi = true;
     request.macros = dispatch.macros;
     request.macros.push_back(passMacro(dispatch.name));
     const auto generatedSource = fx::makeNativeFxShaderSource(program, dispatch, resourceSet, sourceOptions, &resolved);

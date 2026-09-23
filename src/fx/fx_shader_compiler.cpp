@@ -149,7 +149,11 @@ class TemporaryDirectory {
             << " -fvk-use-dx-layout"
             // Keep DXC's register classes in the same disjoint Vulkan
             // binding ranges used by glslc and native_scene_bindings.hpp.
-            << " -fvk-u-shift 0 all -fvk-t-shift 16 all -fvk-s-shift 32 all -fvk-b-shift 48 all -E "
+            // HLSL standalone globals form an implicit $Globals cbuffer. Pin
+            // it to the native YRZFX b2 slot instead of letting declaration
+            // order move it around as resources are added to a shader.
+            << " -fvk-u-shift 0 all -fvk-t-shift 16 all -fvk-s-shift 32 all -fvk-b-shift 48 all"
+               " -fvk-bind-globals 50 0 -E "
             << quoteShellArgument(request.entryPoint) << " -T " << FxShaderCompiler::profile(request.stage) << " -Fo "
             << quoteShellArgument(output.string());
     for (const auto& macro : request.macros)
@@ -276,6 +280,10 @@ FxShaderArtifact FxShaderCompiler::compile(const FxShaderCompileRequest& request
         throw std::invalid_argument("shader entry point must be non-empty");
     if (!available())
         throw std::runtime_error("shader compiler is unavailable: " + executable_.string());
+    if (request.requireDxcForNativeFxAbi && !isDxc(executable_))
+        throw std::runtime_error(
+            "native YRZFX shaders require DXC to bind implicit $Globals to set 0, binding 50; glslc cannot "
+            "guarantee the same ABI");
 
     TemporaryDirectory temporary;
     const auto input = temporary.path() / "effect.hlsl";

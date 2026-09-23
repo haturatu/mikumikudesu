@@ -2355,6 +2355,21 @@ bool testRealShaderCompilation() {
     const auto resourceArtifact = compiler.compile(resourceRequest);
     ok &= check(hasUniqueDescriptorBindings(resourceArtifact.spirv),
                 "glslc keeps HLSL register classes in distinct bindings");
+    auto nativeFxRequest = resourceRequest;
+    nativeFxRequest.requireDxcForNativeFxAbi = true;
+    const bool dxc = compiler.executable().filename() == "dxc" || compiler.executable().filename() == "dxc.exe";
+    if (dxc) {
+        const auto nativeFxArtifact = compiler.compile(nativeFxRequest);
+        ok &= check(!nativeFxArtifact.spirv.empty(), "DXC compiles native FX with the explicit globals ABI");
+    } else {
+        bool rejectedFallback = false;
+        try {
+            static_cast<void>(compiler.compile(nativeFxRequest));
+        } catch (const std::runtime_error& exception) {
+            rejectedFallback = std::string_view(exception.what()).find("require DXC") != std::string_view::npos;
+        }
+        ok &= check(rejectedFallback, "native FX rejects glslc when it cannot guarantee the globals ABI");
+    }
 
     dayo::fx::FxShaderCache cache;
     dayo::fx::FxShaderKey key;
@@ -2374,6 +2389,9 @@ bool testFxPipelineRuntime() {
     dayo::fx::FxShaderCompiler compiler;
     if (!compiler.available())
         return true;
+    const bool dxc = compiler.executable().filename() == "dxc" || compiler.executable().filename() == "dxc.exe";
+    if (!dxc)
+        return check(true, "native FX pipeline execution requires DXC's explicit $Globals binding support");
     namespace fs = std::filesystem;
     const auto directory =
         fs::temp_directory_path() /

@@ -731,6 +731,42 @@ void main(uint3 id : SV_DispatchThreadID)
             ok &= check(found->second.first == expected.set && found->second.second == expected.binding,
                         std::string("SPIR-V ABI coordinates for ") + expected.name);
         }
+
+        dayo::fx::FxShaderCompileRequest globalsRequest;
+        globalsRequest.sourcePath = sourceDirectory / "hlsl/dayo_globals_binding_probe.hlsl";
+        globalsRequest.entryPoint = "main";
+        globalsRequest.stage = dayo::fx::FxShaderStage::compute;
+        globalsRequest.hlsl = R"HLSL(
+cbuffer ViewCB : register(b0) { float4 ViewValue; };
+cbuffer ControllerCB : register(b1) { float4 ControllerValue; };
+float Exposure;
+RWTexture2D<float4> Output : register(u0);
+[numthreads(1, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    Output[id.xy] = float4(Exposure, 0.0, 0.0, 1.0) + ViewValue + ControllerValue;
+}
+)HLSL";
+        globalsRequest.requireDxcForNativeFxAbi = true;
+        const auto globalsArtifact = compiler.compile(globalsRequest);
+        const auto globalsBindings = reflectSpirvBindings(globalsArtifact.spirv);
+        const auto globals = std::ranges::find_if(globalsBindings, [](const auto& item) {
+            return item.second == std::pair<std::uint32_t, std::uint32_t>{0, 50};
+        });
+        ok &= check(globals != globalsBindings.end(),
+                    "standalone HLSL globals bind to the native YRZFX b2 slot (set 0, binding 50)");
+
+        dayo::fx::FxShaderCompiler glslcCompiler{"glslc"};
+        if (glslcCompiler.available()) {
+            bool rejectedFallback = false;
+            try {
+                static_cast<void>(glslcCompiler.compile(globalsRequest));
+            } catch (const std::runtime_error& exception) {
+                rejectedFallback = std::string_view(exception.what()).find("require DXC") != std::string_view::npos;
+            }
+            ok &= check(rejectedFallback,
+                        "glslc is rejected for native FX whose implicit globals require a fixed binding");
+        }
         return ok;
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: SPIR-V ABI probe: " << exception.what() << '\n';
