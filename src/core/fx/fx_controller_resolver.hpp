@@ -3,6 +3,7 @@
 #include "core/scene.hpp"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -37,6 +38,13 @@ class FxControllerResolver {
   public:
     [[nodiscard]] FxControllerValue resolve(const EffectController& controller, const SceneEvaluationSnapshot& snapshot,
                                             dayo::core::ModelId self) const;
+    // Resolves up to arrayCapacity models in evaluation/scene order. A scalar
+    // controller still requires a unique target; array declarations permit
+    // same-name PMX instances to map to successive elements.
+    [[nodiscard]] std::vector<FxControllerValue> resolveArray(const EffectController& controller,
+                                                              const SceneEvaluationSnapshot& snapshot,
+                                                              dayo::core::ModelId self,
+                                                              std::size_t arrayCapacity) const;
 };
 
 } // namespace dayo::core::fx

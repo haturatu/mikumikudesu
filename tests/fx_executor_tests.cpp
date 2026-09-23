@@ -1277,11 +1277,25 @@ bool testFxControllerResolver() {
     duplicate.id = 12;
     duplicate.morphWeights = {0.25F};
     snapshot.models.push_back(duplicate);
+    std::string controllerError;
+    const std::array arrayController{dayo::core::EffectController{
+        .name = "Exposure[2]", .controllerName = "ToonAnime.pmx", .item = "Smile", .type = "float"}};
+    dayo::graphics::NativeControllerBlock arrayBlock(dayo::graphics::makeNativeControllerLayout(arrayController));
+    const bool arrayResolved =
+        dayo::graphics::resolveNativeControllerBlock(arrayBlock, arrayController, snapshot, 11, &controllerError);
+    const auto* exposureField = arrayBlock.layout().find("Exposure[2]");
+    std::array<float, 2> exposureValues{};
+    if (exposureField != nullptr) {
+        std::memcpy(exposureValues.data(), arrayBlock.bytes().data() + exposureField->offset, sizeof(float));
+        std::memcpy(&exposureValues[1],
+                    arrayBlock.bytes().data() + exposureField->offset + exposureField->elementStride, sizeof(float));
+    }
+    ok &= check(arrayResolved && exposureValues == std::array<float, 2>{0.75F, 0.25F},
+                "controller arrays resolve same-name PMX models in scene order");
     const std::array effectControllers{
         dayo::core::EffectController{.name = "Exposure", .controllerName = "(self)", .item = "Smile", .type = "float"}};
     dayo::graphics::NativeControllerBlock first(dayo::graphics::makeNativeControllerLayout(effectControllers));
     dayo::graphics::NativeControllerBlock second(dayo::graphics::makeNativeControllerLayout(effectControllers));
-    std::string controllerError;
     ok &= check(
         dayo::graphics::resolveNativeControllerBlock(first, effectControllers, snapshot, 11, &controllerError) &&
             dayo::graphics::resolveNativeControllerBlock(second, effectControllers, snapshot, 12, &controllerError) &&

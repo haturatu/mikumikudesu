@@ -64,6 +64,7 @@ class NativeControllerBlock {
     [[nodiscard]] std::span<const std::byte> bytes() const noexcept {
         return bytes_;
     }
+    void clear() noexcept;
 
     bool setBool(std::string_view name, bool value, std::size_t arrayIndex = 0) noexcept;
     bool setInt(std::string_view name, std::int32_t value, std::size_t arrayIndex = 0) noexcept;
