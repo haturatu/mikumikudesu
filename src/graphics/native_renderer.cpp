@@ -324,13 +324,16 @@ bool NativeRendererCoordinator::updateEnvironment(const EnvironmentDesc& descrip
     return false;
 }
 
-std::optional<NativeFrameOutput>
-NativeRendererCoordinator::recordFrame(CommandList& commands, const fx::FxFrameContext& context, core::DirtyFlag dirty,
-                                       std::span<const core::MaterialParameterBlock> materials,
-                                       std::span<const AliasEntry> lightSampling,
-                                       const EnvironmentGpuResult& environment, const FxExecutionResources& resources) {
+std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
+    CommandList& commands, const fx::FxFrameContext& context, core::DirtyFlag dirty,
+    std::span<const core::MaterialParameterBlock> materials, std::span<const AliasEntry> lightSampling,
+    const EnvironmentGpuResult& environment, const FxExecutionResources& resources, NativeFrameExecution execution) {
     if (!status_.nativeReady)
         return std::nullopt;
+    if (execution.sampleCount == 0 || execution.sampleIndex >= execution.sampleCount)
+        throw std::invalid_argument("native frame sample index/count is invalid");
+    if (execution.sampleCount == 1)
+        outputSamples_.cancel();
     static_cast<void>(executeGenericEffects(deformEffects_, deformRuntimes_, commands, context, resources, false));
     std::optional<NativeFrameOutput> rendererOutput;
     switch (status_.active) {
@@ -354,6 +357,13 @@ NativeRendererCoordinator::recordFrame(CommandList& commands, const fx::FxFrameC
     }
     if (!rendererOutput.has_value())
         return std::nullopt;
+    if (execution.sampleCount > 1) {
+        const auto resolved =
+            outputSamples_.addSample(*device_, commands, *rendererOutput, execution.sampleIndex, execution.sampleCount);
+        if (!resolved.has_value())
+            return rendererOutput;
+        rendererOutput = resolved;
+    }
     if (postprocessEffects_.empty())
         return rendererOutput;
 
@@ -379,6 +389,7 @@ NativeRendererCoordinator::recordFrame(CommandList& commands, const fx::FxFrameC
 void NativeRendererCoordinator::reset() noexcept {
     deformRuntimes_.clear();
     postprocessRuntimes_.clear();
+    outputSamples_.reset();
     deformEffects_.clear();
     postprocessEffects_.clear();
     bdpt_.reset();

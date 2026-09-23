@@ -8,6 +8,7 @@
 #include "graphics/dayo_fx_runtime.hpp"
 #include "graphics/native_renderer_requirements.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
+#include "graphics/output_sample_accumulator.hpp"
 #include "graphics/subayai_runtime.hpp"
 
 #include <array>
@@ -18,6 +19,11 @@
 #include <vector>
 
 namespace dayo::graphics {
+
+struct NativeFrameExecution {
+    std::uint32_t sampleIndex{};
+    std::uint32_t sampleCount{1};
+};
 
 // Application-facing lifecycle owner for native Subayai/BDPT activation.
 // Resource binding and command recording stay in the renderer runtimes; this
@@ -59,7 +65,8 @@ class NativeRendererCoordinator {
     [[nodiscard]] std::optional<NativeFrameOutput>
     recordFrame(CommandList& commands, const fx::FxFrameContext& context, core::DirtyFlag dirty,
                 std::span<const core::MaterialParameterBlock> materials, std::span<const AliasEntry> lightSampling,
-                const EnvironmentGpuResult& environment, const FxExecutionResources& resources = {});
+                const EnvironmentGpuResult& environment, const FxExecutionResources& resources = {},
+                NativeFrameExecution execution = {});
 
   private:
     struct GenericEffectRuntime {
@@ -91,6 +98,7 @@ class NativeRendererCoordinator {
     std::vector<core::EffectController> controllerDeclarations_;
     GenericRuntimeList deformRuntimes_;
     GenericRuntimeList postprocessRuntimes_;
+    OutputSampleAccumulator outputSamples_;
     const core::fx::SceneEvaluationSnapshot* evaluationSnapshot_{};
 };
 

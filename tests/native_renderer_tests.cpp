@@ -1,9 +1,12 @@
+#include "core/image_hdr.hpp"
 #include "fx/fx_compiler.hpp"
 #include "graphics/fx_raster_semantics.hpp"
 #include "graphics/native_fx_pending_events.hpp"
 #include "graphics/native_renderer.hpp"
 
 #include <array>
+#include <cmath>
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include <string_view>
@@ -34,6 +37,32 @@ dayo::graphics::DeviceCapabilities capableSubayai() {
 
 int main() {
     bool ok = true;
+
+    dayo::graphics::Rgba16fSampleAccumulator sampleAccumulator;
+    sampleAccumulator.begin({1, 1, 1}, 2);
+    const auto makeHalfPixel = [](std::array<float, 4> values) {
+        std::array<std::uint8_t, 8> bytes{};
+        for (std::size_t channel = 0; channel < values.size(); ++channel) {
+            const auto half = dayo::core::floatToHalf(values[channel]);
+            std::memcpy(bytes.data() + channel * sizeof(half), &half, sizeof(half));
+        }
+        return bytes;
+    };
+    const auto firstLinearSample = makeHalfPixel({2.0F, 0.25F, -2.0F, 1.0F});
+    const auto secondLinearSample = makeHalfPixel({4.0F, 0.75F, 2.0F, 1.0F});
+    sampleAccumulator.add(firstLinearSample);
+    ok &= check(!sampleAccumulator.complete(), "linear sample accumulator waits for every sample");
+    sampleAccumulator.add(secondLinearSample);
+    const auto averagedHalfPixel = sampleAccumulator.resolve();
+    std::array<float, 4> averagedValues{};
+    for (std::size_t channel = 0; channel < averagedValues.size(); ++channel) {
+        std::uint16_t half{};
+        std::memcpy(&half, averagedHalfPixel.data() + channel * sizeof(half), sizeof(half));
+        averagedValues[channel] = dayo::core::halfToFloat(half);
+    }
+    ok &= check(std::abs(averagedValues[0] - 3.0F) < 0.01F && std::abs(averagedValues[1] - 0.5F) < 0.01F &&
+                    std::abs(averagedValues[2]) < 0.01F && std::abs(averagedValues[3] - 1.0F) < 0.01F,
+                "RGBA16F samples average in linear float without clipping HDR values");
 
     dayo::graphics::NativeFxPendingEvents pendingEvents;
     pendingEvents.latch(true, false);
