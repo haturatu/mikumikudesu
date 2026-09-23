@@ -355,6 +355,13 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                                                                           const graphics::RenderTargetDesc& target) {
     if (device_ == nullptr || device_->activeRenderer() == graphics::RendererKind::preview)
         return std::nullopt;
+    graphics::NativeFrameExecution outputExecution;
+#if DAYO_HAS_IMGUI
+    if (imageSequenceExportRunning_) {
+        outputExecution.sampleIndex = imageSequenceSampleIndex_;
+        outputExecution.sampleCount = imageSequenceSampleCount_;
+    }
+#endif
     nativeFxPendingEvents_.latch(scene_.dirty(core::DirtyFlag::geometry), scene_.dirty(core::DirtyFlag::material));
     const auto& background = scene_.background();
     if (background.image && background.imagePath &&
@@ -492,6 +499,8 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                                             .onResize = nativeResizeEvent,
                                             .onModelChanged = nativeFxPendingEvents_.modelChanged,
                                             .onMaterialChanged = nativeFxPendingEvents_.materialChanged});
+        if (outputExecution.sampleCount > 1)
+            frameContext.sample = outputExecution.sampleIndex;
         auto sceneResources = nativeSceneResources_.bindings();
         const auto modelResources = nativeSceneModelRuntime_.bindings();
         std::vector<graphics::NativeSceneDerivedModel> derivedModels;
@@ -636,10 +645,10 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                 return false;
             };
         auto output = nativeRenderer_.recordFrame(commands, frameContext, nativeDirty, materials, lightSampling, {},
-                                                  executionResources);
+                                                  executionResources, outputExecution);
         nativeOnStartPending_ = false;
         nativeFxPendingEvents_.clear();
-        if (output.has_value())
+        if (output.has_value() && outputExecution.sampleIndex + 1U == outputExecution.sampleCount)
             nativeScreenRuntime_.publishFrame(commands, output->texture);
         return output;
     } catch (const std::exception& exception) {
@@ -3069,6 +3078,27 @@ void Application::advanceImageSequenceExport() {
         imageSequencePreviousSampleFrame_ = sampleFrame;
 
         auto rendered = device_->renderToImage({sequenceWidth_, sequenceHeight_});
+        const auto finishOutputFrame = [&]() {
+            if (!imageSequenceOutput_->tryPush(frame, std::move(imageSequenceImage_)))
+                throw std::runtime_error("image output queue unexpectedly full");
+            imageSequenceSum_.clear();
+            imageSequenceSampleIndex_ = 0;
+            if (frame == sequenceOutput_.lastFrame)
+                imageSequenceFramesFinished_ = true;
+            else
+                ++imageSequenceNextFrame_;
+        };
+
+        if (device_->activeRenderer() != graphics::RendererKind::preview) {
+            if (imageSequenceSampleIndex_ + 1U < imageSequenceSampleCount_) {
+                ++imageSequenceSampleIndex_;
+                return;
+            }
+            imageSequenceImage_ = std::move(rendered);
+            finishOutputFrame();
+            return;
+        }
+
         if (imageSequenceSampleIndex_ == 0U) {
             imageSequenceImage_ = std::move(rendered);
             imageSequenceSum_.assign(imageSequenceImage_.pixels.size(), 0U);
@@ -3088,14 +3118,7 @@ void Application::advanceImageSequenceExport() {
         for (std::size_t index = 0; index < imageSequenceImage_.pixels.size(); ++index)
             imageSequenceImage_.pixels[index] =
                 static_cast<std::uint8_t>(imageSequenceSum_[index] / imageSequenceSampleCount_);
-        if (!imageSequenceOutput_->tryPush(frame, std::move(imageSequenceImage_)))
-            throw std::runtime_error("image output queue unexpectedly full");
-        imageSequenceSum_.clear();
-        imageSequenceSampleIndex_ = 0;
-        if (frame == sequenceOutput_.lastFrame)
-            imageSequenceFramesFinished_ = true;
-        else
-            ++imageSequenceNextFrame_;
+        finishOutputFrame();
     } catch (const std::exception& error) {
         finishImageSequenceExport(error.what());
     }
