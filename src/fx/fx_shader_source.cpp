@@ -104,6 +104,8 @@ namespace {
 [[nodiscard]] core::fx::MaterialTemplateSchema parseMaterialTemplate(const FxProgram& program) {
     if (!program.materialDescriptor.has_value())
         return {};
+    if (program.materialSchema.has_value())
+        return *program.materialSchema;
     const auto& descriptor = *program.materialDescriptor;
     const auto path = descriptor.templatePath.is_absolute()
                           ? descriptor.templatePath

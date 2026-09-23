@@ -32,6 +32,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -740,6 +741,15 @@ int main() {
                         subayaiEffect.hlslPrefix.find("resources.hlsli") != std::string::npos &&
                         subayaiEffect.materialDescriptor.has_value() && !subayaiEffect.controllers.empty(),
                     "Subayai Jsonnet expansion");
+        const auto subayaiProgram = dayo::fx::FxCompiler{}.compile(subayaiEffect);
+        const auto* roughnessDefault = subayaiProgram.materialSchema.has_value()
+                                           ? subayaiProgram.materialSchema->defaults.find("Roughness")
+                                           : nullptr;
+        ok &= check(subayaiProgram.materialSchema.has_value() &&
+                        subayaiProgram.materialSchema->sourceText.find("f.1 : Roughness") != std::string::npos &&
+                        roughnessDefault != nullptr && std::get_if<float>(roughnessDefault) != nullptr &&
+                        *std::get_if<float>(roughnessDefault) == 0.5F,
+                    "compiled FX program owns the parsed material schema and defaults");
         const auto subayaiRaster =
             std::ranges::find_if(subayaiEffect.passes, [](const auto& pass) { return pass.name == "MMD"; });
         ok &= check(subayaiRaster != subayaiEffect.passes.end() && subayaiRaster->renderTargets.size() == 4 &&
