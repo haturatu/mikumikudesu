@@ -4683,9 +4683,8 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
             binding.stride > physicalProperties_.limits.maxVertexInputBindingStride ||
             !vertexBindingIds.insert(binding.binding).second)
             throw std::invalid_argument("graphics pipeline has an invalid or duplicate vertex input binding");
-        vertexBindings.push_back({.binding = binding.binding,
-                                  .stride = binding.stride,
-                                  .inputRate = toVkVertexInputRate(binding.rate)});
+        vertexBindings.push_back(
+            {.binding = binding.binding, .stride = binding.stride, .inputRate = toVkVertexInputRate(binding.rate)});
     }
     std::vector<VkVertexInputAttributeDescription> vertexAttributes;
     vertexAttributes.reserve(desc.vertexAttributes.size());
