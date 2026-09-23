@@ -645,8 +645,6 @@ double hashValue(double input) {
     y ^= y >> 16U;
     z ^= z >> 16U;
     x += y * z;
-    y += z * x;
-    z += x * y;
     return static_cast<double>(x) / 4294967296.0;
 }
 
