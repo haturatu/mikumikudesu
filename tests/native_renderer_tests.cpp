@@ -2,7 +2,9 @@
 #include "graphics/fx_raster_semantics.hpp"
 #include "graphics/native_renderer.hpp"
 
+#include <array>
 #include <iostream>
+#include <stdexcept>
 #include <string_view>
 
 namespace {
@@ -44,6 +46,27 @@ int main() {
                     deformContext.vertexCount == 250 && deformContext.totalMaterial == 5 &&
                     deformContext.cloneCount == 4 && deformContext.clonedVertexCount == 1000,
                 "deform frame context uses its owner and effect clone count");
+
+    std::array<dayo::core::SceneEffectInstance, 1> deformEffects{};
+    deformEffects[0].controllerModel = modelB.modelId;
+    deformEffects[0].graph.meshCloneCount = 6;
+    ok &= check(dayo::graphics::resolveNativeModelCloneCount(2, modelB.modelId, deformEffects) == 6,
+                "native model clone count unifies scene count with its assigned deformer");
+    ok &= check(dayo::graphics::resolveNativeModelCloneCount(8, modelB.modelId, deformEffects) == 8,
+                "native model clone resolution preserves a larger scene count");
+    ok &= check(dayo::graphics::resolveNativeModelCloneCount(0, 99, deformEffects) == 1,
+                "native model clone resolution defaults unassigned models to one instance");
+    auto secondDeformer = deformEffects.front();
+    secondDeformer.graph.meshCloneCount = 4;
+    const std::array multipleDeformers{deformEffects.front(), secondDeformer};
+    bool rejectedMultipleDeformers = false;
+    try {
+        static_cast<void>(dayo::graphics::resolveNativeModelCloneCount(2, modelB.modelId, multipleDeformers));
+    } catch (const std::logic_error&) {
+        rejectedMultipleDeformers = true;
+    }
+    ok &= check(rejectedMultipleDeformers,
+                "native model clone resolution rejects unsupported multiple-deformer chain semantics");
 
     dayo::fx::FxRequiredFeatures compute;
     const auto computeDecision =
