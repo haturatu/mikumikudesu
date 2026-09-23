@@ -49,6 +49,12 @@ int main() {
         .dimension = 2,
     };
     ok &= check(exportedStore.add(exportedTexture), "deformer resource fixture enters physical store");
+    const auto liveResourceFixture = dayo::graphics::snapshotFxResources("deform.fxdayo", exportedStore);
+    ok &= check(liveResourceFixture.size() == 1 && liveResourceFixture[0].effect == "deform.fxdayo" &&
+                    liveResourceFixture[0].name == "OutBuf" && liveResourceFixture[0].kind == "Texture" &&
+                    liveResourceFixture[0].format == "RGBA16_FLOAT" && liveResourceFixture[0].extent.width == 32 &&
+                    liveResourceFixture[0].extent.height == 16 && liveResourceFixture[0].dimension == 2,
+                "FX live-resource snapshots expose actual allocation metadata without handles");
     dayo::graphics::DeformerResourceRegistry deformerResources;
     deformerResources.publish(7, 101, exportedStore);
     auto exported = deformerResources.resolve(7, "OutBuf");

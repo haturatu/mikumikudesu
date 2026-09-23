@@ -27,6 +27,18 @@ struct NativeFrameExecution {
     std::uint32_t sampleCount{1};
 };
 
+struct NativeFxResourceSnapshot {
+    std::string effect;
+    std::string name;
+    std::string kind;
+    std::string format;
+    Extent3D extent{};
+    std::uint32_t dimension{};
+};
+
+[[nodiscard]] std::vector<NativeFxResourceSnapshot> snapshotFxResources(std::string_view effect,
+                                                                        const FxResourceStore& store);
+
 // Application-facing lifecycle owner for native Subayai/BDPT activation.
 // Resource binding and command recording stay in the renderer runtimes; this
 // class makes effect loading, feature checks, initialization, and fallback one
@@ -66,6 +78,7 @@ class NativeRendererCoordinator {
     [[nodiscard]] const DeformerResourceRegistry& deformerResources() const noexcept {
         return deformerResources_;
     }
+    [[nodiscard]] std::vector<NativeFxResourceSnapshot> liveResources() const;
     [[nodiscard]] const fx::FxProgram* program() const noexcept;
     [[nodiscard]] SubayaiRuntime* subayai() noexcept {
         return status_.nativeReady && status_.active == RendererKind::subayai ? &subayai_ : nullptr;
