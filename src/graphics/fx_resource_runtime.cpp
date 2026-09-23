@@ -709,7 +709,8 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                 .usage = textureUsage(declaration.view, format, usageSummary),
                 .lifetime = ResourceLifetime::persistent,
             };
-            reserveBytes(static_cast<std::uint64_t>(estimateTextureBytes(description)), name);
+            const auto allocationBytes = static_cast<std::uint64_t>(estimateTextureBytes(description));
+            reserveBytes(allocationBytes, name);
             FxResourceStore::Resource resource{.name = name,
                                                .kind = FxResourceStore::Kind::texture,
                                                .texture = {},
@@ -718,6 +719,9 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                                                .extent = resolved,
                                                .format = format,
                                                .dimension = 2,
+                                               .allocationBytes = allocationBytes,
+                                               .elementSize = 0,
+                                               .elementType = {},
                                                .legacyDescriptorKind = textureDescriptorKind(declaration.view, format),
                                                .legacyBinding = binding};
             resource.texture = device.createTextureEx(description);
@@ -780,7 +784,8 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                 .usage = textureUsage(declaration.view, format, usageSummary),
                 .lifetime = ResourceLifetime::persistent,
             };
-            reserveBytes(static_cast<std::uint64_t>(estimateTextureBytes(description)), name);
+            const auto allocationBytes = static_cast<std::uint64_t>(estimateTextureBytes(description));
+            reserveBytes(allocationBytes, name);
             FxResourceStore::Resource resource{.name = name,
                                                .kind = FxResourceStore::Kind::texture,
                                                .texture = {},
@@ -789,6 +794,9 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                                                .extent = resolved,
                                                .format = format,
                                                .dimension = 3,
+                                               .allocationBytes = allocationBytes,
+                                               .elementSize = 0,
+                                               .elementType = {},
                                                .legacyDescriptorKind = textureDescriptorKind(declaration.view, format),
                                                .legacyBinding = binding};
             resource.texture = device.createTextureEx(description);
@@ -836,6 +844,9 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                                                .extent = resolved,
                                                .format = PixelFormat::rgba8Unorm,
                                                .dimension = resolvedFx.dimension,
+                                               .allocationBytes = bytes,
+                                               .elementSize = declaration.elementSize,
+                                               .elementType = declaration.type,
                                                .legacyDescriptorKind = bufferDescriptorKind(declaration.view),
                                                .legacyBinding = binding};
             resource.buffer = device.createBufferEx(description);
@@ -858,6 +869,9 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                                                .extent = {},
                                                .format = PixelFormat::rgba8Unorm,
                                                .dimension = 0,
+                                               .allocationBytes = 0,
+                                               .elementSize = 0,
+                                               .elementType = {},
                                                .legacyDescriptorKind = DescriptorKind::sampler,
                                                .legacyBinding = binding};
             resource.sampler = device.createSamplerEx(samplerDesc(declaration));

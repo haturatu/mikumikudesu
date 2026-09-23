@@ -34,6 +34,9 @@ struct NativeFxResourceSnapshot {
     std::string format;
     Extent3D extent{};
     std::uint32_t dimension{};
+    std::uint64_t allocationBytes{};
+    std::uint32_t elementSize{};
+    std::string elementType;
 };
 
 [[nodiscard]] std::vector<NativeFxResourceSnapshot> snapshotFxResources(std::string_view effect,

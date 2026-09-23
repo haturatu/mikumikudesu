@@ -38,12 +38,17 @@ std::vector<NativeFxResourceSnapshot> snapshotFxResources(std::string_view effec
         const auto kind = resource.kind == FxResourceStore::Kind::texture  ? "Texture"
                           : resource.kind == FxResourceStore::Kind::buffer ? "Buffer"
                                                                            : "Sampler";
+        const auto format =
+            resource.kind == FxResourceStore::Kind::texture ? std::string(toString(resource.format)) : std::string{};
         result.push_back({.effect = std::string(effect),
                           .name = resource.name,
                           .kind = kind,
-                          .format = std::string(toString(resource.format)),
+                          .format = format,
                           .extent = resource.extent,
-                          .dimension = resource.dimension});
+                          .dimension = resource.dimension,
+                          .allocationBytes = resource.allocationBytes,
+                          .elementSize = resource.elementSize,
+                          .elementType = resource.elementType});
     }
     return result;
 }
