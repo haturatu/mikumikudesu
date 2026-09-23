@@ -463,6 +463,20 @@ int main() {
                     "different paths stay distinct");
         ok &= check(makeTextureKey(templ.resources[0].texture) != makeTextureKey(templ.resources[3].texture),
                     "different colorspaces stay distinct");
+        auto hostTexture = templ.resources[0];
+        hostTexture.id = "host";
+        hostTexture.texture.externalId = "host:ScreenBMP:1";
+        auto deformerTexture = hostTexture;
+        deformerTexture.id = "deformer";
+        deformerTexture.texture.externalId = "deformer:owner:resource:generation-2";
+        const std::array externalResources{hostTexture, deformerTexture};
+        MaterialTemplate externalTemplate;
+        externalTemplate.name = "external";
+        externalTemplate.resources.assign(externalResources.begin(), externalResources.end());
+        const auto externalLayout = linkMaterialLayout(externalTemplate, nullptr);
+        ok &= check(externalLayout.uniqueTextures.size() == 2 &&
+                        externalLayout.uniqueTextures[0].externalId != externalLayout.uniqueTextures[1].externalId,
+                    "different host/deformer resource identities do not collapse into one physical texture");
     }
 
     // _R determinism golden: same input set in any order -> same slots.

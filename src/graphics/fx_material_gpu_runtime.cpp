@@ -144,6 +144,8 @@ void validateTable(const core::fx::MaterialGpuTableData& table) {
 
 [[nodiscard]] handles::TextureHandle loadMaterialTexture(Device& device, const core::fx::MaterialTextureDesc& texture,
                                                          core::fx::MaterialTextureDimension dimension) {
+    if (!texture.externalId.empty())
+        throw std::invalid_argument("MatDesc external texture was not resolved: " + texture.externalId);
     const std::filesystem::path path(texture.path);
     if (path.empty())
         throw std::invalid_argument("MatDesc physical texture path is empty");
@@ -201,11 +203,30 @@ void validateTable(const core::fx::MaterialGpuTableData& table) {
     return handle;
 }
 
-[[nodiscard]] std::vector<std::string> textureCatalogKeys(std::span<const core::fx::MaterialTextureDesc> textures) {
+[[nodiscard]] const FxMaterialExternalTexture*
+findExternalTexture(std::span<const FxMaterialExternalTexture> externalTextures, std::string_view identity) noexcept {
+    const auto found = std::ranges::find_if(externalTextures,
+                                            [identity](const auto& texture) { return texture.identity == identity; });
+    return found == externalTextures.end() ? nullptr : &*found;
+}
+
+[[nodiscard]] std::vector<std::string> textureCatalogKeys(std::span<const core::fx::MaterialTextureDesc> textures,
+                                                          core::fx::MaterialTextureDimension dimension,
+                                                          std::span<const FxMaterialExternalTexture> externalTextures) {
     std::vector<std::string> keys;
     keys.reserve(textures.size());
-    for (const auto& texture : textures)
-        keys.push_back(core::fx::textureKeyString(core::fx::makeTextureKey(texture)));
+    for (const auto& texture : textures) {
+        auto key = core::fx::textureKeyString(core::fx::makeTextureKey(texture));
+        if (!texture.externalId.empty()) {
+            const auto* external = findExternalTexture(externalTextures, texture.externalId);
+            if (external == nullptr || !external->texture.valid() || external->dimension != dimension)
+                throw std::invalid_argument("MatDesc external texture binding is missing or has the wrong dimension: " +
+                                            texture.externalId);
+            key += "|handle:" + std::to_string(external->texture.index) + ":" +
+                   std::to_string(external->texture.generation) + "|generation:" + std::to_string(external->generation);
+        }
+        keys.push_back(std::move(key));
+    }
     return keys;
 }
 
@@ -215,7 +236,8 @@ FxMaterialGpuRuntime::~FxMaterialGpuRuntime() {
     reset();
 }
 
-bool FxMaterialGpuRuntime::sync(Device& device, const core::fx::MaterialGpuTableData& table, std::string* error) {
+bool FxMaterialGpuRuntime::sync(Device& device, const core::fx::MaterialGpuTableData& table, std::string* error,
+                                std::span<const FxMaterialExternalTexture> externalTextures) {
     if (error != nullptr)
         error->clear();
     try {
@@ -234,8 +256,10 @@ bool FxMaterialGpuRuntime::sync(Device& device, const core::fx::MaterialGpuTable
     try {
         bool buffersRecreated = false;
         if (!ensureFallbackTextures(error) ||
-            !ensureTextureCatalog(table.textures2D, core::fx::MaterialTextureDimension::twoD, error) ||
-            !ensureTextureCatalog(table.textures3D, core::fx::MaterialTextureDimension::threeD, error) ||
+            !ensureTextureCatalog(table.textures2D, core::fx::MaterialTextureDimension::twoD, externalTextures,
+                                  error) ||
+            !ensureTextureCatalog(table.textures3D, core::fx::MaterialTextureDimension::threeD, externalTextures,
+                                  error) ||
             !ensureTableBuffers(table, buffersRecreated, error))
             throw std::runtime_error(error != nullptr && !error->empty() ? *error : "MatDesc GPU sync failed");
         if (buffersRecreated) {
@@ -281,12 +305,14 @@ bool FxMaterialGpuRuntime::ensureFallbackTextures(std::string* error) {
 }
 
 bool FxMaterialGpuRuntime::ensureTextureCatalog(std::span<const core::fx::MaterialTextureDesc> textures,
-                                                core::fx::MaterialTextureDimension dimension, std::string* error) {
+                                                core::fx::MaterialTextureDimension dimension,
+                                                std::span<const FxMaterialExternalTexture> externalTextures,
+                                                std::string* error) {
     auto& currentTextures = dimension == core::fx::MaterialTextureDimension::twoD ? textures2D_ : textures3D_;
     auto& currentBindings =
         dimension == core::fx::MaterialTextureDimension::twoD ? textureBindings2D_ : textureBindings3D_;
     auto& currentKeys = dimension == core::fx::MaterialTextureDimension::twoD ? textureKeys2D_ : textureKeys3D_;
-    const auto requestedKeys = textureCatalogKeys(textures);
+    const auto requestedKeys = textureCatalogKeys(textures, dimension, externalTextures);
     if (requestedKeys == currentKeys)
         return true;
 
@@ -294,12 +320,24 @@ bool FxMaterialGpuRuntime::ensureTextureCatalog(std::span<const core::fx::Materi
     std::vector<handles::TextureHandle> createdBindings;
     try {
         created.reserve(textures.size());
-        for (const auto& texture : textures)
-            created.push_back(loadMaterialTexture(*device_, texture, dimension));
-        createdBindings.reserve(created.size() + 1U);
-        createdBindings.push_back(dimension == core::fx::MaterialTextureDimension::twoD ? fallbackTexture2D_
-                                                                                        : fallbackTexture3D_);
-        createdBindings.insert(createdBindings.end(), created.begin(), created.end());
+        createdBindings.reserve(textures.size() + 1U);
+        for (const auto& texture : textures) {
+            if (!texture.externalId.empty()) {
+                const auto* external = findExternalTexture(externalTextures, texture.externalId);
+                if (external == nullptr || !external->texture.valid() || external->dimension != dimension)
+                    throw std::invalid_argument(
+                        "MatDesc external texture binding is missing or has the wrong dimension: " +
+                        texture.externalId);
+                createdBindings.push_back(external->texture);
+                continue;
+            }
+            const auto loaded = loadMaterialTexture(*device_, texture, dimension);
+            created.push_back(loaded);
+            createdBindings.push_back(loaded);
+        }
+        createdBindings.insert(createdBindings.begin(), dimension == core::fx::MaterialTextureDimension::twoD
+                                                            ? fallbackTexture2D_
+                                                            : fallbackTexture3D_);
     } catch (const std::exception& exception) {
         destroyTextures(created);
         if (error != nullptr)
@@ -469,7 +507,9 @@ bool FxMaterialGpuRuntime::ready() const noexcept {
                                           frame.textureIndices3D.valid() && frame.values.valid();
                                }) &&
            std::ranges::all_of(textures2D_, [](const auto texture) { return texture.valid(); }) &&
-           std::ranges::all_of(textures3D_, [](const auto texture) { return texture.valid(); });
+           std::ranges::all_of(textures3D_, [](const auto texture) { return texture.valid(); }) &&
+           std::ranges::all_of(textureBindings2D_, [](const auto texture) { return texture.valid(); }) &&
+           std::ranges::all_of(textureBindings3D_, [](const auto texture) { return texture.valid(); });
 }
 
 FxMaterialGpuBindings FxMaterialGpuRuntime::bindings() const noexcept {

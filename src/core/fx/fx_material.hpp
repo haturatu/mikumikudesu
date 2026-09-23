@@ -96,6 +96,9 @@ void loadMaterialDefaultFile(MaterialTemplateSchema& schema, const std::filesyst
 // Canonical texture identity includes the YRZFX texture view contract.
 struct MaterialTextureDesc {
     std::string path;
+    // Empty for file-backed textures; a non-empty identity names a
+    // host/deformer-owned resource resolved by the graphics runtime.
+    std::string externalId;
     std::string format;
     std::string colorspace;
     std::string mipPolicy;
@@ -105,6 +108,7 @@ struct MaterialTextureDesc {
 
 struct MaterialTextureKey {
     std::string path;
+    std::string externalId;
     std::string format;
     std::string colorspace;
     std::string mipPolicy;
@@ -112,8 +116,9 @@ struct MaterialTextureKey {
     bool mipmapped{};
 
     bool operator==(const MaterialTextureKey& other) const noexcept {
-        return path == other.path && format == other.format && colorspace == other.colorspace &&
-               mipPolicy == other.mipPolicy && dimension == other.dimension && mipmapped == other.mipmapped;
+        return path == other.path && externalId == other.externalId && format == other.format &&
+               colorspace == other.colorspace && mipPolicy == other.mipPolicy && dimension == other.dimension &&
+               mipmapped == other.mipmapped;
     }
 };
 
