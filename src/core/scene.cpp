@@ -39,24 +39,6 @@ bool isUpstreamDrawableModel(const PmxModel& model) noexcept {
     });
 }
 
-ModelParticipation resolveModelParticipation(const ModelInstance& model, const SceneEffectStack& effects) noexcept {
-    const auto ownedByModel = [&model](const SceneEffectInstance& effect) {
-        return effect.controllerModel.has_value() && *effect.controllerModel == model.id;
-    };
-    const bool postprocessLauncher = std::ranges::any_of(effects.postprocess, ownedByModel);
-    const bool hasDeformer = std::ranges::any_of(effects.deform, ownedByModel);
-    const bool controller =
-        postprocessLauncher || hasDeformer || (effects.renderer.has_value() && ownedByModel(*effects.renderer));
-    const bool drawable = model.model != nullptr && model.animator != nullptr && model.upstreamDrawable;
-    const bool rasterize = drawable && model.visible && model.animationVisible && !postprocessLauncher;
-    return {.evaluateAnimation = model.model != nullptr && model.animator != nullptr,
-            .deform = drawable && hasDeformer && !postprocessLauncher,
-            .rasterize = rasterize,
-            .acceleration = rasterize,
-            .controller = controller,
-            .postprocessLauncher = postprocessLauncher};
-}
-
 ModelId Scene::addModel(const std::filesystem::path& path) {
     ModelInstance instance;
     instance.id = nextId_++;

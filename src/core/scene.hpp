@@ -78,15 +78,6 @@ struct ModelExecutionOrder {
     std::int32_t raster{};
 };
 
-struct ModelParticipation {
-    bool evaluateAnimation{true};
-    bool deform{};
-    bool rasterize{};
-    bool acceleration{};
-    bool controller{};
-    bool postprocessLauncher{};
-};
-
 using EffectId = std::uint64_t;
 
 struct SceneEffectInstance {
@@ -138,8 +129,6 @@ struct ModelInstance {
 // order values retain their scene order, matching the upstream stable order.
 [[nodiscard]] std::vector<std::size_t> stableMotionEvaluationOrder(std::span<const std::int32_t> orderValues);
 [[nodiscard]] bool isUpstreamDrawableModel(const PmxModel& model) noexcept;
-[[nodiscard]] ModelParticipation resolveModelParticipation(const ModelInstance& model,
-                                                           const SceneEffectStack& effects) noexcept;
 
 struct Timeline {
     float frame{};
