@@ -190,20 +190,51 @@ class ExtentTable final : public core::fx::FxResourceTable {
     return core::fx::FxSizeResolver{}.resolve(expression, evaluated, table);
 }
 
-[[nodiscard]] ResourceUsage textureUsage(std::string_view view, PixelFormat format, bool writable, bool colorTarget) {
-    ResourceUsage usage = ResourceUsage::transferSrc | ResourceUsage::transferDst;
-    if (isDepthFormat(format) || contains(view, "DSV") || contains(view, "DEPTH")) {
-        usage |= ResourceUsage::depthRead | ResourceUsage::depthWrite;
-    } else {
-        // Keep declarations descriptor-compatible even when a resource is
-        // also used as an RTV. Pass usage still controls the image layout;
-        // this bit only makes the typed sampled-image view legal.
-        usage |= ResourceUsage::sampledRead;
-        if (writable || contains(view, "UAV") || contains(view, "STORAGE"))
-            usage |= ResourceUsage::storageReadWrite;
-        if (colorTarget || contains(view, "RTV") || contains(view, "COLOR"))
-            usage |= ResourceUsage::colorAttachment;
+struct FxTextureUsageSummary {
+    bool sampled{};
+    bool storage{};
+    bool colorAttachment{};
+    bool depthAttachment{};
+};
+
+[[nodiscard]] FxTextureUsageSummary summarizeTextureUsage(const fx::FxProgram& program, std::string_view name) {
+    FxTextureUsageSummary result;
+    for (const auto& dispatch : program.passes) {
+        for (const auto& use : dispatch.resources) {
+            if (use.name != name)
+                continue;
+            switch (use.role) {
+            case fx::FxResourceRole::sampled:
+                result.sampled |= !use.write;
+                break;
+            case fx::FxResourceRole::storage:
+                result.storage |= use.write;
+                break;
+            case fx::FxResourceRole::colorAttachment:
+                result.colorAttachment |= use.write;
+                break;
+            case fx::FxResourceRole::depthAttachment:
+                result.depthAttachment |= use.write;
+                break;
+            }
+        }
     }
+    return result;
+}
+
+[[nodiscard]] ResourceUsage textureUsage(std::string_view view, PixelFormat format,
+                                         const FxTextureUsageSummary& summary) {
+    ResourceUsage usage = ResourceUsage::transferSrc | ResourceUsage::transferDst;
+    if (isDepthFormat(format) || summary.depthAttachment || contains(view, "DSV") || contains(view, "DEPTH")) {
+        usage |= ResourceUsage::depthRead | ResourceUsage::depthWrite;
+    }
+    if (summary.sampled || (!isDepthFormat(format) && !contains(view, "DSV") && !contains(view, "DEPTH"))) {
+        usage |= ResourceUsage::sampledRead;
+    }
+    if (summary.storage || contains(view, "UAV") || contains(view, "STORAGE"))
+        usage |= ResourceUsage::storageReadWrite;
+    if (summary.colorAttachment || contains(view, "RTV") || contains(view, "COLOR"))
+        usage |= ResourceUsage::colorAttachment;
     return usage;
 }
 
@@ -233,23 +264,6 @@ class ExtentTable final : public core::fx::FxResourceTable {
 
 [[nodiscard]] DescriptorKind bufferDescriptorKind(std::string_view) {
     return DescriptorKind::storageBuffer;
-}
-
-[[nodiscard]] bool textureWrittenByAnyPass(const fx::FxProgram& program, std::string_view name) {
-    for (const auto& dispatch : program.passes)
-        for (const auto& use : dispatch.resources)
-            if (use.name == name && use.write && use.role != fx::FxResourceRole::colorAttachment &&
-                use.role != fx::FxResourceRole::depthAttachment)
-                return true;
-    return false;
-}
-
-[[nodiscard]] bool textureUsedAsColorByAnyPass(const fx::FxProgram& program, std::string_view name) {
-    for (const auto& dispatch : program.passes)
-        for (const auto& use : dispatch.resources)
-            if (use.name == name && use.write && use.role == fx::FxResourceRole::colorAttachment)
-                return true;
-    return false;
 }
 
 [[nodiscard]] std::size_t checkedSize(std::uint64_t value, std::string_view name) {
@@ -503,14 +517,14 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                 throw std::invalid_argument("FX external texture extent does not match its declaration: " + name);
             const auto levels = mipLevels(resolved, declaration.mipmap);
             const auto binding = nextBinding(registerClass(declaration.view));
+            const auto usageSummary = summarizeTextureUsage(program, name);
             TextureResourceDesc description{
                 .dimension = TextureDimension::d2,
                 .extent = resolved,
                 .format = format,
                 .mipLevels = levels,
                 .arrayLayers = 1,
-                .usage = textureUsage(declaration.view, format, textureWrittenByAnyPass(program, name),
-                                      textureUsedAsColorByAnyPass(program, name)),
+                .usage = textureUsage(declaration.view, format, usageSummary),
                 .lifetime = ResourceLifetime::persistent,
             };
             reserveBytes(static_cast<std::uint64_t>(estimateTextureBytes(description)), name);
@@ -547,14 +561,14 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             const Extent3D resolved{resolvedFx.x, resolvedFx.y, resolvedFx.z};
             const auto levels = mipLevels(resolved, declaration.mipmap);
             const auto binding = nextBinding(registerClass(declaration.view));
+            const auto usageSummary = summarizeTextureUsage(program, name);
             TextureResourceDesc description{
                 .dimension = TextureDimension::d3,
                 .extent = resolved,
                 .format = format,
                 .mipLevels = levels,
                 .arrayLayers = 1,
-                .usage = textureUsage(declaration.view, format, textureWrittenByAnyPass(program, name),
-                                      textureUsedAsColorByAnyPass(program, name)),
+                .usage = textureUsage(declaration.view, format, usageSummary),
                 .lifetime = ResourceLifetime::persistent,
             };
             reserveBytes(static_cast<std::uint64_t>(estimateTextureBytes(description)), name);

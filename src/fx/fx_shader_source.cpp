@@ -53,7 +53,8 @@ namespace {
     if (name == "R8G8B8A8_UNORM" || name == "R8G8B8A8_SRGB" || name == "R16G16B16A16_FLOAT" ||
         name == "R32G32B32A32_FLOAT" || name.empty())
         return "float4";
-    if (name == "R8_UNORM" || name == "R16_FLOAT" || name == "R32_FLOAT" || name == "D32_FLOAT")
+    if (name == "R8_UNORM" || name == "R16_FLOAT" || name == "R32_FLOAT" || name == "D32_FLOAT" ||
+        name == "D24_UNORM_S8_UINT" || name == "D24S8")
         return "float";
     throw std::invalid_argument("FX shader source has an unsupported texture format: " + std::string(format));
 }
@@ -283,8 +284,7 @@ void appendTextureDeclarations(std::ostringstream& output, const FxProgram& prog
     for (const auto& texture : program.textures3D) {
         const auto write = dispatchWrites(dispatch, texture.name);
         const auto color = dispatchUsesAsColor(dispatch, texture.name);
-        const auto depth = dispatchUsesAsDepth(dispatch, texture.name);
-        if (color || depth) {
+        if (color) {
             output << "Texture3D<" << elementType(texture.format) << "> " << identifier(texture.name) << ";\n";
             continue;
         }
@@ -427,15 +427,15 @@ void appendSharedDeclarations(std::ostringstream& output, const FxNativeShaderSo
 } // namespace
 
 std::string makeNativeFxShaderSource(const FxProgram& program, const FxDispatch& dispatch, std::uint32_t resourceSet,
-                                     const FxNativeShaderSourceOptions& options) {
+                                     const FxNativeShaderSourceOptions& options, const FxResolvedPass* resolved) {
     std::ostringstream output;
     output << program.hlslPrefix;
     if (!program.hlslPrefix.empty() && program.hlslPrefix.back() != '\n')
         output << '\n';
     if (dispatch.kind == FxOpKind::compute) {
-        auto threads = dispatch.numThreads;
+        auto threads = resolved != nullptr ? resolved->numThreads : dispatch.numThreads;
         const bool unspecified = threads[0] == 0 && threads[1] == 0 && threads[2] == 0;
-        if (unspecified) {
+        if (resolved == nullptr && unspecified) {
             auto dimension = dispatch.outputSize.dimension;
             if (dimension < 1 || dimension > 3)
                 dimension = dispatch.outputSize.depth > 1                       ? 3U
@@ -448,7 +448,7 @@ std::string makeNativeFxShaderSource(const FxProgram& program, const FxDispatch&
                 threads = {16, 16, 1};
             else
                 threads = {8, 8, 8};
-        } else {
+        } else if (resolved == nullptr) {
             for (auto& count : threads)
                 count = std::max(count, 1U);
         }

@@ -338,6 +338,7 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                                                                           const graphics::RenderTargetDesc& target) {
     if (device_ == nullptr || device_->activeRenderer() == graphics::RendererKind::preview)
         return std::nullopt;
+    nativeFxPendingEvents_.latch(scene_.dirty(core::DirtyFlag::geometry), scene_.dirty(core::DirtyFlag::material));
     const auto& background = scene_.background();
     if (background.image && background.imagePath &&
         static_cast<std::uint64_t>(background.image->height) * 2U == background.image->width) {
@@ -468,8 +469,8 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         auto frameContext = makeNativeFrameContext(target);
         frameContext.host.onStart = nativeOnStartPending_;
         frameContext.host.onResize = nativeResizeEvent;
-        frameContext.host.onModelChanged = scene_.dirty(core::DirtyFlag::geometry);
-        frameContext.host.onMaterialChanged = scene_.dirty(core::DirtyFlag::material);
+        frameContext.host.onModelChanged = nativeFxPendingEvents_.modelChanged;
+        frameContext.host.onMaterialChanged = nativeFxPendingEvents_.materialChanged;
         auto sceneResources = nativeSceneResources_.bindings();
         const auto modelResources = nativeSceneModelRuntime_.bindings();
         std::vector<graphics::NativeSceneDerivedModel> derivedModels;
@@ -617,6 +618,7 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         auto output = nativeRenderer_.recordFrame(commands, frameContext, nativeDirty, materials, lightSampling, {},
                                                   executionResources);
         nativeOnStartPending_ = false;
+        nativeFxPendingEvents_.clear();
         if (output.has_value())
             nativeScreenRuntime_.publishFrame(commands, output->texture);
         return output;
@@ -1388,6 +1390,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
 }
 
 void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
+    nativeFxPendingEvents_.latch(scene_.dirty(core::DirtyFlag::geometry), scene_.dirty(core::DirtyFlag::material));
     if (device_ == nullptr || scene_.models().empty())
         return;
     if (scene_.dirty(core::DirtyFlag::material)) {

@@ -147,8 +147,8 @@ enum class FxDescriptorClass : std::uint8_t {
     switch (descriptorClass) {
     case FxDescriptorClass::storageImage:
         return 0;
-    case FxDescriptorClass::storageBuffer:
     case FxDescriptorClass::sampledImage:
+    case FxDescriptorClass::storageBuffer:
     case FxDescriptorClass::accelerationStructure:
         return 16;
     case FxDescriptorClass::sampler:

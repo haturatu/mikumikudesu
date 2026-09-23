@@ -393,7 +393,7 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                 if (!target.has_value())
                     throw std::logic_error("VulkanFxExecutor: clear target is unavailable");
                 if (target->buffer.valid()) {
-                    commands.clearBufferEx(target->buffer, 0);
+                    commands.clearBufferEx(target->buffer, dispatch.functional.clearValue.color);
                 } else if (target->texture.valid()) {
                     commands.clearTextureEx(target->texture, dispatch.functional.clearValue.color);
                 } else {
