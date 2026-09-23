@@ -1791,8 +1791,9 @@ bool testFxMaterialSceneRuntimeEvaluatesProjectAnnotations() {
         return check(false, "MatDesc scene runtime test directory created");
 
     const auto annotationPath = annotationDirectory / "surface.txt";
-    const std::string initialAnnotation = "Weight : frac(Time)\n_TAlbedo : albedo.ppm\n_TScreen : screen.bmp\n"
-                                          "_TDeformed : DeformerOutput\n";
+    const std::string initialAnnotation =
+        "Weight : frac(Time)\n_TAlbedo : albedo.ppm\n_TScreen : screen.bmp\n_TDeformed : DeformerOutput\n"
+        "_TExtensionless : albedoNoExt\n_TMissing : Deformer.Output\n";
     {
         std::ofstream output(annotationPath, std::ios::binary);
         output << initialAnnotation;
@@ -1805,9 +1806,15 @@ bool testFxMaterialSceneRuntimeEvaluatesProjectAnnotations() {
         output.put(static_cast<char>(128));
         output.put(static_cast<char>(255));
     }
+    const auto extensionlessImagePath = annotationDirectory / "albedoNoExt";
+    fs::copy_file(imagePath, extensionlessImagePath, fs::copy_options::overwrite_existing, filesystemError);
+    if (filesystemError)
+        return check(false, "MatDesc extensionless texture fixture copied");
 
     auto schema = dayo::core::fx::parseMaterialTemplateSchema(
-        "f.1 : Weight\n_T0 : Albedo\n_T1 : Screen\n_T2 : Deformed\nWeight : 0.75\n", "Surface");
+        "f.1 : Weight\n_T0 : Albedo\n_T1 : Screen\n_T2 : Deformed\n_T3 : Extensionless\n"
+        "_T4 : Missing\nWeight : 0.75\n",
+        "Surface");
     dayo::core::MaterialEditorState material;
     material.annotation = "materials/surface.txt";
     const std::array materials{material};
@@ -1863,23 +1870,24 @@ bool testFxMaterialSceneRuntimeEvaluatesProjectAnnotations() {
     };
     const auto textures = runtime.gpuRuntime().bindings().textures2D;
     ok &= check(
-        runtime.gpuRuntime().ready() && textures.size() == 4 &&
+        runtime.gpuRuntime().ready() && textures.size() == 5 &&
             std::ranges::find(textures, dayo::graphics::handles::TextureHandle{700, 1}) != textures.end() &&
             std::ranges::find(textures, dayo::graphics::handles::TextureHandle{701, 2}) != textures.end() &&
-            device.textureDescs_.size() == 3 && std::abs(readUploadedWeight() - 0.25F) < 1.0e-6F,
-        "MatDesc scene runtime evaluates file expressions and binds reserved/deformer textures without owning them");
+            device.textureDescs_.size() == 4 && std::abs(readUploadedWeight() - 0.25F) < 1.0e-6F,
+        "MatDesc resolver binds host/deformer resources, loads extensionless files, and ignores unresolved symbols");
     ok &= check(!runtime.descriptorLayoutChanged(),
                 "first MatDesc scene synchronization does not report a prior descriptor layout change");
 
     context.time = 2.5;
     ok &= check(runtime.sync(device, schema, models, context, &error, resolver) &&
                     std::abs(readUploadedWeight() - 0.5F) < 1.0e-6F && !runtime.descriptorLayoutChanged() &&
-                    device.textureDescs_.size() == 3,
+                    device.textureDescs_.size() == 4,
                 "MatDesc scene runtime reevaluates expressions and reuses file/external texture catalogs");
 
     const auto originalTimestamp = fs::last_write_time(annotationPath, filesystemError);
     const std::string unchangedSuffix = "\n_TAlbedo : albedo.ppm\n_TScreen : screen.bmp\n"
-                                        "_TDeformed : DeformerOutput\n";
+                                        "_TDeformed : DeformerOutput\n_TExtensionless : albedoNoExt\n"
+                                        "_TMissing : Deformer.Output\n";
     std::string sameSizeAnnotation = "Weight : 0.25";
     sameSizeAnnotation.append(initialAnnotation.size() - unchangedSuffix.size() - sameSizeAnnotation.size(), ' ');
     sameSizeAnnotation += unchangedSuffix;
