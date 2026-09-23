@@ -189,8 +189,18 @@ struct FxLogicalBinding {
     bool writable{};
 };
 
+struct FxMaterialDescriptorPlan {
+    FxLogicalBinding materialIndices;
+    FxLogicalBinding textureIndices2D;
+    FxLogicalBinding textureIndices3D;
+    FxLogicalBinding values;
+    FxLogicalBinding textures2D;
+    FxLogicalBinding textures3D;
+};
+
 struct FxPassBindingPlan {
     std::vector<FxLogicalBinding> bindings;
+    std::optional<FxMaterialDescriptorPlan> material;
 
     [[nodiscard]] const FxLogicalBinding* find(std::string_view resource) const noexcept {
         for (const auto& binding : bindings)

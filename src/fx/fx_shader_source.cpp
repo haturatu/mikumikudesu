@@ -166,13 +166,18 @@ void appendLegacyCompatibilityDeclarations(std::ostringstream& output, const FxP
         output << "Texture2D<float4> GBuffer : register(t12, space0);\n";
 }
 
-void appendMaterialDeclarations(std::ostringstream& output, const FxProgram& program, const FxDispatch& dispatch,
-                                std::uint32_t resourceSet, std::uint32_t& sampledBinding) {
+void appendMaterialDeclarations(std::ostringstream& output, const FxProgram& program,
+                                const FxPassBindingPlan& passBindings) {
     if (!program.materialDescriptor.has_value())
         return;
+    if (!passBindings.material.has_value())
+        throw std::logic_error("FX MatDesc descriptor plan is missing");
     core::fx::MaterialTemplateSchema fallbackMaterial;
     const auto& material = parseMaterialTemplate(program, fallbackMaterial);
     const auto& name = program.materialDescriptor->name;
+    const auto registerIndex = [](const FxLogicalBinding& binding) {
+        return binding.binding - fxDescriptorBindingBase(binding.descriptorClass);
+    };
     output << "struct " << identifier(name) << "Value {\n";
     if (material.fields.empty())
         output << "    uint _DayoEmpty;\n";
@@ -195,26 +200,27 @@ void appendMaterialDeclarations(std::ostringstream& output, const FxProgram& pro
             output << "    bool has" << field.name << "; Texture3D<float4> " << field.name << ";\n";
     output << "};\n";
 
-    const auto indexBinding = sampledBinding++;
-    const auto textureIndexBinding = sampledBinding++;
-    const auto texture3dIndexBinding = sampledBinding++;
-    const auto valueBinding = sampledBinding++;
-    const auto textureBinding = sampledBinding++;
+    const auto& descriptors = *passBindings.material;
+    const auto indexBinding = registerIndex(descriptors.materialIndices);
+    const auto textureIndexBinding = registerIndex(descriptors.textureIndices2D);
+    const auto texture3dIndexBinding = registerIndex(descriptors.textureIndices3D);
+    const auto valueBinding = registerIndex(descriptors.values);
+    const auto textureBinding = registerIndex(descriptors.textures2D);
     std::uint32_t textureSlotCount = 0;
     for (const auto& field : material.textures)
         textureSlotCount = std::max(textureSlotCount, field.index + 1U);
     output << "StructuredBuffer<uint> " << identifier(name) << "_idx : register(t" << indexBinding
-           << resourceSetSuffix(resourceSet) << ");\n";
+           << resourceSetSuffix(descriptors.materialIndices.set) << ");\n";
     output << "StructuredBuffer<uint> " << identifier(name) << "_tex : register(t" << textureIndexBinding
-           << resourceSetSuffix(resourceSet) << ");\n";
+           << resourceSetSuffix(descriptors.textureIndices2D.set) << ");\n";
     output << "StructuredBuffer<uint> " << identifier(name) << "_tex3D : register(t" << texture3dIndexBinding
-           << resourceSetSuffix(resourceSet) << ");\n";
+           << resourceSetSuffix(descriptors.textureIndices3D.set) << ");\n";
     output << "StructuredBuffer<" << identifier(name) << "Value> " << identifier(name) << "_value : register(t"
-           << valueBinding << resourceSetSuffix(resourceSet) << ");\n";
+           << valueBinding << resourceSetSuffix(descriptors.values.set) << ");\n";
     output << "Texture2D<float4> " << identifier(name) << "_texture[] : register(t" << textureBinding
-           << resourceSetSuffix(resourceSet) << ");\n";
+           << resourceSetSuffix(descriptors.textures2D.set) << ");\n";
     output << "Texture3D<float4> " << identifier(name) << "_texture3D[] : register(t0"
-           << resourceSetSuffix(resourceSet + 1U) << ");\n";
+           << resourceSetSuffix(descriptors.textures3D.set) << ");\n";
     output << identifier(name) << "Value Get" << identifier(name) << "Value(uint ID, uint subID) {\n"
            << "    uint imat = " << identifier(name) << "_idx[ID] + subID;\n"
            << "    return " << identifier(name) << "_value[imat];\n}\n";
@@ -246,7 +252,6 @@ void appendMaterialDeclarations(std::ostringstream& output, const FxProgram& pro
                << "result.has" << field.name << " ? " << textureIndex << " : 0)];\n";
     }
     output << "    return result;\n}\n";
-    static_cast<void>(dispatch);
 }
 
 void appendControllerBlock(std::ostringstream& output, const FxProgram& program,
@@ -469,17 +474,9 @@ std::string makeNativeFxShaderSource(const FxProgram& program, const FxDispatch&
     appendLegacyCompatibilityDeclarations(output, program);
     output << "#ifdef " << passMacro(dispatch.name) << "\n";
     const auto bindings = planPassBindings(program, dispatch, resourceSet);
-    std::uint32_t sampledBinding = 0;
-    for (const auto& binding : bindings.bindings) {
-        if (binding.descriptorClass == FxDescriptorClass::sampledImage ||
-            (binding.descriptorClass == FxDescriptorClass::storageBuffer && !binding.writable)) {
-            const auto registerIndex = binding.binding - fxDescriptorBindingBaseForUse(binding.descriptorClass, false);
-            sampledBinding = std::max(sampledBinding, registerIndex + 1U);
-        }
-    }
     appendTextureDeclarations(output, program, dispatch, resourceSet, bindings);
     appendBufferDeclarations(output, program, dispatch, resourceSet, bindings);
-    appendMaterialDeclarations(output, program, dispatch, resourceSet, sampledBinding);
+    appendMaterialDeclarations(output, program, bindings);
     appendSamplerDeclarations(output, program, resourceSet, bindings);
     output << "#endif\n";
     output << program.generatedCode;
