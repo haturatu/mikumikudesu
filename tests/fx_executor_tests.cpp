@@ -599,6 +599,24 @@ bool testResolvedPassPlanning() {
                     generatedVolumeShader.find("#define YRZ_NUMTHREADS [numthreads(8,8,8)]") != std::string::npos,
                 "3D shader numthreads and dispatch groups both use the resolved volume extent");
 
+    fx::FxProgram depthProgram;
+    core::EffectTexture depthTexture;
+    depthTexture.name = "Depth";
+    depthTexture.format = "D24_UNORM_S8_UINT";
+    depthTexture.view = "DSV";
+    depthProgram.textures.push_back(depthTexture);
+    fx::FxDispatch depthAttachmentPass;
+    depthAttachmentPass.name = "depth-attachment";
+    depthAttachmentPass.resources.push_back({"Depth", true, fx::FxResourceRole::depthAttachment});
+    const auto depthAttachmentSource = fx::makeNativeFxShaderSource(depthProgram, depthAttachmentPass, 0);
+    fx::FxDispatch depthSamplePass;
+    depthSamplePass.name = "depth-sample";
+    depthSamplePass.resources.push_back({"Depth", false, fx::FxResourceRole::sampled});
+    const auto depthSampleSource = fx::makeNativeFxShaderSource(depthProgram, depthSamplePass, 0);
+    ok &= check(depthAttachmentSource.find("Texture2D<float> Depth") == std::string::npos &&
+                    depthSampleSource.find("Texture2D<float> Depth : register(t0") != std::string::npos,
+                "D24S8 is omitted as an attachment-only declaration and emitted as a sampled float texture");
+
     fx::FxProgram bindingProgram;
     core::EffectTexture textureSrv;
     textureSrv.name = "TexSRV";
