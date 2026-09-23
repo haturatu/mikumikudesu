@@ -1,4 +1,7 @@
 #include "core/model_probe.hpp"
+#include "fx/fx_compiler.hpp"
+#include "fx/fx_shader_compiler.hpp"
+#include "graphics/fx_pipeline_runtime.hpp"
 #include "graphics/vulkan/vulkan_device.hpp"
 #include "platform/window.hpp"
 #include "ui/theme.hpp"
@@ -139,6 +142,55 @@ bool imagesMatch(const dayo::core::ImageRgba8& left, const dayo::core::ImageRgba
             ++mismatched;
     }
     return mismatched <= left.pixels.size() / 100U;
+}
+
+bool createsD24S8StencilPipeline(dayo::graphics::VulkanDevice& device) {
+    dayo::fx::FxShaderCompiler compiler;
+    if (!compiler.available())
+        return true;
+
+    dayo::fx::FxProgram program;
+    program.hlsl = "float4 VS(uint id : SV_VertexID) : SV_Position { "
+                   "return float4(float(id == 0), 0.0, 0.0, 1.0); }\n"
+                   "float4 PS() : SV_Target0 { return float4(1.0, 0.0, 0.0, 1.0); }\n";
+    dayo::core::EffectTexture color;
+    color.name = "Color";
+    color.format = "R8G8B8A8_UNORM";
+    color.view = "RTV";
+    program.textures.push_back(color);
+    dayo::core::EffectTexture depth;
+    depth.name = "Depth";
+    depth.format = "D24_UNORM_S8_UINT";
+    depth.view = "DSV";
+    program.textures.push_back(depth);
+
+    dayo::fx::FxRasterDispatch raster;
+    raster.vertexShader = "VS";
+    raster.pixelShader = "PS";
+    raster.colorAttachments.push_back({.name = "Color"});
+    raster.depthAttachment = dayo::core::EffectAttachment{.name = "Depth"};
+    raster.graphics.depthStencil.depthEnable = true;
+    raster.graphics.depthStencil.stencilEnable = true;
+    dayo::fx::FxDispatch dispatch;
+    dispatch.name = "stencil-test";
+    dispatch.kind = dayo::fx::FxOpKind::raster;
+    dispatch.executable = std::move(raster);
+    program.passes.push_back(std::move(dispatch));
+
+    const auto context = dayo::fx::makeFxFrameContext(0.0F, 0, 64, 64, 0, 0, 0, 0, 1, 1);
+    const auto plan = dayo::fx::FxCompiler{}.plan(program, context);
+    const auto layout = device.createPipelineLayoutEx({});
+    dayo::graphics::FxPipelineRuntime runtime;
+    std::string error;
+    const bool built = runtime.build(
+        device, program, plan, compiler,
+        [layout](const dayo::fx::FxDispatch&) {
+            return std::optional<dayo::graphics::handles::PipelineLayoutHandle>{layout};
+        },
+        &error);
+    runtime.reset();
+    device.destroyPipelineLayoutEx(layout);
+    return check(built, error.empty() ? "D24S8 stencil pipeline is valid under Vulkan validation" : error);
 }
 
 dayo::core::ImageRgba8 renderCase(dayo::graphics::VulkanDevice& device, std::span<const PreviewVertex> vertices,
@@ -734,6 +786,8 @@ int main() {
             std::cerr << "FAIL: native renderer was not recorded for offscreen output\n";
             return 1;
         }
+        if (!createsD24S8StencilPipeline(device))
+            return 1;
 #if DAYO_HAS_IMGUI
         if (!rendersInteractiveViewport(device)) {
             std::cerr << "FAIL: interactive preview viewport did not render or resize\n";
