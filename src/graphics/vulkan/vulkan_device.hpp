@@ -131,6 +131,7 @@ class VulkanDevice final : public Device {
     void copyTextureEx(handles::TextureHandle source, handles::TextureHandle destination) override;
     void clearTextureEx(handles::TextureHandle texture, const std::array<float, 4>& value) override;
     void clearBufferEx(handles::BufferHandle buffer, std::uint32_t value) override;
+    void clearBufferEx(handles::BufferHandle buffer, const std::array<float, 4>& value) override;
     void generateMipmapsEx(handles::TextureHandle texture) override;
     void uploadTextureEx(handles::TextureHandle texture, std::span<const std::uint8_t> bytes, std::uint32_t mipLevel,
                          std::uint32_t arrayLayer) override;
@@ -334,6 +335,8 @@ class VulkanDevice final : public Device {
     void recordClearTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture,
                             const std::array<float, 4>& value);
     void recordClearBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle buffer, std::uint32_t value);
+    void recordClearBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle buffer,
+                           const std::array<float, 4>& value);
     void recordGenerateMipmaps(VkCommandBuffer commandBuffer, handles::TextureHandle texture);
     void recordCopyBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle source,
                           handles::BufferHandle destination);
