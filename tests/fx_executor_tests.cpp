@@ -2853,7 +2853,13 @@ bool testFxPipelineRuntime() {
         .name = "Surface", .templatePath = "material-template.txt", .defaultFile = {}};
     materialProgram.hlsl = "#ifdef YRZ_PASS_deform\n"
                            "[numthreads(8, 4, 1)] void main(uint3 id : SV_DispatchThreadID) { "
-                           "NativeOutput[id.xy] = float4(0, 0, 0, 1); }\n"
+                           "SurfaceTexture surface = GetSurfaceTexture(0, 0); "
+                           "SurfaceTexture3D volume = GetSurfaceTexture3D(0, 0); "
+                           "float4 albedo = surface.hasAlbedoMap ? "
+                           "surface.AlbedoMap.Load(int3(0, 0, 0)) : float4(1, 0, 1, 1); "
+                           "float4 volumeValue = volume.hasVolumeMap ? "
+                           "volume.VolumeMap.Load(int4(0, 0, 0, 0)) : float4(0, 0, 0, 0); "
+                           "NativeOutput[id.xy] = albedo + volumeValue; }\n"
                            "#endif\n";
     const auto materialGenerated = dayo::fx::makeNativeFxShaderSource(materialProgram, dispatch, 7, sharedSource);
     ok &= check(materialGenerated.find("uint tidx = imat * 3;") != std::string::npos &&
@@ -2873,7 +2879,7 @@ bool testFxPipelineRuntime() {
                                   materialGenerated;
     const auto materialArtifact = compiler.compile(materialCompileRequest);
     ok &= check(!materialArtifact.spirv.empty() && materialArtifact.spirv.front() == 0x07230203U,
-                "generated MatDesc HLSL with 2D and 3D texture objects compiles to SPIR-V");
+                "MatDesc 2D and 3D getters with texture loads compile to SPIR-V");
     auto twoDimensionalMaterialProgram = materialProgram;
     twoDimensionalMaterialProgram.materialSchema =
         dayo::core::fx::parseMaterialTemplateSchema("f.1 : Roughness\n_T0 : Albedo\n", "Surface");
