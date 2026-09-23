@@ -475,9 +475,6 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         const auto modelResources = nativeSceneModelRuntime_.bindings();
         std::vector<graphics::NativeSceneDerivedModel> derivedModels;
         derivedModels.reserve(nativeSceneModelData_.size());
-#if DAYO_HAS_IMGUI
-        const auto* selected = scene_.selectedModel();
-#endif
         for (std::size_t modelIndex = 0; modelIndex < nativeSceneModelData_.size(); ++modelIndex) {
             if (modelIndex >= nativeGeometry_.size())
                 throw std::runtime_error("native scene derived model table is out of sync with geometry");
@@ -487,7 +484,7 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
             const auto* instance = scene_.model(geometry.modelId);
             std::int32_t selectedMaterial = -1;
 #if DAYO_HAS_IMGUI
-            if (selected != nullptr && selected->id == geometry.modelId)
+            if (const auto* selected = scene_.selectedModel(); selected != nullptr && selected->id == geometry.modelId)
                 selectedMaterial = uiState_.selectedMaterial;
 #endif
             derivedModels.push_back(
