@@ -2,12 +2,44 @@
 
 #include "core/effect.hpp"
 
+#include <cstdint>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
 
 namespace dayo::core::fx {
+
+enum class MaterialFieldType : std::uint8_t { floatingPoint, signedInteger };
+enum class MaterialTextureDimension : std::uint8_t { twoD, threeD };
+
+struct MaterialFieldSchema {
+    std::string name;
+    MaterialFieldType type{MaterialFieldType::floatingPoint};
+    std::uint32_t components{1};
+};
+
+struct MaterialTextureSchema {
+    std::string name;
+    MaterialTextureDimension dimension{MaterialTextureDimension::twoD};
+    std::uint32_t index{};
+    bool mipmapped{};
+};
+
+// Ordered schema for an upstream MatDesc template. sourceText retains
+// directives, defaults, enum declarations, comments, and unknown extensions
+// until their runtime semantics are implemented.
+struct MaterialTemplateSchema {
+    std::string name;
+    std::vector<MaterialFieldSchema> fields;
+    std::vector<MaterialTextureSchema> textures;
+    std::string sourceText;
+};
+
+[[nodiscard]] MaterialTemplateSchema parseMaterialTemplateSchema(std::string_view source, std::string name = {});
+[[nodiscard]] MaterialTemplateSchema loadMaterialTemplateSchema(const std::filesystem::path& path,
+                                                                std::string name = {});
 
 // Linker-only material layer built on top of MaterialParameterBlock.
 // No GPU work happens here: this layer folds resource aliases into

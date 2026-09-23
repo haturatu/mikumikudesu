@@ -4,8 +4,14 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <iterator>
+#include <limits>
+#include <stdexcept>
+#include <system_error>
 #include <unordered_set>
 
 namespace dayo::core::fx {
@@ -48,6 +54,26 @@ std::string canonicalTagSet(const std::vector<std::string>& tags) {
     return out;
 }
 
+std::string materialIdentifier(std::string_view value) {
+    std::string result;
+    result.reserve(value.size());
+    for (const auto character : value) {
+        const auto byte = static_cast<unsigned char>(character);
+        result.push_back(std::isalnum(byte) || character == '_' ? character : '_');
+    }
+    if (result.empty() || std::isdigit(static_cast<unsigned char>(result.front())))
+        result.insert(result.begin(), '_');
+    return result;
+}
+
+std::uint32_t parseMaterialIndex(std::string_view text, std::string_view token) {
+    std::uint32_t value{};
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+        throw std::invalid_argument("invalid upstream material declaration: " + std::string(token));
+    return value;
+}
+
 std::string resolveImpl(std::string_view id, const std::unordered_map<std::string, MaterialResourceDecl>& byId,
                         std::vector<std::string>& stack) {
     const std::string key = trimCopy(id);
@@ -85,6 +111,72 @@ std::string resolveImpl(std::string_view id, const std::unordered_map<std::strin
 }
 
 } // namespace
+
+MaterialTemplateSchema parseMaterialTemplateSchema(std::string_view source, std::string name) {
+    MaterialTemplateSchema result;
+    result.name = std::move(name);
+    result.sourceText = source;
+
+    std::size_t lineNumber = 0;
+    std::size_t lineStart = 0;
+    while (lineStart < source.size()) {
+        ++lineNumber;
+        const auto lineEnd = source.find('\n', lineStart);
+        const auto length = lineEnd == std::string_view::npos ? source.size() - lineStart : lineEnd - lineStart;
+        auto line = source.substr(lineStart, length);
+        if (lineNumber == 1 && line.starts_with("\xEF\xBB\xBF"))
+            line.remove_prefix(3);
+        if (const auto comment = line.find('#'); comment != std::string_view::npos)
+            line = line.substr(0, comment);
+        const auto separator = line.find(':');
+        if (separator != std::string_view::npos) {
+            const auto left = trimCopy(line.substr(0, separator));
+            const auto right = trimCopy(line.substr(separator + 1));
+            if (!left.empty() && !right.empty()) {
+                if ((left[0] == 'f' || left[0] == 'i') && left.size() >= 3 && left[1] == '.') {
+                    const auto componentCount = parseMaterialIndex(std::string_view(left).substr(2), left);
+                    if (componentCount == 0 || componentCount > 4)
+                        throw std::invalid_argument("upstream material field component count is out of range at line " +
+                                                    std::to_string(lineNumber));
+                    result.fields.push_back(
+                        {.name = materialIdentifier(right),
+                         .type = left[0] == 'f' ? MaterialFieldType::floatingPoint : MaterialFieldType::signedInteger,
+                         .components = componentCount});
+                } else if (left.starts_with("_T") || left.starts_with("_V")) {
+                    std::size_t digitsEnd = 2;
+                    while (digitsEnd < left.size() && std::isdigit(static_cast<unsigned char>(left[digitsEnd])))
+                        ++digitsEnd;
+                    if (digitsEnd == 2 || (digitsEnd != left.size() && left.substr(digitsEnd) != "m"))
+                        throw std::invalid_argument("invalid upstream material texture declaration at line " +
+                                                    std::to_string(lineNumber) + ": " + left);
+                    const auto index = parseMaterialIndex(std::string_view(left).substr(2, digitsEnd - 2), left);
+                    if (index == std::numeric_limits<std::uint32_t>::max())
+                        throw std::invalid_argument("upstream material texture index is out of range at line " +
+                                                    std::to_string(lineNumber));
+                    result.textures.push_back({.name = materialIdentifier(right),
+                                               .dimension = left[1] == 'V' ? MaterialTextureDimension::threeD
+                                                                           : MaterialTextureDimension::twoD,
+                                               .index = index,
+                                               .mipmapped = digitsEnd < left.size()});
+                }
+            }
+        }
+        if (lineEnd == std::string_view::npos)
+            break;
+        lineStart = lineEnd + 1;
+    }
+    return result;
+}
+
+MaterialTemplateSchema loadMaterialTemplateSchema(const std::filesystem::path& path, std::string name) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        throw std::runtime_error("cannot open upstream material template: " + path.string());
+    const std::string source((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    if (input.bad())
+        throw std::runtime_error("cannot read upstream material template: " + path.string());
+    return parseMaterialTemplateSchema(source, std::move(name));
+}
 
 std::size_t MaterialTextureKeyHash::operator()(const MaterialTextureKey& key) const noexcept {
     std::size_t seed = std::hash<std::string>{}(key.path);
