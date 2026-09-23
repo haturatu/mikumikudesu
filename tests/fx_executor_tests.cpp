@@ -40,6 +40,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1788,9 +1789,10 @@ bool testFxMaterialSceneRuntimeEvaluatesProjectAnnotations() {
         return check(false, "MatDesc scene runtime test directory created");
 
     const auto annotationPath = annotationDirectory / "surface.txt";
+    const std::string initialAnnotation = "Weight : frac(Time)\n_TAlbedo : albedo.ppm\n";
     {
         std::ofstream output(annotationPath, std::ios::binary);
-        output << "Weight : frac(Time)\n_TAlbedo : albedo.ppm\n";
+        output << initialAnnotation;
     }
     const auto imagePath = annotationDirectory / "albedo.ppm";
     {
@@ -1848,10 +1850,28 @@ bool testFxMaterialSceneRuntimeEvaluatesProjectAnnotations() {
             !runtime.descriptorLayoutChanged() && device.textureDescs_.size() == 3,
         "MatDesc scene runtime reevaluates cached expressions without reallocating an unchanged texture catalog");
 
+    const auto originalTimestamp = fs::last_write_time(annotationPath, filesystemError);
+    const std::string unchangedSuffix = "\n_TAlbedo : albedo.ppm\n";
+    std::string sameSizeAnnotation = "Weight : 0.25";
+    sameSizeAnnotation.append(initialAnnotation.size() - unchangedSuffix.size() - sameSizeAnnotation.size(), ' ');
+    sameSizeAnnotation += unchangedSuffix;
+    {
+        std::ofstream output(annotationPath, std::ios::binary | std::ios::trunc);
+        output << sameSizeAnnotation;
+    }
+    fs::last_write_time(annotationPath, originalTimestamp, filesystemError);
+    ok &= check(!filesystemError && sameSizeAnnotation.size() == initialAnnotation.size(),
+                "MatDesc annotation fixture changes content while preserving size and timestamp");
+    std::this_thread::sleep_for(std::chrono::milliseconds{550});
+    ok &=
+        check(runtime.sync(device, schema, models, context, &error) && std::abs(readUploadedWeight() - 0.25F) < 1.0e-6F,
+              "MatDesc annotation polling detects same-size edits with unchanged filesystem timestamps");
+
     {
         std::ofstream output(annotationPath, std::ios::binary | std::ios::trunc);
         output << "Weight : frac(Time)\n";
     }
+    std::this_thread::sleep_for(std::chrono::milliseconds{550});
     ok &= check(runtime.sync(device, schema, models, context, &error) && runtime.descriptorLayoutChanged() &&
                     runtime.gpuRuntime().bindings().textures2D.size() == 1,
                 "MatDesc scene runtime reports descriptor-array shape changes after annotation relinking");

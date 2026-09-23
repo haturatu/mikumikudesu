@@ -17,6 +17,7 @@ namespace dayo::graphics {
 namespace {
 
 constexpr std::uintmax_t kMaxAnnotationBytes = 16U * 1024U * 1024U;
+constexpr auto kAnnotationScanInterval = std::chrono::milliseconds{500};
 
 void setError(std::string* error, std::string value) {
     if (error != nullptr)
@@ -113,7 +114,11 @@ void setError(std::string* error, std::string value) {
     return result;
 }
 
-[[nodiscard]] std::string readAnnotationFile(const std::filesystem::path& path, std::uintmax_t expectedSize) {
+[[nodiscard]] std::string readAnnotationFile(const std::filesystem::path& path) {
+    std::error_code sizeError;
+    const auto expectedSize = std::filesystem::file_size(path, sizeError);
+    if (sizeError)
+        throw std::runtime_error("cannot stat MatDesc annotation: " + path.string());
     if (expectedSize > kMaxAnnotationBytes)
         throw std::length_error("MatDesc annotation exceeds 16 MiB: " + path.string());
     std::ifstream input(path, std::ios::binary);
@@ -125,6 +130,17 @@ void setError(std::string* error, std::string value) {
     if (result.size() > kMaxAnnotationBytes)
         throw std::length_error("MatDesc annotation exceeds 16 MiB: " + path.string());
     return result;
+}
+
+[[nodiscard]] std::uint64_t annotationHash(std::string_view text) noexcept {
+    // FNV-1a lets periodic scans detect same-size edits even on filesystems
+    // whose timestamp resolution is too coarse to distinguish them.
+    std::uint64_t hash = 14695981039346656037ULL;
+    for (const auto byte : text) {
+        hash ^= static_cast<unsigned char>(byte);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
 }
 
 } // namespace
@@ -152,17 +168,10 @@ FxMaterialSceneRuntime::resolveAnnotation(const FxMaterialSceneModel& model,
         std::error_code error;
         if (!std::filesystem::is_regular_file(candidate, error) || error)
             continue;
-        const auto size = std::filesystem::file_size(candidate, error);
-        if (error)
-            continue;
-        const auto modified = std::filesystem::last_write_time(candidate, error);
-        if (error)
-            continue;
         result.kind = AnnotationKind::file;
         result.path = std::filesystem::absolute(candidate).lexically_normal();
         result.baseDirectory = result.path.parent_path();
-        result.modified = modified;
-        result.size = size;
+        result.contentHash = annotationHash(readAnnotationFile(result.path));
         return result;
     }
 
@@ -175,7 +184,7 @@ FxMaterialSceneRuntime::resolveAnnotation(const FxMaterialSceneModel& model,
 }
 
 bool FxMaterialSceneRuntime::matches(const core::fx::MaterialTemplateSchema& schema,
-                                     std::span<const FxMaterialSceneModel> models) const {
+                                     std::span<const FxMaterialSceneModel> models) {
     if (!hasSchema_ || !sameSchema(schema, schemaSnapshot_) || models.size() != models_.size())
         return false;
     for (std::size_t modelIndex = 0; modelIndex < models.size(); ++modelIndex) {
@@ -192,9 +201,28 @@ bool FxMaterialSceneRuntime::matches(const core::fx::MaterialTemplateSchema& sch
             if (source.annotation.generic_string() != material.annotation.original ||
                 source.parameters.values() != material.parameters.values())
                 return false;
-            if (resolveAnnotation(input, source) != material.annotation)
-                return false;
         }
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now < nextAnnotationScan_)
+        return true;
+
+    nextAnnotationScan_ = now + kAnnotationScanInterval;
+    try {
+        for (std::size_t modelIndex = 0; modelIndex < models.size(); ++modelIndex) {
+            const auto& input = models[modelIndex];
+            const auto& cached = models_[modelIndex];
+            for (std::size_t materialIndex = 0; materialIndex < input.materials.size(); ++materialIndex) {
+                if (resolveAnnotation(input, input.materials[materialIndex]) !=
+                    cached.materials[materialIndex].annotation)
+                    return false;
+            }
+        }
+    } catch (...) {
+        // Re-link through the normal error-reporting path if polling cannot
+        // inspect a file (for example, a concurrent delete or permission change).
+        return false;
     }
     return true;
 }
@@ -219,7 +247,7 @@ bool FxMaterialSceneRuntime::link(const core::fx::MaterialTemplateSchema& schema
                 instance.templateName = schema.name;
                 instance.overrides = material.parameters;
                 if (annotation.kind == AnnotationKind::file) {
-                    const auto source = readAnnotationFile(annotation.path, annotation.size);
+                    const auto source = readAnnotationFile(annotation.path);
                     instance.annotationOverrides =
                         core::fx::parseMaterialAnnotation(schema, source, annotation.baseDirectory);
                 } else if (annotation.kind == AnnotationKind::inlineText) {
@@ -238,6 +266,7 @@ bool FxMaterialSceneRuntime::link(const core::fx::MaterialTemplateSchema& schema
         }
         schemaSnapshot_ = schema;
         models_ = std::move(linkedModels);
+        nextAnnotationScan_ = std::chrono::steady_clock::now() + kAnnotationScanInterval;
         hasSchema_ = true;
         return true;
     } catch (const std::exception& exception) {
@@ -308,6 +337,7 @@ void FxMaterialSceneRuntime::reset() noexcept {
     gpuRuntime_.reset();
     schemaSnapshot_ = {};
     models_.clear();
+    nextAnnotationScan_ = {};
     hasSchema_ = false;
     descriptorLayoutChanged_ = false;
 }

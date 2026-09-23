@@ -5,6 +5,7 @@
 #include "fx/fx_frame.hpp"
 #include "graphics/fx_material_gpu_runtime.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <span>
@@ -53,8 +54,7 @@ class FxMaterialSceneRuntime {
         std::string original;
         std::filesystem::path path;
         std::filesystem::path baseDirectory;
-        std::filesystem::file_time_type modified{};
-        std::uintmax_t size{};
+        std::uint64_t contentHash{};
         std::string text;
 
         bool operator==(const AnnotationSource&) const = default;
@@ -80,13 +80,14 @@ class FxMaterialSceneRuntime {
     [[nodiscard]] AnnotationSource resolveAnnotation(const FxMaterialSceneModel& model,
                                                      const core::MaterialEditorState& material) const;
     [[nodiscard]] bool matches(const core::fx::MaterialTemplateSchema& schema,
-                               std::span<const FxMaterialSceneModel> models) const;
+                               std::span<const FxMaterialSceneModel> models);
     [[nodiscard]] bool link(const core::fx::MaterialTemplateSchema& schema,
                             std::span<const FxMaterialSceneModel> models, std::string* error);
 
     FxMaterialGpuRuntime gpuRuntime_;
     core::fx::MaterialTemplateSchema schemaSnapshot_;
     std::vector<CachedModel> models_;
+    std::chrono::steady_clock::time_point nextAnnotationScan_{};
     bool hasSchema_{};
     bool descriptorLayoutChanged_{};
 };
