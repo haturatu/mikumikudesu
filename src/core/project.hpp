@@ -2,10 +2,12 @@
 
 #include "core/motion.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace dayo::core {
@@ -13,6 +15,37 @@ namespace dayo::core {
 struct ProjectAsset {
     std::string kind;
     std::filesystem::path path;
+    std::optional<std::size_t> ownerModelIndex;
+    std::optional<std::int32_t> upstreamId;
+    std::vector<std::vector<std::string>> materialSourceFiles;
+
+    ProjectAsset() = default;
+    ProjectAsset(std::string assetKind, std::filesystem::path assetPath)
+        : kind(std::move(assetKind)), path(std::move(assetPath)) {}
+};
+
+struct ProjectModelState {
+    std::filesystem::path source;
+    std::optional<std::int32_t> upstreamId;
+    std::vector<std::string> bones;
+    std::vector<std::string> morphs;
+    std::vector<std::string> materials;
+    std::vector<std::string> materialAnnotations;
+    std::int32_t motionOrder{};
+    std::int32_t deformOrder{};
+    std::int32_t postprocessOrder{};
+    std::int32_t rasterOrder{};
+    std::uint32_t cloneCount{1};
+    bool visible{true};
+};
+
+struct ProjectEditorState {
+    std::uint32_t samplesPerFrame{16};
+    bool motionBlur{};
+    std::uint32_t outputWidth{1920};
+    std::uint32_t outputHeight{1080};
+    float recordFps{30.0F};
+    float animationSpeed{1.0F};
 };
 
 struct DayoProject {
@@ -23,6 +56,11 @@ struct DayoProject {
     float frame{};
     bool playing{true};
     std::vector<ProjectAsset> assets;
+    std::vector<ProjectModelState> models;
+    ProjectEditorState editor;
+    // The upstream JSON object is retained verbatim semantically so fields
+    // unknown to desu survive a load/save cycle.
+    std::string upstreamDocumentJson;
     std::optional<VmdMotion> embeddedMotion;
     // Upstream v3 stores one camera/light subset followed by one subset per
     // model. embeddedMotion remains as the merged single-model compatibility

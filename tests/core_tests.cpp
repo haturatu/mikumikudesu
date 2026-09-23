@@ -317,15 +317,43 @@ int main() {
         project.renderer = "subayai";
         project.frame = 42.5F;
         project.playing = false;
+        project.editor.samplesPerFrame = 32;
+        project.editor.motionBlur = true;
+        project.editor.outputWidth = 2560;
+        project.editor.outputHeight = 1440;
+        project.editor.animationSpeed = 1.5F;
+        project.upstreamDocumentJson =
+            R"({"rootFuture":7,"MikuMikuDayo":{"futureField":{"keep":42},"editor":{"futureSetting":"keep"},"models":[{"futureModel":"keep"}],"fxinfo":[{"id":1,"filename":"effect.fxdayo","futureEffect":"keep"}]}})";
         project.embeddedVmdayo = {0x56, 0x4D, 0x44, 0x01};
         project.assets.push_back({"pmx", std::filesystem::absolute("model.pmx")});
         project.assets.push_back({"vmd", std::filesystem::absolute("motion.vmd")});
+        dayo::core::ProjectAsset effect{"effect", std::filesystem::absolute("effect.fxdayo")};
+        effect.ownerModelIndex = 0;
+        effect.upstreamId = 1;
+        effect.materialSourceFiles = {{"material-0.txt"}};
+        project.assets.push_back(effect);
+        dayo::core::ProjectModelState modelState;
+        modelState.bones = {"root", "head"};
+        modelState.morphs = {"smile"};
+        modelState.materials = {"skin"};
+        modelState.materialAnnotations = {"skin.mat"};
+        modelState.motionOrder = 5;
+        modelState.cloneCount = 3;
+        project.models.push_back(modelState);
         dayo::core::saveProject(projectPath, project);
         const auto loaded = dayo::core::loadProject(projectPath);
         ok &= check(loaded.renderer == "subayai" && loaded.frame == 42.5F && !loaded.playing,
                     ".dayo project settings round trip");
-        ok &=
-            check(loaded.assets.size() == 2 && loaded.assets[0].path.is_absolute(), ".dayo relative asset round trip");
+        ok &= check(loaded.assets.size() == 3 && loaded.assets[0].path.is_absolute() &&
+                        loaded.assets[2].ownerModelIndex == 0 && loaded.assets[2].upstreamId == 1 &&
+                        loaded.assets[2].materialSourceFiles == effect.materialSourceFiles,
+                    ".dayo effect owner and MatDesc source round trip");
+        ok &= check(loaded.models.size() == 1 && loaded.models[0].bones == modelState.bones &&
+                        loaded.models[0].materialAnnotations == modelState.materialAnnotations &&
+                        loaded.models[0].cloneCount == 3 && loaded.editor.samplesPerFrame == 32 &&
+                        loaded.editor.motionBlur && loaded.editor.outputWidth == 2560 &&
+                        loaded.editor.animationSpeed == 1.5F,
+                    ".dayo model order/material metadata and editor output settings round trip");
         ok &= check(loaded.version == 3, ".dayo v3 writer");
         ok &= check(loaded.embeddedVmdayo == project.embeddedVmdayo, ".dayo embedded VMdayo payload");
         project.embeddedVmdayo.clear();
@@ -346,13 +374,24 @@ int main() {
             ok &= check(contents.find("\"MikuMikuDayo\"") != std::string::npos &&
                             contents.find("\"cereal_class_version\": 3") != std::string::npos,
                         "official .dayo v3 JSON header");
+            ok &= check(contents.find("\"futureField\"") != std::string::npos,
+                        "unknown upstream root field survives save");
+            ok &= check(contents.find("\"futureSetting\"") != std::string::npos,
+                        "unknown upstream editor field survives save");
+            ok &= check(contents.find("\"futureModel\"") != std::string::npos,
+                        "unknown upstream model field survives save");
+            ok &= check(contents.find("\"futureEffect\"") != std::string::npos,
+                        "unknown upstream effect field survives save");
         }
         {
             std::ofstream legacy(projectPath, std::ios::binary | std::ios::trunc);
             legacy << "[MikuMikuDayo]\n"
                       "{\"MikuMikuDayo\":{\"ver\":1,\"assetPath\":\".\","
-                      "\"editor\":{\"frame\":12},\"models\":[{\"filename\":\"legacy.pmx\"}],"
-                      "\"fxinfo\":[]}}\n[BinaryDayo]\n";
+                      "\"editor\":{\"frame\":12,\"motionOrder\":[0]},"
+                      "\"models\":[{\"id\":7,\"filename\":\"legacy.pmx\",\"bones\":[\"Bone\"],"
+                      "\"morphs\":[\"smile\"],\"materials\":[\"skin\"]}],"
+                      "\"fxinfo\":[{\"id\":7,\"filename\":\"fx.fxdayo\","
+                      "\"mdb\":{\"sourceFiles\":[[\"skin.mat\"]]}}]}}\n[BinaryDayo]\n";
             for (int section = 0; section < 7; ++section)
                 append(legacy, std::int32_t{0});
             append(legacy, std::int32_t{1});
@@ -369,15 +408,47 @@ int main() {
                 append(legacy, std::int32_t{0});
         }
         const auto legacy = dayo::core::loadProject(projectPath);
-        ok &= check(legacy.frame == 12.0F && legacy.assets.size() == 1 && legacy.embeddedMotion &&
+        ok &= check(legacy.frame == 12.0F && legacy.assets.size() == 2 && legacy.embeddedMotion &&
                         legacy.embeddedMotion->bones.size() == 1 && legacy.embeddedMotion->bones[0].frame == 7,
                     "legacy .dayo binary keyframe import");
+        ok &= check(legacy.models.size() == 1 && legacy.models[0].bones == std::vector<std::string>{"Bone"} &&
+                        legacy.models[0].motionOrder == 0 && legacy.assets.size() == 2 &&
+                        legacy.assets[1].ownerModelIndex == 0 &&
+                        legacy.assets[1].materialSourceFiles == std::vector<std::vector<std::string>>{{"skin.mat"}},
+                    "legacy .dayo order, model, and FX MatDesc metadata import");
         if (legacy.embeddedMotion) {
             dayo::core::Scene embeddedScene;
             embeddedScene.attachMotion(*legacy.embeddedMotion);
             ok &= check(embeddedScene.timeline().duration == 7.0F,
                         "embedded .dayo motion attachment updates timeline duration");
         }
+        {
+            std::ofstream combined(projectPath, std::ios::binary | std::ios::trunc);
+            combined << "[MikuMikuDayo]\n"
+                        "{\"MikuMikuDayo\":{\"ver\":3,\"assetPath\":\".\","
+                        "\"editor\":{\"frame\":18,\"samplesPerFrame\":7,\"motionOrder\":[0]},"
+                        "\"models\":[{\"id\":42,\"filename\":\"merged.pmx\","
+                        "\"bones\":[\"root\"],\"morphs\":[\"smile\"],\"materials\":[\"skin\"]}],"
+                        "\"fxinfo\":[{\"id\":42,\"filename\":\"deform.fxdayo\","
+                        "\"mdb\":{\"sourceFiles\":[[\"skin.mat\"]]}}]},"
+                        "\"mikumikudesu\":{\"version\":3,\"renderer\":\"bdpt\","
+                        "\"assets\":[],\"modelState\":[],"
+                        "\"editorState\":{\"outputWidth\":1234}}}\n[BinaryDayo]\n";
+        }
+        const auto combined = dayo::core::loadProject(projectPath);
+        ok &= check(combined.renderer == "bdpt" && combined.frame == 18.0F && combined.editor.samplesPerFrame == 7 &&
+                        combined.editor.outputWidth == 1234 && combined.models.size() == 1 &&
+                        combined.models[0].upstreamId == 42 && combined.models[0].source.filename() == "merged.pmx" &&
+                        combined.assets.size() == 2 && combined.assets[1].ownerModelIndex == 0 &&
+                        combined.assets[1].upstreamId == 42,
+                    ".dayo native extension merges upstream state instead of hiding it");
+        dayo::core::saveProject(projectPath, combined);
+        const auto combinedRoundTrip = dayo::core::loadProject(projectPath);
+        ok &= check(combinedRoundTrip.models.size() == 1 && combinedRoundTrip.models[0].upstreamId == 42 &&
+                        combinedRoundTrip.assets.size() == 2 && combinedRoundTrip.assets[1].ownerModelIndex == 0 &&
+                        combinedRoundTrip.assets[1].materialSourceFiles ==
+                            std::vector<std::vector<std::string>>{{"skin.mat"}},
+                    ".dayo combined model IDs and MatDesc backup round trip");
         std::error_code projectError;
         std::filesystem::remove(projectPath, projectError);
     } catch (const std::exception& exception) {
