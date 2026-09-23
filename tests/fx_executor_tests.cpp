@@ -626,14 +626,30 @@ bool testResolvedPassPlanning() {
         core::EffectMaterialDescriptor{.name = "Surface", .templatePath = {}, .defaultFile = {}};
     materialShaderProgram.materialSchema = core::fx::parseMaterialTemplateSchema(
         "f.1 : Roughness\n_T0 : Albedo\n_V2 : Volume\nRoughness : 0.5\n", "Surface");
+    core::EffectTexture materialLookupTexture;
+    materialLookupTexture.name = "Lookup";
+    materialShaderProgram.textures.push_back(materialLookupTexture);
     fx::FxDispatch materialShaderPass;
     materialShaderPass.name = "material-shader";
+    const auto materialBindingPlan = fx::planPassBindings(materialShaderProgram, materialShaderPass, 0);
     const auto materialShader = fx::makeNativeFxShaderSource(materialShaderProgram, materialShaderPass, 0);
-    ok &= check(materialShader.find("result.Albedo = Surface_texture[NonUniformResourceIndex(result.hasAlbedo ? "
-                                    "SurfaceTextureIndex_Albedo : 0)];") != std::string::npos &&
-                    materialShader.find("result.Volume = Surface_texture3D[NonUniformResourceIndex(result.hasVolume ? "
-                                        "SurfaceTextureIndex_Volume : 0)];") != std::string::npos,
-                "MatDesc accessors select descriptor zero when a logical texture slot is unbound");
+    ok &=
+        check(materialBindingPlan.material.has_value() && materialBindingPlan.material->materialIndices.binding == 17 &&
+                  materialBindingPlan.material->textureIndices2D.binding == 18 &&
+                  materialBindingPlan.material->textureIndices3D.binding == 19 &&
+                  materialBindingPlan.material->values.binding == 20 &&
+                  materialBindingPlan.material->textures2D.binding == 21 &&
+                  materialBindingPlan.material->textures3D.set == 1 &&
+                  materialBindingPlan.material->textures3D.binding == 16 &&
+                  materialShader.find("Lookup : register(t0, space0)") != std::string::npos &&
+                  materialShader.find("Surface_idx : register(t1, space0)") != std::string::npos &&
+                  materialShader.find("Surface_texture[] : register(t5, space0)") != std::string::npos &&
+                  materialShader.find("Surface_texture3D[] : register(t0, space1)") != std::string::npos &&
+                  materialShader.find("result.Albedo = Surface_texture[NonUniformResourceIndex(result.hasAlbedo ? "
+                                      "SurfaceTextureIndex_Albedo : 0)];") != std::string::npos &&
+                  materialShader.find("result.Volume = Surface_texture3D[NonUniformResourceIndex(result.hasVolume ? "
+                                      "SurfaceTextureIndex_Volume : 0)];") != std::string::npos,
+              "MatDesc HLSL registers share the pass binding plan and use descriptor zero for missing textures");
 
     fx::FxProgram textureOnlyMaterialProgram;
     textureOnlyMaterialProgram.materialDescriptor =

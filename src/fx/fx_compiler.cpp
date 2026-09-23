@@ -276,6 +276,33 @@ FxPassBindingPlan planPassBindings(const FxProgram& program, const FxDispatch& d
         append(buffer.name, false);
     for (const auto& sampler : program.samplers)
         append(sampler.name, true);
+    if (program.materialDescriptor.has_value()) {
+        if (resourceSet == std::numeric_limits<std::uint32_t>::max())
+            throw std::overflow_error("FX MatDesc secondary descriptor set index overflow");
+        const auto appendMaterialBinding = [](std::string_view name, FxDescriptorClass descriptorClass,
+                                              std::uint32_t set, std::uint32_t localBinding) {
+            return FxLogicalBinding{.resource = std::string(name),
+                                    .descriptorClass = descriptorClass,
+                                    .set = set,
+                                    .binding = fxDescriptorBindingBase(descriptorClass) + localBinding,
+                                    .count = 1,
+                                    .writable = false};
+        };
+        FxMaterialDescriptorPlan material;
+        material.materialIndices =
+            appendMaterialBinding("@matdesc/idx", FxDescriptorClass::storageBuffer, resourceSet, sampledBinding++);
+        material.textureIndices2D =
+            appendMaterialBinding("@matdesc/tex", FxDescriptorClass::storageBuffer, resourceSet, sampledBinding++);
+        material.textureIndices3D =
+            appendMaterialBinding("@matdesc/tex3D", FxDescriptorClass::storageBuffer, resourceSet, sampledBinding++);
+        material.values =
+            appendMaterialBinding("@matdesc/value", FxDescriptorClass::storageBuffer, resourceSet, sampledBinding++);
+        material.textures2D =
+            appendMaterialBinding("@matdesc/texture2D", FxDescriptorClass::sampledImage, resourceSet, sampledBinding++);
+        material.textures3D =
+            appendMaterialBinding("@matdesc/texture3D", FxDescriptorClass::sampledImage, resourceSet + 1U, 0);
+        result.material = std::move(material);
+    }
     return result;
 }
 
