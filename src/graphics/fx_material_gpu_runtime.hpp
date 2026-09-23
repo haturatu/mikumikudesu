@@ -37,6 +37,10 @@ class FxMaterialGpuRuntime {
 
     [[nodiscard]] bool ready() const noexcept;
     [[nodiscard]] FxMaterialGpuBindings bindings() const noexcept;
+    [[nodiscard]] FxMaterialGpuBindings bindings(std::size_t frameSlot) const noexcept;
+    [[nodiscard]] bool belongsTo(const Device& device) const noexcept {
+        return device_ == &device;
+    }
     [[nodiscard]] std::span<const handles::TextureHandle> textures2D() const noexcept;
     [[nodiscard]] std::span<const handles::TextureHandle> textures3D() const noexcept;
 

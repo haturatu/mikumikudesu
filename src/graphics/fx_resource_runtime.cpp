@@ -2,6 +2,7 @@
 
 #include "core/fx/fx_size.hpp"
 #include "core/image.hpp"
+#include "graphics/fx_material_gpu_runtime.hpp"
 #include "graphics/native_scene_bindings.hpp"
 
 #include <algorithm>
@@ -312,6 +313,88 @@ void setError(std::string* error, std::string message) {
         *error = std::move(message);
 }
 
+[[nodiscard]] DescriptorKind descriptorKind(fx::FxDescriptorClass descriptorClass) noexcept {
+    switch (descriptorClass) {
+    case fx::FxDescriptorClass::sampledImage:
+        return DescriptorKind::sampledImage;
+    case fx::FxDescriptorClass::storageImage:
+        return DescriptorKind::storageImage;
+    case fx::FxDescriptorClass::storageBuffer:
+        return DescriptorKind::storageBuffer;
+    case fx::FxDescriptorClass::sampler:
+        return DescriptorKind::sampler;
+    case fx::FxDescriptorClass::accelerationStructure:
+        return DescriptorKind::accelerationStructure;
+    }
+    return DescriptorKind::sampledImage;
+}
+
+void appendDescriptorWrites(std::vector<DescriptorBindingEx>& output, const fx::FxLogicalBinding& logical,
+                            const FxResourceStore& store, const FxMaterialGpuBindings* material) {
+    const auto append = [&output, &logical](std::uint32_t element, handles::TextureHandle texture,
+                                            handles::BufferHandle buffer, handles::SamplerHandle sampler,
+                                            handles::AccelerationStructureHandle accelerationStructure) {
+        DescriptorBindingEx binding{.slot = logical.binding, .arrayElement = element};
+        binding.texture = texture;
+        binding.buffer = buffer;
+        binding.sampler = sampler;
+        binding.accelerationStructure = accelerationStructure;
+        output.push_back(binding);
+    };
+    if (logical.resource.starts_with("@matdesc/")) {
+        if (material == nullptr)
+            throw std::logic_error("FX MatDesc descriptor has no GPU material bindings");
+        if (logical.resource == "@matdesc/idx")
+            append(0, {}, material->materialIndices, {}, {});
+        else if (logical.resource == "@matdesc/tex")
+            append(0, {}, material->textureIndices2D, {}, {});
+        else if (logical.resource == "@matdesc/tex3D")
+            append(0, {}, material->textureIndices3D, {}, {});
+        else if (logical.resource == "@matdesc/value")
+            append(0, {}, material->values, {}, {});
+        else if (logical.resource == "@matdesc/texture2D") {
+            if (material->textures2D.size() != logical.count)
+                throw std::logic_error("MatDesc 2D texture catalog changed descriptor count; "
+                                       "reinitialize the FX descriptor runtime");
+            for (std::uint32_t element = 0; element < logical.count; ++element)
+                append(element, material->textures2D[element], {}, {}, {});
+        } else if (logical.resource == "@matdesc/texture3D") {
+            if (material->textures3D.size() != logical.count)
+                throw std::logic_error("MatDesc 3D texture catalog changed descriptor count; "
+                                       "reinitialize the FX descriptor runtime");
+            for (std::uint32_t element = 0; element < logical.count; ++element)
+                append(element, material->textures3D[element], {}, {}, {});
+        } else {
+            throw std::logic_error("unknown MatDesc logical descriptor: " + logical.resource);
+        }
+        return;
+    }
+
+    const auto* physical = store.find(logical.resource);
+    if (physical == nullptr)
+        throw std::invalid_argument("FX pass binding has no physical resource: " + logical.resource);
+    if (physical->kind == FxResourceStore::Kind::texture)
+        append(0, physical->texture, {}, {}, {});
+    else if (physical->kind == FxResourceStore::Kind::buffer)
+        append(0, {}, physical->buffer, {}, {});
+    else
+        append(0, {}, {}, physical->sampler, {});
+}
+
+[[nodiscard]] bool sameDescriptorWrites(std::span<const DescriptorBindingEx> left,
+                                        std::span<const DescriptorBindingEx> right) noexcept {
+    if (left.size() != right.size())
+        return false;
+    for (std::size_t index = 0; index < left.size(); ++index) {
+        const auto& a = left[index];
+        const auto& b = right[index];
+        if (a.slot != b.slot || a.arrayElement != b.arrayElement || a.buffer != b.buffer || a.texture != b.texture ||
+            a.sampler != b.sampler || a.accelerationStructure != b.accelerationStructure || a.mipLevel != b.mipLevel)
+            return false;
+    }
+    return true;
+}
+
 } // namespace
 
 bool FxResourceStore::add(Resource resource) {
@@ -342,63 +425,91 @@ FxPassDescriptorRuntime::~FxPassDescriptorRuntime() {
 }
 
 bool FxPassDescriptorRuntime::initialize(Device& device, const fx::FxProgram& program, std::uint32_t resourceSet,
-                                         const FxResourceStore& store, std::string* error) {
+                                         const FxResourceStore& store, std::string* error,
+                                         const FxMaterialGpuRuntime* materialRuntime) {
     if (error != nullptr)
         error->clear();
     reset();
     device_ = &device;
+    store_ = &store;
+    materialRuntime_ = materialRuntime;
     try {
         const auto stages = allFxStages();
         for (const auto& dispatch : program.passes) {
-            Entry entry;
+            const auto [entryIt, inserted] = entries_.try_emplace(dispatch.name);
+            if (!inserted)
+                throw std::invalid_argument("FX pass names must be unique for descriptor planning: " + dispatch.name);
+            auto& entry = entryIt->second;
             entry.plan = fx::planPassBindings(program, dispatch, resourceSet);
-            if (entry.plan.bindings.empty()) {
-                entries_.emplace(dispatch.name, std::move(entry));
+            if (entry.plan.material.has_value() &&
+                (materialRuntime_ == nullptr || !materialRuntime_->ready() || !materialRuntime_->belongsTo(device)))
+                throw std::invalid_argument("FX MatDesc pass requires a ready GPU material runtime on the same device");
+            if (entry.plan.bindings.empty())
                 continue;
-            }
-            DescriptorSetLayoutDesc layout;
-            layout.bindings.reserve(entry.plan.bindings.size());
-            std::vector<DescriptorBindingEx> bindings;
-            bindings.reserve(entry.plan.bindings.size());
-            for (const auto& binding : entry.plan.bindings) {
-                DescriptorKind kind = DescriptorKind::sampledImage;
-                switch (binding.descriptorClass) {
-                case fx::FxDescriptorClass::sampledImage:
-                    kind = DescriptorKind::sampledImage;
-                    break;
-                case fx::FxDescriptorClass::storageImage:
-                    kind = DescriptorKind::storageImage;
-                    break;
-                case fx::FxDescriptorClass::storageBuffer:
-                    kind = DescriptorKind::storageBuffer;
-                    break;
-                case fx::FxDescriptorClass::sampler:
-                    kind = DescriptorKind::sampler;
-                    break;
-                case fx::FxDescriptorClass::accelerationStructure:
-                    kind = DescriptorKind::accelerationStructure;
-                    break;
+
+            const auto initialMaterialBindings = entry.plan.material.has_value()
+                                                     ? materialRuntime_->bindings(device.currentFrameSlot())
+                                                     : FxMaterialGpuBindings{};
+            for (auto& binding : entry.plan.bindings) {
+                if (binding.resource == "@matdesc/texture2D") {
+                    if (initialMaterialBindings.textures2D.size() > std::numeric_limits<std::uint32_t>::max())
+                        throw std::overflow_error("MatDesc 2D texture descriptor array is too large");
+                    binding.count = static_cast<std::uint32_t>(initialMaterialBindings.textures2D.size());
+                } else if (binding.resource == "@matdesc/texture3D") {
+                    if (initialMaterialBindings.textures3D.size() > std::numeric_limits<std::uint32_t>::max())
+                        throw std::overflow_error("MatDesc 3D texture descriptor array is too large");
+                    binding.count = static_cast<std::uint32_t>(initialMaterialBindings.textures3D.size());
                 }
-                layout.bindings.push_back({binding.binding, kind, binding.count, stages});
-                const auto* physical = store.find(binding.resource);
-                if (physical == nullptr)
-                    throw std::invalid_argument("FX pass binding has no physical resource: " + binding.resource);
-                DescriptorBindingEx descriptor{.slot = binding.binding, .arrayElement = 0};
-                if (physical->kind == FxResourceStore::Kind::texture)
-                    descriptor.texture = physical->texture;
-                else if (physical->kind == FxResourceStore::Kind::buffer)
-                    descriptor.buffer = physical->buffer;
-                else
-                    descriptor.sampler = physical->sampler;
-                bindings.push_back(descriptor);
+                if (binding.count == 0)
+                    throw std::invalid_argument("FX descriptor array cannot be empty: " + binding.resource);
             }
-            entry.layout = device.createDescriptorSetLayoutEx(layout);
-            if (!entry.layout.valid())
-                throw std::runtime_error("FX pass descriptor layout is invalid: " + dispatch.name);
-            entry.set = device.allocateDescriptorSetEx(entry.layout, bindings);
-            if (!entry.set.valid())
-                throw std::runtime_error("FX pass descriptor set is invalid: " + dispatch.name);
-            entries_.emplace(dispatch.name, std::move(entry));
+
+            std::vector<std::uint32_t> setIndices;
+            for (const auto& binding : entry.plan.bindings)
+                if (std::ranges::find(setIndices, binding.set) == setIndices.end())
+                    setIndices.push_back(binding.set);
+            std::ranges::sort(setIndices);
+            entry.sets.reserve(setIndices.size());
+            for (const auto setIndex : setIndices) {
+                DescriptorSetLayoutDesc layout;
+                std::vector<const fx::FxLogicalBinding*> logicalBindings;
+                for (const auto& binding : entry.plan.bindings) {
+                    if (binding.set != setIndex)
+                        continue;
+                    if (std::ranges::any_of(layout.bindings, [&binding](const auto& existing) {
+                            return existing.binding == binding.binding;
+                        }))
+                        throw std::invalid_argument("FX descriptor binding collision in set " +
+                                                    std::to_string(setIndex) + ": " + std::to_string(binding.binding));
+                    logicalBindings.push_back(&binding);
+                    layout.bindings.push_back(
+                        {binding.binding, descriptorKind(binding.descriptorClass), binding.count, stages});
+                }
+                Entry::Set set;
+                set.index = setIndex;
+                set.layout = device.createDescriptorSetLayoutEx(layout);
+                if (!set.layout.valid())
+                    throw std::runtime_error("FX pass descriptor layout is invalid: " + dispatch.name);
+                entry.sets.push_back(std::move(set));
+                auto& ownedSet = entry.sets.back();
+                const auto frameCount = entry.plan.material.has_value() ? kNativeFramesInFlight : 1U;
+                ownedSet.handles.reserve(frameCount);
+                ownedSet.bindings.reserve(frameCount);
+                for (std::uint32_t frameSlot = 0; frameSlot < frameCount; ++frameSlot) {
+                    const auto materialBindings = entry.plan.material.has_value()
+                                                      ? materialRuntime_->bindings(frameSlot)
+                                                      : FxMaterialGpuBindings{};
+                    std::vector<DescriptorBindingEx> writes;
+                    for (const auto* logical : logicalBindings)
+                        appendDescriptorWrites(writes, *logical, store,
+                                               entry.plan.material.has_value() ? &materialBindings : nullptr);
+                    const auto descriptorSet = device.allocateDescriptorSetEx(ownedSet.layout, writes);
+                    if (!descriptorSet.valid())
+                        throw std::runtime_error("FX pass descriptor set is invalid: " + dispatch.name);
+                    ownedSet.handles.push_back(descriptorSet);
+                    ownedSet.bindings.push_back(std::move(writes));
+                }
+            }
         }
     } catch (const std::exception& exception) {
         setError(error, exception.what());
@@ -421,38 +532,86 @@ void FxPassDescriptorRuntime::reset() noexcept {
         }
         for (const auto& [name, entry] : entries_) {
             static_cast<void>(name);
-            if (entry.set.valid()) {
-                try {
-                    device->destroyDescriptorSetEx(entry.set);
-                } catch (...) {
+            for (const auto& set : entry.sets) {
+                for (const auto handle : set.handles) {
+                    if (!handle.valid())
+                        continue;
+                    try {
+                        device->destroyDescriptorSetEx(handle);
+                    } catch (...) {
+                    }
                 }
-            }
-            if (entry.layout.valid()) {
-                try {
-                    device->destroyDescriptorSetLayoutEx(entry.layout);
-                } catch (...) {
+                if (set.layout.valid()) {
+                    try {
+                        device->destroyDescriptorSetLayoutEx(set.layout);
+                    } catch (...) {
+                    }
                 }
             }
         }
     }
     entries_.clear();
+    store_ = nullptr;
+    materialRuntime_ = nullptr;
     device_ = nullptr;
 }
 
 std::optional<handles::DescriptorSetHandle>
 FxPassDescriptorRuntime::resolveDescriptorSet(const fx::FxDispatch& dispatch) const {
-    const auto found = entries_.find(dispatch.name);
-    if (found == entries_.end() || !found->second.set.valid())
+    const auto sets = descriptorSets(dispatch);
+    if (sets.empty() || !sets.front().set.valid())
         return std::nullopt;
-    return found->second.set;
+    return sets.front().set;
 }
 
 std::optional<handles::DescriptorSetLayoutHandle>
 FxPassDescriptorRuntime::resolveDescriptorLayout(const fx::FxDispatch& dispatch) const {
-    const auto found = entries_.find(dispatch.name);
-    if (found == entries_.end() || !found->second.layout.valid())
+    const auto layouts = descriptorLayouts(dispatch);
+    if (layouts.empty() || !layouts.front().second.valid())
         return std::nullopt;
-    return found->second.layout;
+    return layouts.front().second;
+}
+
+std::vector<FxPassDescriptorSet> FxPassDescriptorRuntime::descriptorSets(const fx::FxDispatch& dispatch) const {
+    const auto found = entries_.find(dispatch.name);
+    if (found == entries_.end())
+        return {};
+    const auto hasMaterial = found->second.plan.material.has_value();
+    const auto slot = hasMaterial && device_ != nullptr ? device_->currentFrameSlot() % kNativeFramesInFlight : 0U;
+    std::vector<FxPassDescriptorSet> result;
+    result.reserve(found->second.sets.size());
+    for (auto& set : found->second.sets) {
+        if (set.handles.empty())
+            continue;
+        if (hasMaterial) {
+            if (device_ == nullptr || store_ == nullptr || materialRuntime_ == nullptr || !materialRuntime_->ready() ||
+                !materialRuntime_->belongsTo(*device_))
+                throw std::logic_error("FX MatDesc GPU runtime is no longer ready on its owning device");
+            const auto materialBindings = materialRuntime_->bindings(slot);
+            std::vector<DescriptorBindingEx> currentWrites;
+            for (const auto& logical : found->second.plan.bindings)
+                if (logical.set == set.index)
+                    appendDescriptorWrites(currentWrites, logical, *store_, &materialBindings);
+            if (!sameDescriptorWrites(currentWrites, set.bindings[slot])) {
+                device_->updateDescriptorSetEx(set.handles[slot], currentWrites);
+                set.bindings[slot] = std::move(currentWrites);
+            }
+        }
+        result.push_back({.setIndex = set.index, .layout = set.layout, .set = set.handles[slot]});
+    }
+    return result;
+}
+
+std::vector<std::pair<std::uint32_t, handles::DescriptorSetLayoutHandle>>
+FxPassDescriptorRuntime::descriptorLayouts(const fx::FxDispatch& dispatch) const {
+    const auto found = entries_.find(dispatch.name);
+    if (found == entries_.end())
+        return {};
+    std::vector<std::pair<std::uint32_t, handles::DescriptorSetLayoutHandle>> result;
+    result.reserve(found->second.sets.size());
+    for (const auto& set : found->second.sets)
+        result.emplace_back(set.index, set.layout);
+    return result;
 }
 
 const fx::FxPassBindingPlan* FxPassDescriptorRuntime::bindingPlan(const fx::FxDispatch& dispatch) const noexcept {
@@ -465,7 +624,8 @@ FxResourceRuntime::~FxResourceRuntime() {
 }
 
 bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program, const fx::FxFrameContext& context,
-                                   std::string* error, std::uint32_t resourceSet) {
+                                   std::string* error, std::uint32_t resourceSet,
+                                   const FxMaterialGpuRuntime* materialRuntime) {
     if (error != nullptr)
         error->clear();
     reset();
@@ -729,7 +889,7 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             if (!descriptorSet_.valid())
                 throw std::runtime_error("FX resource descriptor set is invalid");
         }
-        if (!passDescriptors_.initialize(device, program, resourceSet, store_, error))
+        if (!passDescriptors_.initialize(device, program, resourceSet, store_, error, materialRuntime))
             throw std::runtime_error(error != nullptr && !error->empty() ? *error
                                                                          : "FX pass descriptors are unavailable");
     } catch (const std::exception& exception) {

@@ -91,9 +91,6 @@ struct MockDevice final : public dayo::graphics::Device {
     dayo::graphics::RendererKind activeRenderer() const noexcept override {
         return dayo::graphics::RendererKind::preview;
     }
-    std::size_t currentFrameSlot() const noexcept override {
-        return currentFrameSlot_;
-    }
     dayo::graphics::handles::ShaderHandle nativeFullscreenVertexShader() const noexcept override {
         return {900, 1};
     }
@@ -171,6 +168,7 @@ struct MockDevice final : public dayo::graphics::Device {
     dayo::graphics::handles::DescriptorSetLayoutHandle
     createDescriptorSetLayoutEx(const dayo::graphics::DescriptorSetLayoutDesc& desc) override {
         descriptorLayout_ = desc;
+        descriptorLayoutsCreated_.push_back(desc);
         return {nextTypedHandle_++, 1};
     }
     void destroyDescriptorSetLayoutEx(dayo::graphics::handles::DescriptorSetLayoutHandle handle) override {
@@ -183,7 +181,17 @@ struct MockDevice final : public dayo::graphics::Device {
         if (!layout.valid())
             throw std::invalid_argument("mock FX resource layout is invalid");
         descriptorBindings_.assign(bindings.begin(), bindings.end());
-        return {nextTypedHandle_++, 1};
+        const dayo::graphics::handles::DescriptorSetHandle handle{nextTypedHandle_++, 1};
+        descriptorAllocations_.push_back({handle, layout, {bindings.begin(), bindings.end()}});
+        return handle;
+    }
+    void updateDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle set,
+                               std::span<const dayo::graphics::DescriptorBindingEx> bindings) override {
+        updatedDescriptorSets_.push_back(set);
+        updatedDescriptorBindings_.emplace_back(bindings.begin(), bindings.end());
+    }
+    std::size_t currentFrameSlot() const noexcept override {
+        return frameSlot_;
     }
     void destroyDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle handle) override {
         if (handle.valid())
@@ -231,9 +239,13 @@ struct MockDevice final : public dayo::graphics::Device {
         std::vector<std::byte> bytes;
         std::size_t offset{};
     };
+    struct DescriptorSetAllocation {
+        dayo::graphics::handles::DescriptorSetHandle set{};
+        dayo::graphics::handles::DescriptorSetLayoutHandle layout{};
+        std::vector<dayo::graphics::DescriptorBindingEx> bindings;
+    };
     dayo::graphics::DeviceCapabilities capabilities_;
     dayo::graphics::GraphicsConvention convention_;
-    std::size_t currentFrameSlot_{};
     std::uint32_t nextTypedHandle_{1};
     std::size_t destroyedShaders_{};
     std::size_t destroyedPipelines_{};
@@ -260,6 +272,11 @@ struct MockDevice final : public dayo::graphics::Device {
     std::vector<dayo::graphics::SamplerResourceDesc> samplerDescs_;
     dayo::graphics::DescriptorSetLayoutDesc descriptorLayout_;
     std::vector<dayo::graphics::DescriptorBindingEx> descriptorBindings_;
+    std::vector<dayo::graphics::DescriptorSetLayoutDesc> descriptorLayoutsCreated_;
+    std::vector<DescriptorSetAllocation> descriptorAllocations_;
+    std::vector<dayo::graphics::handles::DescriptorSetHandle> updatedDescriptorSets_;
+    std::vector<std::vector<dayo::graphics::DescriptorBindingEx>> updatedDescriptorBindings_;
+    std::size_t frameSlot_{};
     dayo::graphics::PipelineLayoutDesc pipelineLayoutDesc_;
 };
 
@@ -655,6 +672,12 @@ bool testResolvedPassPlanning() {
                   materialShader.find("result.Volume = Surface_texture3D[NonUniformResourceIndex(result.hasVolume ? "
                                       "SurfaceTextureIndex_Volume : 0)];") != std::string::npos,
               "MatDesc HLSL registers share the pass binding plan and use descriptor zero for missing textures");
+    const auto* plannedMaterialIndices = materialBindingPlan.find("@matdesc/idx");
+    const auto* plannedMaterialTextures3D = materialBindingPlan.find("@matdesc/texture3D");
+    ok &= check(plannedMaterialIndices != nullptr && plannedMaterialIndices->set == 0 &&
+                    plannedMaterialIndices->binding == 17 && plannedMaterialTextures3D != nullptr &&
+                    plannedMaterialTextures3D->set == 1 && plannedMaterialTextures3D->binding == 16,
+                "MatDesc logical descriptor resources are retained in the pass binding plan");
 
     fx::FxProgram textureOnlyMaterialProgram;
     textureOnlyMaterialProgram.materialDescriptor =
@@ -1594,7 +1617,7 @@ bool testFxMaterialGpuRuntimeOwnsTablesAndTextures() {
     table.values.bytes.resize(32, std::byte{0x2A});
 
     MockDevice device;
-    device.currentFrameSlot_ = dayo::graphics::kNativeFramesInFlight - 1U;
+    device.frameSlot_ = dayo::graphics::kNativeFramesInFlight - 1U;
     bool ok = false;
     {
         dayo::graphics::FxMaterialGpuRuntime runtime;
@@ -1627,7 +1650,7 @@ bool testFxMaterialGpuRuntimeOwnsTablesAndTextures() {
                       device.bufferUploads_[0].bytes.size() == 8 && device.bufferUploads_[1].bytes.size() == 8 &&
                       device.bufferUploads_[2].bytes.size() == 8 && device.bufferUploads_[3].bytes.size() == 32,
                   "new MatDesc buffers upload every frame slot before becoming ready");
-        ok &= check(runtime.bindings().materialIndices == device.bufferUploads_[device.currentFrameSlot_ * 4U].handle,
+        ok &= check(runtime.bindings().materialIndices == device.bufferUploads_[device.frameSlot_ * 4U].handle,
                     "MatDesc bindings select the initialized current frame slot");
         std::uint32_t uploadedTextureIndex = 0;
         std::uint32_t uploadedMissingIndex = 0;
@@ -1645,35 +1668,96 @@ bool testFxMaterialGpuRuntimeOwnsTablesAndTextures() {
         const auto texturesBeforeResync = device.textureDescs_.size();
         const auto buffersBeforeResync = device.bufferDescs_.size();
         const auto uploadsBeforeResync = device.bufferUploads_.size();
-        device.currentFrameSlot_ = 0;
+        device.frameSlot_ = 0;
         ok &= check(runtime.sync(device, table, &error) && device.textureDescs_.size() == texturesBeforeResync &&
                         device.bufferDescs_.size() == buffersBeforeResync &&
                         device.bufferUploads_.size() == uploadsBeforeResync + 4U,
                     "unchanged MatDesc buffers upload only the active frame slot");
 
-        auto grownTable = table;
-        grownTable.values.layout.stride = 32;
-        grownTable.values.bytes.resize(grownTable.values.count * grownTable.values.layout.stride, std::byte{0x5A});
-        device.currentFrameSlot_ = dayo::graphics::kNativeFramesInFlight - 1U;
+        dayo::fx::FxProgram materialProgram;
+        materialProgram.materialDescriptor =
+            dayo::core::EffectMaterialDescriptor{.name = "Surface", .templatePath = {}, .defaultFile = {}};
+        dayo::core::EffectTexture localTexture;
+        localTexture.name = "Lookup";
+        localTexture.view = "SRV";
+        localTexture.size.absolute = true;
+        localTexture.size.width = 1;
+        localTexture.size.height = 1;
+        materialProgram.textures.push_back(std::move(localTexture));
+        dayo::fx::FxDispatch materialPass;
+        materialPass.name = "material-compute";
+        materialPass.kind = dayo::fx::FxOpKind::compute;
+        materialPass.executable = dayo::fx::FxComputeDispatch{"main"};
+        materialProgram.passes.push_back(materialPass);
+
+        MockDevice missingMaterialDevice;
+        dayo::graphics::FxResourceRuntime missingMaterialRuntime;
+        std::string missingMaterialError;
+        ok &= check(!missingMaterialRuntime.initialize(missingMaterialDevice, materialProgram, testContext(),
+                                                       &missingMaterialError, 2) &&
+                        missingMaterialError.find("requires a ready GPU material runtime") != std::string::npos,
+                    "MatDesc descriptor planning rejects a missing GPU table owner");
+
+        dayo::graphics::FxResourceRuntime passRuntime;
+        ok &= check(passRuntime.initialize(device, materialProgram, testContext(), &error, 2, &runtime),
+                    "MatDesc descriptors join effect-local resources in the pass descriptor runtime");
+        const auto materialLayouts = passRuntime.descriptorLayoutsFor(materialPass);
+        ok &= check(materialLayouts.size() == 2 && materialLayouts[0].first == 2 && materialLayouts[1].first == 3,
+                    "MatDesc pass descriptor plans produce main and 3D texture descriptor sets at planned set indices");
+        const auto mat2dArray = std::ranges::find_if(device.descriptorLayoutsCreated_, [](const auto& layout) {
+            return std::ranges::any_of(layout.bindings, [](const auto& binding) { return binding.count == 2; });
+        });
+        ok &= check(mat2dArray != device.descriptorLayoutsCreated_.end(),
+                    "MatDesc descriptor array layouts use the physical catalog count including fallback textures");
+        ok &= check(materialLayouts.size() == 2 &&
+                        std::ranges::any_of(device.descriptorLayoutsCreated_[1].bindings,
+                                            [](const auto& binding) { return binding.count == 2; }) &&
+                        std::ranges::any_of(device.descriptorLayoutsCreated_[2].bindings,
+                                            [](const auto& binding) { return binding.count == 2; }),
+                    "MatDesc 2D and 3D descriptor arrays retain their independent catalog lengths");
+        const auto slotZeroSets = passRuntime.descriptorSetsFor(materialPass);
+        device.frameSlot_ = 1;
+        const auto slotOneSets = passRuntime.descriptorSetsFor(materialPass);
+        const auto setAt = [](const auto& sets, std::uint32_t setIndex) {
+            return std::ranges::find_if(sets, [setIndex](const auto& set) { return set.setIndex == setIndex; });
+        };
+        const auto setZeroSlot0 = setAt(slotZeroSets, 2);
+        const auto setZeroSlot1 = setAt(slotOneSets, 2);
+        ok &= check(setZeroSlot0 != slotZeroSets.end() && setZeroSlot1 != slotOneSets.end() &&
+                        setZeroSlot0->set != setZeroSlot1->set &&
+                        runtime.bindings(0).materialIndices != runtime.bindings(1).materialIndices,
+                    "MatDesc descriptor sets select the matching frame-safe material table buffers");
+        device.frameSlot_ = 0;
+        auto expandedTable = table;
+        expandedTable.materialIndices = {0U, 1U, 2U};
+        expandedTable.textureIndices2D = {0U, dayo::core::fx::kMissingMaterialTextureIndex,
+                                          dayo::core::fx::kMissingMaterialTextureIndex};
+        expandedTable.textureIndices3D = {0U, dayo::core::fx::kMissingMaterialTextureIndex,
+                                          dayo::core::fx::kMissingMaterialTextureIndex};
+        expandedTable.values.count = 3;
+        expandedTable.values.bytes.resize(48, std::byte{0x31});
         std::array<dayo::graphics::handles::BufferHandle, dayo::graphics::kNativeFramesInFlight> oldSlotHandles{};
         for (std::size_t slot = 0; slot < dayo::graphics::kNativeFramesInFlight; ++slot)
-            oldSlotHandles[slot] = device.bufferUploads_[slot * 4U].handle;
+            oldSlotHandles[slot] = runtime.bindings(slot).materialIndices;
         const auto buffersBeforeGrowth = device.bufferDescs_.size();
         const auto uploadsBeforeGrowth = device.bufferUploads_.size();
-        ok &= check(runtime.sync(device, grownTable, &error) &&
-                        device.bufferDescs_.size() == buffersBeforeGrowth + frameUploadCount &&
+        const bool expanded = runtime.sync(device, expandedTable, &error);
+        const auto refreshedSets = passRuntime.descriptorSetsFor(materialPass);
+        ok &= check(expanded && device.bufferDescs_.size() == buffersBeforeGrowth + frameUploadCount &&
                         device.bufferUploads_.size() == uploadsBeforeGrowth + frameUploadCount,
-                    "MatDesc buffer growth reallocates and initializes every frame slot");
+                    "MatDesc growth reallocates and initializes every frame slot");
         for (std::size_t slot = 0; slot < dayo::graphics::kNativeFramesInFlight; ++slot)
-            ok &= check(device.bufferUploads_[uploadsBeforeGrowth + slot * 4U].handle != oldSlotHandles[slot],
-                        "MatDesc growth replaces each frame slot with its initialized allocation");
-        ok &= check(runtime.bindings().materialIndices ==
-                        device.bufferUploads_[uploadsBeforeGrowth + device.currentFrameSlot_ * 4U].handle,
-                    "reallocated MatDesc bindings refer to the initialized active slot");
+            ok &= check(runtime.bindings(slot).materialIndices != oldSlotHandles[slot] &&
+                            device.bufferUploads_[uploadsBeforeGrowth + slot * 4U].handle != oldSlotHandles[slot],
+                        "MatDesc growth replaces every frame slot with its initialized allocation");
+        ok &= check(runtime.bindings(0).materialIndices == device.bufferUploads_[uploadsBeforeGrowth].handle &&
+                        !device.updatedDescriptorSets_.empty() && refreshedSets.size() == 2,
+                    "MatDesc descriptors refresh to the initialized new table generation");
+        passRuntime.reset();
     }
-    ok &= check(device.destroyedTextures_ == 4 &&
+    ok &= check(device.destroyedTextures_ == 5 &&
                     device.destroyedBuffers_ == 2U * 4U * dayo::graphics::kNativeFramesInFlight,
-                "MatDesc GPU runtime releases old and current frame-slot buffers after growth");
+                "MatDesc GPU runtime releases every resource generation and frame-slot buffer");
 
     auto invalidTable = table;
     invalidTable.textureIndices2D[0] = 1U;

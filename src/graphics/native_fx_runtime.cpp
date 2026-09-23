@@ -1,5 +1,7 @@
 #include "graphics/native_fx_runtime.hpp"
 
+#include "graphics/fx_material_gpu_runtime.hpp"
+
 #include <algorithm>
 #include <exception>
 #include <stdexcept>
@@ -33,10 +35,11 @@ NativeFxRuntime::~NativeFxRuntime() {
 bool NativeFxRuntime::initialize(Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
                                  std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts, std::string* error,
                                  std::span<const handles::DescriptorSetHandle> sharedDescriptorSets,
-                                 fx::FxNativeShaderSourceOptions sourceOptions) {
+                                 fx::FxNativeShaderSourceOptions sourceOptions,
+                                 const FxMaterialGpuRuntime* materialRuntime) {
     const auto defaultContext = fx::makeFxFrameContext(0.0F, 0, 1, 1, 0, 0, 1, 1, 1, program.meshCloneCount);
     return initializeForFrame(device, std::move(program), compiler, defaultContext, sharedLayouts, error,
-                              sharedDescriptorSets, std::move(sourceOptions));
+                              sharedDescriptorSets, std::move(sourceOptions), materialRuntime);
 }
 
 bool NativeFxRuntime::initializeForFrame(Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
@@ -44,7 +47,8 @@ bool NativeFxRuntime::initializeForFrame(Device& device, fx::FxProgram program, 
                                          std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts,
                                          std::string* error,
                                          std::span<const handles::DescriptorSetHandle> sharedDescriptorSets,
-                                         fx::FxNativeShaderSourceOptions sourceOptions) {
+                                         fx::FxNativeShaderSourceOptions sourceOptions,
+                                         const FxMaterialGpuRuntime* materialRuntime) {
     if (error != nullptr)
         error->clear();
     reset();
@@ -54,6 +58,7 @@ bool NativeFxRuntime::initializeForFrame(Device& device, fx::FxProgram program, 
     sharedLayouts_.assign(sharedLayouts.begin(), sharedLayouts.end());
     sharedDescriptorSets_.assign(sharedDescriptorSets.begin(), sharedDescriptorSets.end());
     sourceOptions_ = std::move(sourceOptions);
+    materialRuntime_ = materialRuntime;
     configured_ = true;
     try {
         if (!sharedDescriptorSets_.empty() && sharedDescriptorSets_.size() != sharedLayouts_.size())
@@ -101,7 +106,7 @@ bool NativeFxRuntime::buildForContext(const fx::FxFrameContext& context, std::st
     try {
         const auto framePlan = fx::FxCompiler{}.plan(program_, context);
         resourceSetIndex_ = static_cast<std::uint32_t>(sharedLayouts_.size());
-        if (!resources_.initialize(*device_, program_, context, error, resourceSetIndex_))
+        if (!resources_.initialize(*device_, program_, context, error, resourceSetIndex_, materialRuntime_))
             throw std::runtime_error(error != nullptr && !error->empty() ? *error
                                                                          : "FX resource initialization failed");
 
@@ -111,8 +116,17 @@ bool NativeFxRuntime::buildForContext(const fx::FxFrameContext& context, std::st
         }
         for (const auto& dispatch : program_.passes) {
             std::vector<handles::DescriptorSetLayoutHandle> setLayouts(sharedLayouts_.begin(), sharedLayouts_.end());
-            if (const auto local = resources_.descriptorLayoutFor(dispatch); local.has_value())
-                setLayouts.push_back(*local);
+            for (const auto& [setIndex, layout] : resources_.descriptorLayoutsFor(dispatch)) {
+                if (setIndex < sharedLayouts_.size())
+                    throw std::invalid_argument("native FX resource descriptor overlaps a shared descriptor set");
+                if (setLayouts.size() <= setIndex)
+                    setLayouts.resize(static_cast<std::size_t>(setIndex) + 1U);
+                if (setLayouts[setIndex].valid())
+                    throw std::invalid_argument("native FX pass has multiple layouts for one descriptor set");
+                setLayouts[setIndex] = layout;
+            }
+            if (std::any_of(setLayouts.begin(), setLayouts.end(), [](const auto layout) { return !layout.valid(); }))
+                throw std::invalid_argument("native FX pipeline descriptor set layout indices contain a gap");
             const auto layout = device_->createPipelineLayoutEx({.setLayouts = std::move(setLayouts)});
             if (!layout.valid())
                 throw std::runtime_error("native FX pass pipeline layout allocation returned an invalid handle: " +
@@ -171,6 +185,7 @@ void NativeFxRuntime::reset() noexcept {
     sharedLayouts_.clear();
     sharedDescriptorSets_.clear();
     sourceOptions_ = {};
+    materialRuntime_ = nullptr;
     device_ = nullptr;
     resourceContext_.reset();
     configured_ = false;
@@ -233,11 +248,10 @@ VulkanFxExecutor::Stats NativeFxRuntime::execute(NativeFxFrame& frame, CommandLi
     }
 
     if (!program_.passes.empty() || !frame.sharedDescriptorSets.empty()) {
-        const auto setIndex = resourceSetIndex_;
         const auto existingSets = nativeResources.resolveDescriptorSets;
         const auto existingSingle = nativeResources.resolveDescriptorSet;
         const auto sharedSets = frame.sharedDescriptorSets;
-        nativeResources.resolveDescriptorSets = [this, existingSets, existingSingle, setIndex,
+        nativeResources.resolveDescriptorSets = [this, existingSets, existingSingle,
                                                  sharedSets](const fx::FxDispatch& dispatch) {
             std::vector<FxExecutionResources::TypedDescriptorSetBinding> result;
             if (existingSets) {
@@ -255,8 +269,11 @@ VulkanFxExecutor::Stats NativeFxRuntime::execute(NativeFxFrame& frame, CommandLi
                 if (!hasIndex(static_cast<std::uint32_t>(index)))
                     result.push_back({sharedSets[index], static_cast<std::uint32_t>(index)});
             }
-            if (const auto set = resources_.descriptorSetFor(dispatch); set.has_value() && !hasIndex(setIndex))
-                result.push_back({*set, setIndex});
+            const auto ownedSets = resources_.descriptorSetsFor(dispatch);
+            for (const auto& owned : ownedSets) {
+                std::erase_if(result, [&owned](const auto& binding) { return binding.setIndex == owned.setIndex; });
+                result.push_back({owned.set, owned.setIndex});
+            }
             return result;
         };
         nativeResources.resolveDescriptorSet = {};
