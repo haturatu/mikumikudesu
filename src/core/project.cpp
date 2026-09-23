@@ -175,12 +175,46 @@ DayoProject readUpstreamJson(const Json& root, const std::filesystem::path& base
     if (legacy.contains("editor") && legacy.at("editor").is_object()) {
         const auto& editor = legacy.at("editor");
         result.frame = editor.value("frame", 0.0F);
+        const auto readPath = [&](std::string_view field) {
+            const auto key = std::string(field);
+            return editor.contains(key) && editor.at(key).is_string()
+                       ? resolveAsset(legacyBase, editor.at(key).get<std::string>())
+                       : std::filesystem::path{};
+        };
+        result.editor.skyboxFile = readPath("skyboxFile");
+        result.editor.floorCollision = editor.value("floorCollision", result.editor.floorCollision);
+        result.editor.animationStart = editor.value("animationStart", result.editor.animationStart);
+        result.editor.animationEnd = editor.value("animationEnd", result.editor.animationEnd);
+        result.editor.animationRepeat = editor.value("animationRepeat", result.editor.animationRepeat);
+        result.editor.wavFile = readPath("wavFile");
+        result.editor.wavVolume = editor.value("wavVolume", result.editor.wavVolume);
+        result.editor.wavOffset = editor.value("wavOffset", result.editor.wavOffset);
+        result.editor.recordStart = editor.value("recordStart", result.editor.recordStart);
+        result.editor.recordEnd = editor.value("recordEnd", result.editor.recordEnd);
         result.editor.samplesPerFrame = std::max(editor.value("samplesPerFrame", result.editor.samplesPerFrame), 1U);
         result.editor.motionBlur = editor.value("motionBlur", result.editor.motionBlur);
         result.editor.outputWidth = std::max(editor.value("outputWidth", result.editor.outputWidth), 1U);
         result.editor.outputHeight = std::max(editor.value("outputHeight", result.editor.outputHeight), 1U);
+        result.editor.outputFile = readPath("outputFile");
+        result.editor.movieFile = readPath("movieFile");
         result.editor.recordFps = editor.value("recordFps", result.editor.recordFps);
         result.editor.animationSpeed = editor.value("animationSpeed", result.editor.animationSpeed);
+        result.editor.totalEditTime = editor.value("totalEditTime", result.editor.totalEditTime);
+        result.editor.startFromFrame = editor.value("startFromFrame", result.editor.startFromFrame);
+        result.editor.moveFrameToStopped = editor.value("moveFrameToStopped", result.editor.moveFrameToStopped);
+        result.editor.physicsMode = editor.value("physicsMode", result.editor.physicsMode);
+        result.editor.interleave = editor.value("interleave", result.editor.interleave);
+        result.editor.accumulate = editor.value("accumulate", result.editor.accumulate);
+        result.editor.alwaysSolve = editor.value("alwaysSolve", result.editor.alwaysSolve);
+        result.editor.screenBMPMode = editor.value("screenBMPMode", result.editor.screenBMPMode);
+        result.editor.backgroundMode = editor.value("backgroundMode", result.editor.backgroundMode);
+        result.editor.backgroundTransparent =
+            editor.value("backgroundTransparent", result.editor.backgroundTransparent);
+        result.editor.denoiserEnabled = editor.value("denoiserEnabled", result.editor.denoiserEnabled);
+        result.editor.syncCamera = editor.value("syncCamera", result.editor.syncCamera);
+        result.editor.showRigidBodies = editor.value("showRigidBodies", result.editor.showRigidBodies);
+        result.editor.showInfo = editor.value("showInfo", result.editor.showInfo);
+        result.editor.freeCamera = editor.value("freeCamera", result.editor.freeCamera);
         appendIfPresent(result, editor, "wavFile", "audio", legacyBase);
         appendIfPresent(result, editor, "movieFile", "video", legacyBase);
     }
@@ -489,13 +523,47 @@ DayoProject loadProject(const std::filesystem::path& path) {
         }
         if (native.contains("editorState") && native.at("editorState").is_object()) {
             const auto& editor = native.at("editorState");
+            const auto readPath = [&](std::string_view field, const std::filesystem::path& fallback) {
+                const auto key = std::string(field);
+                return editor.contains(key) && editor.at(key).is_string()
+                           ? resolveAsset(base, editor.at(key).get<std::string>())
+                           : fallback;
+            };
+            result.editor.skyboxFile = readPath("skyboxFile", upstream.editor.skyboxFile);
+            result.editor.floorCollision = editor.value("floorCollision", upstream.editor.floorCollision);
+            result.editor.animationStart = editor.value("animationStart", upstream.editor.animationStart);
+            result.editor.animationEnd = editor.value("animationEnd", upstream.editor.animationEnd);
+            result.editor.animationRepeat = editor.value("animationRepeat", upstream.editor.animationRepeat);
+            result.editor.wavFile = readPath("wavFile", upstream.editor.wavFile);
+            result.editor.wavVolume = editor.value("wavVolume", upstream.editor.wavVolume);
+            result.editor.wavOffset = editor.value("wavOffset", upstream.editor.wavOffset);
+            result.editor.recordStart = editor.value("recordStart", upstream.editor.recordStart);
+            result.editor.recordEnd = editor.value("recordEnd", upstream.editor.recordEnd);
             result.editor.samplesPerFrame =
                 std::max(editor.value("samplesPerFrame", upstream.editor.samplesPerFrame), 1U);
             result.editor.motionBlur = editor.value("motionBlur", upstream.editor.motionBlur);
             result.editor.outputWidth = std::max(editor.value("outputWidth", upstream.editor.outputWidth), 1U);
             result.editor.outputHeight = std::max(editor.value("outputHeight", upstream.editor.outputHeight), 1U);
+            result.editor.outputFile = readPath("outputFile", upstream.editor.outputFile);
+            result.editor.movieFile = readPath("movieFile", upstream.editor.movieFile);
             result.editor.recordFps = editor.value("recordFps", upstream.editor.recordFps);
             result.editor.animationSpeed = editor.value("animationSpeed", upstream.editor.animationSpeed);
+            result.editor.totalEditTime = editor.value("totalEditTime", upstream.editor.totalEditTime);
+            result.editor.startFromFrame = editor.value("startFromFrame", upstream.editor.startFromFrame);
+            result.editor.moveFrameToStopped = editor.value("moveFrameToStopped", upstream.editor.moveFrameToStopped);
+            result.editor.physicsMode = editor.value("physicsMode", upstream.editor.physicsMode);
+            result.editor.interleave = editor.value("interleave", upstream.editor.interleave);
+            result.editor.accumulate = editor.value("accumulate", upstream.editor.accumulate);
+            result.editor.alwaysSolve = editor.value("alwaysSolve", upstream.editor.alwaysSolve);
+            result.editor.screenBMPMode = editor.value("screenBMPMode", upstream.editor.screenBMPMode);
+            result.editor.backgroundMode = editor.value("backgroundMode", upstream.editor.backgroundMode);
+            result.editor.backgroundTransparent =
+                editor.value("backgroundTransparent", upstream.editor.backgroundTransparent);
+            result.editor.denoiserEnabled = editor.value("denoiserEnabled", upstream.editor.denoiserEnabled);
+            result.editor.syncCamera = editor.value("syncCamera", upstream.editor.syncCamera);
+            result.editor.showRigidBodies = editor.value("showRigidBodies", upstream.editor.showRigidBodies);
+            result.editor.showInfo = editor.value("showInfo", upstream.editor.showInfo);
+            result.editor.freeCamera = editor.value("freeCamera", upstream.editor.freeCamera);
         } else {
             result.editor = upstream.editor;
         }
@@ -709,12 +777,42 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
         upstreamEditor = Json::object();
     upstreamEditor["cereal_class_version"] = 3;
     upstreamEditor["frame"] = static_cast<int>(project.frame);
+    const auto editorPath = [&base](const std::filesystem::path& value) {
+        return portablePath(base, value).generic_string();
+    };
+    upstreamEditor["skyboxFile"] = editorPath(project.editor.skyboxFile);
+    upstreamEditor["floorCollision"] = project.editor.floorCollision;
+    upstreamEditor["animationStart"] = project.editor.animationStart;
+    upstreamEditor["animationEnd"] = project.editor.animationEnd;
+    upstreamEditor["animationRepeat"] = project.editor.animationRepeat;
+    upstreamEditor["wavFile"] = editorPath(project.editor.wavFile);
+    upstreamEditor["wavVolume"] = project.editor.wavVolume;
+    upstreamEditor["wavOffset"] = project.editor.wavOffset;
+    upstreamEditor["recordStart"] = project.editor.recordStart;
+    upstreamEditor["recordEnd"] = project.editor.recordEnd;
     upstreamEditor["samplesPerFrame"] = std::max(project.editor.samplesPerFrame, 1U);
     upstreamEditor["motionBlur"] = project.editor.motionBlur;
     upstreamEditor["outputWidth"] = std::max(project.editor.outputWidth, 1U);
     upstreamEditor["outputHeight"] = std::max(project.editor.outputHeight, 1U);
+    upstreamEditor["outputFile"] = editorPath(project.editor.outputFile);
+    upstreamEditor["movieFile"] = editorPath(project.editor.movieFile);
     upstreamEditor["recordFps"] = project.editor.recordFps;
     upstreamEditor["animationSpeed"] = project.editor.animationSpeed;
+    upstreamEditor["totalEditTime"] = project.editor.totalEditTime;
+    upstreamEditor["startFromFrame"] = project.editor.startFromFrame;
+    upstreamEditor["moveFrameToStopped"] = project.editor.moveFrameToStopped;
+    upstreamEditor["physicsMode"] = project.editor.physicsMode;
+    upstreamEditor["interleave"] = project.editor.interleave;
+    upstreamEditor["accumulate"] = project.editor.accumulate;
+    upstreamEditor["alwaysSolve"] = project.editor.alwaysSolve;
+    upstreamEditor["screenBMPMode"] = project.editor.screenBMPMode;
+    upstreamEditor["backgroundMode"] = project.editor.backgroundMode;
+    upstreamEditor["backgroundTransparent"] = project.editor.backgroundTransparent;
+    upstreamEditor["denoiserEnabled"] = project.editor.denoiserEnabled;
+    upstreamEditor["syncCamera"] = project.editor.syncCamera;
+    upstreamEditor["showRigidBodies"] = project.editor.showRigidBodies;
+    upstreamEditor["showInfo"] = project.editor.showInfo;
+    upstreamEditor["freeCamera"] = project.editor.freeCamera;
     upstreamEditor["motionOrder"] = modelOrderArray(modelStates, ProjectOrderField::motion);
     upstreamEditor["postprocessOrder"] = modelOrderArray(modelStates, ProjectOrderField::postprocess);
     upstreamEditor["deformOrder"] = modelOrderArray(modelStates, ProjectOrderField::deform);
@@ -730,12 +828,39 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
     native["frame"] = project.frame;
     native["playing"] = project.playing;
     native["assets"] = std::move(assets);
-    native["editorState"] = {{"samplesPerFrame", std::max(project.editor.samplesPerFrame, 1U)},
+    native["editorState"] = {{"skyboxFile", editorPath(project.editor.skyboxFile)},
+                             {"floorCollision", project.editor.floorCollision},
+                             {"animationStart", project.editor.animationStart},
+                             {"animationEnd", project.editor.animationEnd},
+                             {"animationRepeat", project.editor.animationRepeat},
+                             {"wavFile", editorPath(project.editor.wavFile)},
+                             {"wavVolume", project.editor.wavVolume},
+                             {"wavOffset", project.editor.wavOffset},
+                             {"recordStart", project.editor.recordStart},
+                             {"recordEnd", project.editor.recordEnd},
+                             {"samplesPerFrame", std::max(project.editor.samplesPerFrame, 1U)},
                              {"motionBlur", project.editor.motionBlur},
                              {"outputWidth", std::max(project.editor.outputWidth, 1U)},
                              {"outputHeight", std::max(project.editor.outputHeight, 1U)},
+                             {"outputFile", editorPath(project.editor.outputFile)},
+                             {"movieFile", editorPath(project.editor.movieFile)},
                              {"recordFps", project.editor.recordFps},
-                             {"animationSpeed", project.editor.animationSpeed}};
+                             {"animationSpeed", project.editor.animationSpeed},
+                             {"totalEditTime", project.editor.totalEditTime},
+                             {"startFromFrame", project.editor.startFromFrame},
+                             {"moveFrameToStopped", project.editor.moveFrameToStopped},
+                             {"physicsMode", project.editor.physicsMode},
+                             {"interleave", project.editor.interleave},
+                             {"accumulate", project.editor.accumulate},
+                             {"alwaysSolve", project.editor.alwaysSolve},
+                             {"screenBMPMode", project.editor.screenBMPMode},
+                             {"backgroundMode", project.editor.backgroundMode},
+                             {"backgroundTransparent", project.editor.backgroundTransparent},
+                             {"denoiserEnabled", project.editor.denoiserEnabled},
+                             {"syncCamera", project.editor.syncCamera},
+                             {"showRigidBodies", project.editor.showRigidBodies},
+                             {"showInfo", project.editor.showInfo},
+                             {"freeCamera", project.editor.freeCamera}};
     native["modelState"] = Json::array();
     for (const auto& model : modelStates) {
         Json state{{"source", portablePath(base, model.source).generic_string()},

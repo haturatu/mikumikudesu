@@ -40,12 +40,39 @@ struct ProjectModelState {
 };
 
 struct ProjectEditorState {
+    std::filesystem::path skyboxFile;
+    bool floorCollision{true};
+    std::int32_t animationStart{};
+    std::int32_t animationEnd{-1};
+    bool animationRepeat{};
+    std::filesystem::path wavFile;
+    float wavVolume{1.0F};
+    double wavOffset{};
+    std::int32_t recordStart{};
+    std::int32_t recordEnd{-1};
     std::uint32_t samplesPerFrame{16};
     bool motionBlur{};
     std::uint32_t outputWidth{1920};
     std::uint32_t outputHeight{1080};
+    std::filesystem::path outputFile;
+    std::filesystem::path movieFile;
     float recordFps{30.0F};
     float animationSpeed{1.0F};
+    std::uint64_t totalEditTime{};
+    bool startFromFrame{};
+    bool moveFrameToStopped{};
+    std::int32_t physicsMode{1};
+    std::int32_t interleave{1};
+    bool accumulate{true};
+    bool alwaysSolve{};
+    std::int32_t screenBMPMode{1};
+    std::int32_t backgroundMode{};
+    bool backgroundTransparent{};
+    bool denoiserEnabled{};
+    bool syncCamera{};
+    bool showRigidBodies{};
+    bool showInfo{true};
+    bool freeCamera{};
 };
 
 struct DayoProject {

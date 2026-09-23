@@ -885,6 +885,9 @@ void Application::resetProjectRuntimeState() {
     animationFrame_ = 0.0F;
     uploadedAnimationFrame_ = -1;
     playing_ = true;
+    repeat_ = true;
+    audioVolume_ = 1.0F;
+    audioOffsetSeconds_ = 0.0F;
     nativePlaybackWasActive_ = false;
     nativeOnStartPending_ = true;
     manualCamera_ = false;
@@ -894,6 +897,7 @@ void Application::resetProjectRuntimeState() {
     normalization_ = {};
     projectAssets_.clear();
     projectModelMetadata_.clear();
+    projectEditorState_ = {};
     upstreamDocumentJson_.clear();
     history_.clear();
     frameProfiler_.reset();
@@ -1145,8 +1149,19 @@ core::DayoProject Application::currentProject() const {
     project.playing = playing_;
     project.upstreamDocumentJson = upstreamDocumentJson_;
     project.assets = projectAssets_;
+    project.editor = projectEditorState_;
+    project.editor.animationRepeat = repeat_;
+    project.editor.wavVolume = audioVolume_;
+    project.editor.wavOffset = audioOffsetSeconds_;
+    project.editor.floorCollision = scene_.physicsSettings().floorCollision;
     project.editor.animationSpeed = playbackSpeed_;
     project.editor.recordFps = static_cast<float>(sceneTimelineFps(scene_));
+    if (const auto audio = std::ranges::find(project.assets, std::string_view{"audio"}, &core::ProjectAsset::kind);
+        audio != project.assets.end())
+        project.editor.wavFile = audio->path;
+    if (const auto video = std::ranges::find(project.assets, std::string_view{"video"}, &core::ProjectAsset::kind);
+        video != project.assets.end())
+        project.editor.movieFile = video->path;
 #if DAYO_HAS_IMGUI
     project.editor.samplesPerFrame = sequenceOutput_.samples;
     project.editor.motionBlur = sequenceOutput_.motionBlur;
@@ -1452,6 +1467,13 @@ void Application::handleAsset(const std::filesystem::path& path) {
             resetProjectRuntimeState();
             upstreamDocumentJson_ = project.upstreamDocumentJson;
             projectModelMetadata_ = project.models;
+            projectEditorState_ = project.editor;
+            repeat_ = project.editor.animationRepeat;
+            audioVolume_ = project.editor.wavVolume;
+            audioOffsetSeconds_ = static_cast<float>(project.editor.wavOffset);
+            auto physicsSettings = scene_.physicsSettings();
+            physicsSettings.floorCollision = project.editor.floorCollision;
+            scene_.setPhysicsSettings(physicsSettings);
             if (project.renderer == "subayai")
                 requestRenderer(graphics::RendererKind::subayai);
             else if (project.renderer == "bdpt")
@@ -1462,6 +1484,9 @@ void Application::handleAsset(const std::filesystem::path& path) {
 #if DAYO_HAS_IMGUI
             sequenceOutput_.samples = project.editor.samplesPerFrame;
             sequenceOutput_.motionBlur = project.editor.motionBlur;
+            sequenceOutput_.firstFrame = static_cast<std::uint32_t>(std::max(project.editor.recordStart, 0));
+            if (project.editor.recordEnd >= 0)
+                sequenceOutput_.lastFrame = static_cast<std::uint32_t>(project.editor.recordEnd);
             sequenceWidth_ = project.editor.outputWidth;
             sequenceHeight_ = project.editor.outputHeight;
 #endif
@@ -2990,8 +3015,8 @@ void Application::buildInspectorPanel() {
         }
     }
     if (uiState_.workspace == ui::Workspace::debug && ImGui::CollapsingHeader("Evaluation Order (experimental)")) {
-        ImGui::TextDisabled(
-            "Motion order is applied to animation evaluation; other orders and project persistence are pending.");
+        ImGui::TextDisabled("Motion order drives animation evaluation. Other order fields are persisted; runtime "
+                            "scheduling support is partial.");
         if (ImGui::DragInt("Motion", &model->order.motion, 1.0F, 0, 1024))
             scene_.markDirty(core::DirtyFlag::geometry);
         ImGui::BeginDisabled();
@@ -3320,10 +3345,14 @@ void Application::buildImageSequenceExportUi() {
         int first = static_cast<int>(sequenceOutput_.firstFrame);
         int last = static_cast<int>(sequenceOutput_.lastFrame);
         int samples = static_cast<int>(sequenceOutput_.samples);
-        if (ImGui::InputInt("First frame", &first))
+        if (ImGui::InputInt("First frame", &first)) {
             sequenceOutput_.firstFrame = static_cast<std::uint32_t>(std::max(first, 0));
-        if (ImGui::InputInt("Last frame", &last))
+            projectEditorState_.recordStart = static_cast<std::int32_t>(sequenceOutput_.firstFrame);
+        }
+        if (ImGui::InputInt("Last frame", &last)) {
             sequenceOutput_.lastFrame = static_cast<std::uint32_t>(std::max(last, 0));
+            projectEditorState_.recordEnd = static_cast<std::int32_t>(sequenceOutput_.lastFrame);
+        }
         if (ImGui::InputInt("Samples", &samples))
             sequenceOutput_.samples = static_cast<std::uint32_t>(std::clamp(samples, 1, 4096));
         int width = static_cast<int>(sequenceWidth_);
