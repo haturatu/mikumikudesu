@@ -177,6 +177,7 @@ add_library(
   src/core/audio_export.cpp
   src/core/video_export.cpp
   src/core/media.cpp
+  src/core/model_execution.cpp
   src/core/editor.cpp
   src/core/output.cpp
   src/core/profiling.cpp

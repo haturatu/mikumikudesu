@@ -8,6 +8,7 @@
 #include "core/denoiser.hpp"
 #include "core/image.hpp"
 #include "core/log.hpp"
+#include "core/model_execution.hpp"
 #include "core/model_probe.hpp"
 #include "core/motion.hpp"
 #include "core/video_export.hpp"
@@ -261,7 +262,7 @@ void Application::requestRenderer(graphics::RendererKind renderer) {
             if (!effect.controllerModel.has_value())
                 return false;
             const auto* owner = scene_.model(*effect.controllerModel);
-            return owner != nullptr && !core::resolveModelParticipation(*owner, sourceEffects).deform;
+            return owner != nullptr && !core::ModelExecutionPlanner::resolve(*owner, sourceEffects).runDeformer;
         });
         nativeRenderer_.setEffectStack(runtimeEffects);
         device_->setNativeRendererAvailability(status.nativeReady && status.active == graphics::RendererKind::subayai,
@@ -323,7 +324,7 @@ fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTar
         const auto& instance = scene_.models()[index];
         if (instance.id == scene_.selectedModelId())
             modelIndex = static_cast<std::uint32_t>(index);
-        if (core::resolveModelParticipation(instance, scene_.effects()).rasterize && instance.model != nullptr)
+        if (core::ModelExecutionPlanner::resolve(instance, scene_.effects()).rasterize && instance.model != nullptr)
             totalMaterials += instance.model->materials.size();
     }
     const auto* program = nativeRenderer_.program();
@@ -363,7 +364,7 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
     }
     std::vector<core::MaterialParameterBlock> materials;
     for (const auto& instance : scene_.models()) {
-        if (instance.model == nullptr || !core::resolveModelParticipation(instance, scene_.effects()).rasterize)
+        if (instance.model == nullptr || !core::ModelExecutionPlanner::resolve(instance, scene_.effects()).rasterize)
             continue;
         for (std::size_t index = 0; index < instance.model->materials.size(); ++index) {
             if (index < instance.materialSettings.size())
@@ -1674,23 +1675,26 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     struct EvaluatedModel {
         const core::ModelInstance* instance{};
         bool gpuSkinning{};
-        core::ModelParticipation participation;
+        core::ModelExecutionPolicy policy;
         core::AnimatedModelFrame frame;
     };
     std::pmr::vector<EvaluatedModel> evaluated(scratch);
     evaluated.reserve(scene_.models().size());
-    for (const auto& instance : scene_.models()) {
-        if (instance.model == nullptr || instance.animator == nullptr)
+    const auto executionPlan = core::ModelExecutionPlanner::plan(scene_.models(), scene_.effects());
+    for (std::size_t index = 0; index < scene_.models().size(); ++index) {
+        const auto& instance = scene_.models()[index];
+        const auto& policy = executionPlan[index];
+        if (!policy.evaluateAnimation)
             continue;
         const auto gravity = scene_.evaluatePhysicsSettings(animationFrame_);
-        if (instance.physics != nullptr) {
+        if (policy.evaluatePhysics && instance.physics != nullptr) {
             instance.physics->setGravity({gravity.gravityDirection[0] * gravity.gravity,
                                           gravity.gravityDirection[1] * gravity.gravity,
                                           gravity.gravityDirection[2] * gravity.gravity});
             instance.physics->setGravityNoise(gravity.noiseAmplitude, gravity.noiseFrequency);
             instance.physics->setFloorCollision(gravity.floorCollision);
         }
-        evaluated.push_back({&instance, instance.softBody == nullptr || !instance.softBody->available(), {}, {}});
+        evaluated.push_back({&instance, instance.softBody == nullptr || !instance.softBody->available(), policy, {}});
     }
     {
         auto animation = frameProfiler_.measure(core::ProfileSection::animation);
@@ -1721,11 +1725,13 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         if (instance == nullptr)
             continue;
         instance->animationVisible = evaluatedModel.frame.visible;
-        evaluatedModel.participation = core::resolveModelParticipation(*instance, scene_.effects());
+        evaluatedModel.policy = core::ModelExecutionPlanner::resolve(*instance, scene_.effects());
     }
     evaluatedModels_.models.clear();
     evaluatedModels_.models.reserve(evaluated.size());
     for (const auto& evaluatedModel : evaluated) {
+        if (!evaluatedModel.policy.exposeToControllers)
+            continue;
         const auto& instance = *evaluatedModel.instance;
         core::fx::EvaluatedModelState snapshot;
         snapshot.id = instance.id;
@@ -1755,8 +1761,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     for (const auto& evaluatedModel : evaluated) {
         const auto& instance = *evaluatedModel.instance;
         const auto& frame = evaluatedModel.frame;
-        const auto& participation = evaluatedModel.participation;
-        effectiveVisibility.push_back(participation.rasterize ? 1U : 0U);
+        const auto& policy = evaluatedModel.policy;
+        effectiveVisibility.push_back(policy.rasterize ? 1U : 0U);
         const bool gpuSkinning = evaluatedModel.gpuSkinning;
         const auto morphWeightBase = static_cast<std::uint32_t>(morphWeights.size());
         for (std::size_t morphIndex = 0; morphIndex < instance.model->morphs.size(); ++morphIndex) {
@@ -1845,9 +1851,9 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         native.rasterizeOrder = static_cast<std::uint32_t>(std::max(instance.order.raster, 0));
         native.deformIndex = native.modelIndex;
         native.deformOrder = static_cast<std::uint32_t>(std::max(instance.order.deform, 0));
-        native.rasterize = participation.rasterize;
-        native.acceleration = participation.acceleration;
-        native.hasBlas = instance.upstreamDrawable && !participation.postprocessLauncher;
+        native.rasterize = policy.rasterize;
+        native.acceleration = policy.includeInTlas;
+        native.hasBlas = policy.buildBlas;
         native.indices.assign(instance.model->indices.begin(), instance.model->indices.end());
         native.morphWeights.resize(instance.model->morphs.size(), 0.0F);
         for (std::size_t morphIndex = 0; morphIndex < native.morphWeights.size(); ++morphIndex) {
@@ -2051,7 +2057,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             }
             auto& draw = draws[materialCursor - 1U];
             draw.firstIndex = firstIndex;
-            draw.indexCount = participation.rasterize ? sourceMaterial.indexCount : 0U;
+            draw.indexCount = policy.rasterize ? sourceMaterial.indexCount : 0U;
             draw.materialIndex = static_cast<std::uint32_t>(materialCursor - 1U);
             draw.instanceCount = sceneCloneCount;
             firstIndex += instance.model->materials[materialIndex].indexCount;

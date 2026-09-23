@@ -4,6 +4,7 @@
 #include "core/editor.hpp"
 #include "core/image.hpp"
 #include "core/media.hpp"
+#include "core/model_execution.hpp"
 #include "core/model_probe.hpp"
 #include "core/motion.hpp"
 #include "core/output.hpp"
@@ -910,31 +911,34 @@ int main() {
         scene.model(secondModel)->model->materials.resize(2);
         ok &= check(scene.models().size() == 2 && scene.selectedModel() != nullptr, "multi-model scene instances");
         const auto* firstInstance = scene.model(firstModel);
-        auto participation = dayo::core::resolveModelParticipation(*firstInstance, scene.effects());
-        ok &= check(participation.evaluateAnimation && participation.rasterize && participation.acceleration,
-                    "ordinary visible model participates in animation, raster, and acceleration");
+        auto policy = dayo::core::ModelExecutionPlanner::resolve(*firstInstance, scene.effects());
+        ok &= check(policy.role == dayo::core::ModelRuntimeRole::scene && policy.evaluateAnimation &&
+                        policy.evaluatePhysics && policy.rasterize && policy.buildBlas && policy.includeInTlas &&
+                        policy.exposeToControllers,
+                    "ordinary visible model receives the complete scene execution policy");
         auto postprocessEffects = dayo::core::SceneEffectStack{};
         dayo::core::SceneEffectInstance postprocess;
         postprocess.controllerModel = firstModel;
         postprocess.graph.category = "postprocess";
         postprocessEffects.postprocess.push_back(postprocess);
-        participation = dayo::core::resolveModelParticipation(*firstInstance, postprocessEffects);
-        ok &= check(participation.controller && participation.postprocessLauncher && !participation.deform &&
-                        !participation.rasterize && !participation.acceleration,
-                    "postprocess launcher remains a controller but is excluded from model rendering and acceleration");
+        policy = dayo::core::ModelExecutionPlanner::resolve(*firstInstance, postprocessEffects);
+        ok &= check(policy.role == dayo::core::ModelRuntimeRole::postprocessLauncher && policy.evaluateAnimation &&
+                        policy.exposeToControllers && !policy.runDeformer && !policy.rasterize && !policy.buildBlas &&
+                        !policy.includeInTlas,
+                    "postprocess launcher remains evaluable but is excluded from deform, raster, and acceleration");
         auto deformEffects = dayo::core::SceneEffectStack{};
         dayo::core::SceneEffectInstance deformer;
         deformer.controllerModel = firstModel;
         deformer.graph.category = "deform";
         deformEffects.deform.push_back(deformer);
-        participation = dayo::core::resolveModelParticipation(*firstInstance, deformEffects);
-        ok &= check(participation.deform && participation.rasterize && participation.acceleration,
+        policy = dayo::core::ModelExecutionPlanner::resolve(*firstInstance, deformEffects);
+        ok &= check(policy.runDeformer && policy.rasterize && policy.buildBlas && policy.includeInTlas,
                     "assigned deformer retains the owner's normal scene participation");
         scene.model(firstModel)->animationVisible = false;
-        participation = dayo::core::resolveModelParticipation(*scene.model(firstModel), deformEffects);
-        ok &= check(participation.evaluateAnimation && participation.deform && !participation.rasterize &&
-                        !participation.acceleration,
-                    "animated visibility suppresses raster and TLAS participation without stopping evaluation");
+        policy = dayo::core::ModelExecutionPlanner::resolve(*scene.model(firstModel), deformEffects);
+        ok &= check(policy.evaluateAnimation && policy.exposeToControllers && policy.runDeformer && !policy.rasterize &&
+                        policy.buildBlas && !policy.includeInTlas,
+                    "animated visibility suppresses raster/TLAS membership without stopping evaluation or deform");
         dayo::core::PmxModel distantController;
         distantController.vertices.resize(3);
         for (auto& vertex : distantController.vertices)
@@ -944,7 +948,17 @@ int main() {
         distantController.vertices.back().position = {};
         ok &= check(dayo::core::isUpstreamDrawableModel(distantController),
                     "a model with any ordinary vertex remains drawable");
+        scene.model(firstModel)->upstreamDrawable = false;
+        policy = dayo::core::ModelExecutionPlanner::resolve(*scene.model(firstModel), deformEffects);
+        ok &= check(policy.role == dayo::core::ModelRuntimeRole::controllerOnly && policy.farController &&
+                        policy.evaluateAnimation && policy.exposeToControllers && !policy.runDeformer &&
+                        !policy.rasterize && !policy.buildBlas && !policy.includeInTlas,
+                    "far controller remains available to FX while leaving deform/raster/BLAS/TLAS paths");
+        scene.model(firstModel)->upstreamDrawable = true;
         scene.model(firstModel)->animationVisible = true;
+        const auto planned = dayo::core::ModelExecutionPlanner::plan(scene.models(), deformEffects);
+        ok &= check(planned.size() == scene.models().size() && planned[0].rasterize && planned[1].rasterize,
+                    "execution plan stays index-aligned with stable scene model indices");
         const auto modelTopologyGeneration = scene.topologyGeneration();
         ok &= check(modelTopologyGeneration > initialTopologyGeneration && scene.setModelVisible(firstModel, false) &&
                         scene.setCloneCount(firstModel, 3) && scene.topologyGeneration() == modelTopologyGeneration + 2,
