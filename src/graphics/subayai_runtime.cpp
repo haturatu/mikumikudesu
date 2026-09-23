@@ -106,6 +106,7 @@ bool SubayaiRuntime::initialize(Device& device, fx::FxProgram program, std::stri
 
 void SubayaiRuntime::reset() noexcept {
     dayoFx_.reset();
+    materialSceneRuntime_.reset();
     geometry_.reset();
     environmentRuntime_.reset();
     bindings_.reset();
@@ -200,9 +201,21 @@ bool SubayaiRuntime::syncMaterials(std::span<const core::MaterialParameterBlock>
 SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
                                           std::span<const core::MaterialParameterBlock> materials,
                                           std::span<const AliasEntry> lightSampling,
-                                          const EnvironmentGpuResult& environment) {
+                                          const EnvironmentGpuResult& environment,
+                                          std::span<const FxMaterialSceneModel> materialModels) {
     if (!ready_ || device_ == nullptr)
         throw std::logic_error("Subayai runtime is not initialized");
+    const FxMaterialGpuRuntime* materialGpuRuntime = nullptr;
+    if (program_.materialSchema.has_value()) {
+        std::string materialError;
+        if (!materialSceneRuntime_.sync(*device_, *program_.materialSchema, materialModels, context, &materialError))
+            throw std::runtime_error(materialError.empty() ? "Subayai MatDesc synchronization failed" : materialError);
+        materialGpuRuntime = &materialSceneRuntime_.gpuRuntime();
+        if (materialSceneRuntime_.descriptorLayoutChanged() && nativeAttempted_) {
+            dayoFx_.reset();
+            nativeAttempted_ = false;
+        }
+    }
     if (!materials.empty() && !syncMaterials(materials))
         throw std::runtime_error("Subayai material GPU upload failed");
     std::string lightError;
@@ -249,7 +262,8 @@ SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
         if (externalResourceProvider_ != nullptr)
             dayoFx_.addProvider(*externalResourceProvider_);
         static_cast<void>(dayoFx_.initializeForFrame(*device_, program_, fx::FxShaderCompiler{}, context, sharedLayouts,
-                                                     &nativeError, sharedSets, std::move(sourceOptions)));
+                                                     &nativeError, sharedSets, std::move(sourceOptions),
+                                                     materialGpuRuntime));
     } else if (dayoFx_.ready()) {
         std::string nativeError;
         static_cast<void>(dayoFx_.refresh(context, &nativeError));

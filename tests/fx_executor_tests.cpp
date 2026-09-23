@@ -15,6 +15,7 @@
 #include "graphics/dayo_host_resources.hpp"
 #include "graphics/fx_executor.hpp"
 #include "graphics/fx_material_gpu_runtime.hpp"
+#include "graphics/fx_material_scene_runtime.hpp"
 #include "graphics/fx_pipeline_runtime.hpp"
 #include "graphics/fx_resource_runtime.hpp"
 #include "graphics/native_frame_constants.hpp"
@@ -1773,6 +1774,92 @@ bool testFxMaterialGpuRuntimeOwnsTablesAndTextures() {
     return ok;
 }
 
+bool testFxMaterialSceneRuntimeEvaluatesProjectAnnotations() {
+    namespace fs = std::filesystem;
+    const auto directory =
+        fs::temp_directory_path() /
+        ("dayo-matdesc-scene-runtime-" +
+         std::to_string(static_cast<unsigned long long>(std::chrono::steady_clock::now().time_since_epoch().count())));
+    const auto projectDirectory = directory / "project";
+    const auto annotationDirectory = projectDirectory / "materials";
+    std::error_code filesystemError;
+    fs::create_directories(annotationDirectory, filesystemError);
+    if (filesystemError)
+        return check(false, "MatDesc scene runtime test directory created");
+
+    const auto annotationPath = annotationDirectory / "surface.txt";
+    {
+        std::ofstream output(annotationPath, std::ios::binary);
+        output << "Weight : frac(Time)\n_TAlbedo : albedo.ppm\n";
+    }
+    const auto imagePath = annotationDirectory / "albedo.ppm";
+    {
+        std::ofstream output(imagePath, std::ios::binary);
+        output << "P6\n1 1\n255\n";
+        output.put(static_cast<char>(64));
+        output.put(static_cast<char>(128));
+        output.put(static_cast<char>(255));
+    }
+
+    auto schema = dayo::core::fx::parseMaterialTemplateSchema("f.1 : Weight\n_T0 : Albedo\nWeight : 0.75\n", "Surface");
+    dayo::core::MaterialEditorState material;
+    material.annotation = "materials/surface.txt";
+    const std::array materials{material};
+    const std::array models{dayo::graphics::FxMaterialSceneModel{
+        .id = 17,
+        .sourcePath = directory / "models" / "avatar.pmx",
+        .projectDirectory = projectDirectory,
+        .modelIndex = 0,
+        .vertexCount = 12,
+        .cloneCount = 2,
+        .materials = materials,
+    }};
+
+    MockDevice device;
+    dayo::graphics::FxMaterialSceneRuntime runtime;
+    dayo::fx::FxFrameContext context;
+    context.renderWidth = 64;
+    context.renderHeight = 32;
+    context.totalMaterial = 1;
+    context.frame = 3.0F;
+    context.time = 10.25;
+    std::string error;
+    bool ok = check(runtime.sync(device, schema, models, context, &error),
+                    "MatDesc scene runtime links project-relative material annotation and GPU resources");
+    if (!ok)
+        std::cerr << "MatDesc scene runtime error: " << error << '\n';
+
+    const auto readUploadedWeight = [&device]() {
+        float value = 0.0F;
+        if (device.bufferUploads_.empty() || device.bufferUploads_.back().bytes.size() < sizeof(value))
+            return value;
+        std::memcpy(&value, device.bufferUploads_.back().bytes.data(), sizeof(value));
+        return value;
+    };
+    ok &= check(runtime.gpuRuntime().ready() && runtime.gpuRuntime().bindings().textures2D.size() == 2 &&
+                    std::abs(readUploadedWeight() - 0.25F) < 1.0e-6F,
+                "MatDesc scene runtime evaluates file expressions and creates the per-instance texture catalog");
+    ok &= check(!runtime.descriptorLayoutChanged(),
+                "first MatDesc scene synchronization does not report a prior descriptor layout change");
+
+    context.time = 2.5;
+    ok &= check(
+        runtime.sync(device, schema, models, context, &error) && std::abs(readUploadedWeight() - 0.5F) < 1.0e-6F &&
+            !runtime.descriptorLayoutChanged() && device.textureDescs_.size() == 3,
+        "MatDesc scene runtime reevaluates cached expressions without reallocating an unchanged texture catalog");
+
+    {
+        std::ofstream output(annotationPath, std::ios::binary | std::ios::trunc);
+        output << "Weight : frac(Time)\n";
+    }
+    ok &= check(runtime.sync(device, schema, models, context, &error) && runtime.descriptorLayoutChanged() &&
+                    runtime.gpuRuntime().bindings().textures2D.size() == 1,
+                "MatDesc scene runtime reports descriptor-array shape changes after annotation relinking");
+
+    fs::remove_all(directory, filesystemError);
+    return ok;
+}
+
 bool testPreviewReferencePath() {
     const auto plan = dayo::fx::buildPreviewReferencePlan(testContext());
     bool ok = true;
@@ -3062,6 +3149,7 @@ int main() {
     ok &= testFxConditionRuntime();
     ok &= testNativeFxGlobalVariableRuntime();
     ok &= testFxMaterialGpuRuntimeOwnsTablesAndTextures();
+    ok &= testFxMaterialSceneRuntimeEvaluatesProjectAnnotations();
     ok &= testPreviewReferencePath();
     ok &= testSchedulerOrder();
     ok &= testCloneUnification();

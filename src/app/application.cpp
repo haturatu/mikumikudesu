@@ -801,8 +801,30 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                 log::warn("Native OIDN pass failed: ", oidnError);
                 return false;
             };
+        std::vector<graphics::FxMaterialSceneModel> materialModels;
+        const auto* activeProgram = nativeRenderer_.program();
+        if (activeProgram != nullptr && activeProgram->materialSchema.has_value()) {
+            if (nativeGeometry_.size() != nativeSceneModelData_.size())
+                throw std::logic_error("MatDesc scene model table is out of sync with native geometry");
+            materialModels.reserve(nativeGeometry_.size());
+            for (const auto& geometry : nativeGeometry_) {
+                const auto* instance = scene_.model(geometry.modelId);
+                if (instance == nullptr)
+                    throw std::logic_error("MatDesc scene model is no longer present in the scene");
+                materialModels.push_back({.id = instance->id,
+                                          .sourcePath = instance->sourcePath,
+                                          .projectDirectory = currentProjectPath_.has_value()
+                                                                  ? currentProjectPath_->parent_path()
+                                                                  : std::filesystem::path{},
+                                          .modelIndex = geometry.modelIndex,
+                                          .vertexCount = geometry.baseVertices.size(),
+                                          .cloneCount = geometry.cloneCount,
+                                          .materials = instance->materialSettings});
+            }
+        }
         auto output = nativeRenderer_.recordFrame(commands, frameContext, nativeDirty, materials, lightSampling,
-                                                  nativeRenderer_.environment(), executionResources, outputExecution);
+                                                  nativeRenderer_.environment(), executionResources, outputExecution,
+                                                  materialModels);
         nativeOnStartPending_ = false;
         nativeFxPendingEvents_.clear();
         if (output.has_value() && outputExecution.sampleIndex + 1U == outputExecution.sampleCount)
