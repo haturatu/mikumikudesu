@@ -1539,7 +1539,8 @@ int main() {
         auto evaluatedPreview = preview;
         for (auto& vertex : evaluatedPreview)
             vertex.position[0] += 5.0F;
-        const auto normalizedData = dayo::graphics::makeNativeSceneModelData(model, evaluatedPreview, {}, normalization);
+        const auto normalizedData =
+            dayo::graphics::makeNativeSceneModelData(model, evaluatedPreview, {}, normalization);
         ok &= check(normalizedData.vertices[0].position[0] == 5.0F &&
                         normalizedData.rawVertices[0].position[0] == -1.0F &&
                         normalizedData.rawVertices[1].position[0] == 1.0F,
@@ -1547,9 +1548,8 @@ int main() {
 
         const auto data = dayo::graphics::makeNativeSceneModelData(model, preview);
         ok &= check(data.vertices.size() == 4 && data.rawVertices.size() == 4 && data.indices == model.indices &&
-                        data.materials.size() == 2 &&
-                        data.faces == std::vector<std::uint32_t>{0, 1} && data.materialFaces.size() == 2 &&
-                        data.faceWalker.size() == 2,
+                        data.materials.size() == 2 && data.faces == std::vector<std::uint32_t>{0, 1} &&
+                        data.materialFaces.size() == 2 && data.faceWalker.size() == 2,
                     "native scene data expands PMX model buffers deterministically");
         ok &= check(std::abs(data.vertices[0].tangent[0] - 1.0F) < 1e-5F &&
                         std::abs(data.vertices[0].tangent[1]) < 1e-5F &&
