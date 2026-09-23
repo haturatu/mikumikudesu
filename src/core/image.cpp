@@ -41,11 +41,12 @@ std::array<std::uint8_t, 4> rgb565(std::uint16_t value) {
             static_cast<std::uint8_t>((value & 31U) * 255U / 31U), 255};
 }
 
-void writePixel(ImageRgba8& image, std::uint32_t x, std::uint32_t y, const std::array<std::uint8_t, 4>& color) {
-    if (x >= image.width || y >= image.height)
+void writePixel(std::vector<std::uint8_t>& pixels, std::uint32_t width, std::uint32_t height, std::uint32_t depth,
+                std::uint32_t z, std::uint32_t x, std::uint32_t y, const std::array<std::uint8_t, 4>& color) {
+    if (x >= width || y >= height || z >= depth)
         return;
-    const auto offset = (static_cast<std::size_t>(y) * image.width + x) * 4U;
-    std::copy(color.begin(), color.end(), image.pixels.begin() + static_cast<std::ptrdiff_t>(offset));
+    const auto offset = ((static_cast<std::size_t>(z) * height + y) * width + x) * 4U;
+    std::copy(color.begin(), color.end(), pixels.begin() + static_cast<std::ptrdiff_t>(offset));
 }
 
 std::array<std::array<std::uint8_t, 4>, 4> colorPalette(const std::uint8_t* block, bool dxt1) {
@@ -107,6 +108,16 @@ std::uint64_t checkedRgbaBytes(std::uint32_t width, std::uint32_t height, std::s
     return bytes;
 }
 
+std::uint64_t checkedRgbaVolumeBytes(std::uint32_t width, std::uint32_t height, std::uint32_t depth,
+                                     std::string_view field) {
+    if (depth == 0)
+        throw std::runtime_error("invalid " + std::string(field) + " depth");
+    const auto bytes = checkedMultiply(checkedRgbaBytes(width, height, field), depth, field);
+    if (bytes > std::numeric_limits<std::size_t>::max())
+        throw std::runtime_error("image size exceeds addressable memory for " + std::string(field));
+    return bytes;
+}
+
 void checkPeakAllocation(std::uint64_t inputBytes, std::uint64_t outputBytes, std::string_view field) {
     if (inputBytes > kImageAllocationBudget || outputBytes > kImageAllocationBudget - inputBytes)
         throw std::runtime_error("image allocation budget exceeded for " + std::string(field));
@@ -133,8 +144,8 @@ void checkPeakAllocation(std::uint64_t inputBytes, std::uint64_t outputBytes, st
 
 enum class BlockFormat { bc1, bc2, bc3, bc4, bc5 };
 
-ImageRgba8 decodeBlocks(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> data,
-                        BlockFormat format) {
+void decodeBlockSlice(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> data, BlockFormat format,
+                      std::vector<std::uint8_t>& pixels, std::uint32_t z, std::uint32_t outputDepth) {
     const auto blockSize = (format == BlockFormat::bc1 || format == BlockFormat::bc4) ? 8U : 16U;
     const auto blocksWide = (static_cast<std::uint64_t>(width) + 3U) / 4U;
     const auto blocksHigh = (static_cast<std::uint64_t>(height) + 3U) / 4U;
@@ -142,9 +153,6 @@ ImageRgba8 decodeBlocks(std::uint32_t width, std::uint32_t height, std::span<con
         checkedMultiply(checkedMultiply(blocksWide, blocksHigh, "DDS blocks"), blockSize, "DDS block payload");
     if (expectedBytes > data.size())
         throw std::runtime_error("truncated DDS block data");
-    const auto rgbaBytes = checkedRgbaBytes(width, height, "DDS");
-    checkPeakAllocation(expectedBytes, rgbaBytes, "DDS");
-    ImageRgba8 image{width, height, std::vector<std::uint8_t>(static_cast<std::size_t>(rgbaBytes))};
     for (std::uint32_t by = 0; by < blocksHigh; ++by)
         for (std::uint32_t bx = 0; bx < blocksWide; ++bx) {
             const auto* block = data.data() + (static_cast<std::size_t>(by) * blocksWide + bx) * blockSize;
@@ -154,7 +162,7 @@ ImageRgba8 decodeBlocks(std::uint32_t width, std::uint32_t height, std::span<con
                 for (std::uint32_t pixel = 0; pixel < 16; ++pixel) {
                     const auto r = red[alphaIndex(block, pixel)];
                     const auto g = green[alphaIndex(format == BlockFormat::bc5 ? block + 8 : block, pixel)];
-                    writePixel(image, bx * 4U + pixel % 4U, by * 4U + pixel / 4U,
+                    writePixel(pixels, width, height, outputDepth, z, bx * 4U + pixel % 4U, by * 4U + pixel / 4U,
                                {r, g, format == BlockFormat::bc5 ? static_cast<std::uint8_t>(255) : r, 255});
                 }
                 continue;
@@ -171,9 +179,17 @@ ImageRgba8 decodeBlocks(std::uint32_t width, std::uint32_t height, std::span<con
                 } else if (format == BlockFormat::bc3) {
                     color[3] = alphas[alphaIndex(block, pixel)];
                 }
-                writePixel(image, bx * 4U + pixel % 4U, by * 4U + pixel / 4U, color);
+                writePixel(pixels, width, height, outputDepth, z, bx * 4U + pixel % 4U, by * 4U + pixel / 4U, color);
             }
         }
+}
+
+ImageRgba8 decodeBlocks(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> data,
+                        BlockFormat format) {
+    const auto rgbaBytes = checkedRgbaBytes(width, height, "DDS");
+    checkPeakAllocation(data.size(), rgbaBytes, "DDS");
+    ImageRgba8 image{width, height, std::vector<std::uint8_t>(static_cast<std::size_t>(rgbaBytes))};
+    decodeBlockSlice(width, height, data, format, image.pixels, 0, 1);
     return image;
 }
 
@@ -299,7 +315,215 @@ ImageRgba8 decodeDds(const std::filesystem::path& path) {
     return image;
 }
 
+[[nodiscard]] DdsImageRgba8 decodeDdsTexture(std::span<const std::uint8_t> bytes, const std::filesystem::path& path) {
+    const auto readU32 = [bytes, &path](std::size_t offset) {
+        if (offset > bytes.size() || bytes.size() - offset < sizeof(std::uint32_t))
+            throw std::runtime_error("truncated DDS header: " + path.string());
+        return u32(bytes.data() + offset);
+    };
+    if (bytes.size() < 128 || std::memcmp(bytes.data(), "DDS ", 4) != 0 || readU32(4) != 124U || readU32(76) != 32U)
+        throw std::runtime_error("invalid DDS file: " + path.string());
+
+    DdsImageRgba8 result;
+    result.width = readU32(16);
+    result.height = readU32(12);
+    result.depth = std::max(readU32(24), 1U);
+    result.mipLevels = std::max(readU32(28), 1U);
+    result.arrayLayers = 1;
+    if (result.width == 0 || result.height == 0)
+        throw std::runtime_error("invalid DDS dimensions: " + path.string());
+
+    const auto pixelFlags = readU32(80);
+    auto code = readU32(84);
+    auto dataOffset = std::uint64_t{128};
+    auto arraySize = 1U;
+    const auto caps2 = readU32(112);
+    if (code == fourCc('D', 'X', '1', '0')) {
+        if (bytes.size() < 148)
+            throw std::runtime_error("truncated DDS DX10 header: " + path.string());
+        const auto dxgi = readU32(128);
+        const auto resourceDimension = readU32(132);
+        const auto miscFlag = readU32(136);
+        arraySize = readU32(140);
+        if (arraySize == 0)
+            throw std::runtime_error("invalid DDS DX10 array size: " + path.string());
+        dataOffset = 148;
+        if (dxgi == 71 || dxgi == 72)
+            code = fourCc('D', 'X', 'T', '1');
+        else if (dxgi == 74 || dxgi == 75)
+            code = fourCc('D', 'X', 'T', '3');
+        else if (dxgi == 77 || dxgi == 78)
+            code = fourCc('D', 'X', 'T', '5');
+        else if (dxgi == 80 || dxgi == 81)
+            code = fourCc('B', 'C', '4', 'U');
+        else if (dxgi == 83 || dxgi == 84)
+            code = fourCc('B', 'C', '5', 'U');
+        else if (dxgi == 28 || dxgi == 29)
+            code = fourCc('R', 'G', 'B', 'A');
+        else if (dxgi == 87 || dxgi == 91)
+            code = fourCc('B', 'G', 'R', 'A');
+        else
+            throw std::runtime_error("unsupported DDS DXGI format " + std::to_string(dxgi));
+
+        constexpr std::uint32_t kTexture2D = 3;
+        constexpr std::uint32_t kTexture3D = 4;
+        constexpr std::uint32_t kTextureCube = 0x4;
+        if (resourceDimension == kTexture3D) {
+            if (arraySize != 1 || (miscFlag & kTextureCube) != 0 || readU32(24) == 0)
+                throw std::runtime_error("invalid DDS DX10 volume texture metadata: " + path.string());
+            result.dimension = DdsDimension::threeD;
+        } else if (resourceDimension == kTexture2D) {
+            result.depth = 1;
+            if ((miscFlag & kTextureCube) != 0) {
+                result.dimension = DdsDimension::cube;
+                if (arraySize > std::numeric_limits<std::uint32_t>::max() / 6U)
+                    throw std::runtime_error("DDS cubemap array is too large: " + path.string());
+                result.arrayLayers = arraySize * 6U;
+            } else {
+                result.dimension = DdsDimension::twoD;
+                result.arrayLayers = arraySize;
+            }
+        } else {
+            throw std::runtime_error("unsupported DDS DX10 resource dimension: " + path.string());
+        }
+    } else if ((caps2 & 0x200000U) != 0U) {
+        if ((caps2 & 0x200U) != 0U || readU32(24) == 0)
+            throw std::runtime_error("invalid DDS volume texture metadata: " + path.string());
+        result.dimension = DdsDimension::threeD;
+    } else if ((caps2 & 0x200U) != 0U) {
+        constexpr std::uint32_t kAllCubeFaces = 0xFC00U;
+        if ((caps2 & kAllCubeFaces) != kAllCubeFaces)
+            throw std::runtime_error("incomplete DDS cubemap is unsupported: " + path.string());
+        result.dimension = DdsDimension::cube;
+        result.depth = 1;
+        result.arrayLayers = 6;
+    } else {
+        result.dimension = DdsDimension::twoD;
+        result.depth = 1;
+    }
+
+    auto largest = std::max({result.width, result.height, result.depth});
+    std::uint32_t maximumMipLevels = 1;
+    while (largest > 1) {
+        largest >>= 1U;
+        ++maximumMipLevels;
+    }
+    if (result.mipLevels > maximumMipLevels)
+        throw std::runtime_error("DDS mip count exceeds the texture extent: " + path.string());
+
+    BlockFormat blockFormat{};
+    bool compressed = false;
+    if (code == fourCc('D', 'X', 'T', '1')) {
+        blockFormat = BlockFormat::bc1;
+        compressed = true;
+    } else if (code == fourCc('D', 'X', 'T', '3')) {
+        blockFormat = BlockFormat::bc2;
+        compressed = true;
+    } else if (code == fourCc('D', 'X', 'T', '5')) {
+        blockFormat = BlockFormat::bc3;
+        compressed = true;
+    } else if (code == fourCc('A', 'T', 'I', '1') || code == fourCc('B', 'C', '4', 'U')) {
+        blockFormat = BlockFormat::bc4;
+        compressed = true;
+    } else if (code == fourCc('A', 'T', 'I', '2') || code == fourCc('B', 'C', '5', 'U')) {
+        blockFormat = BlockFormat::bc5;
+        compressed = true;
+    }
+    const bool rgba = code == fourCc('R', 'G', 'B', 'A');
+    const bool bgra = code == fourCc('B', 'G', 'R', 'A');
+    const auto bits = readU32(88);
+    if (!compressed && !rgba && !bgra && (pixelFlags & 0x40U) == 0U)
+        throw std::runtime_error("unsupported DDS pixel format: " + path.string());
+    if (!compressed && !rgba && !bgra && bits != 32)
+        throw std::runtime_error("unsupported DDS pixel depth: " + path.string());
+    if (!compressed && !rgba && !bgra && code != 0)
+        throw std::runtime_error("unsupported DDS FourCC: " + path.string());
+
+    const auto rMask = rgba ? 0x000000FFU : (bgra ? 0x00FF0000U : readU32(92));
+    const auto gMask = (rgba || bgra) ? 0x0000FF00U : readU32(96);
+    const auto bMask = rgba ? 0x00FF0000U : (bgra ? 0x000000FFU : readU32(100));
+    const auto aMask = (rgba || bgra) ? 0xFF000000U : readU32(104);
+    std::uint64_t decodedBytes = 0;
+    std::uint64_t offset = dataOffset;
+    const auto subresourceCount = checkedMultiply(result.arrayLayers, result.mipLevels, "DDS subresource count");
+    const auto metadataBytes =
+        checkedMultiply(subresourceCount, sizeof(ImageRgba8Subresource), "DDS subresource metadata");
+    if (subresourceCount > std::numeric_limits<std::size_t>::max() || metadataBytes > kImageAllocationBudget)
+        throw std::runtime_error("DDS has too many subresources: " + path.string());
+    checkPeakAllocation(bytes.size(), metadataBytes, "DDS");
+    result.subresources.reserve(static_cast<std::size_t>(subresourceCount));
+    for (std::uint32_t layer = 0; layer < result.arrayLayers; ++layer) {
+        for (std::uint32_t mip = 0; mip < result.mipLevels; ++mip) {
+            const auto width = std::max(1U, result.width >> mip);
+            const auto height = std::max(1U, result.height >> mip);
+            const auto depth = result.dimension == DdsDimension::threeD ? std::max(1U, result.depth >> mip) : 1U;
+            const auto outputBytes = checkedRgbaVolumeBytes(width, height, depth, "DDS");
+            if (outputBytes > std::numeric_limits<std::uint64_t>::max() - decodedBytes)
+                throw std::runtime_error("DDS decoded size overflow: " + path.string());
+            decodedBytes += outputBytes;
+            if (metadataBytes > std::numeric_limits<std::uint64_t>::max() - decodedBytes)
+                throw std::runtime_error("DDS allocation size overflow: " + path.string());
+            checkPeakAllocation(bytes.size(), metadataBytes + decodedBytes, "DDS");
+
+            std::uint64_t payloadBytes = outputBytes;
+            std::uint64_t blockSliceBytes = 0;
+            if (compressed) {
+                const auto blockSize = (blockFormat == BlockFormat::bc1 || blockFormat == BlockFormat::bc4) ? 8U : 16U;
+                const auto blocksWide = (static_cast<std::uint64_t>(width) + 3U) / 4U;
+                const auto blocksHigh = (static_cast<std::uint64_t>(height) + 3U) / 4U;
+                blockSliceBytes = checkedMultiply(checkedMultiply(blocksWide, blocksHigh, "DDS blocks"), blockSize,
+                                                  "DDS block payload");
+                payloadBytes = checkedMultiply(blockSliceBytes, depth, "DDS volume block payload");
+            }
+            if (offset > bytes.size() || payloadBytes > bytes.size() - offset)
+                throw std::runtime_error("truncated DDS subresource payload: " + path.string());
+
+            ImageRgba8Subresource subresource{.width = width,
+                                              .height = height,
+                                              .depth = depth,
+                                              .pixels =
+                                                  std::vector<std::uint8_t>(static_cast<std::size_t>(outputBytes))};
+            const auto payload =
+                bytes.subspan(static_cast<std::size_t>(offset), static_cast<std::size_t>(payloadBytes));
+            if (compressed) {
+                for (std::uint32_t z = 0; z < depth; ++z) {
+                    const auto sliceOffset = static_cast<std::size_t>(blockSliceBytes) * z;
+                    const auto slice = payload.subspan(sliceOffset, static_cast<std::size_t>(blockSliceBytes));
+                    decodeBlockSlice(width, height, slice, blockFormat, subresource.pixels, z, depth);
+                }
+            } else {
+                std::copy(payload.begin(), payload.end(), subresource.pixels.begin());
+                const auto pixels = static_cast<std::size_t>(width) * height * depth;
+                for (std::size_t pixel = 0; pixel < pixels; ++pixel) {
+                    const auto value = u32(subresource.pixels.data() + pixel * 4U);
+                    subresource.pixels[pixel * 4U] = unpackChannel(value, rMask, 0);
+                    subresource.pixels[pixel * 4U + 1U] = unpackChannel(value, gMask, 0);
+                    subresource.pixels[pixel * 4U + 2U] = unpackChannel(value, bMask, 0);
+                    subresource.pixels[pixel * 4U + 3U] = unpackChannel(value, aMask, 255);
+                }
+            }
+            result.subresources.push_back(std::move(subresource));
+            offset += payloadBytes;
+        }
+    }
+    return result;
+}
+
 } // namespace
+
+const ImageRgba8Subresource& DdsImageRgba8::subresource(std::uint32_t mipLevel, std::uint32_t arrayLayer) const {
+    if (mipLevel >= mipLevels || arrayLayer >= arrayLayers)
+        throw std::out_of_range("DDS subresource index is out of range");
+    const auto index = static_cast<std::size_t>(arrayLayer) * mipLevels + mipLevel;
+    if (index >= subresources.size())
+        throw std::logic_error("DDS image subresource table is incomplete");
+    return subresources[index];
+}
+
+DdsImageRgba8 loadDdsImageRgba8(const std::filesystem::path& path) {
+    const auto snapshot = readImageSnapshot(path);
+    return decodeDdsTexture(snapshot, path);
+}
 
 ImageRgba8 loadImageRgba8(const std::filesystem::path& path) {
     auto extension = path.extension().string();

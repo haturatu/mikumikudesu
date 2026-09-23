@@ -39,6 +39,10 @@ pointのdispatch group、memoによるpass選択を検証します。Windows 1.3
 Subayai用cubemap prefilterとは別経路です。テストはdispatch計画とmip別render targetを検証しますが、
 Windows 1.30とのGPU数値比較はまだ行っていません。その他のmemoと`globalVarSize`はruntime対応済みとは扱いません。
 
+FX external DDSはBC1–BC5および32-bit RGBA/BGRAをRGBA8へdecodeし、DX10/legacyの2D image、3D volume、cubemapと各mipを読み取ります。
+`textures3D`のexternal DDSは3D textureとしてallocateし、ファイル内のmipを個別uploadします。現在のbackend
+upload ABIに合わせたRGBA8 decodeであり、DXGI format保持、全DXGI形式、FXからのcubemap宣言は未対応です。
+
 `.dayo`の`EditorInfo`は1.30 sourceで定義された全フィールドをproject DTOと両方のJSON sectionへ保持します。
 repeat、audio volume/offset、floor collision、録画範囲など、desuに対応する設定はruntimeへ適用します。
 その他のupstream editor settingはload/saveで保持しますが、同じUIや描画動作を実装したことを意味しません。
