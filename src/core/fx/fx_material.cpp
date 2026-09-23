@@ -13,6 +13,7 @@
 #include <limits>
 #include <stdexcept>
 #include <system_error>
+#include <type_traits>
 #include <unordered_set>
 
 namespace dayo::core::fx {
@@ -436,6 +437,91 @@ bool materialValueMatches(const MaterialFieldSchema& field, const MaterialValue&
     }
 }
 
+FxExpr materialLiteral(FxScalar value) {
+    FxExpr expression;
+    expression.node = FxExpr::Literal{value};
+    return expression;
+}
+
+std::vector<FxExpr> materialValueExpressions(const MaterialFieldSchema& field, const MaterialValue& value) {
+    if (!materialValueMatches(field, value))
+        throw std::invalid_argument("FX material value type does not match schema field: " + field.name);
+    std::vector<FxExpr> result;
+    result.reserve(field.components);
+    const auto append = [&result](const auto& component) {
+        using Component = std::remove_cvref_t<decltype(component)>;
+        if constexpr (std::is_same_v<Component, float>)
+            result.push_back(materialLiteral(FxScalar{static_cast<double>(component)}));
+        else if constexpr (std::is_same_v<Component, std::int32_t>)
+            result.push_back(materialLiteral(FxScalar{static_cast<std::int64_t>(component)}));
+    };
+    std::visit(
+        [&result, &append](const auto& typed) {
+            using Value = std::remove_cvref_t<decltype(typed)>;
+            if constexpr (std::is_same_v<Value, float> || std::is_same_v<Value, std::int32_t>) {
+                append(typed);
+            } else if constexpr (std::is_same_v<Value, std::array<float, 2>> ||
+                                 std::is_same_v<Value, std::array<float, 3>> ||
+                                 std::is_same_v<Value, std::array<float, 4>> ||
+                                 std::is_same_v<Value, std::array<std::int32_t, 2>> ||
+                                 std::is_same_v<Value, std::array<std::int32_t, 3>> ||
+                                 std::is_same_v<Value, std::array<std::int32_t, 4>>) {
+                for (const auto component : typed)
+                    append(component);
+            }
+        },
+        value);
+    return result;
+}
+
+MaterialValue evaluateMaterialExpression(const MaterialBindingPlan::LinkedField& field, const FxEvalContext& context) {
+    const auto& schema = field.schema;
+    const auto& components = field.expression.components;
+    if (components.size() != schema.components)
+        throw std::invalid_argument("FX material expression component count does not match schema field: " +
+                                    schema.name);
+    std::vector<FxScalar> evaluated;
+    evaluated.reserve(components.size());
+    for (const auto& component : components)
+        evaluated.push_back(evaluateFxExpr(component, context));
+
+    const auto asFloat = [&evaluated](std::size_t index) { return static_cast<float>(fxToDouble(evaluated[index])); };
+    const auto asInt = [&evaluated, &schema](std::size_t index) {
+        const auto value = fxToInt(evaluated[index]);
+        if (value < std::numeric_limits<std::int32_t>::min() || value > std::numeric_limits<std::int32_t>::max())
+            throw std::overflow_error("FX material integer value out of range for " + schema.name);
+        return static_cast<std::int32_t>(value);
+    };
+    if (schema.type == MaterialFieldType::floatingPoint) {
+        switch (schema.components) {
+        case 1:
+            return asFloat(0);
+        case 2:
+            return std::array<float, 2>{asFloat(0), asFloat(1)};
+        case 3:
+            return std::array<float, 3>{asFloat(0), asFloat(1), asFloat(2)};
+        case 4:
+            return std::array<float, 4>{asFloat(0), asFloat(1), asFloat(2), asFloat(3)};
+        default:
+            break;
+        }
+    } else {
+        switch (schema.components) {
+        case 1:
+            return asInt(0);
+        case 2:
+            return std::array<std::int32_t, 2>{asInt(0), asInt(1)};
+        case 3:
+            return std::array<std::int32_t, 3>{asInt(0), asInt(1), asInt(2)};
+        case 4:
+            return std::array<std::int32_t, 4>{asInt(0), asInt(1), asInt(2), asInt(3)};
+        default:
+            break;
+        }
+    }
+    throw std::invalid_argument("unsupported FX material field width for " + schema.name);
+}
+
 MaterialAnnotation parseMaterialAnnotationImpl(const MaterialTemplateSchema& schema, std::string_view source,
                                                const std::filesystem::path& baseDirectory) {
     MaterialAnnotation annotation;
@@ -623,6 +709,9 @@ std::size_t MaterialTextureKeyHash::operator()(const MaterialTextureKey& key) co
     seed ^= std::hash<std::string>{}(key.format) + 0x9E3779B9U + (seed << 6U) + (seed >> 2U);
     seed ^= std::hash<std::string>{}(key.colorspace) + 0x9E3779B9U + (seed << 6U) + (seed >> 2U);
     seed ^= std::hash<std::string>{}(key.mipPolicy) + 0x9E3779B9U + (seed << 6U) + (seed >> 2U);
+    seed ^=
+        std::hash<std::uint8_t>{}(static_cast<std::uint8_t>(key.dimension)) + 0x9E3779B9U + (seed << 6U) + (seed >> 2U);
+    seed ^= std::hash<bool>{}(key.mipmapped) + 0x9E3779B9U + (seed << 6U) + (seed >> 2U);
     return seed;
 }
 
@@ -656,11 +745,14 @@ MaterialTextureKey makeTextureKey(const MaterialTextureDesc& desc) {
         .format = normalizeTextureToken(desc.format),
         .colorspace = normalizeTextureToken(desc.colorspace),
         .mipPolicy = normalizeTextureToken(desc.mipPolicy),
+        .dimension = desc.dimension,
+        .mipmapped = desc.mipmapped,
     };
 }
 
 std::string textureKeyString(const MaterialTextureKey& key) {
-    return key.path + "|" + key.format + "|" + key.colorspace + "|" + key.mipPolicy;
+    return key.path + "|" + key.format + "|" + key.colorspace + "|" + key.mipPolicy + "|" +
+           std::to_string(static_cast<std::uint8_t>(key.dimension)) + "|" + (key.mipmapped ? "mipped" : "nomip");
 }
 
 std::string MaterialGpuLayout::slotForLocal(std::string_view localId) const {
@@ -777,12 +869,16 @@ MaterialGpuLayout linkMaterialLayout(const MaterialTemplate& templ, const Materi
             .format = normalizeTextureToken(decl.texture.format),
             .colorspace = normalizeTextureToken(decl.texture.colorspace),
             .mipPolicy = normalizeTextureToken(decl.texture.mipPolicy),
+            .dimension = decl.texture.dimension,
+            .mipmapped = decl.texture.mipmapped,
         };
         const MaterialTextureKey key{
             .path = normalized.path,
             .format = normalized.format,
             .colorspace = normalized.colorspace,
             .mipPolicy = normalized.mipPolicy,
+            .dimension = normalized.dimension,
+            .mipmapped = normalized.mipmapped,
         };
         if (!unique.contains(key))
             unique.emplace(key, std::move(normalized));
@@ -800,8 +896,10 @@ MaterialGpuLayout linkMaterialLayout(const MaterialTemplate& templ, const Materi
 }
 
 MaterialBindingPlan linkMaterial(const MaterialTemplate& templ, const MaterialInstance* instance) {
-    MaterialBindingPlan plan{
-        .layout = linkMaterialLayout(templ, instance), .resolvedParameters = {}, .orderedValues = {}};
+    MaterialBindingPlan plan{.layout = linkMaterialLayout(templ, instance),
+                             .resolvedParameters = {},
+                             .orderedExpressions = {},
+                             .orderedTextures = {}};
     plan.resolvedParameters = templ.defaults;
     if (instance != nullptr) {
         for (const auto& [name, value] : instance->overrides.values())
@@ -815,24 +913,147 @@ MaterialBindingPlan linkMaterial(const MaterialTemplateSchema& schema, const Mat
     MaterialTemplate templ;
     templ.name = schema.name;
     templ.defaults = schema.defaults;
+
+    std::vector<MaterialValueExpression> linkedValues;
+    linkedValues.reserve(schema.fields.size());
+    for (const auto& field : schema.fields) {
+        const auto* value = schema.defaults.find(field.name);
+        if (value == nullptr)
+            throw std::invalid_argument("FX material schema has no default value for field: " + field.name);
+        linkedValues.push_back({.field = field.name,
+                                .source = "<template default>",
+                                .components = materialValueExpressions(field, *value)});
+    }
+    const auto overlayValues = [&schema, &linkedValues](const MaterialAnnotation& annotation) {
+        for (const auto& value : annotation.values) {
+            const auto field = std::find_if(schema.fields.begin(), schema.fields.end(),
+                                            [&value](const auto& candidate) { return candidate.name == value.field; });
+            if (field == schema.fields.end())
+                throw std::invalid_argument("unknown FX material annotation field: " + value.field);
+            if (value.components.size() != field->components)
+                throw std::invalid_argument("FX material annotation component count mismatch for " + value.field);
+            appendOrReplace(linkedValues, value);
+        }
+    };
+    overlayValues(schema.defaultFileAnnotation);
+    if (instance != nullptr) {
+        overlayValues(instance->annotationOverrides);
+        for (const auto& [name, value] : instance->overrides.values()) {
+            const auto field = std::find_if(schema.fields.begin(), schema.fields.end(),
+                                            [&name](const auto& candidate) { return candidate.name == name; });
+            if (field == schema.fields.end())
+                throw std::invalid_argument("unknown FX material instance override: " + name);
+            appendOrReplace(linkedValues,
+                            MaterialValueExpression{.field = name,
+                                                    .source = "<editor override>",
+                                                    .components = materialValueExpressions(*field, value)});
+        }
+    }
+
+    std::vector<MaterialTextureAssignment> linkedTextures = schema.templateTextureAssignments;
+    const auto overlayTextures = [&schema, &linkedTextures](const MaterialAnnotation& annotation) {
+        for (const auto& assignment : annotation.textures) {
+            const auto texture =
+                std::find_if(schema.textures.begin(), schema.textures.end(),
+                             [&assignment](const auto& candidate) { return candidate.name == assignment.field; });
+            if (texture == schema.textures.end())
+                throw std::invalid_argument("unknown FX material texture annotation: " + assignment.field);
+            if (texture->dimension != assignment.dimension || texture->index != assignment.index ||
+                texture->mipmapped != assignment.mipmapped)
+                throw std::invalid_argument("FX material texture annotation does not match schema: " +
+                                            assignment.field);
+            appendOrReplace(linkedTextures, assignment);
+        }
+    };
+    overlayTextures(schema.defaultFileAnnotation);
+    if (instance != nullptr)
+        overlayTextures(instance->annotationOverrides);
+
+    struct TextureSource {
+        MaterialTextureKey key;
+        std::string path;
+        std::filesystem::path baseDirectory;
+    };
+    std::unordered_map<std::string, TextureSource> textureSources;
+    std::unordered_map<std::string, MaterialTextureAssignment> assignmentsByField;
+    for (const auto& assignment : linkedTextures)
+        assignmentsByField[assignment.field] = assignment;
+
     templ.resources.reserve(schema.textures.size());
     for (const auto& texture : schema.textures) {
         MaterialResourceDecl resource;
         resource.id = texture.name;
+        resource.texture.dimension = texture.dimension;
+        resource.texture.mipmapped = texture.mipmapped;
+        resource.texture.mipPolicy = texture.mipmapped ? "mipmapped" : "none";
+        const auto assignment = assignmentsByField.find(texture.name);
+        if (assignment != assignmentsByField.end()) {
+            const std::filesystem::path assignedPath(assignment->second.path);
+            const auto fullPath =
+                assignedPath.is_absolute() ? assignedPath : assignment->second.baseDirectory / assignedPath;
+            resource.texture.path = normalizeTexturePath(fullPath.generic_string());
+            resource.hasTexture = true;
+            textureSources.emplace(texture.name, TextureSource{.key = makeTextureKey(resource.texture),
+                                                               .path = assignment->second.path,
+                                                               .baseDirectory = assignment->second.baseDirectory});
+        }
         templ.resources.push_back(std::move(resource));
     }
 
+    if (instance != nullptr) {
+        for (const auto& resource : instance->extraResources) {
+            if (resource.hasTexture)
+                textureSources[resource.id] = TextureSource{
+                    .key = makeTextureKey(resource.texture), .path = resource.texture.path, .baseDirectory = {}};
+        }
+    }
+
     auto plan = linkMaterial(templ, instance);
-    plan.orderedValues.reserve(schema.fields.size());
+    // Values stay as expressions until the caller supplies the invocation context.
+    plan.resolvedParameters.clear();
+    plan.orderedExpressions.reserve(schema.fields.size());
     for (const auto& field : schema.fields) {
-        const auto* value = plan.resolvedParameters.find(field.name);
-        if (value == nullptr)
-            throw std::invalid_argument("FX material schema has no default value for field: " + field.name);
-        if (!materialValueMatches(field, *value))
-            throw std::invalid_argument("FX material value type does not match schema field: " + field.name);
-        plan.orderedValues.push_back({.schema = field, .value = *value});
+        const auto expression = std::find_if(linkedValues.begin(), linkedValues.end(),
+                                             [&field](const auto& value) { return value.field == field.name; });
+        if (expression == linkedValues.end())
+            throw std::invalid_argument("FX material schema has no linked value expression for field: " + field.name);
+        plan.orderedExpressions.push_back({.schema = field, .expression = *expression});
+    }
+
+    plan.orderedTextures.reserve(schema.textures.size());
+    for (const auto& texture : schema.textures) {
+        MaterialBindingPlan::ResolvedTextureField resolved{.schema = texture,
+                                                           .canonicalId = {},
+                                                           .physicalTextureIndex = std::nullopt,
+                                                           .path = {},
+                                                           .baseDirectory = {}};
+        if (const auto canonical = plan.layout.localToCanonical.find(texture.name);
+            canonical != plan.layout.localToCanonical.end())
+            resolved.canonicalId = canonical->second;
+        if (const auto source = textureSources.find(texture.name); source != textureSources.end()) {
+            resolved.path = source->second.path;
+            resolved.baseDirectory = source->second.baseDirectory;
+            const auto physical = std::find_if(
+                plan.layout.uniqueTextures.begin(), plan.layout.uniqueTextures.end(),
+                [&source](const auto& candidate) { return makeTextureKey(candidate) == source->second.key; });
+            if (physical != plan.layout.uniqueTextures.end())
+                resolved.physicalTextureIndex =
+                    static_cast<std::size_t>(std::distance(plan.layout.uniqueTextures.begin(), physical));
+        }
+        plan.orderedTextures.push_back(std::move(resolved));
     }
     return plan;
+}
+
+EvaluatedMaterialBinding evaluateMaterialValues(const MaterialBindingPlan& plan, const FxEvalContext& context) {
+    EvaluatedMaterialBinding evaluated;
+    evaluated.orderedValues.reserve(plan.orderedExpressions.size());
+    for (const auto& expression : plan.orderedExpressions) {
+        auto value = evaluateMaterialExpression(expression, context);
+        evaluated.values.set(expression.schema.name, value);
+        evaluated.orderedValues.push_back({.schema = expression.schema, .value = std::move(value)});
+    }
+    return evaluated;
 }
 
 } // namespace dayo::core::fx
