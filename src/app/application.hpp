@@ -102,6 +102,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     graphics::NativeSceneResourceStore nativeSceneResources_;
     graphics::NativeSceneDerivedRuntime nativeSceneDerivedRuntime_;
     graphics::NativeDayoEnvironmentRuntime nativeDayoEnvironmentRuntime_;
+    bool skyboxPrefilterFallbackWarned_{};
     graphics::NativeScreenRuntime nativeScreenRuntime_;
     graphics::NativeOidnProvider nativeOidnProvider_;
     core::Scene scene_;

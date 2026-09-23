@@ -436,9 +436,14 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
 #endif
     nativeFxPendingEvents_.latch(scene_.dirty(core::DirtyFlag::geometry), scene_.dirty(core::DirtyFlag::material));
     const auto& background = scene_.background();
-    if (hasEffectMemo(scene_.effects(), nativeRenderer_.program(), "skyboxprefilter"))
-        throw std::runtime_error("SkyboxPrefilter memo requires the upstream 2D mip-prefilter path, which is not "
-                                 "implemented yet");
+    const bool skyboxPrefilterRequested = hasEffectMemo(scene_.effects(), nativeRenderer_.program(), "skyboxprefilter");
+    if (skyboxPrefilterRequested && !skyboxPrefilterFallbackWarned_) {
+        log::warn("SkyboxPrefilter is requested, but the upstream 2D mip-prefilter path is not implemented; "
+                  "using the unfiltered environment until runtime support is available");
+        skyboxPrefilterFallbackWarned_ = true;
+    } else if (!skyboxPrefilterRequested) {
+        skyboxPrefilterFallbackWarned_ = false;
+    }
     if (background.image && background.imagePath &&
         static_cast<std::uint64_t>(background.image->height) * 2U == background.image->width) {
         const auto sourceVersion = environmentFileVersion(*background.imagePath);
@@ -796,6 +801,7 @@ void Application::resetProjectRuntimeState() {
     nativeControllerDeclarations_.clear();
     nativeRenderer_.reset();
     nativeDayoEnvironmentRuntime_.reset();
+    skyboxPrefilterFallbackWarned_ = false;
     nativeSceneFrame_.reset();
     nativeSceneResources_.reset();
     nativeSceneDerivedRuntime_.reset();
