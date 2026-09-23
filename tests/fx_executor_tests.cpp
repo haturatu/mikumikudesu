@@ -262,8 +262,7 @@ struct MockCommands final : public dayo::graphics::CommandList {
     }
     void drawIndexedBufferlessEx(dayo::graphics::handles::BufferHandle, std::uint32_t indexCount,
                                  std::uint32_t instanceCount) override {
-        trace.push_back("drawIndexedBufferlessEx:" + std::to_string(indexCount) + "x" +
-                        std::to_string(instanceCount));
+        trace.push_back("drawIndexedBufferlessEx:" + std::to_string(indexCount) + "x" + std::to_string(instanceCount));
     }
     void dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) override {
         trace.push_back("dispatch:" + std::to_string(x) + "x" + std::to_string(y) + "x" + std::to_string(z));
@@ -295,6 +294,10 @@ struct MockCommands final : public dayo::graphics::CommandList {
     }
     void clearTextureEx(dayo::graphics::handles::TextureHandle, const std::array<float, 4>&) override {
         trace.emplace_back("clearEx");
+    }
+    void clearBufferEx(dayo::graphics::handles::BufferHandle, const std::array<float, 4>& value) override {
+        trace.push_back("clearBufferEx:" + std::to_string(value[0]) + ":" + std::to_string(value[1]) + ":" +
+                        std::to_string(value[2]) + ":" + std::to_string(value[3]));
     }
     void generateMipmapsEx(dayo::graphics::handles::TextureHandle) override {
         trace.emplace_back("mipmapEx");
@@ -448,12 +451,11 @@ bool testMockTraceMatches() {
     graphicsProgram.passes.push_back(postprocess);
     const auto graphicsPlan = dayo::fx::FxCompiler{}.plan(graphicsProgram, testContext());
     const auto graphicsStats = executor.execute(graphicsPlan, graphicsCommands, testContext(), typedResources);
-    ok &=
-        check(graphicsStats.postprocess == 1 &&
-                  graphicsCommands.trace == std::vector<std::string>{"transitionEx", "descriptorEx", "beginRenderingEx",
-                                                                     "bindEx", "draw:3x1", "endRenderingEx",
-                                                                     "memoryBarrierEx"},
-              "typed graphics executor brackets postprocess draws with a render target");
+    ok &= check(graphicsStats.postprocess == 1 &&
+                    graphicsCommands.trace == std::vector<std::string>{"transitionEx", "descriptorEx",
+                                                                       "beginRenderingEx", "bindEx", "draw:3x1",
+                                                                       "endRenderingEx", "memoryBarrierEx"},
+                "typed graphics executor brackets postprocess draws with a render target");
     std::size_t beforePasses = 0;
     std::size_t afterPasses = 0;
     auto hookResources = testResources();
@@ -486,11 +488,12 @@ bool testResolvedPassPlanning() {
     context.renderWidth = 65;
     context.renderHeight = 33;
     const auto screenPlan = compiler.plan(screenProgram, context);
-    ok &= check(screenPlan.resolved.size() == 1 && screenPlan.resolved[0].outputExtent.width == 65 &&
-                    screenPlan.resolved[0].outputExtent.height == 33 && screenPlan.resolved[0].outputExtent.dimension == 2 &&
-                    screenPlan.resolved[0].numThreads == std::array<std::uint32_t, 3>{16, 16, 1} &&
-                    screenPlan.resolved[0].dispatchGroups.width == 5 && screenPlan.resolved[0].dispatchGroups.height == 3,
-                "render compute resolves screen extent and upstream 2D numthreads defaults");
+    ok &= check(
+        screenPlan.resolved.size() == 1 && screenPlan.resolved[0].outputExtent.width == 65 &&
+            screenPlan.resolved[0].outputExtent.height == 33 && screenPlan.resolved[0].outputExtent.dimension == 2 &&
+            screenPlan.resolved[0].numThreads == std::array<std::uint32_t, 3>{16, 16, 1} &&
+            screenPlan.resolved[0].dispatchGroups.width == 5 && screenPlan.resolved[0].dispatchGroups.height == 3,
+        "render compute resolves screen extent and upstream 2D numthreads defaults");
 
     fx::FxProgram deformProgram;
     deformProgram.category = core::fx::FxCategory::deform;
@@ -548,6 +551,33 @@ bool testResolvedPassPlanning() {
                     explicit3dPlan.resolved[0].dispatchGroups.height == 9 &&
                     explicit3dPlan.resolved[0].dispatchGroups.depth == 5,
                 "explicit 3D output and partially specified numthreads resolve all axes");
+
+    fx::FxProgram inferredVolumeProgram;
+    core::EffectTexture volume;
+    volume.name = "Volume";
+    volume.format = "R32_FLOAT";
+    volume.view = "UAV";
+    volume.size.absolute = true;
+    volume.size.dimension = 3;
+    volume.size.width = 17;
+    volume.size.height = 9;
+    volume.size.depth = 5;
+    inferredVolumeProgram.textures3D.push_back(volume);
+    fx::FxDispatch inferredVolumePass;
+    inferredVolumePass.name = "volume-compute";
+    inferredVolumePass.kind = fx::FxOpKind::compute;
+    inferredVolumePass.executable = fx::FxComputeDispatch{"CS"};
+    inferredVolumePass.resources.push_back({"Volume", true, fx::FxResourceRole::storage});
+    inferredVolumeProgram.passes.push_back(inferredVolumePass);
+    const auto inferredVolumePlan = compiler.plan(inferredVolumeProgram, context);
+    const auto generatedVolumeShader = fx::makeNativeFxShaderSource(inferredVolumeProgram, inferredVolumePass, 0, {},
+                                                                    &inferredVolumePlan.resolved.front());
+    ok &= check(inferredVolumePlan.resolved.front().numThreads == std::array<std::uint32_t, 3>{8, 8, 8} &&
+                    inferredVolumePlan.resolved.front().dispatchGroups.width == 3 &&
+                    inferredVolumePlan.resolved.front().dispatchGroups.height == 2 &&
+                    inferredVolumePlan.resolved.front().dispatchGroups.depth == 1 &&
+                    generatedVolumeShader.find("#define YRZ_NUMTHREADS [numthreads(8,8,8)]") != std::string::npos,
+                "3D shader numthreads and dispatch groups both use the resolved volume extent");
 
     fx::FxProgram bindingProgram;
     core::EffectTexture textureSrv;
@@ -677,8 +707,8 @@ bool testBufferlessIndexRasterExecution() {
     resources.resolveTypedPipeline = [](const dayo::fx::FxDispatch&) {
         return std::optional<dayo::graphics::handles::PipelineHandle>{{30, 1}};
     };
-    resources.resolveTypedResource = [](std::string_view name)
-        -> std::optional<dayo::graphics::FxExecutionResources::TypedResource> {
+    resources.resolveTypedResource =
+        [](std::string_view name) -> std::optional<dayo::graphics::FxExecutionResources::TypedResource> {
         if (name == "Indices")
             return dayo::graphics::FxExecutionResources::TypedResource{.buffer = {31, 1}};
         if (name == "Color")
@@ -691,8 +721,7 @@ bool testBufferlessIndexRasterExecution() {
     const auto stats = executor.execute(plan, commands, context, resources);
     bool ok = check(plan.resolved[0].raster.has_value() && plan.resolved[0].raster->indexCount == 6,
                     "FX rasterIB resolves its declared element count");
-    ok &= check(stats.raster == 1 && stats.indexedDraws == 1,
-                "FX rasterIB counts a vertex-bufferless indexed draw");
+    ok &= check(stats.raster == 1 && stats.indexedDraws == 1, "FX rasterIB counts a vertex-bufferless indexed draw");
     ok &= check(std::ranges::find(commands.trace, "drawIndexedBufferlessEx:6x4") != commands.trace.end(),
                 "FX rasterIB records the vertex-bufferless indexed draw with the clone count");
     return ok;
@@ -939,10 +968,38 @@ bool testTypedBufferResourceExecution() {
     const auto plan = dayo::fx::FxCompiler{}.plan(program, testContext());
     const auto stats = executor.execute(plan, commands, testContext(), resources);
     bool ok = check(stats.compute == 1, "executor runs a buffer-only typed pass");
-    ok &= check(commands.trace == std::vector<std::string>{"descriptorEx", "bindEx", "dispatch:4x4x1",
-                                                            "memoryBarrierEx"},
-                "buffer-only typed pass skips image transitions");
+    ok &=
+        check(commands.trace == std::vector<std::string>{"descriptorEx", "bindEx", "dispatch:4x4x1", "memoryBarrierEx"},
+              "buffer-only typed pass skips image transitions");
     return ok;
+}
+
+bool testBufferClearUsesFunctionalValue() {
+    MockDevice device;
+    dayo::graphics::VulkanFxExecutor executor(device);
+    dayo::fx::FxProgram program;
+    dayo::fx::FxDispatch dispatch;
+    dispatch.name = "clear-buffer";
+    dispatch.kind = dayo::fx::FxOpKind::clear;
+    dispatch.functionalKind = dayo::core::EffectFunctionalPassKind::clearUav;
+    dispatch.functional.kind = dayo::core::EffectFunctionalPassKind::clearUav;
+    dispatch.functional.clearValue.color = {1.0F, 2.0F, 3.0F, 4.0F};
+    dispatch.resources.push_back({"Values", true, dayo::fx::FxResourceRole::storage});
+    program.passes.push_back(dispatch);
+
+    dayo::graphics::FxExecutionResources resources;
+    resources.resolveTypedResource =
+        [](std::string_view name) -> std::optional<dayo::graphics::FxExecutionResources::TypedResource> {
+        if (name != "Values")
+            return std::nullopt;
+        return dayo::graphics::FxExecutionResources::TypedResource{.buffer = {7, 1}};
+    };
+    MockCommands commands;
+    const auto plan = dayo::fx::FxCompiler{}.plan(program, testContext());
+    const auto stats = executor.execute(plan, commands, testContext(), resources);
+    return check(stats.clear == 1 && commands.trace.size() == 1 &&
+                     commands.trace.front() == "clearBufferEx:1.000000:2.000000:3.000000:4.000000",
+                 "buffer clear dispatch forwards the functional pass value instead of forcing zero");
 }
 
 bool testDayoHostResourceProvider() {
@@ -1634,6 +1691,39 @@ bool testFxResourceRuntimeMaterializesDeclarations() {
     return ok;
 }
 
+bool testDepthTextureUsageIncludesSampling() {
+    dayo::fx::FxProgram program;
+    dayo::core::EffectTexture depth;
+    depth.name = "Depth";
+    depth.format = "D32_FLOAT";
+    depth.view = "DSV";
+    depth.size.absolute = true;
+    depth.size.width = 64;
+    depth.size.height = 32;
+    program.textures.push_back(std::move(depth));
+
+    dayo::fx::FxDispatch depthWrite;
+    depthWrite.name = "depth-write";
+    depthWrite.resources.push_back({"Depth", true, dayo::fx::FxResourceRole::depthAttachment});
+    dayo::fx::FxDispatch depthSample;
+    depthSample.name = "depth-sample";
+    depthSample.resources.push_back({"Depth", false, dayo::fx::FxResourceRole::sampled});
+    program.passes = {depthWrite, depthSample};
+
+    MockDevice device;
+    dayo::graphics::FxResourceRuntime runtime;
+    std::string error;
+    if (!runtime.initialize(device, program, testContext(), &error))
+        return check(false, "depth attachment plus sampled usage resource allocation succeeds");
+    const auto usage = dayo::graphics::toBits(device.textureDescs_.front().usage);
+    const auto required = dayo::graphics::toBits(dayo::graphics::ResourceUsage::depthRead) |
+                          dayo::graphics::toBits(dayo::graphics::ResourceUsage::depthWrite) |
+                          dayo::graphics::toBits(dayo::graphics::ResourceUsage::sampledRead);
+    const bool valid = (usage & required) == required;
+    runtime.reset();
+    return check(valid, "depth texture usage is unioned across attachment writes and sampled reads");
+}
+
 bool testFxExternalTextureMetadataAndUpload() {
     namespace fs = std::filesystem;
     const auto directory = fs::temp_directory_path() / "dayo-fx-external-texture-test";
@@ -1782,9 +1872,9 @@ bool testNativeFxRuntimeBindsResourcesAndPipelines() {
     MockCommands commands;
     const auto stats = runtime.execute(frame, commands);
     ok &= check(stats.compute == 1, "native FX runtime executes the planned compute pass");
-    ok &= check(commands.trace == std::vector<std::string>{"descriptorEx", "bindEx", "dispatch:4x4x1",
-                                                            "memoryBarrierEx"},
-                "native FX runtime binds its resource set before dispatch");
+    ok &=
+        check(commands.trace == std::vector<std::string>{"descriptorEx", "bindEx", "dispatch:4x4x1", "memoryBarrierEx"},
+              "native FX runtime binds its resource set before dispatch");
     runtime.reset();
     ok &= check(device.destroyedPipelines_ == 1 && device.destroyedShaders_ == 1 &&
                     device.destroyedDescriptorSets_ == 2 && device.destroyedDescriptorLayouts_ == 2 &&
@@ -2154,6 +2244,7 @@ int main() {
     ok &= testDepthOnlyRasterExecution();
     ok &= testOidnHostExecution();
     ok &= testTypedBufferResourceExecution();
+    ok &= testBufferClearUsesFunctionalValue();
     ok &= testDayoHostResourceProvider();
     ok &= testNativeSceneDerivedResources();
     ok &= testViewConstantsAndScreenHistory();
@@ -2167,6 +2258,7 @@ int main() {
     ok &= testRayTracingPayloadIsLossless();
     ok &= testFxResourceDeclarationsAreLossless();
     ok &= testFxResourceRuntimeMaterializesDeclarations();
+    ok &= testDepthTextureUsageIncludesSampling();
     ok &= testFxExternalTextureMetadataAndUpload();
     ok &= testNativeFxRuntimeRefreshesFrameResources();
     ok &= testNativeFxRuntimeBindsResourcesAndPipelines();

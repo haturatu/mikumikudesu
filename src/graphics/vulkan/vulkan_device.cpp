@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -296,22 +297,38 @@ VkStencilOp toVkStencilOp(StencilOpEx operation) {
 
 VkLogicOp toVkLogicOp(LogicOpEx operation) {
     switch (operation) {
-    case LogicOpEx::clear: return VK_LOGIC_OP_CLEAR;
-    case LogicOpEx::andOp: return VK_LOGIC_OP_AND;
-    case LogicOpEx::andReverse: return VK_LOGIC_OP_AND_REVERSE;
-    case LogicOpEx::copy: return VK_LOGIC_OP_COPY;
-    case LogicOpEx::andInverted: return VK_LOGIC_OP_AND_INVERTED;
-    case LogicOpEx::noOp: return VK_LOGIC_OP_NO_OP;
-    case LogicOpEx::xorOp: return VK_LOGIC_OP_XOR;
-    case LogicOpEx::orOp: return VK_LOGIC_OP_OR;
-    case LogicOpEx::nor: return VK_LOGIC_OP_NOR;
-    case LogicOpEx::equivalence: return VK_LOGIC_OP_EQUIVALENT;
-    case LogicOpEx::invert: return VK_LOGIC_OP_INVERT;
-    case LogicOpEx::orReverse: return VK_LOGIC_OP_OR_REVERSE;
-    case LogicOpEx::copyInverted: return VK_LOGIC_OP_COPY_INVERTED;
-    case LogicOpEx::orInverted: return VK_LOGIC_OP_OR_INVERTED;
-    case LogicOpEx::nand: return VK_LOGIC_OP_NAND;
-    case LogicOpEx::set: return VK_LOGIC_OP_SET;
+    case LogicOpEx::clear:
+        return VK_LOGIC_OP_CLEAR;
+    case LogicOpEx::andOp:
+        return VK_LOGIC_OP_AND;
+    case LogicOpEx::andReverse:
+        return VK_LOGIC_OP_AND_REVERSE;
+    case LogicOpEx::copy:
+        return VK_LOGIC_OP_COPY;
+    case LogicOpEx::andInverted:
+        return VK_LOGIC_OP_AND_INVERTED;
+    case LogicOpEx::noOp:
+        return VK_LOGIC_OP_NO_OP;
+    case LogicOpEx::xorOp:
+        return VK_LOGIC_OP_XOR;
+    case LogicOpEx::orOp:
+        return VK_LOGIC_OP_OR;
+    case LogicOpEx::nor:
+        return VK_LOGIC_OP_NOR;
+    case LogicOpEx::equivalence:
+        return VK_LOGIC_OP_EQUIVALENT;
+    case LogicOpEx::invert:
+        return VK_LOGIC_OP_INVERT;
+    case LogicOpEx::orReverse:
+        return VK_LOGIC_OP_OR_REVERSE;
+    case LogicOpEx::copyInverted:
+        return VK_LOGIC_OP_COPY_INVERTED;
+    case LogicOpEx::orInverted:
+        return VK_LOGIC_OP_OR_INVERTED;
+    case LogicOpEx::nand:
+        return VK_LOGIC_OP_NAND;
+    case LogicOpEx::set:
+        return VK_LOGIC_OP_SET;
     }
     throw std::invalid_argument("unknown native logic operation");
 }
@@ -4454,9 +4471,9 @@ handles::SamplerHandle VulkanDevice::createSamplerEx(const SamplerResourceDesc& 
         .addressModeW = addressMode(desc.addressW),
         .mipLodBias = desc.mipLodBias,
         .anisotropyEnable = anisotropy ? VK_TRUE : VK_FALSE,
-        .maxAnisotropy = anisotropy
-                             ? std::min(static_cast<float>(desc.maxAnisotropy), physicalProperties_.limits.maxSamplerAnisotropy)
-                             : 1.0F,
+        .maxAnisotropy = anisotropy ? std::min(static_cast<float>(desc.maxAnisotropy),
+                                               physicalProperties_.limits.maxSamplerAnisotropy)
+                                    : 1.0F,
         .compareEnable = comparison ? VK_TRUE : VK_FALSE,
         .compareOp = toVkCompareOp(static_cast<CompareOpEx>(desc.comparison)),
         .minLod = desc.minLod,
@@ -4740,8 +4757,8 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
         .stencilTestEnable = desc.depthStencil.stencilTest ? VK_TRUE : VK_FALSE,
         .front = stencilState(desc.depthStencil.front, desc.depthStencil.stencilReadMask,
                               desc.depthStencil.stencilWriteMask),
-        .back = stencilState(desc.depthStencil.back, desc.depthStencil.stencilReadMask,
-                             desc.depthStencil.stencilWriteMask),
+        .back =
+            stencilState(desc.depthStencil.back, desc.depthStencil.stencilReadMask, desc.depthStencil.stencilWriteMask),
     };
     const std::array dynamicStates{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     const VkPipelineDynamicStateCreateInfo dynamic{
@@ -4754,6 +4771,8 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
         .colorAttachmentCount = static_cast<std::uint32_t>(vkColorFormats.size()),
         .pColorAttachmentFormats = vkColorFormats.data(),
         .depthAttachmentFormat = vkDepthFormat,
+        .stencilAttachmentFormat =
+            desc.depthFormat == PixelFormat::depth24Stencil8 ? vkDepthFormat : VK_FORMAT_UNDEFINED,
     };
     const VkGraphicsPipelineCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
@@ -5171,38 +5190,14 @@ void VulkanDevice::clearTextureEx(handles::TextureHandle texture, const std::arr
 }
 
 void VulkanDevice::clearBufferEx(handles::BufferHandle buffer, std::uint32_t value) {
-    const auto it = typedBuffers_.find(buffer);
-    if (it == typedBuffers_.end() || !typedBufferHandles_.isAlive(buffer))
-        throw std::invalid_argument("typed buffer clear references a stale buffer handle");
-    if ((toBits(it->second.desc.usage) & toBits(ResourceUsage::transferDst)) == 0U)
-        throw std::invalid_argument("typed buffer clear requires transfer-destination usage");
-    if (it->second.resource.size % 4U != 0U)
-        throw std::invalid_argument("typed buffer clear requires a four-byte-aligned buffer");
-    submitImmediate([&](VkCommandBuffer commandBuffer) {
-        vkCmdFillBuffer(commandBuffer, it->second.resource.buffer, 0, it->second.resource.size, value);
-        const VkBufferMemoryBarrier2 visible{
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = it->second.resource.buffer,
-            .offset = 0,
-            .size = it->second.resource.size,
-        };
-        const VkDependencyInfo dependency{
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .bufferMemoryBarrierCount = 1,
-            .pBufferMemoryBarriers = &visible,
-        };
-        vkCmdPipelineBarrier2(commandBuffer, &dependency);
-    });
+    submitImmediate([&](VkCommandBuffer commandBuffer) { recordClearBuffer(commandBuffer, buffer, value); });
 }
 
-void VulkanDevice::recordClearBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle buffer,
-                                     std::uint32_t value) {
+void VulkanDevice::clearBufferEx(handles::BufferHandle buffer, const std::array<float, 4>& value) {
+    submitImmediate([&](VkCommandBuffer commandBuffer) { recordClearBuffer(commandBuffer, buffer, value); });
+}
+
+void VulkanDevice::recordClearBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle buffer, std::uint32_t value) {
     const auto it = typedBuffers_.find(buffer);
     if (it == typedBuffers_.end() || !typedBufferHandles_.isAlive(buffer))
         throw std::invalid_argument("typed command-list buffer clear references a stale buffer handle");
@@ -5211,6 +5206,68 @@ void VulkanDevice::recordClearBuffer(VkCommandBuffer commandBuffer, handles::Buf
     if (it->second.resource.size % 4U != 0U)
         throw std::invalid_argument("typed command-list buffer clear requires a four-byte-aligned buffer");
     vkCmdFillBuffer(commandBuffer, it->second.resource.buffer, 0, it->second.resource.size, value);
+    const VkBufferMemoryBarrier2 visible{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = it->second.resource.buffer,
+        .offset = 0,
+        .size = it->second.resource.size,
+    };
+    const VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .bufferMemoryBarrierCount = 1,
+        .pBufferMemoryBarriers = &visible,
+    };
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+}
+
+void VulkanDevice::recordClearBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle buffer,
+                                     const std::array<float, 4>& value) {
+    const auto it = typedBuffers_.find(buffer);
+    if (it == typedBuffers_.end() || !typedBufferHandles_.isAlive(buffer))
+        throw std::invalid_argument("typed command-list buffer clear references a stale buffer handle");
+    if ((toBits(it->second.desc.usage) & toBits(ResourceUsage::transferDst)) == 0U)
+        throw std::invalid_argument("typed command-list buffer clear requires transfer-destination usage");
+    if (it->second.resource.size % sizeof(std::uint32_t) != 0U)
+        throw std::invalid_argument("typed command-list buffer clear requires a four-byte-aligned buffer");
+
+    constexpr std::size_t maxUpdateBytes = 65536;
+    constexpr std::size_t wordsPerUpdate = maxUpdateBytes / sizeof(std::uint32_t);
+    const std::array pattern{std::bit_cast<std::uint32_t>(value[0]), std::bit_cast<std::uint32_t>(value[1]),
+                             std::bit_cast<std::uint32_t>(value[2]), std::bit_cast<std::uint32_t>(value[3])};
+    std::array<std::uint32_t, wordsPerUpdate> updateWords{};
+    for (std::size_t index = 0; index < updateWords.size(); ++index)
+        updateWords[index] = pattern[index % pattern.size()];
+
+    for (VkDeviceSize offset = 0; offset < it->second.resource.size;) {
+        const auto remaining = it->second.resource.size - offset;
+        const auto updateSize = static_cast<std::uint32_t>(std::min<VkDeviceSize>(remaining, maxUpdateBytes));
+        vkCmdUpdateBuffer(commandBuffer, it->second.resource.buffer, offset, updateSize, updateWords.data());
+        offset += updateSize;
+    }
+    const VkBufferMemoryBarrier2 visible{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = it->second.resource.buffer,
+        .offset = 0,
+        .size = it->second.resource.size,
+    };
+    const VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .bufferMemoryBarrierCount = 1,
+        .pBufferMemoryBarriers = &visible,
+    };
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
 }
 
 void VulkanDevice::generateMipmapsEx(handles::TextureHandle texture) {
@@ -5624,10 +5681,10 @@ void VulkanDevice::recordBlitTexture(VkCommandBuffer commandBuffer, handles::Tex
     const auto& src = sourceIt->second.desc;
     const auto& dst = destinationIt->second.desc;
     if (src.dimension != TextureDimension::d2 || dst.dimension != TextureDimension::d2 || src.format != dst.format ||
-        isDepthFormat(src.format) || src.extent.depth != 1 || dst.extent.depth != 1 ||
-        src.mipLevels != 1 || dst.mipLevels != 1 || src.arrayLayers != 1 || dst.arrayLayers != 1 ||
-        sourceRect[0] >= sourceRect[2] || sourceRect[1] >= sourceRect[3] || sourceRect[2] > src.extent.width ||
-        sourceRect[3] > src.extent.height || (toBits(src.usage) & toBits(ResourceUsage::transferSrc)) == 0U ||
+        isDepthFormat(src.format) || src.extent.depth != 1 || dst.extent.depth != 1 || src.mipLevels != 1 ||
+        dst.mipLevels != 1 || src.arrayLayers != 1 || dst.arrayLayers != 1 || sourceRect[0] >= sourceRect[2] ||
+        sourceRect[1] >= sourceRect[3] || sourceRect[2] > src.extent.width || sourceRect[3] > src.extent.height ||
+        (toBits(src.usage) & toBits(ResourceUsage::transferSrc)) == 0U ||
         (toBits(dst.usage) & toBits(ResourceUsage::transferDst)) == 0U)
         throw std::invalid_argument("typed texture blit has incompatible resources or source rectangle");
     VkFormatProperties2 properties{.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
@@ -5859,8 +5916,7 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const Ren
         const auto& description = it->second.desc;
         if (description.dimension != TextureDimension::d2 || description.extent.width != requestedExtent.width ||
             description.extent.height != requestedExtent.height || description.extent.depth != 1 ||
-            description.mipLevels != 1 || description.arrayLayers != 1 ||
-            isDepthFormat(description.format) ||
+            description.mipLevels != 1 || description.arrayLayers != 1 || isDepthFormat(description.format) ||
             (toBits(description.usage) & toBits(ResourceUsage::colorAttachment)) == 0U)
             throw std::invalid_argument("typed rendering color attachment is incompatible with the render area");
         const bool undefined = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED;
@@ -5886,8 +5942,7 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const Ren
         const auto depthBits = toBits(description.usage);
         if (description.dimension != TextureDimension::d2 || description.extent.width != requestedExtent.width ||
             description.extent.height != requestedExtent.height || description.extent.depth != 1 ||
-            description.mipLevels != 1 || description.arrayLayers != 1 ||
-            !isDepthFormat(description.format) ||
+            description.mipLevels != 1 || description.arrayLayers != 1 || !isDepthFormat(description.format) ||
             (depthBits & (toBits(ResourceUsage::depthRead) | toBits(ResourceUsage::depthWrite))) == 0U)
             throw std::invalid_argument("typed rendering depth attachment is incompatible with the render area");
         const bool undefined = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED;
@@ -5905,8 +5960,7 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const Ren
 
     const VkExtent2D extent{requestedExtent.width, requestedExtent.height};
     std::optional<VkRenderingAttachmentInfo> stencilAttachment;
-    if (info.depth.has_value() &&
-        typedTextures_.at(info.depth->texture).desc.format == PixelFormat::depth24Stencil8) {
+    if (info.depth.has_value() && typedTextures_.at(info.depth->texture).desc.format == PixelFormat::depth24Stencil8) {
         stencilAttachment = depthAttachment;
     }
     const VkRenderingInfo rendering{

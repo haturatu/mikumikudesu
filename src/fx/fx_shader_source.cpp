@@ -483,11 +483,34 @@ void appendSharedDeclarations(std::ostringstream& output, const FxNativeShaderSo
 } // namespace
 
 std::string makeNativeFxShaderSource(const FxProgram& program, const FxDispatch& dispatch, std::uint32_t resourceSet,
-                                     const FxNativeShaderSourceOptions& options) {
+                                     const FxNativeShaderSourceOptions& options, const FxResolvedPass* resolved) {
     std::ostringstream output;
     output << program.hlslPrefix;
     if (!program.hlslPrefix.empty() && program.hlslPrefix.back() != '\n')
         output << '\n';
+    if (dispatch.kind == FxOpKind::compute) {
+        auto threads = resolved != nullptr ? resolved->numThreads : dispatch.numThreads;
+        const bool unspecified = threads[0] == 0 && threads[1] == 0 && threads[2] == 0;
+        if (resolved == nullptr && unspecified) {
+            auto dimension = dispatch.outputSize.dimension;
+            if (dimension < 1 || dimension > 3)
+                dimension = dispatch.outputSize.depth > 1                       ? 3U
+                            : dispatch.outputSize.height > 1                    ? 2U
+                            : dispatch.category == core::fx::FxCategory::deform ? 1U
+                                                                                : 2U;
+            if (dimension == 1)
+                threads = {1024, 1, 1};
+            else if (dimension == 2)
+                threads = {16, 16, 1};
+            else
+                threads = {8, 8, 8};
+        } else if (resolved == nullptr) {
+            for (auto& count : threads)
+                count = std::max(count, 1U);
+        }
+        output << "#define YRZ_NUMTHREADS [numthreads(" << threads[0] << ',' << threads[1] << ',' << threads[2]
+               << ")]\n";
+    }
     output << "// generated native FX declarations\n";
     appendSharedDeclarations(output, options);
     appendControllerBlock(output, program, options.controllerDeclarations);
