@@ -201,6 +201,20 @@ int main() {
     ok &= check(dayo::core::classifyAsset("sound.M4A") == AssetKind::audio, "audio extension");
     ok &= check(dayo::core::classifyAsset("movie.webm") == AssetKind::video, "video extension");
     {
+        const auto directory = std::filesystem::temp_directory_path() / "mikumikudesu-associated-effect-test";
+        std::filesystem::create_directories(directory);
+        const auto model = directory / "Avatar.PMX";
+        const auto effect = directory / "avatar.FxDayo";
+        const auto unrelated = directory / "Other.fxdayo";
+        std::ofstream(effect).put('\n');
+        std::ofstream(unrelated).put('\n');
+        const auto found = dayo::core::findAssociatedEffect(model);
+        ok &= check(found.has_value() && found->filename() == effect.filename(),
+                    "PMX discovers a same-stem effect case-insensitively");
+        std::error_code error;
+        std::filesystem::remove_all(directory, error);
+    }
+    {
         dayo::core::MotionDocument document;
         document.bones.push_back({.name = "arm", .frame = 5});
         document.morphs.push_back({"smile", 10, 0.75F});
@@ -818,6 +832,42 @@ int main() {
         scene.model(firstModel)->model->materials.resize(2);
         scene.model(secondModel)->model->materials.resize(2);
         ok &= check(scene.models().size() == 2 && scene.selectedModel() != nullptr, "multi-model scene instances");
+        const auto* firstInstance = scene.model(firstModel);
+        auto participation = dayo::core::resolveModelParticipation(*firstInstance, scene.effects());
+        ok &= check(participation.evaluateAnimation && participation.rasterize && participation.acceleration,
+                    "ordinary visible model participates in animation, raster, and acceleration");
+        auto postprocessEffects = dayo::core::SceneEffectStack{};
+        dayo::core::SceneEffectInstance postprocess;
+        postprocess.controllerModel = firstModel;
+        postprocess.graph.category = "postprocess";
+        postprocessEffects.postprocess.push_back(postprocess);
+        participation = dayo::core::resolveModelParticipation(*firstInstance, postprocessEffects);
+        ok &= check(participation.controller && participation.postprocessLauncher && !participation.deform &&
+                        !participation.rasterize && !participation.acceleration,
+                    "postprocess launcher remains a controller but is excluded from model rendering and acceleration");
+        auto deformEffects = dayo::core::SceneEffectStack{};
+        dayo::core::SceneEffectInstance deformer;
+        deformer.controllerModel = firstModel;
+        deformer.graph.category = "deform";
+        deformEffects.deform.push_back(deformer);
+        participation = dayo::core::resolveModelParticipation(*firstInstance, deformEffects);
+        ok &= check(participation.deform && participation.rasterize && participation.acceleration,
+                    "assigned deformer retains the owner's normal scene participation");
+        scene.model(firstModel)->animationVisible = false;
+        participation = dayo::core::resolveModelParticipation(*scene.model(firstModel), deformEffects);
+        ok &= check(participation.evaluateAnimation && participation.deform && !participation.rasterize &&
+                        !participation.acceleration,
+                    "animated visibility suppresses raster and TLAS participation without stopping evaluation");
+        dayo::core::PmxModel distantController;
+        distantController.vertices.resize(3);
+        for (auto& vertex : distantController.vertices)
+            vertex.position = {100001.0F, 0.0F, 0.0F};
+        ok &= check(!dayo::core::isUpstreamDrawableModel(distantController),
+                    "all-far controller geometry is classified as non-drawable");
+        distantController.vertices.back().position = {};
+        ok &= check(dayo::core::isUpstreamDrawableModel(distantController),
+                    "a model with any ordinary vertex remains drawable");
+        scene.model(firstModel)->animationVisible = true;
         const auto modelTopologyGeneration = scene.topologyGeneration();
         ok &= check(modelTopologyGeneration > initialTopologyGeneration && scene.setModelVisible(firstModel, false) &&
                         scene.setCloneCount(firstModel, 3) && scene.topologyGeneration() == modelTopologyGeneration + 2,

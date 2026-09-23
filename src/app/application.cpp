@@ -255,7 +255,15 @@ void Application::requestRenderer(graphics::RendererKind renderer) {
             nativeRenderer_.setSceneFrameRuntime(&nativeSceneFrame_);
         }
         const auto status = nativeRenderer_.prepare(*device_, renderer, *scene_.effect());
-        nativeRenderer_.setEffectStack(scene_.effects());
+        const auto& sourceEffects = scene_.effects();
+        auto runtimeEffects = sourceEffects;
+        std::erase_if(runtimeEffects.deform, [this, &sourceEffects](const auto& effect) {
+            if (!effect.controllerModel.has_value())
+                return false;
+            const auto* owner = scene_.model(*effect.controllerModel);
+            return owner != nullptr && !core::resolveModelParticipation(*owner, sourceEffects).deform;
+        });
+        nativeRenderer_.setEffectStack(runtimeEffects);
         device_->setNativeRendererAvailability(status.nativeReady && status.active == graphics::RendererKind::subayai,
                                                status.nativeReady && status.active == graphics::RendererKind::bdpt);
         device_->selectRenderer(status.active);
@@ -315,7 +323,7 @@ fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTar
         const auto& instance = scene_.models()[index];
         if (instance.id == scene_.selectedModelId())
             modelIndex = static_cast<std::uint32_t>(index);
-        if (instance.visible && instance.model != nullptr)
+        if (core::resolveModelParticipation(instance, scene_.effects()).rasterize && instance.model != nullptr)
             totalMaterials += instance.model->materials.size();
     }
     const auto* program = nativeRenderer_.program();
@@ -355,7 +363,7 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
     }
     std::vector<core::MaterialParameterBlock> materials;
     for (const auto& instance : scene_.models()) {
-        if (!instance.visible || instance.model == nullptr)
+        if (instance.model == nullptr || !core::resolveModelParticipation(instance, scene_.effects()).rasterize)
             continue;
         for (std::size_t index = 0; index < instance.model->materials.size(); ++index) {
             if (index < instance.materialSettings.size())
@@ -433,6 +441,8 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         graphics::handles::AccelerationStructureHandle tlas;
         geometryUploads.reserve(nativeGeometry_.size());
         for (const auto& mesh : nativeGeometry_) {
+            if (!mesh.hasBlas)
+                continue;
             geometryUploads.push_back({
                 .meshId = mesh.meshId,
                 .deform = {.baseVertices = mesh.baseVertices,
@@ -446,6 +456,8 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                 .topologyGeneration = scene_.topologyGeneration(),
                 .deformVersion = nativeDeformVersion_,
             });
+            if (!mesh.acceleration)
+                continue;
             const auto cloneCenter = (static_cast<float>(mesh.cloneCount) - 1.0F) * 0.5F;
             for (std::uint32_t clone = 0; clone < mesh.cloneCount; ++clone) {
                 graphics::Matrix3x4 transform;
@@ -500,7 +512,7 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                  .textureBase = geometry.textureBase,
                  .cloneCount = geometry.cloneCount,
                  .selectedMaterial = selectedMaterial,
-                 .visible = instance != nullptr && instance->visible});
+                 .visible = geometry.rasterize && instance != nullptr});
         }
         if (!nativeSceneDerivedRuntime_.sync(derivedModels, screenExtent, &sceneError))
             throw std::runtime_error(sceneError.empty() ? "native scene derived resource synchronization failed"
@@ -534,6 +546,8 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                                            .rasterizeOrder = geometry.rasterizeOrder,
                                            .deformIndex = geometry.deformIndex,
                                            .deformOrder = geometry.deformOrder});
+            if (!geometry.rasterize)
+                continue;
             for (std::size_t materialIndex = 0; materialIndex < model.materialFaces.size(); ++materialIndex) {
                 const auto& range = model.materialFaces[materialIndex];
                 if (range.count == 0)
@@ -686,6 +700,7 @@ void Application::resetProjectRuntimeState() {
     animatedIndices_.clear();
     animatedMorphDeltas_.clear();
     animatedMorphRanges_.clear();
+    animatedEffectiveVisibility_.clear();
     animatedVertexCount_ = 0;
     animatedMaterialTemplates_.clear();
     animatedTopologyGeneration_ = 0;
@@ -1110,6 +1125,46 @@ int Application::runVideoExport() {
     return 0;
 }
 
+void Application::loadEffectAsset(const std::filesystem::path& path, std::optional<core::ModelId> owner) {
+    const auto normalizedPath = std::filesystem::absolute(path).lexically_normal();
+    if (owner.has_value()) {
+        const auto unowned = std::ranges::find_if(
+            reloadedEffects_, [&](const auto& loaded) { return loaded.path == normalizedPath && !loaded.owner; });
+        if (unowned != reloadedEffects_.end()) {
+            static_cast<void>(scene_.removeEffect(unowned->id));
+            reloadedEffects_.erase(unowned);
+        }
+    }
+    const auto duplicate = std::ranges::find_if(
+        reloadedEffects_, [&](const auto& loaded) { return loaded.path == normalizedPath && loaded.owner == owner; });
+    if (duplicate != reloadedEffects_.end())
+        return;
+
+    ReloadedEffect reloaded(normalizedPath, owner);
+    static_cast<void>(reloaded.reloader.poll());
+    if (reloaded.reloader.current() == nullptr)
+        throw std::runtime_error("effect graph is empty");
+    const auto graph = *reloaded.reloader.current();
+    reloaded.id = scene_.addEffect(graph, owner);
+    reloadedEffects_.push_back(std::move(reloaded));
+    auto filename = normalizedPath.filename().string();
+    std::ranges::transform(filename, filename.begin(),
+                           [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    if (device_ != nullptr && filename.find("subayai") != std::string::npos)
+        requestedRenderer_ = graphics::RendererKind::subayai;
+    else if (device_ != nullptr && filename.find("bdpt") != std::string::npos)
+        requestedRenderer_ = graphics::RendererKind::bdpt;
+    requestRenderer(requestedRenderer_);
+    lastAsset_ = "Effect " + normalizedPath.filename().string() + " — " + std::to_string(graph.passes.size()) +
+                 " passes, " + std::to_string(graph.textures.size()) + " textures";
+    log::info("Loaded effect graph: ", lastAsset_);
+    const auto projectEffect = std::ranges::find_if(projectAssets_, [&](const auto& asset) {
+        return asset.kind == "effect" && std::filesystem::absolute(asset.path).lexically_normal() == normalizedPath;
+    });
+    if (projectEffect == projectAssets_.end())
+        projectAssets_.push_back({"effect", normalizedPath});
+}
+
 void Application::handleAsset(const std::filesystem::path& path) {
     const auto kind = core::classifyAsset(path);
     if (kind == core::AssetKind::unknown) {
@@ -1225,11 +1280,20 @@ void Application::handleAsset(const std::filesystem::path& path) {
         try {
             const auto modelId = scene_.addModel(path);
             scene_.selectModel(modelId);
+            projectAssets_.push_back({"pmx", std::filesystem::absolute(path)});
             if (scene_.models().empty() || scene_.selectedModelId() != modelId)
                 throw std::logic_error("PMX model was not retained in the scene");
             log::info("PMX scene state: models=", scene_.models().size(), " selected=", scene_.selectedModelId());
             videoMode_ = scene_.media() != nullptr && scene_.media()->info().hasVideo;
             normalization_ = scene_.selectedModel()->normalization;
+            if (const auto associatedEffect = core::findAssociatedEffect(path); associatedEffect.has_value()) {
+                try {
+                    loadEffectAsset(*associatedEffect, modelId);
+                } catch (const std::exception& exception) {
+                    log::warn("Associated FX could not be loaded for ", path.filename().string(), ": ",
+                              exception.what());
+                }
+            }
             refreshPreviewTextures();
             animationFrame_ = 0.0F;
             scene_.setFrame(animationFrame_);
@@ -1245,7 +1309,6 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 std::to_string(model->model->indices.size() / 3) + ", bones " +
                 std::to_string(model->model->bones.size()) + ", models " + std::to_string(scene_.models().size());
             log::info("Loaded metadata: ", lastAsset_, " (", path.string(), ")");
-            projectAssets_.push_back({"pmx", std::filesystem::absolute(path)});
         } catch (const std::exception& exception) {
             lastAsset_ = "PMX error: " + std::string(exception.what());
             log::warn(lastAsset_);
@@ -1364,26 +1427,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
         try {
             const auto owner =
                 selectedModel() == nullptr ? std::nullopt : std::optional<core::ModelId>{selectedModel()->id};
-            ReloadedEffect reloaded(path, owner);
-            static_cast<void>(reloaded.reloader.poll());
-            if (reloaded.reloader.current() == nullptr)
-                throw std::runtime_error("effect graph is empty");
-            const auto graph = *reloaded.reloader.current();
-            reloaded.id = scene_.addEffect(graph, owner);
-            reloadedEffects_.push_back(std::move(reloaded));
-            auto filename = path.filename().string();
-            std::ranges::transform(filename, filename.begin(),
-                                   [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
-            if (device_ != nullptr && filename.find("subayai") != std::string::npos) {
-                requestedRenderer_ = graphics::RendererKind::subayai;
-            } else if (device_ != nullptr && filename.find("bdpt") != std::string::npos) {
-                requestedRenderer_ = graphics::RendererKind::bdpt;
-            }
-            requestRenderer(requestedRenderer_);
-            lastAsset_ = "Effect " + path.filename().string() + " — " + std::to_string(graph.passes.size()) +
-                         " passes, " + std::to_string(graph.textures.size()) + " textures";
-            log::info("Loaded effect graph: ", lastAsset_);
-            projectAssets_.push_back({"effect", std::filesystem::absolute(path)});
+            loadEffectAsset(path, owner);
         } catch (const std::exception& exception) {
             lastAsset_ = "Effect error: " + std::string(exception.what());
             log::warn(lastAsset_);
@@ -1410,7 +1454,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     std::size_t materialCount = 0;
     bool dynamicVertices = false;
     for (const auto& instance : scene_.models()) {
-        if (!instance.visible || instance.model == nullptr || instance.animator == nullptr)
+        if (instance.model == nullptr || instance.animator == nullptr)
             continue;
         vertexCount += instance.model->vertices.size();
         indexCount += instance.model->indices.size();
@@ -1445,12 +1489,13 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     struct EvaluatedModel {
         const core::ModelInstance* instance{};
         bool gpuSkinning{};
+        core::ModelParticipation participation;
         core::AnimatedModelFrame frame;
     };
     std::pmr::vector<EvaluatedModel> evaluated(scratch);
     evaluated.reserve(scene_.models().size());
     for (const auto& instance : scene_.models()) {
-        if (!instance.visible || instance.model == nullptr || instance.animator == nullptr)
+        if (instance.model == nullptr || instance.animator == nullptr)
             continue;
         const auto gravity = scene_.evaluatePhysicsSettings(animationFrame_);
         if (instance.physics != nullptr) {
@@ -1460,7 +1505,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             instance.physics->setGravityNoise(gravity.noiseAmplitude, gravity.noiseFrequency);
             instance.physics->setFloorCollision(gravity.floorCollision);
         }
-        evaluated.push_back({&instance, instance.softBody == nullptr || !instance.softBody->available(), {}});
+        evaluated.push_back({&instance, instance.softBody == nullptr || !instance.softBody->available(), {}, {}});
     }
     {
         auto animation = frameProfiler_.measure(core::ProfileSection::animation);
@@ -1478,6 +1523,13 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             core::normalizeForPreview(current.frame.vertices, instance.normalization);
         });
         animation.finish();
+    }
+    for (auto& evaluatedModel : evaluated) {
+        auto* instance = scene_.model(evaluatedModel.instance->id);
+        if (instance == nullptr)
+            continue;
+        instance->animationVisible = evaluatedModel.frame.visible;
+        evaluatedModel.participation = core::resolveModelParticipation(*instance, scene_.effects());
     }
     evaluatedModels_.models.clear();
     evaluatedModels_.models.reserve(evaluated.size());
@@ -1506,9 +1558,13 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     nativeGeometry.reserve(evaluated.size());
     std::vector<graphics::NativeSceneModelData> nativeSceneModels;
     nativeSceneModels.reserve(evaluated.size());
+    std::vector<std::uint8_t> effectiveVisibility;
+    effectiveVisibility.reserve(evaluated.size());
     for (const auto& evaluatedModel : evaluated) {
         const auto& instance = *evaluatedModel.instance;
         const auto& frame = evaluatedModel.frame;
+        const auto& participation = evaluatedModel.participation;
+        effectiveVisibility.push_back(participation.rasterize ? 1U : 0U);
         const bool gpuSkinning = evaluatedModel.gpuSkinning;
         const auto morphWeightBase = static_cast<std::uint32_t>(morphWeights.size());
         for (std::size_t morphIndex = 0; morphIndex < instance.model->morphs.size(); ++morphIndex) {
@@ -1597,6 +1653,9 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         native.rasterizeOrder = static_cast<std::uint32_t>(std::max(instance.order.raster, 0));
         native.deformIndex = native.modelIndex;
         native.deformOrder = static_cast<std::uint32_t>(std::max(instance.order.deform, 0));
+        native.rasterize = participation.rasterize;
+        native.acceleration = participation.acceleration;
+        native.hasBlas = instance.upstreamDrawable && !participation.postprocessLauncher;
         native.indices.assign(instance.model->indices.begin(), instance.model->indices.end());
         native.morphWeights.resize(instance.model->morphs.size(), 0.0F);
         for (std::size_t morphIndex = 0; morphIndex < native.morphWeights.size(); ++morphIndex) {
@@ -1800,12 +1859,14 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             }
             auto& draw = draws[materialCursor - 1U];
             draw.firstIndex = firstIndex;
-            draw.indexCount = sourceMaterial.indexCount;
+            draw.indexCount = participation.rasterize ? sourceMaterial.indexCount : 0U;
             draw.materialIndex = static_cast<std::uint32_t>(materialCursor - 1U);
             draw.instanceCount = sceneCloneCount;
             firstIndex += instance.model->materials[materialIndex].indexCount;
         }
     }
+    const bool participationChanged = effectiveVisibility != animatedEffectiveVisibility_;
+    animatedEffectiveVisibility_ = std::move(effectiveVisibility);
     nativeGeometry_ = std::move(nativeGeometry);
     nativeSceneModelData_ = std::move(nativeSceneModels);
     nativeDeformVersion_ =
@@ -1834,7 +1895,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             }
         }
         device_->updatePreviewMaterials(materials);
-        if (initialUpload || rebuildTopology)
+        if (initialUpload || rebuildTopology || participationChanged)
             device_->updatePreviewDraws(draws);
         upload.finish();
     }

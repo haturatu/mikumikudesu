@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
 #include <string_view>
 
 namespace dayo::core {
@@ -19,6 +20,7 @@ enum class AssetKind {
 };
 
 [[nodiscard]] AssetKind classifyAsset(const std::filesystem::path& path);
+[[nodiscard]] std::optional<std::filesystem::path> findAssociatedEffect(const std::filesystem::path& modelPath);
 [[nodiscard]] std::string_view toString(AssetKind kind) noexcept;
 
 } // namespace dayo::core

@@ -45,6 +45,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
   private:
     void resetProjectRuntimeState();
     [[nodiscard]] core::DayoProject currentProject() const;
+    void loadEffectAsset(const std::filesystem::path& path, std::optional<core::ModelId> owner);
     void handleAsset(const std::filesystem::path& path);
     void refreshAnimatedMesh(bool initialUpload, float deltaSeconds = 0.0F);
     void resetPhysicsSimulation();
@@ -119,6 +120,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::uint64_t animatedVertexCount_{};
     std::vector<graphics::PreviewMaterial> animatedMaterialTemplates_;
     std::vector<graphics::PreviewDraw> animatedDraws_;
+    std::vector<std::uint8_t> animatedEffectiveVisibility_;
     struct NativeModelGeometry {
         std::uint32_t meshId{};
         std::uint32_t cloneCount{1};
@@ -128,6 +130,9 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
         std::uint32_t rasterizeOrder{};
         std::uint32_t deformIndex{};
         std::uint32_t deformOrder{};
+        bool rasterize{};
+        bool acceleration{};
+        bool hasBlas{};
         std::vector<graphics::PreviewVertex> baseVertices;
         std::vector<graphics::PreviewBoneTransform> bones;
         std::vector<graphics::PreviewMorphDelta> morphDeltas;
