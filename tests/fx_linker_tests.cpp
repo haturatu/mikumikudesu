@@ -87,6 +87,20 @@ int main() {
             rejectedWidth = true;
         }
         ok &= check(rejectedWidth, "material schema rejects unsupported field widths");
+        const auto rejects = [](std::string_view invalidSource) {
+            try {
+                static_cast<void>(parseMaterialTemplateSchema(invalidSource));
+            } catch (const std::invalid_argument&) {
+                return true;
+            }
+            return false;
+        };
+        ok &= check(rejects("f.1 : Shared\ni.1 : Shared\n"),
+                    "material schema rejects duplicate field names across scalar types");
+        ok &= check(rejects("_T0 : Surface\n_V1 : Surface\n"),
+                    "material schema rejects duplicate texture names across dimensions");
+        ok &= check(rejects("_E Category : default=0, glass=1\n_E : Category : default=0, glass=1\n"),
+                    "material schema rejects duplicate enum definitions for one field");
     }
 
     // Alias folding: shared / ref / shareTags collapse to canonical ids.

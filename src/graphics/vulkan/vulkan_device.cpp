@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -4769,6 +4770,8 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
         .colorAttachmentCount = static_cast<std::uint32_t>(vkColorFormats.size()),
         .pColorAttachmentFormats = vkColorFormats.data(),
         .depthAttachmentFormat = vkDepthFormat,
+        .stencilAttachmentFormat =
+            desc.depthFormat == PixelFormat::depth24Stencil8 ? vkDepthFormat : VK_FORMAT_UNDEFINED,
     };
     const VkGraphicsPipelineCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
@@ -5186,34 +5189,11 @@ void VulkanDevice::clearTextureEx(handles::TextureHandle texture, const std::arr
 }
 
 void VulkanDevice::clearBufferEx(handles::BufferHandle buffer, std::uint32_t value) {
-    const auto it = typedBuffers_.find(buffer);
-    if (it == typedBuffers_.end() || !typedBufferHandles_.isAlive(buffer))
-        throw std::invalid_argument("typed buffer clear references a stale buffer handle");
-    if ((toBits(it->second.desc.usage) & toBits(ResourceUsage::transferDst)) == 0U)
-        throw std::invalid_argument("typed buffer clear requires transfer-destination usage");
-    if (it->second.resource.size % 4U != 0U)
-        throw std::invalid_argument("typed buffer clear requires a four-byte-aligned buffer");
-    submitImmediate([&](VkCommandBuffer commandBuffer) {
-        vkCmdFillBuffer(commandBuffer, it->second.resource.buffer, 0, it->second.resource.size, value);
-        const VkBufferMemoryBarrier2 visible{
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = it->second.resource.buffer,
-            .offset = 0,
-            .size = it->second.resource.size,
-        };
-        const VkDependencyInfo dependency{
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .bufferMemoryBarrierCount = 1,
-            .pBufferMemoryBarriers = &visible,
-        };
-        vkCmdPipelineBarrier2(commandBuffer, &dependency);
-    });
+    submitImmediate([&](VkCommandBuffer commandBuffer) { recordClearBuffer(commandBuffer, buffer, value); });
+}
+
+void VulkanDevice::clearBufferEx(handles::BufferHandle buffer, const std::array<float, 4>& value) {
+    submitImmediate([&](VkCommandBuffer commandBuffer) { recordClearBuffer(commandBuffer, buffer, value); });
 }
 
 void VulkanDevice::recordClearBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle buffer, std::uint32_t value) {
@@ -5225,6 +5205,68 @@ void VulkanDevice::recordClearBuffer(VkCommandBuffer commandBuffer, handles::Buf
     if (it->second.resource.size % 4U != 0U)
         throw std::invalid_argument("typed command-list buffer clear requires a four-byte-aligned buffer");
     vkCmdFillBuffer(commandBuffer, it->second.resource.buffer, 0, it->second.resource.size, value);
+    const VkBufferMemoryBarrier2 visible{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = it->second.resource.buffer,
+        .offset = 0,
+        .size = it->second.resource.size,
+    };
+    const VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .bufferMemoryBarrierCount = 1,
+        .pBufferMemoryBarriers = &visible,
+    };
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+}
+
+void VulkanDevice::recordClearBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle buffer,
+                                     const std::array<float, 4>& value) {
+    const auto it = typedBuffers_.find(buffer);
+    if (it == typedBuffers_.end() || !typedBufferHandles_.isAlive(buffer))
+        throw std::invalid_argument("typed command-list buffer clear references a stale buffer handle");
+    if ((toBits(it->second.desc.usage) & toBits(ResourceUsage::transferDst)) == 0U)
+        throw std::invalid_argument("typed command-list buffer clear requires transfer-destination usage");
+    if (it->second.resource.size % sizeof(std::uint32_t) != 0U)
+        throw std::invalid_argument("typed command-list buffer clear requires a four-byte-aligned buffer");
+
+    constexpr std::size_t maxUpdateBytes = 65536;
+    constexpr std::size_t wordsPerUpdate = maxUpdateBytes / sizeof(std::uint32_t);
+    const std::array pattern{std::bit_cast<std::uint32_t>(value[0]), std::bit_cast<std::uint32_t>(value[1]),
+                             std::bit_cast<std::uint32_t>(value[2]), std::bit_cast<std::uint32_t>(value[3])};
+    std::array<std::uint32_t, wordsPerUpdate> updateWords{};
+    for (std::size_t index = 0; index < updateWords.size(); ++index)
+        updateWords[index] = pattern[index % pattern.size()];
+
+    for (VkDeviceSize offset = 0; offset < it->second.resource.size;) {
+        const auto remaining = it->second.resource.size - offset;
+        const auto updateSize = static_cast<std::uint32_t>(std::min<VkDeviceSize>(remaining, maxUpdateBytes));
+        vkCmdUpdateBuffer(commandBuffer, it->second.resource.buffer, offset, updateSize, updateWords.data());
+        offset += updateSize;
+    }
+    const VkBufferMemoryBarrier2 visible{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = it->second.resource.buffer,
+        .offset = 0,
+        .size = it->second.resource.size,
+    };
+    const VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .bufferMemoryBarrierCount = 1,
+        .pBufferMemoryBarriers = &visible,
+    };
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
 }
 
 void VulkanDevice::generateMipmapsEx(handles::TextureHandle texture) {

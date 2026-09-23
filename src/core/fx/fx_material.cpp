@@ -129,10 +129,13 @@ void parseMaterialEnum(MaterialTemplateSchema& schema, std::string_view left, st
 
     MaterialEnumSchema enumeration;
     enumeration.field = materialIdentifier(fieldName);
+    if (std::ranges::any_of(schema.enums,
+                            [&enumeration](const auto& existing) { return existing.field == enumeration.field; }))
+        throw std::invalid_argument("duplicate upstream material enum field '" + enumeration.field + "' at line " +
+                                    std::to_string(lineNumber));
     std::int32_t nextValue = 0;
     const auto items = splitMaterialList(valueList);
-    for (std::size_t index = 0; index < items.size(); ++index) {
-        const auto& item = items[index];
+    for (const auto& item : items) {
         const auto assignment = item.find('=');
         const auto name = trimCopy(std::string_view(item).substr(0, assignment));
         if (name.empty())
@@ -179,7 +182,7 @@ std::int32_t parseMaterialEnumValue(const MaterialTemplateSchema& schema, std::s
 
 template <typename T, std::size_t N, typename Parser>
 std::array<T, N> parseMaterialArray(const std::vector<std::string>& values, std::string_view description,
-                                    Parser&& parser) {
+                                    Parser parser) {
     if (values.size() != N)
         throw std::invalid_argument("upstream material component count mismatch for " + std::string(description));
     std::array<T, N> result{};
@@ -301,6 +304,8 @@ MaterialTemplateSchema parseMaterialTemplateSchema(std::string_view source, std:
     result.name = std::move(name);
     result.sourceText = source;
 
+    std::unordered_set<std::string> fieldNames;
+    std::unordered_set<std::string> textureNames;
     std::size_t lineNumber = 0;
     std::size_t lineStart = 0;
     while (lineStart < source.size()) {
@@ -322,8 +327,12 @@ MaterialTemplateSchema parseMaterialTemplateSchema(std::string_view source, std:
                     if (componentCount == 0 || componentCount > 4)
                         throw std::invalid_argument("upstream material field component count is out of range at line " +
                                                     std::to_string(lineNumber));
+                    auto fieldName = materialIdentifier(right);
+                    if (!fieldNames.insert(fieldName).second)
+                        throw std::invalid_argument("duplicate upstream material field '" + fieldName + "' at line " +
+                                                    std::to_string(lineNumber));
                     result.fields.push_back(
-                        {.name = materialIdentifier(right),
+                        {.name = std::move(fieldName),
                          .type = left[0] == 'f' ? MaterialFieldType::floatingPoint : MaterialFieldType::signedInteger,
                          .components = componentCount});
                 } else if (left.starts_with("_E")) {
@@ -339,7 +348,11 @@ MaterialTemplateSchema parseMaterialTemplateSchema(std::string_view source, std:
                     if (index == std::numeric_limits<std::uint32_t>::max())
                         throw std::invalid_argument("upstream material texture index is out of range at line " +
                                                     std::to_string(lineNumber));
-                    result.textures.push_back({.name = materialIdentifier(right),
+                    auto textureName = materialIdentifier(right);
+                    if (!textureNames.insert(textureName).second)
+                        throw std::invalid_argument("duplicate upstream material texture '" + textureName +
+                                                    "' at line " + std::to_string(lineNumber));
+                    result.textures.push_back({.name = std::move(textureName),
                                                .dimension = left[1] == 'V' ? MaterialTextureDimension::threeD
                                                                            : MaterialTextureDimension::twoD,
                                                .index = index,
