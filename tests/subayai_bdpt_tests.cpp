@@ -383,6 +383,9 @@ struct MockDeformCommands final : dayo::graphics::CommandList {
     void clearTextureEx(dayo::graphics::handles::TextureHandle) override {
         events.emplace_back("clear");
     }
+    void clearTextureEx(dayo::graphics::handles::TextureHandle, const std::array<float, 4>&) override {
+        events.emplace_back("clear");
+    }
     void bindPipelineEx(dayo::graphics::handles::PipelineHandle) override {
         events.emplace_back("bind");
     }
@@ -452,7 +455,7 @@ bool testSubayaiNativeFxExecution() {
     const auto stats = runtime.execute(frame, commands);
     ok &= check(stats.compute == 1 &&
                     commands.events == std::vector<std::string>{"transition", "descriptor", "descriptor", "descriptor",
-                                                                "descriptor", "bind", "dispatch:2x1x1"},
+                                                                "descriptor", "bind", "dispatch:1x1x1", "barrier"},
                 "Subayai runtime executes typed FX resources through the native path");
     ok &= check(commands.descriptorSets.size() == 4 && commands.descriptorSets[0].second == 0 &&
                     commands.descriptorSets[1].second == 1 && commands.descriptorSets[2].second == 2 &&
@@ -663,7 +666,7 @@ int main() {
         MockDeformCommands commands;
         const auto stats = runtime.execute(frame, commands, execution);
         ok &= check(stats.compute == 1 && commands.events == std::vector<std::string>{"descriptor", "descriptor",
-                                                                                      "bind", "dispatch:8x4x1"},
+                                                                                      "bind", "dispatch:4x2x1"},
                     "Subayai execution binds both native resource descriptor sets");
         ok &= check(commands.descriptorSets.size() == 2 && commands.descriptorSets[0].second == 0 &&
                         commands.descriptorSets[1].second == 1 &&

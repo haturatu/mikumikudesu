@@ -13,6 +13,77 @@
 
 namespace dayo::graphics {
 
+// Owns only physical textures, buffers, and samplers. Descriptor views are
+// deliberately absent: the same physical resource can be an SRV in one pass
+// and a UAV in the next pass.
+class FxResourceStore {
+  public:
+    enum class Kind : std::uint8_t { texture, buffer, sampler };
+
+    struct Resource {
+        std::string name;
+        Kind kind{Kind::texture};
+        handles::TextureHandle texture{};
+        handles::BufferHandle buffer{};
+        handles::SamplerHandle sampler{};
+        Extent3D extent{};
+        PixelFormat format{PixelFormat::rgba8Unorm};
+        // Compatibility-only physical slot used by the old single-set API.
+        // Per-pass descriptors never consult these fields.
+        DescriptorKind legacyDescriptorKind{DescriptorKind::sampledImage};
+        std::uint32_t legacyBinding{};
+    };
+
+    [[nodiscard]] bool add(Resource resource);
+    void clear() noexcept;
+    [[nodiscard]] std::size_t size() const noexcept {
+        return resources_.size();
+    }
+    [[nodiscard]] const Resource* find(std::string_view name) const noexcept;
+    [[nodiscard]] Resource* find(std::string_view name) noexcept;
+    [[nodiscard]] const std::vector<Resource>& resources() const noexcept {
+        return resources_;
+    }
+
+  private:
+    std::vector<Resource> resources_;
+    std::unordered_map<std::string, std::size_t> indices_;
+};
+
+// Owns one descriptor layout/set per pass. Its plans are generated from the
+// same FxPassBindingPlan used by shader source generation.
+class FxPassDescriptorRuntime {
+  public:
+    FxPassDescriptorRuntime() = default;
+    ~FxPassDescriptorRuntime();
+
+    FxPassDescriptorRuntime(const FxPassDescriptorRuntime&) = delete;
+    FxPassDescriptorRuntime& operator=(const FxPassDescriptorRuntime&) = delete;
+
+    [[nodiscard]] bool initialize(Device& device, const fx::FxProgram& program, std::uint32_t resourceSet,
+                                  const FxResourceStore& store, std::string* error = nullptr);
+    void reset() noexcept;
+
+    [[nodiscard]] std::optional<handles::DescriptorSetHandle>
+    resolveDescriptorSet(const fx::FxDispatch& dispatch) const;
+    [[nodiscard]] std::optional<handles::DescriptorSetLayoutHandle>
+    resolveDescriptorLayout(const fx::FxDispatch& dispatch) const;
+    [[nodiscard]] const fx::FxPassBindingPlan* bindingPlan(const fx::FxDispatch& dispatch) const noexcept;
+    [[nodiscard]] std::size_t size() const noexcept {
+        return entries_.size();
+    }
+
+  private:
+    struct Entry {
+        fx::FxPassBindingPlan plan;
+        handles::DescriptorSetLayoutHandle layout{};
+        handles::DescriptorSetHandle set{};
+    };
+
+    Device* device_{};
+    std::unordered_map<std::string, Entry> entries_;
+};
+
 // Owns the GPU resources declared by one compiled .fxdayo program. The
 // runtime deliberately keeps resource names and descriptor bindings together
 // so a hot-reloaded program cannot accidentally resolve a name against the
@@ -36,7 +107,7 @@ class FxResourceRuntime {
     FxResourceRuntime& operator=(const FxResourceRuntime&) = delete;
 
     [[nodiscard]] bool initialize(Device& device, const fx::FxProgram& program, const fx::FxFrameContext& context,
-                                  std::string* error = nullptr);
+                                  std::string* error = nullptr, std::uint32_t resourceSet = 0);
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
@@ -52,36 +123,35 @@ class FxResourceRuntime {
     [[nodiscard]] handles::DescriptorSetHandle descriptorSet() const noexcept {
         return descriptorSet_;
     }
+    [[nodiscard]] std::optional<handles::DescriptorSetLayoutHandle>
+    descriptorLayoutFor(const fx::FxDispatch& dispatch) const {
+        return passDescriptors_.resolveDescriptorLayout(dispatch);
+    }
+    [[nodiscard]] std::optional<handles::DescriptorSetHandle> descriptorSetFor(const fx::FxDispatch& dispatch) const {
+        return passDescriptors_.resolveDescriptorSet(dispatch);
+    }
+    [[nodiscard]] const fx::FxPassBindingPlan* bindingPlan(const fx::FxDispatch& dispatch) const noexcept {
+        return passDescriptors_.bindingPlan(dispatch);
+    }
     [[nodiscard]] const DescriptorSetLayoutDesc& descriptorLayoutDesc() const noexcept {
         return descriptorLayoutDesc_;
     }
     [[nodiscard]] std::optional<Extent3D> extent(std::string_view name) const;
+    [[nodiscard]] const FxResourceStore& store() const noexcept {
+        return store_;
+    }
     // Resolves the last texture written by a frame plan. Native presentation
     // uses this explicit final-write rule instead of guessing a resource name
     // such as "screen" or "output" from an effect authoring convention.
     [[nodiscard]] std::optional<ResolvedTexture> resolveOutputTexture(std::span<const fx::FxDispatch> ordered) const;
     [[nodiscard]] std::size_t resourceCount() const noexcept {
-        return resources_.size();
+        return store_.size();
     }
 
   private:
-    enum class Kind : std::uint8_t { texture, buffer, sampler };
-
-    struct Resource {
-        std::string name;
-        Kind kind{Kind::texture};
-        DescriptorKind descriptorKind{DescriptorKind::sampledImage};
-        std::uint32_t binding{};
-        handles::TextureHandle texture{};
-        handles::BufferHandle buffer{};
-        handles::SamplerHandle sampler{};
-        Extent3D extent{};
-        PixelFormat format{PixelFormat::rgba8Unorm};
-    };
-
     Device* device_{};
-    std::vector<Resource> resources_;
-    std::unordered_map<std::string, std::size_t> indices_;
+    FxResourceStore store_;
+    FxPassDescriptorRuntime passDescriptors_;
     DescriptorSetLayoutDesc descriptorLayoutDesc_;
     handles::DescriptorSetLayoutHandle descriptorLayout_{};
     handles::DescriptorSetHandle descriptorSet_{};

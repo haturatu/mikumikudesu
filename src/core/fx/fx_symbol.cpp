@@ -27,7 +27,7 @@ bool builtinScalar(std::string_view name, const FxEvalContext& context, FxScalar
         out = context.clonedVertexCount;
         return true;
     }
-    if (name == "TOTALMATERIAL") {
+    if (name == "TOTALMATERIAL" || name == "TOTALMATERIALCOUNT") {
         out = context.totalMaterial;
         return true;
     }
@@ -243,6 +243,19 @@ FxScalar FxSymbolResolver::resolveScalar(std::string_view name) const {
             // one namespace without introducing a vector scalar type.
             return FxScalar{static_cast<std::int64_t>(found->x)};
         }
+        const auto separator = name.rfind('.');
+        if (separator != std::string_view::npos && separator + 2U == name.size()) {
+            const auto extent = table_->find(name.substr(0, separator));
+            if (extent.has_value()) {
+                const auto component = name.back();
+                if (component == 'x')
+                    return FxScalar{static_cast<std::int64_t>(extent->x)};
+                if (component == 'y')
+                    return FxScalar{static_cast<std::int64_t>(extent->y)};
+                if (component == 'z')
+                    return FxScalar{static_cast<std::int64_t>(extent->z)};
+            }
+        }
     }
     dayo::log::warn("fx symbol has unknown identifier: ", name);
     throw std::runtime_error("fx symbol has unknown identifier: " + std::string(name));
@@ -273,7 +286,7 @@ FxExtent FxSymbolResolver::resolveExtent(std::string_view name) const {
         extent.dimension = 1;
         return extent;
     }
-    if (name == "TOTALMATERIAL") {
+    if (name == "TOTALMATERIAL" || name == "TOTALMATERIALCOUNT") {
         FxExtent extent;
         extent.x = toUint32Checked(context_->totalMaterial, name);
         extent.y = 1;

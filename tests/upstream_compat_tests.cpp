@@ -6,6 +6,7 @@
 #include "core/motion.hpp"
 #include "fx/fx_compiler.hpp"
 #include "fx/fx_frame.hpp"
+#include "fx/fx_runtime_requirements.hpp"
 #include "fx/fx_shader_compiler.hpp"
 #include "fx/fx_shader_source.hpp"
 #include "graphics/fx_pipeline_runtime.hpp"
@@ -96,6 +97,7 @@ struct UpstreamScanResult {
     std::size_t graphCount{};
     std::size_t passCount{};
     std::size_t shaderCount{};
+    std::map<dayo::fx::FxRuntimeFeature, std::size_t> featureCounts;
     std::vector<std::string> failures;
 };
 
@@ -326,13 +328,13 @@ bool validatePipelineOracle(const dayo::fx::FxProgram& program,
     return true;
 }
 
-bool buildPipelineOracle(const dayo::fx::FxProgram& program, const dayo::fx::FxShaderCompiler& shaderCompiler,
-                         std::string* error) {
+bool buildPipelineOracle(const dayo::fx::FxProgram& program, const dayo::fx::FxFramePlan& framePlan,
+                         const dayo::fx::FxShaderCompiler& shaderCompiler, std::string* error) {
     PipelineOracleDevice device;
     dayo::graphics::FxPipelineRuntime runtime;
     const auto layout = dayo::graphics::handles::PipelineLayoutHandle{1, 1};
     if (!runtime.build(
-            device, program, shaderCompiler,
+            device, program, framePlan, shaderCompiler,
             [layout](const dayo::fx::FxDispatch&) -> std::optional<dayo::graphics::handles::PipelineLayoutHandle> {
                 return layout;
             },
@@ -343,14 +345,15 @@ bool buildPipelineOracle(const dayo::fx::FxProgram& program, const dayo::fx::FxS
 
 void appendShaderRequest(const std::filesystem::path& sourceDirectory, const std::filesystem::path& effectPath,
                          const dayo::fx::FxProgram& program, const dayo::fx::FxDispatch& dispatch,
-                         const dayo::core::EffectPass& pass, std::string entryPoint, dayo::fx::FxShaderStage stage,
+                         const dayo::fx::FxResolvedPass& resolved, const dayo::core::EffectPass& pass,
+                         std::string entryPoint, dayo::fx::FxShaderStage stage,
                          dayo::fx::FxShaderCompiler& shaderCompiler, UpstreamScanResult& result) {
     if (entryPoint.empty())
         return;
     dayo::fx::FxShaderCompileRequest request;
     const auto effectDirectory = effectPath.parent_path();
     request.hlsl = dayo::fx::normalizeFxShaderIncludes(
-        dayo::fx::makeNativeFxShaderSource(program, dispatch, dayo::graphics::kNativeFxResourceSet),
+        dayo::fx::makeNativeFxShaderSource(program, dispatch, dayo::graphics::kNativeFxResourceSet, {}, &resolved),
         effectDirectory.empty() ? std::filesystem::path{"."} : effectDirectory);
     request.sourcePath = effectPath;
     request.entryPoint = std::move(entryPoint);
@@ -370,7 +373,7 @@ UpstreamScanResult scanUpstreamGraphs(const std::filesystem::path& sourceDirecto
     UpstreamScanResult result;
     const auto files = upstreamFxFiles(sourceDirectory);
     dayo::fx::FxCompiler compiler;
-    const auto context = dayo::fx::makeFxFrameContext(0.0F, 0, 64, 64, 0, 0, 0, 0, 1, 1);
+    const auto context = dayo::fx::makeFxFrameContext(0.0F, 0, 64, 64, 0, 0, 4096, 16, 1, 1);
     dayo::fx::FxShaderCompiler shaderCompiler;
     const bool dxc =
         shaderCompiler.executable().filename() == "dxc" || shaderCompiler.executable().filename() == "dxc.exe";
@@ -387,12 +390,14 @@ UpstreamScanResult scanUpstreamGraphs(const std::filesystem::path& sourceDirecto
             const auto graph = dayo::core::loadEffectGraph(path);
             const auto linked = compiler.link(graph);
             const auto program = compiler.compile(linked);
-            std::string pipelineError;
-            if (compileShaders && !buildPipelineOracle(program, shaderCompiler, &pipelineError))
-                throw std::runtime_error(pipelineError.empty() ? "FX pipeline oracle failed" : pipelineError);
             const auto plan = compiler.plan(program, context);
+            std::string pipelineError;
+            if (compileShaders && !buildPipelineOracle(program, plan, shaderCompiler, &pipelineError))
+                throw std::runtime_error(pipelineError.empty() ? "FX pipeline oracle failed" : pipelineError);
             if (plan.ordered.size() != program.passes.size())
                 throw std::runtime_error("FX plan lost a dispatch");
+            for (const auto feature : dayo::fx::analyzeRuntimeRequirements(program).features)
+                ++result.featureCounts[feature];
             ++result.graphCount;
             result.passCount += program.passes.size();
             for (const auto& dispatch : program.passes) {
@@ -405,34 +410,37 @@ UpstreamScanResult scanUpstreamGraphs(const std::filesystem::path& sourceDirecto
             for (std::size_t passIndex = 0; passIndex < graph.passes.size(); ++passIndex) {
                 const auto& pass = graph.passes[passIndex];
                 const auto& dispatch = program.passes[passIndex];
+                const auto& resolved = plan.resolved[passIndex];
                 switch (pass.type) {
                 case dayo::core::EffectPassType::rasterizer:
                 case dayo::core::EffectPassType::postprocess:
-                    appendShaderRequest(sourceDirectory, path, program, dispatch, pass, pass.vertexShader,
+                    appendShaderRequest(sourceDirectory, path, program, dispatch, resolved, pass, pass.vertexShader,
                                         dayo::fx::FxShaderStage::vertex, shaderCompiler, result);
-                    appendShaderRequest(sourceDirectory, path, program, dispatch, pass, pass.pixelShader,
+                    appendShaderRequest(sourceDirectory, path, program, dispatch, resolved, pass, pass.pixelShader,
                                         dayo::fx::FxShaderStage::fragment, shaderCompiler, result);
                     break;
                 case dayo::core::EffectPassType::compute:
-                    appendShaderRequest(sourceDirectory, path, program, dispatch, pass, pass.computeShader,
+                    appendShaderRequest(sourceDirectory, path, program, dispatch, resolved, pass, pass.computeShader,
                                         dayo::fx::FxShaderStage::compute, shaderCompiler, result);
                     break;
                 case dayo::core::EffectPassType::raytracing:
-                    appendShaderRequest(sourceDirectory, path, program, dispatch, pass, pass.rayGenerationShader,
-                                        dayo::fx::FxShaderStage::rayGeneration, shaderCompiler, result);
+                    appendShaderRequest(sourceDirectory, path, program, dispatch, resolved, pass,
+                                        pass.rayGenerationShader, dayo::fx::FxShaderStage::rayGeneration,
+                                        shaderCompiler, result);
                     for (const auto& shader : pass.missShaders)
-                        appendShaderRequest(sourceDirectory, path, program, dispatch, pass, shader,
+                        appendShaderRequest(sourceDirectory, path, program, dispatch, resolved, pass, shader,
                                             dayo::fx::FxShaderStage::miss, shaderCompiler, result);
                     for (const auto& group : pass.hitGroups) {
-                        appendShaderRequest(sourceDirectory, path, program, dispatch, pass, group.closestHit,
+                        appendShaderRequest(sourceDirectory, path, program, dispatch, resolved, pass, group.closestHit,
                                             dayo::fx::FxShaderStage::closestHit, shaderCompiler, result);
-                        appendShaderRequest(sourceDirectory, path, program, dispatch, pass, group.anyHit,
+                        appendShaderRequest(sourceDirectory, path, program, dispatch, resolved, pass, group.anyHit,
                                             dayo::fx::FxShaderStage::anyHit, shaderCompiler, result);
-                        appendShaderRequest(sourceDirectory, path, program, dispatch, pass, group.intersection,
-                                            dayo::fx::FxShaderStage::intersection, shaderCompiler, result);
+                        appendShaderRequest(sourceDirectory, path, program, dispatch, resolved, pass,
+                                            group.intersection, dayo::fx::FxShaderStage::intersection, shaderCompiler,
+                                            result);
                     }
                     for (const auto& shader : pass.callableShaders)
-                        appendShaderRequest(sourceDirectory, path, program, dispatch, pass, shader,
+                        appendShaderRequest(sourceDirectory, path, program, dispatch, resolved, pass, shader,
                                             dayo::fx::FxShaderStage::callable, shaderCompiler, result);
                     break;
                 case dayo::core::EffectPassType::copy:
@@ -701,6 +709,9 @@ int main() {
         ok &= check(scan.failures.empty(), "all pinned upstream FX metadata and shader probes pass");
         std::cout << "INFO: upstream oracle validated " << scan.graphCount << " graphs, " << scan.passCount
                   << " dispatches, and " << scan.shaderCount << " shader probes\n";
+        for (const auto& [feature, count] : scan.featureCounts)
+            std::cout << "INFO: upstream runtime requirement " << dayo::fx::toString(feature) << " appears in " << count
+                      << " graphs\n";
         for (const auto& failure : scan.failures)
             std::cerr << "FAIL: upstream oracle: " << failure << '\n';
     } catch (const std::exception& exception) {
@@ -798,6 +809,64 @@ float4 PS() : SV_TARGET { return 1; }
                         fixturePass.renderTargets.front().clearValue.color[1] == 0.5F &&
                         fixturePass.depth.clearValue.depth == 0.25F,
                     "YRZFX graphics state fixture");
+        ok &= check(fixtureEffect.rawYrzfx.find("Fixture") != std::string::npos,
+                    "YRZFX source section is retained verbatim in the graph");
+
+        const std::string runtimeFixture = R"FX([YRZFX]
+{
+  fx: {
+    category: "postprocess",
+    memos: ["SkyboxSampler", "unknown-capability"],
+    globalVarSize: 16,
+    meshCloning: {count: 4},
+    controllers: [{name:"gain", controllerName:"(self)", item:"gain", type:"float", description:"gain control", slider:{min:0.1, max:4, step:0.1, default:1, log:true}}],
+    samplers: [{name:"Linear", filter:"ANISOTROPIC", addressU:"CLAMP", addressV:"MIRROR", addressW:"BORDER", mipLodBias:1, maxAnisotropy:8, comparisonFunc:"LESS", borderColor:"OPAQUE_WHITE", minLod:2, maxLod:10}],
+    buffers: [
+      {name:"Vertices", type:"Vertex", elemSize:16, view:"SRV", size:{absolute:true, width:4, dimension:1}},
+      {name:"Indices", type:"uint", view:"UAV", size:{absolute:true, width:6, dimension:1}}
+    ],
+    passes: [
+      {name:"Compute", type:"compute", computeShader:"CS", numthreads:{x:4}, outputSize:{base:"DEFAULT_RTSIZE", ratio:{x:0.5, y:0.25}}},
+      {name:"BufferDraw", type:"rasterizer", vertexShader:"VS", pixelShader:"PS", rasterModelTarget:"buffer", rasterVB:"Vertices", rasterIB:"Indices", layout:[{semanticName:"POSITION", semanticIndex:0, format:"R32G32B32_FLOAT", inputSlot:0, alignedByteOffset:0}]},
+      {name:"Clear", type:"clearRTV", target:"Output", value:{x:0.25, y:0.5, z:0.75, w:1}}
+    ]
+  }
+}
+[HLSL]
+void CS() {}
+)FX";
+        const auto runtimeGraph = dayo::core::loadEffectGraphFromText("runtime-metadata.fxdayo", runtimeFixture);
+        ok &= check(runtimeGraph.rawYrzfx.find("unknown-capability") != std::string::npos &&
+                        runtimeGraph.memos.size() == 2 && runtimeGraph.globalVarSize == 16 &&
+                        runtimeGraph.meshCloneCount == 4,
+                    "effect graph preserves memos, global variable size, clone count, and raw source");
+        ok &= check(runtimeGraph.controllers.size() == 1 && runtimeGraph.controllers[0].slider.has_value() &&
+                        runtimeGraph.controllers[0].slider->logarithmic &&
+                        runtimeGraph.controllers[0].description == "gain control" &&
+                        runtimeGraph.samplers.size() == 1 && runtimeGraph.samplers[0].maxAnisotropy == 8 &&
+                        runtimeGraph.samplers[0].addressModeW == dayo::core::FxAddressMode::border &&
+                        runtimeGraph.samplers[0].comparisonFunc == dayo::core::FxCompareOp::less &&
+                        runtimeGraph.samplers[0].borderColor == dayo::core::FxBorderColor::opaqueWhite,
+                    "controller slider and complete sampler metadata survive parsing");
+        ok &= check(runtimeGraph.passes.size() == 3 &&
+                        runtimeGraph.passes[0].numThreads == std::array<std::uint32_t, 3>{4, 0, 0} &&
+                        runtimeGraph.buffers.size() == 2 && runtimeGraph.buffers[1].elementSize == 4 &&
+                        runtimeGraph.passes[1].rasterSource == dayo::core::EffectRasterSource::buffer &&
+                        runtimeGraph.passes[1].rasterVertexBuffer == "Vertices" &&
+                        runtimeGraph.passes[1].rasterIndexBuffer == "Indices" &&
+                        runtimeGraph.passes[1].vertexLayout.attributes.size() == 1 &&
+                        runtimeGraph.passes[1].vertexLayout.attributes[0].semanticName == "POSITION" &&
+                        runtimeGraph.passes[2].functionalKind == dayo::core::EffectFunctionalPassKind::clearRtv &&
+                        runtimeGraph.passes[2].functional.clearValue.color[1] == 0.5F,
+                    "compute size, buffer raster layout, and functional clear metadata survive parsing");
+        const auto runtimeProgram = dayo::fx::FxCompiler{}.compile(runtimeGraph);
+        const auto required = dayo::fx::analyzeRuntimeRequirements(runtimeProgram);
+        ok &= check(required.contains(dayo::fx::FxRuntimeFeature::globalVariables) &&
+                        required.contains(dayo::fx::FxRuntimeFeature::meshCloning) &&
+                        required.contains(dayo::fx::FxRuntimeFeature::fullSamplerState) &&
+                        required.contains(dayo::fx::FxRuntimeFeature::bufferRaster) &&
+                        required.contains(dayo::fx::FxRuntimeFeature::functionalClearRtv),
+                    "runtime feature analyzer inventories parsed upstream requirements");
         bool rejectedUnknown = false;
         try {
             auto invalid = fixture;

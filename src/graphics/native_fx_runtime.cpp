@@ -99,28 +99,36 @@ bool NativeFxRuntime::refresh(const fx::FxFrameContext& context, std::string* er
 
 bool NativeFxRuntime::buildForContext(const fx::FxFrameContext& context, std::string* error) {
     try {
-        if (!resources_.initialize(*device_, program_, context, error))
+        const auto framePlan = fx::FxCompiler{}.plan(program_, context);
+        resourceSetIndex_ = static_cast<std::uint32_t>(sharedLayouts_.size());
+        if (!resources_.initialize(*device_, program_, context, error, resourceSetIndex_))
             throw std::runtime_error(error != nullptr && !error->empty() ? *error
                                                                          : "FX resource initialization failed");
 
-        std::vector<handles::DescriptorSetLayoutHandle> setLayouts;
-        setLayouts.reserve(sharedLayouts_.size() + 1U);
         for (const auto layout : sharedLayouts_) {
             if (!layout.valid())
                 throw std::invalid_argument("native FX pipeline layout contains an invalid shared descriptor layout");
-            setLayouts.push_back(layout);
         }
-        resourceSetIndex_ = static_cast<std::uint32_t>(setLayouts.size());
-        if (resources_.descriptorLayout().valid())
-            setLayouts.push_back(resources_.descriptorLayout());
-
-        pipelineLayout_ = device_->createPipelineLayoutEx({.setLayouts = std::move(setLayouts)});
-        if (!pipelineLayout_.valid())
-            throw std::runtime_error("native FX pipeline layout allocation returned an invalid handle");
-        const auto layout = pipelineLayout_;
+        for (const auto& dispatch : program_.passes) {
+            std::vector<handles::DescriptorSetLayoutHandle> setLayouts(sharedLayouts_.begin(), sharedLayouts_.end());
+            if (const auto local = resources_.descriptorLayoutFor(dispatch); local.has_value())
+                setLayouts.push_back(*local);
+            const auto layout = device_->createPipelineLayoutEx({.setLayouts = std::move(setLayouts)});
+            if (!layout.valid())
+                throw std::runtime_error("native FX pass pipeline layout allocation returned an invalid handle: " +
+                                         dispatch.name);
+            passPipelineLayouts_.emplace(dispatch.name, layout);
+            if (!pipelineLayout_.valid())
+                pipelineLayout_ = layout;
+        }
         if (!pipelines_.build(
-                *device_, program_, compiler_,
-                [layout](const fx::FxDispatch&) -> std::optional<handles::PipelineLayoutHandle> { return layout; },
+                *device_, program_, framePlan, compiler_,
+                [this](const fx::FxDispatch& dispatch) -> std::optional<handles::PipelineLayoutHandle> {
+                    const auto found = passPipelineLayouts_.find(dispatch.name);
+                    if (found == passPipelineLayouts_.end())
+                        return std::nullopt;
+                    return found->second;
+                },
                 error, resourceSetIndex_, sourceOptions_))
             throw std::runtime_error(error != nullptr && !error->empty() ? *error
                                                                          : "FX pipeline initialization failed");
@@ -139,12 +147,18 @@ bool NativeFxRuntime::buildForContext(const fx::FxFrameContext& context, std::st
 
 void NativeFxRuntime::releaseGpuState() noexcept {
     pipelines_.reset();
-    if (device_ != nullptr && pipelineLayout_.valid()) {
-        try {
-            device_->destroyPipelineLayoutEx(pipelineLayout_);
-        } catch (...) {
+    if (device_ != nullptr) {
+        for (const auto& [name, layout] : passPipelineLayouts_) {
+            static_cast<void>(name);
+            if (!layout.valid())
+                continue;
+            try {
+                device_->destroyPipelineLayoutEx(layout);
+            } catch (...) {
+            }
         }
     }
+    passPipelineLayouts_.clear();
     pipelineLayout_ = {};
     resources_.reset();
     resourceSetIndex_ = 0;
@@ -218,13 +232,12 @@ VulkanFxExecutor::Stats NativeFxRuntime::execute(NativeFxFrame& frame, CommandLi
         };
     }
 
-    if (resources_.descriptorSet().valid() || !frame.sharedDescriptorSets.empty()) {
-        const auto set = resources_.descriptorSet();
+    if (!program_.passes.empty() || !frame.sharedDescriptorSets.empty()) {
         const auto setIndex = resourceSetIndex_;
         const auto existingSets = nativeResources.resolveDescriptorSets;
         const auto existingSingle = nativeResources.resolveDescriptorSet;
         const auto sharedSets = frame.sharedDescriptorSets;
-        nativeResources.resolveDescriptorSets = [existingSets, existingSingle, set, setIndex,
+        nativeResources.resolveDescriptorSets = [this, existingSets, existingSingle, setIndex,
                                                  sharedSets](const fx::FxDispatch& dispatch) {
             std::vector<FxExecutionResources::TypedDescriptorSetBinding> result;
             if (existingSets) {
@@ -242,8 +255,8 @@ VulkanFxExecutor::Stats NativeFxRuntime::execute(NativeFxFrame& frame, CommandLi
                 if (!hasIndex(static_cast<std::uint32_t>(index)))
                     result.push_back({sharedSets[index], static_cast<std::uint32_t>(index)});
             }
-            if (set.valid() && (sharedSets.empty() || !hasIndex(setIndex)))
-                result.push_back({set, setIndex});
+            if (const auto set = resources_.descriptorSetFor(dispatch); set.has_value() && !hasIndex(setIndex))
+                result.push_back({*set, setIndex});
             return result;
         };
         nativeResources.resolveDescriptorSet = {};

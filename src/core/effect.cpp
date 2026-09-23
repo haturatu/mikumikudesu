@@ -35,7 +35,7 @@ EffectPassType passType(std::string_view value) {
         return EffectPassType::raytracing;
     if (value == "copy")
         return EffectPassType::copy;
-    if (value == "clear" || value == "clearRtv" || value == "clearUav" || value == "clearUAV")
+    if (value == "clear" || value == "clearRtv" || value == "clearRTV" || value == "clearUav" || value == "clearUAV")
         return EffectPassType::clear;
     if (value == "mipmap" || value == "mipmapGen" || value == "mipmapgen")
         return EffectPassType::mipmap;
@@ -91,6 +91,53 @@ std::string compactKey(std::string_view value) {
             result.push_back(character);
     }
     return result;
+}
+
+std::uint32_t hlslElementSize(std::string_view type) {
+    std::string key;
+    key.reserve(type.size());
+    for (const auto character : lower(type))
+        if (!std::isspace(static_cast<unsigned char>(character)))
+            key.push_back(character);
+
+    std::uint32_t scalarSize = 0;
+    std::size_t prefixSize = 0;
+    for (const auto& [prefix, size] : std::array<std::pair<std::string_view, std::uint32_t>, 5>{
+             {{"double", 8}, {"float", 4}, {"uint", 4}, {"int", 4}, {"bool", 4}}}) {
+        if (key.starts_with(prefix)) {
+            scalarSize = size;
+            prefixSize = prefix.size();
+            break;
+        }
+    }
+    if (scalarSize == 0)
+        return 0;
+
+    const auto shape = std::string_view(key).substr(prefixSize);
+    if (shape.empty())
+        return scalarSize;
+    const auto x = shape.find('x');
+    const auto parseDimension = [](std::string_view text) -> std::uint32_t {
+        if (text.empty())
+            return 0;
+        std::uint32_t result = 0;
+        const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), result);
+        return error == std::errc{} && end == text.data() + text.size() ? result : 0;
+    };
+    const auto first = parseDimension(x == std::string_view::npos ? shape : shape.substr(0, x));
+    if (first == 0 || first > 4)
+        return 0;
+    std::uint32_t components = first;
+    if (x != std::string_view::npos) {
+        const auto second = parseDimension(shape.substr(x + 1));
+        if (second == 0 || second > 4)
+            return 0;
+        components *= second;
+    }
+    if (shape.find_first_not_of("0123456789x") != std::string_view::npos)
+        return 0;
+    const auto bytes = static_cast<std::uint64_t>(scalarSize) * components;
+    return bytes <= std::numeric_limits<std::uint32_t>::max() ? static_cast<std::uint32_t>(bytes) : 0;
 }
 
 EffectClearValue clearValue(const nlohmann::json& value) {
@@ -164,6 +211,140 @@ EffectDepthFunc depthFunc(std::string_view value) {
     throw std::runtime_error("unsupported YRZFX depth function: " + std::string(value));
 }
 
+FxCompareOp compareOp(std::string_view value) {
+    switch (depthFunc(value)) {
+    case EffectDepthFunc::never:
+        return FxCompareOp::never;
+    case EffectDepthFunc::less:
+        return FxCompareOp::less;
+    case EffectDepthFunc::equal:
+        return FxCompareOp::equal;
+    case EffectDepthFunc::lessEqual:
+        return FxCompareOp::lessEqual;
+    case EffectDepthFunc::greater:
+        return FxCompareOp::greater;
+    case EffectDepthFunc::notEqual:
+        return FxCompareOp::notEqual;
+    case EffectDepthFunc::greaterEqual:
+        return FxCompareOp::greaterEqual;
+    case EffectDepthFunc::always:
+        return FxCompareOp::always;
+    }
+    return FxCompareOp::always;
+}
+
+FxFilter samplerFilter(std::string_view value) {
+    const auto key = compactKey(value);
+    if (key == "point" || key == "nearest")
+        return FxFilter::point;
+    if (key == "anisotropic" || key == "aniso")
+        return FxFilter::anisotropic;
+    return FxFilter::linear;
+}
+
+FxAddressMode addressMode(std::string_view value) {
+    const auto key = compactKey(value);
+    if (key == "mirror" || key == "mirroredrepeat")
+        return FxAddressMode::mirror;
+    if (key == "clamp" || key == "clamptoedge")
+        return FxAddressMode::clamp;
+    if (key == "border" || key == "clamptoborder")
+        return FxAddressMode::border;
+    return FxAddressMode::wrap;
+}
+
+FxStencilOp stencilOp(std::string_view value) {
+    const auto key = compactKey(value);
+    if (key == "zero")
+        return FxStencilOp::zero;
+    if (key == "replace")
+        return FxStencilOp::replace;
+    if (key == "incrsat" || key == "incrementclamp")
+        return FxStencilOp::incrementClamp;
+    if (key == "decrsat" || key == "decrementclamp")
+        return FxStencilOp::decrementClamp;
+    if (key == "invert")
+        return FxStencilOp::invert;
+    if (key == "incr" || key == "incrementwrap")
+        return FxStencilOp::incrementWrap;
+    if (key == "decr" || key == "decrementwrap")
+        return FxStencilOp::decrementWrap;
+    return FxStencilOp::keep;
+}
+
+FxLogicOp logicOp(std::string_view value) {
+    const auto key = compactKey(value);
+    constexpr std::pair<std::string_view, FxLogicOp> values[] = {
+        {"clear", FxLogicOp::clear},
+        {"and", FxLogicOp::andOp},
+        {"andreverse", FxLogicOp::andReverse},
+        {"copy", FxLogicOp::copy},
+        {"andinverted", FxLogicOp::andInverted},
+        {"noop", FxLogicOp::noOp},
+        {"xor", FxLogicOp::xorOp},
+        {"or", FxLogicOp::orOp},
+        {"nor", FxLogicOp::nor},
+        {"equivalence", FxLogicOp::equivalence},
+        {"invert", FxLogicOp::invert},
+        {"orreverse", FxLogicOp::orReverse},
+        {"copyinverted", FxLogicOp::copyInverted},
+        {"orinverted", FxLogicOp::orInverted},
+        {"nand", FxLogicOp::nand},
+        {"set", FxLogicOp::set},
+    };
+    for (const auto& [name, valueEnum] : values)
+        if (key == name)
+            return valueEnum;
+    throw std::runtime_error("unsupported YRZFX logic operation: " + std::string(value));
+}
+
+FxBorderColor borderColor(std::string_view value) {
+    const auto key = compactKey(value);
+    if (key == "opaquewhite")
+        return FxBorderColor::opaqueWhite;
+    if (key == "opaqueblack")
+        return FxBorderColor::opaqueBlack;
+    return FxBorderColor::transparentBlack;
+}
+
+EffectVertexInputRate vertexInputRate(std::string_view value) {
+    return compactKey(value).find("instance") != std::string::npos ? EffectVertexInputRate::instance
+                                                                   : EffectVertexInputRate::vertex;
+}
+
+EffectVertexFormat vertexFormat(std::string_view value) {
+    const auto key = compactKey(value);
+    if (key == "r32float" || key == "float")
+        return EffectVertexFormat::r32Float;
+    if (key == "r32g32float" || key == "float2")
+        return EffectVertexFormat::r32g32Float;
+    if (key == "r32g32b32a32float" || key == "float4")
+        return EffectVertexFormat::r32g32b32a32Float;
+    return EffectVertexFormat::r32g32b32Float;
+}
+
+std::uint8_t colorWriteMask(const nlohmann::json& value) {
+    if (value.is_number_unsigned())
+        return static_cast<std::uint8_t>(value.get<std::uint32_t>() & 0x0FU);
+    if (value.is_number_integer())
+        return static_cast<std::uint8_t>(std::max(0, value.get<int>()) & 0x0F);
+    if (!value.is_string())
+        return 0x0FU;
+    const auto key = compactKey(value.get<std::string>());
+    if (key == "none" || key == "zero")
+        return 0;
+    std::uint8_t mask = 0;
+    if (key.find('r') != std::string::npos)
+        mask |= 0x1U;
+    if (key.find('g') != std::string::npos)
+        mask |= 0x2U;
+    if (key.find('b') != std::string::npos)
+        mask |= 0x4U;
+    if (key.find('a') != std::string::npos)
+        mask |= 0x8U;
+    return mask == 0 ? 0x0FU : mask;
+}
+
 bool knownBlendFactor(std::string_view value) {
     const auto key = compactKey(value);
     return key == "zero" || key == "one" || key == "srccolor" || key == "invsrccolor" || key == "srcalpha" ||
@@ -207,6 +388,8 @@ EffectBlendAttachmentState blendAttachment(const nlohmann::json& value) {
     result.srcAlpha = blendString(value, {"srcBlendAlpha", "srcAlpha"});
     result.dstAlpha = blendString(value, {"destBlendAlpha", "dstAlpha"});
     result.alphaOp = blendString(value, {"blendOpAlpha", "alphaOp"});
+    if (const auto mask = value.find("colorWriteMask"); mask != value.end())
+        result.colorWriteMask = colorWriteMask(*mask);
     validateBlendValue(result.srcColor, true, "srcBlend");
     validateBlendValue(result.dstColor, true, "destBlend");
     validateBlendValue(result.colorOp, false, "blendOp");
@@ -251,6 +434,15 @@ EffectGraphicsState graphicsState(const nlohmann::json& pass) {
         const auto cull = rasterizer->find("cullMode");
         if (cull != rasterizer->end())
             result.rasterizer.cullMode = cullMode(cull->get<std::string>());
+        if (const auto front = rasterizer->find("frontFace"); front != rasterizer->end()) {
+            const auto key = compactKey(front->get<std::string>());
+            if (key == "cw" || key == "clockwise")
+                result.rasterizer.frontFace = EffectFrontFace::clockwise;
+            else if (key == "ccw" || key == "counterclockwise")
+                result.rasterizer.frontFace = EffectFrontFace::counterClockwise;
+            else
+                throw std::runtime_error("unsupported YRZFX front-face orientation: " + front->get<std::string>());
+        }
     }
     if (const auto depth = pass.find("depthStencilDesc"); depth != pass.end()) {
         if (!depth->is_object())
@@ -272,10 +464,81 @@ EffectGraphicsState graphicsState(const nlohmann::json& pass) {
         }
         if (const auto function = depth->find("depthFunc"); function != depth->end())
             result.depthStencil.depthFunc = depthFunc(function->get<std::string>());
+        if (const auto enabled = depth->find("stencilEnable"); enabled != depth->end())
+            result.depthStencil.stencilEnable = enabled->get<bool>();
+        if (const auto mask = depth->find("stencilReadMask"); mask != depth->end())
+            result.depthStencil.stencilReadMask = mask->get<std::uint32_t>();
+        if (const auto mask = depth->find("stencilWriteMask"); mask != depth->end())
+            result.depthStencil.stencilWriteMask = mask->get<std::uint32_t>();
+        const auto parseFace = [&](std::string_view name, EffectDepthStencilState::StencilFace& face) {
+            const auto found = depth->find(name);
+            if (found == depth->end() || !found->is_object())
+                return;
+            if (const auto field = found->find("stencilFailOp"); field != found->end())
+                face.fail = stencilOp(field->get<std::string>());
+            if (const auto field = found->find("stencilPassOp"); field != found->end())
+                face.pass = stencilOp(field->get<std::string>());
+            if (const auto field = found->find("stencilDepthFailOp"); field != found->end())
+                face.depthFail = stencilOp(field->get<std::string>());
+            if (const auto field = found->find("stencilFunc"); field != found->end())
+                face.compare = compareOp(field->get<std::string>());
+        };
+        parseFace("frontFace", result.depthStencil.front);
+        parseFace("backFace", result.depthStencil.back);
     }
     if (const auto target = pass.find("rasterModelTarget"); target != pass.end())
         result.modelTarget = fx::resolveRasterModelTarget(target->get<std::string>());
     result.blend = blendStates(pass);
+    result.independentBlend = pass.value("blendDesc", nlohmann::json::object()).value("independentBlendEnable", false);
+    result.alphaToCoverage = pass.value("blendDesc", nlohmann::json::object()).value("alphaToCoverageEnable", false);
+    if (const auto blend = pass.find("blendDesc"); blend != pass.end() && blend->is_object()) {
+        if (const auto enabled = blend->find("logicOpEnable"); enabled != blend->end())
+            result.logicOpEnable = enabled->get<bool>();
+        if (const auto op = blend->find("logicOp"); op != blend->end() && op->is_string())
+            result.logicOp = logicOp(op->get<std::string>());
+    }
+    return result;
+}
+
+EffectVertexLayout vertexLayout(const nlohmann::json& pass) {
+    EffectVertexLayout result;
+    const auto found = pass.find("layout");
+    if (found == pass.end() || !found->is_array())
+        return result;
+    std::uint32_t location = 0;
+    for (const auto& value : *found) {
+        if (!value.is_object())
+            continue;
+        const auto slot = value.value("inputSlot", 0U);
+        const auto rate = vertexInputRate(value.value("inputSlotClass", "PER_VERTEX_DATA"));
+        const auto binding =
+            std::ranges::find_if(result.bindings, [slot](const auto& item) { return item.binding == slot; });
+        if (binding == result.bindings.end())
+            result.bindings.push_back({slot, 0U, rate});
+        const auto formatName = value.value("format", "UNKNOWN");
+        const auto semantic = value.value("semanticName", "");
+        const auto semanticIndex = value.value("semanticIndex", 0U);
+        result.attributes.push_back(
+            {.location = location++,
+             .binding = slot,
+             .format = vertexFormat(formatName),
+             .offset = value.value("alignedByteOffset", std::numeric_limits<std::uint32_t>::max()),
+             .semanticName = semantic,
+             .semanticIndex = semanticIndex,
+             .formatName = formatName});
+    }
+    return result;
+}
+
+EffectSlider slider(const nlohmann::json& value) {
+    EffectSlider result;
+    if (!value.is_object())
+        return result;
+    result.minimum = value.value("min", value.value("minimum", 0.0F));
+    result.maximum = value.value("max", value.value("maximum", 1.0F));
+    result.step = value.value("step", 0.0F);
+    result.defaultValue = value.value("default", value.value("defaultValue", result.minimum));
+    result.logarithmic = value.value("log", value.value("logarithmic", false));
     return result;
 }
 
@@ -285,14 +548,19 @@ EffectSize effectSize(const nlohmann::json& value) {
         return result;
     result.base = value.value("base", "");
     result.absolute = value.value("absolute", false);
-    result.width = value.value("width", 0U);
-    result.height = value.value("height", 0U);
-    result.depth = value.value("depth", 0U);
-    result.dimension = value.value("dimension", 1U);
+    result.width = value.value("width", 1U);
+    result.height = value.value("height", 1U);
+    result.depth = value.value("depth", 1U);
+    result.dimension = value.value("dimension", 0U);
     if (const auto ratio = value.find("ratio"); ratio != value.end() && ratio->is_object()) {
         result.widthRatio = ratio->value("x", 1.0F);
         result.heightRatio = ratio->value("y", 1.0F);
+        result.depthRatio = ratio->value("z", 1.0F);
     }
+    result.convX = value.value("convX", "x");
+    result.convY = value.value("convY", "y");
+    result.convZ = value.value("convZ", "z");
+    result.rounding = value.value("rounding", "trunc");
     return result;
 }
 
@@ -319,6 +587,31 @@ std::vector<EffectTexture> textures(const nlohmann::json& parent, std::string_vi
         }
         result.push_back(std::move(texture));
     }
+    return result;
+}
+
+EffectSampler sampler(const nlohmann::json& value) {
+    EffectSampler result;
+    if (!value.is_object())
+        return result;
+    result.name = value.value("name", "");
+    result.filter = value.value("filter", "");
+    result.addressU = value.value("addressU", "WRAP");
+    result.addressV = value.value("addressV", "WRAP");
+    result.addressW = value.value("addressW", result.addressV);
+    result.filterKind = samplerFilter(result.filter);
+    result.addressModeU = addressMode(result.addressU);
+    result.addressModeV = addressMode(result.addressV);
+    result.addressModeW = addressMode(result.addressW);
+    result.mipLodBias = value.value("mipLodBias", 0.0F);
+    result.maxAnisotropy =
+        std::max(1U, value.value("maxAnisotropy", result.filterKind == FxFilter::anisotropic ? 16U : 1U));
+    if (const auto compare = value.find("comparisonFunc"); compare != value.end() && compare->is_string())
+        result.comparisonFunc = compareOp(compare->get<std::string>());
+    if (const auto border = value.find("borderColor"); border != value.end() && border->is_string())
+        result.borderColor = borderColor(border->get<std::string>());
+    result.minLod = value.value("minLod", 0.0F);
+    result.maxLod = value.value("maxLod", std::numeric_limits<float>::max());
     return result;
 }
 #endif
@@ -356,6 +649,8 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
     // that predecessor separate so generated declarations can be inserted
     // after the includes and before the executable shader body.
     graph.hlslPrefix = source.substr(0, jsonStart);
+    graph.rawYrzfx =
+        std::string(source.substr(jsonStart + jsonMarker.size(), hlslStart - jsonStart - jsonMarker.size()));
     graph.hlsl = source.substr(hlslStart + hlslMarker.size());
 #if DAYO_HAS_JSONNET
     const auto jsonText =
@@ -367,6 +662,10 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
         throw std::runtime_error("effect has no fx object");
     const auto& fx = *found;
     graph.category = fx.value("category", "");
+    graph.memos = strings(fx, "memos");
+    graph.globalVarSize = fx.value("globalVarSize", 0U);
+    if (const auto global = fx.find("globalVariables"); global != fx.end() && global->is_object())
+        graph.globalVarSize = global->value("size", graph.globalVarSize);
     graph.textures = textures(fx, "textures");
     graph.textures3D = textures(fx, "textures3D");
     if (const auto values = fx.find("buffers"); values != fx.end() && values->is_array()) {
@@ -378,7 +677,10 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
             buffer.type = value.value("type", "");
             buffer.format = value.value("format", "");
             buffer.view = value.value("view", "");
+            buffer.shared = value.value("shared", "");
             buffer.elementSize = value.value("elemSize", value.value("elementSize", 0U));
+            if (buffer.elementSize == 0)
+                buffer.elementSize = hlslElementSize(buffer.type);
             buffer.conditions = strings(value, "conditions");
             if (const auto size = value.find("size"); size != value.end())
                 buffer.size = effectSize(*size);
@@ -398,20 +700,40 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
     }
     if (const auto values = fx.find("samplers"); values != fx.end() && values->is_array()) {
         for (const auto& value : *values)
-            graph.samplers.push_back({value.value("name", ""), value.value("filter", ""),
-                                      value.value("addressU", "WRAP"), value.value("addressV", "WRAP")});
+            graph.samplers.push_back(sampler(value));
     }
     if (const auto values = fx.find("controllers"); values != fx.end() && values->is_array()) {
         for (const auto& value : *values)
-            if (value.is_object())
-                graph.controllers.push_back({value.value("name", ""), value.value("controllerName", ""),
-                                             value.value("item", ""), value.value("type", "")});
+            if (value.is_object()) {
+                EffectController controller;
+                controller.name = value.value("name", "");
+                controller.controllerName = value.value("controllerName", "");
+                controller.item = value.value("item", "");
+                controller.type = value.value("type", "");
+                controller.description = value.value("description", "");
+                if (const auto metadata = value.find("slider"); metadata != value.end())
+                    controller.slider = slider(*metadata);
+                else if (value.contains("min") || value.contains("max"))
+                    controller.slider = slider(value);
+                graph.controllers.push_back(std::move(controller));
+            }
     }
     if (const auto values = fx.find("passes"); values != fx.end() && values->is_array()) {
         for (const auto& value : *values) {
             EffectPass pass;
             pass.name = value.value("name", "");
-            pass.type = passType(value.value("type", ""));
+            const auto typeName = value.value("type", "");
+            pass.type = passType(typeName);
+            const auto typeKey = compactKey(typeName);
+            if (typeKey == "copy")
+                pass.functionalKind = EffectFunctionalPassKind::copy;
+            else if (typeKey == "clearrtv")
+                pass.functionalKind = EffectFunctionalPassKind::clearRtv;
+            else if (typeKey == "clearuav" || typeKey == "clear")
+                pass.functionalKind =
+                    typeKey == "clearrtv" ? EffectFunctionalPassKind::clearRtv : EffectFunctionalPassKind::clearUav;
+            else if (typeKey == "mipmapgen" || typeKey == "mipmap")
+                pass.functionalKind = EffectFunctionalPassKind::mipmapGen;
             pass.vertexShader = value.value("vertexShader", "");
             pass.pixelShader = value.value("pixelShader", "");
             pass.computeShader = value.value("computeShader", "");
@@ -428,8 +750,7 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
             }
             pass.macros = strings(value, "macros");
             if (const auto threads = value.find("numthreads"); threads != value.end() && threads->is_object()) {
-                pass.numThreads = {std::max(1U, threads->value("x", 1U)), std::max(1U, threads->value("y", 1U)),
-                                   std::max(1U, threads->value("z", 1U))};
+                pass.numThreads = {threads->value("x", 0U), threads->value("y", 0U), threads->value("z", 0U)};
             }
             pass.conditions = strings(value, "conditions");
             pass.inputs = attachments(value, "inputs");
@@ -471,6 +792,29 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
                     pass.depth = attachment(*depth);
             }
             pass.graphics = graphicsState(value);
+            pass.rasterizer = pass.graphics.rasterizer;
+            pass.depthStencil = pass.graphics.depthStencil;
+            pass.blend.targets.fill({});
+            pass.blend.alphaToCoverage = pass.graphics.alphaToCoverage;
+            pass.blend.independentBlend = pass.graphics.independentBlend;
+            pass.blend.logicOpEnable = pass.graphics.logicOpEnable;
+            pass.blend.logicOp = pass.graphics.logicOp;
+            pass.blend.targetCount = static_cast<std::uint32_t>(std::min<std::size_t>(pass.graphics.blend.size(), 8));
+            for (std::size_t index = 0; index < pass.blend.targetCount; ++index)
+                pass.blend.targets[index] = pass.graphics.blend[index];
+            pass.rasterVertexBuffer = value.value("rasterVB", "");
+            pass.rasterIndexBuffer = value.value("rasterIB", "");
+            if (pass.graphics.modelTarget == fx::RasterModelTarget::buffer)
+                pass.rasterSource =
+                    pass.rasterVertexBuffer.empty() ? EffectRasterSource::vertexBufferless : EffectRasterSource::buffer;
+            if (const auto source = value.find("rasterSource"); source != value.end() && source->is_string()) {
+                const auto sourceKey = compactKey(source->get<std::string>());
+                if (sourceKey == "buffer" || sourceKey == "vertexbuffer")
+                    pass.rasterSource = EffectRasterSource::buffer;
+                else if (sourceKey == "vertexbufferless" || sourceKey == "none")
+                    pass.rasterSource = EffectRasterSource::vertexBufferless;
+            }
+            pass.vertexLayout = vertexLayout(value);
             if (const auto size = value.find("outputSize"); size != value.end() && size->is_object()) {
                 pass.outputSize = effectSize(*size);
                 pass.outputWidthRatio = pass.outputSize.widthRatio;
@@ -483,6 +827,22 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
             pass.maxPayloadSize = value.value("maxPayloadSize", 0U);
             pass.maxAttributeSize = value.value("maxAttributeSize", 0U);
             pass.maxRecursionDepth = value.value("maxRecursionDepth", 1U);
+            pass.functional.source = pass.inputs.size() == 1 ? pass.inputs.front().name : "";
+            pass.functional.destination = pass.renderTargets.size() == 1 ? pass.renderTargets.front().name : "";
+            pass.functional.target = value.value("target", "");
+            if (pass.functional.target.empty()) {
+                if (pass.functional.destination.empty() && pass.unorderedAccess.size() == 1)
+                    pass.functional.target = pass.unorderedAccess.front().name;
+                else if (!pass.functional.destination.empty())
+                    pass.functional.target = pass.functional.destination;
+            }
+            pass.functional.kind = pass.functionalKind;
+            if (const auto clear = value.find("value"); clear != value.end())
+                pass.functional.clearValue = clearValue(*clear);
+            if (pass.functional.kind == EffectFunctionalPassKind::clearRtv && pass.renderTargets.size() == 1)
+                pass.functional.clearValue = pass.renderTargets.front().clearValue;
+            if (pass.functional.kind == EffectFunctionalPassKind::clearUav && pass.unorderedAccess.size() == 1)
+                pass.functional.clearValue = pass.unorderedAccess.front().clearValue;
             graph.passes.push_back(std::move(pass));
         }
     }
@@ -520,6 +880,10 @@ CompiledEffect compileEffectGraph(const EffectGraph& graph) {
             .maxPayloadSize = pass.maxPayloadSize,
             .maxAttributeSize = pass.maxAttributeSize,
             .maxRecursionDepth = pass.maxRecursionDepth,
+            .numThreads = pass.numThreads,
+            .outputSize = pass.outputSize,
+            .functionalKind = pass.functionalKind,
+            .functional = pass.functional,
         };
         if (pass.type == EffectPassType::oidn) {
             const auto hasResource = [&](std::string_view name, bool write) {

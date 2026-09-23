@@ -52,7 +52,8 @@ namespace {
     if (name == "R8G8B8A8_UNORM" || name == "R8G8B8A8_SRGB" || name == "R16G16B16A16_FLOAT" ||
         name == "R32G32B32A32_FLOAT" || name.empty())
         return "float4";
-    if (name == "R8_UNORM" || name == "R16_FLOAT" || name == "R32_FLOAT" || name == "D32_FLOAT")
+    if (name == "R8_UNORM" || name == "R16_FLOAT" || name == "R32_FLOAT" || name == "D32_FLOAT" ||
+        name == "D24_UNORM_S8_UINT" || name == "D24S8")
         return "float";
     throw std::invalid_argument("FX shader source has an unsupported texture format: " + std::string(format));
 }
@@ -199,6 +200,12 @@ struct MaterialTemplate {
     });
 }
 
+[[nodiscard]] bool dispatchUsesAsDepth(const FxDispatch& dispatch, std::string_view name) {
+    return std::ranges::any_of(dispatch.resources, [name](const FxDispatch::ResourceUse& resource) {
+        return resource.write && resource.name == name && resource.role == FxResourceRole::depthAttachment;
+    });
+}
+
 [[nodiscard]] bool containsIdentifier(std::string_view source, std::string_view wanted) {
     std::size_t offset = 0;
     while ((offset = source.find(wanted, offset)) != std::string_view::npos) {
@@ -321,7 +328,7 @@ void appendControllerBlock(std::ostringstream& output, const FxProgram& program,
 }
 
 void appendTextureDeclarations(std::ostringstream& output, const FxProgram& program, const FxDispatch& dispatch,
-                               std::uint32_t resourceSet, std::uint32_t& sampledBinding, std::uint32_t& uavBinding) {
+                               std::uint32_t resourceSet, const FxPassBindingPlan& bindings) {
     for (const auto& texture : program.textures) {
         const auto write = dispatchWrites(dispatch, texture.name);
         const auto color = dispatchUsesAsColor(dispatch, texture.name);
@@ -329,7 +336,12 @@ void appendTextureDeclarations(std::ostringstream& output, const FxProgram& prog
             output << "Texture2D<" << elementType(texture.format) << "> " << identifier(texture.name) << ";\n";
             continue;
         }
-        const auto binding = write ? uavBinding++ : sampledBinding++;
+        const auto* planned = bindings.find(texture.name);
+        if (planned == nullptr && dispatchUsesAsDepth(dispatch, texture.name))
+            continue;
+        if (planned == nullptr)
+            throw std::logic_error("FX binding plan omitted texture: " + texture.name);
+        const auto binding = planned->binding - fxDescriptorBindingBaseForUse(planned->descriptorClass, write);
         output << (write ? "RWTexture2D<" : "Texture2D<") << elementType(texture.format) << "> "
                << identifier(texture.name) << " : register(" << (write ? 'u' : 't') << binding
                << resourceSetSuffix(resourceSet) << ");\n";
@@ -341,7 +353,10 @@ void appendTextureDeclarations(std::ostringstream& output, const FxProgram& prog
             output << "Texture3D<" << elementType(texture.format) << "> " << identifier(texture.name) << ";\n";
             continue;
         }
-        const auto binding = write ? uavBinding++ : sampledBinding++;
+        const auto* planned = bindings.find(texture.name);
+        if (planned == nullptr)
+            throw std::logic_error("FX binding plan omitted 3D texture: " + texture.name);
+        const auto binding = planned->binding - fxDescriptorBindingBaseForUse(planned->descriptorClass, write);
         output << (write ? "RWTexture3D<" : "Texture3D<") << elementType(texture.format) << "> "
                << identifier(texture.name) << " : register(" << (write ? 'u' : 't') << binding
                << resourceSetSuffix(resourceSet) << ");\n";
@@ -349,10 +364,13 @@ void appendTextureDeclarations(std::ostringstream& output, const FxProgram& prog
 }
 
 void appendBufferDeclarations(std::ostringstream& output, const FxProgram& program, const FxDispatch& dispatch,
-                              std::uint32_t resourceSet, std::uint32_t& sampledBinding, std::uint32_t& uavBinding) {
+                              std::uint32_t resourceSet, const FxPassBindingPlan& bindings) {
     for (const auto& buffer : program.buffers) {
         const auto write = dispatchWrites(dispatch, buffer.name);
-        const auto binding = write ? uavBinding++ : sampledBinding++;
+        const auto* planned = bindings.find(buffer.name);
+        if (planned == nullptr)
+            throw std::logic_error("FX binding plan omitted buffer: " + buffer.name);
+        const auto binding = planned->binding - fxDescriptorBindingBaseForUse(planned->descriptorClass, write);
         const auto type = buffer.type.empty() ? std::string_view{"uint"} : std::string_view{buffer.type};
         output << (write ? "RWStructuredBuffer<" : "StructuredBuffer<") << type << "> " << identifier(buffer.name)
                << " : register(" << (write ? 'u' : 't') << binding << resourceSetSuffix(resourceSet) << ");\n";
@@ -360,11 +378,14 @@ void appendBufferDeclarations(std::ostringstream& output, const FxProgram& progr
 }
 
 void appendSamplerDeclarations(std::ostringstream& output, const FxProgram& program, std::uint32_t resourceSet,
-                               std::uint32_t& binding) {
+                               const FxPassBindingPlan& bindings) {
     for (const auto& sampler : program.samplers) {
+        const auto* planned = bindings.find(sampler.name);
+        if (planned == nullptr)
+            throw std::logic_error("FX binding plan omitted sampler: " + sampler.name);
+        const auto binding = planned->binding - fxDescriptorBindingBase(planned->descriptorClass);
         output << "SamplerState " << identifier(sampler.name) << " : register(s" << binding
                << resourceSetSuffix(resourceSet) << ");\n";
-        ++binding;
     }
 }
 
@@ -471,23 +492,52 @@ void appendSharedDeclarations(std::ostringstream& output, const FxNativeShaderSo
 } // namespace
 
 std::string makeNativeFxShaderSource(const FxProgram& program, const FxDispatch& dispatch, std::uint32_t resourceSet,
-                                     const FxNativeShaderSourceOptions& options) {
+                                     const FxNativeShaderSourceOptions& options, const FxResolvedPass* resolved) {
     std::ostringstream output;
     output << program.hlslPrefix;
     if (!program.hlslPrefix.empty() && program.hlslPrefix.back() != '\n')
         output << '\n';
+    if (dispatch.kind == FxOpKind::compute) {
+        auto threads = resolved != nullptr ? resolved->numThreads : dispatch.numThreads;
+        const bool unspecified = threads[0] == 0 && threads[1] == 0 && threads[2] == 0;
+        if (resolved == nullptr && unspecified) {
+            auto dimension = dispatch.outputSize.dimension;
+            if (dimension < 1 || dimension > 3)
+                dimension = dispatch.outputSize.depth > 1                       ? 3U
+                            : dispatch.outputSize.height > 1                    ? 2U
+                            : dispatch.category == core::fx::FxCategory::deform ? 1U
+                                                                                : 2U;
+            if (dimension == 1)
+                threads = {1024, 1, 1};
+            else if (dimension == 2)
+                threads = {16, 16, 1};
+            else
+                threads = {8, 8, 8};
+        } else if (resolved == nullptr) {
+            for (auto& count : threads)
+                count = std::max(count, 1U);
+        }
+        output << "#define YRZ_NUMTHREADS [numthreads(" << threads[0] << ',' << threads[1] << ',' << threads[2]
+               << ")]\n";
+    }
     output << "// generated native FX declarations\n";
     appendSharedDeclarations(output, options);
     appendControllerBlock(output, program, options.controllerDeclarations);
     appendLegacyCompatibilityDeclarations(output, program);
     output << "#ifdef " << passMacro(dispatch.name) << "\n";
+    const auto bindings = planPassBindings(program, dispatch, resourceSet);
     std::uint32_t sampledBinding = 0;
-    std::uint32_t uavBinding = 0;
-    std::uint32_t samplerBinding = 0;
-    appendTextureDeclarations(output, program, dispatch, resourceSet, sampledBinding, uavBinding);
-    appendBufferDeclarations(output, program, dispatch, resourceSet, sampledBinding, uavBinding);
+    for (const auto& binding : bindings.bindings) {
+        if (binding.descriptorClass == FxDescriptorClass::sampledImage ||
+            (binding.descriptorClass == FxDescriptorClass::storageBuffer && !binding.writable)) {
+            const auto registerIndex = binding.binding - fxDescriptorBindingBaseForUse(binding.descriptorClass, false);
+            sampledBinding = std::max(sampledBinding, registerIndex + 1U);
+        }
+    }
+    appendTextureDeclarations(output, program, dispatch, resourceSet, bindings);
+    appendBufferDeclarations(output, program, dispatch, resourceSet, bindings);
     appendMaterialDeclarations(output, program, dispatch, resourceSet, sampledBinding);
-    appendSamplerDeclarations(output, program, resourceSet, samplerBinding);
+    appendSamplerDeclarations(output, program, resourceSet, bindings);
     output << "#endif\n";
     output << program.generatedCode;
     if (!program.generatedCode.empty() && program.generatedCode.back() != '\n')

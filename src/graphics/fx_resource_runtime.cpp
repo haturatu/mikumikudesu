@@ -64,13 +64,14 @@ class ExtentTable final : public core::fx::FxResourceTable {
         return PixelFormat::rgba32Float;
     if (name == "D32_FLOAT")
         return PixelFormat::depth32Float;
+    if (name == "D24_UNORM_S8_UINT" || name == "D24S8")
+        return PixelFormat::depth24Stencil8;
     throw std::invalid_argument("FX resource format is unsupported: " + std::string(value));
 }
 
 [[nodiscard]] SamplerResourceDesc samplerDesc(const core::EffectSampler& sampler) {
     SamplerResourceDesc result;
-    const auto filter = upper(sampler.filter);
-    result.filter = filter == "POINT" || filter == "NEAREST" ? SamplerFilter::nearest : SamplerFilter::linear;
+    result.filter = sampler.filterKind == core::FxFilter::point ? SamplerFilter::nearest : SamplerFilter::linear;
     const auto address = [](std::string_view value) {
         const auto mode = upper(value);
         if (mode == "CLAMP" || mode == "CLAMP_TO_EDGE")
@@ -83,7 +84,13 @@ class ExtentTable final : public core::fx::FxResourceTable {
     };
     result.addressU = address(sampler.addressU);
     result.addressV = address(sampler.addressV);
-    result.addressW = result.addressV;
+    result.addressW = address(sampler.addressW);
+    result.maxAnisotropy = sampler.maxAnisotropy;
+    result.comparison = static_cast<SamplerCompareOp>(sampler.comparisonFunc);
+    result.borderColor = static_cast<SamplerBorderColor>(sampler.borderColor);
+    result.mipLodBias = sampler.mipLodBias;
+    result.minLod = sampler.minLod;
+    result.maxLod = sampler.maxLod;
     return result;
 }
 
@@ -106,49 +113,128 @@ class ExtentTable final : public core::fx::FxResourceTable {
     return result;
 }
 
-[[nodiscard]] core::fx::FxSizeExpr sizeExpression(const core::EffectSize& source, std::uint32_t dimension,
-                                                  bool defaultToRenderTarget) {
-    core::fx::FxSizeExpr result;
-    result.base = source.base;
-    result.dimension = dimension;
-    result.widthRatio = source.widthRatio;
-    result.heightRatio = source.heightRatio;
-    if (source.width != 0)
-        result.xExpr = std::to_string(source.width);
-    if (source.height != 0)
-        result.yExpr = std::to_string(source.height);
-    if (source.depth != 0)
-        result.zExpr = std::to_string(source.depth);
-    if (result.base.empty() && result.xExpr.empty() && defaultToRenderTarget)
-        result.base = "DEFAULT_RTSIZE";
-    if (result.base.empty() && result.xExpr.empty())
-        result.xExpr = "1";
+[[nodiscard]] std::string sizeConversion(std::string_view base, std::string_view conversion) {
+    if (conversion == "one")
+        return "1";
+    std::string result;
+    const bool scalarBase =
+        base == "VERTEXCOUNT" || base == "CLONEDVERTEXCOUNT" || base == "TOTALMATERIAL" || base == "TOTALMATERIALCOUNT";
+    for (const auto axis : std::array<char, 3>{'x', 'y', 'z'}) {
+        const bool containsAxis = std::ranges::any_of(
+            conversion, [axis](unsigned char character) { return static_cast<char>(std::tolower(character)) == axis; });
+        if (!containsAxis)
+            continue;
+        if (!result.empty())
+            result += '*';
+        if (scalarBase && axis == 'x')
+            result += base;
+        else if (scalarBase)
+            result += '1';
+        else
+            result += std::string(base) + '.' + axis;
+    }
+    if (result.empty())
+        throw std::invalid_argument("unsupported YRZFX size conversion: " + std::string(conversion));
     return result;
 }
 
-[[nodiscard]] Extent3D resolveExtent(const core::EffectSize& source, std::uint32_t dimension,
-                                     bool defaultToRenderTarget, const fx::FxFrameContext& context,
-                                     const ExtentTable& table) {
-    const auto expression = sizeExpression(source, dimension, defaultToRenderTarget);
-    const auto evaluated = evaluationContext(context);
-    const auto extent = core::fx::FxSizeResolver{}.resolve(expression, evaluated, table);
-    return {.width = extent.x, .height = extent.y, .depth = extent.z};
+[[nodiscard]] core::fx::FxSizeExpr sizeExpression(const core::EffectSize& source, std::uint32_t dimension,
+                                                  bool defaultToRenderTarget) {
+    core::fx::FxSizeExpr result;
+    result.base = source.absolute ? std::string{} : source.base;
+    result.dimension =
+        source.dimension != 0 ? source.dimension : (!source.base.empty() && !source.absolute ? 0U : dimension);
+    result.widthRatio = source.absolute ? 1.0F : source.widthRatio;
+    result.heightRatio = source.absolute ? 1.0F : source.heightRatio;
+    result.depthRatio = source.absolute ? 1.0F : source.depthRatio;
+    if (source.absolute || source.rounding == "trunc")
+        result.rounding = core::fx::FxSizeExpr::Rounding::truncate;
+    else if (source.rounding == "round")
+        result.rounding = core::fx::FxSizeExpr::Rounding::nearest;
+    else if (source.rounding == "ceil")
+        result.rounding = core::fx::FxSizeExpr::Rounding::ceil;
+    else
+        throw std::invalid_argument("unsupported YRZFX size rounding mode: " + source.rounding);
+    if (source.absolute && source.width != 0)
+        result.xExpr = std::to_string(source.width);
+    if (source.absolute && source.height != 0)
+        result.yExpr = std::to_string(source.height);
+    if (source.absolute && source.depth != 0)
+        result.zExpr = std::to_string(source.depth);
+    if (!source.absolute) {
+        if (result.base.empty() && defaultToRenderTarget)
+            result.base = "DEFAULT_RTSIZE";
+        if (!result.base.empty()) {
+            if (result.xExpr.empty())
+                result.xExpr = sizeConversion(result.base, source.convX);
+            if ((result.dimension == 0 || result.dimension >= 2) && result.yExpr.empty())
+                result.yExpr = sizeConversion(result.base, source.convY);
+            if ((result.dimension == 0 || result.dimension >= 3) && result.zExpr.empty())
+                result.zExpr = sizeConversion(result.base, source.convZ);
+        } else if (result.xExpr.empty()) {
+            result.xExpr = "1";
+            if (result.dimension >= 2)
+                result.yExpr = "1";
+            if (result.dimension >= 3)
+                result.zExpr = "1";
+        }
+    }
+    return result;
 }
 
-[[nodiscard]] ResourceUsage textureUsage(std::string_view view, PixelFormat format) {
-    ResourceUsage usage = ResourceUsage::transferSrc | ResourceUsage::transferDst;
-    if (isDepthFormat(format) || contains(view, "DSV") || contains(view, "DEPTH")) {
-        usage |= ResourceUsage::depthRead | ResourceUsage::depthWrite;
-    } else {
-        // Keep declarations descriptor-compatible even when a resource is
-        // also used as an RTV. Pass usage still controls the image layout;
-        // this bit only makes the typed sampled-image view legal.
-        usage |= ResourceUsage::sampledRead;
-        if (contains(view, "UAV") || contains(view, "STORAGE"))
-            usage |= ResourceUsage::storageReadWrite;
-        if (contains(view, "RTV") || contains(view, "COLOR"))
-            usage |= ResourceUsage::colorAttachment;
+[[nodiscard]] core::fx::FxExtent resolveFxExtent(const core::EffectSize& source, std::uint32_t dimension,
+                                                 bool defaultToRenderTarget, const fx::FxFrameContext& context,
+                                                 const ExtentTable& table) {
+    const auto expression = sizeExpression(source, dimension, defaultToRenderTarget);
+    const auto evaluated = evaluationContext(context);
+    return core::fx::FxSizeResolver{}.resolve(expression, evaluated, table);
+}
+
+struct FxTextureUsageSummary {
+    bool sampled{};
+    bool storage{};
+    bool colorAttachment{};
+    bool depthAttachment{};
+};
+
+[[nodiscard]] FxTextureUsageSummary summarizeTextureUsage(const fx::FxProgram& program, std::string_view name) {
+    FxTextureUsageSummary result;
+    for (const auto& dispatch : program.passes) {
+        for (const auto& use : dispatch.resources) {
+            if (use.name != name)
+                continue;
+            switch (use.role) {
+            case fx::FxResourceRole::sampled:
+                result.sampled |= !use.write;
+                break;
+            case fx::FxResourceRole::storage:
+                result.storage |= use.write;
+                break;
+            case fx::FxResourceRole::colorAttachment:
+                result.colorAttachment |= use.write;
+                break;
+            case fx::FxResourceRole::depthAttachment:
+                result.depthAttachment |= use.write;
+                break;
+            }
+        }
     }
+    return result;
+}
+
+[[nodiscard]] ResourceUsage textureUsage(std::string_view view, PixelFormat format,
+                                         const FxTextureUsageSummary& summary) {
+    ResourceUsage usage = ResourceUsage::transferSrc | ResourceUsage::transferDst;
+    if (isDepthFormat(format) || summary.depthAttachment || contains(view, "DSV") || contains(view, "DEPTH")) {
+        usage |= ResourceUsage::depthRead | ResourceUsage::depthWrite;
+    }
+    if (summary.sampled || (!isDepthFormat(format) && !contains(view, "DSV") && !contains(view, "DEPTH"))) {
+        usage |= ResourceUsage::sampledRead;
+    }
+    if (summary.storage || contains(view, "UAV") || contains(view, "STORAGE"))
+        usage |= ResourceUsage::storageReadWrite;
+    if (summary.colorAttachment || contains(view, "RTV") || contains(view, "COLOR"))
+        usage |= ResourceUsage::colorAttachment;
     return usage;
 }
 
@@ -158,18 +244,26 @@ class ExtentTable final : public core::fx::FxResourceTable {
     return DescriptorKind::sampledImage;
 }
 
-[[nodiscard]] ResourceUsage bufferUsage(std::string_view view) {
+[[nodiscard]] ResourceUsage bufferUsage(const fx::FxProgram& program, std::string_view name, std::string_view view) {
     ResourceUsage usage = ResourceUsage::transferDst;
-    if (contains(view, "UAV") || contains(view, "STORAGE"))
-        usage |= ResourceUsage::storageReadWrite;
-    else
-        usage |= ResourceUsage::uniformRead;
+    // StructuredBuffer and RWStructuredBuffer both use storage-buffer
+    // descriptors; readonly affects shader access, not the descriptor class.
+    usage |= ResourceUsage::storageReadWrite;
+    for (const auto& dispatch : program.passes) {
+        const auto* raster = std::get_if<fx::FxRasterDispatch>(&dispatch.executable);
+        if (raster == nullptr)
+            continue;
+        if (raster->vertexBuffer == name)
+            usage |= ResourceUsage::vertexRead;
+        if (raster->indexBuffer == name)
+            usage |= ResourceUsage::indexRead;
+    }
+    static_cast<void>(view);
     return usage;
 }
 
-[[nodiscard]] DescriptorKind bufferDescriptorKind(std::string_view view) {
-    return contains(view, "UAV") || contains(view, "STORAGE") ? DescriptorKind::storageBuffer
-                                                              : DescriptorKind::uniformBuffer;
+[[nodiscard]] DescriptorKind bufferDescriptorKind(std::string_view) {
+    return DescriptorKind::storageBuffer;
 }
 
 [[nodiscard]] std::size_t checkedSize(std::uint64_t value, std::string_view name) {
@@ -179,7 +273,9 @@ class ExtentTable final : public core::fx::FxResourceTable {
 }
 
 [[nodiscard]] bool hasExplicitSize(const core::EffectSize& size) noexcept {
-    return size.absolute || !size.base.empty() || size.width != 0 || size.height != 0 || size.depth != 0;
+    return size.absolute || !size.base.empty() || size.dimension != 0 || size.widthRatio != 1.0F ||
+           size.heightRatio != 1.0F || size.depthRatio != 1.0F || size.convX != "x" || size.convY != "y" ||
+           size.convZ != "z" || size.rounding != "trunc";
 }
 
 [[nodiscard]] std::uint32_t mipLevels(Extent3D extent, bool enabled) noexcept {
@@ -212,12 +308,158 @@ void setError(std::string* error, std::string message) {
 
 } // namespace
 
+bool FxResourceStore::add(Resource resource) {
+    if (resource.name.empty() || indices_.contains(resource.name))
+        return false;
+    indices_.emplace(resource.name, resources_.size());
+    resources_.push_back(std::move(resource));
+    return true;
+}
+
+void FxResourceStore::clear() noexcept {
+    resources_.clear();
+    indices_.clear();
+}
+
+const FxResourceStore::Resource* FxResourceStore::find(std::string_view name) const noexcept {
+    const auto found = indices_.find(std::string(name));
+    return found == indices_.end() ? nullptr : &resources_[found->second];
+}
+
+FxResourceStore::Resource* FxResourceStore::find(std::string_view name) noexcept {
+    const auto found = indices_.find(std::string(name));
+    return found == indices_.end() ? nullptr : &resources_[found->second];
+}
+
+FxPassDescriptorRuntime::~FxPassDescriptorRuntime() {
+    reset();
+}
+
+bool FxPassDescriptorRuntime::initialize(Device& device, const fx::FxProgram& program, std::uint32_t resourceSet,
+                                         const FxResourceStore& store, std::string* error) {
+    if (error != nullptr)
+        error->clear();
+    reset();
+    device_ = &device;
+    try {
+        const auto stages = allFxStages();
+        for (const auto& dispatch : program.passes) {
+            Entry entry;
+            entry.plan = fx::planPassBindings(program, dispatch, resourceSet);
+            if (entry.plan.bindings.empty()) {
+                entries_.emplace(dispatch.name, std::move(entry));
+                continue;
+            }
+            DescriptorSetLayoutDesc layout;
+            layout.bindings.reserve(entry.plan.bindings.size());
+            std::vector<DescriptorBindingEx> bindings;
+            bindings.reserve(entry.plan.bindings.size());
+            for (const auto& binding : entry.plan.bindings) {
+                DescriptorKind kind = DescriptorKind::sampledImage;
+                switch (binding.descriptorClass) {
+                case fx::FxDescriptorClass::sampledImage:
+                    kind = DescriptorKind::sampledImage;
+                    break;
+                case fx::FxDescriptorClass::storageImage:
+                    kind = DescriptorKind::storageImage;
+                    break;
+                case fx::FxDescriptorClass::storageBuffer:
+                    kind = DescriptorKind::storageBuffer;
+                    break;
+                case fx::FxDescriptorClass::sampler:
+                    kind = DescriptorKind::sampler;
+                    break;
+                case fx::FxDescriptorClass::accelerationStructure:
+                    kind = DescriptorKind::accelerationStructure;
+                    break;
+                }
+                layout.bindings.push_back({binding.binding, kind, binding.count, stages});
+                const auto* physical = store.find(binding.resource);
+                if (physical == nullptr)
+                    throw std::invalid_argument("FX pass binding has no physical resource: " + binding.resource);
+                DescriptorBindingEx descriptor{.slot = binding.binding, .arrayElement = 0};
+                if (physical->kind == FxResourceStore::Kind::texture)
+                    descriptor.texture = physical->texture;
+                else if (physical->kind == FxResourceStore::Kind::buffer)
+                    descriptor.buffer = physical->buffer;
+                else
+                    descriptor.sampler = physical->sampler;
+                bindings.push_back(descriptor);
+            }
+            entry.layout = device.createDescriptorSetLayoutEx(layout);
+            if (!entry.layout.valid())
+                throw std::runtime_error("FX pass descriptor layout is invalid: " + dispatch.name);
+            entry.set = device.allocateDescriptorSetEx(entry.layout, bindings);
+            if (!entry.set.valid())
+                throw std::runtime_error("FX pass descriptor set is invalid: " + dispatch.name);
+            entries_.emplace(dispatch.name, std::move(entry));
+        }
+    } catch (const std::exception& exception) {
+        setError(error, exception.what());
+        reset();
+        return false;
+    } catch (...) {
+        setError(error, "FX pass descriptor runtime initialization failed");
+        reset();
+        return false;
+    }
+    return true;
+}
+
+void FxPassDescriptorRuntime::reset() noexcept {
+    Device* device = device_;
+    if (device != nullptr) {
+        try {
+            device->waitIdle();
+        } catch (...) {
+        }
+        for (const auto& [name, entry] : entries_) {
+            static_cast<void>(name);
+            if (entry.set.valid()) {
+                try {
+                    device->destroyDescriptorSetEx(entry.set);
+                } catch (...) {
+                }
+            }
+            if (entry.layout.valid()) {
+                try {
+                    device->destroyDescriptorSetLayoutEx(entry.layout);
+                } catch (...) {
+                }
+            }
+        }
+    }
+    entries_.clear();
+    device_ = nullptr;
+}
+
+std::optional<handles::DescriptorSetHandle>
+FxPassDescriptorRuntime::resolveDescriptorSet(const fx::FxDispatch& dispatch) const {
+    const auto found = entries_.find(dispatch.name);
+    if (found == entries_.end() || !found->second.set.valid())
+        return std::nullopt;
+    return found->second.set;
+}
+
+std::optional<handles::DescriptorSetLayoutHandle>
+FxPassDescriptorRuntime::resolveDescriptorLayout(const fx::FxDispatch& dispatch) const {
+    const auto found = entries_.find(dispatch.name);
+    if (found == entries_.end() || !found->second.layout.valid())
+        return std::nullopt;
+    return found->second.layout;
+}
+
+const fx::FxPassBindingPlan* FxPassDescriptorRuntime::bindingPlan(const fx::FxDispatch& dispatch) const noexcept {
+    const auto found = entries_.find(dispatch.name);
+    return found == entries_.end() ? nullptr : &found->second.plan;
+}
+
 FxResourceRuntime::~FxResourceRuntime() {
     reset();
 }
 
 bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program, const fx::FxFrameContext& context,
-                                   std::string* error) {
+                                   std::string* error, std::uint32_t resourceSet) {
     if (error != nullptr)
         error->clear();
     reset();
@@ -235,7 +477,7 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
         const auto addName = [&](std::string name) {
             if (name.empty())
                 throw std::invalid_argument("FX resource declaration has an empty name");
-            if (!indices_.emplace(name, resources_.size()).second)
+            if (store_.find(name) != nullptr)
                 throw std::invalid_argument("FX resource declaration is duplicated: " + name);
             return name;
         };
@@ -265,30 +507,36 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                     throw std::invalid_argument("FX external texture format must be RGBA8_UNORM: " + name);
                 external = core::loadImageRgba8(externalPath(program, declaration.filename));
             }
-            const auto resolved = external.has_value() && !hasExplicitSize(declaration.size)
-                                      ? Extent3D{external->width, external->height, 1}
-                                      : resolveExtent(declaration.size, 2, true, context, table);
+            const auto resolvedFx =
+                external.has_value() && !hasExplicitSize(declaration.size)
+                    ? core::fx::FxExtent{.x = external->width, .y = external->height, .z = 1, .dimension = 2}
+                    : resolveFxExtent(declaration.size, 2, true, context, table);
+            const Extent3D resolved{resolvedFx.x, resolvedFx.y, resolvedFx.z};
             if (external.has_value() &&
                 (resolved.width != external->width || resolved.height != external->height || resolved.depth != 1))
                 throw std::invalid_argument("FX external texture extent does not match its declaration: " + name);
             const auto levels = mipLevels(resolved, declaration.mipmap);
             const auto binding = nextBinding(registerClass(declaration.view));
+            const auto usageSummary = summarizeTextureUsage(program, name);
             TextureResourceDesc description{
                 .dimension = TextureDimension::d2,
                 .extent = resolved,
                 .format = format,
                 .mipLevels = levels,
                 .arrayLayers = 1,
-                .usage = textureUsage(declaration.view, format),
+                .usage = textureUsage(declaration.view, format, usageSummary),
                 .lifetime = ResourceLifetime::persistent,
             };
             reserveBytes(static_cast<std::uint64_t>(estimateTextureBytes(description)), name);
-            Resource resource{.name = name,
-                              .kind = Kind::texture,
-                              .descriptorKind = textureDescriptorKind(declaration.view, format),
-                              .binding = binding,
-                              .extent = resolved,
-                              .format = format};
+            FxResourceStore::Resource resource{.name = name,
+                                               .kind = FxResourceStore::Kind::texture,
+                                               .texture = {},
+                                               .buffer = {},
+                                               .sampler = {},
+                                               .extent = resolved,
+                                               .format = format,
+                                               .legacyDescriptorKind = textureDescriptorKind(declaration.view, format),
+                                               .legacyBinding = binding};
             resource.texture = device.createTextureEx(description);
             if (!resource.texture.valid())
                 throw std::runtime_error("FX texture allocation returned an invalid handle: " + name);
@@ -297,78 +545,108 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                 if (levels > 1)
                     device.generateMipmapsEx(resource.texture);
             }
-            resources_.push_back(resource);
-            table.add(name, {.x = resolved.width, .y = resolved.height, .z = resolved.depth, .dimension = 2});
-            addBinding(resource.binding, resource.descriptorKind);
+            if (!store_.add(std::move(resource)))
+                throw std::invalid_argument("FX resource declaration is duplicated: " + name);
+            table.add(name, resolvedFx);
+            const auto* stored = store_.find(name);
+            addBinding(stored->legacyBinding, stored->legacyDescriptorKind);
         }
         for (const auto& declaration : program.textures3D) {
             const auto name = addName(declaration.name);
             if (!declaration.filename.empty())
                 throw std::invalid_argument("FX external 3D textures are not supported by this loader: " + name);
             const auto format = pixelFormat(declaration.format);
-            const auto resolved = resolveExtent(declaration.size, 3, false, context, table);
+            const auto resolvedFx = resolveFxExtent(declaration.size, 3, false, context, table);
+            const Extent3D resolved{resolvedFx.x, resolvedFx.y, resolvedFx.z};
             const auto levels = mipLevels(resolved, declaration.mipmap);
             const auto binding = nextBinding(registerClass(declaration.view));
+            const auto usageSummary = summarizeTextureUsage(program, name);
             TextureResourceDesc description{
                 .dimension = TextureDimension::d3,
                 .extent = resolved,
                 .format = format,
                 .mipLevels = levels,
                 .arrayLayers = 1,
-                .usage = textureUsage(declaration.view, format),
+                .usage = textureUsage(declaration.view, format, usageSummary),
                 .lifetime = ResourceLifetime::persistent,
             };
             reserveBytes(static_cast<std::uint64_t>(estimateTextureBytes(description)), name);
-            Resource resource{.name = name,
-                              .kind = Kind::texture,
-                              .descriptorKind = textureDescriptorKind(declaration.view, format),
-                              .binding = binding,
-                              .extent = resolved,
-                              .format = format};
+            FxResourceStore::Resource resource{.name = name,
+                                               .kind = FxResourceStore::Kind::texture,
+                                               .texture = {},
+                                               .buffer = {},
+                                               .sampler = {},
+                                               .extent = resolved,
+                                               .format = format,
+                                               .legacyDescriptorKind = textureDescriptorKind(declaration.view, format),
+                                               .legacyBinding = binding};
             resource.texture = device.createTextureEx(description);
             if (!resource.texture.valid())
                 throw std::runtime_error("FX 3D texture allocation returned an invalid handle: " + name);
-            resources_.push_back(resource);
-            table.add(name, {.x = resolved.width, .y = resolved.height, .z = resolved.depth, .dimension = 3});
-            addBinding(resource.binding, resource.descriptorKind);
+            if (!store_.add(std::move(resource)))
+                throw std::invalid_argument("FX resource declaration is duplicated: " + name);
+            table.add(name, resolvedFx);
+            const auto* stored = store_.find(name);
+            addBinding(stored->legacyBinding, stored->legacyDescriptorKind);
         }
         for (const auto& declaration : program.buffers) {
             const auto name = addName(declaration.name);
             if (declaration.elementSize == 0)
                 throw std::invalid_argument("FX buffer element size is zero: " + name);
-            const auto resolved = resolveExtent(declaration.size, 1, false, context, table);
-            const auto bytes = core::fx::FxSizeResolver::bufferBytes(
-                {.x = resolved.width, .y = 1, .z = 1, .dimension = 1}, declaration.elementSize);
+            auto bufferSize = declaration.size;
+            if (!bufferSize.absolute && bufferSize.base.empty()) {
+                bufferSize.base =
+                    program.category == core::fx::FxCategory::deform ? "CLONEDVERTEXCOUNT" : "DEFAULT_RTSIZE";
+                bufferSize.dimension = program.category == core::fx::FxCategory::deform ? 1U : 2U;
+            }
+            const auto resolvedFx = resolveFxExtent(bufferSize, 1, false, context, table);
+            const Extent3D resolved{resolvedFx.x, resolvedFx.y, resolvedFx.z};
+            const auto bytes = core::fx::FxSizeResolver::bufferBytes(resolvedFx, declaration.elementSize);
             reserveBytes(bytes, name);
             const auto binding = nextBinding(registerClass(declaration.view));
             BufferResourceDesc description{
                 .size = checkedSize(bytes, name),
-                .usage = bufferUsage(declaration.view),
+                .usage = bufferUsage(program, declaration.name, declaration.view),
                 .cpuVisible = false,
                 .lifetime = ResourceLifetime::persistent,
             };
-            Resource resource{.name = name,
-                              .kind = Kind::buffer,
-                              .descriptorKind = bufferDescriptorKind(declaration.view),
-                              .binding = binding,
-                              .extent = resolved};
+            FxResourceStore::Resource resource{.name = name,
+                                               .kind = FxResourceStore::Kind::buffer,
+                                               .texture = {},
+                                               .buffer = {},
+                                               .sampler = {},
+                                               .extent = resolved,
+                                               .format = PixelFormat::rgba8Unorm,
+                                               .legacyDescriptorKind = bufferDescriptorKind(declaration.view),
+                                               .legacyBinding = binding};
             resource.buffer = device.createBufferEx(description);
             if (!resource.buffer.valid())
                 throw std::runtime_error("FX buffer allocation returned an invalid handle: " + name);
-            resources_.push_back(resource);
-            table.add(name, {.x = resolved.width, .y = 1, .z = 1, .dimension = 1});
-            addBinding(resource.binding, resource.descriptorKind);
+            if (!store_.add(std::move(resource)))
+                throw std::invalid_argument("FX resource declaration is duplicated: " + name);
+            table.add(name, resolvedFx);
+            const auto* stored = store_.find(name);
+            addBinding(stored->legacyBinding, stored->legacyDescriptorKind);
         }
         for (const auto& declaration : program.samplers) {
             const auto name = addName(declaration.name);
             const auto binding = nextBinding(NativeSceneRegisterClass::sampler);
-            Resource resource{
-                .name = name, .kind = Kind::sampler, .descriptorKind = DescriptorKind::sampler, .binding = binding};
+            FxResourceStore::Resource resource{.name = name,
+                                               .kind = FxResourceStore::Kind::sampler,
+                                               .texture = {},
+                                               .buffer = {},
+                                               .sampler = {},
+                                               .extent = {},
+                                               .format = PixelFormat::rgba8Unorm,
+                                               .legacyDescriptorKind = DescriptorKind::sampler,
+                                               .legacyBinding = binding};
             resource.sampler = device.createSamplerEx(samplerDesc(declaration));
             if (!resource.sampler.valid())
                 throw std::runtime_error("FX sampler allocation returned an invalid handle: " + name);
-            resources_.push_back(resource);
-            addBinding(resource.binding, resource.descriptorKind);
+            if (!store_.add(std::move(resource)))
+                throw std::invalid_argument("FX resource declaration is duplicated: " + name);
+            const auto* stored = store_.find(name);
+            addBinding(stored->legacyBinding, stored->legacyDescriptorKind);
         }
 
         if (!descriptorLayoutDesc_.bindings.empty()) {
@@ -376,12 +654,12 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             if (!descriptorLayout_.valid())
                 throw std::runtime_error("FX resource descriptor layout is invalid");
             std::vector<DescriptorBindingEx> bindings;
-            bindings.reserve(resources_.size());
-            for (const auto& resource : resources_) {
-                DescriptorBindingEx binding{.slot = resource.binding, .arrayElement = 0};
-                if (resource.kind == Kind::texture)
+            bindings.reserve(store_.size());
+            for (const auto& resource : store_.resources()) {
+                DescriptorBindingEx binding{.slot = resource.legacyBinding, .arrayElement = 0};
+                if (resource.kind == FxResourceStore::Kind::texture)
                     binding.texture = resource.texture;
-                else if (resource.kind == Kind::buffer)
+                else if (resource.kind == FxResourceStore::Kind::buffer)
                     binding.buffer = resource.buffer;
                 else
                     binding.sampler = resource.sampler;
@@ -391,6 +669,9 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             if (!descriptorSet_.valid())
                 throw std::runtime_error("FX resource descriptor set is invalid");
         }
+        if (!passDescriptors_.initialize(device, program, resourceSet, store_, error))
+            throw std::runtime_error(error != nullptr && !error->empty() ? *error
+                                                                         : "FX pass descriptors are unavailable");
     } catch (const std::exception& exception) {
         setError(error, exception.what());
         reset();
@@ -406,6 +687,7 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
 void FxResourceRuntime::reset() noexcept {
     Device* device = device_;
     if (device != nullptr) {
+        passDescriptors_.reset();
         try {
             device->waitIdle();
         } catch (...) {
@@ -422,7 +704,7 @@ void FxResourceRuntime::reset() noexcept {
             } catch (...) {
             }
         }
-        for (const auto& resource : resources_) {
+        for (const auto& resource : store_.resources()) {
             try {
                 if (resource.texture.valid())
                     device->destroyTextureEx(resource.texture);
@@ -435,32 +717,31 @@ void FxResourceRuntime::reset() noexcept {
         }
     }
     device_ = nullptr;
-    resources_.clear();
-    indices_.clear();
+    store_.clear();
     descriptorLayoutDesc_ = {};
     descriptorLayout_ = {};
     descriptorSet_ = {};
 }
 
 std::optional<handles::TextureHandle> FxResourceRuntime::resolveTexture(std::string_view name) const {
-    const auto found = indices_.find(std::string(name));
-    if (found == indices_.end() || resources_[found->second].kind != Kind::texture)
+    const auto* resource = store_.find(name);
+    if (resource == nullptr || resource->kind != FxResourceStore::Kind::texture)
         return std::nullopt;
-    return resources_[found->second].texture;
+    return resource->texture;
 }
 
 std::optional<handles::BufferHandle> FxResourceRuntime::resolveBuffer(std::string_view name) const {
-    const auto found = indices_.find(std::string(name));
-    if (found == indices_.end() || resources_[found->second].kind != Kind::buffer)
+    const auto* resource = store_.find(name);
+    if (resource == nullptr || resource->kind != FxResourceStore::Kind::buffer)
         return std::nullopt;
-    return resources_[found->second].buffer;
+    return resource->buffer;
 }
 
 std::optional<handles::SamplerHandle> FxResourceRuntime::resolveSampler(std::string_view name) const {
-    const auto found = indices_.find(std::string(name));
-    if (found == indices_.end() || resources_[found->second].kind != Kind::sampler)
+    const auto* resource = store_.find(name);
+    if (resource == nullptr || resource->kind != FxResourceStore::Kind::sampler)
         return std::nullopt;
-    return resources_[found->second].sampler;
+    return resource->sampler;
 }
 
 std::optional<handles::DescriptorSetHandle> FxResourceRuntime::resolveDescriptorSet(const fx::FxDispatch&) const {
@@ -470,10 +751,10 @@ std::optional<handles::DescriptorSetHandle> FxResourceRuntime::resolveDescriptor
 }
 
 std::optional<Extent3D> FxResourceRuntime::extent(std::string_view name) const {
-    const auto found = indices_.find(std::string(name));
-    if (found == indices_.end() || resources_[found->second].kind == Kind::sampler)
+    const auto* resource = store_.find(name);
+    if (resource == nullptr || resource->kind == FxResourceStore::Kind::sampler)
         return std::nullopt;
-    return resources_[found->second].extent;
+    return resource->extent;
 }
 
 std::optional<FxResourceRuntime::ResolvedTexture>
@@ -482,13 +763,11 @@ FxResourceRuntime::resolveOutputTexture(std::span<const fx::FxDispatch> ordered)
         for (const auto& resource : std::ranges::reverse_view(dispatch.resources)) {
             if (!resource.write)
                 continue;
-            const auto found = indices_.find(resource.name);
-            if (found == indices_.end())
+            const auto* candidate = store_.find(resource.name);
+            if (candidate == nullptr || candidate->kind != FxResourceStore::Kind::texture)
                 continue;
-            const auto& candidate = resources_[found->second];
-            if (candidate.kind != Kind::texture)
-                continue;
-            return ResolvedTexture{.handle = candidate.texture, .extent = candidate.extent, .format = candidate.format};
+            return ResolvedTexture{
+                .handle = candidate->texture, .extent = candidate->extent, .format = candidate->format};
         }
     }
     return std::nullopt;

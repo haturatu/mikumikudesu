@@ -51,6 +51,9 @@ struct DeviceCapabilities {
     bool rayTracingPipeline{};
     bool rayQuery{};
     bool fragmentShaderBarycentric{};
+    bool samplerAnisotropy{};
+    bool logicOp{};
+    bool independentBlend{};
     bool nativeSubayai{};
     bool nativeBdpt{};
 
@@ -295,6 +298,34 @@ struct PipelineDesc {
 enum class CullModeEx : std::uint8_t { none, front, back };
 enum class FrontFaceEx : std::uint8_t { counterClockwise, clockwise };
 enum class CompareOpEx : std::uint8_t { never, less, equal, lessOrEqual, greater, notEqual, greaterOrEqual, always };
+enum class StencilOpEx : std::uint8_t {
+    keep,
+    zero,
+    replace,
+    incrementClamp,
+    decrementClamp,
+    invert,
+    incrementWrap,
+    decrementWrap
+};
+enum class LogicOpEx : std::uint8_t {
+    clear,
+    andOp,
+    andReverse,
+    copy,
+    andInverted,
+    noOp,
+    xorOp,
+    orOp,
+    nor,
+    equivalence,
+    invert,
+    orReverse,
+    copyInverted,
+    orInverted,
+    nand,
+    set
+};
 enum class BlendFactorEx : std::uint8_t {
     zero,
     one,
@@ -315,10 +346,22 @@ struct RasterizerStateEx {
     FrontFaceEx frontFace{FrontFaceEx::counterClockwise};
 };
 
+struct StencilOpStateEx {
+    StencilOpEx fail{StencilOpEx::keep};
+    StencilOpEx pass{StencilOpEx::keep};
+    StencilOpEx depthFail{StencilOpEx::keep};
+    CompareOpEx compare{CompareOpEx::always};
+};
+
 struct DepthStencilStateEx {
     bool depthTest{};
     bool depthWrite{};
     CompareOpEx depthCompare{CompareOpEx::less};
+    bool stencilTest{};
+    std::uint32_t stencilReadMask{0xFFU};
+    std::uint32_t stencilWriteMask{0xFFU};
+    StencilOpStateEx front;
+    StencilOpStateEx back;
 };
 
 struct BlendAttachmentStateEx {
@@ -329,6 +372,7 @@ struct BlendAttachmentStateEx {
     BlendFactorEx srcAlpha{BlendFactorEx::one};
     BlendFactorEx dstAlpha{BlendFactorEx::zero};
     BlendOpEx alphaOp{BlendOpEx::add};
+    std::uint8_t colorWriteMask{0x0FU};
 };
 
 struct GraphicsPipelineDescEx {
@@ -345,6 +389,10 @@ struct GraphicsPipelineDescEx {
     bool depthOnly{};
     RasterizerStateEx rasterizer;
     DepthStencilStateEx depthStencil;
+    bool alphaToCoverage{};
+    bool independentBlend{};
+    bool logicOpEnable{};
+    LogicOpEx logicOp{LogicOpEx::copy};
     std::vector<BlendAttachmentStateEx> blendAttachments;
 };
 
@@ -358,6 +406,7 @@ struct DepthAttachmentEx {
     handles::TextureHandle texture{};
     bool clear{};
     float clearDepth{1.0F};
+    std::uint32_t clearStencil{};
 };
 
 struct RenderingInfoEx {
@@ -500,6 +549,9 @@ class CommandList {
     virtual void drawIndexedEx(const IndexedDrawEx&) {
         throw std::logic_error("Typed indexed draws are not implemented by this backend");
     }
+    virtual void drawIndexedBufferlessEx(handles::BufferHandle, std::uint32_t, std::uint32_t = 1) {
+        throw std::logic_error("Typed vertex-bufferless indexed draws are not implemented by this backend");
+    }
     virtual void dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) = 0;
     virtual void traceRays(std::uint32_t width, std::uint32_t height) = 0;
     virtual void traceRays(handles::ShaderBindingTableHandle sbt, std::uint32_t width, std::uint32_t height,
@@ -539,6 +591,12 @@ class CommandList {
     }
     virtual void clearTextureEx(handles::TextureHandle, const std::array<float, 4>&) {
         throw std::logic_error("Typed command-list colored texture clear is not implemented by this backend");
+    }
+    virtual void clearBufferEx(handles::BufferHandle, std::uint32_t) {
+        throw std::logic_error("Typed command-list buffer clear is not implemented by this backend");
+    }
+    virtual void clearBufferEx(handles::BufferHandle, const std::array<float, 4>&) {
+        throw std::logic_error("Typed command-list four-component buffer clear is not implemented by this backend");
     }
     virtual void generateMipmapsEx(handles::TextureHandle) {
         throw std::logic_error("Typed command-list mipmap generation is not implemented by this backend");
@@ -878,6 +936,9 @@ class Device {
     }
     virtual void clearBufferEx(handles::BufferHandle, std::uint32_t) {
         throw std::logic_error("Typed buffer clear is not implemented by this backend");
+    }
+    virtual void clearBufferEx(handles::BufferHandle, const std::array<float, 4>&) {
+        throw std::logic_error("Typed four-component buffer clear is not implemented by this backend");
     }
     virtual void generateMipmapsEx(handles::TextureHandle) {
         throw std::logic_error("Typed mipmap generation is not implemented by this backend");

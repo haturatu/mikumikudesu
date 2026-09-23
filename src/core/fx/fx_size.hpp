@@ -34,6 +34,7 @@ struct FxSizeExpr {
         nearest,
         floor,
         ceil,
+        truncate,
     };
 
     std::string base;          // "" = absolute, otherwise resource or builtin name
@@ -43,6 +44,7 @@ struct FxSizeExpr {
     std::string zExpr;
     float widthRatio{1.0F};
     float heightRatio{1.0F};
+    float depthRatio{1.0F};
     Rounding rounding{Rounding::nearest};
 };
 

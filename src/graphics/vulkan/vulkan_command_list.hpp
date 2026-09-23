@@ -23,6 +23,8 @@ class VulkanCommandList final : public CommandList {
     void bindPipeline(PipelineHandle) override;
     void draw(std::uint32_t vertexCount, std::uint32_t instanceCount = 1) override;
     void drawIndexedEx(const IndexedDrawEx& draw) override;
+    void drawIndexedBufferlessEx(handles::BufferHandle indexBuffer, std::uint32_t indexCount,
+                                 std::uint32_t instanceCount = 1) override;
     void dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) override;
     void traceRays(std::uint32_t width, std::uint32_t height) override;
     void traceRays(handles::ShaderBindingTableHandle sbt, std::uint32_t width, std::uint32_t height,
@@ -53,6 +55,8 @@ class VulkanCommandList final : public CommandList {
                        std::array<std::uint32_t, 4> sourceRect) override;
     void clearTextureEx(handles::TextureHandle texture) override;
     void clearTextureEx(handles::TextureHandle texture, const std::array<float, 4>& value) override;
+    void clearBufferEx(handles::BufferHandle buffer, std::uint32_t value) override;
+    void clearBufferEx(handles::BufferHandle buffer, const std::array<float, 4>& value) override;
     void generateMipmapsEx(handles::TextureHandle texture) override;
     void copyBufferEx(handles::BufferHandle source, handles::BufferHandle destination) override;
     void uploadBufferEx(handles::BufferHandle destination, std::span<const std::byte> bytes,

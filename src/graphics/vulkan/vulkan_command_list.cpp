@@ -30,6 +30,13 @@ void VulkanCommandList::drawIndexedEx(const IndexedDrawEx& draw) {
     device_->recordDrawIndexed(commandBuffer_, draw);
 }
 
+void VulkanCommandList::drawIndexedBufferlessEx(handles::BufferHandle indexBuffer, std::uint32_t indexCount,
+                                                std::uint32_t instanceCount) {
+    if (device_ == nullptr)
+        throw std::logic_error("typed vertex-bufferless indexed draw requires a Vulkan device");
+    device_->recordDrawIndexedBufferless(commandBuffer_, indexBuffer, indexCount, instanceCount);
+}
+
 void VulkanCommandList::dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) {
     vkCmdDispatch(commandBuffer_, x, y, z);
 }
@@ -188,6 +195,18 @@ void VulkanCommandList::clearTextureEx(handles::TextureHandle texture, const std
     if (device_ == nullptr)
         throw std::logic_error("typed texture clear requires a Vulkan device");
     device_->recordClearTexture(commandBuffer_, texture, value);
+}
+
+void VulkanCommandList::clearBufferEx(handles::BufferHandle buffer, std::uint32_t value) {
+    if (device_ == nullptr)
+        throw std::logic_error("typed buffer clear requires a Vulkan device");
+    device_->recordClearBuffer(commandBuffer_, buffer, value);
+}
+
+void VulkanCommandList::clearBufferEx(handles::BufferHandle buffer, const std::array<float, 4>& value) {
+    if (device_ == nullptr)
+        throw std::logic_error("typed buffer clear requires a Vulkan device");
+    device_->recordClearBuffer(commandBuffer_, buffer, value);
 }
 
 void VulkanCommandList::generateMipmapsEx(handles::TextureHandle texture) {

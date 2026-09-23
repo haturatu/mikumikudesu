@@ -123,6 +123,8 @@ PixelFormat textureFormat(std::string_view value) {
         return PixelFormat::r32g32Float;
     if (name == "D32_FLOAT")
         return PixelFormat::depth32Float;
+    if (name == "D24_UNORM_S8_UINT" || name == "D24S8")
+        return PixelFormat::depth24Stencil8;
     throw std::invalid_argument("FX graphics target format is unsupported: " + std::string(value));
 }
 
@@ -136,6 +138,10 @@ CullModeEx cullMode(core::EffectCullMode mode) {
         return CullModeEx::back;
     }
     throw std::invalid_argument("unsupported FX cull mode");
+}
+
+FrontFaceEx frontFace(core::EffectFrontFace face) {
+    return face == core::EffectFrontFace::clockwise ? FrontFaceEx::clockwise : FrontFaceEx::counterClockwise;
 }
 
 CompareOpEx compareOp(core::EffectDepthFunc function) {
@@ -158,6 +164,54 @@ CompareOpEx compareOp(core::EffectDepthFunc function) {
         return CompareOpEx::always;
     }
     throw std::invalid_argument("unsupported FX depth compare operation");
+}
+
+CompareOpEx compareOp(core::FxCompareOp function) {
+    switch (function) {
+    case core::FxCompareOp::never:
+        return CompareOpEx::never;
+    case core::FxCompareOp::less:
+        return CompareOpEx::less;
+    case core::FxCompareOp::equal:
+        return CompareOpEx::equal;
+    case core::FxCompareOp::lessEqual:
+        return CompareOpEx::lessOrEqual;
+    case core::FxCompareOp::greater:
+        return CompareOpEx::greater;
+    case core::FxCompareOp::notEqual:
+        return CompareOpEx::notEqual;
+    case core::FxCompareOp::greaterEqual:
+        return CompareOpEx::greaterOrEqual;
+    case core::FxCompareOp::always:
+        return CompareOpEx::always;
+    }
+    throw std::invalid_argument("unsupported FX stencil compare operation");
+}
+
+StencilOpEx stencilOp(core::FxStencilOp operation) {
+    switch (operation) {
+    case core::FxStencilOp::keep:
+        return StencilOpEx::keep;
+    case core::FxStencilOp::zero:
+        return StencilOpEx::zero;
+    case core::FxStencilOp::replace:
+        return StencilOpEx::replace;
+    case core::FxStencilOp::incrementClamp:
+        return StencilOpEx::incrementClamp;
+    case core::FxStencilOp::decrementClamp:
+        return StencilOpEx::decrementClamp;
+    case core::FxStencilOp::invert:
+        return StencilOpEx::invert;
+    case core::FxStencilOp::incrementWrap:
+        return StencilOpEx::incrementWrap;
+    case core::FxStencilOp::decrementWrap:
+        return StencilOpEx::decrementWrap;
+    }
+    throw std::invalid_argument("unsupported FX stencil operation");
+}
+
+LogicOpEx logicOp(core::FxLogicOp operation) {
+    return static_cast<LogicOpEx>(operation);
 }
 
 std::string compact(std::string_view value) {
@@ -218,10 +272,10 @@ const core::EffectTexture* findTexture(const fx::FxProgram& program, std::string
 }
 
 PixelFormat attachmentFormat(const fx::FxProgram& program, const core::EffectAttachment& attachment, bool depth) {
-    if (depth)
-        return PixelFormat::depth32Float;
     const auto* texture = findTexture(program, attachment.name);
-    return texture == nullptr || texture->format.empty() ? PixelFormat::rgba16Float : textureFormat(texture->format);
+    if (texture != nullptr && !texture->format.empty())
+        return textureFormat(texture->format);
+    return depth ? PixelFormat::depth32Float : PixelFormat::rgba16Float;
 }
 
 std::vector<PixelFormat> graphicsTargetFormats(const fx::FxProgram& program, const fx::FxDispatch& dispatch) {
@@ -256,7 +310,7 @@ std::optional<PixelFormat> graphicsDepthFormat(const fx::FxProgram& program, con
         return attachmentFormat(program, *raster->depthAttachment, true);
     for (const auto& resource : dispatch.resources)
         if (resource.write && resource.role == fx::FxResourceRole::depthAttachment)
-            return PixelFormat::depth32Float;
+            return attachmentFormat(program, {.name = resource.name}, true);
     return std::nullopt;
 }
 
@@ -275,11 +329,27 @@ GraphicsPipelineDescEx graphicsPipelineDescriptor(const fx::FxProgram& program, 
     const auto* graphics = std::get_if<fx::FxRasterDispatch>(&dispatch.executable);
     if (graphics != nullptr) {
         descriptor.rasterizer.cullMode = cullMode(graphics->graphics.rasterizer.cullMode);
+        descriptor.rasterizer.frontFace = frontFace(graphics->graphics.rasterizer.frontFace);
         descriptor.depthStencil.depthTest =
             descriptor.depthFormat.has_value() && graphics->graphics.depthStencil.depthEnable;
         descriptor.depthStencil.depthWrite =
             descriptor.depthStencil.depthTest && graphics->graphics.depthStencil.depthWrite;
         descriptor.depthStencil.depthCompare = compareOp(graphics->graphics.depthStencil.depthFunc);
+        descriptor.depthStencil.stencilTest = graphics->graphics.depthStencil.stencilEnable;
+        descriptor.depthStencil.stencilReadMask = graphics->graphics.depthStencil.stencilReadMask;
+        descriptor.depthStencil.stencilWriteMask = graphics->graphics.depthStencil.stencilWriteMask;
+        const auto stencilState = [](const core::EffectDepthStencilState::StencilFace& source) {
+            return StencilOpStateEx{.fail = stencilOp(source.fail),
+                                    .pass = stencilOp(source.pass),
+                                    .depthFail = stencilOp(source.depthFail),
+                                    .compare = compareOp(source.compare)};
+        };
+        descriptor.depthStencil.front = stencilState(graphics->graphics.depthStencil.front);
+        descriptor.depthStencil.back = stencilState(graphics->graphics.depthStencil.back);
+        descriptor.alphaToCoverage = graphics->graphics.alphaToCoverage;
+        descriptor.independentBlend = graphics->graphics.independentBlend;
+        descriptor.logicOpEnable = graphics->graphics.logicOpEnable;
+        descriptor.logicOp = logicOp(graphics->graphics.logicOp);
         if (graphics->graphics.blend.size() > descriptor.colorFormats.size())
             throw std::invalid_argument("FX blend attachment count exceeds color attachment count");
         descriptor.blendAttachments.resize(descriptor.colorFormats.size());
@@ -292,6 +362,7 @@ GraphicsPipelineDescEx graphicsPipelineDescriptor(const fx::FxProgram& program, 
                                                   .srcAlpha = blendFactor(state.srcAlpha),
                                                   .dstAlpha = blendFactor(state.dstAlpha),
                                                   .alphaOp = blendOp(state.alphaOp)};
+            descriptor.blendAttachments[index].colorWriteMask = state.colorWriteMask;
         }
     }
     return descriptor;
@@ -304,7 +375,8 @@ FxPipelineRuntime::~FxPipelineRuntime() {
 }
 
 handles::ShaderHandle FxPipelineRuntime::compileShader(Device& device, const fx::FxProgram& program,
-                                                       const fx::FxDispatch& dispatch, std::string_view entryPoint,
+                                                       const fx::FxDispatch& dispatch,
+                                                       const fx::FxResolvedPass& resolved, std::string_view entryPoint,
                                                        fx::FxShaderStage stage, const fx::FxShaderCompiler& compiler,
                                                        Entry& entry, std::uint32_t resourceSet,
                                                        const fx::FxNativeShaderSourceOptions& sourceOptions) {
@@ -317,7 +389,7 @@ handles::ShaderHandle FxPipelineRuntime::compileShader(Device& device, const fx:
     fx::FxShaderCompileRequest request;
     request.macros = dispatch.macros;
     request.macros.push_back(passMacro(dispatch.name));
-    const auto generatedSource = fx::makeNativeFxShaderSource(program, dispatch, resourceSet, sourceOptions);
+    const auto generatedSource = fx::makeNativeFxShaderSource(program, dispatch, resourceSet, sourceOptions, &resolved);
     key.sourceHash =
         program.sourcePath.string() + "@" + std::to_string(program.sourceVersion) + "@" + std::to_string(resourceSet);
     key.hlslHash = std::to_string(std::hash<std::string>{}(generatedSource));
@@ -354,8 +426,9 @@ handles::ShaderHandle FxPipelineRuntime::compileShader(Device& device, const fx:
     return shader;
 }
 
-bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, const fx::FxShaderCompiler& compiler,
-                              const LayoutResolver& resolveLayout, std::string* error, std::uint32_t resourceSet,
+bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, const fx::FxFramePlan& framePlan,
+                              const fx::FxShaderCompiler& compiler, const LayoutResolver& resolveLayout,
+                              std::string* error, std::uint32_t resourceSet,
                               const fx::FxNativeShaderSourceOptions& sourceOptions) {
     if (error != nullptr)
         error->clear();
@@ -364,9 +437,15 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
         setError(error, "FX pipeline build requires a pipeline-layout resolver");
         return false;
     }
+    if (framePlan.resolved.size() != program.passes.size()) {
+        setError(error, "FX pipeline build requires one resolved pass per dispatch");
+        return false;
+    }
     device_ = &device;
     try {
-        for (const auto& dispatch : program.passes) {
+        for (std::size_t passIndex = 0; passIndex < program.passes.size(); ++passIndex) {
+            const auto& dispatch = program.passes[passIndex];
+            const auto& resolved = framePlan.resolved[passIndex];
             if (dispatch.kind == fx::FxOpKind::copy || dispatch.kind == fx::FxOpKind::clear ||
                 dispatch.kind == fx::FxOpKind::mipmap || dispatch.kind == fx::FxOpKind::oidn)
                 continue;
@@ -385,11 +464,11 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                 if (raster == nullptr || raster->vertexShader.empty() || raster->pixelShader.empty())
                     throw std::invalid_argument("raster FX pass requires vertex and pixel shaders: " + dispatch.name);
                 const auto vertex =
-                    compileShader(device, program, dispatch, raster->vertexShader, fx::FxShaderStage::vertex, compiler,
-                                  entry, resourceSet, sourceOptions);
+                    compileShader(device, program, dispatch, resolved, raster->vertexShader, fx::FxShaderStage::vertex,
+                                  compiler, entry, resourceSet, sourceOptions);
                 const auto pixel =
-                    compileShader(device, program, dispatch, raster->pixelShader, fx::FxShaderStage::fragment, compiler,
-                                  entry, resourceSet, sourceOptions);
+                    compileShader(device, program, dispatch, resolved, raster->pixelShader, fx::FxShaderStage::fragment,
+                                  compiler, entry, resourceSet, sourceOptions);
                 entry.pipeline = device.createGraphicsPipelineEx(
                     graphicsPipelineDescriptor(program, dispatch, *layout, {vertex, pixel}));
                 break;
@@ -403,8 +482,8 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                     throw std::invalid_argument(
                         "postprocess FX pipeline needs a renderer-owned fullscreen vertex shader: " + dispatch.name);
                 const auto pixel =
-                    compileShader(device, program, dispatch, postprocess->pixelShader, fx::FxShaderStage::fragment,
-                                  compiler, entry, resourceSet, sourceOptions);
+                    compileShader(device, program, dispatch, resolved, postprocess->pixelShader,
+                                  fx::FxShaderStage::fragment, compiler, entry, resourceSet, sourceOptions);
                 entry.pipeline = device.createGraphicsPipelineEx(
                     graphicsPipelineDescriptor(program, dispatch, *layout, {fullscreenVertex, pixel}));
                 break;
@@ -414,8 +493,8 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                 if (compute == nullptr || compute->computeShader.empty())
                     throw std::invalid_argument("compute FX pass requires a compute shader: " + dispatch.name);
                 const auto shader =
-                    compileShader(device, program, dispatch, compute->computeShader, fx::FxShaderStage::compute,
-                                  compiler, entry, resourceSet, sourceOptions);
+                    compileShader(device, program, dispatch, resolved, compute->computeShader,
+                                  fx::FxShaderStage::compute, compiler, entry, resourceSet, sourceOptions);
                 entry.pipeline = device.createComputePipelineEx({.layout = *layout, .shaders = {shader}});
                 break;
             }
@@ -428,12 +507,13 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                 descriptor.maxPayloadSize = ray->maxPayloadSize;
                 descriptor.maxAttributeSize = ray->maxAttributeSize;
                 descriptor.maxRecursionDepth = ray->maxRecursionDepth;
-                descriptor.rayGeneration.push_back(compileShader(device, program, dispatch, ray->rayGenerationShader,
-                                                                 fx::FxShaderStage::rayGeneration, compiler, entry,
-                                                                 resourceSet, sourceOptions));
+                descriptor.rayGeneration.push_back(
+                    compileShader(device, program, dispatch, resolved, ray->rayGenerationShader,
+                                  fx::FxShaderStage::rayGeneration, compiler, entry, resourceSet, sourceOptions));
                 for (const auto& shader : ray->missShaders)
-                    descriptor.miss.push_back(compileShader(device, program, dispatch, shader, fx::FxShaderStage::miss,
-                                                            compiler, entry, resourceSet, sourceOptions));
+                    descriptor.miss.push_back(compileShader(device, program, dispatch, resolved, shader,
+                                                            fx::FxShaderStage::miss, compiler, entry, resourceSet,
+                                                            sourceOptions));
                 for (const auto& group : ray->hitGroups) {
                     RayTracingHitGroupDesc hit;
                     hit.type = group.type == core::fx::FxRayTracingHitGroupType::procedural
@@ -441,19 +521,20 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
                                    : RayTracingHitGroupType::triangles;
                     if (!group.closestHit.empty())
                         hit.closestHit =
-                            compileShader(device, program, dispatch, group.closestHit, fx::FxShaderStage::closestHit,
-                                          compiler, entry, resourceSet, sourceOptions);
+                            compileShader(device, program, dispatch, resolved, group.closestHit,
+                                          fx::FxShaderStage::closestHit, compiler, entry, resourceSet, sourceOptions);
                     if (!group.anyHit.empty())
-                        hit.anyHit = compileShader(device, program, dispatch, group.anyHit, fx::FxShaderStage::anyHit,
-                                                   compiler, entry, resourceSet, sourceOptions);
+                        hit.anyHit =
+                            compileShader(device, program, dispatch, resolved, group.anyHit, fx::FxShaderStage::anyHit,
+                                          compiler, entry, resourceSet, sourceOptions);
                     if (!group.intersection.empty())
                         hit.intersection =
-                            compileShader(device, program, dispatch, group.intersection,
+                            compileShader(device, program, dispatch, resolved, group.intersection,
                                           fx::FxShaderStage::intersection, compiler, entry, resourceSet, sourceOptions);
                     descriptor.hitGroups.push_back(hit);
                 }
                 for (const auto& shader : ray->callableShaders)
-                    descriptor.callable.push_back(compileShader(device, program, dispatch, shader,
+                    descriptor.callable.push_back(compileShader(device, program, dispatch, resolved, shader,
                                                                 fx::FxShaderStage::callable, compiler, entry,
                                                                 resourceSet, sourceOptions));
                 entry.pipeline = device.createRayTracingPipelineEx(descriptor);
@@ -484,6 +565,14 @@ bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, cons
         return false;
     }
     return true;
+}
+
+bool FxPipelineRuntime::build(Device& device, const fx::FxProgram& program, const fx::FxShaderCompiler& compiler,
+                              const LayoutResolver& resolveLayout, std::string* error, std::uint32_t resourceSet,
+                              const fx::FxNativeShaderSourceOptions& sourceOptions) {
+    const auto context = fx::makeFxFrameContext(0.0F, 0, 1, 1, 0, 0, 1, 1, 1, program.meshCloneCount);
+    const auto framePlan = fx::FxCompiler{}.plan(program, context);
+    return build(device, program, framePlan, compiler, resolveLayout, error, resourceSet, sourceOptions);
 }
 
 void FxPipelineRuntime::destroyEntry(const Entry& entry) noexcept {

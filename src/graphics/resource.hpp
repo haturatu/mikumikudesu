@@ -27,11 +27,23 @@ enum class PixelFormat : std::uint8_t {
     rgba8Srgb,
     rgba16Float,
     rgba32Float,
-    depth32Float
+    depth32Float,
+    depth24Stencil8
 };
 
 enum class SamplerFilter : std::uint8_t { nearest, linear };
 enum class SamplerAddressMode : std::uint8_t { repeat, clampToEdge, mirroredRepeat, clampToBorder };
+enum class SamplerCompareOp : std::uint8_t {
+    never,
+    less,
+    equal,
+    lessOrEqual,
+    greater,
+    notEqual,
+    greaterOrEqual,
+    always
+};
+enum class SamplerBorderColor : std::uint8_t { transparentBlack, opaqueBlack, opaqueWhite };
 
 struct SamplerResourceDesc {
     SamplerFilter filter{SamplerFilter::linear};
@@ -39,6 +51,9 @@ struct SamplerResourceDesc {
     SamplerAddressMode addressV{SamplerAddressMode::repeat};
     SamplerAddressMode addressW{SamplerAddressMode::repeat};
     float mipLodBias{};
+    std::uint32_t maxAnisotropy{1};
+    SamplerCompareOp comparison{SamplerCompareOp::always};
+    SamplerBorderColor borderColor{SamplerBorderColor::transparentBlack};
     float minLod{};
     float maxLod{std::numeric_limits<float>::max()};
 };
@@ -287,6 +302,7 @@ struct PhysicalResourceRequirements {
     case PixelFormat::rgba8Unorm:
     case PixelFormat::rgba8Srgb:
     case PixelFormat::depth32Float:
+    case PixelFormat::depth24Stencil8:
         return 4;
     case PixelFormat::rgba16Float:
         return 8;
@@ -336,7 +352,7 @@ struct PhysicalResourceRequirements {
 }
 
 [[nodiscard]] constexpr bool isDepthFormat(PixelFormat format) noexcept {
-    return format == PixelFormat::depth32Float;
+    return format == PixelFormat::depth32Float || format == PixelFormat::depth24Stencil8;
 }
 
 // Frame-indexed retirement queue. Destroyed resources stay alive for

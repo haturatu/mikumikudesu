@@ -131,6 +131,7 @@ class VulkanDevice final : public Device {
     void copyTextureEx(handles::TextureHandle source, handles::TextureHandle destination) override;
     void clearTextureEx(handles::TextureHandle texture, const std::array<float, 4>& value) override;
     void clearBufferEx(handles::BufferHandle buffer, std::uint32_t value) override;
+    void clearBufferEx(handles::BufferHandle buffer, const std::array<float, 4>& value) override;
     void generateMipmapsEx(handles::TextureHandle texture) override;
     void uploadTextureEx(handles::TextureHandle texture, std::span<const std::uint8_t> bytes, std::uint32_t mipLevel,
                          std::uint32_t arrayLayer) override;
@@ -321,6 +322,8 @@ class VulkanDevice final : public Device {
                                    VkAccessFlags2 finalAccess, bool initialized, VkExtent2D extent);
     void recordBindPipeline(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline);
     void recordDrawIndexed(VkCommandBuffer commandBuffer, const IndexedDrawEx& draw);
+    void recordDrawIndexedBufferless(VkCommandBuffer commandBuffer, handles::BufferHandle indexBuffer,
+                                     std::uint32_t indexCount, std::uint32_t instanceCount);
     void recordTransitionTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture);
     void recordTextureTransition(VkCommandBuffer commandBuffer, handles::TextureHandle texture,
                                  VkImageLayout nextLayout);
@@ -331,6 +334,9 @@ class VulkanDevice final : public Device {
     void flushCommandBufferForHostReadback(VkCommandBuffer commandBuffer);
     void recordClearTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture,
                             const std::array<float, 4>& value);
+    void recordClearBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle buffer, std::uint32_t value);
+    void recordClearBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle buffer,
+                           const std::array<float, 4>& value);
     void recordGenerateMipmaps(VkCommandBuffer commandBuffer, handles::TextureHandle texture);
     void recordCopyBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle source,
                           handles::BufferHandle destination);
