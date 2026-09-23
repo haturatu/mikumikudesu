@@ -141,7 +141,7 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
             frame.staticGenerations.reserve(models.size());
             for (const auto& model : models) {
                 frame.vertices.push_back(upload(device, std::span<const NativeSceneVertex>(model.vertices),
-                                                ResourceUsage::storageRead | ResourceUsage::vertexRead |
+                                                ResourceUsage::storageReadWrite | ResourceUsage::vertexRead |
                                                     ResourceUsage::asBuildRead | ResourceUsage::rayTracingRead |
                                                     ResourceUsage::transferSrc,
                                                 "vertices"));

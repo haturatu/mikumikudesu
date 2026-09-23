@@ -203,6 +203,7 @@ struct MockNativeDevice final : dayo::graphics::Device {
     dayo::graphics::handles::BufferHandle createBufferEx(const dayo::graphics::BufferResourceDesc& desc) override {
         const auto handle = dayo::graphics::handles::BufferHandle{nextTypedBuffer_++, 1};
         typedBuffers_.emplace(handle, Buffer{std::vector<std::byte>(desc.size)});
+        typedBufferUsages.emplace_back(handle, desc.usage);
         return handle;
     }
     void destroyTextureEx(dayo::graphics::handles::TextureHandle handle) override {
@@ -323,6 +324,7 @@ struct MockNativeDevice final : dayo::graphics::Device {
     std::size_t frameSlot{};
     dayo::graphics::DescriptorSetLayoutDesc lastDescriptorLayout;
     std::vector<dayo::graphics::DescriptorBindingEx> lastDescriptorBindings;
+    std::vector<std::pair<dayo::graphics::handles::BufferHandle, dayo::graphics::ResourceUsage>> typedBufferUsages;
     std::unordered_map<dayo::graphics::handles::DescriptorSetHandle, std::vector<dayo::graphics::DescriptorBindingEx>>
         descriptorBindings_;
     std::unordered_map<dayo::graphics::handles::BufferHandle, Buffer> typedBuffers_;
@@ -1552,12 +1554,20 @@ int main() {
                     "native scene model runtime allocates one buffer set per model");
         const auto counts = runtime.descriptorCounts();
         const auto bindings = runtime.bindings();
+        const auto vertexUsage = std::ranges::find_if(
+            device.typedBufferUsages, [&](const auto& entry) { return entry.first == bindings.vertexBuffers.front(); });
+        const auto requiredVertexUsage =
+            dayo::graphics::ResourceUsage::storageReadWrite | dayo::graphics::ResourceUsage::vertexRead |
+            dayo::graphics::ResourceUsage::asBuildRead | dayo::graphics::ResourceUsage::rayTracingRead;
         ok &= check(counts.vertexBuffers == 1 && counts.indexBuffers == 1 && counts.materials == 1 &&
                         bindings.vertexBuffers.size() == 1 && bindings.indexBuffers.size() == 1 &&
                         bindings.materials.size() == 1 && bindings.previousVertices.size() == 1 &&
                         bindings.rawVertices.size() == 1 && bindings.previousVertices[0] != bindings.vertexBuffers[0] &&
-                        bindings.rawVertices[0] != bindings.vertexBuffers[0],
-                    "native scene model runtime exposes fixed per-model descriptor arrays");
+                        bindings.rawVertices[0] != bindings.vertexBuffers[0] &&
+                        vertexUsage != device.typedBufferUsages.end() &&
+                        (dayo::graphics::toBits(vertexUsage->second) & dayo::graphics::toBits(requiredVertexUsage)) ==
+                            dayo::graphics::toBits(requiredVertexUsage),
+                    "native scene model runtime exposes writable final vertices to raster and ray tracing");
         const auto uploaded =
             device.readbackBufferEx(bindings.vertexBuffers[0], 0, sizeof(dayo::graphics::NativeSceneVertex));
         dayo::graphics::NativeSceneVertex firstVertex{};
