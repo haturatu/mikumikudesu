@@ -35,6 +35,9 @@ enum class FxRuntimeFeature : std::uint8_t {
 
 struct FxRuntimeRequirements {
     std::vector<FxRuntimeFeature> features;
+    std::uint32_t maxVertexInputSlotCount{};
+    std::uint32_t maxVertexInputSlotIndex{};
+    std::vector<core::EffectVertexFormat> vertexInputFormats;
 
     [[nodiscard]] bool contains(FxRuntimeFeature feature) const noexcept;
     void add(FxRuntimeFeature feature);
