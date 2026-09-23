@@ -7,6 +7,7 @@
 #include "core/asset.hpp"
 #include "core/denoiser.hpp"
 #include "core/fx/fx_controller_resolver.hpp"
+#include "core/fx_debug.hpp"
 #include "core/image.hpp"
 #include "core/log.hpp"
 #include "core/model_execution.hpp"
@@ -4151,22 +4152,69 @@ void Application::buildEditorUi() {
     if (uiState_.fxDebugVisible && ImGui::Begin(workspaceWindowName("FX Debug", "fx-debug").c_str())) {
         if (const auto* effect = scene_.effect()) {
             const auto compiled = core::compileEffectGraph(*effect);
-            ImGui::Text("Resources: %zu", effect->textures.size());
-            for (const auto& texture : effect->textures)
-                ImGui::BulletText("%s (%s)", texture.name.c_str(), texture.format.c_str());
-            ImGui::SeparatorText("Passes");
-            for (std::size_t index = 0; index < compiled.passes.size(); ++index) {
-                const auto& pass = compiled.passes[index];
+            const auto debug = core::FxRuntimeInspector::snapshot(
+                *effect, static_cast<std::uint64_t>(std::max(animationFrame_, 0.0F)));
+            ImGui::Text("Frame: %llu  Inspector: %s  Resources: %u  Global bytes: %u",
+                        static_cast<unsigned long long>(debug.frame), debug.backend.c_str(), debug.resourceCount,
+                        debug.globalVarSize);
+            if (!debug.memos.empty()) {
+                ImGui::TextUnformatted("Memos:");
+                for (const auto& memo : debug.memos)
+                    ImGui::BulletText("%s", memo.c_str());
+            }
+            ImGui::SeparatorText("Resources");
+            for (std::size_t index = 0; index < debug.resources.size(); ++index) {
+                const auto& resource = debug.resources[index];
                 ImGui::PushID(static_cast<int>(index));
-                if (ImGui::TreeNode(pass.name.c_str())) {
-                    ImGui::Text("Type: %s", core::toString(pass.type));
-                    for (const auto& barrier : pass.barriers)
-                        ImGui::BulletText("Barrier: %s", barrier.c_str());
-                    for (const auto& resource : pass.resources)
-                        ImGui::BulletText("%s %s", resource.write ? "Write" : "Read", resource.resource.c_str());
+                if (ImGui::TreeNode(resource.name.c_str())) {
+                    ImGui::Text("Kind: %s  Format: %s  View: %s", resource.kind.c_str(), resource.format.c_str(),
+                                resource.view.c_str());
+                    if (resource.kind == "Buffer")
+                        ImGui::Text("Elements: %u  Element bytes: %u", resource.width, resource.elementSize);
+                    else if (resource.kind != "Sampler")
+                        ImGui::Text("Extent: %u x %u x %u  Mips: %s", resource.width, resource.height, resource.depth,
+                                    resource.mipmapped ? "yes" : "no");
+                    if (!resource.sizeBase.empty())
+                        ImGui::Text("Size base: %s", resource.sizeBase.c_str());
+                    if (!resource.shared.empty())
+                        ImGui::Text("Shared: %s", resource.shared.c_str());
+                    if (!resource.filename.empty())
+                        ImGui::TextWrapped("Source: %s", resource.filename.c_str());
                     ImGui::TreePop();
                 }
                 ImGui::PopID();
+            }
+            ImGui::SeparatorText("Passes");
+            for (std::size_t index = 0; index < debug.passes.size(); ++index) {
+                const auto& debugPass = debug.passes[index];
+                const auto& compiledPass = compiled.passes[index];
+                ImGui::PushID(static_cast<int>(index));
+                if (ImGui::TreeNode(debugPass.name.c_str())) {
+                    ImGui::Text("Type: %s  Functional: %s", debugPass.type.c_str(), debugPass.functionalKind.c_str());
+                    for (const auto& access : debugPass.resources)
+                        ImGui::BulletText("%s %s", access.write ? "Write" : "Read", access.name.c_str());
+                    for (const auto& condition : debugPass.conditions)
+                        ImGui::BulletText("Condition: %s", condition.c_str());
+                    for (const auto& barrier : compiledPass.barriers)
+                        ImGui::BulletText("Barrier: %s", barrier.c_str());
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+            if (!debug.controllers.empty()) {
+                ImGui::SeparatorText("Controllers");
+                for (const auto& controller : debug.controllers) {
+                    ImGui::Text("%s <- %s / %s (%s)", controller.name.c_str(), controller.controller.c_str(),
+                                controller.item.c_str(), controller.type.c_str());
+                    if (controller.slider.has_value()) {
+                        const auto& slider = *controller.slider;
+                        ImGui::Text("Range: %.4g .. %.4g  Step: %.4g  Default: %.4g%s%s", slider.minimum,
+                                    slider.maximum, slider.step, slider.defaultValue,
+                                    slider.logarithmic ? "  logarithmic" : "", slider.integer ? "  integer" : "");
+                    }
+                    if (!controller.description.empty())
+                        ImGui::TextWrapped("%s", controller.description.c_str());
+                }
             }
         } else
             ImGui::TextUnformatted("Load an .fxdayo file to inspect resources and passes.");

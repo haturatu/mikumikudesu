@@ -2,6 +2,7 @@
 #include "core/asset.hpp"
 #include "core/audio_export.hpp"
 #include "core/editor.hpp"
+#include "core/fx_debug.hpp"
 #include "core/image.hpp"
 #include "core/media.hpp"
 #include "core/model_execution.hpp"
@@ -65,6 +66,42 @@ int main() {
         const auto order = dayo::core::stableMotionEvaluationOrder(priorities);
         ok &= check(order == std::vector<std::size_t>{1, 3, 0, 2},
                     "motion evaluation follows configured order and preserves ties");
+    }
+    {
+        dayo::core::EffectGraph graph;
+        dayo::core::EffectTexture volume;
+        volume.name = "volume";
+        volume.format = "R16_FLOAT";
+        volume.view = "UAV";
+        volume.size.base = "DEFAULT_RTSIZE";
+        volume.size.depth = 16;
+        volume.size.dimension = 3;
+        volume.mipmap = true;
+        graph.textures3D.push_back(volume);
+        dayo::core::EffectBuffer buffer;
+        buffer.name = "particles";
+        buffer.type = "Particle";
+        buffer.elementSize = 32;
+        buffer.size.width = 2048;
+        graph.buffers.push_back(buffer);
+        dayo::core::EffectPass pass;
+        pass.name = "clear";
+        pass.type = dayo::core::EffectPassType::clear;
+        pass.inputs.push_back({.name = "source", .clear = false, .clearValue = {}});
+        pass.unorderedAccess.push_back({.name = "target", .clear = false, .clearValue = {}});
+        pass.conditions = {"FRAME > 0"};
+        pass.functionalKind = dayo::core::EffectFunctionalPassKind::clearUav;
+        graph.passes.push_back(pass);
+        graph.memos = {"SkyboxSampler"};
+        graph.globalVarSize = 512;
+        const auto snapshot = dayo::core::FxRuntimeInspector::snapshot(graph, 7);
+        ok &= check(snapshot.passCount == 1 && snapshot.passes.front().resources.size() == 2 &&
+                        snapshot.resources.size() == 2 && snapshot.resources[0].kind == "Texture3D" &&
+                        snapshot.resources[0].depth == 16 && snapshot.resources[1].elementSize == 32 &&
+                        snapshot.passes.front().functionalKind == "clearUAV" &&
+                        snapshot.passes.front().conditions.front() == "FRAME > 0" &&
+                        snapshot.memos.front() == "SkyboxSampler" && snapshot.globalVarSize == 512,
+                    "FX debug inventory keeps resource shape, pass accesses, conditions and host metadata");
     }
     {
         const auto ddsPath = std::filesystem::temp_directory_path() / "mikumikudesu-dds-budget-test.dds";

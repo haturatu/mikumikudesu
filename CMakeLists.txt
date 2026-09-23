@@ -170,6 +170,7 @@ add_library(
   src/core/effect.cpp
   src/core/ffmpeg_utils.cpp
   src/core/fx/fx_expr.cpp
+  src/core/fx_debug.cpp
   src/core/fx/fx_size.cpp
   src/core/fx/fx_symbol.cpp
   src/core/image.cpp
