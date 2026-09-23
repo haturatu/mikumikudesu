@@ -15,6 +15,7 @@
 #include "fx/fx_frame.hpp"
 #include "fx/fx_scheduler.hpp"
 #include "graphics/device.hpp"
+#include "graphics/native_fx_pending_events.hpp"
 #include "graphics/native_oidn_provider.hpp"
 #include "graphics/native_renderer.hpp"
 #include "graphics/native_scene_derived_runtime.hpp"
@@ -73,7 +74,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void requestRenderer(graphics::RendererKind renderer);
     [[nodiscard]] bool ensureNativeSceneRuntime(bool restartRenderer, std::string* error = nullptr);
     [[nodiscard]] fx::FxCameraState makeSceneCameraState() const;
-    [[nodiscard]] fx::FxFrameContext makeNativeFrameContext(const graphics::RenderTargetDesc& target) const;
+    [[nodiscard]] fx::FxFrameContext makeNativeFrameContext(const graphics::RenderTargetDesc& target,
+                                                            const fx::FxHostFrameState& invocationEvents);
     [[nodiscard]] std::optional<graphics::NativeFrameOutput>
     recordNativeFrame(graphics::CommandList& commands, const graphics::RenderTargetDesc& target);
     void setAudioExportDestinationForSource(const std::filesystem::path& source);
@@ -142,10 +144,13 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::vector<float> nativeLightPowers_;
     std::uint64_t nativeDeformVersion_{};
     std::uint64_t nativeMaterialGeneration_{1};
+    graphics::NativeFxPendingEvents nativeFxPendingEvents_;
     std::uint64_t animatedTopologyGeneration_{};
     float animationFrame_{};
     int uploadedAnimationFrame_{-1};
     bool playing_{true};
+    bool nativePlaybackWasActive_{};
+    bool nativeOnStartPending_{true};
     bool repeat_{true};
     float playbackSpeed_{1.0F};
     float audioVolume_{1.0F};

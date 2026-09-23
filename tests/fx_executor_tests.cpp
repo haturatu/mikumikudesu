@@ -1,6 +1,7 @@
 #include "core/fx/fx_controller_resolver.hpp"
 #include "fx/fx_catalog.hpp"
 #include "fx/fx_compiler.hpp"
+#include "fx/fx_condition_runtime.hpp"
 #include "fx/fx_frame.hpp"
 #include "fx/fx_preview_path.hpp"
 #include "fx/fx_scheduler.hpp"
@@ -613,9 +614,10 @@ bool testResolvedPassPlanning() {
     depthSamplePass.name = "depth-sample";
     depthSamplePass.resources.push_back({"Depth", false, fx::FxResourceRole::sampled});
     const auto depthSampleSource = fx::makeNativeFxShaderSource(depthProgram, depthSamplePass, 0);
-    ok &= check(depthAttachmentSource.find("Texture2D<float> Depth") == std::string::npos &&
+    ok &= check(depthAttachmentSource.find("Texture2D<float> Depth;") != std::string::npos &&
+                    depthAttachmentSource.find("Depth : register(") == std::string::npos &&
                     depthSampleSource.find("Texture2D<float> Depth : register(t0") != std::string::npos,
-                "D24S8 is omitted as an attachment-only declaration and emitted as a sampled float texture");
+                "D24S8 attachment stays unbound and is emitted as a sampled float texture in a later pass");
 
     fx::FxProgram bindingProgram;
     core::EffectTexture textureSrv;
@@ -1202,6 +1204,7 @@ bool testViewConstantsAndScreenHistory() {
     context.host.screenBmpMode = 1;
     context.host.backgroundMode = 3;
     context.host.backgroundTransparent = true;
+    context.host.playing = true;
     context.host.denoiserEnabled = true;
     context.host.onResize = true;
     context.modelCount = 4;
@@ -1212,8 +1215,35 @@ bool testViewConstantsAndScreenHistory() {
                     "ViewCB uses frame camera matrices");
     ok &= check(view.selfShadowMode == 2 && view.selfShadowDistance == 4.0F && view.screenBmpMode == 1 &&
                     view.backgroundMode == 3 && view.backgroundTransparent == 1 && view.denoiserEnabled == 1 &&
-                    view.onResize == 1,
+                    view.playing == 1 && view.onResize == 1,
                 "ViewCB carries upstream host frame flags");
+
+    auto expressionContext = context;
+    expressionContext.expressionSymbols.emplace("Exposure", 0.75);
+    auto expressionView = view;
+    expressionView.frameTimes = {12.5F, 0.25F, 10.0F, 0.5F};
+    expressionView.realTimes = {99.0F, 0.75F};
+    expressionView.output = {64, 32, 3, 8};
+    expressionView.cameraFlags = {1, 1};
+    dayo::graphics::populateNativeViewExpressionSymbols(expressionContext, expressionView);
+    dayo::core::fx::FxEvalContext evalContext;
+    evalContext.time = expressionContext.time;
+    evalContext.namedSymbols = expressionContext.expressionSymbols;
+    ok &= check(dayo::core::fx::fxToDouble(
+                    dayo::core::fx::evaluateFxExpr(dayo::core::fx::parseFxExpr("Time"), evalContext)) == 12.5,
+                "Time expression reads the same ViewCB slot uploaded to HLSL");
+    ok &= check(dayo::core::fx::fxToDouble(dayo::core::fx::evaluateFxExpr(
+                    dayo::core::fx::parseFxExpr("DTime + FrameTime + DFrameTime + RealTime + DRealTime"),
+                    evalContext)) == 110.5,
+                "cb.hlsli time symbols resolve from the uploaded ViewCB payload");
+    ok &= check(dayo::core::fx::fxToDouble(dayo::core::fx::evaluateFxExpr(
+                    dayo::core::fx::parseFxExpr("Exposure + Resolution.x + Resolution.y + iSample + SamplesPerFrame"),
+                    evalContext)) == 107.75,
+                "application-provided host symbols coexist with cb.hlsli expression symbols");
+    ok &= check(
+        dayo::core::fx::fxToDouble(dayo::core::fx::evaluateFxExpr(
+            dayo::core::fx::parseFxExpr("Perspective + CameraInterpolated + Playing + OnResize"), evalContext)) == 4.0,
+        "ViewCB scalar flags are available to runtime expressions");
 
     dayo::graphics::NativeScreenRuntime screen;
     std::string error;
@@ -1328,6 +1358,35 @@ bool testFxControllerResolver() {
             return false;
         }(),
         "controller resolver rejects ambiguous model targets");
+    return ok;
+}
+
+bool testFxConditionRuntime() {
+    dayo::fx::FxConditionRuntime runtime;
+    dayo::core::fx::FakeFxResourceTable resourceTable;
+    resourceTable.add("Probe", {.x = 4, .y = 2, .z = 1, .dimension = 2});
+    auto context = testContext();
+    context.frame = 5.75F;
+    context.time = 0.75;
+    context.expressionSymbols.emplace("Exposure", 0.75);
+    context.host.onResize = true;
+    context.host.onModelChanged = true;
+    const std::vector<std::string> conditions = {"frame if FRAME >= 5", "resize if DEFAULT_RTSIZE.x == 64",
+                                                 "modelChanged if Probe.x == 4", "frame if frac(Time) >= 0.5",
+                                                 "frame if Exposure >= 0.5"};
+    bool ok = check(runtime.evaluate(conditions, context, &resourceTable),
+                    "condition runtime combines frame events, predicates, and resource extents");
+    context.expressionSymbols.insert_or_assign("Exposure", 0.25);
+    ok &= check(!runtime.evaluate(conditions, context, &resourceTable),
+                "condition runtime resolves named constant-buffer values from the frame context");
+    context.expressionSymbols.insert_or_assign("Exposure", 0.75);
+    context.frame = 4.0F;
+    ok &= check(!runtime.evaluate(conditions, context, &resourceTable),
+                "condition runtime rejects a false expression predicate");
+    context.frame = 5.0F;
+    context.host.onResize = false;
+    ok &= check(!runtime.evaluate(conditions, context, &resourceTable), "condition runtime rejects an inactive event");
+    ok &= check(runtime.evaluate({}, context), "empty condition list is unconditional");
     return ok;
 }
 
@@ -1764,11 +1823,18 @@ bool testFxResourceRuntimeMaterializesDeclarations() {
                 "FX resource runtime resolves buffers and samplers");
     const auto colorExtent = runtime.extent("Color");
     const auto volumeExtent = runtime.extent("Volume");
+    const auto colorSymbolExtent = runtime.find("Color");
+    const auto volumeSymbolExtent = runtime.find("Volume");
+    const auto bufferSymbolExtent = runtime.find("Lights");
     ok &= check(colorExtent.has_value() && colorExtent->width == 64 && colorExtent->height == 32,
                 "FX resource runtime resolves absolute 2D extents");
     ok &= check(volumeExtent.has_value() && volumeExtent->width == 8 && volumeExtent->height == 4 &&
                     volumeExtent->depth == 2,
                 "FX resource runtime resolves absolute 3D extents");
+    ok &= check(colorSymbolExtent.has_value() && colorSymbolExtent->dimension == 2 && volumeSymbolExtent.has_value() &&
+                    volumeSymbolExtent->dimension == 3 && bufferSymbolExtent.has_value() &&
+                    bufferSymbolExtent->dimension == 1,
+                "FX resource runtime exposes dimension-preserving expression symbols");
     ok &= check(runtime.descriptorLayout().valid() && runtime.descriptorSet().valid() &&
                     runtime.descriptorLayoutDesc().bindings.size() == 4 && device.descriptorBindings_.size() == 4,
                 "FX resource runtime allocates one typed descriptor set");
@@ -1883,25 +1949,38 @@ bool testNativeFxRuntimeRefreshesFrameResources() {
     dispatch.kind = dayo::fx::FxOpKind::compute;
     dispatch.executable = dayo::fx::FxComputeDispatch{"main"};
     dispatch.resources.push_back({"Output", true});
-    program.passes.push_back(std::move(dispatch));
+    dispatch.conditions.emplace_back("frame if FRAME >= 12");
+    program.passes.push_back(dispatch);
+    auto startDispatch = dispatch;
+    startDispatch.name = "start-pass";
+    startDispatch.conditions = {"start"};
+    program.passes.push_back(std::move(startDispatch));
+    auto resizeDispatch = dispatch;
+    resizeDispatch.name = "resize-pass";
+    resizeDispatch.conditions = {"resize"};
+    program.passes.push_back(std::move(resizeDispatch));
+    auto loadDispatch = dispatch;
+    loadDispatch.name = "load-pass";
+    loadDispatch.conditions = {"load"};
+    program.passes.push_back(std::move(loadDispatch));
 
     const auto firstContext = dayo::fx::makeFxFrameContext(12.0F, 3, 4, 2, 1, 0, 3, 1, 1, 1);
     const auto secondContext = dayo::fx::makeFxFrameContext(12.0F, 3, 8, 4, 1, 0, 3, 1, 1, 1);
     const std::array sharedLayouts{dayo::graphics::handles::DescriptorSetLayoutHandle{700, 1}};
     const std::array sharedSets{dayo::graphics::handles::DescriptorSetHandle{800, 1}};
     MockDevice device;
-    dayo::graphics::NativeFxRuntime runtime;
+    dayo::graphics::DayoFxRuntime runtime;
     std::string error;
     bool ok = check(runtime.initializeForFrame(device, std::move(program), compiler, firstContext, sharedLayouts,
                                                &error, sharedSets),
                     "native FX runtime initializes against the first frame context");
-    const auto firstExtent = runtime.resources().extent("Output");
+    const auto firstExtent = runtime.nativeRuntime().resources().extent("Output");
     ok &= check(firstExtent.has_value() && firstExtent->width == 4 && firstExtent->height == 2,
                 "native FX runtime uses the first frame dimensions");
     ok &= check(runtime.refresh(firstContext, &error), "native FX runtime reuses unchanged frame resources");
     const auto allocationsBeforeRefresh = device.textureDescs_.size();
     ok &= check(runtime.refresh(secondContext, &error), "native FX runtime refreshes changed frame resources");
-    const auto secondExtent = runtime.resources().extent("Output");
+    const auto secondExtent = runtime.nativeRuntime().resources().extent("Output");
     ok &= check(secondExtent.has_value() && secondExtent->width == 8 && secondExtent->height == 4,
                 "native FX runtime rebuilds render-size-dependent resources");
     ok &= check(device.textureDescs_.size() == allocationsBeforeRefresh + 1,
@@ -1924,11 +2003,27 @@ bool testNativeFxRuntimeRefreshesFrameResources() {
     };
     auto frame = runtime.prepareFrame(secondContext);
     MockCommands commands;
-    const auto stats = runtime.execute(frame, commands, resources);
-    ok &= check(stats.compute == 1, "native FX runtime executes after a resource refresh");
+    frame.context.frame = 11.0F;
+    const auto firstInvocation = runtime.execute(frame, commands, resources);
+    ok &= check(firstInvocation.compute == 1,
+                "Dayo FX runtime raises OnLoad on first use without synthesizing OnStart or OnResize");
+    frame = runtime.prepareFrame(secondContext);
+    frame.context.frame = 12.0F;
+    const auto frameInvocation = runtime.execute(frame, commands, resources);
+    ok &= check(frameInvocation.compute == 1,
+                "Dayo FX runtime evaluates the frame predicate without repeating one-shot events");
+    frame = runtime.prepareFrame(secondContext);
+    frame.context.host.onStart = true;
+    const auto startInvocation = runtime.execute(frame, commands, resources);
+    ok &= check(startInvocation.compute == 2, "Dayo FX runtime honors the host playback-start event");
+    frame = runtime.prepareFrame(secondContext);
+    frame.context.host.onStart = false;
+    frame.context.host.onResize = true;
+    const auto resizeInvocation = runtime.execute(frame, commands, resources);
+    ok &= check(resizeInvocation.compute == 2, "Dayo FX runtime honors the host resize event");
     const auto descriptorCount =
         static_cast<std::size_t>(std::count(commands.trace.begin(), commands.trace.end(), std::string{"descriptorEx"}));
-    ok &= check(descriptorCount == 2, "native FX runtime appends its resource set to shared descriptor bindings");
+    ok &= check(descriptorCount == 12, "native FX runtime binds the shared and effect resource sets per pass");
     runtime.reset();
     return ok;
 }
@@ -2201,6 +2296,7 @@ bool testFxPipelineRuntime() {
     dispatch.kind = dayo::fx::FxOpKind::compute;
     dispatch.shader = "main";
     dispatch.executable = dayo::fx::FxComputeDispatch{"main"};
+    dispatch.numThreads = {8, 4, 1};
     dispatch.macros = {"NATIVE=1"};
     dispatch.resources = {{"NativeOutput", true}};
     program.passes.push_back(dispatch);
@@ -2213,12 +2309,32 @@ bool testFxPipelineRuntime() {
                                       .descriptorSet = 3});
     const auto generated = dayo::fx::makeNativeFxShaderSource(program, dispatch, 7, sharedSource);
     bool ok = check(generated.find("YRZFX_ControllerCB") != std::string::npos &&
+                        generated.find("#define YRZ_NUMTHREADS [numthreads(8,4,1)]") != std::string::npos &&
                         generated.find("NativeOutput : register(u0, space7)") != std::string::npos &&
                         generated.find("NativeInput : register(t0, space7)") != std::string::npos &&
                         generated.find("NativeData : register(t1, space7)") != std::string::npos &&
                         generated.find("NativeSampler : register(s0, space7)") != std::string::npos &&
                         generated.find("SharedValues : register(t0, space3)") != std::string::npos,
                     "native FX source emits disjoint typed and renderer-shared register classes");
+
+    auto deformDispatch = dispatch;
+    deformDispatch.category = dayo::core::fx::FxCategory::deform;
+    deformDispatch.numThreads = {};
+    const auto deformGenerated = dayo::fx::makeNativeFxShaderSource(program, deformDispatch, 7, sharedSource);
+    ok &= check(deformGenerated.find("#define YRZ_NUMTHREADS [numthreads(1024,1,1)]") != std::string::npos,
+                "native FX source uses the upstream one-dimensional default thread group");
+
+    dayo::core::EffectTexture depthTexture;
+    depthTexture.name = "ZBuf";
+    depthTexture.format = "D32_FLOAT";
+    depthTexture.view = "DSV";
+    program.textures.push_back(depthTexture);
+    auto depthDispatch = dispatch;
+    depthDispatch.resources = {{.name = "ZBuf", .write = true, .role = dayo::fx::FxResourceRole::depthAttachment}};
+    const auto depthGenerated = dayo::fx::makeNativeFxShaderSource(program, depthDispatch, 7, sharedSource);
+    ok &= check(depthGenerated.find("Texture2D<float> ZBuf;") != std::string::npos &&
+                    depthGenerated.find("ZBuf : register(") == std::string::npos,
+                "depth attachments stay out of sampled descriptor plans");
 
     dayo::graphics::FxPipelineRuntime runtime;
     std::string error;
@@ -2349,6 +2465,7 @@ int main() {
     ok &= testNativeSceneDerivedResources();
     ok &= testViewConstantsAndScreenHistory();
     ok &= testFxControllerResolver();
+    ok &= testFxConditionRuntime();
     ok &= testPreviewReferencePath();
     ok &= testSchedulerOrder();
     ok &= testCloneUnification();

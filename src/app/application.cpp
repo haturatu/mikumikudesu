@@ -290,7 +290,8 @@ fx::FxCameraState Application::makeSceneCameraState() const {
     return camera;
 }
 
-fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTargetDesc& target) const {
+fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTargetDesc& target,
+                                                       const fx::FxHostFrameState& invocationEvents) {
     const auto* model = selectedModel();
     const auto* motion =
         scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
@@ -331,6 +332,13 @@ fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTar
         !background.enabled || background.screenSource == core::ScreenTextureSource::white ? 0 : 1;
     context.host.backgroundMode =
         !background.enabled || background.screenSource == core::ScreenTextureSource::white ? 2 : 1;
+    context.host.playing = playing_;
+    context.host.onStart = invocationEvents.onStart;
+    context.host.onResize = invocationEvents.onResize;
+    context.host.onModelChanged = invocationEvents.onModelChanged;
+    context.host.onMaterialChanged = invocationEvents.onMaterialChanged;
+    graphics::populateNativeViewExpressionSymbols(
+        context, graphics::makeNativeViewConstants(context, static_cast<std::uint32_t>(context.totalMaterial)));
     return context;
 }
 
@@ -338,6 +346,7 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                                                                           const graphics::RenderTargetDesc& target) {
     if (device_ == nullptr || device_->activeRenderer() == graphics::RendererKind::preview)
         return std::nullopt;
+    nativeFxPendingEvents_.latch(scene_.dirty(core::DirtyFlag::geometry), scene_.dirty(core::DirtyFlag::material));
     const auto& background = scene_.background();
     if (background.image && background.imagePath &&
         static_cast<std::uint64_t>(background.image->height) * 2U == background.image->width) {
@@ -385,7 +394,9 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         if (!ensureNativeSceneRuntime(true, &sceneError))
             throw std::runtime_error(sceneError.empty() ? "native scene runtime synchronization failed" : sceneError);
         const graphics::Extent3D screenExtent{target.width, target.height, 1};
-        if (!nativeScreenRuntime_.ready() || !nativeScreenRuntime_.matchesExtent(screenExtent)) {
+        const bool nativeResizeEvent =
+            !nativeScreenRuntime_.ready() || !nativeScreenRuntime_.matchesExtent(screenExtent);
+        if (nativeResizeEvent) {
             if (!nativeScreenRuntime_.initialize(*device_, screenExtent, &sceneError))
                 throw std::runtime_error(sceneError.empty() ? "native screen runtime initialization failed"
                                                             : sceneError);
@@ -463,7 +474,11 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
             synchronizeGeometry(bdptRuntime);
         if (!tlas.valid())
             throw std::runtime_error("native scene runtime requires a synchronized TLAS");
-        const auto frameContext = makeNativeFrameContext(target);
+        auto frameContext =
+            makeNativeFrameContext(target, {.onStart = nativeOnStartPending_,
+                                            .onResize = nativeResizeEvent,
+                                            .onModelChanged = nativeFxPendingEvents_.modelChanged,
+                                            .onMaterialChanged = nativeFxPendingEvents_.materialChanged});
         auto sceneResources = nativeSceneResources_.bindings();
         const auto modelResources = nativeSceneModelRuntime_.bindings();
         std::vector<graphics::NativeSceneDerivedModel> derivedModels;
@@ -607,6 +622,8 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
             };
         auto output = nativeRenderer_.recordFrame(commands, frameContext, nativeDirty, materials, lightSampling, {},
                                                   executionResources);
+        nativeOnStartPending_ = false;
+        nativeFxPendingEvents_.clear();
         if (output.has_value())
             nativeScreenRuntime_.publishFrame(commands, output->texture);
         return output;
@@ -685,6 +702,8 @@ void Application::resetProjectRuntimeState() {
     animationFrame_ = 0.0F;
     uploadedAnimationFrame_ = -1;
     playing_ = true;
+    nativePlaybackWasActive_ = false;
+    nativeOnStartPending_ = true;
     manualCamera_ = false;
     cameraYaw_ = 0.0F;
     cameraPitch_ = 0.0F;
@@ -748,8 +767,10 @@ int Application::run() {
         std::cout << device->capabilities().json() << '\n';
         return 0;
     }
-    if (options_.videoExport)
+    if (options_.videoExport) {
+        nativeOnStartPending_ = true;
         return runVideoExport();
+    }
 
     bool running = true;
     std::uint64_t frameCount = 0;
@@ -905,6 +926,9 @@ int Application::run() {
         }
         device->beginUiFrame();
         buildUi();
+        if (playing_ && !nativePlaybackWasActive_)
+            nativeOnStartPending_ = true;
+        nativePlaybackWasActive_ = playing_;
         frameProfiler_.addDrawStats(animatedVertexCount_, static_cast<std::uint64_t>(animatedDraws_.size()));
         {
             auto render = frameProfiler_.measure(core::ProfileSection::render);
@@ -1371,6 +1395,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
 }
 
 void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
+    nativeFxPendingEvents_.latch(scene_.dirty(core::DirtyFlag::geometry), scene_.dirty(core::DirtyFlag::material));
     if (device_ == nullptr || scene_.models().empty())
         return;
     if (scene_.dirty(core::DirtyFlag::material)) {
@@ -2668,6 +2693,7 @@ void Application::startImageSequenceExport() {
         evaluateExportFrame(0.0F, 0.0F, true);
         imageSequenceOutput_.emplace(std::move(output));
         imageSequenceExportRunning_ = true;
+        nativeOnStartPending_ = true;
         playing_ = false;
         if (audioPlayer_.active())
             audioPlayer_.setPaused(true);
@@ -3861,6 +3887,7 @@ void Application::buildVideoExportUi() {
                         videoPreRollDone_ = false;
                         videoExportFramesFinished_ = false;
                         videoExportUiActive_ = true;
+                        nativeOnStartPending_ = true;
                         playing_ = false;
                         videoExportStatus_.clear();
                         audioPlayer_.stop();

@@ -1,5 +1,6 @@
 #include "fx/fx_compiler.hpp"
 #include "graphics/fx_raster_semantics.hpp"
+#include "graphics/native_fx_pending_events.hpp"
 #include "graphics/native_renderer.hpp"
 
 #include <array>
@@ -33,6 +34,15 @@ dayo::graphics::DeviceCapabilities capableSubayai() {
 
 int main() {
     bool ok = true;
+
+    dayo::graphics::NativeFxPendingEvents pendingEvents;
+    pendingEvents.latch(true, false);
+    pendingEvents.latch(false, true);
+    ok &= check(pendingEvents.modelChanged && pendingEvents.materialChanged,
+                "native FX change events remain latched across scene dirty-flag clearing");
+    pendingEvents.clear();
+    ok &= check(!pendingEvents.modelChanged && !pendingEvents.materialChanged,
+                "native FX change events clear after the effect stack completes");
 
     const auto sceneContext = dayo::fx::makeFxFrameContext(12.0F, 3, 640, 480, 7, 0, 100, 2, 1, 1);
     const dayo::graphics::NativeEffectModel modelA{

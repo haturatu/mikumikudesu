@@ -2,10 +2,15 @@
 
 #include "core/log.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <limits>
+#include <numbers>
 #include <optional>
+#include <ranges>
+#include <span>
 #include <stdexcept>
 
 namespace dayo::core::fx {
@@ -336,7 +341,7 @@ class Parser {
         std::size_t saved = pos_;
         skipWs();
         if (peek() == '(') {
-            if (name != "pow" && name != "min" && name != "max")
+            if (!isSupportedFxFunction(name))
                 throw std::runtime_error("fx expression has unknown function: " + name);
             ++pos_;
             std::vector<std::shared_ptr<FxExpr>> args;
@@ -377,7 +382,19 @@ class Parser {
     std::size_t depth_{};
 };
 
-bool resolveBuiltin(std::string_view name, const FxEvalContext& context, FxScalar& out) noexcept {
+bool resolveBuiltin(std::string_view name, const FxEvalContext& context, FxScalar& out) {
+    if (name == "pi") {
+        out = std::numbers::pi_v<double>;
+        return true;
+    }
+    if (name == "Time") {
+        out = context.time;
+        return true;
+    }
+    if (const auto found = context.namedSymbols.find(std::string(name)); found != context.namedSymbols.end()) {
+        out = found->second;
+        return true;
+    }
     if (name == "DEFAULT_RTSIZE.x") {
         out = context.rtWidth;
         return true;
@@ -510,47 +527,11 @@ FxScalar evalBinary(FxExpr::BinaryOp op, const FxScalar& lhs, const FxScalar& rh
 
 FxScalar evalCall(const FxExpr::Call& call, const FxEvalContext& context, FxCompatibilityProfile profile,
                   bool allowPowQuirk) {
-    if (call.name == "pow") {
-        if (call.args.size() != 2)
-            throw std::runtime_error("pow() expects 2 arguments");
-        if (profile == FxCompatibilityProfile::upstream130 && !allowPowQuirk) {
-            dayo::log::warn("fx pow() rejected under upstream130 without quirk allowlist");
-            throw std::runtime_error("pow() requires quirk allowlist under upstream130");
-        }
-        const double base = toDoubleImpl(evalNode(*call.args[0], context, profile, allowPowQuirk));
-        const double exp = toDoubleImpl(evalNode(*call.args[1], context, profile, allowPowQuirk));
-        return FxScalar{std::pow(base, exp)};
-    }
-    if (call.name == "min" || call.name == "max") {
-        if (call.args.size() < 2)
-            throw std::runtime_error(call.name + "() expects at least 2 arguments");
-        const bool wantMin = call.name == "min";
-        bool hasDouble = false;
-        for (const auto& arg : call.args) {
-            if (std::holds_alternative<double>(evalNode(*arg, context, profile, allowPowQuirk)))
-                hasDouble = true;
-        }
-        if (hasDouble) {
-            double best = toDoubleImpl(evalNode(*call.args[0], context, profile, allowPowQuirk));
-            for (std::size_t i = 1; i < call.args.size(); ++i) {
-                const double v = toDoubleImpl(evalNode(*call.args[i], context, profile, allowPowQuirk));
-                best = wantMin ? std::fmin(best, v) : std::fmax(best, v);
-            }
-            return FxScalar{best};
-        }
-        auto asInt = [](const FxScalar& v) -> std::int64_t {
-            if (const auto* b = std::get_if<bool>(&v))
-                return *b ? 1 : 0;
-            return std::get<std::int64_t>(v);
-        };
-        std::int64_t best = asInt(evalNode(*call.args[0], context, profile, allowPowQuirk));
-        for (std::size_t i = 1; i < call.args.size(); ++i) {
-            const std::int64_t v = asInt(evalNode(*call.args[i], context, profile, allowPowQuirk));
-            best = wantMin ? std::min(best, v) : std::max(best, v);
-        }
-        return FxScalar{best};
-    }
-    throw std::runtime_error("fx expression has unknown function: " + call.name);
+    std::vector<FxScalar> arguments;
+    arguments.reserve(call.args.size());
+    for (const auto& argument : call.args)
+        arguments.push_back(evalNode(*argument, context, profile, allowPowQuirk));
+    return evaluateFxFunction(call.name, arguments);
 }
 
 FxScalar evalNode(const FxExpr& expr, const FxEvalContext& context, FxCompatibilityProfile profile,
@@ -601,7 +582,7 @@ FxExprDependency depOfIdent(std::string_view name) noexcept {
         return FxExprDependency::Model;
     if (name == "TOTALMATERIAL")
         return FxExprDependency::Material;
-    if (name == "FRAME" || name == "FRAMEINDEX" || name == "SAMPLE" || name == "SAMPLEINDEX")
+    if (name == "Time" || name == "FRAME" || name == "FRAMEINDEX" || name == "SAMPLE" || name == "SAMPLEINDEX")
         return FxExprDependency::Frame;
     return FxExprDependency::Static;
 }
@@ -635,7 +616,180 @@ FxExprDependency depOf(const FxExpr& expr) noexcept {
     return FxExprDependency::Static;
 }
 
+constexpr std::array<std::string_view, 42> kSupportedFunctions{
+    "sin",  "cos",        "tan",  "asin", "acos",    "atan",    "atan2",  "sinh",  "cosh",  "tanh",     "exp",
+    "log",  "sqrt",       "exp2", "log2", "log10",   "pow",     "abs",    "floor", "ceil",  "trunc",    "round",
+    "frac", "fmod",       "mod",  "sign", "degrees", "radians", "min",    "max",   "clamp", "saturate", "lerp",
+    "step", "smoothstep", "bit",  "hsvR", "hsvG",    "hsvB",    "select", "hash",  "noise"};
+
+std::uint32_t hashSeed(double input) {
+    const double value = std::trunc(static_cast<float>(input));
+    double wrapped = std::fmod(value, 4294967296.0);
+    if (wrapped < 0.0)
+        wrapped += 4294967296.0;
+    return static_cast<std::uint32_t>(wrapped);
+}
+
+double hashValue(double input) {
+    std::uint32_t x = hashSeed(input);
+    std::uint32_t y = 114U;
+    std::uint32_t z = 514U;
+    const auto pcgStep = [](std::uint32_t value) { return value * 1664525U + 1013904223U; };
+    x = pcgStep(x);
+    y = pcgStep(y);
+    z = pcgStep(z);
+    x += y * z;
+    y += z * x;
+    z += x * y;
+    x ^= x >> 16U;
+    y ^= y >> 16U;
+    z ^= z >> 16U;
+    x += y * z;
+    return static_cast<double>(x) / 4294967296.0;
+}
+
+FxScalar evaluateFunctionImpl(std::string_view name, std::span<const FxScalar> arguments) {
+    const auto value = [&arguments](std::size_t index) { return toDoubleImpl(arguments[index]); };
+    const auto require = [name, &arguments](std::size_t count) {
+        if (arguments.size() != count)
+            throw std::runtime_error(std::string(name) + "() expects " + std::to_string(count) + " arguments");
+    };
+    if (name == "min" || name == "max") {
+        require(2);
+        return FxScalar{name == "min" ? std::fmin(value(0), value(1)) : std::fmax(value(0), value(1))};
+    }
+    if (name == "sin" || name == "cos" || name == "tan" || name == "asin" || name == "acos" || name == "atan" ||
+        name == "sinh" || name == "cosh" || name == "tanh" || name == "exp" || name == "log" || name == "sqrt" ||
+        name == "exp2" || name == "log2" || name == "log10" || name == "abs" || name == "floor" || name == "ceil" ||
+        name == "trunc" || name == "round" || name == "frac" || name == "sign" || name == "degrees" ||
+        name == "radians" || name == "saturate" || name == "hash" || name == "noise") {
+        require(1);
+        const double input = value(0);
+        if (name == "sin")
+            return FxScalar{std::sin(input)};
+        if (name == "cos")
+            return FxScalar{std::cos(input)};
+        if (name == "tan")
+            return FxScalar{std::tan(input)};
+        if (name == "asin")
+            return FxScalar{std::asin(input)};
+        if (name == "acos")
+            return FxScalar{std::acos(input)};
+        if (name == "atan")
+            return FxScalar{std::atan(input)};
+        if (name == "sinh")
+            return FxScalar{std::sinh(input)};
+        if (name == "cosh")
+            return FxScalar{std::cosh(input)};
+        if (name == "tanh")
+            return FxScalar{std::tanh(input)};
+        if (name == "exp")
+            return FxScalar{std::exp(input)};
+        if (name == "log")
+            return FxScalar{std::log(input)};
+        if (name == "sqrt")
+            return FxScalar{std::sqrt(input)};
+        if (name == "exp2")
+            return FxScalar{std::exp2(input)};
+        if (name == "log2")
+            return FxScalar{std::log2(input)};
+        if (name == "log10")
+            return FxScalar{std::log10(input)};
+        if (name == "abs")
+            return FxScalar{std::fabs(input)};
+        if (name == "floor")
+            return FxScalar{std::floor(input)};
+        if (name == "ceil")
+            return FxScalar{std::ceil(input)};
+        if (name == "trunc")
+            return FxScalar{std::trunc(input)};
+        if (name == "round")
+            return FxScalar{std::round(input)};
+        if (name == "frac")
+            return FxScalar{input - std::floor(input)};
+        if (name == "sign")
+            return FxScalar{input == 0.0 ? 0.0 : (input > 0.0 ? 1.0 : -1.0)};
+        if (name == "degrees")
+            return FxScalar{input * 180.0 / std::numbers::pi_v<double>};
+        if (name == "radians")
+            return FxScalar{input * std::numbers::pi_v<double> / 180.0};
+        if (name == "saturate")
+            return FxScalar{std::clamp(input, 0.0, 1.0)};
+        if (name == "hash")
+            return FxScalar{hashValue(input)};
+        const double fraction = input - std::floor(input);
+        const double integer = input - fraction;
+        const double blend = fraction * fraction * fraction * (fraction * (fraction * 6.0 - 15.0) + 10.0);
+        return FxScalar{hashValue(integer) * (1.0 - blend) + hashValue(integer + 1.0) * blend};
+    }
+    if (name == "pow" || name == "atan2" || name == "fmod" || name == "mod" || name == "step" || name == "bit") {
+        require(2);
+        const double lhs = value(0);
+        const double rhs = value(1);
+        if (name == "pow")
+            return FxScalar{std::pow(lhs, rhs)};
+        if (name == "atan2")
+            return FxScalar{std::atan2(lhs, rhs)};
+        if (name == "fmod")
+            return FxScalar{std::fmod(lhs, rhs)};
+        if (name == "mod") {
+            if (rhs == 0.0)
+                throw std::runtime_error("mod() divisor is zero");
+            return FxScalar{lhs - rhs * std::floor(lhs / rhs)};
+        }
+        if (name == "step")
+            return FxScalar{lhs >= rhs};
+        if (!std::isfinite(lhs) || !std::isfinite(rhs) || lhs < std::numeric_limits<std::int32_t>::min() ||
+            lhs > std::numeric_limits<std::int32_t>::max() || rhs < 0.0 || rhs >= 32.0)
+            throw std::runtime_error("bit() argument is out of range");
+        const auto bits = static_cast<std::uint32_t>(static_cast<std::int32_t>(lhs));
+        const auto shift = static_cast<std::uint32_t>(rhs);
+        return FxScalar{static_cast<double>((bits >> shift) & 1U)};
+    }
+    if (name == "clamp" || name == "lerp" || name == "select" || name == "smoothstep") {
+        require(3);
+        const double first = value(0);
+        const double second = value(1);
+        const double third = value(2);
+        if (name == "clamp")
+            return FxScalar{std::max(std::min(third, first), second)};
+        if (name == "lerp")
+            return FxScalar{first * (1.0 - third) + second * third};
+        if (name == "select")
+            return FxScalar{fxToBool(arguments[0]) ? second : third};
+        if (first == second)
+            return FxScalar{first <= third ? 0.0 : 1.0};
+        const double u = (third - first) / (second - first);
+        const double x = std::max(0.0, std::min(u, 1.0));
+        return FxScalar{x * x * (3.0 - 2.0 * x)};
+    }
+    if (name == "hsvR" || name == "hsvG" || name == "hsvB") {
+        require(3);
+        double hue = value(0);
+        const double saturation = std::clamp(value(1), 0.0, 1.0);
+        const double brightness = value(2);
+        if (name == "hsvG")
+            hue += 2.0 / 3.0;
+        else if (name == "hsvB")
+            hue += 1.0 / 3.0;
+        const double component = std::fabs((hue - std::floor(hue)) * 2.0 - 1.0) * 3.0 - 1.0;
+        const double sat = std::clamp(component, 0.0, 1.0);
+        return FxScalar{((sat - 1.0) * saturation + 1.0) * brightness};
+    }
+    throw std::runtime_error("fx expression has unknown function: " + std::string(name));
+}
+
 } // namespace
+
+bool isSupportedFxFunction(std::string_view name) noexcept {
+    return std::ranges::find(kSupportedFunctions, name) != kSupportedFunctions.end();
+}
+
+FxScalar evaluateFxFunction(std::string_view name, std::span<const FxScalar> arguments) {
+    if (!isSupportedFxFunction(name))
+        throw std::runtime_error("fx expression has unknown function: " + std::string(name));
+    return evaluateFunctionImpl(name, arguments);
+}
 
 FxExpr parseFxExpr(std::string_view text) {
     Parser parser(text);

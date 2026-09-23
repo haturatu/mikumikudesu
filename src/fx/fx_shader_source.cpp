@@ -332,13 +332,12 @@ void appendTextureDeclarations(std::ostringstream& output, const FxProgram& prog
     for (const auto& texture : program.textures) {
         const auto write = dispatchWrites(dispatch, texture.name);
         const auto color = dispatchUsesAsColor(dispatch, texture.name);
-        if (color) {
+        const auto depth = dispatchUsesAsDepth(dispatch, texture.name);
+        if (color || depth) {
             output << "Texture2D<" << elementType(texture.format) << "> " << identifier(texture.name) << ";\n";
             continue;
         }
         const auto* planned = bindings.find(texture.name);
-        if (planned == nullptr && dispatchUsesAsDepth(dispatch, texture.name))
-            continue;
         if (planned == nullptr)
             throw std::logic_error("FX binding plan omitted texture: " + texture.name);
         const auto binding = planned->binding - fxDescriptorBindingBaseForUse(planned->descriptorClass, write);

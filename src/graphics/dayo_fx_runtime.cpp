@@ -24,6 +24,10 @@ bool DayoFxRuntime::initialize(Device& device, fx::FxProgram program, const fx::
                                std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts, std::string* error,
                                std::span<const handles::DescriptorSetHandle> sharedDescriptorSets,
                                fx::FxNativeShaderSourceOptions sourceOptions) {
+    conditionRuntime_.clear();
+    hasExecuted_ = false;
+    lastRenderWidth_ = 0;
+    lastRenderHeight_ = 0;
     return runtime_.initialize(device, std::move(program), compiler, sharedLayouts, error, sharedDescriptorSets,
                                std::move(sourceOptions));
 }
@@ -34,6 +38,10 @@ bool DayoFxRuntime::initializeForFrame(Device& device, fx::FxProgram program, co
                                        std::string* error,
                                        std::span<const handles::DescriptorSetHandle> sharedDescriptorSets,
                                        fx::FxNativeShaderSourceOptions sourceOptions) {
+    conditionRuntime_.clear();
+    hasExecuted_ = false;
+    lastRenderWidth_ = 0;
+    lastRenderHeight_ = 0;
     return runtime_.initializeForFrame(device, std::move(program), compiler, context, sharedLayouts, error,
                                        sharedDescriptorSets, std::move(sourceOptions));
 }
@@ -44,6 +52,10 @@ bool DayoFxRuntime::refresh(const fx::FxFrameContext& context, std::string* erro
 
 void DayoFxRuntime::reset() noexcept {
     runtime_.reset();
+    conditionRuntime_.clear();
+    hasExecuted_ = false;
+    lastRenderWidth_ = 0;
+    lastRenderHeight_ = 0;
 }
 
 void DayoFxRuntime::addProvider(FxExternalResourceProvider& provider) {
@@ -62,7 +74,18 @@ NativeFxFrame DayoFxRuntime::prepareFrame(const fx::FxFrameContext& context,
 
 VulkanFxExecutor::Stats DayoFxRuntime::execute(NativeFxFrame& frame, CommandList& commands,
                                                const FxExecutionResources& resources) const {
+    const bool firstInvocation = !hasExecuted_;
+    const bool resized = hasExecuted_ && (lastRenderWidth_ != frame.context.renderWidth ||
+                                          lastRenderHeight_ != frame.context.renderHeight);
+    frame.context.host.onLoad = frame.context.host.onLoad || firstInvocation;
+    frame.context.host.onResize = frame.context.host.onResize || resized;
     auto nativeResources = resources;
+    if (!nativeResources.evaluateConditions) {
+        nativeResources.evaluateConditions = [this](std::span<const std::string> conditions,
+                                                    const fx::FxFrameContext& context) {
+            return conditionRuntime_.evaluate(conditions, context, &runtime_.resources());
+        };
+    }
     const auto existingResolver = resources.resolveTypedResource;
     const auto providers = providers_;
     nativeResources.resolveTypedResource =
@@ -107,7 +130,11 @@ VulkanFxExecutor::Stats DayoFxRuntime::execute(NativeFxFrame& frame, CommandList
         if (existingAfter)
             existingAfter(dispatch, list);
     };
-    return runtime_.execute(frame, commands, nativeResources);
+    auto stats = runtime_.execute(frame, commands, nativeResources);
+    hasExecuted_ = true;
+    lastRenderWidth_ = frame.context.renderWidth;
+    lastRenderHeight_ = frame.context.renderHeight;
+    return stats;
 }
 
 std::optional<NativeFrameOutput> DayoFxRuntime::output(const NativeFxFrame& frame) const {
