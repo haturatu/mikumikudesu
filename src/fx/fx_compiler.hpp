@@ -107,10 +107,9 @@ struct FxDispatch {
                std::uint32_t widthDenominator, std::vector<ResourceUse> passResources,
                std::vector<std::string> passConditions, FxExecutable passExecutable,
                std::vector<std::string> passMacros)
-        : name(std::move(passName)), kind(passKind), shader(std::move(passShader)),
-          widthRatioNumerator(widthNumerator), widthRatioDenominator(widthDenominator),
-          resources(std::move(passResources)), conditions(std::move(passConditions)),
-          executable(std::move(passExecutable)), macros(std::move(passMacros)) {}
+        : name(std::move(passName)), kind(passKind), shader(std::move(passShader)), widthRatioNumerator(widthNumerator),
+          widthRatioDenominator(widthDenominator), resources(std::move(passResources)),
+          conditions(std::move(passConditions)), executable(std::move(passExecutable)), macros(std::move(passMacros)) {}
     std::string name;
     FxOpKind kind{FxOpKind::raster};
     std::string shader;
@@ -147,9 +146,8 @@ enum class FxDescriptorClass : std::uint8_t {
     switch (descriptorClass) {
     case FxDescriptorClass::storageImage:
         return 0;
-    case FxDescriptorClass::storageBuffer:
-        return 16;
     case FxDescriptorClass::sampledImage:
+    case FxDescriptorClass::storageBuffer:
     case FxDescriptorClass::accelerationStructure:
         return 16;
     case FxDescriptorClass::sampler:
@@ -174,9 +172,9 @@ enum class FxDescriptorClass : std::uint8_t {
 }
 
 [[nodiscard]] constexpr std::uint32_t fxDescriptorBindingBaseForUse(FxDescriptorClass descriptorClass,
-                                                                     bool writable) noexcept {
+                                                                    bool writable) noexcept {
     return descriptorClass == FxDescriptorClass::storageBuffer && writable ? 0U
-                                                                             : fxDescriptorBindingBase(descriptorClass);
+                                                                           : fxDescriptorBindingBase(descriptorClass);
 }
 
 struct FxLogicalBinding {

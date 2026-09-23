@@ -127,8 +127,7 @@ class FxResourceRuntime {
     descriptorLayoutFor(const fx::FxDispatch& dispatch) const {
         return passDescriptors_.resolveDescriptorLayout(dispatch);
     }
-    [[nodiscard]] std::optional<handles::DescriptorSetHandle>
-    descriptorSetFor(const fx::FxDispatch& dispatch) const {
+    [[nodiscard]] std::optional<handles::DescriptorSetHandle> descriptorSetFor(const fx::FxDispatch& dispatch) const {
         return passDescriptors_.resolveDescriptorSet(dispatch);
     }
     [[nodiscard]] const fx::FxPassBindingPlan* bindingPlan(const fx::FxDispatch& dispatch) const noexcept {
