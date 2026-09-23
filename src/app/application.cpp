@@ -1709,8 +1709,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             native.deformedVertices.push_back(seed);
         }
         if (!native.baseVertices.empty() && !native.indices.empty()) {
-            auto nativeModel =
-                graphics::makeNativeSceneModelData(*instance.model, native.baseVertices, frame.materials);
+            auto nativeModel = graphics::makeNativeSceneModelData(*instance.model, native.baseVertices, frame.materials,
+                                                                  instance.normalization);
             const auto hasLoadedPmxTexture = [&instance](std::int32_t index) {
                 return index >= 0 && static_cast<std::size_t>(index) < instance.model->textures.size() &&
                        hasLoadedTexture(instance.textures, index);

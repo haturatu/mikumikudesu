@@ -79,7 +79,10 @@ struct alignas(16) NativeSceneWalkerAlias {
 static_assert(sizeof(NativeSceneWalkerAlias) == 16);
 
 struct NativeSceneModelData {
+    // Per-frame evaluated vertices consumed by raster and acceleration paths.
     std::vector<NativeSceneVertex> vertices;
+    // Immutable bind-pose source consumed by deform shaders through RawVB.
+    std::vector<NativeSceneVertex> rawVertices;
     std::vector<std::uint32_t> indices;
     std::vector<NativeSceneMaterial> materials;
     // One material index per triangle, matching Faces[model][face].
@@ -131,6 +134,7 @@ makeNativeSceneMaterial(const mmd::PmxMaterial& material,
 // NativeSceneResourceGpuRuntime owns the corresponding device buffers.
 [[nodiscard]] NativeSceneModelData
 makeNativeSceneModelData(const mmd::PmxModel& model, std::span<const PreviewVertex> vertices,
-                         std::span<const mmd::AnimatedModelFrame::Material> animatedMaterials = {});
+                         std::span<const mmd::AnimatedModelFrame::Material> animatedMaterials = {},
+                         mmd::PreviewNormalization normalization = {});
 
 } // namespace dayo::graphics

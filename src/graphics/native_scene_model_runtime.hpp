@@ -54,6 +54,7 @@ class NativeSceneModelRuntime {
         std::vector<handles::BufferHandle> vertices;
         std::vector<handles::BufferHandle> previousVertices;
         std::vector<handles::BufferHandle> rawVertices;
+        std::vector<handles::BufferHandle> rawVertexStaging;
         std::vector<handles::BufferHandle> vertexStaging;
         std::vector<handles::BufferHandle> indices;
         std::vector<handles::BufferHandle> indexStaging;
@@ -76,6 +77,7 @@ class NativeSceneModelRuntime {
     Device* device_{};
     std::array<FrameResources, kNativeFramesInFlight> frameResources_;
     std::vector<std::size_t> vertexBytes_;
+    std::vector<std::size_t> rawVertexBytes_;
     std::vector<std::size_t> indexBytes_;
     std::vector<std::size_t> materialBytes_;
     std::vector<std::size_t> faceBytes_;
