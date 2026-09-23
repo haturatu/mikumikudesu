@@ -24,7 +24,8 @@ void setError(std::string* error, std::string value) {
 
 [[nodiscard]] bool sameResult(const EnvironmentGpuResult& left, const EnvironmentGpuResult& right) noexcept {
     return left.cubemap == right.cubemap && left.prefiltered == right.prefiltered &&
-           left.sphericalHarmonics == right.sphericalHarmonics && left.skywalkerVersion == right.skywalkerVersion;
+           left.sphericalHarmonics == right.sphericalHarmonics && left.skywalkerVersion == right.skywalkerVersion &&
+           left.skybox == right.skybox;
 }
 
 } // namespace

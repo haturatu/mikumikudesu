@@ -111,6 +111,80 @@ float videoSourceFrame(std::uint64_t outputFrame, std::uint64_t firstFrame, std:
     return static_cast<float>(std::min(static_cast<double>(lastFrame), value));
 }
 
+std::uint64_t environmentFileVersion(const std::filesystem::path& path) noexcept {
+    std::error_code error;
+    const auto timestamp = std::filesystem::last_write_time(path, error);
+    if (error)
+        return 0;
+    const auto fileSize = std::filesystem::file_size(path, error);
+    if (error)
+        return static_cast<std::uint64_t>(timestamp.time_since_epoch().count());
+    const auto ticks = static_cast<std::uint64_t>(timestamp.time_since_epoch().count());
+    return ticks ^ (fileSize + 0x9e3779b97f4a7c15ULL + (ticks << 6U) + (ticks >> 2U));
+}
+
+bool hasEffectMemo(const core::SceneEffectStack& effects, const fx::FxProgram* rendererProgram,
+                   std::string_view requested) {
+    const auto equalMemo = [requested](std::string_view memo) {
+        return memo.size() == requested.size() &&
+               std::equal(memo.begin(), memo.end(), requested.begin(), [](unsigned char left, unsigned char right) {
+                   return std::tolower(left) == std::tolower(right);
+               });
+    };
+    const auto matches = [&equalMemo](const core::EffectGraph& graph) {
+        return std::ranges::any_of(graph.memos, [&](const std::string& memo) { return equalMemo(memo); });
+    };
+    if (std::ranges::any_of(effects.deform, [&](const auto& effect) { return matches(effect.graph); }) ||
+        std::ranges::any_of(effects.postprocess, [&](const auto& effect) { return matches(effect.graph); }) ||
+        (effects.renderer.has_value() && matches(effects.renderer->graph)))
+        return true;
+    if (rendererProgram == nullptr)
+        return false;
+    return std::ranges::any_of(rendererProgram->memos, [&](const std::string& memo) { return equalMemo(memo); });
+}
+
+std::optional<std::filesystem::path> findDayoHlslDirectory(const core::SceneEffectStack& effects,
+                                                           const fx::FxProgram* rendererProgram) {
+    std::vector<std::filesystem::path> sources;
+    if (rendererProgram != nullptr && !rendererProgram->sourcePath.empty())
+        sources.push_back(rendererProgram->sourcePath);
+    const auto appendSources = [&sources](const auto& instances) {
+        for (const auto& instance : instances) {
+            if (!instance.source.empty())
+                sources.push_back(instance.source);
+            if (!instance.graph.sourcePath.empty())
+                sources.push_back(instance.graph.sourcePath);
+        }
+    };
+    appendSources(effects.deform);
+    appendSources(effects.postprocess);
+    if (effects.renderer.has_value()) {
+        sources.push_back(effects.renderer->source);
+        sources.push_back(effects.renderer->graph.sourcePath);
+    }
+
+    std::error_code error;
+    for (const auto& source : sources) {
+        if (source.empty())
+            continue;
+        auto directory = source.parent_path();
+        while (!directory.empty()) {
+            const auto hlsl = directory / "hlsl";
+            error.clear();
+            const bool hasPdf = std::filesystem::is_regular_file(hlsl / "system" / "skyboxPDF.hlsl", error);
+            error.clear();
+            const bool hasSh = std::filesystem::is_regular_file(hlsl / "system" / "skyboxSH.hlsl", error);
+            if (hasPdf && hasSh)
+                return std::filesystem::absolute(hlsl).lexically_normal();
+            const auto parent = directory.parent_path();
+            if (parent == directory)
+                break;
+            directory = parent;
+        }
+    }
+    return std::nullopt;
+}
+
 #if DAYO_HAS_IMGUI
 const char* workspaceSuffix(ui::Workspace workspace) noexcept {
     switch (workspace) {
@@ -362,10 +436,40 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
 #endif
     nativeFxPendingEvents_.latch(scene_.dirty(core::DirtyFlag::geometry), scene_.dirty(core::DirtyFlag::material));
     const auto& background = scene_.background();
+    const bool skyboxPrefilterRequested = hasEffectMemo(scene_.effects(), nativeRenderer_.program(), "skyboxprefilter");
+    if (skyboxPrefilterRequested && !skyboxPrefilterFallbackWarned_) {
+        log::warn("SkyboxPrefilter is requested, but the upstream 2D mip-prefilter path is not implemented; "
+                  "using the unfiltered environment until runtime support is available");
+        skyboxPrefilterFallbackWarned_ = true;
+    } else if (!skyboxPrefilterRequested) {
+        skyboxPrefilterFallbackWarned_ = false;
+    }
     if (background.image && background.imagePath &&
         static_cast<std::uint64_t>(background.image->height) * 2U == background.image->width) {
+        const auto sourceVersion = environmentFileVersion(*background.imagePath);
         static_cast<void>(nativeRenderer_.updateEnvironment(
-            {.source = background.imagePath->string(), .exposure = 1.0F, .version = 1}));
+            {.source = background.imagePath->string(), .exposure = 1.0F, .version = sourceVersion}));
+        const auto& environment = nativeRenderer_.environment();
+        if (environment.skybox.valid()) {
+            const auto hlslDirectory = findDayoHlslDirectory(scene_.effects(), nativeRenderer_.program());
+            if (!hlslDirectory.has_value())
+                throw std::runtime_error("cannot locate the pinned MikuMikuDayo hlsl/system environment shaders for "
+                                         "the active effect stack");
+            std::string environmentError;
+            const bool buildSkyboxSampler = hasEffectMemo(scene_.effects(), nativeRenderer_.program(), "skyboxsampler");
+            const graphics::Extent3D extent{background.image->width, background.image->height, 1};
+            if (!nativeDayoEnvironmentRuntime_.sync(*device_, commands, environment.skybox, extent,
+                                                    *background.imagePath, sourceVersion, *hlslDirectory,
+                                                    buildSkyboxSampler, &environmentError))
+                throw std::runtime_error(environmentError.empty() ? "canonical Dayo environment sync failed"
+                                                                  : environmentError);
+        } else {
+            nativeDayoEnvironmentRuntime_.reset();
+            nativeRenderer_.clearEnvironment();
+        }
+    } else {
+        nativeDayoEnvironmentRuntime_.reset();
+        nativeRenderer_.clearEnvironment();
     }
     std::vector<core::MaterialParameterBlock> materials;
     for (const auto& instance : scene_.models()) {
@@ -531,6 +635,7 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
             throw std::runtime_error(sceneError.empty() ? "native scene derived resource synchronization failed"
                                                         : sceneError);
         nativeSceneDerivedRuntime_.apply(sceneResources);
+        nativeDayoEnvironmentRuntime_.apply(sceneResources);
         sceneResources.tlas = tlas;
         sceneResources.vertexBuffers = modelResources.vertexBuffers;
         sceneResources.indexBuffers = modelResources.indexBuffers;
@@ -647,8 +752,8 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                 log::warn("Native OIDN pass failed: ", oidnError);
                 return false;
             };
-        auto output = nativeRenderer_.recordFrame(commands, frameContext, nativeDirty, materials, lightSampling, {},
-                                                  executionResources, outputExecution);
+        auto output = nativeRenderer_.recordFrame(commands, frameContext, nativeDirty, materials, lightSampling,
+                                                  nativeRenderer_.environment(), executionResources, outputExecution);
         nativeOnStartPending_ = false;
         nativeFxPendingEvents_.clear();
         if (output.has_value() && outputExecution.sampleIndex + 1U == outputExecution.sampleCount)
@@ -695,6 +800,8 @@ void Application::resetProjectRuntimeState() {
     evaluatedModels_.models.clear();
     nativeControllerDeclarations_.clear();
     nativeRenderer_.reset();
+    nativeDayoEnvironmentRuntime_.reset();
+    skyboxPrefilterFallbackWarned_ = false;
     nativeSceneFrame_.reset();
     nativeSceneResources_.reset();
     nativeSceneDerivedRuntime_.reset();
@@ -772,6 +879,7 @@ int Application::run() {
     });
     const auto cleanupGraphicsRuntime = [this](void*) noexcept {
         nativeRenderer_.reset();
+        nativeDayoEnvironmentRuntime_.reset();
         nativeSceneFrame_.reset();
         nativeSceneResources_.reset();
         nativeSceneDerivedRuntime_.reset();

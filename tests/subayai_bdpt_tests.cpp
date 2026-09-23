@@ -6,6 +6,7 @@
 #include "graphics/dayo_host_resources.hpp"
 #include "graphics/device.hpp"
 #include "graphics/native_controller_runtime.hpp"
+#include "graphics/native_dayo_environment_runtime.hpp"
 #include "graphics/native_frame_constants.hpp"
 #include "graphics/native_scene_binding_runtime.hpp"
 #include "graphics/native_scene_bindings.hpp"
@@ -145,11 +146,15 @@ struct MockAccelerationBackend : dayo::graphics::IAccelerationBackend {
 struct MockEnvironmentBackend : dayo::graphics::IEnvironmentBackend {
     std::uint64_t regenerations{0};
     mutable std::uint64_t recordings{0};
+    std::uint64_t resets{0};
     void regenerate(const dayo::graphics::EnvironmentDesc&) override {
         ++regenerations;
     }
     void record(dayo::graphics::CommandList&) const override {
         ++recordings;
+    }
+    void reset() noexcept override {
+        ++resets;
     }
 };
 
@@ -1053,6 +1058,47 @@ int main() {
                         backend.lastTlasInstances[1].flags == 1 && backend.lastTlasInstances[2].instanceId == 2,
                     "TLAS expands each world instance independently");
     }
+    // The canonical 1.30 environment resources use the upstream HLSL pass
+    // sequence and exact StructuredBuffer layouts.
+    {
+        ok &= check(sizeof(dayo::graphics::DayoWalkerAlias) == 12 &&
+                        sizeof(dayo::graphics::DayoSphericalHarmonics) == 144,
+                    "canonical Dayo environment structures match upstream structured-buffer strides");
+        const auto withSampler = dayo::graphics::buildDayoEnvironmentDispatchPlan({2048, 1024, 1}, true);
+        const std::array expectedPasses{
+            dayo::graphics::DayoEnvironmentPass::skyLuminance, dayo::graphics::DayoEnvironmentPass::skyLuminanceRow,
+            dayo::graphics::DayoEnvironmentPass::skyWalkin,    dayo::graphics::DayoEnvironmentPass::skyWalkinRow,
+            dayo::graphics::DayoEnvironmentPass::shComboX,     dayo::graphics::DayoEnvironmentPass::shComboY};
+        const std::array<std::array<std::uint32_t, 3>, 6> expectedGroups{
+            std::array<std::uint32_t, 3>{128, 64, 1}, {8, 1, 1}, {8, 1, 1}, {1, 1, 1}, {32, 1, 1}, {1, 1, 1}};
+        bool dispatchMatches = withSampler.size() == expectedPasses.size();
+        for (std::size_t index = 0; dispatchMatches && index < withSampler.size(); ++index)
+            dispatchMatches =
+                withSampler[index].pass == expectedPasses[index] && withSampler[index].groups == expectedGroups[index];
+        ok &= check(dispatchMatches, "Dayo environment dispatch matches all six pinned 1.30 compute entries");
+        const auto withoutSampler = dayo::graphics::buildDayoEnvironmentDispatchPlan({2048, 1024, 1}, false);
+        ok &= check(withoutSampler.size() == 2 &&
+                        withoutSampler[0].pass == dayo::graphics::DayoEnvironmentPass::shComboX &&
+                        withoutSampler[1].pass == dayo::graphics::DayoEnvironmentPass::shComboY,
+                    "SkyboxSampler memo gates only the four upstream alias-table passes");
+        bool invalidExtentRejected = false;
+        try {
+            static_cast<void>(dayo::graphics::buildDayoEnvironmentDispatchPlan({1024, 512, 2}, true));
+        } catch (const std::invalid_argument&) {
+            invalidExtentRejected = true;
+        }
+        ok &= check(invalidExtentRejected, "Dayo environment rejects non-2D source extents");
+        dayo::graphics::NativeSceneResourceBindings bindings;
+        bindings.skybox = {1, 1};
+        bindings.skywalker = {2, 1};
+        bindings.skywalkerRow = {3, 1};
+        bindings.skyboxSh = {4, 1};
+        dayo::graphics::NativeDayoEnvironmentRuntime runtime;
+        runtime.apply(bindings);
+        ok &= check(!bindings.skybox.valid() && !bindings.skywalker.valid() && !bindings.skywalkerRow.valid() &&
+                        !bindings.skyboxSh.valid(),
+                    "an empty canonical environment clears stale scene bindings");
+    }
     // EnvironmentService keeps cubemap/prefiltered/SH/Skywalker without regen.
     {
         MockEnvironmentBackend backend;
@@ -1072,6 +1118,9 @@ int main() {
         const EnvironmentDesc changed{.source = "sky.hdr", .exposure = 2.0F, .version = 7};
         ok &= check(service.update(changed), "environment exposure change regenerates");
         ok &= check(backend.regenerations == 2, "environment regen on change");
+        service.clear();
+        ok &= check(!service.ready() && !service.gpuResult().cubemap.valid() && backend.resets == 1,
+                    "clearing environment drops cached handles and releases backend resources");
     }
     // Native environment regeneration owns the source/equirectangular image,
     // cubemap and prefiltered cubemap, while command recording performs the
@@ -1102,7 +1151,7 @@ int main() {
                                           .space = dayo::core::ColorSpace::srgb,
                                           .bytes = std::vector<std::uint8_t>(128, 128)};
         const auto result = backend.regenerateImage({.source = "memory", .exposure = 1.0F, .version = 9}, image);
-        ok &= check(backend.ready() && result.cubemap.valid() && result.prefiltered.valid() &&
+        ok &= check(backend.ready() && result.skybox.valid() && result.cubemap.valid() && result.prefiltered.valid() &&
                         result.skywalkerVersion == 9 && result.sphericalHarmonics[0] > 0.0F,
                     "native environment creates typed outputs and SH coefficients");
         MockDeformCommands commands;

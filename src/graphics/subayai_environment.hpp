@@ -30,6 +30,8 @@ struct EnvironmentGpuResult {
     handles::TextureHandle prefiltered{};
     std::array<float, 27> sphericalHarmonics{};
     std::uint64_t skywalkerVersion{};
+    // Original linear equirectangular Texture2D consumed by Dayo::Skybox.
+    handles::TextureHandle skybox{};
 };
 
 struct EnvironmentPassBindings {
@@ -63,6 +65,7 @@ class IEnvironmentBackend {
         return {};
     }
     virtual void record(CommandList&) const {}
+    virtual void reset() noexcept {}
 };
 
 class EnvironmentService {
@@ -72,6 +75,7 @@ class EnvironmentService {
     // Returns true when regeneration ran, false when the cached environment
     // was reused.
     bool update(const EnvironmentDesc& desc);
+    void clear() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
         return ready_;
@@ -129,7 +133,7 @@ class NativeEnvironmentBackend final : public IEnvironmentBackend {
     [[nodiscard]] EnvironmentGpuResult regenerateEx(const EnvironmentDesc& desc) override;
     [[nodiscard]] EnvironmentGpuResult regenerateImage(const EnvironmentDesc& desc, const core::ImageData& image);
     void record(CommandList& commands) const override;
-    void reset() noexcept;
+    void reset() noexcept override;
 
     [[nodiscard]] bool ready() const noexcept {
         return device_ != nullptr && resources_.cubemap.valid() && resources_.prefiltered.valid() &&

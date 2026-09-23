@@ -329,12 +329,19 @@ bool validatePipelineOracle(const dayo::fx::FxProgram& program,
                 return fail("pipeline oracle blend state is missing: " + dispatch.name);
             const auto& source = raster->graphics.blend[index];
             const auto& actual = descriptor.blendAttachments[index];
-            if (actual.enabled != source.enabled || actual.srcColor != *oracleBlendFactor(source.srcColor) ||
-                actual.dstColor != *oracleBlendFactor(source.dstColor) ||
-                actual.colorOp != *oracleBlendOp(source.colorOp) ||
-                actual.srcAlpha != *oracleBlendFactor(source.srcAlpha) ||
-                actual.dstAlpha != *oracleBlendFactor(source.dstAlpha) ||
-                actual.alphaOp != *oracleBlendOp(source.alphaOp))
+            const auto srcColor = oracleBlendFactor(source.srcColor);
+            const auto dstColor = oracleBlendFactor(source.dstColor);
+            const auto colorOp = oracleBlendOp(source.colorOp);
+            const auto srcAlpha = oracleBlendFactor(source.srcAlpha);
+            const auto dstAlpha = oracleBlendFactor(source.dstAlpha);
+            const auto alphaOp = oracleBlendOp(source.alphaOp);
+            if (!srcColor.has_value() || !dstColor.has_value() || !colorOp.has_value() || !srcAlpha.has_value() ||
+                !dstAlpha.has_value() || !alphaOp.has_value())
+                return fail("pipeline oracle encountered an unsupported blend value: " + dispatch.name);
+            if (actual.enabled != source.enabled || actual.srcColor != srcColor.value() ||
+                actual.dstColor != dstColor.value() || actual.colorOp != colorOp.value() ||
+                actual.srcAlpha != srcAlpha.value() || actual.dstAlpha != dstAlpha.value() ||
+                actual.alphaOp != alphaOp.value())
                 return fail("pipeline oracle blend state mismatch: " + dispatch.name);
         }
     }
@@ -731,6 +738,59 @@ void main(uint3 id : SV_DispatchThreadID)
     }
 }
 
+bool checkDayoEnvironmentShaderProbes(const std::filesystem::path& sourceDirectory) {
+    dayo::fx::FxShaderCompiler compiler;
+    const bool dxc = compiler.executable().filename() == "dxc" || compiler.executable().filename() == "dxc.exe";
+    if (!compiler.available() || !dxc) {
+        if (upstreamShaderProbesRequired()) {
+            std::cerr << "FAIL: DXC unavailable; Dayo environment shader probes are required\n";
+            return false;
+        }
+        std::cerr << "WARN: DXC unavailable; Dayo environment shader probes skipped\n";
+        return true;
+    }
+
+    struct EntryProbe {
+        const char* file;
+        std::array<std::string_view, 4> entries;
+        std::size_t entryCount;
+    };
+    const std::array probes{
+        EntryProbe{"skyboxPDF.hlsl", {"SkyLuminance", "SkyLuminanceRow", "SkyWalkin", "SkyWalkinRow"}, 4},
+        EntryProbe{"skyboxSH.hlsl", {"SHComboX", "SHComboY", {}, {}}, 2},
+    };
+    const auto systemDirectory = sourceDirectory / "hlsl" / "system";
+    bool ok = true;
+    std::size_t compiled = 0;
+    for (const auto& probe : probes) {
+        const auto path = systemDirectory / probe.file;
+        std::ifstream input(path, std::ios::binary);
+        if (!check(input.good(), "pinned Dayo environment shader exists")) {
+            ok = false;
+            continue;
+        }
+        const std::string source((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        for (std::size_t index = 0; index < probe.entryCount; ++index) {
+            dayo::fx::FxShaderCompileRequest request;
+            request.hlsl = source;
+            request.sourcePath = path;
+            request.entryPoint = probe.entries[index];
+            request.stage = dayo::fx::FxShaderStage::compute;
+            request.includeDirectories = {systemDirectory, sourceDirectory / "hlsl"};
+            try {
+                const auto artifact = compiler.compile(request);
+                ok &= check(!artifact.spirv.empty(), "pinned Dayo environment entry produces SPIR-V");
+                ++compiled;
+            } catch (const std::exception& exception) {
+                std::cerr << "FAIL: pinned Dayo environment shader " << path.string() << '#' << probe.entries[index]
+                          << ": " << exception.what() << '\n';
+                ok = false;
+            }
+        }
+    }
+    return ok && check(compiled == 6, "all six pinned Dayo environment compute entries compile with DXC");
+}
+
 } // namespace
 
 int main() {
@@ -756,6 +816,7 @@ int main() {
     try {
         ok &= checkUpstreamAbi(sourceDirectory);
         ok &= checkAbiSpirvProbe(sourceDirectory);
+        ok &= checkDayoEnvironmentShaderProbes(sourceDirectory);
         const auto expectedGraphCount = upstreamFxFiles(sourceDirectory).size();
         const auto scan = scanUpstreamGraphs(sourceDirectory);
         ok &= check(scan.graphCount == expectedGraphCount, "all pinned upstream FX graphs compile and link");
