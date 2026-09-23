@@ -218,10 +218,9 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
     for (std::size_t passIndex = 0; passIndex < plan.ordered.size(); ++passIndex) {
         const auto& dispatch = plan.ordered[passIndex];
         const auto* resolved = passIndex < plan.resolved.size() ? &plan.resolved[passIndex] : nullptr;
-        const auto outputExtent = resolved == nullptr
-                                      ? dayo::fx::FxExtent3D{std::max(context.renderWidth, 1U),
-                                                             std::max(context.renderHeight, 1U), 1}
-                                      : resolved->outputExtent;
+        const auto outputExtent = resolved == nullptr ? dayo::fx::FxExtent3D{std::max(context.renderWidth, 1U),
+                                                                             std::max(context.renderHeight, 1U), 1}
+                                                      : resolved->outputExtent;
         dayo::log::debug("VulkanFxExecutor pass ", dispatch.name, " kind ", dayo::fx::toString(dispatch.kind));
         bool executed = false;
         switch (dispatch.kind) {
@@ -232,16 +231,17 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                 const auto* raster = std::get_if<dayo::fx::FxRasterDispatch>(&dispatch.executable);
                 if (raster != nullptr && raster->rasterSource != dayo::core::EffectRasterSource::scene) {
                     if (!raster->vertexBuffer.empty())
-                        throw std::logic_error("VulkanFxExecutor: FX vertex-buffer raster input is not supported yet: " +
-                                               raster->vertexBuffer);
+                        throw std::logic_error(
+                            "VulkanFxExecutor: FX vertex-buffer raster input is not supported yet: " +
+                            raster->vertexBuffer);
                     if (!raster->indexBuffer.empty()) {
                         if (!resources.resolveTypedResource)
-                            throw std::logic_error("VulkanFxExecutor: FX index buffer has no typed resource resolver: " +
-                                                   raster->indexBuffer);
+                            throw std::logic_error(
+                                "VulkanFxExecutor: FX index buffer has no typed resource resolver: " +
+                                raster->indexBuffer);
                         const auto indexBuffer = resources.resolveTypedResource(raster->indexBuffer);
-                        const auto indexCount = resolved != nullptr && resolved->raster.has_value()
-                                                    ? resolved->raster->indexCount
-                                                    : 0U;
+                        const auto indexCount =
+                            resolved != nullptr && resolved->raster.has_value() ? resolved->raster->indexCount : 0U;
                         if (!indexBuffer.has_value() || !indexBuffer->buffer.valid() || indexCount == 0)
                             throw std::logic_error("VulkanFxExecutor: FX index buffer is unavailable or unresolved: " +
                                                    raster->indexBuffer);
@@ -251,24 +251,24 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                         commands.draw(static_cast<std::uint32_t>(context.clonedVertexCount), context.cloneCount);
                     }
                 } else if (!resources.sceneDraws.empty()) {
-                const auto target =
-                    raster == nullptr ? dayo::core::fx::RasterModelTarget::all : raster->graphics.modelTarget;
-                for (const auto& sceneDraw : resources.sceneDraws) {
-                    if (!matchesRasterTarget(target, resources.rasterControllerModel, sceneDraw))
-                        continue;
-                    if (resources.updatePassConstants)
-                        resources.updatePassConstants(commands, sceneDraw);
-                    commands.drawIndexedEx({.vertexBuffer = sceneDraw.vertexBuffer,
-                                            .indexBuffer = sceneDraw.indexBuffer,
-                                            .firstIndex = sceneDraw.firstIndex,
-                                            .indexCount = sceneDraw.indexCount,
-                                            .vertexOffset = sceneDraw.vertexOffset,
-                                            .firstInstance = sceneDraw.firstInstance,
-                                            .instanceCount = sceneDraw.instanceCount,
-                                            .modelIndex = sceneDraw.modelIndex,
-                                            .materialIndex = sceneDraw.materialIndex});
-                    ++stats.indexedDraws;
-                }
+                    const auto target =
+                        raster == nullptr ? dayo::core::fx::RasterModelTarget::all : raster->graphics.modelTarget;
+                    for (const auto& sceneDraw : resources.sceneDraws) {
+                        if (!matchesRasterTarget(target, resources.rasterControllerModel, sceneDraw))
+                            continue;
+                        if (resources.updatePassConstants)
+                            resources.updatePassConstants(commands, sceneDraw);
+                        commands.drawIndexedEx({.vertexBuffer = sceneDraw.vertexBuffer,
+                                                .indexBuffer = sceneDraw.indexBuffer,
+                                                .firstIndex = sceneDraw.firstIndex,
+                                                .indexCount = sceneDraw.indexCount,
+                                                .vertexOffset = sceneDraw.vertexOffset,
+                                                .firstInstance = sceneDraw.firstInstance,
+                                                .instanceCount = sceneDraw.instanceCount,
+                                                .modelIndex = sceneDraw.modelIndex,
+                                                .materialIndex = sceneDraw.materialIndex});
+                        ++stats.indexedDraws;
+                    }
                 } else {
                     commands.draw(static_cast<std::uint32_t>(context.clonedVertexCount), context.cloneCount);
                 }
@@ -311,8 +311,7 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                     for (auto& threadCount : threads)
                         threadCount = std::max(threadCount, 1U);
                 }
-                commands.dispatch(ceilDiv(outputExtent.width, threads[0]),
-                                  ceilDiv(outputExtent.height, threads[1]),
+                commands.dispatch(ceilDiv(outputExtent.width, threads[0]), ceilDiv(outputExtent.height, threads[1]),
                                   ceilDiv(outputExtent.depth, threads[2]));
             }
             ++stats.compute;
@@ -354,7 +353,7 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
                 if (!target.has_value())
                     throw std::logic_error("VulkanFxExecutor: clear target is unavailable");
                 if (target->buffer.valid()) {
-                    commands.clearBufferEx(target->buffer, 0);
+                    commands.clearBufferEx(target->buffer, dispatch.functional.clearValue.color);
                 } else if (target->texture.valid()) {
                     commands.clearTextureEx(target->texture, dispatch.functional.clearValue.color);
                 } else {
@@ -426,9 +425,8 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             }
             break;
         }
-        const bool wroteResource = std::ranges::any_of(dispatch.resources, [](const auto& resource) {
-            return resource.write;
-        });
+        const bool wroteResource =
+            std::ranges::any_of(dispatch.resources, [](const auto& resource) { return resource.write; });
         if (executed && wroteResource && resources.resolveTypedPipeline)
             commands.memoryBarrierEx();
         if (executed) {
