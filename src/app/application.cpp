@@ -467,7 +467,6 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         const auto modelResources = nativeSceneModelRuntime_.bindings();
         std::vector<graphics::NativeSceneDerivedModel> derivedModels;
         derivedModels.reserve(nativeSceneModelData_.size());
-        const auto* selected = scene_.selectedModel();
         for (std::size_t modelIndex = 0; modelIndex < nativeSceneModelData_.size(); ++modelIndex) {
             if (modelIndex >= nativeGeometry_.size())
                 throw std::runtime_error("native scene derived model table is out of sync with geometry");
@@ -475,12 +474,16 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                 throw std::overflow_error("native scene model material count exceeds 32-bit table indices");
             const auto& geometry = nativeGeometry_[modelIndex];
             const auto* instance = scene_.model(geometry.modelId);
+            std::int32_t selectedMaterial = -1;
+#if DAYO_HAS_IMGUI
+            if (const auto* selected = scene_.selectedModel(); selected != nullptr && selected->id == geometry.modelId)
+                selectedMaterial = uiState_.selectedMaterial;
+#endif
             derivedModels.push_back(
                 {.materialCount = static_cast<std::uint32_t>(nativeSceneModelData_[modelIndex].materials.size()),
                  .textureBase = geometry.textureBase,
                  .cloneCount = geometry.cloneCount,
-                 .selectedMaterial =
-                     selected != nullptr && selected->id == geometry.modelId ? uiState_.selectedMaterial : -1,
+                 .selectedMaterial = selectedMaterial,
                  .visible = instance != nullptr && instance->visible});
         }
         if (!nativeSceneDerivedRuntime_.sync(derivedModels, screenExtent, &sceneError))
