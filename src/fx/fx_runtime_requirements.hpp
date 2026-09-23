@@ -43,7 +43,7 @@ struct FxRuntimeRequirements {
 [[nodiscard]] const char* toString(FxRuntimeFeature feature) noexcept;
 [[nodiscard]] FxRuntimeRequirements analyzeRuntimeRequirements(const FxProgram& program);
 [[nodiscard]] std::vector<FxRuntimeFeature> missingRuntimeFeatures(const FxRuntimeRequirements& required,
-                                                                    const FxRuntimeRequirements& implemented);
+                                                                   const FxRuntimeRequirements& implemented);
 [[nodiscard]] std::string formatRuntimeFeatureList(const FxRuntimeRequirements& requirements);
 
 } // namespace dayo::fx

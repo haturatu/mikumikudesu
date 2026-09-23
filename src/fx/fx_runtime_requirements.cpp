@@ -150,8 +150,9 @@ FxRuntimeRequirements analyzeRuntimeRequirements(const FxProgram& program) {
         }
     }
     for (const auto& sampler : program.samplers) {
-        if (sampler.filterKind != core::FxFilter::linear || sampler.maxAnisotropy > 1 || sampler.mipLodBias != 0.0F || sampler.minLod != 0.0F ||
-            sampler.maxLod != std::numeric_limits<float>::max() || sampler.comparisonFunc != core::FxCompareOp::always ||
+        if (sampler.filterKind != core::FxFilter::linear || sampler.maxAnisotropy > 1 || sampler.mipLodBias != 0.0F ||
+            sampler.minLod != 0.0F || sampler.maxLod != std::numeric_limits<float>::max() ||
+            sampler.comparisonFunc != core::FxCompareOp::always ||
             sampler.borderColor != core::FxBorderColor::transparentBlack || sampler.addressW != "WRAP")
             result.add(FxRuntimeFeature::fullSamplerState);
     }
