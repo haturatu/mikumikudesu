@@ -70,15 +70,13 @@ bool FxConditionRuntime::evaluate(std::span<const std::string> conditions, const
     const auto active = activeEvents(context.host);
     const auto values = expressionContext(context);
     const core::fx::FxSymbolResolver resolver(values, resources);
-    for (const auto& source : conditions) {
+    return std::ranges::all_of(conditions, [this, active, &resolver](const std::string& source) {
         const auto& condition = compile(source);
         if (condition.events != core::fx::kFxEventNone && (condition.events & active) == 0)
             return false;
-        if (condition.predicate.has_value() &&
-            !core::fx::fxToBool(core::fx::evaluateFxExprWithSymbols(*condition.predicate, resolver)))
-            return false;
-    }
-    return true;
+        return !condition.predicate.has_value() ||
+               core::fx::fxToBool(core::fx::evaluateFxExprWithSymbols(*condition.predicate, resolver));
+    });
 }
 
 } // namespace dayo::fx

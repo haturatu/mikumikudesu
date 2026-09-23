@@ -1803,7 +1803,7 @@ bool testNativeFxRuntimeRefreshesFrameResources() {
     dispatch.kind = dayo::fx::FxOpKind::compute;
     dispatch.executable = dayo::fx::FxComputeDispatch{"main"};
     dispatch.resources.push_back({"Output", true});
-    dispatch.conditions.push_back("frame if FRAME >= 12");
+    dispatch.conditions.emplace_back("frame if FRAME >= 12");
     program.passes.push_back(dispatch);
     auto startDispatch = dispatch;
     startDispatch.name = "start-pass";
