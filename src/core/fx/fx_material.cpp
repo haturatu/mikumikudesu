@@ -779,7 +779,7 @@ std::string normalizeTextureToken(std::string_view token) noexcept {
 
 MaterialTextureKey makeTextureKey(const MaterialTextureDesc& desc) {
     return MaterialTextureKey{
-        .path = normalizeTexturePath(desc.path),
+        .path = desc.externalId.empty() ? normalizeTexturePath(desc.path) : std::string{},
         .externalId = desc.externalId,
         .format = normalizeTextureToken(desc.format),
         .colorspace = normalizeTextureToken(desc.colorspace),
@@ -913,7 +913,7 @@ MaterialGpuLayout linkMaterialLayout(const MaterialTemplate& templ, const Materi
             .mipmapped = decl.texture.mipmapped,
         };
         const MaterialTextureKey key{
-            .path = normalized.path,
+            .path = normalized.externalId.empty() ? normalized.path : std::string{},
             .externalId = normalized.externalId,
             .format = normalized.format,
             .colorspace = normalized.colorspace,

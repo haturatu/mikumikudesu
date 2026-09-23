@@ -70,6 +70,7 @@ class FxMaterialSceneRuntime {
         AnnotationSource annotation;
         core::fx::MaterialInstance instance;
         core::fx::MaterialBindingPlan binding;
+        std::vector<bool> fileBackedTextures;
     };
 
     struct CachedModel {

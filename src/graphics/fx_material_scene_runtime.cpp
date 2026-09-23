@@ -44,11 +44,22 @@ void setError(std::string* error, std::string value) {
             character = '/';
         character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
     }
-    return normalized == "screen.bmp";
+    return std::filesystem::path(normalized).filename() == "screen.bmp";
 }
 
-[[nodiscard]] bool isFileLikeTextureToken(std::string_view value) noexcept {
-    return value.find('.') != std::string_view::npos;
+[[nodiscard]] bool isFileBackedTexture(const core::fx::MaterialBindingPlan::ResolvedTextureField& texture) {
+    if (texture.path.empty() || isScreenBmpToken(texture.path))
+        return false;
+    const std::filesystem::path assigned(texture.path);
+    const auto isRegularFile = [](const std::filesystem::path& path) {
+        std::error_code error;
+        return std::filesystem::is_regular_file(path, error) && !error;
+    };
+    if (assigned.is_absolute())
+        return isRegularFile(assigned);
+    if (!texture.baseDirectory.empty() && isRegularFile(texture.baseDirectory / assigned))
+        return true;
+    return isRegularFile(assigned);
 }
 
 [[nodiscard]] bool sameSchema(const core::fx::MaterialTemplateSchema& left,
@@ -232,6 +243,15 @@ bool FxMaterialSceneRuntime::matches(const core::fx::MaterialTemplateSchema& sch
                 if (resolveAnnotation(input, input.materials[materialIndex]) !=
                     cached.materials[materialIndex].annotation)
                     return false;
+                const auto& cachedMaterial = cached.materials[materialIndex];
+                if (cachedMaterial.fileBackedTextures.size() != cachedMaterial.binding.orderedTextures.size())
+                    return false;
+                for (std::size_t textureIndex = 0; textureIndex < cachedMaterial.binding.orderedTextures.size();
+                     ++textureIndex) {
+                    if (isFileBackedTexture(cachedMaterial.binding.orderedTextures[textureIndex]) !=
+                        cachedMaterial.fileBackedTextures[textureIndex])
+                        return false;
+                }
             }
         }
     } catch (...) {
@@ -272,10 +292,15 @@ bool FxMaterialSceneRuntime::link(const core::fx::MaterialTemplateSchema& schema
                     log::warn("MatDesc annotation file was not found; using template defaults: ", annotation.original);
                 }
                 auto binding = core::fx::linkMaterial(schema, &instance);
+                std::vector<bool> fileBackedTextures;
+                fileBackedTextures.reserve(binding.orderedTextures.size());
+                for (const auto& texture : binding.orderedTextures)
+                    fileBackedTextures.push_back(isFileBackedTexture(texture));
                 linkedModel.materials.push_back({.parameters = material.parameters,
                                                  .annotation = std::move(annotation),
                                                  .instance = std::move(instance),
-                                                 .binding = std::move(binding)});
+                                                 .binding = std::move(binding),
+                                                 .fileBackedTextures = std::move(fileBackedTextures)});
             }
             linkedModels.push_back(std::move(linkedModel));
         }
@@ -324,9 +349,11 @@ bool FxMaterialSceneRuntime::sync(Device& device, const core::fx::MaterialTempla
             if (input.id != model.id || input.modelIndex != model.modelIndex)
                 throw std::logic_error("MatDesc scene models changed order while the table was being evaluated");
             const auto evalContext = evaluationContext(context, input);
-            for (const auto& material : model.materials) {
+            for (std::size_t materialIndex = 0; materialIndex < model.materials.size(); ++materialIndex) {
+                const auto& material = model.materials[materialIndex];
                 auto binding = material.binding;
-                for (auto& texture : binding.orderedTextures) {
+                for (std::size_t textureIndex = 0; textureIndex < binding.orderedTextures.size(); ++textureIndex) {
+                    auto& texture = binding.orderedTextures[textureIndex];
                     if (texture.path.empty() || !texture.physicalTextureIndex.has_value())
                         continue;
                     std::optional<FxMaterialExternalTexture> external;
@@ -339,15 +366,16 @@ bool FxMaterialSceneRuntime::sync(Device& device, const core::fx::MaterialTempla
                                 "MatDesc texture resolver returned an invalid external texture: " + texture.path);
                         auto& descriptor = binding.layout.uniqueTextures.at(*texture.physicalTextureIndex);
                         descriptor.externalId = external->identity;
+                        descriptor.path.clear();
                         const auto [found, inserted] = externalTextureMap.emplace(external->identity, *external);
                         if (!inserted && (found->second.texture != external->texture ||
                                           found->second.dimension != external->dimension ||
                                           found->second.generation != external->generation))
                             throw std::logic_error("MatDesc external texture identity resolved inconsistently: " +
                                                    external->identity);
-                    } else if (isScreenBmpToken(texture.path) || !isFileLikeTextureToken(texture.path)) {
-                        // Upstream resource tokens without a file-like dot resolve to a shared/deformer resource;
-                        // if no provider owns the token, the material receives its dimension-correct dummy texture.
+                    } else if (isScreenBmpToken(texture.path) || !material.fileBackedTextures.at(textureIndex)) {
+                        // Resolve host/deformer resources before considering a file. Unknown symbols and missing
+                        // files intentionally map to the dimension-correct fallback instead of a guessed path.
                         texture.physicalTextureIndex.reset();
                     }
                 }
