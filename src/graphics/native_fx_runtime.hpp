@@ -16,6 +16,8 @@
 
 namespace dayo::graphics {
 
+class FxMaterialGpuRuntime;
+
 struct NativeFxFrame {
     fx::FxFrameContext context;
     fx::FxFramePlan plan;
@@ -41,7 +43,8 @@ class NativeFxRuntime {
                                   std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts = {},
                                   std::string* error = nullptr,
                                   std::span<const handles::DescriptorSetHandle> sharedDescriptorSets = {},
-                                  fx::FxNativeShaderSourceOptions sourceOptions = {});
+                                  fx::FxNativeShaderSourceOptions sourceOptions = {},
+                                  const FxMaterialGpuRuntime* materialRuntime = nullptr);
     // Initializes resources against the first real frame context. The
     // compatibility overload above remains useful for callers that do not
     // have a frame yet.
@@ -50,7 +53,8 @@ class NativeFxRuntime {
                                           std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts = {},
                                           std::string* error = nullptr,
                                           std::span<const handles::DescriptorSetHandle> sharedDescriptorSets = {},
-                                          fx::FxNativeShaderSourceOptions sourceOptions = {});
+                                          fx::FxNativeShaderSourceOptions sourceOptions = {},
+                                          const FxMaterialGpuRuntime* materialRuntime = nullptr);
     // Rebuilds size-dependent FX resources and their descriptor/pipeline
     // lifetime when a render/model context changes. Callers should invoke
     // this at a frame boundary before prepareFrame().
@@ -95,6 +99,9 @@ class NativeFxRuntime {
     std::vector<handles::DescriptorSetLayoutHandle> sharedLayouts_;
     std::vector<handles::DescriptorSetHandle> sharedDescriptorSets_;
     fx::FxNativeShaderSourceOptions sourceOptions_;
+    // Borrowed owner; it must outlive this runtime and remain on the same
+    // Device. Its frame-slot buffers are rebound when their handles change.
+    const FxMaterialGpuRuntime* materialRuntime_{};
     FxResourceRuntime resources_;
     FxPipelineRuntime pipelines_;
     std::unordered_map<std::string, handles::PipelineLayoutHandle> passPipelineLayouts_;

@@ -473,7 +473,11 @@ bool FxMaterialGpuRuntime::ready() const noexcept {
 }
 
 FxMaterialGpuBindings FxMaterialGpuRuntime::bindings() const noexcept {
-    const auto slot = device_ == nullptr ? 0U : device_->currentFrameSlot() % kNativeFramesInFlight;
+    return bindings(device_ == nullptr ? 0U : device_->currentFrameSlot());
+}
+
+FxMaterialGpuBindings FxMaterialGpuRuntime::bindings(std::size_t frameSlot) const noexcept {
+    const auto slot = frameSlot % kNativeFramesInFlight;
     const auto& frame = frameBuffers_[slot];
     return {.materialIndices = frame.materialIndices,
             .textureIndices2D = frame.textureIndices2D,
