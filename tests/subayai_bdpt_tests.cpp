@@ -1547,6 +1547,15 @@ int main() {
                     "native scene data separates evaluated vertices from normalized PMX bind pose");
 
         const auto data = dayo::graphics::makeNativeSceneModelData(model, preview);
+        auto evaluatedUvVertices = model.vertices;
+        evaluatedUvVertices[0].additionalUv[0] = {0.25F, 0.5F, 0.75F, 1.0F};
+        evaluatedUvVertices[0].additionalUv[3] = {4.0F, 3.0F, 2.0F, 1.0F};
+        const auto morphedUvData =
+            dayo::graphics::makeNativeSceneModelData(model, preview, {}, {}, evaluatedUvVertices);
+        ok &= check(morphedUvData.vertices[0].exuv[0] == 0.25F && morphedUvData.vertices[0].exuv[3] == 1.0F &&
+                        morphedUvData.vertices[0].exuv[12] == 4.0F && morphedUvData.vertices[0].exuv[15] == 1.0F &&
+                        morphedUvData.rawVertices[0].exuv[0] == model.vertices[0].additionalUv[0][0],
+                    "native scene current additional UV follows animated morphs while RawVB remains bind pose");
         ok &= check(data.vertices.size() == 4 && data.rawVertices.size() == 4 && data.indices == model.indices &&
                         data.materials.size() == 2 && data.faces == std::vector<std::uint32_t>{0, 1} &&
                         data.materialFaces.size() == 2 && data.faceWalker.size() == 2,
