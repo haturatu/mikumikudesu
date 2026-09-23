@@ -106,6 +106,7 @@ class VulkanFxExecutor {
         std::size_t rayTracing{};
         std::size_t oidn{};
         std::size_t indexedDraws{};
+        std::size_t vertexBufferDraws{};
     };
 
     explicit VulkanFxExecutor(Device& device) noexcept : device_(&device) {}

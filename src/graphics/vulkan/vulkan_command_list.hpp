@@ -23,6 +23,7 @@ class VulkanCommandList final : public CommandList {
     void bindPipeline(PipelineHandle) override;
     void draw(std::uint32_t vertexCount, std::uint32_t instanceCount = 1) override;
     void drawIndexedEx(const IndexedDrawEx& draw) override;
+    void drawVertexBufferEx(const VertexDrawEx& draw) override;
     void drawIndexedBufferlessEx(handles::BufferHandle indexBuffer, std::uint32_t indexCount,
                                  std::uint32_t instanceCount = 1) override;
     void dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) override;

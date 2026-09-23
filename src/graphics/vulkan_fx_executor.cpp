@@ -230,23 +230,63 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
             {
                 const auto* raster = std::get_if<dayo::fx::FxRasterDispatch>(&dispatch.executable);
                 if (raster != nullptr && raster->rasterSource != dayo::core::EffectRasterSource::scene) {
-                    if (!raster->vertexBuffer.empty())
-                        throw std::logic_error(
-                            "VulkanFxExecutor: FX vertex-buffer raster input is not supported yet: " +
-                            raster->vertexBuffer);
+                    std::optional<FxExecutionResources::TypedResource> vertexBuffer;
+                    std::optional<FxExecutionResources::TypedResource> indexBuffer;
+                    if (!raster->vertexBuffer.empty()) {
+                        if (!resources.resolveTypedResource)
+                            throw std::logic_error(
+                                "VulkanFxExecutor: FX vertex buffer has no typed resource resolver: " +
+                                raster->vertexBuffer);
+                        vertexBuffer = resources.resolveTypedResource(raster->vertexBuffer);
+                        if (!vertexBuffer.has_value() || !vertexBuffer->buffer.valid())
+                            throw std::logic_error("VulkanFxExecutor: FX vertex buffer is unavailable or unresolved: " +
+                                                   raster->vertexBuffer);
+                    }
                     if (!raster->indexBuffer.empty()) {
                         if (!resources.resolveTypedResource)
                             throw std::logic_error(
                                 "VulkanFxExecutor: FX index buffer has no typed resource resolver: " +
                                 raster->indexBuffer);
-                        const auto indexBuffer = resources.resolveTypedResource(raster->indexBuffer);
+                        indexBuffer = resources.resolveTypedResource(raster->indexBuffer);
                         const auto indexCount =
                             resolved != nullptr && resolved->raster.has_value() ? resolved->raster->indexCount : 0U;
                         if (!indexBuffer.has_value() || !indexBuffer->buffer.valid() || indexCount == 0)
                             throw std::logic_error("VulkanFxExecutor: FX index buffer is unavailable or unresolved: " +
                                                    raster->indexBuffer);
-                        commands.drawIndexedBufferlessEx(indexBuffer->buffer, indexCount, context.cloneCount);
+                        if (vertexBuffer.has_value()) {
+                            IndexedDrawEx draw{.vertexBuffer = vertexBuffer->buffer,
+                                               .indexBuffer = indexBuffer->buffer,
+                                               .indexCount = indexCount,
+                                               .instanceCount = context.cloneCount};
+                            if (raster->vertexLayout.bindings.empty()) {
+                                draw.vertexBuffers.push_back({.binding = 0, .buffer = vertexBuffer->buffer});
+                            } else {
+                                for (const auto& binding : raster->vertexLayout.bindings)
+                                    draw.vertexBuffers.push_back(
+                                        {.binding = binding.binding, .buffer = vertexBuffer->buffer});
+                            }
+                            commands.drawIndexedEx(draw);
+                        } else {
+                            commands.drawIndexedBufferlessEx(indexBuffer->buffer, indexCount, context.cloneCount);
+                        }
                         ++stats.indexedDraws;
+                    } else if (vertexBuffer.has_value()) {
+                        const auto vertexCount =
+                            resolved != nullptr && resolved->raster.has_value() ? resolved->raster->vertexCount : 0U;
+                        if (vertexCount == 0)
+                            throw std::logic_error(
+                                "VulkanFxExecutor: FX vertex buffer has no resolved element count: " +
+                                raster->vertexBuffer);
+                        VertexDrawEx draw{.vertexCount = vertexCount, .instanceCount = context.cloneCount};
+                        if (raster->vertexLayout.bindings.empty()) {
+                            draw.vertexBuffers.push_back({.binding = 0, .buffer = vertexBuffer->buffer});
+                        } else {
+                            for (const auto& binding : raster->vertexLayout.bindings)
+                                draw.vertexBuffers.push_back(
+                                    {.binding = binding.binding, .buffer = vertexBuffer->buffer});
+                        }
+                        commands.drawVertexBufferEx(draw);
+                        ++stats.vertexBufferDraws;
                     } else {
                         commands.draw(static_cast<std::uint32_t>(context.clonedVertexCount), context.cloneCount);
                     }

@@ -322,6 +322,7 @@ class VulkanDevice final : public Device {
                                    VkAccessFlags2 finalAccess, bool initialized, VkExtent2D extent);
     void recordBindPipeline(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline);
     void recordDrawIndexed(VkCommandBuffer commandBuffer, const IndexedDrawEx& draw);
+    void recordDrawVertexBuffer(VkCommandBuffer commandBuffer, const VertexDrawEx& draw);
     void recordDrawIndexedBufferless(VkCommandBuffer commandBuffer, handles::BufferHandle indexBuffer,
                                      std::uint32_t indexCount, std::uint32_t instanceCount);
     void recordTransitionTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture);
