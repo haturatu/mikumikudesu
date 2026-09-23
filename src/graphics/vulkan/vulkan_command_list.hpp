@@ -75,7 +75,7 @@ class VulkanCommandList final : public CommandList {
     VulkanDevice* device_{};
     VkCommandBuffer commandBuffer_{};
     handles::PipelineHandle pipeline_{};
-    std::vector<handles::TextureHandle> renderingTargets_;
+    std::vector<RenderingTargetEx> renderingTargets_;
 };
 
 } // namespace dayo::graphics

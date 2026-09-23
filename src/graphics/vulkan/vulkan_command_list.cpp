@@ -109,7 +109,7 @@ void VulkanCommandList::beginRenderingEx(handles::TextureHandle target, bool cle
     if (!renderingTargets_.empty())
         throw std::logic_error("typed rendering is already active on this command list");
     device_->recordBeginRendering(commandBuffer_, target, clear);
-    renderingTargets_.push_back(target);
+    renderingTargets_.push_back({.texture = target, .mipLevel = 0});
 }
 
 void VulkanCommandList::beginRenderingEx(const RenderingInfoEx& info) {
@@ -120,9 +120,9 @@ void VulkanCommandList::beginRenderingEx(const RenderingInfoEx& info) {
     device_->recordBeginRendering(commandBuffer_, info);
     renderingTargets_.reserve(info.colors.size() + (info.depth.has_value() ? 1U : 0U));
     for (const auto& color : info.colors)
-        renderingTargets_.push_back(color.texture);
+        renderingTargets_.push_back({.texture = color.texture, .mipLevel = color.mipLevel});
     if (info.depth.has_value())
-        renderingTargets_.push_back(info.depth->texture);
+        renderingTargets_.push_back({.texture = info.depth->texture, .mipLevel = info.depth->mipLevel});
 }
 
 void VulkanCommandList::endRenderingEx() {
