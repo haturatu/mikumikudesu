@@ -77,7 +77,7 @@ class NativeRendererCoordinator {
     recordFrame(CommandList& commands, const fx::FxFrameContext& context, core::DirtyFlag dirty,
                 std::span<const core::MaterialParameterBlock> materials, std::span<const AliasEntry> lightSampling,
                 const EnvironmentGpuResult& environment, const FxExecutionResources& resources = {},
-                NativeFrameExecution execution = {});
+                NativeFrameExecution execution = {}, std::span<const FxMaterialSceneModel> materialModels = {});
 
   private:
     struct GenericEffectRuntime {

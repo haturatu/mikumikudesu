@@ -5,6 +5,7 @@
 #include "graphics/bdpt_accumulation.hpp"
 #include "graphics/dayo_fx_runtime.hpp"
 #include "graphics/fx_executor.hpp"
+#include "graphics/fx_material_scene_runtime.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/subayai_bindings.hpp"
 #include "graphics/subayai_geometry.hpp"
@@ -90,7 +91,8 @@ class BdptRuntime {
     // Scene dirty state controls whether the progressive target is cleared or
     // the next sample is accumulated.
     [[nodiscard]] BdptFrame prepareFrame(const fx::FxFrameContext& context, core::DirtyFlag dirty,
-                                         std::span<const AliasEntry> lightSampling = {});
+                                         std::span<const AliasEntry> lightSampling = {},
+                                         std::span<const FxMaterialSceneModel> materialModels = {});
     [[nodiscard]] VulkanFxExecutor::Stats execute(BdptFrame& frame, CommandList& commands,
                                                   const FxExecutionResources& resources = {}) const;
     [[nodiscard]] std::optional<NativeFrameOutput> output(const BdptFrame& frame) const;
@@ -105,6 +107,7 @@ class BdptRuntime {
     handles::DescriptorSetLayoutHandle descriptorLayout_{};
     std::array<handles::DescriptorSetHandle, kNativeFramesInFlight> descriptorSets_{};
     DayoFxRuntime dayoFx_;
+    FxMaterialSceneRuntime materialSceneRuntime_;
     FxExternalResourceProvider* externalResourceProvider_{};
     std::vector<core::EffectController> controllerDeclarations_;
     NativeSceneFrameRuntime* sceneFrame_{};
