@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cctype>
 #include <charconv>
 #include <filesystem>
@@ -585,6 +586,58 @@ std::string resolveImpl(std::string_view id, const std::unordered_map<std::strin
     return key;
 }
 
+[[nodiscard]] std::size_t alignMaterialRow(std::size_t value) {
+    constexpr std::size_t rowSize = 16;
+    const auto remainder = value % rowSize;
+    if (remainder == 0)
+        return value;
+    const auto padding = rowSize - remainder;
+    if (value > std::numeric_limits<std::size_t>::max() - padding)
+        throw std::overflow_error("FX material structured-buffer layout size overflow");
+    return value + padding;
+}
+
+void storeMaterialWord(std::byte* destination, std::uint32_t value) noexcept {
+    for (std::size_t index = 0; index < sizeof(value); ++index) {
+        const auto shift = static_cast<unsigned>(index * 8U);
+        destination[index] = static_cast<std::byte>((value >> shift) & 0xffU);
+    }
+}
+
+void storeMaterialFloat(std::byte* destination, float value) noexcept {
+    static_assert(sizeof(float) == sizeof(std::uint32_t));
+    storeMaterialWord(destination, std::bit_cast<std::uint32_t>(value));
+}
+
+void storeMaterialInteger(std::byte* destination, std::int32_t value) noexcept {
+    storeMaterialWord(destination, static_cast<std::uint32_t>(value));
+}
+
+void storeMaterialField(std::byte* destination, const MaterialFieldSchema& schema, const MaterialValue& value) {
+    if (!materialValueMatches(schema, value))
+        throw std::invalid_argument("evaluated FX material value does not match schema field: " + schema.name);
+    std::visit(
+        [destination](const auto& typed) {
+            using Value = std::remove_cvref_t<decltype(typed)>;
+            if constexpr (std::is_same_v<Value, float>) {
+                storeMaterialFloat(destination, typed);
+            } else if constexpr (std::is_same_v<Value, std::int32_t>) {
+                storeMaterialInteger(destination, typed);
+            } else if constexpr (std::is_same_v<Value, std::array<float, 2>> ||
+                                 std::is_same_v<Value, std::array<float, 3>> ||
+                                 std::is_same_v<Value, std::array<float, 4>>) {
+                for (std::size_t index = 0; index < typed.size(); ++index)
+                    storeMaterialFloat(destination + index * sizeof(float), typed[index]);
+            } else if constexpr (std::is_same_v<Value, std::array<std::int32_t, 2>> ||
+                                 std::is_same_v<Value, std::array<std::int32_t, 3>> ||
+                                 std::is_same_v<Value, std::array<std::int32_t, 4>>) {
+                for (std::size_t index = 0; index < typed.size(); ++index)
+                    storeMaterialInteger(destination + index * sizeof(std::int32_t), typed[index]);
+            }
+        },
+        value);
+}
+
 } // namespace
 
 MaterialTemplateSchema parseMaterialTemplateSchema(std::string_view source, std::string name) {
@@ -1048,6 +1101,61 @@ EvaluatedMaterialBinding evaluateMaterialValues(const MaterialBindingPlan& plan,
         evaluated.orderedValues.push_back({.schema = expression.schema, .value = std::move(value)});
     }
     return evaluated;
+}
+
+MaterialStructuredBufferLayout makeMaterialStructuredBufferLayout(const MaterialTemplateSchema& schema) {
+    if (schema.fields.empty())
+        throw std::invalid_argument("FX material structured-buffer schema has no value fields");
+    MaterialStructuredBufferLayout layout;
+    layout.fields.reserve(schema.fields.size());
+    std::unordered_set<std::string> names;
+    std::size_t cursor = 0;
+    for (const auto& field : schema.fields) {
+        if (field.name.empty() || !names.insert(field.name).second)
+            throw std::invalid_argument("FX material structured-buffer schema has an empty or duplicate field name");
+        if (field.components == 0 || field.components > 4)
+            throw std::invalid_argument("FX material structured-buffer field width is unsupported: " + field.name);
+        constexpr std::size_t componentSize = sizeof(std::uint32_t);
+        const auto fieldSize = static_cast<std::size_t>(field.components) * componentSize;
+        const auto rowOffset = cursor % 16U;
+        if (rowOffset + fieldSize > 16U)
+            cursor = alignMaterialRow(cursor);
+        layout.fields.push_back({.schema = field, .offset = cursor, .size = fieldSize});
+        if (cursor > std::numeric_limits<std::size_t>::max() - fieldSize)
+            throw std::overflow_error("FX material structured-buffer layout size overflow");
+        cursor += fieldSize;
+    }
+    layout.stride = alignMaterialRow(cursor);
+    return layout;
+}
+
+MaterialStructuredBufferData packMaterialStructuredBuffer(const MaterialStructuredBufferLayout& layout,
+                                                          std::span<const EvaluatedMaterialBinding> materials) {
+    if (layout.fields.empty() || layout.stride == 0 || layout.stride % 16U != 0)
+        throw std::invalid_argument("FX material structured-buffer layout is invalid");
+    if (materials.size() > std::numeric_limits<std::size_t>::max() / layout.stride)
+        throw std::overflow_error("FX material structured-buffer allocation size overflow");
+
+    MaterialStructuredBufferData result{.layout = layout, .bytes = {}, .count = materials.size()};
+    result.bytes.resize(materials.size() * layout.stride, std::byte{0});
+    for (std::size_t materialIndex = 0; materialIndex < materials.size(); ++materialIndex) {
+        const auto& material = materials[materialIndex];
+        if (material.orderedValues.size() != layout.fields.size())
+            throw std::invalid_argument("evaluated FX material field count does not match its structured layout");
+        auto* record = result.bytes.data() + materialIndex * layout.stride;
+        for (std::size_t fieldIndex = 0; fieldIndex < layout.fields.size(); ++fieldIndex) {
+            const auto& expected = layout.fields[fieldIndex];
+            const auto& actual = material.orderedValues[fieldIndex];
+            if (actual.schema.name != expected.schema.name || actual.schema.type != expected.schema.type ||
+                actual.schema.components != expected.schema.components || expected.offset > layout.stride ||
+                expected.size > layout.stride - expected.offset ||
+                expected.size != static_cast<std::size_t>(expected.schema.components) * sizeof(std::uint32_t))
+                throw std::invalid_argument("evaluated FX material field order/layout mismatch at " +
+                                            expected.schema.name);
+            storeMaterialField(record + expected.offset, expected.schema, actual.value);
+        }
+    }
+    return result;
 }
 
 } // namespace dayo::core::fx
