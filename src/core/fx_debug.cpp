@@ -1,6 +1,9 @@
 #include "core/fx_debug.hpp"
 
+#include <algorithm>
+#include <ranges>
 #include <sstream>
+#include <string_view>
 
 namespace dayo::core {
 namespace {
@@ -42,7 +45,9 @@ FxRuntimeDebugSnapshot FxRuntimeInspector::snapshot(const EffectGraph& graph, st
                                     .view = texture.view,
                                     .shared = texture.shared,
                                     .filename = texture.filename,
+                                    .type = {},
                                     .sizeBase = texture.size.base,
+                                    .conditions = texture.conditions,
                                     .width = texture.size.width,
                                     .height = texture.size.height,
                                     .depth = 1,
@@ -56,7 +61,9 @@ FxRuntimeDebugSnapshot FxRuntimeInspector::snapshot(const EffectGraph& graph, st
                                     .view = texture.view,
                                     .shared = texture.shared,
                                     .filename = texture.filename,
+                                    .type = {},
                                     .sizeBase = texture.size.base,
+                                    .conditions = texture.conditions,
                                     .width = texture.size.width,
                                     .height = texture.size.height,
                                     .depth = texture.size.depth,
@@ -70,7 +77,9 @@ FxRuntimeDebugSnapshot FxRuntimeInspector::snapshot(const EffectGraph& graph, st
                                     .view = buffer.view,
                                     .shared = buffer.shared,
                                     .filename = {},
+                                    .type = buffer.type,
                                     .sizeBase = buffer.size.base,
+                                    .conditions = buffer.conditions,
                                     .width = buffer.size.width,
                                     .height = 1,
                                     .depth = 1,
@@ -84,7 +93,9 @@ FxRuntimeDebugSnapshot FxRuntimeInspector::snapshot(const EffectGraph& graph, st
                                     .view = sampler.addressU + "," + sampler.addressV + "," + sampler.addressW,
                                     .shared = {},
                                     .filename = {},
+                                    .type = {},
                                     .sizeBase = {},
+                                    .conditions = {},
                                     .width = 0,
                                     .height = 1,
                                     .depth = 1,
@@ -98,32 +109,39 @@ FxRuntimeDebugSnapshot FxRuntimeInspector::snapshot(const EffectGraph& graph, st
                                       .functionalKind = functionalKindName(pass.functionalKind),
                                       .resources = {},
                                       .conditions = pass.conditions};
+        const auto addAccess = [&debugPass](std::string_view name, bool write) {
+            if (name.empty() || std::ranges::any_of(debugPass.resources, [name, write](const auto& access) {
+                    return access.name == name && access.write == write;
+                }))
+                return;
+            debugPass.resources.push_back({.name = std::string(name), .write = write});
+        };
         for (const auto& input : pass.inputs)
-            debugPass.resources.push_back({.name = input.name, .write = false});
+            addAccess(input.name, false);
         for (const auto& target : pass.renderTargets)
-            debugPass.resources.push_back({.name = target.name, .write = true});
+            addAccess(target.name, true);
         for (const auto& target : pass.unorderedAccess)
-            debugPass.resources.push_back({.name = target.name, .write = true});
+            addAccess(target.name, true);
         if (!pass.depth.name.empty())
-            debugPass.resources.push_back({.name = pass.depth.name, .write = true});
+            addAccess(pass.depth.name, true);
         if (!pass.rasterVertexBuffer.empty())
-            debugPass.resources.push_back({.name = pass.rasterVertexBuffer, .write = false});
+            addAccess(pass.rasterVertexBuffer, false);
         if (!pass.rasterIndexBuffer.empty())
-            debugPass.resources.push_back({.name = pass.rasterIndexBuffer, .write = false});
+            addAccess(pass.rasterIndexBuffer, false);
         if (!pass.functional.source.empty())
-            debugPass.resources.push_back({.name = pass.functional.source, .write = false});
+            addAccess(pass.functional.source, false);
         if (!pass.functional.destination.empty())
-            debugPass.resources.push_back({.name = pass.functional.destination, .write = true});
+            addAccess(pass.functional.destination, true);
         if (!pass.functional.target.empty())
-            debugPass.resources.push_back({.name = pass.functional.target, .write = true});
+            addAccess(pass.functional.target, true);
         if (!pass.oidnInput.empty())
-            debugPass.resources.push_back({.name = pass.oidnInput, .write = false});
+            addAccess(pass.oidnInput, false);
         if (!pass.oidnAlbedo.empty())
-            debugPass.resources.push_back({.name = pass.oidnAlbedo, .write = false});
+            addAccess(pass.oidnAlbedo, false);
         if (!pass.oidnNormal.empty())
-            debugPass.resources.push_back({.name = pass.oidnNormal, .write = false});
+            addAccess(pass.oidnNormal, false);
         if (!pass.oidnOutput.empty())
-            debugPass.resources.push_back({.name = pass.oidnOutput, .write = true});
+            addAccess(pass.oidnOutput, true);
         result.passes.push_back(std::move(debugPass));
     }
     result.controllers.reserve(graph.controllers.size());

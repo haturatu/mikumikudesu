@@ -2,14 +2,18 @@
 #include "core/fx/fx_expr.hpp"
 #include "core/fx/fx_size.hpp"
 #include "core/fx/fx_symbol.hpp"
+#include "core/fx_debug.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <numbers>
+#include <ranges>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -117,6 +121,52 @@ bool testUpstreamExpressionFunctionTable() {
     return ok;
 }
 
+bool testFxRuntimeDebugInventory() {
+    using namespace dayo::core;
+    EffectGraph graph;
+    EffectTexture targetTexture;
+    targetTexture.name = "Target";
+    targetTexture.format = "RGBA8";
+    targetTexture.conditions = {"WIDTH > 0"};
+    graph.textures.push_back(std::move(targetTexture));
+    EffectBuffer particleBuffer;
+    particleBuffer.name = "Particles";
+    particleBuffer.type = "Particle";
+    particleBuffer.elementSize = 32;
+    particleBuffer.conditions = {"FRAME >= 0"};
+    graph.buffers.push_back(std::move(particleBuffer));
+    EffectPass pass;
+    pass.name = "CopyPass";
+    pass.type = EffectPassType::compute;
+    EffectAttachment source;
+    source.name = "Source";
+    pass.inputs.push_back(std::move(source));
+    EffectAttachment targetAttachment;
+    targetAttachment.name = "Target";
+    pass.renderTargets.push_back(std::move(targetAttachment));
+    pass.functionalKind = EffectFunctionalPassKind::copy;
+    pass.functional.kind = EffectFunctionalPassKind::copy;
+    pass.functional.source = "Source";
+    pass.functional.destination = "Target";
+    graph.passes.push_back(std::move(pass));
+
+    const auto snapshot = FxRuntimeInspector::snapshot(graph, 9);
+    const auto target =
+        std::ranges::find_if(snapshot.resources, [](const auto& resource) { return resource.name == "Target"; });
+    const auto particles =
+        std::ranges::find_if(snapshot.resources, [](const auto& resource) { return resource.name == "Particles"; });
+    bool ok = check(target != snapshot.resources.end() && target->conditions == std::vector<std::string>{"WIDTH > 0"},
+                    "FX Debug resource inventory retains texture conditions");
+    ok &= check(particles != snapshot.resources.end() && particles->type == "Particle" &&
+                    particles->elementSize == 32 && particles->conditions == std::vector<std::string>{"FRAME >= 0"},
+                "FX Debug resource inventory retains buffer type and conditions");
+    ok &= check(snapshot.passes.size() == 1 && snapshot.passes[0].resources.size() == 2 &&
+                    snapshot.passes[0].resources[0].name == "Source" && !snapshot.passes[0].resources[0].write &&
+                    snapshot.passes[0].resources[1].name == "Target" && snapshot.passes[0].resources[1].write,
+                "FX Debug functional pass accesses are deduplicated by resource and access direction");
+    return ok;
+}
+
 } // namespace
 
 int main() {
@@ -163,6 +213,7 @@ int main() {
                     !isSupportedFxFunction("notAnExprFunction"),
                 "Expr.ixx function inventory");
     ok &= testUpstreamExpressionFunctionTable();
+    ok &= testFxRuntimeDebugInventory();
 
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("DEFAULT_RTSIZE.x"), ctx)), 1280.0, "DEFAULT_RTSIZE.x");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("DEFAULT_RTSIZE.y"), ctx)), 720.0, "DEFAULT_RTSIZE.y");
