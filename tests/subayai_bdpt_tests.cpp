@@ -1424,12 +1424,12 @@ int main() {
     // independently of the native scene descriptor-set population.
     {
         const std::array<dayo::core::EffectController, 6> controllers{{
-            {.name = "Exposure", .controllerName = {}, .item = {}, .type = "float"},
-            {.name = "Tint", .controllerName = {}, .item = {}, .type = "float3"},
-            {.name = "Enabled", .controllerName = {}, .item = {}, .type = "bool"},
-            {.name = "Transform", .controllerName = {}, .item = {}, .type = "float4x4"},
-            {.name = "Samples[2]", .controllerName = {}, .item = {}, .type = "float"},
-            {.name = "Mode", .controllerName = {}, .item = {}, .type = "int"},
+            {.name = "Exposure", .controllerName = {}, .item = {}, .type = "float", .descriptions = {}},
+            {.name = "Tint", .controllerName = {}, .item = {}, .type = "float3", .descriptions = {}},
+            {.name = "Enabled", .controllerName = {}, .item = {}, .type = "bool", .descriptions = {}},
+            {.name = "Transform", .controllerName = {}, .item = {}, .type = "float4x4", .descriptions = {}},
+            {.name = "Samples[2]", .controllerName = {}, .item = {}, .type = "float", .descriptions = {}},
+            {.name = "Mode", .controllerName = {}, .item = {}, .type = "int", .descriptions = {}},
         }};
         const auto layout = dayo::graphics::makeNativeControllerLayout(controllers);
         const auto* exposure = layout.find("Exposure");
@@ -1477,7 +1477,7 @@ int main() {
     {
         MockNativeDevice device;
         const std::array<dayo::core::EffectController, 1> controllers{{
-            {.name = "Gain", .controllerName = {}, .item = {}, .type = "float"},
+            {.name = "Gain", .controllerName = {}, .item = {}, .type = "float", .descriptions = {}},
         }};
         dayo::graphics::NativeSceneFrameRuntime runtime;
         std::string error;

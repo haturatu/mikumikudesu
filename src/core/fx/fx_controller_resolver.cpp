@@ -16,6 +16,36 @@ std::string lower(std::string_view value) {
     return result;
 }
 
+bool controllerTargetsModel(const EffectController& controller, const SceneEffectInstance& effect,
+                            const ModelInstance& model) {
+    const auto target = lower(controller.controllerName);
+    if (target.empty() || target == "(self)")
+        return effect.controllerModel.has_value() && *effect.controllerModel == model.id;
+    if (!model.model)
+        return false;
+    return target == lower(model.sourcePath.filename().string()) || target == lower(model.sourcePath.string()) ||
+           target == lower(model.displayName) || target == lower(model.model->metadata.modelName) ||
+           target == lower(model.model->metadata.englishName);
+}
+
+void collectMorphUi(const SceneEffectInstance& effect, const ModelInstance& model, std::string_view morphName,
+                    std::optional<FxMorphControllerUi>& result) {
+    for (const auto& controller : effect.graph.controllers) {
+        const auto type = lower(controller.type);
+        if ((!type.empty() && type != "float") || controller.item != morphName ||
+            !controllerTargetsModel(controller, effect, model))
+            continue;
+        if (!controller.slider.has_value() && controller.description.empty() && controller.descriptions.empty())
+            continue;
+        FxMorphControllerUi metadata;
+        metadata.slider = controller.slider;
+        metadata.descriptions = controller.descriptions;
+        if (metadata.descriptions.empty() && !controller.description.empty())
+            metadata.descriptions.push_back(controller.description);
+        result = std::move(metadata);
+    }
+}
+
 std::string controllerType(const EffectController& controller) {
     const auto type = lower(controller.type);
     return type.empty() ? "float" : type;
@@ -131,6 +161,18 @@ FxControllerValue boneValue(std::string_view type, const mmd::AnimatedModelFrame
 }
 
 } // namespace
+
+std::optional<FxMorphControllerUi> resolveFxMorphControllerUi(const SceneEffectStack& effects,
+                                                              const ModelInstance& model, std::string_view morphName) {
+    std::optional<FxMorphControllerUi> result;
+    for (const auto& effect : effects.deform)
+        collectMorphUi(effect, model, morphName, result);
+    if (effects.renderer.has_value())
+        collectMorphUi(*effects.renderer, model, morphName, result);
+    for (const auto& effect : effects.postprocess)
+        collectMorphUi(effect, model, morphName, result);
+    return result;
+}
 
 FxControllerValue FxControllerResolver::resolve(const EffectController& controller,
                                                 const SceneEvaluationSnapshot& snapshot,

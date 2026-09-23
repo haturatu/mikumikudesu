@@ -6,7 +6,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -30,6 +32,16 @@ struct SceneEvaluationSnapshot {
 
 using FxControllerValue = std::variant<bool, std::int32_t, std::uint32_t, float, std::array<float, 2>,
                                        std::array<float, 3>, std::array<float, 4>, std::array<float, 16>>;
+
+struct FxMorphControllerUi {
+    std::optional<EffectSlider> slider;
+    std::vector<std::string> descriptions;
+};
+
+// Finds the last active float-morph controller declaration for a model and
+// returns its UI metadata. This does not alter controller values or animation.
+[[nodiscard]] std::optional<FxMorphControllerUi>
+resolveFxMorphControllerUi(const SceneEffectStack& effects, const ModelInstance& model, std::string_view morphName);
 
 // Resolves EffectController declarations against a frame-stable PMX
 // evaluation snapshot. It never reaches into a live animator, which keeps
