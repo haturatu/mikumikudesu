@@ -586,17 +586,6 @@ std::string resolveImpl(std::string_view id, const std::unordered_map<std::strin
     return key;
 }
 
-[[nodiscard]] std::size_t alignMaterialRow(std::size_t value) {
-    constexpr std::size_t rowSize = 16;
-    const auto remainder = value % rowSize;
-    if (remainder == 0)
-        return value;
-    const auto padding = rowSize - remainder;
-    if (value > std::numeric_limits<std::size_t>::max() - padding)
-        throw std::overflow_error("FX material structured-buffer layout size overflow");
-    return value + padding;
-}
-
 void storeMaterialWord(std::byte* destination, std::uint32_t value) noexcept {
     for (std::size_t index = 0; index < sizeof(value); ++index) {
         const auto shift = static_cast<unsigned>(index * 8U);
@@ -1104,10 +1093,14 @@ EvaluatedMaterialBinding evaluateMaterialValues(const MaterialBindingPlan& plan,
 }
 
 MaterialStructuredBufferLayout makeMaterialStructuredBufferLayout(const MaterialTemplateSchema& schema) {
-    if (schema.fields.empty())
-        throw std::invalid_argument("FX material structured-buffer schema has no value fields");
     MaterialStructuredBufferLayout layout;
     layout.fields.reserve(schema.fields.size());
+    if (schema.fields.empty()) {
+        // HLSL has no portable empty struct representation. Keep texture-only
+        // MatDesc templates valid with an unobservable one-word value record.
+        layout.stride = sizeof(std::uint32_t);
+        return layout;
+    }
     std::unordered_set<std::string> names;
     std::size_t cursor = 0;
     for (const auto& field : schema.fields) {
@@ -1117,21 +1110,18 @@ MaterialStructuredBufferLayout makeMaterialStructuredBufferLayout(const Material
             throw std::invalid_argument("FX material structured-buffer field width is unsupported: " + field.name);
         constexpr std::size_t componentSize = sizeof(std::uint32_t);
         const auto fieldSize = static_cast<std::size_t>(field.components) * componentSize;
-        const auto rowOffset = cursor % 16U;
-        if (rowOffset + fieldSize > 16U)
-            cursor = alignMaterialRow(cursor);
         layout.fields.push_back({.schema = field, .offset = cursor, .size = fieldSize});
         if (cursor > std::numeric_limits<std::size_t>::max() - fieldSize)
             throw std::overflow_error("FX material structured-buffer layout size overflow");
         cursor += fieldSize;
     }
-    layout.stride = alignMaterialRow(cursor);
+    layout.stride = cursor;
     return layout;
 }
 
 MaterialStructuredBufferData packMaterialStructuredBuffer(const MaterialStructuredBufferLayout& layout,
                                                           std::span<const EvaluatedMaterialBinding> materials) {
-    if (layout.fields.empty() || layout.stride == 0 || layout.stride % 16U != 0)
+    if (layout.stride == 0 || (layout.fields.empty() && layout.stride != sizeof(std::uint32_t)))
         throw std::invalid_argument("FX material structured-buffer layout is invalid");
     if (materials.size() > std::numeric_limits<std::size_t>::max() / layout.stride)
         throw std::overflow_error("FX material structured-buffer allocation size overflow");

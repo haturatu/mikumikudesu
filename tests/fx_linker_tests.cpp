@@ -247,7 +247,7 @@ int main() {
     }
 
     // Pack evaluated values in declaration order using the DirectX
-    // StructuredBuffer row layout selected by the FX shader compiler.
+    // StructuredBuffer storage layout selected by the FX shader compiler.
     {
         MaterialTemplateSchema schema;
         schema.fields = {{.name = "Gain", .type = MaterialFieldType::floatingPoint, .components = 1},
@@ -286,16 +286,25 @@ int main() {
         const auto straddled = makeMaterialStructuredBufferLayout(straddledSchema);
         ok &= check(layout.fields[0].offset == 0 && layout.fields[1].offset == 4 && layout.fields[2].offset == 12 &&
                         layout.fields[3].offset == 16 && layout.fields[4].offset == 28 && layout.stride == 32,
-                    "MatDesc structured-buffer layout applies DirectX row packing in declaration order");
+                    "MatDesc structured-buffer layout follows DXC storage layout in declaration order");
         ok &= check(
             packed.count == 2 && packed.bytes.size() == 64 && readFloat(0) == 0.5F && readFloat(4) == 1.0F &&
                 readFloat(8) == 2.0F && std::bit_cast<std::int32_t>(readLittleEndianWord(packed.bytes, 12)) == 3 &&
                 readFloat(16) == 4.0F && readFloat(24) == 6.0F && readFloat(28) == 7.0F && readFloat(32) == 0.25F &&
                 std::bit_cast<std::int32_t>(readLittleEndianWord(packed.bytes, 44)) == -1 && readFloat(60) == 13.0F,
             "MatDesc values pack into little-endian records with the reflected row stride");
-        ok &= check(straddled.fields[0].offset == 0 && straddled.fields[1].offset == 16 && straddled.stride == 32,
-                    "MatDesc vector fields do not straddle a DirectX 16-byte row");
+        ok &= check(straddled.fields[0].offset == 0 && straddled.fields[1].offset == 8 && straddled.stride == 20,
+                    "MatDesc vector fields use their DXC storage offsets without cbuffer row padding");
         ok &= check(rejectedOrder, "MatDesc packer rejects values with a different field order");
+
+        const MaterialTemplateSchema textureOnlySchema{};
+        const auto textureOnlyLayout = makeMaterialStructuredBufferLayout(textureOnlySchema);
+        const EvaluatedMaterialBinding textureOnlyMaterial{};
+        const auto textureOnlyPayload =
+            packMaterialStructuredBuffer(textureOnlyLayout, std::span(&textureOnlyMaterial, 1));
+        ok &= check(textureOnlyLayout.fields.empty() && textureOnlyLayout.stride == sizeof(std::uint32_t) &&
+                        textureOnlyPayload.count == 1 && textureOnlyPayload.bytes.size() == sizeof(std::uint32_t),
+                    "texture-only MatDesc layouts use a one-word private value record");
     }
 
     // Alias folding: shared / ref / shareTags collapse to canonical ids.

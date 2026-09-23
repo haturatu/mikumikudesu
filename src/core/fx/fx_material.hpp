@@ -206,7 +206,7 @@ struct MaterialStructuredFieldLayout {
 };
 
 struct MaterialStructuredBufferLayout {
-    // DirectX structured-buffer row packing, matching the FX compiler's
+    // DXC storage-buffer member offsets and ArrayStride, matching the
     // -fvk-use-dx-layout option and the generated FooValue declaration.
     std::vector<MaterialStructuredFieldLayout> fields;
     std::size_t stride{};
