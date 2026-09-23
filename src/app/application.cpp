@@ -4185,18 +4185,28 @@ void Application::buildEditorUi() {
                 ImGui::PopID();
             }
             const auto liveResources = nativeRenderer_.liveResources();
-            ImGui::SeparatorText("Live GPU allocations");
+            ImGui::SeparatorText("Live FX resource allocations");
             if (liveResources.empty()) {
                 ImGui::TextDisabled("No native FX resource allocations are active.");
             } else {
                 for (std::size_t index = 0; index < liveResources.size(); ++index) {
                     const auto& resource = liveResources[index];
                     ImGui::PushID(static_cast<int>(index));
-                    ImGui::Text("%s / %s  ·  %s  ·  %s", resource.effect.c_str(), resource.name.c_str(),
-                                resource.kind.c_str(), resource.format.c_str());
-                    if (resource.kind != "Sampler")
+                    if (!resource.format.empty())
+                        ImGui::Text("%s / %s  ·  %s  ·  %s", resource.effect.c_str(), resource.name.c_str(),
+                                    resource.kind.c_str(), resource.format.c_str());
+                    else
+                        ImGui::Text("%s / %s  ·  %s", resource.effect.c_str(), resource.name.c_str(),
+                                    resource.kind.c_str());
+                    if (resource.kind == "Buffer") {
+                        ImGui::TextDisabled("Type: %s  Bytes: %llu  Elements: %u  Element bytes: %u",
+                                            resource.elementType.c_str(),
+                                            static_cast<unsigned long long>(resource.allocationBytes),
+                                            resource.extent.width, resource.elementSize);
+                    } else if (resource.kind == "Texture") {
                         ImGui::TextDisabled("Extent: %u x %u x %u  Dimension: %u", resource.extent.width,
                                             resource.extent.height, resource.extent.depth, resource.dimension);
+                    }
                     ImGui::PopID();
                 }
             }

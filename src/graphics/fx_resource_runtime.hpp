@@ -39,6 +39,9 @@ class FxResourceStore {
         Extent3D extent{};
         PixelFormat format{PixelFormat::rgba8Unorm};
         std::uint32_t dimension{2};
+        std::uint64_t allocationBytes{};
+        std::uint32_t elementSize{};
+        std::string elementType;
         // Compatibility-only physical slot used by the old single-set API.
         // Per-pass descriptors never consult these fields.
         DescriptorKind legacyDescriptorKind{DescriptorKind::sampledImage};
