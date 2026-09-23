@@ -4,6 +4,7 @@
 #include <exception>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 
 namespace dayo::graphics {
@@ -31,6 +32,7 @@ NativeViewConstants makeNativeViewConstants(const fx::FxFrameContext& context,
     const auto frameTime = context.frame / 30.0F;
     result.frameTimes = {frameTime, 0.0F, frameTime, 0.0F};
     result.output = {context.renderWidth, context.renderHeight, narrowSample(context.sample), 1};
+    result.playing = context.host.playing ? 1 : 0;
     result.lightColor = context.lighting.color;
     result.lightDirection = context.lighting.direction;
     result.selfShadowMode = context.host.selfShadowMode;
@@ -44,6 +46,53 @@ NativeViewConstants makeNativeViewConstants(const fx::FxFrameContext& context,
     result.onResize = context.host.onResize ? 1 : 0;
     result.onLoad = context.host.onLoad ? 1 : 0;
     return result;
+}
+
+void populateNativeViewExpressionSymbols(fx::FxFrameContext& context, const NativeViewConstants& view) {
+    const auto setInteger = [&context](std::string_view name, std::int64_t value) {
+        context.expressionSymbols.insert_or_assign(std::string(name), core::fx::FxScalar{value});
+    };
+    const auto setFloat = [&context](std::string_view name, float value) {
+        context.expressionSymbols.insert_or_assign(std::string(name), core::fx::FxScalar{static_cast<double>(value)});
+    };
+
+    setInteger("Perspective", view.cameraFlags[0]);
+    setInteger("CameraInterpolated", view.cameraFlags[1]);
+    setInteger("ModelCount", view.modelCounts[0]);
+    setInteger("TotalMaterialCount", view.modelCounts[1]);
+    context.time = view.frameTimes[0];
+    setFloat("DTime", view.frameTimes[1]);
+    setFloat("FrameTime", view.frameTimes[2]);
+    setFloat("DFrameTime", view.frameTimes[3]);
+    setFloat("RealTime", view.realTimes[0]);
+    setFloat("DRealTime", view.realTimes[1]);
+    setInteger("MouseDown", view.mouseButtons[0]);
+    setInteger("MouseClicked", view.mouseButtons[1]);
+    setFloat("MousePos.x", view.mousePosition[0]);
+    setFloat("MousePos.y", view.mousePosition[1]);
+    setInteger("Playing", view.playing);
+    setInteger("Resolution.x", view.output[0]);
+    setInteger("Resolution.y", view.output[1]);
+    setInteger("iSample", view.output[2]);
+    setInteger("SamplesPerFrame", view.output[3]);
+    setFloat("LightColor.x", view.lightColor[0]);
+    setFloat("LightColor.y", view.lightColor[1]);
+    setFloat("LightColor.z", view.lightColor[2]);
+    setInteger("SelfShadowMode", view.selfShadowMode);
+    setFloat("LightDirection.x", view.lightDirection[0]);
+    setFloat("LightDirection.y", view.lightDirection[1]);
+    setFloat("LightDirection.z", view.lightDirection[2]);
+    setFloat("SelfShadowDistance", view.selfShadowDistance);
+    setFloat("SceneRadius", view.sceneRadius);
+    setInteger("ScreenBMPMode", view.screenBmpMode);
+    setInteger("BackgroundMode", view.backgroundMode);
+    setInteger("BackgroundTransparent", view.backgroundTransparent);
+    setInteger("MaterialHighLight", view.materialHighlight);
+    setInteger("DenoiserEnabled", view.denoiserEnabled);
+    setInteger("OnStart", view.onStart);
+    setInteger("OnLoadSkybox", view.onLoadSkybox);
+    setInteger("OnResize", view.onResize);
+    setInteger("OnLoad", view.onLoad);
 }
 
 NativeFrameConstantsRuntime::~NativeFrameConstantsRuntime() {
