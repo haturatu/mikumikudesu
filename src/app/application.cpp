@@ -725,6 +725,8 @@ void Application::resetProjectRuntimeState() {
     cameraDistance_ = 3.0F;
     normalization_ = {};
     projectAssets_.clear();
+    projectModelMetadata_.clear();
+    upstreamDocumentJson_.clear();
     history_.clear();
     frameProfiler_.reset();
 }
@@ -972,7 +974,103 @@ core::DayoProject Application::currentProject() const {
     project.renderer = std::string(graphics::toString(requestedRenderer_));
     project.frame = animationFrame_;
     project.playing = playing_;
+    project.upstreamDocumentJson = upstreamDocumentJson_;
     project.assets = projectAssets_;
+    project.editor.animationSpeed = playbackSpeed_;
+    project.editor.recordFps = static_cast<float>(sceneTimelineFps(scene_));
+#if DAYO_HAS_IMGUI
+    project.editor.samplesPerFrame = sequenceOutput_.samples;
+    project.editor.motionBlur = sequenceOutput_.motionBlur;
+    project.editor.outputWidth = sequenceWidth_;
+    project.editor.outputHeight = sequenceHeight_;
+#endif
+    project.models = projectModelMetadata_;
+    for (const auto& instance : scene_.models()) {
+        core::ProjectModelState state;
+        state.source = instance.sourcePath;
+        auto savedModel = std::ranges::find_if(project.models, [&](const auto& previous) {
+            return !previous.source.empty() && std::filesystem::absolute(previous.source).lexically_normal() ==
+                                                   std::filesystem::absolute(instance.sourcePath).lexically_normal();
+        });
+        if (savedModel != project.models.end())
+            state.upstreamId = savedModel->upstreamId;
+        if (instance.model != nullptr) {
+            state.bones.reserve(instance.model->bones.size());
+            for (const auto& bone : instance.model->bones)
+                state.bones.push_back(bone.name);
+            state.morphs.reserve(instance.model->morphs.size());
+            for (const auto& morph : instance.model->morphs)
+                state.morphs.push_back(morph.name);
+            state.materials.reserve(instance.model->materials.size());
+            for (const auto& material : instance.model->materials)
+                state.materials.push_back(material.name);
+        }
+        state.materialAnnotations.reserve(instance.materialSettings.size());
+        for (const auto& material : instance.materialSettings)
+            state.materialAnnotations.push_back(material.annotation.string());
+        state.motionOrder = instance.order.motion;
+        state.deformOrder = instance.order.deform;
+        state.postprocessOrder = instance.order.postprocess;
+        state.rasterOrder = instance.order.raster;
+        state.cloneCount = instance.cloneCount;
+        state.visible = instance.visible;
+        if (savedModel == project.models.end())
+            project.models.push_back(std::move(state));
+        else
+            *savedModel = std::move(state);
+    }
+    for (auto& asset : project.assets) {
+        if (asset.kind != "effect")
+            continue;
+        const auto normalized = std::filesystem::absolute(asset.path).lexically_normal();
+        const auto loaded =
+            std::ranges::find_if(reloadedEffects_, [&](const auto& effect) { return effect.path == normalized; });
+        if (loaded == reloadedEffects_.end())
+            continue;
+        const auto owner = loaded->owner.has_value()
+                               ? std::ranges::find(scene_.models(), *loaded->owner, &core::ModelInstance::id)
+                               : scene_.models().end();
+        if (owner != scene_.models().end()) {
+            const auto ownerState = std::ranges::find_if(project.models, [&](const auto& state) {
+                return !state.source.empty() && std::filesystem::absolute(state.source).lexically_normal() ==
+                                                    std::filesystem::absolute(owner->sourcePath).lexically_normal();
+            });
+            if (ownerState != project.models.end()) {
+                asset.ownerModelIndex = static_cast<std::size_t>(std::distance(project.models.begin(), ownerState));
+                asset.upstreamId =
+                    ownerState->upstreamId.value_or(static_cast<std::int32_t>(*asset.ownerModelIndex + 1U));
+            } else {
+                asset.ownerModelIndex.reset();
+            }
+        } else {
+            asset.ownerModelIndex.reset();
+        }
+        const auto* graph = loaded->reloader.current();
+        if (graph == nullptr)
+            continue;
+        if (graph->category == "render")
+            asset.upstreamId = -1;
+        if (!loaded->materialSourceFiles.empty())
+            asset.materialSourceFiles = loaded->materialSourceFiles;
+        if (!graph->materialDescriptor.has_value())
+            continue;
+        if (!asset.materialSourceFiles.empty())
+            continue;
+        const auto defaultFile = graph->materialDescriptor->defaultFile.generic_string();
+        asset.materialSourceFiles.clear();
+        asset.materialSourceFiles.reserve(project.models.size());
+        for (const auto& model : project.models) {
+            std::vector<std::string> sources;
+            sources.reserve(model.materials.size());
+            for (std::size_t material = 0; material < model.materials.size(); ++material) {
+                const auto annotation = material < model.materialAnnotations.size()
+                                            ? std::filesystem::path(model.materialAnnotations[material])
+                                            : std::filesystem::path{};
+                sources.push_back(annotation.empty() ? defaultFile : annotation.generic_string());
+            }
+            asset.materialSourceFiles.push_back(std::move(sources));
+        }
+    }
     core::VmdMotion camera = scene_.cameraMotion() == nullptr ? core::VmdMotion{} : *scene_.cameraMotion();
     if (camera.modelName.empty())
         camera.modelName = "Camera/Light";
@@ -1162,7 +1260,7 @@ void Application::loadEffectAsset(const std::filesystem::path& path, std::option
         return asset.kind == "effect" && std::filesystem::absolute(asset.path).lexically_normal() == normalizedPath;
     });
     if (projectEffect == projectAssets_.end())
-        projectAssets_.push_back({"effect", normalizedPath});
+        projectAssets_.emplace_back("effect", normalizedPath);
 }
 
 void Application::handleAsset(const std::filesystem::path& path) {
@@ -1183,22 +1281,109 @@ void Application::handleAsset(const std::filesystem::path& path) {
             projectDestination_[projectLength] = '\0';
 #endif
             resetProjectRuntimeState();
+            upstreamDocumentJson_ = project.upstreamDocumentJson;
+            projectModelMetadata_ = project.models;
             if (project.renderer == "subayai")
                 requestRenderer(graphics::RendererKind::subayai);
             else if (project.renderer == "bdpt")
                 requestRenderer(graphics::RendererKind::bdpt);
             else
                 requestRenderer(graphics::RendererKind::preview);
+            playbackSpeed_ = project.editor.animationSpeed;
+#if DAYO_HAS_IMGUI
+            sequenceOutput_.samples = project.editor.samplesPerFrame;
+            sequenceOutput_.motionBlur = project.editor.motionBlur;
+            sequenceWidth_ = project.editor.outputWidth;
+            sequenceHeight_ = project.editor.outputHeight;
+#endif
+            const auto findLoadedModel = [&](std::size_t projectIndex) -> core::ModelInstance* {
+                if (projectIndex < project.models.size() && !project.models[projectIndex].source.empty()) {
+                    const auto& source = project.models[projectIndex].source;
+                    const auto found = std::ranges::find_if(scene_.models(), [&](const auto& instance) {
+                        return std::filesystem::absolute(instance.sourcePath).lexically_normal() ==
+                               std::filesystem::absolute(source).lexically_normal();
+                    });
+                    return found == scene_.models().end() ? nullptr : scene_.model(found->id);
+                }
+                return projectIndex < scene_.models().size() ? scene_.model(scene_.models()[projectIndex].id) : nullptr;
+            };
+            for (const auto& asset : project.assets) {
+                if (asset.kind != "pmx")
+                    continue;
+                try {
+                    handleAsset(asset.path);
+                } catch (const std::exception& exception) {
+                    log::warn("Project model could not be loaded: ", asset.path.string(), ": ", exception.what());
+                }
+            }
+            for (std::size_t index = 0; index < project.models.size(); ++index) {
+                auto* instance = findLoadedModel(index);
+                if (instance == nullptr)
+                    continue;
+                const auto& state = project.models[index];
+                instance->order = {state.motionOrder, state.deformOrder, state.postprocessOrder, state.rasterOrder};
+                static_cast<void>(scene_.setCloneCount(instance->id, state.cloneCount));
+                static_cast<void>(scene_.setModelVisible(instance->id, state.visible));
+                const auto annotationCount =
+                    std::min(instance->materialSettings.size(), state.materialAnnotations.size());
+                for (std::size_t material = 0; material < annotationCount; ++material)
+                    instance->materialSettings[material].annotation = state.materialAnnotations[material];
+            }
+            for (const auto& asset : project.assets) {
+                if (asset.kind != "effect")
+                    continue;
+                try {
+                    std::optional<core::ModelId> owner;
+                    if (asset.ownerModelIndex.has_value()) {
+                        if (auto* instance = findLoadedModel(*asset.ownerModelIndex); instance != nullptr) {
+                            owner = instance->id;
+                        } else {
+                            log::warn("Project effect owner model is unavailable; skipping effect: ",
+                                      asset.path.string());
+                            continue;
+                        }
+                    }
+                    loadEffectAsset(asset.path, owner);
+                } catch (const std::exception& exception) {
+                    log::warn("Project effect could not be loaded: ", asset.path.string(), ": ", exception.what());
+                }
+                const auto normalized = std::filesystem::absolute(asset.path).lexically_normal();
+                const auto loaded = std::ranges::find_if(reloadedEffects_,
+                                                         [&](const auto& effect) { return effect.path == normalized; });
+                if (loaded != reloadedEffects_.end() && !asset.materialSourceFiles.empty())
+                    loaded->materialSourceFiles = asset.materialSourceFiles;
+            }
             for (const auto& asset : project.assets)
-                handleAsset(asset.path);
+                if (asset.kind != "pmx" && asset.kind != "effect") {
+                    try {
+                        handleAsset(asset.path);
+                    } catch (const std::exception& exception) {
+                        log::warn("Project asset could not be loaded: ", asset.path.string(), ": ", exception.what());
+                    }
+                }
+
+            for (const auto& savedAsset : project.assets) {
+                const auto existing = std::ranges::find_if(projectAssets_, [&](const auto& loaded) {
+                    return loaded.kind == savedAsset.kind &&
+                           std::filesystem::absolute(loaded.path).lexically_normal() ==
+                               std::filesystem::absolute(savedAsset.path).lexically_normal();
+                });
+                if (existing == projectAssets_.end()) {
+                    projectAssets_.push_back(savedAsset);
+                } else {
+                    existing->ownerModelIndex = savedAsset.ownerModelIndex;
+                    existing->upstreamId = savedAsset.upstreamId;
+                    existing->materialSourceFiles = savedAsset.materialSourceFiles;
+                }
+            }
             if (project.embeddedMotions.size() > 1U) {
                 scene_.attachMotion(project.embeddedMotions.front());
-                const auto& models = scene_.models();
-                const auto count = std::min(models.size(), project.embeddedMotions.size() - 1U);
+                const auto count = std::min(project.models.size(), project.embeddedMotions.size() - 1U);
                 for (std::size_t index = 0; index < count; ++index) {
                     const auto& motion = project.embeddedMotions[index + 1U];
                     if (!motion.bones.empty() || !motion.morphs.empty() || !motion.ik.empty()) {
-                        scene_.attachMotion(motion, models[index].id);
+                        if (auto* instance = findLoadedModel(index); instance != nullptr)
+                            scene_.attachMotion(motion, instance->id);
                     }
                 }
                 manualCamera_ = false;
@@ -1231,7 +1416,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             refreshAnimatedMesh(false);
             refreshPreviewScene();
             lastAsset_ = "VMdayo " + path.filename().string();
-            projectAssets_.push_back({"vmdayo", std::filesystem::absolute(path)});
+            projectAssets_.emplace_back("vmdayo", std::filesystem::absolute(path));
             log::info("Loaded VMdayo motion: ", path.string());
         } catch (const std::exception& exception) {
             lastAsset_ = "VMdayo error: " + std::string(exception.what());
@@ -1268,7 +1453,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             }
             lastAsset_ = "Image " + path.filename().string() + " — " + std::to_string(image.width) + "x" +
                          std::to_string(image.height);
-            projectAssets_.push_back({"image", std::filesystem::absolute(path)});
+            projectAssets_.emplace_back("image", std::filesystem::absolute(path));
             log::info("Loaded image: ", lastAsset_);
         } catch (const std::exception& exception) {
             lastAsset_ = "Image error: " + std::string(exception.what());
@@ -1280,7 +1465,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
         try {
             const auto modelId = scene_.addModel(path);
             scene_.selectModel(modelId);
-            projectAssets_.push_back({"pmx", std::filesystem::absolute(path)});
+            projectAssets_.emplace_back("pmx", std::filesystem::absolute(path));
             if (scene_.models().empty() || scene_.selectedModelId() != modelId)
                 throw std::logic_error("PMX model was not retained in the scene");
             log::info("PMX scene state: models=", scene_.models().size(), " selected=", scene_.selectedModelId());
@@ -1366,8 +1551,8 @@ void Application::handleAsset(const std::filesystem::path& path) {
             lastAsset_ =
                 std::string(core::toString(kind)) + " — " + std::to_string(media->info().durationSeconds) + " s";
             log::info("Loaded media: ", lastAsset_, " (", path.string(), ")");
-            projectAssets_.push_back(
-                {kind == core::AssetKind::audio ? "audio" : "video", std::filesystem::absolute(path)});
+            projectAssets_.emplace_back(kind == core::AssetKind::audio ? "audio" : "video",
+                                        std::filesystem::absolute(path));
         } catch (const std::exception& exception) {
             lastAsset_ = "Media error: " + std::string(exception.what());
             log::warn(lastAsset_);
@@ -1401,7 +1586,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
                              " morph keys, " + std::to_string(lastFrame) + " frames";
             }
             log::info("Loaded motion: ", lastAsset_, " (", path.string(), ")");
-            projectAssets_.push_back({"vmd", std::filesystem::absolute(path)});
+            projectAssets_.emplace_back("vmd", std::filesystem::absolute(path));
         } catch (const std::exception& exception) {
             lastAsset_ = "VMD error: " + std::string(exception.what());
             log::warn(lastAsset_);
@@ -1416,7 +1601,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             const auto* pose = selectedModel()->pose.get();
             lastAsset_ = "VPD pose — " + std::to_string(pose->bones.size()) + " bones";
             log::info("Loaded pose: ", lastAsset_, " (", path.string(), ")");
-            projectAssets_.push_back({"vpd", std::filesystem::absolute(path)});
+            projectAssets_.emplace_back("vpd", std::filesystem::absolute(path));
         } catch (const std::exception& exception) {
             lastAsset_ = "VPD error: " + std::string(exception.what());
             log::warn(lastAsset_);

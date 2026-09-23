@@ -165,11 +165,14 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::int64_t uploadedVideoFrame_{-1};
     std::string lastAsset_{"Drop PMX/VMD/VPD/media files into the window"};
     std::vector<core::ProjectAsset> projectAssets_;
+    std::vector<core::ProjectModelState> projectModelMetadata_;
+    std::string upstreamDocumentJson_;
     std::optional<std::filesystem::path> currentProjectPath_;
     struct ReloadedEffect {
         std::filesystem::path path;
         core::EffectId id{};
         std::optional<core::ModelId> owner;
+        std::vector<std::vector<std::string>> materialSourceFiles;
         core::EffectHotReloader reloader;
 
         ReloadedEffect(std::filesystem::path source, std::optional<core::ModelId> model)
