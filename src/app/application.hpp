@@ -15,6 +15,7 @@
 #include "fx/fx_frame.hpp"
 #include "fx/fx_scheduler.hpp"
 #include "graphics/device.hpp"
+#include "graphics/native_fx_pending_events.hpp"
 #include "graphics/native_oidn_provider.hpp"
 #include "graphics/native_renderer.hpp"
 #include "graphics/native_scene_derived_runtime.hpp"
@@ -142,6 +143,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::vector<float> nativeLightPowers_;
     std::uint64_t nativeDeformVersion_{};
     std::uint64_t nativeMaterialGeneration_{1};
+    graphics::NativeFxPendingEvents nativeFxPendingEvents_;
     std::uint64_t animatedTopologyGeneration_{};
     float animationFrame_{};
     int uploadedAnimationFrame_{-1};

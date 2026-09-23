@@ -1,9 +1,11 @@
 #include "fx/fx_compiler.hpp"
 #include "graphics/fx_raster_semantics.hpp"
+#include "graphics/native_fx_pending_events.hpp"
 #include "graphics/native_renderer.hpp"
 
 #include <array>
 #include <iostream>
+#include <stdexcept>
 #include <string_view>
 
 namespace {
@@ -33,6 +35,15 @@ dayo::graphics::DeviceCapabilities capableSubayai() {
 int main() {
     bool ok = true;
 
+    dayo::graphics::NativeFxPendingEvents pendingEvents;
+    pendingEvents.latch(true, false);
+    pendingEvents.latch(false, true);
+    ok &= check(pendingEvents.modelChanged && pendingEvents.materialChanged,
+                "native FX change events remain latched across scene dirty-flag clearing");
+    pendingEvents.clear();
+    ok &= check(!pendingEvents.modelChanged && !pendingEvents.materialChanged,
+                "native FX change events clear after the effect stack completes");
+
     const auto sceneContext = dayo::fx::makeFxFrameContext(12.0F, 3, 640, 480, 7, 0, 100, 2, 1, 1);
     const dayo::graphics::NativeEffectModel modelA{
         .modelId = 7, .modelIndex = 0, .vertexCount = 100, .materialCount = 2, .cloneCount = 1};
@@ -46,19 +57,26 @@ int main() {
                     deformContext.cloneCount == 4 && deformContext.clonedVertexCount == 1000,
                 "deform frame context uses its owner and effect clone count");
 
-    std::array<dayo::core::SceneEffectInstance, 3> deformEffects{};
+    std::array<dayo::core::SceneEffectInstance, 1> deformEffects{};
     deformEffects[0].controllerModel = modelB.modelId;
-    deformEffects[0].graph.meshCloneCount = 4;
-    deformEffects[1].controllerModel = modelB.modelId;
-    deformEffects[1].graph.meshCloneCount = 6;
-    deformEffects[2].controllerModel = modelA.modelId;
-    deformEffects[2].graph.meshCloneCount = 12;
+    deformEffects[0].graph.meshCloneCount = 6;
     ok &= check(dayo::graphics::resolveNativeModelCloneCount(2, modelB.modelId, deformEffects) == 6,
-                "native model clone count unifies scene count with its assigned deform effects");
+                "native model clone count unifies scene count with its assigned deformer");
     ok &= check(dayo::graphics::resolveNativeModelCloneCount(8, modelB.modelId, deformEffects) == 8,
                 "native model clone resolution preserves a larger scene count");
     ok &= check(dayo::graphics::resolveNativeModelCloneCount(0, 99, deformEffects) == 1,
                 "native model clone resolution defaults unassigned models to one instance");
+    auto secondDeformer = deformEffects.front();
+    secondDeformer.graph.meshCloneCount = 4;
+    const std::array multipleDeformers{deformEffects.front(), secondDeformer};
+    bool rejectedMultipleDeformers = false;
+    try {
+        static_cast<void>(dayo::graphics::resolveNativeModelCloneCount(2, modelB.modelId, multipleDeformers));
+    } catch (const std::logic_error&) {
+        rejectedMultipleDeformers = true;
+    }
+    ok &= check(rejectedMultipleDeformers,
+                "native model clone resolution rejects unsupported multiple-deformer chain semantics");
 
     dayo::fx::FxRequiredFeatures compute;
     const auto computeDecision =

@@ -45,7 +45,8 @@ struct FxNativeShaderSourceOptions {
 // requiring the Vulkan backend to parse effect source text again.
 [[nodiscard]] std::string makeNativeFxShaderSource(const FxProgram& program, const FxDispatch& dispatch,
                                                    std::uint32_t resourceSet,
-                                                   const FxNativeShaderSourceOptions& options = {});
+                                                   const FxNativeShaderSourceOptions& options = {},
+                                                   const FxResolvedPass* resolved = nullptr);
 
 // Resolves quoted include paths case-insensitively before invoking an external
 // HLSL compiler. MikuMikuDayo assets are authored on a case-insensitive file

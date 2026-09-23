@@ -35,6 +35,10 @@ class FxPipelineRuntime {
     [[nodiscard]] bool build(Device& device, const fx::FxProgram& program, const fx::FxShaderCompiler& compiler,
                              const LayoutResolver& resolveLayout, std::string* error = nullptr,
                              std::uint32_t resourceSet = 0, const fx::FxNativeShaderSourceOptions& sourceOptions = {});
+    [[nodiscard]] bool build(Device& device, const fx::FxProgram& program, const fx::FxFramePlan& framePlan,
+                             const fx::FxShaderCompiler& compiler, const LayoutResolver& resolveLayout,
+                             std::string* error = nullptr, std::uint32_t resourceSet = 0,
+                             const fx::FxNativeShaderSourceOptions& sourceOptions = {});
     void reset() noexcept;
 
     [[nodiscard]] std::optional<handles::PipelineHandle> resolvePipeline(const fx::FxDispatch& dispatch) const;
@@ -52,7 +56,8 @@ class FxPipelineRuntime {
     };
 
     [[nodiscard]] handles::ShaderHandle compileShader(Device& device, const fx::FxProgram& program,
-                                                      const fx::FxDispatch& dispatch, std::string_view entryPoint,
+                                                      const fx::FxDispatch& dispatch,
+                                                      const fx::FxResolvedPass& resolved, std::string_view entryPoint,
                                                       fx::FxShaderStage stage, const fx::FxShaderCompiler& compiler,
                                                       Entry& entry, std::uint32_t resourceSet,
                                                       const fx::FxNativeShaderSourceOptions& sourceOptions);
