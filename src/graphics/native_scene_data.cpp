@@ -92,22 +92,26 @@ NativeSceneMaterial makeNativeSceneMaterial(const mmd::PmxMaterial& material,
 
 NativeSceneModelData makeNativeSceneModelData(const mmd::PmxModel& model, std::span<const PreviewVertex> vertices,
                                               std::span<const mmd::AnimatedModelFrame::Material> animatedMaterials,
-                                              mmd::PreviewNormalization normalization) {
+                                              mmd::PreviewNormalization normalization,
+                                              std::span<const mmd::PmxVertex> evaluatedVertices) {
     if (vertices.size() != model.vertices.size())
         throw std::invalid_argument("native scene vertex count does not match PMX model");
     if (model.indices.size() % 3U != 0)
         throw std::invalid_argument("native scene index count is not a triangle list");
     if (model.materials.size() != animatedMaterials.size() && !animatedMaterials.empty())
         throw std::invalid_argument("native scene animated material count does not match PMX model");
+    if (evaluatedVertices.size() != model.vertices.size() && !evaluatedVertices.empty())
+        throw std::invalid_argument("native scene evaluated vertex count does not match PMX model");
 
     NativeSceneModelData result;
     result.vertices.reserve(vertices.size());
     result.rawVertices.reserve(model.vertices.size());
     for (std::size_t index = 0; index < vertices.size(); ++index) {
         auto converted = makeNativeSceneVertex(vertices[index]);
-        for (std::size_t channel = 0; channel < model.vertices[index].additionalUv.size(); ++channel)
-            std::copy(model.vertices[index].additionalUv[channel].begin(),
-                      model.vertices[index].additionalUv[channel].end(), converted.exuv + channel * 4U);
+        const auto& additionalUv =
+            evaluatedVertices.empty() ? model.vertices[index].additionalUv : evaluatedVertices[index].additionalUv;
+        for (std::size_t channel = 0; channel < additionalUv.size(); ++channel)
+            std::copy(additionalUv[channel].begin(), additionalUv[channel].end(), converted.exuv + channel * 4U);
         result.vertices.push_back(converted);
 
         const auto& source = model.vertices[index];

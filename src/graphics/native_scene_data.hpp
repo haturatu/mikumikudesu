@@ -135,6 +135,7 @@ makeNativeSceneMaterial(const mmd::PmxMaterial& material,
 [[nodiscard]] NativeSceneModelData
 makeNativeSceneModelData(const mmd::PmxModel& model, std::span<const PreviewVertex> vertices,
                          std::span<const mmd::AnimatedModelFrame::Material> animatedMaterials = {},
-                         mmd::PreviewNormalization normalization = {});
+                         mmd::PreviewNormalization normalization = {},
+                         std::span<const mmd::PmxVertex> evaluatedVertices = {});
 
 } // namespace dayo::graphics
