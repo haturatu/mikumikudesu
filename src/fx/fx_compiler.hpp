@@ -224,6 +224,7 @@ struct FxProgram {
     std::optional<core::fx::MaterialTemplateSchema> materialSchema;
     std::vector<std::string> memos;
     std::uint32_t globalVarSize{1024};
+    bool globalVarSizeSpecified{};
     std::string rawYrzfx;
     std::string hlslPrefix;
     std::string generatedCode;

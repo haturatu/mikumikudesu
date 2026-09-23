@@ -1030,7 +1030,7 @@ void CS() {}
         const auto runtimeGraph = dayo::core::loadEffectGraphFromText("runtime-metadata.fxdayo", runtimeFixture);
         ok &= check(runtimeGraph.rawYrzfx.find("unknown-capability") != std::string::npos &&
                         runtimeGraph.memos.size() == 2 && runtimeGraph.globalVarSize == 16 &&
-                        runtimeGraph.meshCloneCount == 4,
+                        runtimeGraph.globalVarSizeSpecified && runtimeGraph.meshCloneCount == 4,
                     "effect graph preserves memos, global variable size, clone count, and raw source");
         const auto defaultGlobalSize = dayo::core::loadEffectGraphFromText("default-global-size.fxdayo",
                                                                            R"FX([YRZFX]
@@ -1043,7 +1043,7 @@ void CS() {}
 [HLSL]
 float4 PS() : SV_TARGET { return 1; }
 )FX");
-        ok &= check(defaultGlobalSize.globalVarSize == 1024,
+        ok &= check(defaultGlobalSize.globalVarSize == 1024 && !defaultGlobalSize.globalVarSizeSpecified,
                     "omitted globalVarSize uses the pinned upstream 1.30 1024-byte default");
         ok &= check(
             runtimeGraph.controllers.size() == 1 && runtimeGraph.controllers[0].slider.has_value() &&

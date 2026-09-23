@@ -321,6 +321,7 @@ struct EffectGraph {
     // MikuMikuDayo 1.30 allocates a 1024-byte implicit global constant buffer
     // unless an effect overrides this size.
     std::uint32_t globalVarSize{1024};
+    bool globalVarSizeSpecified{};
     // The Jsonnet section is retained verbatim for diagnostics, round-trip
     // tooling, and upstream compatibility tests. Parsed fields remain the
     // execution ABI; this text prevents unknown fields from being silently
