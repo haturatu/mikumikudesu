@@ -1967,6 +1967,60 @@ bool testFxExternalTextureMetadataAndUpload() {
                     device.uploadedTextureBytes_ == 8 && device.generatedMipmaps_ == 1,
                 "FX external texture uploads base mip and generates remaining mips");
     runtime.reset();
+
+    const auto volumePath = directory / "volume.dds";
+    std::array<std::uint8_t, 148> volumeHeader{};
+    const auto putVolumeHeader = [&volumeHeader](std::size_t offset, std::uint32_t value) {
+        volumeHeader[offset] = static_cast<std::uint8_t>(value);
+        volumeHeader[offset + 1] = static_cast<std::uint8_t>(value >> 8U);
+        volumeHeader[offset + 2] = static_cast<std::uint8_t>(value >> 16U);
+        volumeHeader[offset + 3] = static_cast<std::uint8_t>(value >> 24U);
+    };
+    std::copy_n("DDS ", 4, volumeHeader.begin());
+    putVolumeHeader(4, 124);
+    putVolumeHeader(12, 1);
+    putVolumeHeader(16, 2);
+    putVolumeHeader(24, 2);
+    putVolumeHeader(28, 2);
+    putVolumeHeader(76, 32);
+    putVolumeHeader(80, 4);
+    putVolumeHeader(84, 0x30315844); // DX10
+    putVolumeHeader(108, 0x1000);
+    putVolumeHeader(112, 0x200000);
+    putVolumeHeader(128, 28); // DXGI_FORMAT_R8G8B8A8_UNORM
+    putVolumeHeader(132, 4);  // D3D10_RESOURCE_DIMENSION_TEXTURE3D
+    putVolumeHeader(140, 1);
+    {
+        std::ofstream output(volumePath, std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(volumeHeader.data()),
+                     static_cast<std::streamsize>(volumeHeader.size()));
+        const std::array<std::uint8_t, 20> payload{255, 0,   0,   255, 0, 255, 0,   255, 0,   0,
+                                                   255, 255, 255, 255, 0, 255, 255, 255, 255, 255};
+        output.write(reinterpret_cast<const char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
+    }
+    dayo::fx::FxProgram volumeProgram;
+    volumeProgram.sourcePath = directory / "volume.fxdayo";
+    dayo::core::EffectTexture volumeTexture;
+    volumeTexture.name = "SmokeVolume";
+    volumeTexture.filename = volumePath.filename().string();
+    volumeTexture.mipmap = true;
+    volumeTexture.view = "SRV";
+    volumeProgram.textures3D.push_back(std::move(volumeTexture));
+    const auto uploadsBeforeVolume = device.textureUploads_;
+    dayo::graphics::FxResourceRuntime volumeRuntime;
+    runtimeError.clear();
+    ok &= check(volumeRuntime.initialize(device, volumeProgram, testContext(), &runtimeError),
+                "FX external Texture3D loads a DX10 DDS volume");
+    ok &= check(runtimeError.empty() && volumeRuntime.extent("SmokeVolume").has_value() &&
+                    volumeRuntime.extent("SmokeVolume")->width == 2 &&
+                    volumeRuntime.extent("SmokeVolume")->height == 1 && volumeRuntime.extent("SmokeVolume")->depth == 2,
+                "external FX volume uses the DDS extent when no explicit size is declared");
+    ok &= check(device.textureDescs_.back().dimension == dayo::graphics::TextureDimension::d3 &&
+                    device.textureDescs_.back().mipLevels == 2 && device.textureDescs_.back().extent.depth == 2 &&
+                    device.textureUploads_ == uploadsBeforeVolume + 2 &&
+                    device.uploadedTextureData_ == std::vector<std::uint8_t>{255, 255, 255, 255},
+                "FX runtime allocates a 3D texture and uploads its DDS mip chain");
+    volumeRuntime.reset();
     fs::remove_all(directory, error);
     return ok;
 }

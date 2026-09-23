@@ -127,6 +127,69 @@ int main() {
                     "uncompressed BGRA DDS reads directly into the output buffer");
         std::filesystem::remove(bgraPath);
 
+        const auto writeDx10Header = [](std::array<std::uint8_t, 148>& header, std::uint32_t width,
+                                        std::uint32_t height, std::uint32_t depth, std::uint32_t mipLevels,
+                                        std::uint32_t dimension, std::uint32_t miscFlag, std::uint32_t arraySize) {
+            const auto put = [&header](std::size_t offset, std::uint32_t value) {
+                header[offset] = static_cast<std::uint8_t>(value);
+                header[offset + 1] = static_cast<std::uint8_t>(value >> 8U);
+                header[offset + 2] = static_cast<std::uint8_t>(value >> 16U);
+                header[offset + 3] = static_cast<std::uint8_t>(value >> 24U);
+            };
+            std::copy_n("DDS ", 4, header.begin());
+            put(4, 124);
+            put(12, height);
+            put(16, width);
+            put(24, depth);
+            put(28, mipLevels);
+            put(76, 32);
+            put(80, 4);
+            put(84, 0x30315844); // DX10
+            put(108, 0x1000);
+            put(112, dimension == 4 ? 0x200000 : 0);
+            put(128, 28); // DXGI_FORMAT_R8G8B8A8_UNORM
+            put(132, dimension);
+            put(136, miscFlag);
+            put(140, arraySize);
+        };
+        const auto volumePath = std::filesystem::temp_directory_path() / "mikumikudesu-volume-test.dds";
+        std::array<std::uint8_t, 148> volumeHeader{};
+        writeDx10Header(volumeHeader, 2, 1, 2, 2, 4, 0, 1);
+        {
+            std::ofstream output(volumePath, std::ios::binary | std::ios::trunc);
+            output.write(reinterpret_cast<const char*>(volumeHeader.data()),
+                         static_cast<std::streamsize>(volumeHeader.size()));
+            const std::array<std::uint8_t, 20> payload{255, 0,   0,   255, 0, 255, 0,   255, 0,   0,
+                                                       255, 255, 255, 255, 0, 255, 255, 255, 255, 255};
+            output.write(reinterpret_cast<const char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
+        }
+        const auto volume = dayo::core::loadDdsImageRgba8(volumePath);
+        ok &= check(volume.dimension == dayo::core::DdsDimension::threeD && volume.width == 2 && volume.height == 1 &&
+                        volume.depth == 2 && volume.arrayLayers == 1 && volume.mipLevels == 2,
+                    "DX10 DDS volume metadata retains depth and mip count");
+        ok &= check(volume.subresource(0).pixels == std::vector<std::uint8_t>{255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255,
+                                                                              255, 255, 255, 0, 255} &&
+                        volume.subresource(1).pixels == std::vector<std::uint8_t>{255, 255, 255, 255},
+                    "DDS volume and each mip decode in layer-major subresource order");
+        std::filesystem::remove(volumePath);
+
+        const auto cubePath = std::filesystem::temp_directory_path() / "mikumikudesu-cube-test.dds";
+        std::array<std::uint8_t, 148> cubeHeader{};
+        writeDx10Header(cubeHeader, 1, 1, 1, 1, 3, 0x4, 1);
+        {
+            std::ofstream output(cubePath, std::ios::binary | std::ios::trunc);
+            output.write(reinterpret_cast<const char*>(cubeHeader.data()),
+                         static_cast<std::streamsize>(cubeHeader.size()));
+            const std::array<std::uint8_t, 24> faces{1, 0, 0, 255, 2, 0, 0, 255, 3, 0, 0, 255,
+                                                     4, 0, 0, 255, 5, 0, 0, 255, 6, 0, 0, 255};
+            output.write(reinterpret_cast<const char*>(faces.data()), static_cast<std::streamsize>(faces.size()));
+        }
+        const auto cube = dayo::core::loadDdsImageRgba8(cubePath);
+        ok &= check(cube.dimension == dayo::core::DdsDimension::cube && cube.arrayLayers == 6 &&
+                        cube.subresource(0, 5).pixels == std::vector<std::uint8_t>{6, 0, 0, 255},
+                    "DX10 DDS cubemaps expose their six faces as array layers");
+        std::filesystem::remove(cubePath);
+
         const auto pngPath = std::filesystem::temp_directory_path() / "mikumikudesu-stbi-budget-test.png";
         const auto putBe32 = [](std::ofstream& output, std::uint32_t value) {
             const std::array<std::uint8_t, 4> bytes{
