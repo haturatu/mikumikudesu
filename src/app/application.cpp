@@ -4184,6 +4184,22 @@ void Application::buildEditorUi() {
                 }
                 ImGui::PopID();
             }
+            const auto liveResources = nativeRenderer_.liveResources();
+            ImGui::SeparatorText("Live GPU allocations");
+            if (liveResources.empty()) {
+                ImGui::TextDisabled("No native FX resource allocations are active.");
+            } else {
+                for (std::size_t index = 0; index < liveResources.size(); ++index) {
+                    const auto& resource = liveResources[index];
+                    ImGui::PushID(static_cast<int>(index));
+                    ImGui::Text("%s / %s  ·  %s  ·  %s", resource.effect.c_str(), resource.name.c_str(),
+                                resource.kind.c_str(), resource.format.c_str());
+                    if (resource.kind != "Sampler")
+                        ImGui::TextDisabled("Extent: %u x %u x %u  Dimension: %u", resource.extent.width,
+                                            resource.extent.height, resource.extent.depth, resource.dimension);
+                    ImGui::PopID();
+                }
+            }
             ImGui::SeparatorText("Passes");
             for (std::size_t index = 0; index < debug.passes.size(); ++index) {
                 const auto& debugPass = debug.passes[index];

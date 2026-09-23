@@ -32,6 +32,36 @@ enum class PixelFormat : std::uint8_t {
     depth24Stencil8
 };
 
+[[nodiscard]] constexpr std::string_view toString(PixelFormat format) noexcept {
+    switch (format) {
+    case PixelFormat::r8Unorm:
+        return "R8_UNORM";
+    case PixelFormat::r16Float:
+        return "R16_FLOAT";
+    case PixelFormat::r16g16Float:
+        return "R16G16_FLOAT";
+    case PixelFormat::r32Float:
+        return "R32_FLOAT";
+    case PixelFormat::r32g32Float:
+        return "R32G32_FLOAT";
+    case PixelFormat::r32g32Uint:
+        return "R32G32_UINT";
+    case PixelFormat::rgba8Unorm:
+        return "RGBA8_UNORM";
+    case PixelFormat::rgba8Srgb:
+        return "RGBA8_SRGB";
+    case PixelFormat::rgba16Float:
+        return "RGBA16_FLOAT";
+    case PixelFormat::rgba32Float:
+        return "RGBA32_FLOAT";
+    case PixelFormat::depth32Float:
+        return "D32_FLOAT";
+    case PixelFormat::depth24Stencil8:
+        return "D24_UNORM_S8_UINT";
+    }
+    return "UNKNOWN";
+}
+
 enum class SamplerFilter : std::uint8_t { nearest, linear };
 enum class SamplerAddressMode : std::uint8_t { repeat, clampToEdge, mirroredRepeat, clampToBorder };
 enum class SamplerCompareOp : std::uint8_t {
