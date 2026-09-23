@@ -1204,6 +1204,7 @@ bool testViewConstantsAndScreenHistory() {
     context.host.screenBmpMode = 1;
     context.host.backgroundMode = 3;
     context.host.backgroundTransparent = true;
+    context.host.playing = true;
     context.host.denoiserEnabled = true;
     context.host.onResize = true;
     context.modelCount = 4;
@@ -1214,8 +1215,35 @@ bool testViewConstantsAndScreenHistory() {
                     "ViewCB uses frame camera matrices");
     ok &= check(view.selfShadowMode == 2 && view.selfShadowDistance == 4.0F && view.screenBmpMode == 1 &&
                     view.backgroundMode == 3 && view.backgroundTransparent == 1 && view.denoiserEnabled == 1 &&
-                    view.onResize == 1,
+                    view.playing == 1 && view.onResize == 1,
                 "ViewCB carries upstream host frame flags");
+
+    auto expressionContext = context;
+    expressionContext.expressionSymbols.emplace("Exposure", 0.75);
+    auto expressionView = view;
+    expressionView.frameTimes = {12.5F, 0.25F, 10.0F, 0.5F};
+    expressionView.realTimes = {99.0F, 0.75F};
+    expressionView.output = {64, 32, 3, 8};
+    expressionView.cameraFlags = {1, 1};
+    dayo::graphics::populateNativeViewExpressionSymbols(expressionContext, expressionView);
+    dayo::core::fx::FxEvalContext evalContext;
+    evalContext.time = expressionContext.time;
+    evalContext.namedSymbols = expressionContext.expressionSymbols;
+    ok &= check(dayo::core::fx::fxToDouble(
+                    dayo::core::fx::evaluateFxExpr(dayo::core::fx::parseFxExpr("Time"), evalContext)) == 12.5,
+                "Time expression reads the same ViewCB slot uploaded to HLSL");
+    ok &= check(dayo::core::fx::fxToDouble(dayo::core::fx::evaluateFxExpr(
+                    dayo::core::fx::parseFxExpr("DTime + FrameTime + DFrameTime + RealTime + DRealTime"),
+                    evalContext)) == 110.5,
+                "cb.hlsli time symbols resolve from the uploaded ViewCB payload");
+    ok &= check(dayo::core::fx::fxToDouble(dayo::core::fx::evaluateFxExpr(
+                    dayo::core::fx::parseFxExpr("Exposure + Resolution.x + Resolution.y + iSample + SamplesPerFrame"),
+                    evalContext)) == 107.75,
+                "application-provided host symbols coexist with cb.hlsli expression symbols");
+    ok &= check(
+        dayo::core::fx::fxToDouble(dayo::core::fx::evaluateFxExpr(
+            dayo::core::fx::parseFxExpr("Perspective + CameraInterpolated + Playing + OnResize"), evalContext)) == 4.0,
+        "ViewCB scalar flags are available to runtime expressions");
 
     dayo::graphics::NativeScreenRuntime screen;
     std::string error;
