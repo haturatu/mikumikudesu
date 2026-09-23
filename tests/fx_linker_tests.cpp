@@ -363,6 +363,51 @@ int main() {
                     "texture-only MatDesc produces a valid private value row in the GPU table");
     }
 
+    // Scene adapters can provide one invocation context per material while
+    // leaving link/evaluate ordering and row-table packing in the core layer.
+    {
+        auto schema = parseMaterialTemplateSchema("f.1 : Weight\n_T1 : Albedo\nWeight : 0.25\n", "Surface");
+        applyMaterialDefaultFile(schema, "Weight : Time + MODELINDEX\n_TAlbedo : defaults/albedo.png\n", "defaults");
+        MaterialInstance animated;
+        animated.templateName = "Surface";
+        animated.annotationOverrides =
+            parseMaterialAnnotation(schema, "Weight : frac(Time)\n_TAlbedo : model/albedo.png\n", "model-a");
+        MaterialInstance inherited;
+        inherited.templateName = "Surface";
+        MaterialInstance edited;
+        edited.templateName = "Surface";
+        edited.overrides.set("Weight", 7.0F);
+
+        FxEvalContext firstContext;
+        firstContext.time = 10.25;
+        firstContext.modelIndex = 0;
+        FxEvalContext inheritedContext;
+        inheritedContext.time = 0.5;
+        inheritedContext.modelIndex = 2;
+        FxEvalContext editedContext;
+        editedContext.time = 4.0;
+        editedContext.modelIndex = 1;
+        const std::array firstModelMaterials{
+            MaterialGpuTableInputMaterial{.instance = &animated, .context = firstContext},
+            MaterialGpuTableInputMaterial{.instance = &inherited, .context = inheritedContext}};
+        const std::array secondModelMaterials{
+            MaterialGpuTableInputMaterial{.instance = &edited, .context = editedContext}};
+        const std::array inputModels{MaterialGpuTableInputModel{firstModelMaterials},
+                                     MaterialGpuTableInputModel{secondModelMaterials}};
+        const auto table = makeMaterialGpuTableData(schema, inputModels);
+        const auto readFloat = [&table](std::size_t index) {
+            return std::bit_cast<float>(readLittleEndianWord(table.values.bytes, index * table.values.layout.stride));
+        };
+
+        ok &= check(table.materialIndices == std::vector<std::uint32_t>{0, 2} && table.values.count == 3 &&
+                        readFloat(0) == 0.25F && readFloat(1) == 2.5F && readFloat(2) == 7.0F,
+                    "MatDesc input builder evaluates per-instance expressions and preserves model material bases");
+        ok &= check(table.textureSlotCount == 2 && table.textures2D.size() == 2 && table.textureIndices2D.size() == 6 &&
+                        table.textureIndices2D[1] != table.textureIndices2D[3] &&
+                        table.textureIndices2D[3] == table.textureIndices2D[5],
+                    "MatDesc input builder deduplicates inherited texture defaults across scene instances");
+    }
+
     // Alias folding: shared / ref / shareTags collapse to canonical ids.
     {
         const auto templ = makeAliasTemplate();
