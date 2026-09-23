@@ -218,10 +218,36 @@ struct MaterialStructuredBufferData {
     std::size_t count{};
 };
 
+inline constexpr std::uint32_t kMissingMaterialTextureIndex = UINT32_MAX;
+
+struct MaterialGpuTableMaterial {
+    const MaterialBindingPlan* binding{};
+    const EvaluatedMaterialBinding* evaluated{};
+};
+
+struct MaterialGpuTableModel {
+    std::span<const MaterialGpuTableMaterial> materials;
+};
+
+// CPU upload payload matching the generated MatDesc HLSL accessors:
+// _idx[model] + subID selects a value row, while _tex/_tex3D use the
+// material row and the schema's explicit logical texture index.
+struct MaterialGpuTableData {
+    std::uint32_t textureSlotCount{};
+    std::vector<std::uint32_t> materialIndices;
+    std::vector<std::uint32_t> textureIndices2D;
+    std::vector<std::uint32_t> textureIndices3D;
+    std::vector<MaterialTextureDesc> textures2D;
+    std::vector<MaterialTextureDesc> textures3D;
+    MaterialStructuredBufferData values;
+};
+
 [[nodiscard]] MaterialStructuredBufferLayout makeMaterialStructuredBufferLayout(const MaterialTemplateSchema& schema);
 [[nodiscard]] MaterialStructuredBufferData
 packMaterialStructuredBuffer(const MaterialStructuredBufferLayout& layout,
                              std::span<const EvaluatedMaterialBinding> materials);
+[[nodiscard]] MaterialGpuTableData makeMaterialGpuTableData(const MaterialTemplateSchema& schema,
+                                                            std::span<const MaterialGpuTableModel> models);
 
 // Alias folding rules (priority: ref > shareTags > shared > concrete):
 // - ref="B"        -> canonical(resolve(B)); missing target keeps "B".
