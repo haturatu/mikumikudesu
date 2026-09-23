@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 
 namespace {
@@ -144,6 +145,93 @@ int main() {
                     "material schema rejects duplicate texture names across dimensions");
         ok &= check(rejects("_E Category : default=0, glass=1\n_E : Category : default=0, glass=1\n"),
                     "material schema rejects duplicate enum definitions for one field");
+    }
+
+    // Schema-based linking retains value expressions and logical texture
+    // indices until the invocation context is evaluated.
+    {
+        auto schema = parseMaterialTemplateSchema("f.1 : Roughness\nf.3 : Emission\ni.1 : Mode\n"
+                                                  "_T3m : AlbedoMap\n_V1 : VolumeMap\n"
+                                                  "_E Mode : off=0, on=1\nRoughness : 0.5\nMode : on\n"
+                                                  "_TAlbedoMap : template/albedo.png\n"
+                                                  "_VVolumeMap : template/volume.dds\n",
+                                                  "Surface");
+        applyMaterialDefaultFile(schema,
+                                 "Roughness : frac(Time/40)\nEmission : 0, 0, 0\n"
+                                 "_TAlbedoMap : defaults/albedo.png\n_VVolumeMap : defaults/volume.dds\n",
+                                 "default-file");
+        MaterialInstance instance;
+        instance.templateName = "Surface";
+        instance.annotationOverrides = parseMaterialAnnotation(
+            schema, "Emission : 1, 2, 3\n_TAlbedoMap : material/albedo.png\n", "model-material");
+        instance.overrides.set("Mode", std::int32_t{0});
+        const auto plan = linkMaterial(schema, &instance);
+        FxEvalContext context;
+        context.time = 10.0;
+        const auto evaluated = evaluateMaterialValues(plan, context);
+        const auto defaultFilePlan = linkMaterial(schema);
+        const auto defaultFileValues = evaluateMaterialValues(defaultFilePlan, context);
+        auto templateOnlySchema = schema;
+        templateOnlySchema.defaultFileAnnotation = {};
+        const auto templateOnlyPlan = linkMaterial(templateOnlySchema);
+        const auto templateOnlyValues = evaluateMaterialValues(templateOnlyPlan, context);
+        const auto physicalTexture = [&plan](std::size_t index) {
+            if (index >= plan.orderedTextures.size() || !plan.orderedTextures[index].physicalTextureIndex.has_value())
+                return static_cast<const MaterialTextureDesc*>(nullptr);
+            const auto physicalIndex = *plan.orderedTextures[index].physicalTextureIndex;
+            if (physicalIndex >= plan.layout.uniqueTextures.size())
+                return static_cast<const MaterialTextureDesc*>(nullptr);
+            return &plan.layout.uniqueTextures[physicalIndex];
+        };
+        const auto* albedoPhysical = physicalTexture(0);
+        const auto* volumePhysical = physicalTexture(1);
+        ok &= check(
+            plan.orderedExpressions.size() == 3 && plan.orderedExpressions[0].schema.name == "Roughness" &&
+                plan.orderedExpressions[0].expression.source == "frac(Time/40)" &&
+                std::abs(std::get<float>(evaluated.orderedValues[0].value) - 0.25F) < 1.0e-6F &&
+                plan.orderedExpressions[1].schema.name == "Emission" &&
+                std::get<std::array<float, 3>>(evaluated.orderedValues[1].value) ==
+                    std::array<float, 3>{1.0F, 2.0F, 3.0F} &&
+                plan.orderedExpressions[2].schema.name == "Mode" &&
+                std::get<std::int32_t>(evaluated.orderedValues[2].value) == 0,
+            "material linking retains dynamic expressions and applies default, annotation, then editor precedence");
+        ok &= check(
+            plan.orderedTextures.size() == 2 && plan.orderedTextures[0].schema.index == 3 &&
+                plan.orderedTextures[0].schema.dimension == MaterialTextureDimension::twoD &&
+                plan.orderedTextures[0].schema.mipmapped && plan.orderedTextures[0].path == "material/albedo.png" &&
+                plan.orderedTextures[0].baseDirectory == "model-material" &&
+                plan.orderedTextures[0].physicalTextureIndex.has_value() && plan.orderedTextures[1].schema.index == 1 &&
+                plan.orderedTextures[1].schema.dimension == MaterialTextureDimension::threeD &&
+                plan.orderedTextures[1].physicalTextureIndex.has_value() && albedoPhysical != nullptr &&
+                albedoPhysical->dimension == MaterialTextureDimension::twoD && albedoPhysical->mipmapped &&
+                volumePhysical != nullptr && volumePhysical->dimension == MaterialTextureDimension::threeD &&
+                !volumePhysical->mipmapped && plan.layout.uniqueTextures.size() == 2 &&
+                plan.slotFor("AlbedoMap") != nullptr,
+            "material texture bindings retain logical indices, dimensions, mip policy, and physical slots");
+        ok &= check(std::abs(std::get<float>(defaultFileValues.orderedValues[0].value) - 0.25F) < 1.0e-6F &&
+                        defaultFilePlan.orderedTextures[0].path == "defaults/albedo.png" &&
+                        defaultFilePlan.orderedTextures[1].path == "defaults/volume.dds",
+                    "default-file expressions and texture assignments feed the linked material plan");
+        ok &= check(std::get<float>(templateOnlyValues.orderedValues[0].value) == 0.5F &&
+                        templateOnlyPlan.orderedTextures[0].path == "template/albedo.png" &&
+                        templateOnlyPlan.orderedTextures[1].path == "template/volume.dds",
+                    "template literal and texture defaults remain active without a default file");
+
+        auto editorOverride = instance;
+        editorOverride.overrides.set("Roughness", 0.75F);
+        const auto edited = evaluateMaterialValues(linkMaterial(schema, &editorOverride), context);
+        ok &= check(std::get<float>(edited.orderedValues[0].value) == 0.75F,
+                    "concrete editor overrides take precedence over dynamic material annotations");
+
+        MaterialInstance invalid;
+        invalid.overrides.set("Roughness", std::int32_t{1});
+        bool rejectedType = false;
+        try {
+            static_cast<void>(linkMaterial(schema, &invalid));
+        } catch (const std::invalid_argument&) {
+            rejectedType = true;
+        }
+        ok &= check(rejectedType, "material linker rejects instance values with an incompatible schema type");
     }
 
     // Alias folding: shared / ref / shareTags collapse to canonical ids.

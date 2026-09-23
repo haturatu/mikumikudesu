@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -90,12 +91,14 @@ void loadMaterialDefaultFile(MaterialTemplateSchema& schema, const std::filesyst
 // No GPU work happens here: this layer folds resource aliases into
 // canonical IDs, deduplicates textures, and assigns deterministic _R slots.
 
-// Canonical texture identity: path + format + colorspace + mip policy.
+// Canonical texture identity includes the YRZFX texture view contract.
 struct MaterialTextureDesc {
     std::string path;
     std::string format;
     std::string colorspace;
     std::string mipPolicy;
+    MaterialTextureDimension dimension{MaterialTextureDimension::twoD};
+    bool mipmapped{};
 };
 
 struct MaterialTextureKey {
@@ -103,10 +106,12 @@ struct MaterialTextureKey {
     std::string format;
     std::string colorspace;
     std::string mipPolicy;
+    MaterialTextureDimension dimension{MaterialTextureDimension::twoD};
+    bool mipmapped{};
 
     bool operator==(const MaterialTextureKey& other) const noexcept {
         return path == other.path && format == other.format && colorspace == other.colorspace &&
-               mipPolicy == other.mipPolicy;
+               mipPolicy == other.mipPolicy && dimension == other.dimension && mipmapped == other.mipmapped;
     }
 };
 
@@ -140,6 +145,7 @@ struct MaterialTemplate {
 struct MaterialInstance {
     std::string templateName;
     MaterialParameterBlock overrides;
+    MaterialAnnotation annotationOverrides;
     std::vector<MaterialResourceDecl> extraResources;
 };
 
@@ -160,10 +166,35 @@ struct MaterialGpuLayout {
 
 struct MaterialBindingPlan {
     MaterialGpuLayout layout;
-    // Template defaults overlaid with instance overrides.
+    // Populated by the legacy MaterialTemplate overload. Schema-based plans
+    // keep expressions linked until evaluateMaterialValues() is called.
     MaterialParameterBlock resolvedParameters;
+    struct LinkedField {
+        MaterialFieldSchema schema;
+        MaterialValueExpression expression;
+    };
+    struct ResolvedTextureField {
+        MaterialTextureSchema schema;
+        std::string canonicalId;
+        std::optional<std::size_t> physicalTextureIndex;
+        std::string path;
+        std::filesystem::path baseDirectory;
+    };
+    // Expressions and textures preserve HLSL declaration order/logical index.
+    std::vector<LinkedField> orderedExpressions;
+    std::vector<ResolvedTextureField> orderedTextures;
 
     [[nodiscard]] const std::string* slotFor(std::string_view localId) const noexcept;
+};
+
+struct EvaluatedMaterialBinding {
+    MaterialParameterBlock values;
+    // Values in the exact HLSL StructuredBuffer<FooValue> field declaration order.
+    struct ResolvedField {
+        MaterialFieldSchema schema;
+        MaterialValue value;
+    };
+    std::vector<ResolvedField> orderedValues;
 };
 
 // Alias folding rules (priority: ref > shareTags > shared > concrete):
@@ -179,5 +210,9 @@ struct MaterialBindingPlan {
                                                    const MaterialInstance* instance = nullptr);
 [[nodiscard]] MaterialBindingPlan linkMaterial(const MaterialTemplate& templ,
                                                const MaterialInstance* instance = nullptr);
+[[nodiscard]] MaterialBindingPlan linkMaterial(const MaterialTemplateSchema& schema,
+                                               const MaterialInstance* instance = nullptr);
+[[nodiscard]] EvaluatedMaterialBinding evaluateMaterialValues(const MaterialBindingPlan& plan,
+                                                              const FxEvalContext& context);
 
 } // namespace dayo::core::fx
