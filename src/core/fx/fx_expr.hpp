@@ -4,8 +4,10 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -25,6 +27,8 @@ struct FxEvalContext {
     std::int64_t clonedVertexCount{};
     std::int64_t frameIndex{};
     std::int64_t sampleIndex{};
+    double time{};
+    std::unordered_map<std::string, FxScalar> namedSymbols;
 };
 
 // Bitmask describing which inputs an expression depends on.
@@ -83,7 +87,7 @@ struct FxExpr {
         std::shared_ptr<FxExpr> rhs;
     };
     struct Call {
-        std::string name; // "pow" | "min" | "max"
+        std::string name;
         std::vector<std::shared_ptr<FxExpr>> args;
     };
 
@@ -99,16 +103,16 @@ struct FxExpr {
 //   numbers, DEFAULT_RTSIZE.x/.y, VERTEXCOUNT, CLONEDVERTEXCOUNT,
 //   TOTALMATERIAL, CloneCount, FRAME/FRAMEINDEX, SAMPLE/SAMPLEINDEX,
 //   MODELINDEX, true/false, + - * / %, comparisons, &&, ||,
-//   pow/min/max, parens, unary -/!.
-// Throws std::runtime_error on syntax errors. Profile-independent: pow
-// gating happens at evaluate() time so one AST serves both profiles.
+//   the scalar functions supported by MikuMikuDayo 1.30 Expr.ixx,
+//   parens, unary -/!.
+// Throws std::runtime_error on syntax errors.
 [[nodiscard]] FxExpr parseFxExpr(std::string_view text);
+[[nodiscard]] bool isSupportedFxFunction(std::string_view name) noexcept;
+[[nodiscard]] FxScalar evaluateFxFunction(std::string_view name, std::span<const FxScalar> arguments);
 
-// Evaluate an AST. pow() handling is profile-separated:
-//   upstream130     -> only when allowPowQuirk is true (quirk allowlist path)
-//   nativeExtended  -> always allowed
-// Throws std::runtime_error on unknown identifiers, arity errors,
-// division by zero, or disallowed pow().
+// Evaluate an AST. The compatibility parameters remain for size-resolution
+// callers; the function set follows MikuMikuDayo 1.30 Expr.ixx in both profiles.
+// Throws std::runtime_error on unknown identifiers, arity errors, or invalid math.
 [[nodiscard]] FxScalar evaluateFxExpr(const FxExpr& expr, const FxEvalContext& context,
                                       FxCompatibilityProfile profile = FxCompatibilityProfile::upstream130,
                                       bool allowPowQuirk = false);

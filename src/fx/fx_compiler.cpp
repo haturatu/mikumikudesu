@@ -47,6 +47,8 @@ class FrameExtentTable final : public core::fx::FxResourceTable {
     result.clonedVertexCount = fxSizeContextValue(context.clonedVertexCount);
     result.frameIndex = static_cast<std::int64_t>(context.frame);
     result.sampleIndex = fxSizeContextValue(static_cast<std::size_t>(context.sample));
+    result.time = context.time;
+    result.namedSymbols = context.expressionSymbols;
     return result;
 }
 
@@ -376,7 +378,8 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
         const auto templatePath = descriptor.templatePath.is_absolute()
                                       ? descriptor.templatePath
                                       : graph.sourcePath.parent_path() / descriptor.templatePath;
-        auto schema = core::fx::loadMaterialTemplateSchema(templatePath, descriptor.name);
+        auto schema =
+            core::fx::loadMaterialTemplateSchema(templatePath, descriptor.name, graph.sourcePath.parent_path());
         if (!descriptor.defaultFile.empty()) {
             const auto defaultFile = descriptor.defaultFile.is_absolute()
                                          ? descriptor.defaultFile

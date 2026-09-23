@@ -40,7 +40,7 @@ core::fx::FxEventMask activeEvents(const FxHostFrameState& host) noexcept {
     return result;
 }
 
-core::fx::FxEvalContext expressionContext(const FxFrameContext& context) noexcept {
+core::fx::FxEvalContext expressionContext(const FxFrameContext& context) {
     return {.rtWidth = context.renderWidth,
             .rtHeight = context.renderHeight,
             .vertexCount = clampSigned(context.vertexCount),
@@ -49,7 +49,9 @@ core::fx::FxEvalContext expressionContext(const FxFrameContext& context) noexcep
             .cloneCount = context.cloneCount,
             .clonedVertexCount = clampSigned(context.clonedVertexCount),
             .frameIndex = frameIndex(context.frame),
-            .sampleIndex = clampSigned(context.sample)};
+            .sampleIndex = clampSigned(context.sample),
+            .time = context.time,
+            .namedSymbols = context.expressionSymbols};
 }
 
 } // namespace

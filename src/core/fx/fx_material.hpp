@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/effect.hpp"
+#include "core/fx/fx_expr.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -37,23 +38,52 @@ struct MaterialEnumSchema {
     std::vector<MaterialEnumValue> values;
 };
 
-// Ordered schema for an upstream MatDesc template. sourceText retains
-// directives, defaults, enum declarations, comments, and unknown extensions
-// until their runtime semantics are implemented.
+struct MaterialValueExpression {
+    std::string field;
+    std::string source;
+    std::vector<FxExpr> components;
+};
+
+struct MaterialTextureAssignment {
+    std::string field;
+    MaterialTextureDimension dimension{MaterialTextureDimension::twoD};
+    std::uint32_t index{};
+    bool mipmapped{};
+    std::string path;
+    std::filesystem::path baseDirectory;
+};
+
+struct MaterialAnnotation {
+    std::vector<MaterialValueExpression> values;
+    std::vector<MaterialTextureAssignment> textures;
+};
+
+// Ordered schema for an upstream MatDesc template. Template defaults remain
+// concrete (upstream disallows expressions in templates); a defaultFile is a
+// separate annotation whose expressions and texture paths are retained for
+// invocation-time evaluation and resource linking.
 struct MaterialTemplateSchema {
     std::string name;
     std::vector<MaterialFieldSchema> fields;
     std::vector<MaterialTextureSchema> textures;
     std::vector<MaterialEnumSchema> enums;
     MaterialParameterBlock defaults;
+    std::vector<MaterialTextureAssignment> templateTextureAssignments;
+    MaterialAnnotation defaultFileAnnotation;
+    std::filesystem::path templateTextureBaseDirectory;
+    std::filesystem::path defaultFileBaseDirectory;
     std::string sourceText;
     std::string defaultFileSourceText;
 };
 
 [[nodiscard]] MaterialTemplateSchema parseMaterialTemplateSchema(std::string_view source, std::string name = {});
 [[nodiscard]] MaterialTemplateSchema loadMaterialTemplateSchema(const std::filesystem::path& path,
-                                                                std::string name = {});
-void applyMaterialDefaultFile(MaterialTemplateSchema& schema, std::string_view source);
+                                                                std::string name = {},
+                                                                std::filesystem::path textureBaseDirectory = {});
+[[nodiscard]] MaterialAnnotation parseMaterialAnnotation(const MaterialTemplateSchema& schema, std::string_view source,
+                                                         std::filesystem::path baseDirectory = {});
+void applyMaterialDefaultFile(MaterialTemplateSchema& schema, std::string_view source,
+                              std::filesystem::path baseDirectory = {});
 void loadMaterialDefaultFile(MaterialTemplateSchema& schema, const std::filesystem::path& path);
 
 // Linker-only material layer built on top of MaterialParameterBlock.

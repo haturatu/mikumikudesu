@@ -5,12 +5,25 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 
 namespace dayo::core::fx {
 namespace {
 
-bool builtinScalar(std::string_view name, const FxEvalContext& context, FxScalar& out) noexcept {
+bool builtinScalar(std::string_view name, const FxEvalContext& context, FxScalar& out) {
+    if (name == "pi") {
+        out = std::numbers::pi_v<double>;
+        return true;
+    }
+    if (name == "Time") {
+        out = context.time;
+        return true;
+    }
+    if (const auto found = context.namedSymbols.find(std::string(name)); found != context.namedSymbols.end()) {
+        out = found->second;
+        return true;
+    }
     if (name == "DEFAULT_RTSIZE.x") {
         out = context.rtWidth;
         return true;
@@ -143,47 +156,11 @@ FxScalar evalBinaryScalar(FxExpr::BinaryOp op, const FxScalar& lhs, const FxScal
 
 FxScalar evalCallScalar(const FxExpr::Call& call, const FxSymbolResolver& resolver, FxCompatibilityProfile profile,
                         bool allowPowQuirk) {
-    if (call.name == "pow") {
-        if (call.args.size() != 2)
-            throw std::runtime_error("pow() expects 2 arguments");
-        if (profile == FxCompatibilityProfile::upstream130 && !allowPowQuirk) {
-            dayo::log::warn("fx pow() rejected under upstream130 without quirk allowlist");
-            throw std::runtime_error("pow() requires quirk allowlist under upstream130");
-        }
-        const double base = fxToDouble(evalWithResolver(*call.args[0], resolver, profile, allowPowQuirk));
-        const double exp = fxToDouble(evalWithResolver(*call.args[1], resolver, profile, allowPowQuirk));
-        return FxScalar{std::pow(base, exp)};
-    }
-    if (call.name == "min" || call.name == "max") {
-        if (call.args.size() < 2)
-            throw std::runtime_error(call.name + "() expects at least 2 arguments");
-        const bool wantMin = call.name == "min";
-        bool hasDouble = false;
-        for (const auto& arg : call.args) {
-            if (std::holds_alternative<double>(evalWithResolver(*arg, resolver, profile, allowPowQuirk)))
-                hasDouble = true;
-        }
-        if (hasDouble) {
-            double best = fxToDouble(evalWithResolver(*call.args[0], resolver, profile, allowPowQuirk));
-            for (std::size_t i = 1; i < call.args.size(); ++i) {
-                const double v = fxToDouble(evalWithResolver(*call.args[i], resolver, profile, allowPowQuirk));
-                best = wantMin ? std::fmin(best, v) : std::fmax(best, v);
-            }
-            return FxScalar{best};
-        }
-        const auto asInt = [](const FxScalar& value) -> std::int64_t {
-            if (const auto* b = std::get_if<bool>(&value))
-                return *b ? 1 : 0;
-            return std::get<std::int64_t>(value);
-        };
-        std::int64_t best = asInt(evalWithResolver(*call.args[0], resolver, profile, allowPowQuirk));
-        for (std::size_t i = 1; i < call.args.size(); ++i) {
-            const std::int64_t v = asInt(evalWithResolver(*call.args[i], resolver, profile, allowPowQuirk));
-            best = wantMin ? std::min(best, v) : std::max(best, v);
-        }
-        return FxScalar{best};
-    }
-    throw std::runtime_error("fx expression has unknown function: " + call.name);
+    std::vector<FxScalar> arguments;
+    arguments.reserve(call.args.size());
+    for (const auto& argument : call.args)
+        arguments.push_back(evalWithResolver(*argument, resolver, profile, allowPowQuirk));
+    return evaluateFxFunction(call.name, arguments);
 }
 
 FxScalar evalWithResolver(const FxExpr& expr, const FxSymbolResolver& resolver, FxCompatibilityProfile profile,

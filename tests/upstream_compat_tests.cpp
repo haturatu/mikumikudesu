@@ -805,6 +805,10 @@ int main() {
                         roughnessDefault != nullptr && std::get_if<float>(roughnessDefault) != nullptr &&
                         *std::get_if<float>(roughnessDefault) == 0.5F,
                     "compiled FX program owns the parsed material schema and defaults");
+        ok &= check(subayaiProgram.materialSchema.has_value() &&
+                        subayaiProgram.materialSchema->templateTextureBaseDirectory ==
+                            subayaiEffect.sourcePath.parent_path(),
+                    "compiled MatDesc template textures resolve relative to the effect directory");
         const auto subayaiRaster =
             std::ranges::find_if(subayaiEffect.passes, [](const auto& pass) { return pass.name == "MMD"; });
         ok &= check(subayaiRaster != subayaiEffect.passes.end() && subayaiRaster->renderTargets.size() == 4 &&

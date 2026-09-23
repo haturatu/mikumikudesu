@@ -1339,12 +1339,19 @@ bool testFxConditionRuntime() {
     resourceTable.add("Probe", {.x = 4, .y = 2, .z = 1, .dimension = 2});
     auto context = testContext();
     context.frame = 5.75F;
+    context.time = 0.75;
+    context.expressionSymbols.emplace("Exposure", 0.75);
     context.host.onResize = true;
     context.host.onModelChanged = true;
     const std::vector<std::string> conditions = {"frame if FRAME >= 5", "resize if DEFAULT_RTSIZE.x == 64",
-                                                 "modelChanged if Probe.x == 4"};
+                                                 "modelChanged if Probe.x == 4", "frame if frac(Time) >= 0.5",
+                                                 "frame if Exposure >= 0.5"};
     bool ok = check(runtime.evaluate(conditions, context, &resourceTable),
                     "condition runtime combines frame events, predicates, and resource extents");
+    context.expressionSymbols.insert_or_assign("Exposure", 0.25);
+    ok &= check(!runtime.evaluate(conditions, context, &resourceTable),
+                "condition runtime resolves named constant-buffer values from the frame context");
+    context.expressionSymbols.insert_or_assign("Exposure", 0.75);
     context.frame = 4.0F;
     ok &= check(!runtime.evaluate(conditions, context, &resourceTable),
                 "condition runtime rejects a false expression predicate");

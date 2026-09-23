@@ -96,18 +96,88 @@ float parseMaterialFloat(std::string_view text, std::string_view description) {
 std::vector<std::string> splitMaterialList(std::string_view text) {
     std::vector<std::string> values;
     std::size_t start = 0;
-    while (start <= text.size()) {
-        const auto end = text.find(',', start);
-        const auto length = end == std::string_view::npos ? text.size() - start : end - start;
-        const auto value = trimCopy(text.substr(start, length));
+    std::size_t depth = 0;
+    char quote = '\0';
+    bool escaped = false;
+    for (std::size_t index = 0; index <= text.size(); ++index) {
+        const bool atEnd = index == text.size();
+        const char character = atEnd ? '\0' : text[index];
+        if (quote != '\0') {
+            if (!escaped && character == quote)
+                quote = '\0';
+            if (!escaped && character == '\\')
+                escaped = true;
+            else
+                escaped = false;
+        } else if (character == '\'' || character == '"') {
+            quote = character;
+        } else if (character == '(') {
+            ++depth;
+        } else if (character == ')') {
+            if (depth == 0)
+                throw std::invalid_argument("unbalanced parentheses in upstream material value list");
+            --depth;
+        }
+        if (!atEnd && (character != ',' || quote != '\0' || depth != 0))
+            continue;
+        if (quote != '\0' || depth != 0)
+            throw std::invalid_argument("unterminated expression in upstream material value list");
+        const auto value = trimCopy(text.substr(start, index - start));
         if (value.empty())
             throw std::invalid_argument("empty item in upstream material value list");
         values.push_back(value);
-        if (end == std::string_view::npos)
-            break;
-        start = end + 1;
+        start = index + 1;
     }
     return values;
+}
+
+std::string_view stripMaterialComment(std::string_view line) noexcept {
+    char quote = '\0';
+    bool escaped = false;
+    for (std::size_t index = 0; index < line.size(); ++index) {
+        const char character = line[index];
+        if (quote != '\0') {
+            if (!escaped && character == quote)
+                quote = '\0';
+            if (!escaped && character == '\\')
+                escaped = true;
+            else
+                escaped = false;
+        } else if (character == '\'' || character == '"') {
+            quote = character;
+        } else if (character == '#') {
+            return line.substr(0, index);
+        }
+    }
+    return line;
+}
+
+std::string unquoteMaterialTexture(std::string_view token) {
+    auto value = trimCopy(token);
+    const bool startsQuoted = !value.empty() && (value.front() == '\'' || value.front() == '"');
+    const bool endsQuoted = !value.empty() && (value.back() == '\'' || value.back() == '"');
+    if (startsQuoted != endsQuoted || (startsQuoted && value.back() != value.front()))
+        throw std::invalid_argument("malformed quoted upstream material texture path: " + value);
+    if (startsQuoted) {
+        std::string unquoted;
+        unquoted.reserve(value.size() - 2);
+        bool escaped = false;
+        for (std::size_t index = 1; index + 1 < value.size(); ++index) {
+            const char character = value[index];
+            if (escaped) {
+                unquoted.push_back(character);
+                escaped = false;
+            } else if (character == '\\') {
+                escaped = true;
+            } else {
+                unquoted.push_back(character);
+            }
+        }
+        if (escaped)
+            unquoted.push_back('\\');
+        return unquoted;
+    }
+    return value;
 }
 
 void parseMaterialEnum(MaterialTemplateSchema& schema, std::string_view left, std::string_view right,
@@ -237,7 +307,77 @@ void setMaterialValue(MaterialTemplateSchema& schema, const MaterialFieldSchema&
     }
 }
 
-void overlayMaterialDefaults(MaterialTemplateSchema& schema, std::string_view source) {
+const MaterialTextureSchema* findMaterialTexture(const MaterialTemplateSchema& schema, std::string_view name) {
+    const auto found = std::find_if(schema.textures.begin(), schema.textures.end(),
+                                    [name](const auto& texture) { return texture.name == name; });
+    return found == schema.textures.end() ? nullptr : &*found;
+}
+
+MaterialTextureAssignment parseMaterialTextureAssignment(const MaterialTemplateSchema& schema, std::string_view left,
+                                                         std::string_view right,
+                                                         const std::filesystem::path& baseDirectory) {
+    const bool isVolume = left.starts_with("_V");
+    const auto field = materialIdentifier(trimCopy(left.substr(2)));
+    const auto* texture = findMaterialTexture(schema, field);
+    if (texture == nullptr)
+        throw std::invalid_argument("unknown upstream material texture assignment: " + field);
+    const auto dimension = isVolume ? MaterialTextureDimension::threeD : MaterialTextureDimension::twoD;
+    if (texture->dimension != dimension)
+        throw std::invalid_argument("upstream material texture assignment dimension mismatch for " + field);
+    return {.field = field,
+            .dimension = texture->dimension,
+            .index = texture->index,
+            .mipmapped = texture->mipmapped,
+            .path = unquoteMaterialTexture(right),
+            .baseDirectory = baseDirectory};
+}
+
+MaterialValueExpression parseMaterialValueExpression(const MaterialTemplateSchema& schema,
+                                                     const MaterialFieldSchema& field, std::string_view source) {
+    const auto components = splitMaterialList(source);
+    if (components.size() != field.components)
+        throw std::invalid_argument("upstream material component count mismatch for " + field.name);
+    MaterialValueExpression result{.field = field.name, .source = trimCopy(source), .components = {}};
+    result.components.reserve(components.size());
+    for (const auto& component : components) {
+        if (field.type == MaterialFieldType::signedInteger) {
+            const auto enumeration = std::find_if(schema.enums.begin(), schema.enums.end(),
+                                                  [&field](const auto& item) { return item.field == field.name; });
+            if (enumeration != schema.enums.end()) {
+                const auto label = std::find_if(enumeration->values.begin(), enumeration->values.end(),
+                                                [&component](const auto& item) { return item.name == component; });
+                if (label != enumeration->values.end()) {
+                    FxExpr literal;
+                    literal.node = FxExpr::Literal{FxScalar{static_cast<std::int64_t>(label->value)}};
+                    result.components.push_back(std::move(literal));
+                    continue;
+                }
+            }
+        }
+        result.components.push_back(parseFxExpr(component));
+    }
+    return result;
+}
+
+void appendOrReplace(std::vector<MaterialValueExpression>& expressions, MaterialValueExpression value) {
+    const auto found = std::find_if(expressions.begin(), expressions.end(),
+                                    [&value](const auto& existing) { return existing.field == value.field; });
+    if (found == expressions.end())
+        expressions.push_back(std::move(value));
+    else
+        *found = std::move(value);
+}
+
+void appendOrReplace(std::vector<MaterialTextureAssignment>& assignments, MaterialTextureAssignment value) {
+    const auto found = std::find_if(assignments.begin(), assignments.end(),
+                                    [&value](const auto& existing) { return existing.field == value.field; });
+    if (found == assignments.end())
+        assignments.push_back(std::move(value));
+    else
+        *found = std::move(value);
+}
+
+void overlayTemplateDefaults(MaterialTemplateSchema& schema, std::string_view source) {
     std::size_t lineStart = 0;
     while (lineStart < source.size()) {
         const auto lineEnd = source.find('\n', lineStart);
@@ -245,15 +385,21 @@ void overlayMaterialDefaults(MaterialTemplateSchema& schema, std::string_view so
         auto line = source.substr(lineStart, length);
         if (lineStart == 0 && line.starts_with("\xEF\xBB\xBF"))
             line.remove_prefix(3);
-        if (const auto comment = line.find('#'); comment != std::string_view::npos)
-            line = line.substr(0, comment);
+        line = stripMaterialComment(line);
         const auto separator = line.find(':');
         if (separator != std::string_view::npos) {
-            const auto fieldName = materialIdentifier(trimCopy(line.substr(0, separator)));
+            const auto left = trimCopy(line.substr(0, separator));
+            const auto fieldName = materialIdentifier(left);
             const auto* field = findMaterialField(schema, fieldName);
             const auto values = trimCopy(line.substr(separator + 1));
-            if (field != nullptr && !values.empty())
+            if (field != nullptr && !values.empty()) {
                 setMaterialValue(schema, *field, splitMaterialList(values));
+            } else if ((left.starts_with("_T") || left.starts_with("_V")) && left.size() > 2 &&
+                       !std::isdigit(static_cast<unsigned char>(left[2])) && !values.empty()) {
+                auto assignment =
+                    parseMaterialTextureAssignment(schema, left, values, schema.templateTextureBaseDirectory);
+                appendOrReplace(schema.templateTextureAssignments, std::move(assignment));
+            }
         }
         if (lineEnd == std::string_view::npos)
             break;
@@ -261,6 +407,7 @@ void overlayMaterialDefaults(MaterialTemplateSchema& schema, std::string_view so
     }
 }
 
+<<<<<<< HEAD
 bool materialValueMatches(const MaterialFieldSchema& field, const MaterialValue& value) {
     if (field.type == MaterialFieldType::floatingPoint) {
         switch (field.components) {
@@ -288,6 +435,39 @@ bool materialValueMatches(const MaterialFieldSchema& field, const MaterialValue&
     default:
         return false;
     }
+}
+
+MaterialAnnotation parseMaterialAnnotationImpl(const MaterialTemplateSchema& schema, std::string_view source,
+                                               const std::filesystem::path& baseDirectory) {
+    MaterialAnnotation annotation;
+    std::size_t lineStart = 0;
+    while (lineStart < source.size()) {
+        const auto lineEnd = source.find('\n', lineStart);
+        const auto length = lineEnd == std::string_view::npos ? source.size() - lineStart : lineEnd - lineStart;
+        auto line = source.substr(lineStart, length);
+        if (lineStart == 0 && line.starts_with("\xEF\xBB\xBF"))
+            line.remove_prefix(3);
+        line = stripMaterialComment(line);
+        const auto separator = line.find(':');
+        if (separator != std::string_view::npos) {
+            const auto left = trimCopy(line.substr(0, separator));
+            const auto values = trimCopy(line.substr(separator + 1));
+            if (!left.empty() && !values.empty()) {
+                const auto fieldName = materialIdentifier(left);
+                if (const auto* field = findMaterialField(schema, fieldName); field != nullptr) {
+                    appendOrReplace(annotation.values, parseMaterialValueExpression(schema, *field, values));
+                } else if ((left.starts_with("_T") || left.starts_with("_V")) && left.size() > 2 &&
+                           !std::isdigit(static_cast<unsigned char>(left[2]))) {
+                    appendOrReplace(annotation.textures,
+                                    parseMaterialTextureAssignment(schema, left, values, baseDirectory));
+                }
+            }
+        }
+        if (lineEnd == std::string_view::npos)
+            break;
+        lineStart = lineEnd + 1;
+    }
+    return annotation;
 }
 
 std::string resolveImpl(std::string_view id, const std::unordered_map<std::string, MaterialResourceDecl>& byId,
@@ -344,8 +524,7 @@ MaterialTemplateSchema parseMaterialTemplateSchema(std::string_view source, std:
         auto line = source.substr(lineStart, length);
         if (lineNumber == 1 && line.starts_with("\xEF\xBB\xBF"))
             line.remove_prefix(3);
-        if (const auto comment = line.find('#'); comment != std::string_view::npos)
-            line = line.substr(0, comment);
+        line = stripMaterialComment(line);
         const auto separator = line.find(':');
         if (separator != std::string_view::npos) {
             const auto left = trimCopy(line.substr(0, separator));
@@ -366,7 +545,8 @@ MaterialTemplateSchema parseMaterialTemplateSchema(std::string_view source, std:
                          .components = componentCount});
                 } else if (left.starts_with("_E")) {
                     parseMaterialEnum(result, left, right, lineNumber);
-                } else if (left.starts_with("_T") || left.starts_with("_V")) {
+                } else if ((left.starts_with("_T") || left.starts_with("_V")) && left.size() > 2 &&
+                           std::isdigit(static_cast<unsigned char>(left[2]))) {
                     std::size_t digitsEnd = 2;
                     while (digitsEnd < left.size() && std::isdigit(static_cast<unsigned char>(left[digitsEnd])))
                         ++digitsEnd;
@@ -395,23 +575,36 @@ MaterialTemplateSchema parseMaterialTemplateSchema(std::string_view source, std:
     }
     for (const auto& field : result.fields)
         setMaterialValue(result, field, std::vector<std::string>(field.components, "0"));
-    overlayMaterialDefaults(result, source);
+    overlayTemplateDefaults(result, source);
     return result;
 }
 
-MaterialTemplateSchema loadMaterialTemplateSchema(const std::filesystem::path& path, std::string name) {
+MaterialTemplateSchema loadMaterialTemplateSchema(const std::filesystem::path& path, std::string name,
+                                                  std::filesystem::path textureBaseDirectory) {
     std::ifstream input(path, std::ios::binary);
     if (!input)
         throw std::runtime_error("cannot open upstream material template: " + path.string());
     const std::string source((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
     if (input.bad())
         throw std::runtime_error("cannot read upstream material template: " + path.string());
-    return parseMaterialTemplateSchema(source, std::move(name));
+    auto schema = parseMaterialTemplateSchema(source, std::move(name));
+    schema.templateTextureBaseDirectory =
+        textureBaseDirectory.empty() ? path.parent_path() : std::move(textureBaseDirectory);
+    for (auto& assignment : schema.templateTextureAssignments)
+        assignment.baseDirectory = schema.templateTextureBaseDirectory;
+    return schema;
 }
 
-void applyMaterialDefaultFile(MaterialTemplateSchema& schema, std::string_view source) {
+MaterialAnnotation parseMaterialAnnotation(const MaterialTemplateSchema& schema, std::string_view source,
+                                           std::filesystem::path baseDirectory) {
+    return parseMaterialAnnotationImpl(schema, source, baseDirectory);
+}
+
+void applyMaterialDefaultFile(MaterialTemplateSchema& schema, std::string_view source,
+                              std::filesystem::path baseDirectory) {
     schema.defaultFileSourceText = source;
-    overlayMaterialDefaults(schema, source);
+    schema.defaultFileBaseDirectory = std::move(baseDirectory);
+    schema.defaultFileAnnotation = parseMaterialAnnotation(schema, source, schema.defaultFileBaseDirectory);
 }
 
 void loadMaterialDefaultFile(MaterialTemplateSchema& schema, const std::filesystem::path& path) {
@@ -423,7 +616,7 @@ void loadMaterialDefaultFile(MaterialTemplateSchema& schema, const std::filesyst
     const std::string source((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
     if (input.bad())
         throw std::runtime_error("cannot read upstream material default file: " + path.string());
-    applyMaterialDefaultFile(schema, source);
+    applyMaterialDefaultFile(schema, source, path.parent_path());
 }
 
 std::size_t MaterialTextureKeyHash::operator()(const MaterialTextureKey& key) const noexcept {
