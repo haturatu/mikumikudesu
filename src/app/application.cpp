@@ -436,14 +436,7 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
 #endif
     nativeFxPendingEvents_.latch(scene_.dirty(core::DirtyFlag::geometry), scene_.dirty(core::DirtyFlag::material));
     const auto& background = scene_.background();
-    const bool skyboxPrefilterRequested = hasEffectMemo(scene_.effects(), nativeRenderer_.program(), "skyboxprefilter");
-    if (skyboxPrefilterRequested && !skyboxPrefilterFallbackWarned_) {
-        log::warn("SkyboxPrefilter is requested, but the upstream 2D mip-prefilter path is not implemented; "
-                  "using the unfiltered environment until runtime support is available");
-        skyboxPrefilterFallbackWarned_ = true;
-    } else if (!skyboxPrefilterRequested) {
-        skyboxPrefilterFallbackWarned_ = false;
-    }
+    const bool buildSkyboxPrefilter = hasEffectMemo(scene_.effects(), nativeRenderer_.program(), "skyboxprefilter");
     if (background.image && background.imagePath &&
         static_cast<std::uint64_t>(background.image->height) * 2U == background.image->width) {
         const auto sourceVersion = environmentFileVersion(*background.imagePath);
@@ -460,7 +453,7 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
             const graphics::Extent3D extent{background.image->width, background.image->height, 1};
             if (!nativeDayoEnvironmentRuntime_.sync(*device_, commands, environment.skybox, extent,
                                                     *background.imagePath, sourceVersion, *hlslDirectory,
-                                                    buildSkyboxSampler, &environmentError))
+                                                    buildSkyboxSampler, &environmentError, buildSkyboxPrefilter))
                 throw std::runtime_error(environmentError.empty() ? "canonical Dayo environment sync failed"
                                                                   : environmentError);
         } else {
@@ -801,7 +794,6 @@ void Application::resetProjectRuntimeState() {
     nativeControllerDeclarations_.clear();
     nativeRenderer_.reset();
     nativeDayoEnvironmentRuntime_.reset();
-    skyboxPrefilterFallbackWarned_ = false;
     nativeSceneFrame_.reset();
     nativeSceneResources_.reset();
     nativeSceneDerivedRuntime_.reset();

@@ -39,8 +39,19 @@ struct DayoEnvironmentDispatch {
     std::array<std::uint32_t, 3> groups{};
 };
 
+struct DayoSkyboxPrefilterDraw {
+    std::uint32_t mipLevel{};
+    std::uint32_t width{};
+    std::uint32_t height{};
+    std::uint32_t iteration{};
+    float roughness{};
+    float alpha{};
+    std::uint32_t samples{};
+};
+
 [[nodiscard]] std::vector<DayoEnvironmentDispatch> buildDayoEnvironmentDispatchPlan(Extent3D extent,
                                                                                     bool buildSkyboxSampler);
+[[nodiscard]] std::vector<DayoSkyboxPrefilterDraw> buildDayoSkyboxPrefilterPlan(Extent3D extent);
 
 // Executes the pinned MikuMikuDayo 1.30 system/skyboxPDF.hlsl and
 // system/skyboxSH.hlsl passes. It owns the output/work buffers and borrows the
@@ -56,7 +67,7 @@ class NativeDayoEnvironmentRuntime {
     [[nodiscard]] bool sync(Device& device, CommandList& commands, handles::TextureHandle skybox, Extent3D extent,
                             const std::filesystem::path& source, std::uint64_t sourceVersion,
                             const std::filesystem::path& hlslDirectory, bool buildSkyboxSampler,
-                            std::string* error = nullptr);
+                            std::string* error = nullptr, bool buildSkyboxPrefilter = false);
     void apply(NativeSceneResourceBindings& bindings) const noexcept;
     void reset() noexcept;
 
@@ -90,29 +101,44 @@ class NativeDayoEnvironmentRuntime {
         handles::BufferHandle skyLum{};
         handles::BufferHandle skyLumRow{};
         handles::BufferHandle skyboxShX{};
+        handles::TextureHandle prefilteredSkybox{};
+        handles::SamplerHandle prefilterSampler{};
         handles::DescriptorSetHandle pdfSet{};
         handles::DescriptorSetHandle shSet{};
+        handles::DescriptorSetHandle prefilterCopySet{};
+        handles::DescriptorSetHandle prefilterMipSet{};
+        std::vector<handles::BufferHandle> prefilterConstants;
+        std::vector<handles::DescriptorSetHandle> prefilterConstantSets;
     };
 
     [[nodiscard]] bool ensurePipelines(Device& device, const std::filesystem::path& hlslDirectory, std::string* error);
+    [[nodiscard]] bool ensurePrefilterPipelines(Device& device, std::string* error);
     [[nodiscard]] bool createResources(Device& device, handles::TextureHandle skybox, Extent3D extent,
-                                       bool buildSkyboxSampler, Resources& result, std::string* error);
+                                       bool buildSkyboxSampler, bool buildSkyboxPrefilter, Resources& result,
+                                       std::string* error);
     void destroyResources(Device* device, Resources& resources) noexcept;
     void destroyPipelines(Device* device) noexcept;
     void setError(std::string* error, std::string value) const;
 
     Device* device_{};
     handles::TextureHandle skybox_{};
+    handles::TextureHandle sourceSkybox_{};
     Resources resources_;
     handles::DescriptorSetLayoutHandle descriptorLayout_{};
     handles::PipelineLayoutHandle pipelineLayout_{};
     std::array<handles::ShaderHandle, 6> shaders_{};
     std::array<handles::PipelineHandle, 6> pipelines_{};
+    handles::DescriptorSetLayoutHandle prefilterDescriptorLayout_{};
+    handles::DescriptorSetLayoutHandle prefilterConstantLayout_{};
+    handles::PipelineLayoutHandle prefilterPipelineLayout_{};
+    std::array<handles::ShaderHandle, 3> prefilterShaders_{};
+    std::array<handles::PipelineHandle, 2> prefilterPipelines_{};
     std::filesystem::path source_;
     std::filesystem::path hlslDirectory_;
     Extent3D extent_{};
     std::uint64_t sourceVersion_{};
     bool buildSkyboxSampler_{};
+    bool buildSkyboxPrefilter_{};
     std::uint64_t generation_{};
 };
 

@@ -34,9 +34,10 @@ installも同じ一覧を使い、拡張子による除外を行わず、第三�
 `skyboxSH.hlsl`のentry pointをDXCでSPIR-V化してGPU上で実行します。テストではABI stride、pass順、各entry
 pointのdispatch group、memoによるpass選択を検証します。Windows 1.30とのGPU数値比較はまだ行っていません。
 
-`SkyboxPrefilter`はこの経路では未対応です。上流は元の2D equirectangular textureをmip付きでprefilter
-するため、Subayai用のcubemap prefilterを代用してはいけません。その他のmemoと`globalVarSize`も
-この実装範囲外で、runtime対応済みとは扱いません。
+`SkyboxPrefilter` memoも、上流の2D equirectangular texture向け`PrefilterEnvmap`をGPUで実行します。
+元画像をmip 0へコピーし、上流と同じroughness・alpha blend・サンプル数・4 iterationで各mipを生成します。
+Subayai用cubemap prefilterとは別経路です。テストはdispatch計画とmip別render targetを検証しますが、
+Windows 1.30とのGPU数値比較はまだ行っていません。その他のmemoと`globalVarSize`はruntime対応済みとは扱いません。
 
 ## Windows fixtureの受け入れ条件
 

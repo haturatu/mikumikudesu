@@ -564,6 +564,7 @@ struct DescriptorBindingEx {
     handles::TextureHandle texture{};
     handles::SamplerHandle sampler{};
     handles::AccelerationStructureHandle accelerationStructure{};
+    std::optional<std::uint32_t> mipLevel;
 };
 
 struct ExternalTextureImportDesc {

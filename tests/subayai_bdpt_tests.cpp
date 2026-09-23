@@ -202,7 +202,8 @@ struct MockNativeDevice final : dayo::graphics::Device {
         lastDescriptorLayout = desc;
         return {nextDescriptorLayout_++, 1};
     }
-    dayo::graphics::handles::TextureHandle createTextureEx(const dayo::graphics::TextureResourceDesc&) override {
+    dayo::graphics::handles::TextureHandle createTextureEx(const dayo::graphics::TextureResourceDesc& desc) override {
+        textureDescriptions.push_back(desc);
         return {nextTypedTexture_++, 1};
     }
     dayo::graphics::handles::BufferHandle createBufferEx(const dayo::graphics::BufferResourceDesc& desc) override {
@@ -237,6 +238,7 @@ struct MockNativeDevice final : dayo::graphics::Device {
         if (!layout.valid())
             throw std::invalid_argument("mock descriptor layout is invalid");
         lastDescriptorBindings.assign(bindings.begin(), bindings.end());
+        descriptorAllocations.emplace_back(bindings.begin(), bindings.end());
         const auto set = dayo::graphics::handles::DescriptorSetHandle{nextDescriptorSet_++, 1};
         descriptorBindings_[set].assign(bindings.begin(), bindings.end());
         return set;
@@ -259,6 +261,16 @@ struct MockNativeDevice final : dayo::graphics::Device {
     dayo::graphics::handles::PipelineLayoutHandle
     createPipelineLayoutEx(const dayo::graphics::PipelineLayoutDesc&) override {
         return {nextPipelineLayout_++, 1};
+    }
+    dayo::graphics::handles::SamplerHandle createSamplerEx() override {
+        return {nextSampler_++, 1};
+    }
+    dayo::graphics::handles::SamplerHandle createSamplerEx(const dayo::graphics::SamplerResourceDesc&) override {
+        return createSamplerEx();
+    }
+    dayo::graphics::handles::PipelineHandle
+    createGraphicsPipelineEx(const dayo::graphics::GraphicsPipelineDescEx&) override {
+        return {nextPipeline_++, 1};
     }
     void destroyPipelineLayoutEx(dayo::graphics::handles::PipelineLayoutHandle) override {}
     dayo::graphics::handles::ShaderHandle createShaderEx(const dayo::graphics::ShaderDesc&) override {
@@ -317,6 +329,7 @@ struct MockNativeDevice final : dayo::graphics::Device {
     std::uint32_t nextDescriptorLayout_{1};
     std::uint32_t nextDescriptorSet_{1};
     std::uint32_t nextPipelineLayout_{1};
+    std::uint32_t nextSampler_{1};
     std::uint32_t nextShader_{1};
     std::uint32_t nextPipeline_{1};
     std::uint32_t nextSbt_{1};
@@ -329,7 +342,9 @@ struct MockNativeDevice final : dayo::graphics::Device {
     std::size_t frameSlot{};
     dayo::graphics::DescriptorSetLayoutDesc lastDescriptorLayout;
     std::vector<dayo::graphics::DescriptorBindingEx> lastDescriptorBindings;
+    std::vector<std::vector<dayo::graphics::DescriptorBindingEx>> descriptorAllocations;
     std::vector<std::pair<dayo::graphics::handles::BufferHandle, dayo::graphics::ResourceUsage>> typedBufferUsages;
+    std::vector<dayo::graphics::TextureResourceDesc> textureDescriptions;
     std::unordered_map<dayo::graphics::handles::DescriptorSetHandle, std::vector<dayo::graphics::DescriptorBindingEx>>
         descriptorBindings_;
     std::unordered_map<dayo::graphics::handles::BufferHandle, Buffer> typedBuffers_;
@@ -369,10 +384,15 @@ struct MockDeformCommands final : dayo::graphics::CommandList {
     std::vector<std::string> events;
     std::vector<std::byte> constants;
     std::vector<std::pair<dayo::graphics::handles::DescriptorSetHandle, std::uint32_t>> descriptorSets;
+    std::vector<dayo::graphics::RenderingInfoEx> renderingInfos;
+    std::size_t drawCalls{};
+    std::size_t renderingEnds{};
 
     void transition(dayo::graphics::TextureHandle) override {}
     void bindPipeline(dayo::graphics::PipelineHandle) override {}
-    void draw(std::uint32_t, std::uint32_t) override {}
+    void draw(std::uint32_t, std::uint32_t) override {
+        ++drawCalls;
+    }
     void dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) override {
         events.push_back("dispatch:" + std::to_string(x) + "x" + std::to_string(y) + "x" + std::to_string(z));
     }
@@ -409,6 +429,14 @@ struct MockDeformCommands final : dayo::graphics::CommandList {
     }
     void generateMipmapsEx(dayo::graphics::handles::TextureHandle) override {
         events.emplace_back("mipmap");
+    }
+    void beginRenderingEx(const dayo::graphics::RenderingInfoEx& info) override {
+        renderingInfos.push_back(info);
+        events.emplace_back("begin-rendering");
+    }
+    void endRenderingEx() override {
+        ++renderingEnds;
+        events.emplace_back("end-rendering");
     }
     void accelerationStructureBarrierEx() override {
         events.emplace_back("as-barrier");
@@ -1088,6 +1116,55 @@ int main() {
             invalidExtentRejected = true;
         }
         ok &= check(invalidExtentRejected, "Dayo environment rejects non-2D source extents");
+        const auto prefilterPlan = dayo::graphics::buildDayoSkyboxPrefilterPlan({8, 4, 1});
+        ok &= check(
+            prefilterPlan.size() == 12 && prefilterPlan[0].mipLevel == 1 && prefilterPlan[0].width == 4 &&
+                prefilterPlan[0].height == 2 && std::abs(prefilterPlan[0].roughness - (1.0F / 3.0F)) < 0.0001F &&
+                prefilterPlan[0].alpha == 1.0F && prefilterPlan[0].samples == 64 && prefilterPlan[2].mipLevel == 3 &&
+                prefilterPlan[2].width == 1 && prefilterPlan[2].height == 1 && prefilterPlan[2].roughness == 1.0F &&
+                std::abs(prefilterPlan[2].alpha - (1.0F / 3.0F)) < 0.0001F && prefilterPlan[2].samples == 256 &&
+                prefilterPlan[3].iteration == 1 && prefilterPlan[3].mipLevel == 1 &&
+                prefilterPlan.back().iteration == 3 && prefilterPlan.back().mipLevel == 3,
+            "SkyboxPrefilter follows upstream mip roughness, alpha, samples, and iteration order");
+
+        const dayo::fx::FxShaderCompiler prefilterCompiler;
+        const auto upstreamRoot = std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo";
+        const auto dxcName = prefilterCompiler.executable().filename().string();
+        if (prefilterCompiler.available() && (dxcName == "dxc" || dxcName == "dxc.exe") &&
+            std::filesystem::is_regular_file(upstreamRoot / ".mikumikudayo-ready")) {
+            MockNativeDevice device;
+            MockDeformCommands commands;
+            dayo::graphics::NativeDayoEnvironmentRuntime runtime;
+            std::string error;
+            const dayo::graphics::handles::TextureHandle sourceSkybox{77, 1};
+            const bool synchronized = runtime.sync(device, commands, sourceSkybox, {8, 4, 1}, "sky.hdr", 1,
+                                                   upstreamRoot / "hlsl", false, &error, true);
+            const bool mipTargetsMatch =
+                commands.renderingInfos.size() == 13 && commands.renderingInfos.front().colors.front().mipLevel == 0 &&
+                commands.renderingInfos.front().extent.width == 8 &&
+                commands.renderingInfos.front().extent.height == 4 &&
+                std::ranges::all_of(prefilterPlan, [&](const auto& draw) {
+                    const auto index = 1U + static_cast<std::size_t>(draw.iteration) * 3U +
+                                       static_cast<std::size_t>(draw.mipLevel - 1U);
+                    const auto& rendering = commands.renderingInfos[index];
+                    return rendering.colors.front().mipLevel == draw.mipLevel && rendering.extent.width == draw.width &&
+                           rendering.extent.height == draw.height;
+                });
+            const bool samplesMipZero = std::ranges::any_of(device.descriptorAllocations, [&](const auto& set) {
+                return std::ranges::any_of(set, [&](const auto& binding) {
+                    return binding.texture == runtime.skybox() && binding.mipLevel == 0U;
+                });
+            });
+            ok &=
+                check(synchronized && error.empty() && runtime.ready() && runtime.generation() == 1 &&
+                          runtime.skybox() != sourceSkybox && commands.drawCalls == 13 &&
+                          commands.renderingEnds == 13 && mipTargetsMatch && samplesMipZero &&
+                          device.textureDescriptions.size() == 1 && device.textureDescriptions.front().mipLevels == 4 &&
+                          std::ranges::count_if(commands.descriptorSets,
+                                                [](const auto& binding) { return binding.second == 1; }) == 12,
+                      "Dayo SkyboxPrefilter compiles through DXC and records mip-specific draws");
+            runtime.reset();
+        }
         dayo::graphics::NativeSceneResourceBindings bindings;
         bindings.skybox = {1, 1};
         bindings.skywalker = {2, 1};
@@ -1398,18 +1475,25 @@ int main() {
                         runtime.layout(dayo::graphics::NativeSceneDescriptorSet::textures).valid(),
                     "native scene binding runtime exposes indexed layouts");
         const std::array<dayo::graphics::DescriptorBindingEx, 4> incomplete{
-            dayo::graphics::DescriptorBindingEx{.slot = 16, .arrayElement = 0, .buffer = {1, 1}},
-            dayo::graphics::DescriptorBindingEx{.slot = 17, .arrayElement = 0, .texture = {2, 1}},
-            dayo::graphics::DescriptorBindingEx{.slot = 17, .arrayElement = 1, .texture = {3, 1}},
-            dayo::graphics::DescriptorBindingEx{.slot = 48, .arrayElement = 0, .buffer = {4, 1}},
+            dayo::graphics::DescriptorBindingEx{
+                .slot = 16, .arrayElement = 0, .buffer = {1, 1}, .mipLevel = std::nullopt},
+            dayo::graphics::DescriptorBindingEx{
+                .slot = 17, .arrayElement = 0, .texture = {2, 1}, .mipLevel = std::nullopt},
+            dayo::graphics::DescriptorBindingEx{
+                .slot = 17, .arrayElement = 1, .texture = {3, 1}, .mipLevel = std::nullopt},
+            dayo::graphics::DescriptorBindingEx{
+                .slot = 48, .arrayElement = 0, .buffer = {4, 1}, .mipLevel = std::nullopt},
         };
         ok &= check(runtime.bind(dayo::graphics::NativeSceneDescriptorSet::textures, incomplete, &error) &&
                         runtime.descriptorSet(dayo::graphics::NativeSceneDescriptorSet::textures).valid(),
                     "native scene binding runtime binds complete array sets");
         const std::array<dayo::graphics::DescriptorBindingEx, 3> partial{
-            dayo::graphics::DescriptorBindingEx{.slot = 16, .arrayElement = 0, .buffer = {1, 1}},
-            dayo::graphics::DescriptorBindingEx{.slot = 17, .arrayElement = 0, .texture = {2, 1}},
-            dayo::graphics::DescriptorBindingEx{.slot = 48, .arrayElement = 0, .buffer = {4, 1}},
+            dayo::graphics::DescriptorBindingEx{
+                .slot = 16, .arrayElement = 0, .buffer = {1, 1}, .mipLevel = std::nullopt},
+            dayo::graphics::DescriptorBindingEx{
+                .slot = 17, .arrayElement = 0, .texture = {2, 1}, .mipLevel = std::nullopt},
+            dayo::graphics::DescriptorBindingEx{
+                .slot = 48, .arrayElement = 0, .buffer = {4, 1}, .mipLevel = std::nullopt},
         };
         ok &=
             check(!runtime.bind(dayo::graphics::NativeSceneDescriptorSet::textures, partial, &error) && !error.empty(),
