@@ -327,7 +327,8 @@ class VulkanDevice final : public Device {
                                      std::uint32_t indexCount, std::uint32_t instanceCount);
     void recordTransitionTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture);
     void recordTextureTransition(VkCommandBuffer commandBuffer, handles::TextureHandle texture,
-                                 VkImageLayout nextLayout);
+                                 VkImageLayout nextLayout, std::uint32_t baseMipLevel = 0,
+                                 std::uint32_t mipLevelCount = 0);
     void recordCopyTexture(VkCommandBuffer commandBuffer, handles::TextureHandle source,
                            handles::TextureHandle destination);
     void recordBlitTexture(VkCommandBuffer commandBuffer, handles::TextureHandle source,
@@ -351,6 +352,7 @@ class VulkanDevice final : public Device {
     void recordBeginRendering(VkCommandBuffer commandBuffer, const RenderingInfoEx& info);
     void recordEndRendering(VkCommandBuffer commandBuffer, handles::TextureHandle target);
     void recordEndRendering(VkCommandBuffer commandBuffer, std::span<const handles::TextureHandle> targets);
+    void recordEndRendering(VkCommandBuffer commandBuffer, std::span<const RenderingTargetEx> targets);
     void recordMemoryBarrier(VkCommandBuffer commandBuffer);
     void recordTransferBarrier(VkCommandBuffer commandBuffer);
     void recordAccelerationStructureBarrier(VkCommandBuffer commandBuffer);
@@ -540,7 +542,8 @@ class VulkanDevice final : public Device {
         VulkanImage resource;
         TextureResourceDesc desc;
         VkImageView view{};
-        VkImageLayout layout{VK_IMAGE_LAYOUT_UNDEFINED};
+        std::vector<VkImageView> mipViews;
+        std::vector<VkImageLayout> mipLayouts;
     };
     struct TypedSampler {
         VkSampler sampler{};

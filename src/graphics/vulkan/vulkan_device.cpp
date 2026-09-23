@@ -4370,6 +4370,8 @@ handles::TextureHandle VulkanDevice::createTextureEx(const TextureResourceDesc& 
 
     TypedTexture typed{};
     typed.desc = desc;
+    typed.mipViews.resize(desc.mipLevels, VK_NULL_HANDLE);
+    typed.mipLayouts.resize(desc.mipLevels, VK_IMAGE_LAYOUT_UNDEFINED);
     const std::uint32_t layerMultiplier = desc.dimension == TextureDimension::cube ? 6U : 1U;
     const std::uint32_t imageLayers = desc.arrayLayers * layerMultiplier;
     const VkImageCreateFlags imageFlags = desc.dimension == TextureDimension::cube
@@ -4412,7 +4414,21 @@ handles::TextureHandle VulkanDevice::createTextureEx(const TextureResourceDesc& 
             .subresourceRange = {aspect, 0, desc.mipLevels, 0, imageLayers},
         };
         check(vkCreateImageView(device_, &viewInfo, nullptr, &typed.view), "create typed texture view");
+        for (std::uint32_t mipLevel = 0; mipLevel < desc.mipLevels; ++mipLevel) {
+            const VkImageViewCreateInfo mipViewInfo{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .image = typed.resource.image,
+                .viewType = toVkImageViewType(desc.dimension, desc.arrayLayers),
+                .format = format,
+                .subresourceRange = {aspect, mipLevel, 1, 0, imageLayers},
+            };
+            check(vkCreateImageView(device_, &mipViewInfo, nullptr, &typed.mipViews[mipLevel]),
+                  "create typed texture mip view");
+        }
     } catch (...) {
+        for (const auto mipView : typed.mipViews)
+            if (mipView != VK_NULL_HANDLE)
+                vkDestroyImageView(device_, mipView, nullptr);
         if (typed.view != VK_NULL_HANDLE)
             vkDestroyImageView(device_, typed.view, nullptr);
         if (typed.resource.memory != VK_NULL_HANDLE)
@@ -5590,40 +5606,54 @@ VkImageLayout VulkanDevice::typedTextureFinalLayout(const TypedTexture& texture)
 }
 
 void VulkanDevice::recordTextureTransition(VkCommandBuffer commandBuffer, handles::TextureHandle texture,
-                                           VkImageLayout nextLayout) {
+                                           VkImageLayout nextLayout, std::uint32_t baseMipLevel,
+                                           std::uint32_t mipLevelCount) {
     const auto it = typedTextures_.find(texture);
     if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(texture))
         throw std::invalid_argument("typed transition references a stale texture handle");
     if (commandBuffer == VK_NULL_HANDLE)
         throw std::invalid_argument("typed transition requires a command buffer");
 
-    if (it->second.layout == nextLayout)
-        return;
+    const auto mipTotal = it->second.desc.mipLevels;
+    if (baseMipLevel >= mipTotal)
+        throw std::out_of_range("typed texture transition base mip is out of range");
+    if (mipLevelCount == 0)
+        mipLevelCount = mipTotal - baseMipLevel;
+    if (mipLevelCount > mipTotal - baseMipLevel)
+        throw std::out_of_range("typed texture transition mip range is out of range");
 
-    VkImageMemoryBarrier2 barrier{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_PIPELINE_STAGE_2_NONE
-                                                                       : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .srcAccessMask = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED
-                             ? VK_ACCESS_2_NONE
-                             : VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-        .oldLayout = it->second.layout,
-        .newLayout = nextLayout,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = it->second.resource.image,
-        .subresourceRange = {imageAspect(it->second.desc.format), 0, it->second.desc.mipLevels, 0,
-                             imageLayerCount(it->second.desc)},
-    };
+    std::vector<VkImageMemoryBarrier2> barriers;
+    barriers.reserve(mipLevelCount);
+    for (std::uint32_t mipLevel = baseMipLevel; mipLevel < baseMipLevel + mipLevelCount; ++mipLevel) {
+        auto& oldLayout = it->second.mipLayouts[mipLevel];
+        if (oldLayout == nextLayout)
+            continue;
+        barriers.push_back({
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = oldLayout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_PIPELINE_STAGE_2_NONE
+                                                                   : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .srcAccessMask = oldLayout == VK_IMAGE_LAYOUT_UNDEFINED
+                                 ? VK_ACCESS_2_NONE
+                                 : VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+            .oldLayout = oldLayout,
+            .newLayout = nextLayout,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = it->second.resource.image,
+            .subresourceRange = {imageAspect(it->second.desc.format), mipLevel, 1, 0, imageLayerCount(it->second.desc)},
+        });
+        oldLayout = nextLayout;
+    }
+    if (barriers.empty())
+        return;
     const VkDependencyInfo dependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .imageMemoryBarrierCount = 1,
-        .pImageMemoryBarriers = &barrier,
+        .imageMemoryBarrierCount = static_cast<std::uint32_t>(barriers.size()),
+        .pImageMemoryBarriers = barriers.data(),
     };
     vkCmdPipelineBarrier2(commandBuffer, &dependency);
-    it->second.layout = nextLayout;
 }
 
 void VulkanDevice::recordTransitionTexture(VkCommandBuffer commandBuffer, handles::TextureHandle texture) {
@@ -5897,12 +5927,16 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const Ren
         throw std::invalid_argument("typed rendering requires a color or depth attachment");
 
     const auto extentTexture = info.colors.empty() ? info.depth->texture : info.colors.front().texture;
+    const auto extentMip = info.colors.empty() ? info.depth->mipLevel : info.colors.front().mipLevel;
     const auto firstIt = typedTextures_.find(extentTexture);
     if (firstIt == typedTextures_.end() || !typedTextureHandles_.isAlive(extentTexture))
         throw std::invalid_argument("typed rendering attachment references a stale texture handle");
     const auto& firstDescription = firstIt->second.desc;
-    const Extent3D requestedExtent =
-        info.extent.width == 0 || info.extent.height == 0 ? firstDescription.extent : info.extent;
+    if (extentMip >= firstDescription.mipLevels)
+        throw std::out_of_range("typed rendering extent mip is out of range");
+    const auto firstMipExtent = mipExtent(firstDescription, extentMip);
+    const Extent3D mipExtentValue{firstMipExtent.width, firstMipExtent.height, firstMipExtent.depth};
+    const Extent3D requestedExtent = info.extent.width == 0 || info.extent.height == 0 ? mipExtentValue : info.extent;
     if (requestedExtent.width == 0 || requestedExtent.height == 0 || requestedExtent.depth != 1)
         throw std::invalid_argument("typed rendering extent is invalid");
 
@@ -5913,18 +5947,22 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const Ren
         if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(color.texture))
             throw std::invalid_argument("typed rendering color attachment references a stale texture handle");
         const auto& description = it->second.desc;
-        if (description.dimension != TextureDimension::d2 || description.extent.width != requestedExtent.width ||
-            description.extent.height != requestedExtent.height || description.extent.depth != 1 ||
-            description.mipLevels != 1 || description.arrayLayers != 1 || isDepthFormat(description.format) ||
+        if (color.mipLevel >= description.mipLevels)
+            throw std::out_of_range("typed rendering color mip is out of range");
+        const auto attachmentExtent = mipExtent(description, color.mipLevel);
+        if (description.dimension != TextureDimension::d2 || attachmentExtent.width != requestedExtent.width ||
+            attachmentExtent.height != requestedExtent.height || attachmentExtent.depth != 1 ||
+            description.arrayLayers != 1 || isDepthFormat(description.format) ||
             (toBits(description.usage) & toBits(ResourceUsage::colorAttachment)) == 0U)
             throw std::invalid_argument("typed rendering color attachment is incompatible with the render area");
-        const bool undefined = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED;
-        recordTextureTransition(commandBuffer, color.texture, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        const bool undefined = it->second.mipLayouts[color.mipLevel] == VK_IMAGE_LAYOUT_UNDEFINED;
+        recordTextureTransition(commandBuffer, color.texture, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, color.mipLevel,
+                                1);
         const VkClearValue clearValue{
             .color = {{color.clearColor[0], color.clearColor[1], color.clearColor[2], color.clearColor[3]}}};
         colorAttachments.push_back({
             .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-            .imageView = it->second.view,
+            .imageView = it->second.mipViews[color.mipLevel],
             .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             .loadOp = color.clear || undefined ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
             .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -5939,17 +5977,21 @@ void VulkanDevice::recordBeginRendering(VkCommandBuffer commandBuffer, const Ren
             throw std::invalid_argument("typed rendering depth attachment references a stale texture handle");
         const auto& description = it->second.desc;
         const auto depthBits = toBits(description.usage);
-        if (description.dimension != TextureDimension::d2 || description.extent.width != requestedExtent.width ||
-            description.extent.height != requestedExtent.height || description.extent.depth != 1 ||
-            description.mipLevels != 1 || description.arrayLayers != 1 || !isDepthFormat(description.format) ||
+        if (info.depth->mipLevel >= description.mipLevels)
+            throw std::out_of_range("typed rendering depth mip is out of range");
+        const auto attachmentExtent = mipExtent(description, info.depth->mipLevel);
+        if (description.dimension != TextureDimension::d2 || attachmentExtent.width != requestedExtent.width ||
+            attachmentExtent.height != requestedExtent.height || attachmentExtent.depth != 1 ||
+            description.arrayLayers != 1 || !isDepthFormat(description.format) ||
             (depthBits & (toBits(ResourceUsage::depthRead) | toBits(ResourceUsage::depthWrite))) == 0U)
             throw std::invalid_argument("typed rendering depth attachment is incompatible with the render area");
-        const bool undefined = it->second.layout == VK_IMAGE_LAYOUT_UNDEFINED;
-        recordTextureTransition(commandBuffer, info.depth->texture, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        const bool undefined = it->second.mipLayouts[info.depth->mipLevel] == VK_IMAGE_LAYOUT_UNDEFINED;
+        recordTextureTransition(commandBuffer, info.depth->texture, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                info.depth->mipLevel, 1);
         const VkClearValue clearValue{.depthStencil = {info.depth->clearDepth, info.depth->clearStencil}};
         depthAttachment = VkRenderingAttachmentInfo{
             .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-            .imageView = it->second.view,
+            .imageView = it->second.mipViews[info.depth->mipLevel],
             .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             .loadOp = info.depth->clear || undefined ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
             .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -5987,22 +6029,34 @@ void VulkanDevice::recordEndRendering(VkCommandBuffer commandBuffer, handles::Te
 void VulkanDevice::recordEndRendering(VkCommandBuffer commandBuffer, std::span<const handles::TextureHandle> targets) {
     if (targets.empty())
         throw std::invalid_argument("typed rendering requires at least one attachment");
+    std::vector<RenderingTargetEx> subresources;
+    subresources.reserve(targets.size());
+    for (const auto target : targets)
+        subresources.push_back({.texture = target, .mipLevel = 0});
+    recordEndRendering(commandBuffer, subresources);
+}
+
+void VulkanDevice::recordEndRendering(VkCommandBuffer commandBuffer, std::span<const RenderingTargetEx> targets) {
+    if (targets.empty())
+        throw std::invalid_argument("typed rendering requires at least one attachment");
     if (commandBuffer == VK_NULL_HANDLE)
         throw std::invalid_argument("typed rendering requires a command buffer");
     for (const auto target : targets) {
-        const auto it = typedTextures_.find(target);
-        if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(target))
+        const auto it = typedTextures_.find(target.texture);
+        if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(target.texture))
             throw std::invalid_argument("typed rendering attachment references a stale texture handle");
+        if (target.mipLevel >= it->second.desc.mipLevels)
+            throw std::out_of_range("typed rendering attachment mip is out of range");
         const auto expectedLayout = isDepthFormat(it->second.desc.format)
                                         ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
                                         : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        if (it->second.layout != expectedLayout)
+        if (it->second.mipLayouts[target.mipLevel] != expectedLayout)
             throw std::logic_error("typed rendering attachment is not in its rendering layout");
     }
     vkCmdEndRendering(commandBuffer);
     for (const auto target : targets) {
-        const auto it = typedTextures_.find(target);
-        recordTextureTransition(commandBuffer, target, typedTextureFinalLayout(it->second));
+        const auto it = typedTextures_.find(target.texture);
+        recordTextureTransition(commandBuffer, target.texture, typedTextureFinalLayout(it->second), target.mipLevel, 1);
     }
 }
 
@@ -6383,6 +6437,9 @@ void VulkanDevice::destroyTextureEx(handles::TextureHandle handle) {
         throw std::invalid_argument("stale typed texture handle");
     if (it->second.view != VK_NULL_HANDLE)
         vkDestroyImageView(device_, it->second.view, nullptr);
+    for (const auto mipView : it->second.mipViews)
+        if (mipView != VK_NULL_HANDLE)
+            vkDestroyImageView(device_, mipView, nullptr);
     if (it->second.resource.image != VK_NULL_HANDLE)
         vkDestroyImage(device_, it->second.resource.image, nullptr);
     if (it->second.resource.memory != VK_NULL_HANDLE)
@@ -6474,6 +6531,9 @@ void VulkanDevice::destroyTypedResources() noexcept {
     typedSamplerHandles_.clear();
     for (const auto& [handle, resource] : typedTextures_) {
         static_cast<void>(handle);
+        for (const auto mipView : resource.mipViews)
+            if (mipView != VK_NULL_HANDLE)
+                vkDestroyImageView(device_, mipView, nullptr);
         if (resource.view != VK_NULL_HANDLE)
             vkDestroyImageView(device_, resource.view, nullptr);
         if (resource.resource.image != VK_NULL_HANDLE)

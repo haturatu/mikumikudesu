@@ -434,6 +434,7 @@ struct RenderingAttachmentEx {
     handles::TextureHandle texture{};
     bool clear{};
     std::array<float, 4> clearColor{};
+    std::uint32_t mipLevel{};
 };
 
 struct DepthAttachmentEx {
@@ -441,6 +442,12 @@ struct DepthAttachmentEx {
     bool clear{};
     float clearDepth{1.0F};
     std::uint32_t clearStencil{};
+    std::uint32_t mipLevel{};
+};
+
+struct RenderingTargetEx {
+    handles::TextureHandle texture{};
+    std::uint32_t mipLevel{};
 };
 
 struct RenderingInfoEx {

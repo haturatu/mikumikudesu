@@ -711,9 +711,26 @@ bool recordsNativeOffscreenOutput(dayo::graphics::VulkanDevice& device) {
     device.selectRenderer(dayo::graphics::RendererKind::subayai);
     bool called = false;
     dayo::graphics::handles::TextureHandle output{};
+    dayo::graphics::handles::TextureHandle mipTarget{};
     device.setNativeFrameRecorder(
         [&](dayo::graphics::CommandList& commands, const dayo::graphics::RenderTargetDesc& target) {
             called = true;
+            mipTarget = device.createTextureEx({
+                .dimension = dayo::graphics::TextureDimension::d2,
+                .extent = {target.width, target.height, 1},
+                .format = dayo::graphics::PixelFormat::rgba16Float,
+                .mipLevels = 7,
+                .arrayLayers = 1,
+                .usage = dayo::graphics::ResourceUsage::sampledRead | dayo::graphics::ResourceUsage::colorAttachment |
+                         dayo::graphics::ResourceUsage::transferSrc,
+                .lifetime = dayo::graphics::ResourceLifetime::transient,
+            });
+            dayo::graphics::RenderingInfoEx mipRendering;
+            mipRendering.colors.push_back(
+                {.texture = mipTarget, .clear = true, .clearColor = {1.0F, 0.0F, 0.0F, 1.0F}, .mipLevel = 1});
+            mipRendering.extent = {std::max(target.width / 2U, 1U), std::max(target.height / 2U, 1U), 1};
+            commands.beginRenderingEx(mipRendering);
+            commands.endRenderingEx();
             output = device.createTextureEx({
                 .dimension = dayo::graphics::TextureDimension::d2,
                 .extent = {target.width, target.height, 1},
@@ -741,14 +758,22 @@ bool recordsNativeOffscreenOutput(dayo::graphics::VulkanDevice& device) {
         device.selectRenderer(dayo::graphics::RendererKind::preview);
         if (output.valid())
             device.destroyTextureEx(output);
+        if (mipTarget.valid())
+            device.destroyTextureEx(mipTarget);
         throw;
     }
     device.setNativeFrameRecorder({});
     device.setNativeRendererAvailability(false, false);
     device.selectRenderer(dayo::graphics::RendererKind::preview);
+    const auto mipBytes = mipTarget.valid() ? device.readbackTextureEx(mipTarget, 1, 0) : std::vector<std::uint8_t>{};
+    const bool mipClearMatches = mipBytes.size() >= 8U && mipBytes[0] == 0U && mipBytes[1] == 0x3CU &&
+                                 mipBytes[2] == 0U && mipBytes[3] == 0U && mipBytes[4] == 0U && mipBytes[5] == 0U &&
+                                 mipBytes[6] == 0U && mipBytes[7] == 0x3CU;
     if (output.valid())
         device.destroyTextureEx(output);
-    return called && outputMatches;
+    if (mipTarget.valid())
+        device.destroyTextureEx(mipTarget);
+    return called && outputMatches && mipClearMatches;
 }
 
 } // namespace
