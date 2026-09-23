@@ -31,7 +31,7 @@ NativeViewConstants makeNativeViewConstants(const fx::FxFrameContext& context,
     result.modelCounts = {context.modelCount, totalMaterialCount};
     const auto frameTime = context.frame / 30.0F;
     result.frameTimes = {frameTime, 0.0F, frameTime, 0.0F};
-    result.output = {context.renderWidth, context.renderHeight, narrowSample(context.sample), 1};
+    result.output = {context.renderWidth, context.renderHeight, narrowSample(context.sample), context.sampleCount};
     result.playing = context.host.playing ? 1 : 0;
     result.lightColor = context.lighting.color;
     result.lightDirection = context.lighting.direction;

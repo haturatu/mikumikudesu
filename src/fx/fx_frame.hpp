@@ -57,6 +57,7 @@ struct FxFrameContext {
     float frame{};
     double time{};
     std::uint64_t sample{};
+    std::uint32_t sampleCount{1};
     std::uint32_t renderWidth{};
     std::uint32_t renderHeight{};
     std::uint64_t currentModel{};

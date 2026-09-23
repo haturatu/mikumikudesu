@@ -346,8 +346,6 @@ fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTar
     context.host.onResize = invocationEvents.onResize;
     context.host.onModelChanged = invocationEvents.onModelChanged;
     context.host.onMaterialChanged = invocationEvents.onMaterialChanged;
-    graphics::populateNativeViewExpressionSymbols(
-        context, graphics::makeNativeViewConstants(context, static_cast<std::uint32_t>(context.totalMaterial)));
     return context;
 }
 
@@ -499,8 +497,13 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                                             .onResize = nativeResizeEvent,
                                             .onModelChanged = nativeFxPendingEvents_.modelChanged,
                                             .onMaterialChanged = nativeFxPendingEvents_.materialChanged});
-        if (outputExecution.sampleCount > 1)
+        if (outputExecution.sampleCount > 1) {
             frameContext.sample = outputExecution.sampleIndex;
+            frameContext.sampleCount = outputExecution.sampleCount;
+        }
+        graphics::populateNativeViewExpressionSymbols(
+            frameContext,
+            graphics::makeNativeViewConstants(frameContext, static_cast<std::uint32_t>(frameContext.totalMaterial)));
         auto sceneResources = nativeSceneResources_.bindings();
         const auto modelResources = nativeSceneModelRuntime_.bindings();
         std::vector<graphics::NativeSceneDerivedModel> derivedModels;
