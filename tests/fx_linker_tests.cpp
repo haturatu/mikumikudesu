@@ -99,6 +99,8 @@ int main() {
                     "material schema rejects duplicate field names across scalar types");
         ok &= check(rejects("_T0 : Surface\n_V1 : Surface\n"),
                     "material schema rejects duplicate texture names across dimensions");
+        ok &= check(rejects("_E Category : default=0, glass=1\n_E : Category : default=0, glass=1\n"),
+                    "material schema rejects duplicate enum definitions for one field");
     }
 
     // Alias folding: shared / ref / shareTags collapse to canonical ids.

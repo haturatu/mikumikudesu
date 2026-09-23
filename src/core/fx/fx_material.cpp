@@ -129,10 +129,13 @@ void parseMaterialEnum(MaterialTemplateSchema& schema, std::string_view left, st
 
     MaterialEnumSchema enumeration;
     enumeration.field = materialIdentifier(fieldName);
+    if (std::ranges::any_of(schema.enums,
+                            [&enumeration](const auto& existing) { return existing.field == enumeration.field; }))
+        throw std::invalid_argument("duplicate upstream material enum field '" + enumeration.field + "' at line " +
+                                    std::to_string(lineNumber));
     std::int32_t nextValue = 0;
     const auto items = splitMaterialList(valueList);
-    for (std::size_t index = 0; index < items.size(); ++index) {
-        const auto& item = items[index];
+    for (const auto& item : items) {
         const auto assignment = item.find('=');
         const auto name = trimCopy(std::string_view(item).substr(0, assignment));
         if (name.empty())
@@ -179,7 +182,7 @@ std::int32_t parseMaterialEnumValue(const MaterialTemplateSchema& schema, std::s
 
 template <typename T, std::size_t N, typename Parser>
 std::array<T, N> parseMaterialArray(const std::vector<std::string>& values, std::string_view description,
-                                    Parser&& parser) {
+                                    Parser parser) {
     if (values.size() != N)
         throw std::invalid_argument("upstream material component count mismatch for " + std::string(description));
     std::array<T, N> result{};
