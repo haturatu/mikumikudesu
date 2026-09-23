@@ -6293,7 +6293,13 @@ void VulkanDevice::updateDescriptorSetEx(handles::DescriptorSetHandle set,
             const auto textureIt = typedTextures_.find(binding.texture);
             if (textureIt == typedTextures_.end() || !typedTextureHandles_.isAlive(binding.texture))
                 throw std::invalid_argument("stale typed texture handle");
-            VkDescriptorImageInfo info{VK_NULL_HANDLE, textureIt->second.view,
+            VkImageView imageView = textureIt->second.view;
+            if (binding.mipLevel.has_value()) {
+                if (*binding.mipLevel >= textureIt->second.desc.mipLevels)
+                    throw std::out_of_range("typed image descriptor mip is out of range");
+                imageView = textureIt->second.mipViews[*binding.mipLevel];
+            }
+            VkDescriptorImageInfo info{VK_NULL_HANDLE, imageView,
                                        layoutBinding->kind == DescriptorKind::storageImage
                                            ? VK_IMAGE_LAYOUT_GENERAL
                                            : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};

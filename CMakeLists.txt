@@ -832,6 +832,7 @@ if(BUILD_TESTING)
   add_executable(dayo_subayai_bdpt_tests tests/subayai_bdpt_tests.cpp)
   target_include_directories(dayo_subayai_bdpt_tests PRIVATE src)
   target_link_libraries(dayo_subayai_bdpt_tests PRIVATE dayo_core dayo_graphics)
+  target_compile_definitions(dayo_subayai_bdpt_tests PRIVATE DAYO_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(
       dayo_subayai_bdpt_tests
