@@ -1,4 +1,5 @@
 #include "graphics/native_oidn_provider.hpp"
+#include "graphics/native_scene_data.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -130,26 +131,58 @@ bool NativeOidnProvider::execute(const fx::FxOidnDispatch& dispatch, const fx::F
         setError(error, "OIDN host has no typed resource resolver");
         return false;
     }
-    const auto findTexture = [&resolve](std::string_view name, bool required) {
+    const auto findResource = [&resolve](std::string_view name, bool required) {
         if (name.empty()) {
             if (required)
                 throw std::invalid_argument("OIDN resource name is empty");
-            return handles::TextureHandle{};
+            return FxExecutionResources::TypedResource{};
         }
         const auto binding = resolve(name);
-        if (!binding.has_value() || !binding->texture.valid())
-            throw std::invalid_argument("OIDN texture resource is unavailable: " + std::string(name));
-        return binding->texture;
+        if (!binding.has_value() || !binding->valid())
+            throw std::invalid_argument("OIDN resource is unavailable: " + std::string(name));
+        return *binding;
     };
     try {
-        const auto input = findTexture(dispatch.input, true);
-        const auto output = findTexture(dispatch.output, true);
-        const auto albedo = findTexture(dispatch.albedo, false);
-        const auto normal = findTexture(dispatch.normal, false);
-        if (!denoiser_.ensure(context.renderWidth, context.renderHeight) && !denoiser_.available()) {
+        if (context.renderWidth == 0 || context.renderHeight == 0)
+            throw std::invalid_argument("OIDN render extent is empty");
+        const auto width = static_cast<std::size_t>(context.renderWidth);
+        const auto height = static_cast<std::size_t>(context.renderHeight);
+        if (width > std::numeric_limits<std::size_t>::max() / height)
+            throw std::overflow_error("OIDN render pixel count overflows host size");
+        const auto pixelCount = width * height;
+        if (pixelCount > std::numeric_limits<std::size_t>::max() / sizeof(NativeSceneOidnInput) ||
+            pixelCount > std::numeric_limits<std::size_t>::max() / 3U)
+            throw std::overflow_error("OIDN input size overflows host size");
+
+        const auto input = findResource(dispatch.input, true);
+        const bool inputIsTexture = input.texture.valid() && !input.buffer.valid() && !input.sampler.valid() &&
+                                    !input.accelerationStructure.valid();
+        const bool inputIsBuffer = input.buffer.valid() && !input.texture.valid() && !input.sampler.valid() &&
+                                   !input.accelerationStructure.valid();
+        if (!inputIsTexture && !inputIsBuffer)
+            throw std::invalid_argument("OIDN input must resolve to exactly one texture or structured buffer");
+        const auto outputBinding = findResource(dispatch.output, true);
+        if (!outputBinding.texture.valid() || outputBinding.buffer.valid() || outputBinding.sampler.valid() ||
+            outputBinding.accelerationStructure.valid())
+            throw std::invalid_argument("OIDN output must resolve to a texture");
+        const auto findOptionalTexture = [&findResource](std::string_view name) {
+            const auto binding = findResource(name, false);
+            if (name.empty())
+                return handles::TextureHandle{};
+            if (!binding.texture.valid() || binding.buffer.valid() || binding.sampler.valid() ||
+                binding.accelerationStructure.valid())
+                throw std::invalid_argument("OIDN auxiliary resource must resolve to a texture: " + std::string(name));
+            return binding.texture;
+        };
+        const auto albedo = findOptionalTexture(dispatch.albedo);
+        const auto normal = findOptionalTexture(dispatch.normal);
+        const auto output = outputBinding.texture;
+        const bool hasBufferInput = inputIsBuffer;
+        const bool denoiserReady = denoiser_.ensure(context.renderWidth, context.renderHeight);
+        if (!denoiserReady && !denoiser_.available() && !hasBufferInput) {
             commands.transferBarrierEx();
-            if (input != output)
-                commands.copyTextureEx(input, output);
+            if (input.texture != output)
+                commands.copyTextureEx(input.texture, output);
             return true;
         }
 
@@ -157,10 +190,29 @@ bool NativeOidnProvider::execute(const fx::FxOidnDispatch& dispatch, const fx::F
         // wait for that work before using the device's immediate readback and
         // upload context, then continue recording later FX passes.
         commands.flushAndWaitForHostReadbackEx();
-        const auto beautyBytes = device_->readbackTextureEx(input, 0, 0);
-        const auto beauty = decodeRgb(beautyBytes, context.renderWidth, context.renderHeight);
+        std::vector<float> beauty;
         std::vector<float> albedoValues;
         std::vector<float> normalValues;
+        if (hasBufferInput) {
+            const auto byteCount = pixelCount * sizeof(NativeSceneOidnInput);
+            const auto inputBytes = device_->readbackBufferEx(input.buffer, 0, byteCount);
+            if (inputBytes.size() != byteCount)
+                throw std::runtime_error("OIDN structured buffer readback size does not match its extent");
+            const auto sampleCount = pixelCount * 3U;
+            beauty.resize(sampleCount);
+            albedoValues.resize(sampleCount);
+            normalValues.resize(sampleCount);
+            for (std::size_t pixel = 0; pixel < pixelCount; ++pixel) {
+                NativeSceneOidnInput sample{};
+                std::memcpy(&sample, inputBytes.data() + pixel * sizeof(sample), sizeof(sample));
+                std::copy_n(sample.color, 3, beauty.begin() + static_cast<std::ptrdiff_t>(pixel * 3U));
+                std::copy_n(sample.albedo, 3, albedoValues.begin() + static_cast<std::ptrdiff_t>(pixel * 3U));
+                std::copy_n(sample.normal, 3, normalValues.begin() + static_cast<std::ptrdiff_t>(pixel * 3U));
+            }
+        } else {
+            const auto beautyBytes = device_->readbackTextureEx(input.texture, 0, 0);
+            beauty = decodeRgb(beautyBytes, context.renderWidth, context.renderHeight);
+        }
         if (albedo.valid())
             albedoValues =
                 decodeRgb(device_->readbackTextureEx(albedo, 0, 0), context.renderWidth, context.renderHeight);
