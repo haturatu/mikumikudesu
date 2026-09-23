@@ -270,6 +270,7 @@ add_library(
   src/graphics/dayo_host_resources.cpp
   src/graphics/dayo_fx_runtime.cpp
   src/graphics/deformer_resource_registry.cpp
+  src/graphics/fx_shared_resource_registry.cpp
   src/graphics/fx_material_gpu_runtime.cpp
   src/graphics/fx_material_scene_runtime.cpp
   src/graphics/device.cpp
