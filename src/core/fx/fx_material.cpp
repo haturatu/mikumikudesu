@@ -407,7 +407,6 @@ void overlayTemplateDefaults(MaterialTemplateSchema& schema, std::string_view so
     }
 }
 
-<<<<<<< HEAD
 bool materialValueMatches(const MaterialFieldSchema& field, const MaterialValue& value) {
     if (field.type == MaterialFieldType::floatingPoint) {
         switch (field.components) {
