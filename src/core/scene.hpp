@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -133,6 +134,9 @@ struct ModelInstance {
     std::string displayName;
 };
 
+// Returns scene indices ordered by the user's motion evaluation order. Equal
+// order values retain their scene order, matching the upstream stable order.
+[[nodiscard]] std::vector<std::size_t> stableMotionEvaluationOrder(std::span<const std::int32_t> orderValues);
 [[nodiscard]] bool isUpstreamDrawableModel(const PmxModel& model) noexcept;
 [[nodiscard]] ModelParticipation resolveModelParticipation(const ModelInstance& model,
                                                            const SceneEffectStack& effects) noexcept;

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <functional>
 #include <iomanip>
+#include <numeric>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -17,6 +18,14 @@ Scene::Scene() = default;
 Scene::~Scene() = default;
 Scene::Scene(Scene&&) noexcept = default;
 Scene& Scene::operator=(Scene&&) noexcept = default;
+
+std::vector<std::size_t> stableMotionEvaluationOrder(std::span<const std::int32_t> orderValues) {
+    std::vector<std::size_t> indices(orderValues.size());
+    std::iota(indices.begin(), indices.end(), 0U);
+    std::ranges::stable_sort(indices,
+                             [&](const auto left, const auto right) { return orderValues[left] < orderValues[right]; });
+    return indices;
+}
 
 bool isUpstreamDrawableModel(const PmxModel& model) noexcept {
     if (model.vertices.empty())
