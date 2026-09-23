@@ -52,7 +52,8 @@ namespace {
     if (name == "R8G8B8A8_UNORM" || name == "R8G8B8A8_SRGB" || name == "R16G16B16A16_FLOAT" ||
         name == "R32G32B32A32_FLOAT" || name.empty())
         return "float4";
-    if (name == "R8_UNORM" || name == "R16_FLOAT" || name == "R32_FLOAT" || name == "D32_FLOAT")
+    if (name == "R8_UNORM" || name == "R16_FLOAT" || name == "R32_FLOAT" || name == "D32_FLOAT" ||
+        name == "D24_UNORM_S8_UINT" || name == "D24S8")
         return "float";
     throw std::invalid_argument("FX shader source has an unsupported texture format: " + std::string(format));
 }
@@ -199,6 +200,12 @@ struct MaterialTemplate {
     });
 }
 
+[[nodiscard]] bool dispatchUsesAsDepth(const FxDispatch& dispatch, std::string_view name) {
+    return std::ranges::any_of(dispatch.resources, [name](const FxDispatch::ResourceUse& resource) {
+        return resource.write && resource.name == name && resource.role == FxResourceRole::depthAttachment;
+    });
+}
+
 [[nodiscard]] bool containsIdentifier(std::string_view source, std::string_view wanted) {
     std::size_t offset = 0;
     while ((offset = source.find(wanted, offset)) != std::string_view::npos) {
@@ -330,6 +337,8 @@ void appendTextureDeclarations(std::ostringstream& output, const FxProgram& prog
             continue;
         }
         const auto* planned = bindings.find(texture.name);
+        if (planned == nullptr && dispatchUsesAsDepth(dispatch, texture.name))
+            continue;
         if (planned == nullptr)
             throw std::logic_error("FX binding plan omitted texture: " + texture.name);
         const auto binding = planned->binding - fxDescriptorBindingBaseForUse(planned->descriptorClass, write);
