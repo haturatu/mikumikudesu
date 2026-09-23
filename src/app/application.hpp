@@ -14,6 +14,7 @@
 #include "fx/fx_frame.hpp"
 #include "fx/fx_scheduler.hpp"
 #include "graphics/device.hpp"
+#include "graphics/native_dayo_environment_runtime.hpp"
 #include "graphics/native_fx_pending_events.hpp"
 #include "graphics/native_oidn_provider.hpp"
 #include "graphics/native_renderer.hpp"
@@ -100,6 +101,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     graphics::NativeSceneFrameRuntime nativeSceneFrame_;
     graphics::NativeSceneResourceStore nativeSceneResources_;
     graphics::NativeSceneDerivedRuntime nativeSceneDerivedRuntime_;
+    graphics::NativeDayoEnvironmentRuntime nativeDayoEnvironmentRuntime_;
     graphics::NativeScreenRuntime nativeScreenRuntime_;
     graphics::NativeOidnProvider nativeOidnProvider_;
     core::Scene scene_;

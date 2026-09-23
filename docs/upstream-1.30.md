@@ -26,6 +26,18 @@ installも同じ一覧を使い、拡張子による除外を行わず、第三�
 その実行をサポートしたことにはなりません。OIDNは任意検出で、2.5.0への固定は行いません。
 非同期画像出力はbounded queueまで対応済みです。ファイル名末尾からの連番開始は別の残件です。
 
+## Dayo environment host resources
+
+固定した1.30 sourceの`resources.hlsli`/`yrztypes.hlsli`に合わせ、`Dayo::Skybox`は線形の2:1
+`Texture2D<float4>`、`Skywalker`/`SkywalkerRow`は12-byte Walker要素、`SkyboxSH`は9個の`float4`
+としてscene descriptorへ渡します。`SkyboxSampler` memoがある場合は同梱`skyboxPDF.hlsl`の輝度・立体角・
+alias-table式をCPU側で再現し、`skyboxSH.hlsl`のZ-up係数を計算します。CPU fixtureでABI strideと代表的な
+分布・係数を検証しますが、Windows 1.30とのGPU数値比較はまだ行っていません。
+
+`SkyboxPrefilter`はこの経路では未対応です。上流は元の2D equirectangular textureをmip付きでprefilter
+するため、Subayai用のcubemap prefilterを代用してはいけません。その他のmemoと`globalVarSize`も
+この実装範囲外で、runtime対応済みとは扱いません。
+
 ## Windows fixtureの受け入れ条件
 
 Windows 1.30実行環境での保存・再読込は今回のLinux検証に含みません。

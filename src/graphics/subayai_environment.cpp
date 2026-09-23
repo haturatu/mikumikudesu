@@ -116,6 +116,19 @@ bool EnvironmentService::update(const EnvironmentDesc& desc) {
     return true;
 }
 
+void EnvironmentService::clear() noexcept {
+    if (ready_ && backend_ != nullptr)
+        backend_->reset();
+    cached_ = {};
+    ready_ = false;
+    cubemap_ = {};
+    prefiltered_ = {};
+    sphericalHarmonics_ = {};
+    skywalkerVersion_ = 0;
+    typedResult_ = {};
+    recordPending_ = false;
+}
+
 void EnvironmentService::setHandles(TextureHandle cubemap, TextureHandle prefiltered,
                                     std::uint64_t skywalkerVersion) noexcept {
     cubemap_ = cubemap;
@@ -239,7 +252,8 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const Environmen
     result_ = {.cubemap = resources_.cubemap,
                .prefiltered = resources_.prefiltered,
                .sphericalHarmonics = harmonics,
-               .skywalkerVersion = desc.version};
+               .skywalkerVersion = desc.version,
+               .skybox = resources_.source};
     return result_;
 }
 
@@ -267,7 +281,9 @@ void NativeEnvironmentBackend::record(CommandList& commands) const {
 
 void NativeEnvironmentBackend::reset() noexcept {
     Device* device = device_;
-    if (device != nullptr) {
+    const bool hasResources = resources_.prefilterSet.valid() || resources_.equirectToCubeSet.valid() ||
+                              resources_.prefiltered.valid() || resources_.cubemap.valid() || resources_.source.valid();
+    if (device != nullptr && hasResources) {
         try {
             device->waitIdle();
         } catch (...) {

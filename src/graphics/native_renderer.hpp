@@ -50,6 +50,12 @@ class NativeRendererCoordinator {
         evaluationSnapshot_ = snapshot;
     }
     [[nodiscard]] bool updateEnvironment(const EnvironmentDesc& description);
+    void clearEnvironment() noexcept {
+        environmentService_.clear();
+    }
+    [[nodiscard]] const EnvironmentGpuResult& environment() const noexcept {
+        return environmentService_.gpuResult();
+    }
     void reset() noexcept;
 
     [[nodiscard]] const NativeRendererStatus& status() const noexcept {
@@ -88,6 +94,7 @@ class NativeRendererCoordinator {
     SubayaiRuntime subayai_;
     BdptRuntime bdpt_;
     IEnvironmentBackend* environmentBackend_{};
+    EnvironmentService environmentService_{nullptr};
     NativeSceneFrameRuntime* sceneFrameRuntime_{};
     std::optional<DayoHostResourceProvider> hostResourceProvider_;
     NativeSceneResourceBindings hostBindings_;

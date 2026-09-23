@@ -6,6 +6,7 @@
 #include "graphics/dayo_host_resources.hpp"
 #include "graphics/device.hpp"
 #include "graphics/native_controller_runtime.hpp"
+#include "graphics/native_dayo_environment_runtime.hpp"
 #include "graphics/native_frame_constants.hpp"
 #include "graphics/native_scene_binding_runtime.hpp"
 #include "graphics/native_scene_bindings.hpp"
@@ -145,11 +146,15 @@ struct MockAccelerationBackend : dayo::graphics::IAccelerationBackend {
 struct MockEnvironmentBackend : dayo::graphics::IEnvironmentBackend {
     std::uint64_t regenerations{0};
     mutable std::uint64_t recordings{0};
+    std::uint64_t resets{0};
     void regenerate(const dayo::graphics::EnvironmentDesc&) override {
         ++regenerations;
     }
     void record(dayo::graphics::CommandList&) const override {
         ++recordings;
+    }
+    void reset() noexcept override {
+        ++resets;
     }
 };
 
@@ -1053,6 +1058,63 @@ int main() {
                         backend.lastTlasInstances[1].flags == 1 && backend.lastTlasInstances[2].instanceId == 2,
                     "TLAS expands each world instance independently");
     }
+    // The canonical 1.30 environment resources use exact source HLSL layouts
+    // and luminance/solid-angle distributions.
+    {
+        const auto makeImage = [](std::array<float, 8> values) {
+            std::vector<float> samples(4U * 2U * 4U, 1.0F);
+            for (std::size_t pixel = 0; pixel < values.size(); ++pixel) {
+                samples[pixel * 4U] = values[pixel];
+                samples[pixel * 4U + 1U] = values[pixel];
+                samples[pixel * 4U + 2U] = values[pixel];
+                samples[pixel * 4U + 3U] = 1.0F;
+            }
+            dayo::core::ImageData image{.width = 4,
+                                        .height = 2,
+                                        .channels = 4,
+                                        .type = dayo::core::PixelType::float32,
+                                        .space = dayo::core::ColorSpace::linear,
+                                        .bytes = std::vector<std::uint8_t>(samples.size() * sizeof(float))};
+            std::memcpy(image.bytes.data(), samples.data(), image.bytes.size());
+            return image;
+        };
+        const auto cpu = dayo::graphics::buildDayoEnvironmentCpuResources(
+            makeImage({0.0F, 0.0F, 1.0F, 3.0F, 4.0F, 0.0F, 0.0F, 0.0F}), true);
+        ok &= check(cpu.skywalker.size() == 8 && cpu.skywalkerRow.size() == 2,
+                    "Dayo Skywalker buffers use one Walker entry per pixel and row");
+        ok &= check(std::abs(cpu.skywalker[2].pdf - 0.25F) < 1e-6F && std::abs(cpu.skywalker[3].pdf - 0.75F) < 1e-6F &&
+                        std::abs(cpu.skywalker[4].pdf - 1.0F) < 1e-6F,
+                    "Dayo Walker PDFs follow luminance weights and per-row conditional distributions");
+        ok &=
+            check(std::abs(cpu.skywalkerRow[0].pdf - 0.5F) < 1e-6F && std::abs(cpu.skywalkerRow[1].pdf - 0.5F) < 1e-6F,
+                  "Dayo row Walker PDF includes equirectangular solid-angle weighting");
+        const auto noSampler = dayo::graphics::buildDayoEnvironmentCpuResources(
+            makeImage({0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F}), false);
+        ok &= check(noSampler.skywalker.size() == 1 && noSampler.skywalkerRow.size() == 1 &&
+                        noSampler.skywalker[0].pair == UINT32_MAX && noSampler.skywalker[0].probability == 1.0F &&
+                        noSampler.skywalker[0].pdf == 1.0F,
+                    "missing SkyboxSampler memo uses initialized one-element host buffers");
+        const auto uniform = dayo::graphics::buildDayoEnvironmentCpuResources(
+            makeImage({1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F}), false);
+        const float expectedConstant = 0.282095F * (std::sin(std::numbers::pi_v<float> / 4.0F) * 2.0F) *
+                                       std::numbers::pi_v<float> * std::numbers::pi_v<float>;
+        ok &= check(std::abs(uniform.skyboxSh.coefficients[0][0] - expectedConstant) < 1e-5F &&
+                        std::abs(uniform.skyboxSh.coefficients[0][3] - expectedConstant) < 1e-5F,
+                    "Dayo SH uses the 1.30 Z-up basis and nine float4 storage layout");
+        ok &= check(sizeof(dayo::graphics::DayoWalkerAlias) == 12 &&
+                        sizeof(dayo::graphics::DayoSphericalHarmonics) == 144,
+                    "canonical Dayo environment structures match upstream structured-buffer strides");
+        dayo::graphics::NativeSceneResourceBindings bindings;
+        bindings.skybox = {1, 1};
+        bindings.skywalker = {2, 1};
+        bindings.skywalkerRow = {3, 1};
+        bindings.skyboxSh = {4, 1};
+        dayo::graphics::NativeDayoEnvironmentRuntime runtime;
+        runtime.apply(bindings);
+        ok &= check(!bindings.skybox.valid() && !bindings.skywalker.valid() && !bindings.skywalkerRow.valid() &&
+                        !bindings.skyboxSh.valid(),
+                    "an empty canonical environment clears stale scene bindings");
+    }
     // EnvironmentService keeps cubemap/prefiltered/SH/Skywalker without regen.
     {
         MockEnvironmentBackend backend;
@@ -1072,6 +1134,9 @@ int main() {
         const EnvironmentDesc changed{.source = "sky.hdr", .exposure = 2.0F, .version = 7};
         ok &= check(service.update(changed), "environment exposure change regenerates");
         ok &= check(backend.regenerations == 2, "environment regen on change");
+        service.clear();
+        ok &= check(!service.ready() && !service.gpuResult().cubemap.valid() && backend.resets == 1,
+                    "clearing environment drops cached handles and releases backend resources");
     }
     // Native environment regeneration owns the source/equirectangular image,
     // cubemap and prefiltered cubemap, while command recording performs the
@@ -1102,7 +1167,7 @@ int main() {
                                           .space = dayo::core::ColorSpace::srgb,
                                           .bytes = std::vector<std::uint8_t>(128, 128)};
         const auto result = backend.regenerateImage({.source = "memory", .exposure = 1.0F, .version = 9}, image);
-        ok &= check(backend.ready() && result.cubemap.valid() && result.prefiltered.valid() &&
+        ok &= check(backend.ready() && result.skybox.valid() && result.cubemap.valid() && result.prefiltered.valid() &&
                         result.skywalkerVersion == 9 && result.sphericalHarmonics[0] > 0.0F,
                     "native environment creates typed outputs and SH coefficients");
         MockDeformCommands commands;

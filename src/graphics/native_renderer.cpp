@@ -121,7 +121,11 @@ NativeRendererStatus NativeRendererCoordinator::prepare(Device& device, Renderer
 }
 
 void NativeRendererCoordinator::setEnvironmentBackend(IEnvironmentBackend* backend) noexcept {
+    if (environmentBackend_ == backend)
+        return;
+    environmentService_.clear();
     environmentBackend_ = backend;
+    environmentService_ = EnvironmentService(backend);
     subayai_.setEnvironmentBackend(backend);
 }
 
@@ -319,9 +323,7 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
 }
 
 bool NativeRendererCoordinator::updateEnvironment(const EnvironmentDesc& description) {
-    if (auto* runtime = subayai())
-        return runtime->updateEnvironment(description);
-    return false;
+    return environmentService_.update(description);
 }
 
 std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
@@ -334,12 +336,16 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
         throw std::invalid_argument("native frame sample index/count is invalid");
     if (execution.sampleCount == 1)
         outputSamples_.cancel();
+    environmentService_.record(commands);
     static_cast<void>(executeGenericEffects(deformEffects_, deformRuntimes_, commands, context, resources, false));
+    const auto& activeEnvironment =
+        environment.skybox.valid() || environment.cubemap.valid() || environment.prefiltered.valid()
+            ? environment
+            : environmentService_.gpuResult();
     std::optional<NativeFrameOutput> rendererOutput;
     switch (status_.active) {
     case RendererKind::subayai: {
-        auto frame = subayai_.prepareFrame(context, materials, lightSampling, environment);
-        subayai_.recordEnvironment(commands);
+        auto frame = subayai_.prepareFrame(context, materials, lightSampling, activeEnvironment);
         const auto stats = subayai_.execute(frame, commands, resources);
         static_cast<void>(stats);
         rendererOutput = subayai_.output(frame);
