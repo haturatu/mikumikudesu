@@ -102,23 +102,26 @@ namespace {
     return identifier(name.substr(0, bracket));
 }
 
-[[nodiscard]] core::fx::MaterialTemplateSchema parseMaterialTemplate(const FxProgram& program) {
-    if (!program.materialDescriptor.has_value())
-        return {};
+[[nodiscard]] const core::fx::MaterialTemplateSchema&
+parseMaterialTemplate(const FxProgram& program, core::fx::MaterialTemplateSchema& fallback) {
+    if (!program.materialDescriptor.has_value()) {
+        fallback = {};
+        return fallback;
+    }
     if (program.materialSchema.has_value())
         return *program.materialSchema;
     const auto& descriptor = *program.materialDescriptor;
     const auto path = descriptor.templatePath.is_absolute()
                           ? descriptor.templatePath
                           : program.sourcePath.parent_path() / descriptor.templatePath;
-    auto schema = core::fx::loadMaterialTemplateSchema(path, descriptor.name, program.sourcePath.parent_path());
+    fallback = core::fx::loadMaterialTemplateSchema(path, descriptor.name, program.sourcePath.parent_path());
     if (!descriptor.defaultFile.empty()) {
         const auto defaults = descriptor.defaultFile.is_absolute()
                                   ? descriptor.defaultFile
                                   : program.sourcePath.parent_path() / descriptor.defaultFile;
-        core::fx::loadMaterialDefaultFile(schema, defaults);
+        core::fx::loadMaterialDefaultFile(fallback, defaults);
     }
-    return schema;
+    return fallback;
 }
 
 [[nodiscard]] bool dispatchWrites(const FxDispatch& dispatch, std::string_view name) {
@@ -167,7 +170,8 @@ void appendMaterialDeclarations(std::ostringstream& output, const FxProgram& pro
                                 std::uint32_t resourceSet, std::uint32_t& sampledBinding) {
     if (!program.materialDescriptor.has_value())
         return;
-    const auto material = parseMaterialTemplate(program);
+    core::fx::MaterialTemplateSchema fallbackMaterial;
+    const auto& material = parseMaterialTemplate(program, fallbackMaterial);
     const auto& name = program.materialDescriptor->name;
     output << "struct " << identifier(name) << "Value {\n";
     for (const auto& field : material.fields) {
