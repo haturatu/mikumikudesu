@@ -2883,6 +2883,13 @@ bool testFxPipelineRuntime() {
     auto twoDimensionalMaterialProgram = materialProgram;
     twoDimensionalMaterialProgram.materialSchema =
         dayo::core::fx::parseMaterialTemplateSchema("f.1 : Roughness\n_T0 : Albedo\n", "Surface");
+    twoDimensionalMaterialProgram.hlsl =
+        "#ifdef YRZ_PASS_deform\n"
+        "[numthreads(8, 4, 1)] void main(uint3 id : SV_DispatchThreadID) { "
+        "SurfaceTexture surface = GetSurfaceTexture(0, 0); "
+        "float4 albedo = surface.hasAlbedoMap ? surface.AlbedoMap.Load(int3(0, 0, 0)) : float4(1, 0, 1, 1); "
+        "NativeOutput[id.xy] = albedo; }\n"
+        "#endif\n";
     const auto twoDimensionalMaterialSource =
         dayo::fx::makeNativeFxShaderSource(twoDimensionalMaterialProgram, dispatch, 7, sharedSource);
     ok &= check(twoDimensionalMaterialSource.find("struct SurfaceTexture3D") == std::string::npos &&
