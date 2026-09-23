@@ -33,6 +33,9 @@ struct NativeSceneResourceBindings {
     handles::TextureHandle screenTexture{};
     handles::BufferHandle viewConstants{};
     handles::BufferHandle controllerConstants{};
+    // Per-effect YRZFX global CB; the scene store supplies a safe placeholder
+    // and GenericEffectRuntime replaces it with its owned buffer when needed.
+    handles::BufferHandle globalConstants{};
 
     handles::BufferHandle textureTable{};
     std::span<const handles::TextureHandle> textures{};

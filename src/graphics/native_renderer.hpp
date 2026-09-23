@@ -7,6 +7,7 @@
 #include "graphics/bdpt_runtime.hpp"
 #include "graphics/dayo_fx_runtime.hpp"
 #include "graphics/deformer_resource_registry.hpp"
+#include "graphics/native_fx_global_variable_runtime.hpp"
 #include "graphics/native_renderer_requirements.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/output_sample_accumulator.hpp"
@@ -83,6 +84,7 @@ class NativeRendererCoordinator {
         Device* device{};
         DayoFxRuntime runtime;
         NativeControllerRuntime controller;
+        NativeFxGlobalVariableRuntime globalVariables;
         std::optional<NativeControllerBlock> block;
         std::array<handles::DescriptorSetHandle, kNativeFramesInFlight> frameSets{};
         ~GenericEffectRuntime();

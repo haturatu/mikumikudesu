@@ -276,6 +276,7 @@ add_library(
   src/graphics/output_sample_accumulator.cpp
   src/graphics/native_screen_runtime.cpp
   src/graphics/native_controller_runtime.cpp
+  src/graphics/native_fx_global_variable_runtime.cpp
   src/graphics/native_scene_frame_runtime.cpp
   src/graphics/native_scene_data.cpp
   src/graphics/native_scene_derived_runtime.cpp

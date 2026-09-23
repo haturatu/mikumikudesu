@@ -996,6 +996,19 @@ void CS() {}
                         runtimeGraph.memos.size() == 2 && runtimeGraph.globalVarSize == 16 &&
                         runtimeGraph.meshCloneCount == 4,
                     "effect graph preserves memos, global variable size, clone count, and raw source");
+        const auto defaultGlobalSize = dayo::core::loadEffectGraphFromText("default-global-size.fxdayo",
+                                                                           R"FX([YRZFX]
+{
+  fx: {
+    category: "postprocess",
+    passes: [{name:"Clear", type:"clearRTV", target:"Output", value:{x:0, y:0, z:0, w:1}}]
+  }
+}
+[HLSL]
+float4 PS() : SV_TARGET { return 1; }
+)FX");
+        ok &= check(defaultGlobalSize.globalVarSize == 1024,
+                    "omitted globalVarSize uses the pinned upstream 1.30 1024-byte default");
         ok &= check(
             runtimeGraph.controllers.size() == 1 && runtimeGraph.controllers[0].slider.has_value() &&
                 runtimeGraph.controllers[0].slider->logarithmic && runtimeGraph.controllers[0].slider->integer &&

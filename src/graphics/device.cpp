@@ -78,6 +78,7 @@ std::string DeviceCapabilities::json() const {
            << "  \"acceleration_structure\": " << accelerationStructure << ",\n"
            << "  \"ray_tracing_pipeline\": " << rayTracingPipeline << ",\n"
            << "  \"ray_query\": " << rayQuery << ",\n"
+           << "  \"max_uniform_buffer_range\": " << maxUniformBufferRange << ",\n"
            << "  \"fragment_shader_barycentric\": " << fragmentShaderBarycentric << "\n"
            << '}';
     return output.str();

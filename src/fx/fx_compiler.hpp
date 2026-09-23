@@ -223,7 +223,7 @@ struct FxProgram {
     std::optional<core::EffectMaterialDescriptor> materialDescriptor;
     std::optional<core::fx::MaterialTemplateSchema> materialSchema;
     std::vector<std::string> memos;
-    std::uint32_t globalVarSize{};
+    std::uint32_t globalVarSize{1024};
     std::string rawYrzfx;
     std::string hlslPrefix;
     std::string generatedCode;

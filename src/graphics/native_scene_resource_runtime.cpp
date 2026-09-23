@@ -40,7 +40,7 @@ bool requireCount(std::size_t actual, std::uint32_t expected, std::string_view n
 std::vector<DescriptorBindingEx> nativeSceneFrameDescriptorBindings(const NativeSceneResourceBindings& resources) {
     const auto legacyGBuffer = resources.gbuffer.valid() ? resources.gbuffer : resources.gbuffer1;
     std::vector<DescriptorBindingEx> frame;
-    frame.reserve(20);
+    frame.reserve(22);
     const auto addTexture = [&frame](NativeSceneRegisterClass registerClass, std::uint32_t index,
                                      handles::TextureHandle handle) {
         frame.push_back({.slot = nativeSceneBinding(registerClass, index), .arrayElement = 0, .texture = handle});
@@ -56,6 +56,7 @@ std::vector<DescriptorBindingEx> nativeSceneFrameDescriptorBindings(const Native
     addTexture(NativeSceneRegisterClass::uav, 4, resources.gbuffer2);
     addBuffer(NativeSceneRegisterClass::uniform, 0, resources.viewConstants);
     addBuffer(NativeSceneRegisterClass::uniform, 1, resources.controllerConstants);
+    addBuffer(NativeSceneRegisterClass::uniform, 2, resources.globalConstants);
     frame.push_back({.slot = nativeSceneBinding(NativeSceneRegisterClass::sampled, 0),
                      .arrayElement = 0,
                      .accelerationStructure = resources.tlas});
@@ -116,6 +117,7 @@ bool NativeSceneResourceRuntime::sync(const NativeSceneResourceBindings& resourc
         !checkHandle(resources.screenTexture.valid(), "ScreenTexture") ||
         !checkHandle(resources.viewConstants.valid(), "ViewCB") ||
         !checkHandle(resources.controllerConstants.valid(), "YRZFX_ControllerCB") ||
+        !checkHandle(resources.globalConstants.valid(), "YRZFX_GlobalCB") ||
         !checkHandle(resources.textureTable.valid(), "TextureTable") ||
         !checkHandle(resources.passConstants.valid(), "CBuff1") ||
         !checkHandle(valid(resources.textures), "Textures") || !checkHandle(valid(resources.vertexBuffers), "VB") ||

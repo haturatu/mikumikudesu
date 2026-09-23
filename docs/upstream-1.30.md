@@ -37,7 +37,10 @@ pointのdispatch group、memoによるpass選択を検証します。Windows 1.3
 `SkyboxPrefilter` memoも、上流の2D equirectangular texture向け`PrefilterEnvmap`をGPUで実行します。
 元画像をmip 0へコピーし、上流と同じroughness・alpha blend・サンプル数・4 iterationで各mipを生成します。
 Subayai用cubemap prefilterとは別経路です。テストはdispatch計画とmip別render targetを検証しますが、
-Windows 1.30とのGPU数値比較はまだ行っていません。その他のmemoと`globalVarSize`はruntime対応済みとは扱いません。
+Windows 1.30とのGPU数値比較はまだ行っていません。未知memoは保持しますが、既知handlerがないものは未対応です。
+`globalVarSize`は固定1.30 sourceの既定1024 byteを使い、FX instanceごとに永続uniform bufferを生成して
+controller宣言のあるpassの`b2`へbindします。上流sourceにもglobal CBへのCPU writeが無く、desu側もゼロ初期化までです。
+更新データの意味論・Windows GPU結果は未検証です。
 
 FX external DDSはBC1–BC5および32-bit RGBA/BGRAをRGBA8へdecodeし、DX10/legacyの2D image、3D volume、cubemapと各mipを読み取ります。
 `textures3D`のexternal DDSは3D textureとしてallocateし、ファイル内のmipを個別uploadします。現在のbackend

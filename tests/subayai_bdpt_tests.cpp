@@ -1598,6 +1598,7 @@ int main() {
         resources.skyboxSh = buffer();
         resources.screenBmp = texture();
         resources.cloneCount = buffer();
+        resources.globalConstants = buffer();
         resources.screenTexture = texture();
         resources.textureTable = buffer();
         resources.textures = textures;
@@ -1896,6 +1897,7 @@ int main() {
         resources.screenTexture = texture();
         resources.viewConstants = buffer();
         resources.controllerConstants = buffer();
+        resources.globalConstants = buffer();
         resources.textureTable = buffer();
         resources.textures = textures;
         resources.passConstants = buffer();

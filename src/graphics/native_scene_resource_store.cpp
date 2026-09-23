@@ -102,6 +102,7 @@ bool NativeSceneResourceStore::initialize(Device& device, NativeSceneDescriptorC
         bindings_.screenTexture = placeholderTexture_;
         bindings_.viewConstants = placeholderBuffer_;
         bindings_.controllerConstants = placeholderBuffer_;
+        bindings_.globalConstants = placeholderBuffer_;
         bindings_.textureTable = placeholderBuffer_;
         bindings_.passConstants = placeholderBuffer_;
         if (!replaceArrays({}, error))
@@ -154,6 +155,7 @@ bool NativeSceneResourceStore::replaceScalars(const NativeSceneResourceBindings&
     bindings_.screenTexture = textureOrPlaceholder(overrides.screenTexture);
     bindings_.viewConstants = bufferOrPlaceholder(overrides.viewConstants);
     bindings_.controllerConstants = bufferOrPlaceholder(overrides.controllerConstants);
+    bindings_.globalConstants = bufferOrPlaceholder(overrides.globalConstants);
     bindings_.textureTable = bufferOrPlaceholder(overrides.textureTable);
     bindings_.passConstants = bufferOrPlaceholder(overrides.passConstants);
     bindings_.hostResourceMask = 0;

@@ -664,7 +664,7 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
     const auto& fx = *found;
     graph.category = fx.value("category", "");
     graph.memos = strings(fx, "memos");
-    graph.globalVarSize = fx.value("globalVarSize", 0U);
+    graph.globalVarSize = fx.value("globalVarSize", graph.globalVarSize);
     if (const auto global = fx.find("globalVariables"); global != fx.end() && global->is_object())
         graph.globalVarSize = global->value("size", graph.globalVarSize);
     graph.textures = textures(fx, "textures");

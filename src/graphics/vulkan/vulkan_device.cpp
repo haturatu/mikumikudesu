@@ -831,6 +831,7 @@ void VulkanDevice::queryCapabilities() {
     capabilities_.descriptorIndexing =
         vulkan12.runtimeDescriptorArray == VK_TRUE && vulkan12.descriptorBindingPartiallyBound == VK_TRUE;
     capabilities_.samplerAnisotropy = features.features.samplerAnisotropy == VK_TRUE;
+    capabilities_.maxUniformBufferRange = properties.properties.limits.maxUniformBufferRange;
     capabilities_.logicOp = features.features.logicOp == VK_TRUE;
     capabilities_.independentBlend = features.features.independentBlend == VK_TRUE;
     scalarBlockLayoutSupported_ = vulkan12.scalarBlockLayout == VK_TRUE;
