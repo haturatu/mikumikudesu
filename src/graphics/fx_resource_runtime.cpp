@@ -110,6 +110,8 @@ class ExtentTable final : public core::fx::FxResourceTable {
     result.clonedVertexCount = checked(context.clonedVertexCount, "clonedVertexCount");
     result.frameIndex = static_cast<std::int64_t>(context.frame);
     result.sampleIndex = checked(static_cast<std::size_t>(context.sample), "sampleIndex");
+    result.time = context.time;
+    result.namedSymbols = context.expressionSymbols;
     return result;
 }
 

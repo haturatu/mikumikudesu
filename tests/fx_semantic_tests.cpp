@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <numbers>
 #include <string>
 #include <string_view>
 
@@ -50,6 +51,8 @@ int main() {
     ctx.clonedVertexCount = 40000;
     ctx.frameIndex = 30;
     ctx.sampleIndex = 2;
+    ctx.time = 45.0;
+    ctx.namedSymbols.emplace("ControllerGain", 2.5);
 
     // --- evaluation ---
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("1+2*3"), ctx)), 7.0, "arith precedence");
@@ -61,6 +64,21 @@ int main() {
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("min(3,5)"), ctx)), 3.0, "min");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("max(3,5)"), ctx)), 5.0, "max");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("max(1,5,3)"), ctx)), 5.0, "max variadic");
+    ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("frac(Time/40)"), ctx)), 0.125,
+                       "MikuMikuDayo material Time expression");
+    ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("pi"), ctx)), std::numbers::pi_v<double>,
+                       "Expr.ixx pi constant");
+    ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("lerp(2,6,0.25)"), ctx)), 3.0, "Expr.ixx lerp");
+    ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("clamp(3,0,2)"), ctx)), 2.0, "Expr.ixx clamp");
+    ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("saturate(-1)"), ctx)), 0.0, "Expr.ixx saturate");
+    ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("frac(-0.25)"), ctx)), 0.75, "Expr.ixx frac negative");
+    ok &= check(fxToBool(evaluateFxExpr(parseFxExpr("step(2,1)"), ctx)), "Expr.ixx step argument order");
+    ok &= check(fxToDouble(evaluateFxExpr(parseFxExpr("hash(3)"), ctx)) >= 0.0 &&
+                    fxToDouble(evaluateFxExpr(parseFxExpr("hash(3)"), ctx)) < 1.0,
+                "Expr.ixx hash result range");
+    ok &= check(isSupportedFxFunction("frac") && isSupportedFxFunction("noise") &&
+                    !isSupportedFxFunction("notAnExprFunction"),
+                "Expr.ixx function inventory");
 
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("DEFAULT_RTSIZE.x"), ctx)), 1280.0, "DEFAULT_RTSIZE.x");
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("DEFAULT_RTSIZE.y"), ctx)), 720.0, "DEFAULT_RTSIZE.y");
@@ -96,6 +114,7 @@ int main() {
     ok &= check(any(fxDependencies(parseFxExpr("CLONEDVERTEXCOUNT")), FxExprDependency::Model), "dep cloned model");
     ok &= check(any(fxDependencies(parseFxExpr("TOTALMATERIAL")), FxExprDependency::Material), "dep material");
     ok &= check(any(fxDependencies(parseFxExpr("CloneCount")), FxExprDependency::Model), "dep clone");
+    ok &= check(any(fxDependencies(parseFxExpr("frac(Time)")), FxExprDependency::Frame), "dep Time");
     {
         const auto mask = fxDependencies(parseFxExpr("DEFAULT_RTSIZE.x+VERTEXCOUNT"));
         ok &= check(any(mask, FxExprDependency::Resize) && any(mask, FxExprDependency::Model), "dep combined");
@@ -104,12 +123,7 @@ int main() {
     // --- pow profile split ---
     ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("pow(2,3)"), ctx, FxCompatibilityProfile::nativeExtended)),
                        8.0, "pow native");
-    ok &= expectDouble(
-        fxToDouble(evaluateFxExpr(parseFxExpr("pow(2,3)"), ctx, FxCompatibilityProfile::upstream130, true)), 8.0,
-        "pow upstream quirk");
-    ok &= expectThrows(
-        [&] { static_cast<void>(evaluateFxExpr(parseFxExpr("pow(2,3)"), ctx, FxCompatibilityProfile::upstream130)); },
-        "pow upstream without quirk throws");
+    ok &= expectDouble(fxToDouble(evaluateFxExpr(parseFxExpr("pow(2,3)"), ctx)), 8.0, "Expr.ixx pow is supported");
 
     // --- symbol resolver ---
     {
@@ -126,6 +140,8 @@ int main() {
         ok &= check(vc.x == 10000 && vc.dimension == 1, "symbol vertex extent");
         ok &= expectDouble(fxToDouble(evaluateFxExprWithSymbols(parseFxExpr("BaseTex/2"), resolver)), 256.0,
                            "symbol expr eval");
+        ok &= expectDouble(fxToDouble(evaluateFxExprWithSymbols(parseFxExpr("ControllerGain*2"), resolver)), 5.0,
+                           "named constant-buffer/controller symbol");
         ok &= expectThrows([&] { static_cast<void>(resolver.resolveScalar("MISSING")); }, "symbol unknown throws");
     }
 
@@ -232,17 +248,14 @@ int main() {
         ok &= expectThrows([&] { static_cast<void>(fxCheckedMul(UINT64_MAX, 2)); }, "checked mul throws");
         ok &= expectThrows([&] { static_cast<void>(fxCheckedAdd(UINT64_MAX, 1)); }, "checked add throws");
 
-        // pow quirk propagates through size resolution.
+        // pow is part of the upstream Expr.ixx function set.
         FxSizeExpr powExpr;
         powExpr.dimension = 1;
         powExpr.xExpr = "pow(2,10)";
         ok &= check(resolver.resolve(powExpr, ctx, table, FxCompatibilityProfile::nativeExtended).x == 1024,
                     "size pow native");
-        ok &= expectThrows(
-            [&] { static_cast<void>(resolver.resolve(powExpr, ctx, table, FxCompatibilityProfile::upstream130)); },
-            "size pow upstream throws");
-        ok &= check(resolver.resolve(powExpr, ctx, table, FxCompatibilityProfile::upstream130, true).x == 1024,
-                    "size pow quirk");
+        ok &= check(resolver.resolve(powExpr, ctx, table, FxCompatibilityProfile::upstream130).x == 1024,
+                    "size pow upstream");
     }
 
     if (!ok)
