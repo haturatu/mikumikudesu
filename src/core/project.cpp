@@ -70,7 +70,7 @@ void appendIfPresent(DayoProject& result, const Json& object, std::string_view f
         return;
     auto value = object.at(key).get<std::string>();
     if (!value.empty())
-        result.assets.push_back(ProjectAsset{std::move(kind), resolveAsset(base, value)});
+        result.assets.emplace_back(std::move(kind), resolveAsset(base, value));
 }
 
 std::vector<std::string> readStrings(const Json& value) {
@@ -83,8 +83,43 @@ std::vector<std::string> readStrings(const Json& value) {
     return result;
 }
 
+enum class ProjectOrderField {
+    motion,
+    deform,
+    postprocess,
+    raster,
+};
+
+std::int32_t& orderValue(ProjectModelState& model, ProjectOrderField field) noexcept {
+    switch (field) {
+    case ProjectOrderField::motion:
+        return model.motionOrder;
+    case ProjectOrderField::deform:
+        return model.deformOrder;
+    case ProjectOrderField::postprocess:
+        return model.postprocessOrder;
+    case ProjectOrderField::raster:
+        return model.rasterOrder;
+    }
+    return model.motionOrder;
+}
+
+std::int32_t orderValue(const ProjectModelState& model, ProjectOrderField field) noexcept {
+    switch (field) {
+    case ProjectOrderField::motion:
+        return model.motionOrder;
+    case ProjectOrderField::deform:
+        return model.deformOrder;
+    case ProjectOrderField::postprocess:
+        return model.postprocessOrder;
+    case ProjectOrderField::raster:
+        return model.rasterOrder;
+    }
+    return model.motionOrder;
+}
+
 void readModelOrder(const Json& editor, std::string_view field, std::vector<ProjectModelState>& models,
-                    std::int32_t ProjectModelState::* member) {
+                    ProjectOrderField orderField) {
     const auto key = std::string(field);
     if (!editor.contains(key) || !editor.at(key).is_array())
         return;
@@ -94,15 +129,16 @@ void readModelOrder(const Json& editor, std::string_view field, std::vector<Proj
             continue;
         const auto index = item.get<std::int64_t>();
         if (index >= 0 && static_cast<std::uint64_t>(index) < models.size())
-            models[static_cast<std::size_t>(index)].*member = priority++;
+            orderValue(models[static_cast<std::size_t>(index)], orderField) = priority++;
     }
 }
 
-Json modelOrderArray(const std::vector<ProjectModelState>& models, std::int32_t ProjectModelState::* member) {
+Json modelOrderArray(const std::vector<ProjectModelState>& models, ProjectOrderField orderField) {
     std::vector<std::size_t> order(models.size());
     std::iota(order.begin(), order.end(), 0U);
-    std::ranges::stable_sort(
-        order, [&](const auto left, const auto right) { return models[left].*member < models[right].*member; });
+    std::ranges::stable_sort(order, [&](const auto left, const auto right) {
+        return orderValue(models[left], orderField) < orderValue(models[right], orderField);
+    });
     Json result = Json::array();
     for (const auto index : order)
         result.push_back(index);
@@ -179,10 +215,10 @@ DayoProject readUpstreamJson(const Json& root, const std::filesystem::path& base
         }
         if (legacy.contains("editor") && legacy.at("editor").is_object()) {
             const auto& editor = legacy.at("editor");
-            readModelOrder(editor, "motionOrder", result.models, &ProjectModelState::motionOrder);
-            readModelOrder(editor, "deformOrder", result.models, &ProjectModelState::deformOrder);
-            readModelOrder(editor, "postprocessOrder", result.models, &ProjectModelState::postprocessOrder);
-            readModelOrder(editor, "rasterOrder", result.models, &ProjectModelState::rasterOrder);
+            readModelOrder(editor, "motionOrder", result.models, ProjectOrderField::motion);
+            readModelOrder(editor, "deformOrder", result.models, ProjectOrderField::deform);
+            readModelOrder(editor, "postprocessOrder", result.models, ProjectOrderField::postprocess);
+            readModelOrder(editor, "rasterOrder", result.models, ProjectOrderField::raster);
         }
     }
 
@@ -679,10 +715,10 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
     upstreamEditor["outputHeight"] = std::max(project.editor.outputHeight, 1U);
     upstreamEditor["recordFps"] = project.editor.recordFps;
     upstreamEditor["animationSpeed"] = project.editor.animationSpeed;
-    upstreamEditor["motionOrder"] = modelOrderArray(modelStates, &ProjectModelState::motionOrder);
-    upstreamEditor["postprocessOrder"] = modelOrderArray(modelStates, &ProjectModelState::postprocessOrder);
-    upstreamEditor["deformOrder"] = modelOrderArray(modelStates, &ProjectModelState::deformOrder);
-    upstreamEditor["rasterOrder"] = modelOrderArray(modelStates, &ProjectModelState::rasterOrder);
+    upstreamEditor["motionOrder"] = modelOrderArray(modelStates, ProjectOrderField::motion);
+    upstreamEditor["postprocessOrder"] = modelOrderArray(modelStates, ProjectOrderField::postprocess);
+    upstreamEditor["deformOrder"] = modelOrderArray(modelStates, ProjectOrderField::deform);
+    upstreamEditor["rasterOrder"] = modelOrderArray(modelStates, ProjectOrderField::raster);
     upstream["editor"] = std::move(upstreamEditor);
     root["MikuMikuDayo"] = std::move(upstream);
 
