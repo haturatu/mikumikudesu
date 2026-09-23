@@ -1,6 +1,7 @@
 #include "core/animation.hpp"
 #include "core/asset.hpp"
 #include "core/effect.hpp"
+#include "core/fx/fx_material.hpp"
 #include "core/fx/fx_pass.hpp"
 #include "core/image.hpp"
 #include "core/motion.hpp"
@@ -15,6 +16,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -26,6 +28,7 @@
 #include <ranges>
 #include <regex>
 #include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -827,9 +830,217 @@ bool checkDayoEnvironmentShaderProbes(const std::filesystem::path& sourceDirecto
     return ok && check(compiled == 6, "all six pinned Dayo environment compute entries compile with DXC");
 }
 
+struct StructuredBufferLayoutReflection {
+    std::vector<std::uint32_t> offsets;
+    std::uint32_t stride{};
+};
+
+std::optional<StructuredBufferLayoutReflection> reflectStructuredBufferLayout(std::span<const std::uint32_t> words,
+                                                                              std::uint32_t descriptorSet,
+                                                                              std::uint32_t descriptorBinding) {
+    constexpr std::uint32_t kOpDecorate = 71;
+    constexpr std::uint32_t kOpMemberDecorate = 72;
+    constexpr std::uint32_t kOpTypeRuntimeArray = 29;
+    constexpr std::uint32_t kOpTypeStruct = 30;
+    constexpr std::uint32_t kOpTypePointer = 32;
+    constexpr std::uint32_t kOpVariable = 59;
+    constexpr std::uint32_t kArrayStrideDecoration = 6;
+    constexpr std::uint32_t kBindingDecoration = 33;
+    constexpr std::uint32_t kDescriptorSetDecoration = 34;
+    constexpr std::uint32_t kOffsetDecoration = 35;
+
+    std::unordered_map<std::uint32_t, std::uint32_t> bindings;
+    std::unordered_map<std::uint32_t, std::uint32_t> sets;
+    std::unordered_map<std::uint32_t, std::uint32_t> pointerPointees;
+    std::unordered_map<std::uint32_t, std::uint32_t> runtimeArrayElements;
+    std::unordered_map<std::uint32_t, std::uint32_t> arrayStrides;
+    std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> structMembers;
+    std::unordered_map<std::uint32_t, std::unordered_map<std::uint32_t, std::uint32_t>> memberOffsets;
+    std::unordered_map<std::uint32_t, std::uint32_t> variableTypes;
+
+    for (std::size_t offset = 5; offset < words.size();) {
+        const auto instruction = words[offset];
+        const auto wordCount = static_cast<std::size_t>(instruction >> 16U);
+        if (wordCount == 0 || offset + wordCount > words.size())
+            return std::nullopt;
+        const auto opcode = instruction & 0xFFFFU;
+        if (opcode == kOpDecorate && wordCount >= 4) {
+            const auto target = words[offset + 1U];
+            const auto decoration = words[offset + 2U];
+            if (decoration == kBindingDecoration)
+                bindings[target] = words[offset + 3U];
+            else if (decoration == kDescriptorSetDecoration)
+                sets[target] = words[offset + 3U];
+            else if (decoration == kArrayStrideDecoration)
+                arrayStrides[target] = words[offset + 3U];
+        } else if (opcode == kOpMemberDecorate && wordCount >= 5 && words[offset + 3U] == kOffsetDecoration) {
+            memberOffsets[words[offset + 1U]][words[offset + 2U]] = words[offset + 4U];
+        } else if (opcode == kOpTypeRuntimeArray && wordCount >= 3) {
+            runtimeArrayElements[words[offset + 1U]] = words[offset + 2U];
+        } else if (opcode == kOpTypeStruct && wordCount >= 2) {
+            auto& members = structMembers[words[offset + 1U]];
+            members.assign(words.begin() + static_cast<std::ptrdiff_t>(offset + 2U),
+                           words.begin() + static_cast<std::ptrdiff_t>(offset + wordCount));
+        } else if (opcode == kOpTypePointer && wordCount >= 4) {
+            pointerPointees[words[offset + 1U]] = words[offset + 3U];
+        } else if (opcode == kOpVariable && wordCount >= 4) {
+            variableTypes[words[offset + 2U]] = words[offset + 1U];
+        }
+        offset += wordCount;
+    }
+
+    for (const auto& [variable, binding] : bindings) {
+        const auto set = sets.find(variable);
+        if (binding != descriptorBinding || set == sets.end() || set->second != descriptorSet)
+            continue;
+        const auto variableType = variableTypes.find(variable);
+        if (variableType == variableTypes.end())
+            continue;
+        const auto pointer = pointerPointees.find(variableType->second);
+        if (pointer == pointerPointees.end())
+            continue;
+        const auto wrapper = structMembers.find(pointer->second);
+        if (wrapper == structMembers.end() || wrapper->second.size() != 1)
+            continue;
+        const auto runtimeArray = wrapper->second.front();
+        const auto elementType = runtimeArrayElements.find(runtimeArray);
+        const auto stride = arrayStrides.find(runtimeArray);
+        if (elementType == runtimeArrayElements.end() || stride == arrayStrides.end())
+            continue;
+        const auto members = structMembers.find(elementType->second);
+        const auto offsets = memberOffsets.find(elementType->second);
+        if (members == structMembers.end() || offsets == memberOffsets.end())
+            continue;
+        StructuredBufferLayoutReflection result;
+        result.stride = stride->second;
+        result.offsets.reserve(members->second.size());
+        for (std::size_t index = 0; index < members->second.size(); ++index) {
+            const auto member = offsets->second.find(static_cast<std::uint32_t>(index));
+            if (member == offsets->second.end())
+                return std::nullopt;
+            result.offsets.push_back(member->second);
+        }
+        return result;
+    }
+    return std::nullopt;
+}
+
+bool checkMaterialStructuredBufferLayoutProbes(const std::filesystem::path& sourceDirectory) {
+    dayo::fx::FxShaderCompiler compiler;
+    const bool dxc = compiler.executable().filename() == "dxc" || compiler.executable().filename() == "dxc.exe";
+    if (!compiler.available() || !dxc) {
+        if (upstreamShaderProbesRequired()) {
+            std::cerr << "FAIL: DXC unavailable; MatDesc structured-buffer layout probes are required\n";
+            return false;
+        }
+        std::cerr << "WARN: DXC unavailable; MatDesc structured-buffer layout probes skipped\n";
+        return true;
+    }
+
+    struct Field {
+        dayo::core::fx::MaterialFieldType type;
+        std::uint32_t components;
+    };
+    struct Probe {
+        std::string_view name;
+        std::vector<Field> fields;
+        std::vector<std::uint32_t> offsets;
+        std::uint32_t stride{};
+    };
+    const auto f = [](std::uint32_t components) {
+        return Field{dayo::core::fx::MaterialFieldType::floatingPoint, components};
+    };
+    const auto i = [](std::uint32_t components) {
+        return Field{dayo::core::fx::MaterialFieldType::signedInteger, components};
+    };
+    const std::array probes{
+        Probe{"float", {f(1)}, {0}, 4},
+        Probe{"float2", {f(2)}, {0}, 8},
+        Probe{"float3", {f(3)}, {0}, 12},
+        Probe{"float4", {f(4)}, {0}, 16},
+        Probe{"float3_float3", {f(3), f(3)}, {0, 12}, 24},
+        Probe{"float_float3", {f(1), f(3)}, {0, 4}, 16},
+        Probe{"float2_float3", {f(2), f(3)}, {0, 8}, 20},
+        Probe{"mixed", {f(1), f(2), i(1), f(3), f(1)}, {0, 4, 12, 16, 28}, 32},
+    };
+
+    std::ostringstream hlsl;
+    for (std::size_t probeIndex = 0; probeIndex < probes.size(); ++probeIndex) {
+        const auto& probe = probes[probeIndex];
+        hlsl << "struct Probe" << probeIndex << "Value {\n";
+        for (std::size_t fieldIndex = 0; fieldIndex < probe.fields.size(); ++fieldIndex) {
+            const auto& field = probe.fields[fieldIndex];
+            std::string type = field.type == dayo::core::fx::MaterialFieldType::floatingPoint ? "float" : "int";
+            if (field.components > 1)
+                type += std::to_string(field.components);
+            hlsl << type << " F" << fieldIndex << ";\n";
+        }
+        hlsl << "};\nStructuredBuffer<Probe" << probeIndex << "Value> Data" << probeIndex << " : register(t"
+             << probeIndex << ");\n";
+    }
+    hlsl << "RWStructuredBuffer<float4> Output : register(u0);\n"
+            "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) {\n"
+            "float4 color = 0;\n";
+    for (std::size_t probeIndex = 0; probeIndex < probes.size(); ++probeIndex) {
+        const auto& probe = probes[probeIndex];
+        for (std::size_t fieldIndex = 0; fieldIndex < probe.fields.size(); ++fieldIndex) {
+            const auto components = probe.fields[fieldIndex].components;
+            const auto swizzle = std::string_view{".xyzw"}.substr(0, components + 1U);
+            const auto type = components == 1 ? std::string{"float"} : "float" + std::to_string(components);
+            hlsl << "color" << swizzle << " += " << type << "(Data" << probeIndex << "[0].F" << fieldIndex << ");\n";
+        }
+    }
+    hlsl << "Output[0] = color;\n}\n";
+
+    dayo::fx::FxShaderCompileRequest request;
+    request.hlsl = hlsl.str();
+    request.sourcePath = sourceDirectory / "hlsl/matdesc_layout_probe.hlsl";
+    request.entryPoint = "main";
+    request.stage = dayo::fx::FxShaderStage::compute;
+    dayo::fx::FxShaderArtifact artifact;
+    try {
+        artifact = compiler.compile(request);
+    } catch (const std::exception& exception) {
+        std::cerr << "FAIL: DXC MatDesc layout probe compilation: " << exception.what() << '\n';
+        return false;
+    }
+
+    bool ok = true;
+    for (std::size_t probeIndex = 0; probeIndex < probes.size(); ++probeIndex) {
+        const auto& probe = probes[probeIndex];
+        dayo::core::fx::MaterialTemplateSchema schema;
+        schema.name = "Probe";
+        for (std::size_t index = 0; index < probe.fields.size(); ++index) {
+            const auto& field = probe.fields[index];
+            const auto fieldName = "F" + std::to_string(index);
+            schema.fields.push_back({.name = fieldName, .type = field.type, .components = field.components});
+        }
+
+        const auto cpuLayout = dayo::core::fx::makeMaterialStructuredBufferLayout(schema);
+        std::vector<std::uint32_t> cpuOffsets;
+        cpuOffsets.reserve(cpuLayout.fields.size());
+        for (const auto& field : cpuLayout.fields)
+            cpuOffsets.push_back(static_cast<std::uint32_t>(field.offset));
+        ok &= check(cpuOffsets == probe.offsets && cpuLayout.stride == probe.stride,
+                    std::string("CPU MatDesc layout golden: ") + std::string(probe.name));
+
+        const auto reflected =
+            reflectStructuredBufferLayout(artifact.spirv, 0, 16U + static_cast<std::uint32_t>(probeIndex));
+        ok &= check(reflected.has_value(),
+                    std::string("DXC reflects MatDesc storage buffer: ") + std::string(probe.name));
+        if (!reflected.has_value())
+            continue;
+        ok &= check(reflected->offsets == probe.offsets && reflected->stride == probe.stride,
+                    std::string("DXC SPIR-V structured-buffer golden: ") + std::string(probe.name));
+        ok &= check(reflected->offsets == cpuOffsets && reflected->stride == cpuLayout.stride,
+                    std::string("CPU MatDesc packing matches DXC SPIR-V: ") + std::string(probe.name));
+    }
+    return ok;
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     const auto sourceDirectory = std::filesystem::path(DAYO_SOURCE_DIR) / "MikuMikuDayo";
     bool ok = true;
 
@@ -849,9 +1060,15 @@ int main() {
             return 1;
     }
 
+    if (argc == 2 && std::string_view(argv[1]) == "--abi-probes-only") {
+        return checkAbiSpirvProbe(sourceDirectory) && checkMaterialStructuredBufferLayoutProbes(sourceDirectory) ? 0
+                                                                                                                 : 1;
+    }
+
     try {
         ok &= checkUpstreamAbi(sourceDirectory);
         ok &= checkAbiSpirvProbe(sourceDirectory);
+        ok &= checkMaterialStructuredBufferLayoutProbes(sourceDirectory);
         ok &= checkDayoEnvironmentShaderProbes(sourceDirectory);
         const auto expectedGraphCount = upstreamFxFiles(sourceDirectory).size();
         const auto scan = scanUpstreamGraphs(sourceDirectory);
