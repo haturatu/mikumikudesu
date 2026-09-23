@@ -132,6 +132,12 @@ struct MaterialBindingPlan {
     MaterialGpuLayout layout;
     // Template defaults overlaid with instance overrides.
     MaterialParameterBlock resolvedParameters;
+    // Values in the exact HLSL StructuredBuffer<FooValue> field declaration order.
+    struct ResolvedField {
+        MaterialFieldSchema schema;
+        MaterialValue value;
+    };
+    std::vector<ResolvedField> orderedValues;
 
     [[nodiscard]] const std::string* slotFor(std::string_view localId) const noexcept;
 };
@@ -148,6 +154,8 @@ struct MaterialBindingPlan {
 [[nodiscard]] MaterialGpuLayout linkMaterialLayout(const MaterialTemplate& templ,
                                                    const MaterialInstance* instance = nullptr);
 [[nodiscard]] MaterialBindingPlan linkMaterial(const MaterialTemplate& templ,
+                                               const MaterialInstance* instance = nullptr);
+[[nodiscard]] MaterialBindingPlan linkMaterial(const MaterialTemplateSchema& schema,
                                                const MaterialInstance* instance = nullptr);
 
 } // namespace dayo::core::fx

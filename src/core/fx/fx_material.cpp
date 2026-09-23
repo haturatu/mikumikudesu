@@ -258,6 +258,35 @@ void overlayMaterialDefaults(MaterialTemplateSchema& schema, std::string_view so
     }
 }
 
+bool materialValueMatches(const MaterialFieldSchema& field, const MaterialValue& value) {
+    if (field.type == MaterialFieldType::floatingPoint) {
+        switch (field.components) {
+        case 1:
+            return std::holds_alternative<float>(value);
+        case 2:
+            return std::holds_alternative<std::array<float, 2>>(value);
+        case 3:
+            return std::holds_alternative<std::array<float, 3>>(value);
+        case 4:
+            return std::holds_alternative<std::array<float, 4>>(value);
+        default:
+            return false;
+        }
+    }
+    switch (field.components) {
+    case 1:
+        return std::holds_alternative<std::int32_t>(value);
+    case 2:
+        return std::holds_alternative<std::array<std::int32_t, 2>>(value);
+    case 3:
+        return std::holds_alternative<std::array<std::int32_t, 3>>(value);
+    case 4:
+        return std::holds_alternative<std::array<std::int32_t, 4>>(value);
+    default:
+        return false;
+    }
+}
+
 std::string resolveImpl(std::string_view id, const std::unordered_map<std::string, MaterialResourceDecl>& byId,
                         std::vector<std::string>& stack) {
     const std::string key = trimCopy(id);
@@ -566,13 +595,38 @@ MaterialGpuLayout linkMaterialLayout(const MaterialTemplate& templ, const Materi
 }
 
 MaterialBindingPlan linkMaterial(const MaterialTemplate& templ, const MaterialInstance* instance) {
-    MaterialBindingPlan plan{.layout = linkMaterialLayout(templ, instance), .resolvedParameters = {}};
+    MaterialBindingPlan plan{
+        .layout = linkMaterialLayout(templ, instance), .resolvedParameters = {}, .orderedValues = {}};
     plan.resolvedParameters = templ.defaults;
     if (instance != nullptr) {
         for (const auto& [name, value] : instance->overrides.values())
             plan.resolvedParameters.set(name, value);
     }
     log::debug("fx material '", templ.name, "' binding plan with ", plan.layout.canonicalToSlot.size(), " slots");
+    return plan;
+}
+
+MaterialBindingPlan linkMaterial(const MaterialTemplateSchema& schema, const MaterialInstance* instance) {
+    MaterialTemplate templ;
+    templ.name = schema.name;
+    templ.defaults = schema.defaults;
+    templ.resources.reserve(schema.textures.size());
+    for (const auto& texture : schema.textures) {
+        MaterialResourceDecl resource;
+        resource.id = texture.name;
+        templ.resources.push_back(std::move(resource));
+    }
+
+    auto plan = linkMaterial(templ, instance);
+    plan.orderedValues.reserve(schema.fields.size());
+    for (const auto& field : schema.fields) {
+        const auto* value = plan.resolvedParameters.find(field.name);
+        if (value == nullptr)
+            throw std::invalid_argument("FX material schema has no default value for field: " + field.name);
+        if (!materialValueMatches(field, *value))
+            throw std::invalid_argument("FX material value type does not match schema field: " + field.name);
+        plan.orderedValues.push_back({.schema = field, .value = *value});
+    }
     return plan;
 }
 

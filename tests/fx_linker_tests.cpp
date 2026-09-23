@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 
 namespace {
@@ -87,6 +88,45 @@ int main() {
             rejectedWidth = true;
         }
         ok &= check(rejectedWidth, "material schema rejects unsupported field widths");
+    }
+
+    // Schema-based linking overlays instance values but emits an ordered
+    // value list for the generated HLSL struct ABI.
+    {
+        const auto schema =
+            parseMaterialTemplateSchema("f.1 : Roughness\nf.3 : Emission\ni.1 : Mode\n_T0m : AlbedoMap\n"
+                                        "_E Mode : off=0, on=1\nRoughness : 0.5\nMode : on\n",
+                                        "Surface");
+        MaterialInstance instance;
+        instance.templateName = "Surface";
+        instance.overrides.set("Roughness", 0.25F);
+        instance.overrides.set("Emission", std::array<float, 3>{1.0F, 2.0F, 3.0F});
+        MaterialResourceDecl albedo;
+        albedo.id = "AlbedoMap";
+        albedo.texture.path = "textures/albedo.png";
+        albedo.hasTexture = true;
+        instance.extraResources.push_back(std::move(albedo));
+
+        const auto plan = linkMaterial(schema, &instance);
+        ok &= check(
+            plan.orderedValues.size() == 3 && plan.orderedValues[0].schema.name == "Roughness" &&
+                std::get<float>(plan.orderedValues[0].value) == 0.25F &&
+                plan.orderedValues[1].schema.name == "Emission" &&
+                std::get<std::array<float, 3>>(plan.orderedValues[1].value) == std::array<float, 3>{1.0F, 2.0F, 3.0F} &&
+                plan.orderedValues[2].schema.name == "Mode" && std::get<std::int32_t>(plan.orderedValues[2].value) == 1,
+            "material binding values preserve schema field order and resolved defaults/overrides");
+        ok &= check(plan.layout.uniqueTextures.size() == 1 && plan.slotFor("AlbedoMap") != nullptr,
+                    "schema texture declarations enter the existing deterministic resource linker");
+
+        MaterialInstance invalid;
+        invalid.overrides.set("Roughness", std::int32_t{1});
+        bool rejectedType = false;
+        try {
+            static_cast<void>(linkMaterial(schema, &invalid));
+        } catch (const std::invalid_argument&) {
+            rejectedType = true;
+        }
+        ok &= check(rejectedType, "material linker rejects instance values with an incompatible schema type");
     }
 
     // Alias folding: shared / ref / shareTags collapse to canonical ids.
