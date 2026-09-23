@@ -1567,13 +1567,11 @@ int main() {
                     "native scene model runtime allocates one buffer set per model");
         const auto counts = runtime.descriptorCounts();
         const auto bindings = runtime.bindings();
-        const auto vertexUsage = std::ranges::find_if(device.typedBufferUsages, [&](const auto& entry) {
-            return entry.first == bindings.vertexBuffers.front();
-        });
-        const auto requiredVertexUsage = dayo::graphics::ResourceUsage::storageReadWrite |
-                                         dayo::graphics::ResourceUsage::vertexRead |
-                                         dayo::graphics::ResourceUsage::asBuildRead |
-                                         dayo::graphics::ResourceUsage::rayTracingRead;
+        const auto vertexUsage = std::ranges::find_if(
+            device.typedBufferUsages, [&](const auto& entry) { return entry.first == bindings.vertexBuffers.front(); });
+        const auto requiredVertexUsage =
+            dayo::graphics::ResourceUsage::storageReadWrite | dayo::graphics::ResourceUsage::vertexRead |
+            dayo::graphics::ResourceUsage::asBuildRead | dayo::graphics::ResourceUsage::rayTracingRead;
         ok &= check(counts.vertexBuffers == 1 && counts.indexBuffers == 1 && counts.materials == 1 &&
                         bindings.vertexBuffers.size() == 1 && bindings.indexBuffers.size() == 1 &&
                         bindings.materials.size() == 1 && bindings.previousVertices.size() == 1 &&
