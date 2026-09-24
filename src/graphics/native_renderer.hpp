@@ -7,6 +7,7 @@
 #include "graphics/bdpt_runtime.hpp"
 #include "graphics/dayo_fx_runtime.hpp"
 #include "graphics/deformer_resource_registry.hpp"
+#include "graphics/fx_shared_resource_registry.hpp"
 #include "graphics/native_fx_global_variable_runtime.hpp"
 #include "graphics/native_renderer_requirements.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
@@ -111,6 +112,7 @@ class NativeRendererCoordinator {
     executeGenericEffects(std::span<const core::SceneEffectInstance> effects, GenericRuntimeList& runtimes,
                           CommandList& commands, const fx::FxFrameContext& context,
                           const FxExecutionResources& resources, bool publishToScreen);
+    void publishActiveRendererResources();
 
     NativeRendererStatus status_{};
     SubayaiRuntime subayai_;
@@ -129,6 +131,8 @@ class NativeRendererCoordinator {
     GenericRuntimeList postprocessRuntimes_;
     OutputSampleAccumulator outputSamples_;
     DeformerResourceRegistry deformerResources_;
+    FxSharedResourceRegistry sharedResources_;
+    std::string rendererSharedResourceOwner_;
     const core::fx::SceneEvaluationSnapshot* evaluationSnapshot_{};
 };
 

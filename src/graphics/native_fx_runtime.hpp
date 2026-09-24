@@ -44,7 +44,8 @@ class NativeFxRuntime {
                                   std::string* error = nullptr,
                                   std::span<const handles::DescriptorSetHandle> sharedDescriptorSets = {},
                                   fx::FxNativeShaderSourceOptions sourceOptions = {},
-                                  const FxMaterialGpuRuntime* materialRuntime = nullptr);
+                                  const FxMaterialGpuRuntime* materialRuntime = nullptr,
+                                  const FxMaterialRuntimeInitializer& initializeMaterialRuntime = {});
     // Initializes resources against the first real frame context. The
     // compatibility overload above remains useful for callers that do not
     // have a frame yet.
@@ -54,11 +55,13 @@ class NativeFxRuntime {
                                           std::string* error = nullptr,
                                           std::span<const handles::DescriptorSetHandle> sharedDescriptorSets = {},
                                           fx::FxNativeShaderSourceOptions sourceOptions = {},
-                                          const FxMaterialGpuRuntime* materialRuntime = nullptr);
+                                          const FxMaterialGpuRuntime* materialRuntime = nullptr,
+                                          const FxMaterialRuntimeInitializer& initializeMaterialRuntime = {});
     // Rebuilds size-dependent FX resources and their descriptor/pipeline
     // lifetime when a render/model context changes. Callers should invoke
     // this at a frame boundary before prepareFrame().
-    [[nodiscard]] bool refresh(const fx::FxFrameContext& context, std::string* error = nullptr);
+    [[nodiscard]] bool refresh(const fx::FxFrameContext& context, std::string* error = nullptr,
+                               const FxMaterialRuntimeInitializer& initializeMaterialRuntime = {});
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
@@ -111,7 +114,8 @@ class NativeFxRuntime {
     bool configured_{};
     bool ready_{};
 
-    [[nodiscard]] bool buildForContext(const fx::FxFrameContext& context, std::string* error);
+    [[nodiscard]] bool buildForContext(const fx::FxFrameContext& context, std::string* error,
+                                       const FxMaterialRuntimeInitializer& initializeMaterialRuntime = {});
     void releaseGpuState() noexcept;
 };
 
