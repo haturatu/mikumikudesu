@@ -14,6 +14,7 @@
 #include "graphics/dayo_fx_runtime.hpp"
 #include "graphics/dayo_host_resources.hpp"
 #include "graphics/fx_executor.hpp"
+#include "graphics/fx_material_gpu_runtime.hpp"
 #include "graphics/fx_pipeline_runtime.hpp"
 #include "graphics/fx_resource_runtime.hpp"
 #include "graphics/native_frame_constants.hpp"
@@ -89,6 +90,9 @@ struct MockDevice final : public dayo::graphics::Device {
     }
     dayo::graphics::RendererKind activeRenderer() const noexcept override {
         return dayo::graphics::RendererKind::preview;
+    }
+    std::size_t currentFrameSlot() const noexcept override {
+        return currentFrameSlot_;
     }
     dayo::graphics::handles::ShaderHandle nativeFullscreenVertexShader() const noexcept override {
         return {900, 1};
@@ -229,6 +233,7 @@ struct MockDevice final : public dayo::graphics::Device {
     };
     dayo::graphics::DeviceCapabilities capabilities_;
     dayo::graphics::GraphicsConvention convention_;
+    std::size_t currentFrameSlot_{};
     std::uint32_t nextTypedHandle_{1};
     std::size_t destroyedShaders_{};
     std::size_t destroyedPipelines_{};
@@ -1513,6 +1518,175 @@ bool testNativeFxGlobalVariableRuntime() {
     return ok;
 }
 
+bool testFxMaterialGpuRuntimeOwnsTablesAndTextures() {
+    namespace fs = std::filesystem;
+    const auto directory =
+        fs::temp_directory_path() /
+        ("dayo-matdesc-gpu-runtime-" +
+         std::to_string(static_cast<unsigned long long>(std::chrono::steady_clock::now().time_since_epoch().count())));
+    std::error_code filesystemError;
+    fs::create_directories(directory, filesystemError);
+    if (filesystemError)
+        return check(false, "MatDesc GPU runtime test directory created");
+
+    const auto imagePath = directory / "albedo.ppm";
+    {
+        std::ofstream output(imagePath, std::ios::binary);
+        output << "P6\n2 1\n255\n";
+        output.put(static_cast<char>(255));
+        output.put(static_cast<char>(0));
+        output.put(static_cast<char>(0));
+        output.put(static_cast<char>(0));
+        output.put(static_cast<char>(255));
+        output.put(static_cast<char>(0));
+    }
+
+    const auto volumePath = directory / "volume.dds";
+    std::array<std::uint8_t, 148> volumeHeader{};
+    const auto putVolumeHeader = [&volumeHeader](std::size_t offset, std::uint32_t value) {
+        volumeHeader[offset] = static_cast<std::uint8_t>(value);
+        volumeHeader[offset + 1] = static_cast<std::uint8_t>(value >> 8U);
+        volumeHeader[offset + 2] = static_cast<std::uint8_t>(value >> 16U);
+        volumeHeader[offset + 3] = static_cast<std::uint8_t>(value >> 24U);
+    };
+    std::copy_n("DDS ", 4, volumeHeader.begin());
+    putVolumeHeader(4, 124);
+    putVolumeHeader(12, 1);
+    putVolumeHeader(16, 2);
+    putVolumeHeader(24, 2);
+    putVolumeHeader(28, 2);
+    putVolumeHeader(76, 32);
+    putVolumeHeader(80, 4);
+    putVolumeHeader(84, 0x30315844); // DX10
+    putVolumeHeader(108, 0x1000);
+    putVolumeHeader(112, 0x200000);
+    putVolumeHeader(128, 28); // DXGI_FORMAT_R8G8B8A8_UNORM
+    putVolumeHeader(132, 4);  // D3D10_RESOURCE_DIMENSION_TEXTURE3D
+    putVolumeHeader(140, 1);
+    {
+        std::ofstream output(volumePath, std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(volumeHeader.data()),
+                     static_cast<std::streamsize>(volumeHeader.size()));
+        const std::array<std::uint8_t, 20> payload{255, 0,   0,   255, 0, 255, 0,   255, 0,   0,
+                                                   255, 255, 255, 255, 0, 255, 255, 255, 255, 255};
+        output.write(reinterpret_cast<const char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
+    }
+
+    dayo::core::fx::MaterialGpuTableData table;
+    table.textureSlotCount = 1;
+    table.materialIndices = {0U, 1U};
+    table.textureIndices2D = {0U, dayo::core::fx::kMissingMaterialTextureIndex};
+    table.textureIndices3D = {0U, dayo::core::fx::kMissingMaterialTextureIndex};
+    table.textures2D.push_back({.path = imagePath.string(),
+                                .format = {},
+                                .colorspace = {},
+                                .mipPolicy = {},
+                                .dimension = dayo::core::fx::MaterialTextureDimension::twoD,
+                                .mipmapped = true});
+    table.textures3D.push_back({.path = volumePath.string(),
+                                .format = {},
+                                .colorspace = {},
+                                .mipPolicy = {},
+                                .dimension = dayo::core::fx::MaterialTextureDimension::threeD,
+                                .mipmapped = true});
+    table.values.layout.stride = 16;
+    table.values.count = 2;
+    table.values.bytes.resize(32, std::byte{0x2A});
+
+    MockDevice device;
+    device.currentFrameSlot_ = dayo::graphics::kNativeFramesInFlight - 1U;
+    bool ok = false;
+    {
+        dayo::graphics::FxMaterialGpuRuntime runtime;
+        std::string error;
+        ok = check(runtime.sync(device, table, &error),
+                   "MatDesc GPU runtime creates texture catalogs and table buffers");
+        if (!ok)
+            std::cerr << "MatDesc GPU runtime error: " << error << '\n';
+        ok &= check(runtime.ready(), "MatDesc GPU runtime reports ready only after all resources exist");
+        const auto bindings = runtime.bindings();
+        ok &= check(bindings.materialIndices.valid() && bindings.textureIndices2D.valid() &&
+                        bindings.textureIndices3D.valid() && bindings.values.valid(),
+                    "MatDesc GPU runtime exposes the active frame-slot table buffers");
+        ok &= check(bindings.textures2D.size() == 2 && bindings.textures3D.size() == 2 &&
+                        bindings.textures2D.front().valid() && bindings.textures2D.back().valid() &&
+                        bindings.textures3D.front().valid() && bindings.textures3D.back().valid(),
+                    "MatDesc GPU runtime reserves descriptor index zero for dimension-correct fallback textures");
+        ok &= check(device.textureDescs_.size() == 4 &&
+                        device.textureDescs_[0].dimension == dayo::graphics::TextureDimension::d2 &&
+                        device.textureDescs_[1].dimension == dayo::graphics::TextureDimension::d3 &&
+                        device.textureDescs_[2].dimension == dayo::graphics::TextureDimension::d2 &&
+                        device.textureDescs_[3].dimension == dayo::graphics::TextureDimension::d3 &&
+                        device.textureDescs_[3].extent.depth == 2 && device.textureDescs_[3].mipLevels == 2 &&
+                        (dayo::graphics::toBits(device.textureDescs_[2].usage) &
+                         dayo::graphics::toBits(dayo::graphics::ResourceUsage::transferSrc)) != 0U,
+                    "MatDesc GPU runtime allocates dimension-matched fallback, 2D, and DDS volume textures");
+        const auto frameUploadCount = 4U * dayo::graphics::kNativeFramesInFlight;
+        ok &=
+            check(device.bufferDescs_.size() == frameUploadCount && device.bufferUploads_.size() == frameUploadCount &&
+                      device.bufferUploads_[0].bytes.size() == 8 && device.bufferUploads_[1].bytes.size() == 8 &&
+                      device.bufferUploads_[2].bytes.size() == 8 && device.bufferUploads_[3].bytes.size() == 32,
+                  "new MatDesc buffers upload every frame slot before becoming ready");
+        ok &= check(runtime.bindings().materialIndices == device.bufferUploads_[device.currentFrameSlot_ * 4U].handle,
+                    "MatDesc bindings select the initialized current frame slot");
+        std::uint32_t uploadedTextureIndex = 0;
+        std::uint32_t uploadedMissingIndex = 0;
+        std::memcpy(&uploadedTextureIndex, device.bufferUploads_[1].bytes.data(), sizeof(uploadedTextureIndex));
+        std::memcpy(&uploadedMissingIndex,
+                    device.bufferUploads_[1].bytes.data() + static_cast<std::ptrdiff_t>(sizeof(uploadedMissingIndex)),
+                    sizeof(uploadedMissingIndex));
+        ok &= check(uploadedTextureIndex == 1U && uploadedMissingIndex == dayo::core::fx::kMissingMaterialTextureIndex,
+                    "MatDesc GPU indices account for the reserved fallback descriptor at slot zero");
+        std::uint32_t uploadedVolumeIndex = 0;
+        std::memcpy(&uploadedVolumeIndex, device.bufferUploads_[2].bytes.data(), sizeof(uploadedVolumeIndex));
+        ok &= check(uploadedVolumeIndex == 1U && device.textureUploads_ == 5 && device.generatedMipmaps_ == 1,
+                    "MatDesc GPU runtime uploads 2D and 3D DDS mip chains with fallback-adjusted indices");
+
+        const auto texturesBeforeResync = device.textureDescs_.size();
+        const auto buffersBeforeResync = device.bufferDescs_.size();
+        const auto uploadsBeforeResync = device.bufferUploads_.size();
+        device.currentFrameSlot_ = 0;
+        ok &= check(runtime.sync(device, table, &error) && device.textureDescs_.size() == texturesBeforeResync &&
+                        device.bufferDescs_.size() == buffersBeforeResync &&
+                        device.bufferUploads_.size() == uploadsBeforeResync + 4U,
+                    "unchanged MatDesc buffers upload only the active frame slot");
+
+        auto grownTable = table;
+        grownTable.values.layout.stride = 32;
+        grownTable.values.bytes.resize(grownTable.values.count * grownTable.values.layout.stride, std::byte{0x5A});
+        device.currentFrameSlot_ = dayo::graphics::kNativeFramesInFlight - 1U;
+        std::array<dayo::graphics::handles::BufferHandle, dayo::graphics::kNativeFramesInFlight> oldSlotHandles{};
+        for (std::size_t slot = 0; slot < dayo::graphics::kNativeFramesInFlight; ++slot)
+            oldSlotHandles[slot] = device.bufferUploads_[slot * 4U].handle;
+        const auto buffersBeforeGrowth = device.bufferDescs_.size();
+        const auto uploadsBeforeGrowth = device.bufferUploads_.size();
+        ok &= check(runtime.sync(device, grownTable, &error) &&
+                        device.bufferDescs_.size() == buffersBeforeGrowth + frameUploadCount &&
+                        device.bufferUploads_.size() == uploadsBeforeGrowth + frameUploadCount,
+                    "MatDesc buffer growth reallocates and initializes every frame slot");
+        for (std::size_t slot = 0; slot < dayo::graphics::kNativeFramesInFlight; ++slot)
+            ok &= check(device.bufferUploads_[uploadsBeforeGrowth + slot * 4U].handle != oldSlotHandles[slot],
+                        "MatDesc growth replaces each frame slot with its initialized allocation");
+        ok &= check(runtime.bindings().materialIndices ==
+                        device.bufferUploads_[uploadsBeforeGrowth + device.currentFrameSlot_ * 4U].handle,
+                    "reallocated MatDesc bindings refer to the initialized active slot");
+    }
+    ok &= check(device.destroyedTextures_ == 4 &&
+                    device.destroyedBuffers_ == 2U * 4U * dayo::graphics::kNativeFramesInFlight,
+                "MatDesc GPU runtime releases old and current frame-slot buffers after growth");
+
+    auto invalidTable = table;
+    invalidTable.textureIndices2D[0] = 1U;
+    MockDevice invalidDevice;
+    dayo::graphics::FxMaterialGpuRuntime invalidRuntime;
+    std::string invalidError;
+    ok &= check(!invalidRuntime.sync(invalidDevice, invalidTable, &invalidError) && !invalidError.empty() &&
+                    invalidDevice.textureDescs_.empty() && invalidDevice.bufferDescs_.empty(),
+                "MatDesc GPU runtime rejects out-of-range texture indices before allocating resources");
+    fs::remove_all(directory, filesystemError);
+    return ok;
+}
+
 bool testPreviewReferencePath() {
     const auto plan = dayo::fx::buildPreviewReferencePlan(testContext());
     bool ok = true;
@@ -2693,6 +2867,7 @@ int main() {
     ok &= testFxControllerResolver();
     ok &= testFxConditionRuntime();
     ok &= testNativeFxGlobalVariableRuntime();
+    ok &= testFxMaterialGpuRuntimeOwnsTablesAndTextures();
     ok &= testPreviewReferencePath();
     ok &= testSchedulerOrder();
     ok &= testCloneUnification();
