@@ -8,6 +8,8 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -24,6 +26,9 @@ struct FxMaterialSceneModel {
     std::span<const core::MaterialEditorState> materials;
 };
 
+using FxMaterialTextureResolver = std::function<std::optional<FxMaterialExternalTexture>(
+    core::ModelId, const core::fx::MaterialTextureSchema&, std::string_view)>;
+
 // Links per-model MatDesc annotations once, evaluates their expressions for
 // each frame, and uploads the resulting scene-wide tables and texture catalogs.
 class FxMaterialSceneRuntime {
@@ -36,7 +41,7 @@ class FxMaterialSceneRuntime {
 
     [[nodiscard]] bool sync(Device& device, const core::fx::MaterialTemplateSchema& schema,
                             std::span<const FxMaterialSceneModel> models, const fx::FxFrameContext& context,
-                            std::string* error = nullptr);
+                            std::string* error = nullptr, const FxMaterialTextureResolver& textureResolver = {});
     void reset() noexcept;
 
     [[nodiscard]] const FxMaterialGpuRuntime& gpuRuntime() const noexcept {
@@ -65,6 +70,7 @@ class FxMaterialSceneRuntime {
         AnnotationSource annotation;
         core::fx::MaterialInstance instance;
         core::fx::MaterialBindingPlan binding;
+        std::vector<bool> fileBackedTextures;
     };
 
     struct CachedModel {

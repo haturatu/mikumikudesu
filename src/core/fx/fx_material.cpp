@@ -743,6 +743,7 @@ void loadMaterialDefaultFile(MaterialTemplateSchema& schema, const std::filesyst
 
 std::size_t MaterialTextureKeyHash::operator()(const MaterialTextureKey& key) const noexcept {
     std::size_t seed = std::hash<std::string>{}(key.path);
+    seed ^= std::hash<std::string>{}(key.externalId) + 0x9E3779B9U + (seed << 6U) + (seed >> 2U);
     seed ^= std::hash<std::string>{}(key.format) + 0x9E3779B9U + (seed << 6U) + (seed >> 2U);
     seed ^= std::hash<std::string>{}(key.colorspace) + 0x9E3779B9U + (seed << 6U) + (seed >> 2U);
     seed ^= std::hash<std::string>{}(key.mipPolicy) + 0x9E3779B9U + (seed << 6U) + (seed >> 2U);
@@ -776,9 +777,19 @@ std::string normalizeTextureToken(std::string_view token) noexcept {
     }
 }
 
+bool isScreenBmpToken(std::string_view token) noexcept {
+    try {
+        const auto normalized = normalizeTextureToken(normalizeTexturePath(token));
+        return std::filesystem::path(normalized).filename() == "screen.bmp";
+    } catch (...) {
+        return false;
+    }
+}
+
 MaterialTextureKey makeTextureKey(const MaterialTextureDesc& desc) {
     return MaterialTextureKey{
-        .path = normalizeTexturePath(desc.path),
+        .path = desc.externalId.empty() ? normalizeTexturePath(desc.path) : std::string{},
+        .externalId = desc.externalId,
         .format = normalizeTextureToken(desc.format),
         .colorspace = normalizeTextureToken(desc.colorspace),
         .mipPolicy = normalizeTextureToken(desc.mipPolicy),
@@ -788,7 +799,7 @@ MaterialTextureKey makeTextureKey(const MaterialTextureDesc& desc) {
 }
 
 std::string textureKeyString(const MaterialTextureKey& key) {
-    return key.path + "|" + key.format + "|" + key.colorspace + "|" + key.mipPolicy + "|" +
+    return key.path + "|" + key.externalId + "|" + key.format + "|" + key.colorspace + "|" + key.mipPolicy + "|" +
            std::to_string(static_cast<std::uint8_t>(key.dimension)) + "|" + (key.mipmapped ? "mipped" : "nomip");
 }
 
@@ -903,6 +914,7 @@ MaterialGpuLayout linkMaterialLayout(const MaterialTemplate& templ, const Materi
             continue;
         MaterialTextureDesc normalized{
             .path = normalizeTexturePath(decl.texture.path),
+            .externalId = decl.texture.externalId,
             .format = normalizeTextureToken(decl.texture.format),
             .colorspace = normalizeTextureToken(decl.texture.colorspace),
             .mipPolicy = normalizeTextureToken(decl.texture.mipPolicy),
@@ -910,7 +922,8 @@ MaterialGpuLayout linkMaterialLayout(const MaterialTemplate& templ, const Materi
             .mipmapped = decl.texture.mipmapped,
         };
         const MaterialTextureKey key{
-            .path = normalized.path,
+            .path = normalized.externalId.empty() ? normalized.path : std::string{},
+            .externalId = normalized.externalId,
             .format = normalized.format,
             .colorspace = normalized.colorspace,
             .mipPolicy = normalized.mipPolicy,

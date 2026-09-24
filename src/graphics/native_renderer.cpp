@@ -1,5 +1,7 @@
 #include "graphics/native_renderer.hpp"
 
+#include "core/fx/fx_material.hpp"
+
 #include <ranges>
 #include <sstream>
 #include <stdexcept>
@@ -361,17 +363,53 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
         environment.skybox.valid() || environment.cubemap.valid() || environment.prefiltered.valid()
             ? environment
             : environmentService_.gpuResult();
+    const FxMaterialTextureResolver textureResolver =
+        [this](core::ModelId owner, const core::fx::MaterialTextureSchema& schema,
+               std::string_view assigned) -> std::optional<FxMaterialExternalTexture> {
+        if (core::fx::isScreenBmpToken(assigned)) {
+            if (schema.dimension != core::fx::MaterialTextureDimension::twoD || !hostResourceProvider_.has_value())
+                return std::nullopt;
+            const auto screen = hostResourceProvider_->resolve(DayoSemantic::ScreenBMP);
+            if (!screen.has_value() || !screen->texture.valid())
+                return std::nullopt;
+            const auto texture = screen->texture;
+            return FxMaterialExternalTexture{.identity = "host:ScreenBMP:" + std::to_string(texture.index) + ":" +
+                                                         std::to_string(texture.generation),
+                                             .texture = texture,
+                                             .dimension = core::fx::MaterialTextureDimension::twoD,
+                                             .generation = texture.generation};
+        }
+
+        const auto resolved = deformerResources_.resolve(owner, assigned);
+        if (resolved.status != DeformerResourceRegistry::LookupStatus::unique || !resolved.value.has_value())
+            return std::nullopt;
+        const auto& resource = resolved.value->resource;
+        const auto expectedDimension = schema.dimension == core::fx::MaterialTextureDimension::twoD ? 2U : 3U;
+        if (resource.kind != FxResourceStore::Kind::texture || !resource.texture.valid() ||
+            resource.dimension != expectedDimension)
+            return std::nullopt;
+        const auto texture = resource.texture;
+        const auto& exportInfo = *resolved.value;
+        return FxMaterialExternalTexture{
+            .identity = "deformer:" + std::to_string(owner) + ":" + std::to_string(exportInfo.effect) + ":" +
+                        std::to_string(exportInfo.generation) + ":" + resource.name + ":" +
+                        std::to_string(texture.index) + ":" + std::to_string(texture.generation),
+            .texture = texture,
+            .dimension = schema.dimension,
+            .generation = exportInfo.generation};
+    };
     std::optional<NativeFrameOutput> rendererOutput;
     switch (status_.active) {
     case RendererKind::subayai: {
-        auto frame = subayai_.prepareFrame(context, materials, lightSampling, activeEnvironment, materialModels);
+        auto frame = subayai_.prepareFrame(context, materials, lightSampling, activeEnvironment, materialModels,
+                                           textureResolver);
         const auto stats = subayai_.execute(frame, commands, resources);
         static_cast<void>(stats);
         rendererOutput = subayai_.output(frame);
         break;
     }
     case RendererKind::bdpt: {
-        auto frame = bdpt_.prepareFrame(context, dirty, lightSampling, materialModels);
+        auto frame = bdpt_.prepareFrame(context, dirty, lightSampling, materialModels, textureResolver);
         const auto stats = bdpt_.execute(frame, commands, resources);
         static_cast<void>(stats);
         rendererOutput = bdpt_.output(frame);

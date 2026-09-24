@@ -92,7 +92,8 @@ class BdptRuntime {
     // the next sample is accumulated.
     [[nodiscard]] BdptFrame prepareFrame(const fx::FxFrameContext& context, core::DirtyFlag dirty,
                                          std::span<const AliasEntry> lightSampling = {},
-                                         std::span<const FxMaterialSceneModel> materialModels = {});
+                                         std::span<const FxMaterialSceneModel> materialModels = {},
+                                         const FxMaterialTextureResolver& textureResolver = {});
     [[nodiscard]] VulkanFxExecutor::Stats execute(BdptFrame& frame, CommandList& commands,
                                                   const FxExecutionResources& resources = {}) const;
     [[nodiscard]] std::optional<NativeFrameOutput> output(const BdptFrame& frame) const;

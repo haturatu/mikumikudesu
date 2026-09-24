@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <ranges>
 #include <stdexcept>
 #include <string_view>
@@ -34,6 +35,21 @@ void setError(std::string* error, std::string value) {
         (value[2] == '/' || value[2] == '\\'))
         return false;
     return true;
+}
+
+[[nodiscard]] bool isFileBackedTexture(const core::fx::MaterialBindingPlan::ResolvedTextureField& texture) {
+    if (texture.path.empty() || core::fx::isScreenBmpToken(texture.path))
+        return false;
+    const std::filesystem::path assigned(texture.path);
+    const auto isRegularFile = [](const std::filesystem::path& path) {
+        std::error_code error;
+        return std::filesystem::is_regular_file(path, error) && !error;
+    };
+    if (assigned.is_absolute())
+        return isRegularFile(assigned);
+    if (!texture.baseDirectory.empty() && isRegularFile(texture.baseDirectory / assigned))
+        return true;
+    return isRegularFile(assigned);
 }
 
 [[nodiscard]] bool sameSchema(const core::fx::MaterialTemplateSchema& left,
@@ -217,6 +233,15 @@ bool FxMaterialSceneRuntime::matches(const core::fx::MaterialTemplateSchema& sch
                 if (resolveAnnotation(input, input.materials[materialIndex]) !=
                     cached.materials[materialIndex].annotation)
                     return false;
+                const auto& cachedMaterial = cached.materials[materialIndex];
+                if (cachedMaterial.fileBackedTextures.size() != cachedMaterial.binding.orderedTextures.size())
+                    return false;
+                for (std::size_t textureIndex = 0; textureIndex < cachedMaterial.binding.orderedTextures.size();
+                     ++textureIndex) {
+                    if (isFileBackedTexture(cachedMaterial.binding.orderedTextures[textureIndex]) !=
+                        cachedMaterial.fileBackedTextures[textureIndex])
+                        return false;
+                }
             }
         }
     } catch (...) {
@@ -257,10 +282,15 @@ bool FxMaterialSceneRuntime::link(const core::fx::MaterialTemplateSchema& schema
                     log::warn("MatDesc annotation file was not found; using template defaults: ", annotation.original);
                 }
                 auto binding = core::fx::linkMaterial(schema, &instance);
+                std::vector<bool> fileBackedTextures;
+                fileBackedTextures.reserve(binding.orderedTextures.size());
+                for (const auto& texture : binding.orderedTextures)
+                    fileBackedTextures.push_back(isFileBackedTexture(texture));
                 linkedModel.materials.push_back({.parameters = material.parameters,
                                                  .annotation = std::move(annotation),
                                                  .instance = std::move(instance),
-                                                 .binding = std::move(binding)});
+                                                 .binding = std::move(binding),
+                                                 .fileBackedTextures = std::move(fileBackedTextures)});
             }
             linkedModels.push_back(std::move(linkedModel));
         }
@@ -280,7 +310,7 @@ bool FxMaterialSceneRuntime::link(const core::fx::MaterialTemplateSchema& schema
 
 bool FxMaterialSceneRuntime::sync(Device& device, const core::fx::MaterialTemplateSchema& schema,
                                   std::span<const FxMaterialSceneModel> models, const fx::FxFrameContext& context,
-                                  std::string* error) {
+                                  std::string* error, const FxMaterialTextureResolver& textureResolver) {
     if (error != nullptr)
         error->clear();
     descriptorLayoutChanged_ = false;
@@ -294,11 +324,14 @@ bool FxMaterialSceneRuntime::sync(Device& device, const core::fx::MaterialTempla
             totalMaterials += model.materials.size();
         }
         std::vector<core::fx::EvaluatedMaterialBinding> evaluated;
+        std::vector<core::fx::MaterialBindingPlan> frameBindings;
         std::vector<core::fx::MaterialGpuTableMaterial> materialRefs;
         std::vector<core::fx::MaterialGpuTableModel> tableModels;
         evaluated.reserve(totalMaterials);
+        frameBindings.reserve(totalMaterials);
         materialRefs.reserve(totalMaterials);
         tableModels.reserve(models_.size());
+        std::map<std::string, FxMaterialExternalTexture> externalTextureMap;
         for (std::size_t modelIndex = 0; modelIndex < models_.size(); ++modelIndex) {
             const auto& model = models_[modelIndex];
             const auto start = materialRefs.size();
@@ -306,19 +339,56 @@ bool FxMaterialSceneRuntime::sync(Device& device, const core::fx::MaterialTempla
             if (input.id != model.id || input.modelIndex != model.modelIndex)
                 throw std::logic_error("MatDesc scene models changed order while the table was being evaluated");
             const auto evalContext = evaluationContext(context, input);
-            for (const auto& material : model.materials) {
-                evaluated.push_back(core::fx::evaluateMaterialValues(material.binding, evalContext));
-                materialRefs.push_back({.binding = &material.binding, .evaluated = &evaluated.back()});
+            for (std::size_t materialIndex = 0; materialIndex < model.materials.size(); ++materialIndex) {
+                const auto& material = model.materials[materialIndex];
+                auto binding = material.binding;
+                for (std::size_t textureIndex = 0; textureIndex < binding.orderedTextures.size(); ++textureIndex) {
+                    auto& texture = binding.orderedTextures[textureIndex];
+                    if (texture.path.empty() || !texture.physicalTextureIndex.has_value())
+                        continue;
+                    std::optional<FxMaterialExternalTexture> external;
+                    if (textureResolver)
+                        external = textureResolver(model.id, texture.schema, texture.path);
+                    if (external.has_value()) {
+                        if (external->identity.empty() || !external->texture.valid() ||
+                            external->dimension != texture.schema.dimension)
+                            throw std::invalid_argument(
+                                "MatDesc texture resolver returned an invalid external texture: " + texture.path);
+                        auto& descriptor = binding.layout.uniqueTextures.at(*texture.physicalTextureIndex);
+                        descriptor.externalId = external->identity;
+                        descriptor.path.clear();
+                        const auto [found, inserted] = externalTextureMap.emplace(external->identity, *external);
+                        if (!inserted && (found->second.texture != external->texture ||
+                                          found->second.dimension != external->dimension ||
+                                          found->second.generation != external->generation))
+                            throw std::logic_error("MatDesc external texture identity resolved inconsistently: " +
+                                                   external->identity);
+                    } else if (core::fx::isScreenBmpToken(texture.path) ||
+                               !material.fileBackedTextures.at(textureIndex)) {
+                        // Resolve host/deformer resources before considering a file. Unknown symbols and missing
+                        // files intentionally map to the dimension-correct fallback instead of a guessed path.
+                        texture.physicalTextureIndex.reset();
+                    }
+                }
+                evaluated.push_back(core::fx::evaluateMaterialValues(binding, evalContext));
+                frameBindings.push_back(std::move(binding));
+                materialRefs.push_back({.binding = &frameBindings.back(), .evaluated = &evaluated.back()});
             }
             tableModels.push_back({.materials = std::span<const core::fx::MaterialGpuTableMaterial>(materialRefs)
                                                     .subspan(start, model.materials.size())});
         }
         const auto table = core::fx::makeMaterialGpuTableData(schema, tableModels);
+        std::vector<FxMaterialExternalTexture> externalTextures;
+        externalTextures.reserve(externalTextureMap.size());
+        for (auto& [identity, texture] : externalTextureMap) {
+            static_cast<void>(identity);
+            externalTextures.push_back(std::move(texture));
+        }
         const bool wasReady = gpuRuntime_.ready();
         const auto previousBindings = gpuRuntime_.bindings();
         const auto previous2DCount = previousBindings.textures2D.size();
         const auto previous3DCount = previousBindings.textures3D.size();
-        if (!gpuRuntime_.sync(device, table, error))
+        if (!gpuRuntime_.sync(device, table, error, externalTextures))
             return false;
         const auto currentBindings = gpuRuntime_.bindings();
         descriptorLayoutChanged_ = wasReady && (previous2DCount != currentBindings.textures2D.size() ||
