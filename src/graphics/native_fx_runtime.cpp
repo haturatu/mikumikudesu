@@ -36,19 +36,19 @@ bool NativeFxRuntime::initialize(Device& device, fx::FxProgram program, const fx
                                  std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts, std::string* error,
                                  std::span<const handles::DescriptorSetHandle> sharedDescriptorSets,
                                  fx::FxNativeShaderSourceOptions sourceOptions,
-                                 const FxMaterialGpuRuntime* materialRuntime) {
+                                 const FxMaterialGpuRuntime* materialRuntime,
+                                 const FxMaterialRuntimeInitializer& initializeMaterialRuntime) {
     const auto defaultContext = fx::makeFxFrameContext(0.0F, 0, 1, 1, 0, 0, 1, 1, 1, program.meshCloneCount);
     return initializeForFrame(device, std::move(program), compiler, defaultContext, sharedLayouts, error,
-                              sharedDescriptorSets, std::move(sourceOptions), materialRuntime);
+                              sharedDescriptorSets, std::move(sourceOptions), materialRuntime,
+                              initializeMaterialRuntime);
 }
 
-bool NativeFxRuntime::initializeForFrame(Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
-                                         const fx::FxFrameContext& context,
-                                         std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts,
-                                         std::string* error,
-                                         std::span<const handles::DescriptorSetHandle> sharedDescriptorSets,
-                                         fx::FxNativeShaderSourceOptions sourceOptions,
-                                         const FxMaterialGpuRuntime* materialRuntime) {
+bool NativeFxRuntime::initializeForFrame(
+    Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler, const fx::FxFrameContext& context,
+    std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts, std::string* error,
+    std::span<const handles::DescriptorSetHandle> sharedDescriptorSets, fx::FxNativeShaderSourceOptions sourceOptions,
+    const FxMaterialGpuRuntime* materialRuntime, const FxMaterialRuntimeInitializer& initializeMaterialRuntime) {
     if (error != nullptr)
         error->clear();
     reset();
@@ -66,7 +66,7 @@ bool NativeFxRuntime::initializeForFrame(Device& device, fx::FxProgram program, 
         if (std::any_of(sharedDescriptorSets_.begin(), sharedDescriptorSets_.end(),
                         [](const auto set) { return !set.valid(); }))
             throw std::invalid_argument("native FX shared descriptor sets contain an invalid handle");
-        if (!buildForContext(context, error))
+        if (!buildForContext(context, error, initializeMaterialRuntime))
             throw std::runtime_error(error != nullptr && !error->empty() ? *error : "FX runtime initialization failed");
     } catch (const std::exception& exception) {
         if (error == nullptr || error->empty())
@@ -83,7 +83,8 @@ bool NativeFxRuntime::initializeForFrame(Device& device, fx::FxProgram program, 
     return true;
 }
 
-bool NativeFxRuntime::refresh(const fx::FxFrameContext& context, std::string* error) {
+bool NativeFxRuntime::refresh(const fx::FxFrameContext& context, std::string* error,
+                              const FxMaterialRuntimeInitializer& initializeMaterialRuntime) {
     if (error != nullptr)
         error->clear();
     if (device_ == nullptr || !configured_) {
@@ -95,18 +96,28 @@ bool NativeFxRuntime::refresh(const fx::FxFrameContext& context, std::string* er
 
     ready_ = false;
     releaseGpuState();
-    if (!buildForContext(context, error))
+    if (!buildForContext(context, error, initializeMaterialRuntime))
         return false;
     resourceContext_ = context;
     ready_ = true;
     return true;
 }
 
-bool NativeFxRuntime::buildForContext(const fx::FxFrameContext& context, std::string* error) {
+bool NativeFxRuntime::buildForContext(const fx::FxFrameContext& context, std::string* error,
+                                      const FxMaterialRuntimeInitializer& initializeMaterialRuntime) {
     try {
         const auto framePlan = fx::FxCompiler{}.plan(program_, context);
         resourceSetIndex_ = static_cast<std::uint32_t>(sharedLayouts_.size());
-        if (!resources_.initialize(*device_, program_, context, error, resourceSetIndex_, materialRuntime_))
+        const auto materialInitializer =
+            initializeMaterialRuntime
+                ? FxMaterialRuntimeInitializer{[this, &initializeMaterialRuntime](const FxResourceStore& store,
+                                                                                  std::string* materialError) {
+                      materialRuntime_ = initializeMaterialRuntime(store, materialError);
+                      return materialRuntime_;
+                  }}
+                : FxMaterialRuntimeInitializer{};
+        if (!resources_.initialize(*device_, program_, context, error, resourceSetIndex_, materialRuntime_,
+                                   materialInitializer))
             throw std::runtime_error(error != nullptr && !error->empty() ? *error
                                                                          : "FX resource initialization failed");
 

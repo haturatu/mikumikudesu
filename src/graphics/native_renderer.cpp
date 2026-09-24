@@ -173,6 +173,7 @@ void NativeRendererCoordinator::setEffectStack(const core::SceneEffectStack& eff
     deformRuntimes_.clear();
     postprocessRuntimes_.clear();
     deformerResources_.clear();
+    sharedResources_.clear();
 }
 
 void NativeRendererCoordinator::setEffectSchedule(std::span<const fx::ScheduledFx> schedule) {
@@ -209,11 +210,13 @@ void NativeRendererCoordinator::setEffectSchedule(std::span<const fx::ScheduledF
     };
     const auto deformChanged =
         reorder(deformEffects_, deformRuntimes_, [](fx::FrameStage stage) { return stage == fx::FrameStage::deform; });
-    static_cast<void>(reorder(postprocessEffects_, postprocessRuntimes_, [](fx::FrameStage stage) {
+    const auto postprocessChanged = reorder(postprocessEffects_, postprocessRuntimes_, [](fx::FrameStage stage) {
         return stage == fx::FrameStage::postPre || stage == fx::FrameStage::postPost;
-    }));
+    });
     if (deformChanged)
         deformerResources_.clear();
+    if (deformChanged || postprocessChanged)
+        sharedResources_.clear();
 }
 
 void NativeRendererCoordinator::setControllerDeclarations(std::span<const core::EffectController> declarations) {
@@ -230,6 +233,7 @@ void NativeRendererCoordinator::setControllerDeclarations(std::span<const core::
     deformRuntimes_.clear();
     postprocessRuntimes_.clear();
     deformerResources_.clear();
+    sharedResources_.clear();
 }
 
 std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffects(
@@ -332,6 +336,10 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
                 stageResources.defaultColorTarget = output->texture;
         }
         static_cast<void>(entry->runtime.execute(frame, commands, stageResources));
+        if (const auto* program = entry->runtime.program(); program != nullptr) {
+            const auto owner = "effect:" + std::to_string(effects[index].id);
+            sharedResources_.publish(owner, *program, entry->runtime.nativeRuntime().resources().store());
+        }
         if (ownerModel != nullptr && effects[index].controllerModel.has_value()) {
             deformerResources_.publish(*effects[index].controllerModel, effects[index].id,
                                        entry->runtime.nativeRuntime().resources().store());
@@ -364,6 +372,42 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
     return lastOutput;
 }
 
+void NativeRendererCoordinator::publishActiveRendererResources() {
+    const auto* activeProgram = program();
+    const FxResourceStore* activeStore = nullptr;
+    switch (status_.active) {
+    case RendererKind::subayai:
+        activeStore = subayai_.liveResourceStore();
+        break;
+    case RendererKind::bdpt:
+        activeStore = bdpt_.liveResourceStore();
+        break;
+    case RendererKind::preview:
+        break;
+    }
+
+    if (activeProgram == nullptr) {
+        if (!rendererSharedResourceOwner_.empty())
+            sharedResources_.invalidateOwner(rendererSharedResourceOwner_);
+        rendererSharedResourceOwner_.clear();
+        return;
+    }
+
+    auto owner = std::string("renderer:");
+    owner += activeProgram->sourcePath.empty() ? activeProgram->label
+                                               : activeProgram->sourcePath.lexically_normal().generic_string();
+    if (rendererSharedResourceOwner_ != owner) {
+        if (!rendererSharedResourceOwner_.empty())
+            sharedResources_.invalidateOwner(rendererSharedResourceOwner_);
+        rendererSharedResourceOwner_ = owner;
+    }
+    if (activeStore == nullptr) {
+        sharedResources_.invalidateOwner(owner);
+        return;
+    }
+    sharedResources_.publish(std::move(owner), *activeProgram, *activeStore);
+}
+
 bool NativeRendererCoordinator::updateEnvironment(const EnvironmentDesc& description) {
     return environmentService_.update(description);
 }
@@ -381,6 +425,7 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
         outputSamples_.cancel();
     environmentService_.record(commands);
     static_cast<void>(executeGenericEffects(deformEffects_, deformRuntimes_, commands, context, resources, false));
+    publishActiveRendererResources();
     const auto& activeEnvironment =
         environment.skybox.valid() || environment.cubemap.valid() || environment.prefiltered.valid()
             ? environment
@@ -402,20 +447,65 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
                                              .generation = texture.generation};
         }
 
+        const FxResourceStore* rendererStore = nullptr;
+        switch (status_.active) {
+        case RendererKind::subayai:
+            rendererStore = subayai_.liveResourceStore();
+            break;
+        case RendererKind::bdpt:
+            rendererStore = bdpt_.liveResourceStore();
+            break;
+        case RendererKind::preview:
+            break;
+        }
+        if (rendererStore != nullptr) {
+            const auto* resource = rendererStore->find(assigned);
+            const auto expectedDimension = schema.dimension == core::fx::MaterialTextureDimension::twoD ? 2U : 3U;
+            if (resource != nullptr && resource->kind == FxResourceStore::Kind::texture && resource->texture.valid() &&
+                resource->dimension == expectedDimension) {
+                const auto* rendererProgram = program();
+                auto identity = std::string("renderer-local:");
+                if (rendererProgram != nullptr)
+                    identity += rendererProgram->sourcePath.lexically_normal().generic_string();
+                identity += ":" + resource->name + ":" + std::to_string(resource->texture.index) + ":" +
+                            std::to_string(resource->texture.generation);
+                return FxMaterialExternalTexture{.identity = std::move(identity),
+                                                 .texture = resource->texture,
+                                                 .dimension = schema.dimension,
+                                                 .generation = resource->texture.generation};
+            }
+        }
+
         const auto resolved = deformerResources_.resolve(owner, assigned);
-        if (resolved.status != DeformerResourceRegistry::LookupStatus::unique || !resolved.value.has_value())
-            return std::nullopt;
-        const auto& resource = resolved.value->resource;
         const auto expectedDimension = schema.dimension == core::fx::MaterialTextureDimension::twoD ? 2U : 3U;
+        if (resolved.status == DeformerResourceRegistry::LookupStatus::unique && resolved.value.has_value()) {
+            const auto& resource = resolved.value->resource;
+            if (resource.kind == FxResourceStore::Kind::texture && resource.texture.valid() &&
+                resource.dimension == expectedDimension) {
+                const auto texture = resource.texture;
+                const auto& exportInfo = *resolved.value;
+                return FxMaterialExternalTexture{
+                    .identity = "deformer:" + std::to_string(owner) + ":" + std::to_string(exportInfo.effect) + ":" +
+                                std::to_string(exportInfo.generation) + ":" + resource.name + ":" +
+                                std::to_string(texture.index) + ":" + std::to_string(texture.generation),
+                    .texture = texture,
+                    .dimension = schema.dimension,
+                    .generation = exportInfo.generation};
+            }
+        }
+
+        const auto shared = sharedResources_.resolve(assigned);
+        if (shared.status != FxSharedResourceRegistry::LookupStatus::unique || !shared.value.has_value())
+            return std::nullopt;
+        const auto& resource = shared.value->resource;
         if (resource.kind != FxResourceStore::Kind::texture || !resource.texture.valid() ||
             resource.dimension != expectedDimension)
             return std::nullopt;
+        const auto& exportInfo = *shared.value;
         const auto texture = resource.texture;
-        const auto& exportInfo = *resolved.value;
         return FxMaterialExternalTexture{
-            .identity = "deformer:" + std::to_string(owner) + ":" + std::to_string(exportInfo.effect) + ":" +
-                        std::to_string(exportInfo.generation) + ":" + resource.name + ":" +
-                        std::to_string(texture.index) + ":" + std::to_string(texture.generation),
+            .identity = "shared:" + exportInfo.owner + ":" + std::to_string(exportInfo.generation) + ":" +
+                        resource.name + ":" + std::to_string(texture.index) + ":" + std::to_string(texture.generation),
             .texture = texture,
             .dimension = schema.dimension,
             .generation = exportInfo.generation};
@@ -428,6 +518,7 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
         const auto stats = subayai_.execute(frame, commands, resources);
         static_cast<void>(stats);
         rendererOutput = subayai_.output(frame);
+        publishActiveRendererResources();
         break;
     }
     case RendererKind::bdpt: {
@@ -435,6 +526,7 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
         const auto stats = bdpt_.execute(frame, commands, resources);
         static_cast<void>(stats);
         rendererOutput = bdpt_.output(frame);
+        publishActiveRendererResources();
         break;
     }
     case RendererKind::preview:
@@ -475,6 +567,8 @@ void NativeRendererCoordinator::reset() noexcept {
     deformRuntimes_.clear();
     postprocessRuntimes_.clear();
     deformerResources_.clear();
+    sharedResources_.clear();
+    rendererSharedResourceOwner_.clear();
     outputSamples_.reset();
     deformEffects_.clear();
     postprocessEffects_.clear();

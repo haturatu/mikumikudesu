@@ -625,7 +625,8 @@ FxResourceRuntime::~FxResourceRuntime() {
 
 bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program, const fx::FxFrameContext& context,
                                    std::string* error, std::uint32_t resourceSet,
-                                   const FxMaterialGpuRuntime* materialRuntime) {
+                                   const FxMaterialGpuRuntime* materialRuntime,
+                                   const FxMaterialRuntimeInitializer& initializeMaterialRuntime) {
     if (error != nullptr)
         error->clear();
     reset();
@@ -902,6 +903,13 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             descriptorSet_ = device.allocateDescriptorSetEx(descriptorLayout_, bindings);
             if (!descriptorSet_.valid())
                 throw std::runtime_error("FX resource descriptor set is invalid");
+        }
+        if (initializeMaterialRuntime) {
+            materialRuntime = initializeMaterialRuntime(store_, error);
+            if (materialRuntime == nullptr)
+                throw std::runtime_error(error != nullptr && !error->empty()
+                                             ? *error
+                                             : "FX material runtime initialization returned no runtime");
         }
         if (!passDescriptors_.initialize(device, program, resourceSet, store_, error, materialRuntime))
             throw std::runtime_error(error != nullptr && !error->empty() ? *error
