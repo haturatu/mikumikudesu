@@ -399,6 +399,7 @@ FxProgram FxCompiler::compile(const core::EffectGraph& graph) const {
     program.meshCloneCount = graph.meshCloneCount;
     program.memos = graph.memos;
     program.globalVarSize = graph.globalVarSize;
+    program.globalVarSizeSpecified = graph.globalVarSizeSpecified;
     program.rawYrzfx = graph.rawYrzfx;
     for (const auto& pass : graph.passes) {
         FxDispatch dispatch;

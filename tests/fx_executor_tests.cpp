@@ -16,6 +16,7 @@
 #include "graphics/fx_pipeline_runtime.hpp"
 #include "graphics/fx_resource_runtime.hpp"
 #include "graphics/native_frame_constants.hpp"
+#include "graphics/native_fx_global_variable_runtime.hpp"
 #include "graphics/native_fx_runtime.hpp"
 #include "graphics/native_oidn_provider.hpp"
 #include "graphics/native_scene_bindings.hpp"
@@ -1369,8 +1370,10 @@ bool testFxControllerResolver() {
         "identical controller names resolve independently for two effect owners");
     dayo::graphics::NativeSceneResourceBindings firstBindings;
     firstBindings.controllerConstants = {101, 1};
+    firstBindings.globalConstants = {201, 1};
     auto secondBindings = firstBindings;
     secondBindings.controllerConstants = {102, 1};
+    secondBindings.globalConstants = {202, 1};
     const auto firstFrame = dayo::graphics::nativeSceneFrameDescriptorBindings(firstBindings);
     const auto secondFrame = dayo::graphics::nativeSceneFrameDescriptorBindings(secondBindings);
     const auto controllerSlot =
@@ -1382,6 +1385,15 @@ bool testFxControllerResolver() {
     ok &= check(firstDescriptor != firstFrame.end() && secondDescriptor != secondFrame.end() &&
                     firstDescriptor->buffer != secondDescriptor->buffer,
                 "effect-local frame descriptor sets bind distinct ControllerCB buffers");
+    const auto globalSlot = dayo::graphics::nativeSceneBinding(dayo::graphics::NativeSceneRegisterClass::uniform, 2);
+    const auto firstGlobal =
+        std::ranges::find_if(firstFrame, [globalSlot](const auto& binding) { return binding.slot == globalSlot; });
+    const auto secondGlobal =
+        std::ranges::find_if(secondFrame, [globalSlot](const auto& binding) { return binding.slot == globalSlot; });
+    ok &= check(firstGlobal != firstFrame.end() && secondGlobal != secondFrame.end() &&
+                    firstGlobal->buffer == dayo::graphics::handles::BufferHandle{201, 1} &&
+                    secondGlobal->buffer == dayo::graphics::handles::BufferHandle{202, 1},
+                "YRZFX global constants occupy the upstream b2 descriptor and remain effect-local");
     ok &= check(
         [&] {
             try {
@@ -1426,6 +1438,35 @@ bool testFxConditionRuntime() {
     context.host.onResize = false;
     ok &= check(!runtime.evaluate(conditions, context, &resourceTable), "condition runtime rejects an inactive event");
     ok &= check(runtime.evaluate({}, context), "empty condition list is unconditional");
+    return ok;
+}
+
+bool testNativeFxGlobalVariableRuntime() {
+    MockDevice device;
+    device.capabilities_.maxUniformBufferRange = 4096;
+    dayo::graphics::NativeFxGlobalVariableRuntime runtime;
+    std::string error;
+    bool ok = check(runtime.initialize(device, 64, &error) && error.empty() && runtime.ready() && runtime.size() == 64,
+                    "native FX global-variable runtime allocates the declared byte range");
+    ok &= check(runtime.buffer().valid() && !device.bufferDescs_.empty() && device.bufferDescs_.back().size == 64 &&
+                    device.bufferDescs_.back().cpuVisible &&
+                    device.bufferDescs_.back().lifetime == dayo::graphics::ResourceLifetime::persistent &&
+                    (dayo::graphics::toBits(device.bufferDescs_.back().usage) &
+                     dayo::graphics::toBits(dayo::graphics::ResourceUsage::uniformRead)) != 0,
+                "native FX global-variable allocation is a persistent uniform buffer");
+    ok &= check(device.bufferUploads_.size() == 1 && device.bufferUploads_.back().bytes.size() == 64 &&
+                    std::ranges::all_of(device.bufferUploads_.back().bytes,
+                                        [](std::byte value) { return value == std::byte{0}; }),
+                "native FX global-variable buffer begins deterministically zeroed");
+    runtime.reset();
+    device.capabilities_.maxUniformBufferRange = 32;
+    ok &= check(!runtime.initialize(device, 64, &error) && !error.empty() && !runtime.buffer().valid(),
+                "native FX global-variable allocation rejects ranges unsupported by the device");
+    ok &= check(!runtime.initialize(device, dayo::graphics::kMaxNativeFxGlobalVariableBytes + 1U, &error) &&
+                    error.find("64 KiB") != std::string::npos,
+                "native FX global-variable allocation enforces the constant-buffer size ceiling");
+    ok &= check(runtime.initialize(device, 0, &error) && runtime.ready() && !runtime.buffer().valid(),
+                "explicit zero global-variable size disables the allocation");
     return ok;
 }
 
@@ -2314,6 +2355,21 @@ bool testRealShaderCompilation() {
     const auto resourceArtifact = compiler.compile(resourceRequest);
     ok &= check(hasUniqueDescriptorBindings(resourceArtifact.spirv),
                 "glslc keeps HLSL register classes in distinct bindings");
+    auto nativeFxRequest = resourceRequest;
+    nativeFxRequest.requireDxcForNativeFxAbi = true;
+    const bool dxc = compiler.executable().filename() == "dxc" || compiler.executable().filename() == "dxc.exe";
+    if (dxc) {
+        const auto nativeFxArtifact = compiler.compile(nativeFxRequest);
+        ok &= check(!nativeFxArtifact.spirv.empty(), "DXC compiles native FX with the explicit globals ABI");
+    } else {
+        bool rejectedFallback = false;
+        try {
+            static_cast<void>(compiler.compile(nativeFxRequest));
+        } catch (const std::runtime_error& exception) {
+            rejectedFallback = std::string_view(exception.what()).find("require DXC") != std::string_view::npos;
+        }
+        ok &= check(rejectedFallback, "native FX rejects glslc when it cannot guarantee the globals ABI");
+    }
 
     dayo::fx::FxShaderCache cache;
     dayo::fx::FxShaderKey key;
@@ -2333,6 +2389,9 @@ bool testFxPipelineRuntime() {
     dayo::fx::FxShaderCompiler compiler;
     if (!compiler.available())
         return true;
+    const bool dxc = compiler.executable().filename() == "dxc" || compiler.executable().filename() == "dxc.exe";
+    if (!dxc)
+        return check(true, "native FX pipeline execution requires DXC's explicit $Globals binding support");
     namespace fs = std::filesystem;
     const auto directory =
         fs::temp_directory_path() /
@@ -2380,9 +2439,10 @@ bool testFxPipelineRuntime() {
     program.sourcePath = directory / "pipeline-runtime.fxdayo";
     program.hlsl = "#include \"constants.hlsli\"\n"
                    "#include \"subayai/hlsl/casesensitive.hlsli\"\n"
+                   "float Exposure;\n"
                    "#ifdef YRZ_PASS_deform\n"
                    "[numthreads(1, 1, 1)] void main(uint3 id : SV_DispatchThreadID) { NativeOutput[id.xy] = "
-                   "float4(Gain + TEST_CASE_SENSITIVE_VALUE, 0, 0, 1); }\n"
+                   "float4(Gain + Exposure + TEST_CASE_SENSITIVE_VALUE, 0, 0, 1); }\n"
                    "#endif\n";
     dayo::fx::FxDispatch dispatch;
     dispatch.name = "deform";
@@ -2458,6 +2518,21 @@ bool testFxPipelineRuntime() {
     runtime.reset();
     ok &= check(device.destroyedPipelines_ == 1 && device.destroyedShaders_ == 1,
                 "FX pipeline runtime destroys owned Vulkan objects");
+
+    dayo::fx::FxShaderCompiler glslcCompiler{"glslc"};
+    if (glslcCompiler.available()) {
+        dayo::graphics::FxPipelineRuntime glslcRuntime;
+        std::string glslcError;
+        const bool glslcBuilt = glslcRuntime.build(
+            device, program, glslcCompiler,
+            [](const dayo::fx::FxDispatch&) {
+                return std::optional<dayo::graphics::handles::PipelineLayoutHandle>{{1, 1}};
+            },
+            &glslcError, 7, sharedSource);
+        ok &= check(!program.globalVarSizeSpecified && !program.controllers.empty() && !glslcBuilt &&
+                        glslcError.find("require DXC") != std::string::npos,
+                    "native FX with controllers rejects glslc for standalone globals when globalVarSize is omitted");
+    }
 
     dayo::fx::FxDispatch postprocess;
     postprocess.name = "postprocess";
@@ -2574,6 +2649,7 @@ int main() {
     ok &= testViewConstantsAndScreenHistory();
     ok &= testFxControllerResolver();
     ok &= testFxConditionRuntime();
+    ok &= testNativeFxGlobalVariableRuntime();
     ok &= testPreviewReferencePath();
     ok &= testSchedulerOrder();
     ok &= testCloneUnification();

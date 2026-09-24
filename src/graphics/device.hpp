@@ -52,6 +52,7 @@ struct DeviceCapabilities {
     bool rayQuery{};
     bool fragmentShaderBarycentric{};
     bool samplerAnisotropy{};
+    std::uint32_t maxUniformBufferRange{};
     bool logicOp{};
     bool independentBlend{};
     bool nativeSubayai{};

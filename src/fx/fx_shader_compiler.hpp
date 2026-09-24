@@ -28,6 +28,9 @@ struct FxShaderCompileRequest {
     std::vector<std::string> macros;
     std::vector<std::filesystem::path> includeDirectories;
     std::string targetEnvironment{"vulkan1.3"};
+    // Native YRZFX binds implicit HLSL globals to a fixed host ABI slot.
+    // glslc has no equivalent to DXC's -fvk-bind-globals option.
+    bool requireDxcForNativeFxAbi{};
 };
 
 struct FxShaderArtifact {

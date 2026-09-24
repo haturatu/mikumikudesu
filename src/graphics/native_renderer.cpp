@@ -240,13 +240,15 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
         auto& entry = runtimes[index];
         if (!entry) {
             auto program = fx::FxCompiler{}.compile(effects[index].graph);
+            std::string error;
             entry = std::make_unique<GenericEffectRuntime>();
             entry->device = device_;
+            if (!entry->globalVariables.initialize(*device_, program.globalVarSize, &error))
+                throw std::runtime_error(error.empty() ? "generic Dayo FX global buffer initialization failed" : error);
             if (!entry->controller.initialize(*device_, effects[index].graph.controllers))
                 throw std::runtime_error("generic Dayo FX controller buffer initialization failed");
             entry->block.emplace(entry->controller.layout());
             entry->runtime.addProvider(sceneHostProvider_);
-            std::string error;
             fx::FxNativeShaderSourceOptions sourceOptions;
             sourceOptions.controllerDeclarations = effects[index].graph.controllers;
             if (!entry->runtime.initializeForFrame(*device_, std::move(program), fx::FxShaderCompiler{}, effectContext,
@@ -275,6 +277,11 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
             throw std::runtime_error("generic Dayo FX host frame bindings are incomplete");
         auto effectBindings = hostBindings_;
         effectBindings.controllerConstants = entry->controller.buffer();
+        // MikuMikuDayo 1.30 appends globalCB after ControllerCB on passes
+        // which declare controllers. Keep the effect-local allocation alive
+        // with the runtime and bind it at b2 in that same case.
+        if (!effects[index].graph.controllers.empty() && entry->globalVariables.buffer().valid())
+            effectBindings.globalConstants = entry->globalVariables.buffer();
         auto frameBindings = nativeSceneFrameDescriptorBindings(effectBindings);
         const auto slot = device_->currentFrameSlot() % kNativeFramesInFlight;
         auto& frameSet = entry->frameSets[slot];
