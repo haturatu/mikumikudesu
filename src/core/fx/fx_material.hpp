@@ -3,9 +3,11 @@
 #include "core/effect.hpp"
 #include "core/fx/fx_expr.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -196,6 +198,30 @@ struct EvaluatedMaterialBinding {
     };
     std::vector<ResolvedField> orderedValues;
 };
+
+struct MaterialStructuredFieldLayout {
+    MaterialFieldSchema schema;
+    std::size_t offset{};
+    std::size_t size{};
+};
+
+struct MaterialStructuredBufferLayout {
+    // DXC storage-buffer member offsets and ArrayStride, matching the
+    // -fvk-use-dx-layout option and the generated FooValue declaration.
+    std::vector<MaterialStructuredFieldLayout> fields;
+    std::size_t stride{};
+};
+
+struct MaterialStructuredBufferData {
+    MaterialStructuredBufferLayout layout;
+    std::vector<std::byte> bytes;
+    std::size_t count{};
+};
+
+[[nodiscard]] MaterialStructuredBufferLayout makeMaterialStructuredBufferLayout(const MaterialTemplateSchema& schema);
+[[nodiscard]] MaterialStructuredBufferData
+packMaterialStructuredBuffer(const MaterialStructuredBufferLayout& layout,
+                             std::span<const EvaluatedMaterialBinding> materials);
 
 // Alias folding rules (priority: ref > shareTags > shared > concrete):
 // - ref="B"        -> canonical(resolve(B)); missing target keeps "B".

@@ -4,8 +4,11 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
+#include <cstddef>
 #include <iostream>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -31,6 +34,15 @@ dayo::core::fx::MaterialTemplate makeAliasTemplate() {
         {.id = "baseB", .shareTags = {"base"}}, {.id = "local", .shareTags = {}},
     };
     return templ;
+}
+
+std::uint32_t readLittleEndianWord(std::span<const std::byte> bytes, std::size_t offset) {
+    std::uint32_t value = 0;
+    for (std::size_t index = 0; index < sizeof(value); ++index) {
+        const auto byte = std::to_integer<std::uint32_t>(bytes[offset + index]);
+        value |= byte << static_cast<unsigned>(index * 8U);
+    }
+    return value;
 }
 
 } // namespace
@@ -232,6 +244,67 @@ int main() {
             rejectedType = true;
         }
         ok &= check(rejectedType, "material linker rejects instance values with an incompatible schema type");
+    }
+
+    // Pack evaluated values in declaration order using the DirectX
+    // StructuredBuffer storage layout selected by the FX shader compiler.
+    {
+        MaterialTemplateSchema schema;
+        schema.fields = {{.name = "Gain", .type = MaterialFieldType::floatingPoint, .components = 1},
+                         {.name = "Tint", .type = MaterialFieldType::floatingPoint, .components = 2},
+                         {.name = "Mode", .type = MaterialFieldType::signedInteger, .components = 1},
+                         {.name = "Direction", .type = MaterialFieldType::floatingPoint, .components = 3},
+                         {.name = "Tail", .type = MaterialFieldType::floatingPoint, .components = 1}};
+        const auto layout = makeMaterialStructuredBufferLayout(schema);
+        const auto makeMaterial = [&schema](float gain, std::array<float, 2> tint, std::int32_t mode,
+                                            std::array<float, 3> direction, float tail) {
+            EvaluatedMaterialBinding material;
+            material.orderedValues = {{.schema = schema.fields[0], .value = gain},
+                                      {.schema = schema.fields[1], .value = tint},
+                                      {.schema = schema.fields[2], .value = mode},
+                                      {.schema = schema.fields[3], .value = direction},
+                                      {.schema = schema.fields[4], .value = tail}};
+            return material;
+        };
+        const std::array materials{makeMaterial(0.5F, {1.0F, 2.0F}, 3, {4.0F, 5.0F, 6.0F}, 7.0F),
+                                   makeMaterial(0.25F, {8.0F, 9.0F}, -1, {10.0F, 11.0F, 12.0F}, 13.0F)};
+        const auto packed = packMaterialStructuredBuffer(layout, materials);
+        const auto readFloat = [&packed](std::size_t offset) {
+            return std::bit_cast<float>(readLittleEndianWord(packed.bytes, offset));
+        };
+        bool rejectedOrder = false;
+        auto mismatched = materials[0];
+        mismatched.orderedValues[1].schema.name = "WrongField";
+        try {
+            static_cast<void>(packMaterialStructuredBuffer(layout, std::span(&mismatched, 1)));
+        } catch (const std::invalid_argument&) {
+            rejectedOrder = true;
+        }
+        const auto straddledSchema = MaterialTemplateSchema{
+            .fields = {{.name = "Pair", .type = MaterialFieldType::floatingPoint, .components = 2},
+                       {.name = "Vector", .type = MaterialFieldType::floatingPoint, .components = 3}}};
+        const auto straddled = makeMaterialStructuredBufferLayout(straddledSchema);
+        ok &= check(layout.fields[0].offset == 0 && layout.fields[1].offset == 4 && layout.fields[2].offset == 12 &&
+                        layout.fields[3].offset == 16 && layout.fields[4].offset == 28 && layout.stride == 32,
+                    "MatDesc structured-buffer layout follows DXC storage layout in declaration order");
+        ok &= check(
+            packed.count == 2 && packed.bytes.size() == 64 && readFloat(0) == 0.5F && readFloat(4) == 1.0F &&
+                readFloat(8) == 2.0F && std::bit_cast<std::int32_t>(readLittleEndianWord(packed.bytes, 12)) == 3 &&
+                readFloat(16) == 4.0F && readFloat(24) == 6.0F && readFloat(28) == 7.0F && readFloat(32) == 0.25F &&
+                std::bit_cast<std::int32_t>(readLittleEndianWord(packed.bytes, 44)) == -1 && readFloat(60) == 13.0F,
+            "MatDesc values pack into little-endian records with the reflected row stride");
+        ok &= check(straddled.fields[0].offset == 0 && straddled.fields[1].offset == 8 && straddled.stride == 20,
+                    "MatDesc vector fields use their DXC storage offsets without cbuffer row padding");
+        ok &= check(rejectedOrder, "MatDesc packer rejects values with a different field order");
+
+        const MaterialTemplateSchema textureOnlySchema{};
+        const auto textureOnlyLayout = makeMaterialStructuredBufferLayout(textureOnlySchema);
+        const EvaluatedMaterialBinding textureOnlyMaterial{};
+        const auto textureOnlyPayload =
+            packMaterialStructuredBuffer(textureOnlyLayout, std::span(&textureOnlyMaterial, 1));
+        ok &= check(textureOnlyLayout.fields.empty() && textureOnlyLayout.stride == sizeof(std::uint32_t) &&
+                        textureOnlyPayload.count == 1 && textureOnlyPayload.bytes.size() == sizeof(std::uint32_t),
+                    "texture-only MatDesc layouts use a one-word private value record");
     }
 
     // Alias folding: shared / ref / shareTags collapse to canonical ids.

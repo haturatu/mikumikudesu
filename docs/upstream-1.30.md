@@ -17,7 +17,7 @@ installも同じ一覧を使い、拡張子による除外を行わず、第三�
 | --- | --- | --- |
 | 1. baseline・配布 | 1.30 ZIPの固定、SHA256検証、共通manifestによる配布、公式assetの既存互換テスト | 実装済み |
 | 2. データ・solver互換 | Windows 1.30保存fixtureの往復、camera/external parent/制限IKの数値比較 | データ形式は実装済み、実機検証は未実施 |
-| 3. FX 1.30契約 | buffer/size expression、pow、CloneCount/CLONEDVERTEXCOUNT、MatDesc、resource allocation、RT hit groupの接続 | 実装済み。上流全FXの互換性検証は未実施 |
+| 3. FX 1.30契約 | buffer/size expression、pow、CloneCount/CLONEDVERTEXCOUNT、MatDesc、resource allocation、RT hit groupの接続 | IR/parser/plannerとtyped executorは実装済み。generic MatDesc GPU bindingや上流全FXのruntime検証は未完了 |
 | 4. Subayai/BDPT実行 | Vulkan BLAS/TLAS/SBT、各pass実行器、native frame/output bridge、RT対応GPUでの画像比較 | runtime接続・feature fallback・CPU/Mock検証は実装済み、RT対応GPUでの画像比較は未実施 |
 
 `nativeSubayai`/`nativeBdpt`は起動時のGPU capability、選択したFX graphの要求feature、native runtimeの
@@ -50,6 +50,12 @@ upload ABIに合わせたRGBA8 decodeであり、DXGI format保持、全DXGI形�
 `.dayo`の`EditorInfo`は1.30 sourceで定義された全フィールドをproject DTOと両方のJSON sectionへ保持します。
 repeat、audio volume/offset、floor collision、録画範囲など、desuに対応する設定はruntimeへ適用します。
 その他のupstream editor settingはload/saveで保持しますが、同じUIや描画動作を実装したことを意味しません。
+
+MatDescのordered value payloadは、生成HLSLのfield宣言順とDXCのDirectX buffer row packingに合わせるCPU packerを持ちます
+([DXC SPIR-V layout rules](https://github.com/microsoft/DirectXShaderCompiler/blob/main/docs/SPIR-V.rst),
+[DXC buffer packing](https://github.com/microsoft/DirectXShaderCompiler/wiki/Buffer-Packing))。
+これは値bufferのpacking foundationです。generic `_idx`/`_tex`/`_tex3D`/`_value` descriptorとbindless textureのGPU runtime、
+`screen.bmp`およびdeformer resourceのMatDesc参照はまだend-to-end接続されていません。
 
 ## Windows fixtureの受け入れ条件
 
