@@ -24,32 +24,33 @@ bool DayoFxRuntime::initialize(Device& device, fx::FxProgram program, const fx::
                                std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts, std::string* error,
                                std::span<const handles::DescriptorSetHandle> sharedDescriptorSets,
                                fx::FxNativeShaderSourceOptions sourceOptions,
-                               const FxMaterialGpuRuntime* materialRuntime) {
+                               const FxMaterialGpuRuntime* materialRuntime,
+                               const FxMaterialRuntimeInitializer& initializeMaterialRuntime) {
     conditionRuntime_.clear();
     hasExecuted_ = false;
     lastRenderWidth_ = 0;
     lastRenderHeight_ = 0;
     return runtime_.initialize(device, std::move(program), compiler, sharedLayouts, error, sharedDescriptorSets,
-                               std::move(sourceOptions), materialRuntime);
+                               std::move(sourceOptions), materialRuntime, initializeMaterialRuntime);
 }
 
-bool DayoFxRuntime::initializeForFrame(Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
-                                       const fx::FxFrameContext& context,
-                                       std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts,
-                                       std::string* error,
-                                       std::span<const handles::DescriptorSetHandle> sharedDescriptorSets,
-                                       fx::FxNativeShaderSourceOptions sourceOptions,
-                                       const FxMaterialGpuRuntime* materialRuntime) {
+bool DayoFxRuntime::initializeForFrame(
+    Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler, const fx::FxFrameContext& context,
+    std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts, std::string* error,
+    std::span<const handles::DescriptorSetHandle> sharedDescriptorSets, fx::FxNativeShaderSourceOptions sourceOptions,
+    const FxMaterialGpuRuntime* materialRuntime, const FxMaterialRuntimeInitializer& initializeMaterialRuntime) {
     conditionRuntime_.clear();
     hasExecuted_ = false;
     lastRenderWidth_ = 0;
     lastRenderHeight_ = 0;
     return runtime_.initializeForFrame(device, std::move(program), compiler, context, sharedLayouts, error,
-                                       sharedDescriptorSets, std::move(sourceOptions), materialRuntime);
+                                       sharedDescriptorSets, std::move(sourceOptions), materialRuntime,
+                                       initializeMaterialRuntime);
 }
 
-bool DayoFxRuntime::refresh(const fx::FxFrameContext& context, std::string* error) {
-    return runtime_.refresh(context, error);
+bool DayoFxRuntime::refresh(const fx::FxFrameContext& context, std::string* error,
+                            const FxMaterialRuntimeInitializer& initializeMaterialRuntime) {
+    return runtime_.refresh(context, error, initializeMaterialRuntime);
 }
 
 void DayoFxRuntime::reset() noexcept {
