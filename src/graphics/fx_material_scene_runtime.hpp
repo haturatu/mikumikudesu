@@ -42,6 +42,9 @@ class FxMaterialSceneRuntime {
     [[nodiscard]] bool sync(Device& device, const core::fx::MaterialTemplateSchema& schema,
                             std::span<const FxMaterialSceneModel> models, const fx::FxFrameContext& context,
                             std::string* error = nullptr, const FxMaterialTextureResolver& textureResolver = {});
+    void invalidateLinks() noexcept {
+        hasSchema_ = false;
+    }
     void reset() noexcept;
 
     [[nodiscard]] const FxMaterialGpuRuntime& gpuRuntime() const noexcept {

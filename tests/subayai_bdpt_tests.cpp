@@ -5,6 +5,7 @@
 #include "graphics/bdpt_runtime.hpp"
 #include "graphics/dayo_host_resources.hpp"
 #include "graphics/device.hpp"
+#include "graphics/fx_material_scene_runtime.hpp"
 #include "graphics/native_controller_runtime.hpp"
 #include "graphics/native_dayo_environment_runtime.hpp"
 #include "graphics/native_frame_constants.hpp"
@@ -503,6 +504,86 @@ bool testSubayaiNativeFxExecution() {
     return ok;
 }
 
+bool testSubayaiMatDescResolvesLocalTextureOnFirstFrame() {
+    dayo::fx::FxShaderCompiler compiler;
+    if (!compiler.available())
+        return true;
+
+    MockNativeDevice device;
+    dayo::graphics::SubayaiRuntime runtime;
+    dayo::fx::FxProgram program;
+    program.label = "Subayai-MatDesc-local-texture";
+    program.sourcePath = "subayai-matdesc-local-texture.fxdayo";
+    program.hlsl = "float4 main() : SV_Target { return float4(1, 0, 0, 1); }\n";
+    program.materialDescriptor =
+        dayo::core::EffectMaterialDescriptor{.name = "Surface", .templatePath = {}, .defaultFile = {}};
+    program.materialSchema = dayo::core::fx::parseMaterialTemplateSchema("_T0 : Albedo\n", "Surface");
+
+    dayo::core::EffectTexture localTexture;
+    localTexture.name = "LocalTex";
+    localTexture.view = "SRV";
+    program.textures.push_back(std::move(localTexture));
+
+    std::string error;
+    bool ok = check(runtime.initialize(device, std::move(program), &error),
+                    "Subayai initializes a MatDesc graph with a renderer-local texture");
+    dayo::core::MaterialEditorState material;
+    material.annotation = "_TAlbedo : LocalTex";
+    const std::array materials{material};
+    const std::array models{dayo::graphics::FxMaterialSceneModel{
+        .id = 17,
+        .sourcePath = "model.pmx",
+        .projectDirectory = {},
+        .modelIndex = 0,
+        .vertexCount = 3,
+        .cloneCount = 1,
+        .materials = materials,
+    }};
+    const auto context = dayo::fx::makeFxFrameContext(0.0F, 0, 16, 8, 1, 0, 3, 1, 1, 1);
+    dayo::graphics::handles::TextureHandle resolvedTexture{};
+    std::size_t resolverCalls = 0;
+    const dayo::graphics::FxMaterialTextureResolver resolver =
+        [&runtime, &resolvedTexture,
+         &resolverCalls](dayo::core::ModelId, const dayo::core::fx::MaterialTextureSchema&,
+                         std::string_view assigned) -> std::optional<dayo::graphics::FxMaterialExternalTexture> {
+        ++resolverCalls;
+        if (assigned != "LocalTex")
+            return std::nullopt;
+        const auto* store = runtime.liveResourceStore();
+        const auto* resource = store == nullptr ? nullptr : store->find(assigned);
+        if (resource == nullptr || resource->kind != dayo::graphics::FxResourceStore::Kind::texture ||
+            !resource->texture.valid())
+            return std::nullopt;
+        resolvedTexture = resource->texture;
+        return dayo::graphics::FxMaterialExternalTexture{
+            .identity = "renderer-local:LocalTex",
+            .texture = resource->texture,
+            .dimension = dayo::core::fx::MaterialTextureDimension::twoD,
+            .generation = 1,
+        };
+    };
+    const std::array<dayo::graphics::AliasEntry, 1> lightSampling{{{1.0F, 0}}};
+    dayo::graphics::EnvironmentGpuResult environment;
+    auto first = runtime.prepareFrame(context, {}, lightSampling, environment, models, resolver);
+    const auto* local =
+        runtime.liveResourceStore() == nullptr ? nullptr : runtime.liveResourceStore()->find("LocalTex");
+    const auto localHandle = local == nullptr ? dayo::graphics::handles::TextureHandle{} : local->texture;
+    ok &= check(runtime.nativeReady() && first.nativeFx.has_value(),
+                "first-frame Subayai MatDesc runtime reaches native FX readiness");
+    ok &= check(resolverCalls > 0 && resolvedTexture == localHandle && localHandle.valid(),
+                "first-frame MatDesc resolver sees the allocated renderer-local texture");
+
+    const auto resolverCallsAfterFirstFrame = resolverCalls;
+    auto second = runtime.prepareFrame(context, {}, lightSampling, environment, models, resolver);
+    const auto* secondLocal =
+        runtime.liveResourceStore() == nullptr ? nullptr : runtime.liveResourceStore()->find("LocalTex");
+    ok &= check(second.nativeFx.has_value() && resolverCalls >= resolverCallsAfterFirstFrame &&
+                    secondLocal != nullptr && secondLocal->texture == localHandle && resolvedTexture == localHandle,
+                "second-frame MatDesc keeps the same renderer-local resource handle");
+    runtime.reset();
+    return ok;
+}
+
 bool testBdptNativeFxExecution() {
     dayo::fx::FxShaderCompiler compiler;
     if (!compiler.available())
@@ -586,6 +667,7 @@ int main() {
     bool ok = true;
 
     ok &= testSubayaiNativeFxExecution();
+    ok &= testSubayaiMatDescResolvesLocalTextureOnFirstFrame();
     ok &= testBdptNativeFxExecution();
 
     // Native material linking keeps Subayai hair controls in a dedicated GPU

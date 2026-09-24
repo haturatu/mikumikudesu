@@ -66,15 +66,18 @@ class DayoFxRuntime {
                                   std::string* error = nullptr,
                                   std::span<const handles::DescriptorSetHandle> sharedDescriptorSets = {},
                                   fx::FxNativeShaderSourceOptions sourceOptions = {},
-                                  const FxMaterialGpuRuntime* materialRuntime = nullptr);
+                                  const FxMaterialGpuRuntime* materialRuntime = nullptr,
+                                  const FxMaterialRuntimeInitializer& initializeMaterialRuntime = {});
     [[nodiscard]] bool initializeForFrame(Device& device, fx::FxProgram program, const fx::FxShaderCompiler& compiler,
                                           const fx::FxFrameContext& context,
                                           std::span<const handles::DescriptorSetLayoutHandle> sharedLayouts = {},
                                           std::string* error = nullptr,
                                           std::span<const handles::DescriptorSetHandle> sharedDescriptorSets = {},
                                           fx::FxNativeShaderSourceOptions sourceOptions = {},
-                                          const FxMaterialGpuRuntime* materialRuntime = nullptr);
-    [[nodiscard]] bool refresh(const fx::FxFrameContext& context, std::string* error = nullptr);
+                                          const FxMaterialGpuRuntime* materialRuntime = nullptr,
+                                          const FxMaterialRuntimeInitializer& initializeMaterialRuntime = {});
+    [[nodiscard]] bool refresh(const fx::FxFrameContext& context, std::string* error = nullptr,
+                               const FxMaterialRuntimeInitializer& initializeMaterialRuntime = {});
     void reset() noexcept;
 
     void addProvider(FxExternalResourceProvider& provider);
