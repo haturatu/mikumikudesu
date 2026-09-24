@@ -68,6 +68,10 @@ class BdptRuntime {
     [[nodiscard]] const fx::FxProgram* program() const noexcept {
         return ready_ ? &program_ : nullptr;
     }
+    [[nodiscard]] const FxResourceStore* liveResourceStore() const noexcept {
+        const auto& resources = dayoFx_.nativeRuntime().resources();
+        return resources.ready() ? &resources.store() : nullptr;
+    }
     [[nodiscard]] BdptAccumulation& accumulation() noexcept {
         return accumulation_;
     }

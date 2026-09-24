@@ -625,7 +625,8 @@ FxResourceRuntime::~FxResourceRuntime() {
 
 bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program, const fx::FxFrameContext& context,
                                    std::string* error, std::uint32_t resourceSet,
-                                   const FxMaterialGpuRuntime* materialRuntime) {
+                                   const FxMaterialGpuRuntime* materialRuntime,
+                                   const FxMaterialRuntimeInitializer& initializeMaterialRuntime) {
     if (error != nullptr)
         error->clear();
     reset();
@@ -709,7 +710,8 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                 .usage = textureUsage(declaration.view, format, usageSummary),
                 .lifetime = ResourceLifetime::persistent,
             };
-            reserveBytes(static_cast<std::uint64_t>(estimateTextureBytes(description)), name);
+            const auto allocationBytes = static_cast<std::uint64_t>(estimateTextureBytes(description));
+            reserveBytes(allocationBytes, name);
             FxResourceStore::Resource resource{.name = name,
                                                .kind = FxResourceStore::Kind::texture,
                                                .texture = {},
@@ -718,6 +720,9 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                                                .extent = resolved,
                                                .format = format,
                                                .dimension = 2,
+                                               .allocationBytes = allocationBytes,
+                                               .elementSize = 0,
+                                               .elementType = {},
                                                .legacyDescriptorKind = textureDescriptorKind(declaration.view, format),
                                                .legacyBinding = binding};
             resource.texture = device.createTextureEx(description);
@@ -780,7 +785,8 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                 .usage = textureUsage(declaration.view, format, usageSummary),
                 .lifetime = ResourceLifetime::persistent,
             };
-            reserveBytes(static_cast<std::uint64_t>(estimateTextureBytes(description)), name);
+            const auto allocationBytes = static_cast<std::uint64_t>(estimateTextureBytes(description));
+            reserveBytes(allocationBytes, name);
             FxResourceStore::Resource resource{.name = name,
                                                .kind = FxResourceStore::Kind::texture,
                                                .texture = {},
@@ -789,6 +795,9 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                                                .extent = resolved,
                                                .format = format,
                                                .dimension = 3,
+                                               .allocationBytes = allocationBytes,
+                                               .elementSize = 0,
+                                               .elementType = {},
                                                .legacyDescriptorKind = textureDescriptorKind(declaration.view, format),
                                                .legacyBinding = binding};
             resource.texture = device.createTextureEx(description);
@@ -836,6 +845,9 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                                                .extent = resolved,
                                                .format = PixelFormat::rgba8Unorm,
                                                .dimension = resolvedFx.dimension,
+                                               .allocationBytes = bytes,
+                                               .elementSize = declaration.elementSize,
+                                               .elementType = declaration.type,
                                                .legacyDescriptorKind = bufferDescriptorKind(declaration.view),
                                                .legacyBinding = binding};
             resource.buffer = device.createBufferEx(description);
@@ -858,6 +870,9 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                                                .extent = {},
                                                .format = PixelFormat::rgba8Unorm,
                                                .dimension = 0,
+                                               .allocationBytes = 0,
+                                               .elementSize = 0,
+                                               .elementType = {},
                                                .legacyDescriptorKind = DescriptorKind::sampler,
                                                .legacyBinding = binding};
             resource.sampler = device.createSamplerEx(samplerDesc(declaration));
@@ -888,6 +903,13 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             descriptorSet_ = device.allocateDescriptorSetEx(descriptorLayout_, bindings);
             if (!descriptorSet_.valid())
                 throw std::runtime_error("FX resource descriptor set is invalid");
+        }
+        if (initializeMaterialRuntime) {
+            materialRuntime = initializeMaterialRuntime(store_, error);
+            if (materialRuntime == nullptr)
+                throw std::runtime_error(error != nullptr && !error->empty()
+                                             ? *error
+                                             : "FX material runtime initialization returned no runtime");
         }
         if (!passDescriptors_.initialize(device, program, resourceSet, store_, error, materialRuntime))
             throw std::runtime_error(error != nullptr && !error->empty() ? *error

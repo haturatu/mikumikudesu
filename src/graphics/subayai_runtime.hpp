@@ -71,6 +71,10 @@ class SubayaiRuntime {
     [[nodiscard]] const fx::FxProgram* program() const noexcept {
         return ready_ ? &program_ : nullptr;
     }
+    [[nodiscard]] const FxResourceStore* liveResourceStore() const noexcept {
+        const auto& resources = dayoFx_.nativeRuntime().resources();
+        return resources.ready() ? &resources.store() : nullptr;
+    }
     [[nodiscard]] bool syncMaterials(std::span<const core::MaterialParameterBlock> materials);
     void setEnvironmentBackend(IEnvironmentBackend* backend) noexcept {
         environmentService_ = EnvironmentService(backend);

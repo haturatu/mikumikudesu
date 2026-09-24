@@ -2,6 +2,7 @@
 #include "fx/fx_compiler.hpp"
 #include "graphics/deformer_resource_registry.hpp"
 #include "graphics/fx_raster_semantics.hpp"
+#include "graphics/fx_shared_resource_registry.hpp"
 #include "graphics/native_fx_pending_events.hpp"
 #include "graphics/native_renderer.hpp"
 
@@ -9,8 +10,10 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <ranges>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 namespace {
 
@@ -47,8 +50,56 @@ int main() {
         .extent = {32, 16, 1},
         .format = dayo::graphics::PixelFormat::rgba16Float,
         .dimension = 2,
+        .allocationBytes = 4096,
+        .elementSize = 0,
+        .elementType = {},
     };
     ok &= check(exportedStore.add(exportedTexture), "deformer resource fixture enters physical store");
+    dayo::graphics::FxResourceStore::Resource exportedBuffer{
+        .name = "Particles",
+        .kind = dayo::graphics::FxResourceStore::Kind::buffer,
+        .buffer = {5, 1},
+        .extent = {64, 1, 1},
+        .format = dayo::graphics::PixelFormat::rgba8Unorm,
+        .dimension = 1,
+        .allocationBytes = 2048,
+        .elementSize = 32,
+        .elementType = "Particle",
+    };
+    ok &= check(exportedStore.add(exportedBuffer), "buffer resource fixture enters physical store");
+    dayo::graphics::FxResourceStore::Resource exportedSampler{
+        .name = "LinearSampler",
+        .kind = dayo::graphics::FxResourceStore::Kind::sampler,
+        .sampler = {6, 1},
+        .extent = {},
+        .format = dayo::graphics::PixelFormat::rgba8Unorm,
+        .dimension = 0,
+        .allocationBytes = 0,
+        .elementSize = 0,
+        .elementType = {},
+    };
+    ok &= check(exportedStore.add(exportedSampler), "sampler resource fixture enters physical store");
+    const auto liveResourceFixture = dayo::graphics::snapshotFxResources("deform.fxdayo", exportedStore);
+    const auto findLiveResource = [&liveResourceFixture](std::string_view name) {
+        return std::ranges::find_if(liveResourceFixture,
+                                    [name](const auto& resource) { return resource.name == name; });
+    };
+    const auto liveTexture = findLiveResource("OutBuf");
+    const auto liveBuffer = findLiveResource("Particles");
+    const auto liveSampler = findLiveResource("LinearSampler");
+    ok &= check(liveResourceFixture.size() == 3 && liveTexture != liveResourceFixture.end() &&
+                    liveTexture->effect == "deform.fxdayo" && liveTexture->kind == "Texture" &&
+                    liveTexture->format == "RGBA16_FLOAT" && liveTexture->extent.width == 32 &&
+                    liveTexture->extent.height == 16 && liveTexture->dimension == 2 &&
+                    liveTexture->allocationBytes == 4096,
+                "FX texture snapshots retain format, extent, and allocation size without handles");
+    ok &= check(liveBuffer != liveResourceFixture.end() && liveBuffer->kind == "Buffer" && liveBuffer->format.empty() &&
+                    liveBuffer->allocationBytes == 2048 && liveBuffer->elementSize == 32 &&
+                    liveBuffer->elementType == "Particle",
+                "FX buffer snapshots show byte/type metadata instead of a placeholder pixel format");
+    ok &= check(liveSampler != liveResourceFixture.end() && liveSampler->kind == "Sampler" &&
+                    liveSampler->format.empty() && liveSampler->allocationBytes == 0,
+                "FX sampler snapshots do not claim a texture format or byte allocation");
     dayo::graphics::DeformerResourceRegistry deformerResources;
     deformerResources.publish(7, 101, exportedStore);
     auto exported = deformerResources.resolve(7, "OutBuf");
@@ -81,6 +132,125 @@ int main() {
     ok &= check(exported.value.has_value() && exported.value->generation > initialGeneration &&
                     exported.value->resource.texture == exportedTexture.texture,
                 "changed physical handles receive a fresh resource generation");
+
+    const auto makeTextureDeclaration = [](std::string name, std::string shared) {
+        dayo::core::EffectTexture declaration;
+        declaration.name = std::move(name);
+        declaration.shared = std::move(shared);
+        return declaration;
+    };
+    const auto makeBufferDeclaration = [](std::string name, std::string shared) {
+        dayo::core::EffectBuffer declaration;
+        declaration.name = std::move(name);
+        declaration.shared = std::move(shared);
+        return declaration;
+    };
+    dayo::fx::FxProgram sharedProgram;
+    sharedProgram.textures.push_back(makeTextureDeclaration("SharedColor", "SOURCE"));
+    sharedProgram.textures3D.push_back(makeTextureDeclaration("SharedVolume", "source"));
+    sharedProgram.buffers.push_back(makeBufferDeclaration("SharedData", " source "));
+    sharedProgram.textures.push_back(makeTextureDeclaration("ReferenceOnly", "REF"));
+    dayo::graphics::FxResourceStore sharedStore;
+    ok &= check(sharedStore.add({.name = "SharedColor",
+                                 .kind = dayo::graphics::FxResourceStore::Kind::texture,
+                                 .texture = {20, 1},
+                                 .extent = {8, 4, 1},
+                                 .format = dayo::graphics::PixelFormat::rgba16Float,
+                                 .dimension = 2}),
+                "2D shared source fixture enters physical store");
+    ok &= check(sharedStore.add({.name = "SharedVolume",
+                                 .kind = dayo::graphics::FxResourceStore::Kind::texture,
+                                 .texture = {21, 2},
+                                 .extent = {8, 4, 2},
+                                 .format = dayo::graphics::PixelFormat::rgba16Float,
+                                 .dimension = 3}),
+                "3D shared source fixture enters physical store");
+    ok &= check(sharedStore.add(
+                    {.name = "SharedData", .kind = dayo::graphics::FxResourceStore::Kind::buffer, .buffer = {22, 3}}),
+                "buffer shared source fixture enters physical store");
+    ok &= check(sharedStore.add({.name = "ReferenceOnly",
+                                 .kind = dayo::graphics::FxResourceStore::Kind::texture,
+                                 .texture = {23, 4},
+                                 .extent = {1, 1, 1},
+                                 .dimension = 2}),
+                "shared reference-only fixture enters physical store");
+    dayo::graphics::FxSharedResourceRegistry sharedResources;
+    sharedResources.publish("effect:source", sharedProgram, sharedStore);
+    auto shared = sharedResources.resolve("SharedColor");
+    ok &= check(shared.status == dayo::graphics::FxSharedResourceRegistry::LookupStatus::unique &&
+                    shared.value.has_value() &&
+                    shared.value->resource.texture == dayo::graphics::handles::TextureHandle{20, 1},
+                "shared source registry publishes a non-owning 2D texture handle");
+    const auto sharedGeneration = shared.value.has_value() ? shared.value->generation : 0;
+    sharedResources.publish("effect:source", sharedProgram, sharedStore);
+    shared = sharedResources.resolve("SharedColor");
+    ok &= check(shared.value.has_value() && shared.value->generation == sharedGeneration,
+                "unchanged shared source snapshots preserve their generation");
+    auto replacedSharedStore = sharedStore;
+    replacedSharedStore.find("SharedColor")->texture = {25, 5};
+    sharedResources.publish("effect:source", sharedProgram, replacedSharedStore);
+    shared = sharedResources.resolve("SharedColor");
+    ok &= check(shared.value.has_value() && shared.value->generation > sharedGeneration &&
+                    shared.value->resource.texture == dayo::graphics::handles::TextureHandle{25, 5},
+                "replaced shared physical resources receive a fresh generation");
+    const auto sharedVolume = sharedResources.resolve("SharedVolume");
+    const auto sharedBuffer = sharedResources.resolve("SharedData");
+    ok &= check(sharedVolume.value.has_value() && sharedVolume.value->resource.dimension == 3 &&
+                    sharedBuffer.value.has_value() &&
+                    sharedBuffer.value->resource.kind == dayo::graphics::FxResourceStore::Kind::buffer,
+                "shared source registry retains 3D texture and buffer kinds");
+    ok &= check(sharedResources.resolve("ReferenceOnly").status ==
+                    dayo::graphics::FxSharedResourceRegistry::LookupStatus::notFound,
+                "shared ref declarations are not incorrectly published as sources");
+    auto wrongKindProgram = sharedProgram;
+    wrongKindProgram.textures3D.clear();
+    wrongKindProgram.buffers.clear();
+    wrongKindProgram.textures.clear();
+    wrongKindProgram.textures.push_back(makeTextureDeclaration("WrongKind", "source"));
+    dayo::graphics::FxResourceStore wrongKindStore;
+    ok &= check(wrongKindStore.add(
+                    {.name = "WrongKind", .kind = dayo::graphics::FxResourceStore::Kind::buffer, .buffer = {24, 1}}),
+                "wrong-kind shared resource fixture enters physical store");
+    sharedResources.publish("effect:wrong-kind", wrongKindProgram, wrongKindStore);
+    ok &= check(sharedResources.resolve("WrongKind").status ==
+                    dayo::graphics::FxSharedResourceRegistry::LookupStatus::notFound,
+                "a mismatched physical resource kind is not published");
+    auto wrongDimensionProgram = sharedProgram;
+    wrongDimensionProgram.textures.clear();
+    wrongDimensionProgram.textures3D.clear();
+    wrongDimensionProgram.buffers.clear();
+    wrongDimensionProgram.textures3D.push_back(makeTextureDeclaration("WrongDimension", "source"));
+    dayo::graphics::FxResourceStore wrongDimensionStore;
+    ok &= check(wrongDimensionStore.add({.name = "WrongDimension",
+                                         .kind = dayo::graphics::FxResourceStore::Kind::texture,
+                                         .texture = {26, 1},
+                                         .extent = {4, 4, 1},
+                                         .dimension = 2}),
+                "wrong-dimension shared resource fixture enters physical store");
+    sharedResources.publish("effect:wrong-dimension", wrongDimensionProgram, wrongDimensionStore);
+    ok &= check(sharedResources.resolve("WrongDimension").status ==
+                    dayo::graphics::FxSharedResourceRegistry::LookupStatus::notFound,
+                "a mismatched physical texture dimension is not published");
+    auto duplicateStore = sharedStore;
+    auto duplicateProgram = wrongKindProgram;
+    duplicateProgram.textures.clear();
+    duplicateProgram.textures.push_back(makeTextureDeclaration("SharedColor", "source"));
+    sharedResources.publish("effect:duplicate", duplicateProgram, duplicateStore);
+    shared = sharedResources.resolve("SharedColor");
+    ok &= check(shared.status == dayo::graphics::FxSharedResourceRegistry::LookupStatus::ambiguous &&
+                    !shared.value.has_value(),
+                "duplicate global shared source names are reported as ambiguous");
+    sharedResources.invalidateOwner("effect:duplicate");
+    shared = sharedResources.resolve("SharedColor");
+    ok &= check(shared.status == dayo::graphics::FxSharedResourceRegistry::LookupStatus::unique,
+                "shared source invalidation removes only one runtime owner");
+    sharedProgram.textures.clear();
+    sharedProgram.textures3D.clear();
+    sharedProgram.buffers.clear();
+    sharedResources.publish("effect:source", sharedProgram, sharedStore);
+    ok &= check(sharedResources.resolve("SharedColor").status ==
+                    dayo::graphics::FxSharedResourceRegistry::LookupStatus::notFound,
+                "publishing an empty shared-source snapshot invalidates stale exports");
 
     dayo::graphics::Rgba16fSampleAccumulator sampleAccumulator;
     sampleAccumulator.begin({1, 1, 1}, 2);

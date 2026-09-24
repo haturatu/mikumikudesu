@@ -17,9 +17,9 @@ installも同じ一覧を使い、拡張子による除外を行わず、第三�
 | --- | --- | --- |
 | 1. baseline・配布 | 1.30 ZIPの固定、SHA256検証、共通manifestによる配布、公式assetの既存互換テスト | 実装済み |
 | 2. データ・solver互換 | Windows 1.30保存fixtureの往復、camera/external parent/制限IKの数値比較 | データ形式は実装済み、実機検証は未実施 |
-| 3. FX 1.30契約 | buffer/size expression、pow、CloneCount/CLONEDVERTEXCOUNT、MatDesc、resource allocation、RT hit groupの接続 | IR/parser/planner、MatDesc scene table/per-pass descriptor path、host screen.bmp・deformer texture参照、typed executorは実装済み。effect-local/shared texture解決と上流全FXのruntime検証は未完了 |
+| 3. FX 1.30契約 | buffer/size expression、pow、CloneCount/CLONEDVERTEXCOUNT、MatDesc、resource allocation、RT hit groupの接続 | IR/parser/planner、MatDesc scene table/per-pass descriptor path、host screen.bmp・deformer texture参照、live FXのshared=source registry、renderer-local texture参照、typed executorは実装済み。shared=ref allocationと上流全FXのruntime検証は未完了 |
 | 4. Subayai/BDPT実行 | Vulkan BLAS/TLAS/SBT、各pass実行器、native frame/output bridge、RT対応GPUでの画像比較 | runtime接続・feature fallback・CPU/Mock検証は実装済み、RT対応GPUでの画像比較は未実施 |
-| 5. FX Debug | resource/pass/controllerの実行時inspect、texture preview/dump | graph metadata inspectorは実装済み。native GPU resource snapshot、readback preview/dumpは未完了 |
+| 5. FX Debug | resource/pass/controllerの実行時inspect、texture preview/dump | graph metadataとnative GPU allocationの実体サイズ・形式のinspectは実装済み。readback preview/dumpは未完了 |
 
 `nativeSubayai`/`nativeBdpt`は起動時のGPU capability、選択したFX graphの要求feature、native runtimeの
 初期化結果をすべて満たした場合だけ有効になります。Previewのclone複製は、上流FXが参照する
@@ -61,10 +61,12 @@ registerはpass binding planから生成し、Texture3D descriptorは独立し�
 `FxMaterialGpuRuntime`はfallbackをdescriptor index 0へ予約し、dedup済み2D/3D textureとframe-slot別の4つのstructured bufferを生成・更新します。
 `NativeFxRuntime`/`DayoFxRuntime`はこれらをper-pass descriptor setへ結び、2D/3D descriptor array長とsecondary setを構築し、buffer再確保時にdescriptorを更新できます。
 `FxMaterialSceneRuntime`はモデル別material annotation/defaultFileをlinkし、各frameで式を評価してscene-wide GPU tableへ反映します。
-Subayai/BDPT generic FXへこのtableを渡し、annotation textureのうち予約された`screen.bmp`とowner modelに割り当てられたdeformerのtexture resourceは、
-resource ownerを維持したままgeneration付きexternal descriptorとして参照します。deformer resource名のうち未解決かつfile-likeでないtokenはdimension別fallbackへ解決します。
-画像は現在RGBA8へdecodeし、DDS 2D/3Dと通常画像のmipmapを扱います。effect-local resourceとcross-effect shared resourceのMatDesc解決、
-Windows 1.30とのGPU画像比較はまだ未完了です。2D/3D texture objectを含むMatDesc getterの生成HLSLは、
+Subayai/BDPT generic FXへこのtableを渡し、annotation textureのうち予約された`screen.bmp`、active renderer-local texture、owner modelに割り当てられたdeformer texture、
+およびlive FX runtimeが`shared=source`として公開したtextureは、resource ownerを維持したままgeneration付きexternal descriptorとして参照します。
+共有source名が複数runtimeに存在する場合は誤選択せず未解決として扱います。deformer resource名のうち未解決かつfile-likeでないtokenはdimension別fallbackへ解決します。
+画像は現在RGBA8へdecodeし、DDS 2D/3Dと通常画像のmipmapを扱います。この実装はlive runtimeのtexture source解決に限定され、
+FX宣言の`shared=ref` resource allocation/aliasing、実行前のpostprocess source解決、完全な上流互換、Windows 1.30とのGPU画像比較は未完了です。
+2D/3D texture objectを含むMatDesc getterの生成HLSLは、
 aggregate zero-initializationを避けるfield-wise loweringを行い、compile fixtureでSPIR-V生成まで確認します。
 
 ## Windows fixtureの受け入れ条件

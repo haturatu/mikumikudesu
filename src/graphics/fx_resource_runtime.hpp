@@ -5,6 +5,7 @@
 #include "graphics/device.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -39,6 +40,9 @@ class FxResourceStore {
         Extent3D extent{};
         PixelFormat format{PixelFormat::rgba8Unorm};
         std::uint32_t dimension{2};
+        std::uint64_t allocationBytes{};
+        std::uint32_t elementSize{};
+        std::string elementType{};
         // Compatibility-only physical slot used by the old single-set API.
         // Per-pass descriptors never consult these fields.
         DescriptorKind legacyDescriptorKind{DescriptorKind::sampledImage};
@@ -60,6 +64,8 @@ class FxResourceStore {
     std::vector<Resource> resources_;
     std::unordered_map<std::string, std::size_t> indices_;
 };
+
+using FxMaterialRuntimeInitializer = std::function<const FxMaterialGpuRuntime*(const FxResourceStore&, std::string*)>;
 
 // Owns one descriptor layout/set per pass. Its plans are generated from the
 // same FxPassBindingPlan used by shader source generation.
@@ -131,7 +137,8 @@ class FxResourceRuntime : public core::fx::FxResourceTable {
 
     [[nodiscard]] bool initialize(Device& device, const fx::FxProgram& program, const fx::FxFrameContext& context,
                                   std::string* error = nullptr, std::uint32_t resourceSet = 0,
-                                  const FxMaterialGpuRuntime* materialRuntime = nullptr);
+                                  const FxMaterialGpuRuntime* materialRuntime = nullptr,
+                                  const FxMaterialRuntimeInitializer& initializeMaterialRuntime = {});
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {

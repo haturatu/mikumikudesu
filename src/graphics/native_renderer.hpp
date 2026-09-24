@@ -7,6 +7,7 @@
 #include "graphics/bdpt_runtime.hpp"
 #include "graphics/dayo_fx_runtime.hpp"
 #include "graphics/deformer_resource_registry.hpp"
+#include "graphics/fx_shared_resource_registry.hpp"
 #include "graphics/native_fx_global_variable_runtime.hpp"
 #include "graphics/native_renderer_requirements.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
@@ -26,6 +27,21 @@ struct NativeFrameExecution {
     std::uint32_t sampleIndex{};
     std::uint32_t sampleCount{1};
 };
+
+struct NativeFxResourceSnapshot {
+    std::string effect;
+    std::string name;
+    std::string kind;
+    std::string format;
+    Extent3D extent{};
+    std::uint32_t dimension{};
+    std::uint64_t allocationBytes{};
+    std::uint32_t elementSize{};
+    std::string elementType;
+};
+
+[[nodiscard]] std::vector<NativeFxResourceSnapshot> snapshotFxResources(std::string_view effect,
+                                                                        const FxResourceStore& store);
 
 // Application-facing lifecycle owner for native Subayai/BDPT activation.
 // Resource binding and command recording stay in the renderer runtimes; this
@@ -66,6 +82,7 @@ class NativeRendererCoordinator {
     [[nodiscard]] const DeformerResourceRegistry& deformerResources() const noexcept {
         return deformerResources_;
     }
+    [[nodiscard]] std::vector<NativeFxResourceSnapshot> liveResources() const;
     [[nodiscard]] const fx::FxProgram* program() const noexcept;
     [[nodiscard]] SubayaiRuntime* subayai() noexcept {
         return status_.nativeReady && status_.active == RendererKind::subayai ? &subayai_ : nullptr;
@@ -95,6 +112,7 @@ class NativeRendererCoordinator {
     executeGenericEffects(std::span<const core::SceneEffectInstance> effects, GenericRuntimeList& runtimes,
                           CommandList& commands, const fx::FxFrameContext& context,
                           const FxExecutionResources& resources, bool publishToScreen);
+    void publishActiveRendererResources();
 
     NativeRendererStatus status_{};
     SubayaiRuntime subayai_;
@@ -113,6 +131,8 @@ class NativeRendererCoordinator {
     GenericRuntimeList postprocessRuntimes_;
     OutputSampleAccumulator outputSamples_;
     DeformerResourceRegistry deformerResources_;
+    FxSharedResourceRegistry sharedResources_;
+    std::string rendererSharedResourceOwner_;
     const core::fx::SceneEvaluationSnapshot* evaluationSnapshot_{};
 };
 

@@ -1,5 +1,6 @@
 #include "graphics/subayai_runtime.hpp"
 
+#include "core/log.hpp"
 #include "graphics/native_renderer_requirements.hpp"
 
 #include <algorithm>
@@ -207,7 +208,19 @@ SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
     if (!ready_ || device_ == nullptr)
         throw std::logic_error("Subayai runtime is not initialized");
     const FxMaterialGpuRuntime* materialGpuRuntime = nullptr;
+    FxMaterialRuntimeInitializer initializeMaterialRuntime;
     if (program_.materialSchema.has_value()) {
+        initializeMaterialRuntime = [this, context, materialModels, textureResolver](const FxResourceStore&,
+                                                                                     std::string* materialError) {
+            materialSceneRuntime_.invalidateLinks();
+            if (!materialSceneRuntime_.sync(*device_, *program_.materialSchema, materialModels, context, materialError,
+                                            textureResolver))
+                return static_cast<const FxMaterialGpuRuntime*>(nullptr);
+            return &materialSceneRuntime_.gpuRuntime();
+        };
+    }
+    const bool nativeInitializationPending = !nativeAttempted_ && !program_.hlsl.empty();
+    if (program_.materialSchema.has_value() && !nativeInitializationPending) {
         std::string materialError;
         if (!materialSceneRuntime_.sync(*device_, *program_.materialSchema, materialModels, context, &materialError,
                                         textureResolver))
@@ -263,12 +276,14 @@ SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
         std::string nativeError;
         if (externalResourceProvider_ != nullptr)
             dayoFx_.addProvider(*externalResourceProvider_);
-        static_cast<void>(dayoFx_.initializeForFrame(*device_, program_, fx::FxShaderCompiler{}, context, sharedLayouts,
-                                                     &nativeError, sharedSets, std::move(sourceOptions),
-                                                     materialGpuRuntime));
+        if (!dayoFx_.initializeForFrame(*device_, program_, fx::FxShaderCompiler{}, context, sharedLayouts,
+                                        &nativeError, sharedSets, std::move(sourceOptions), materialGpuRuntime,
+                                        initializeMaterialRuntime))
+            dayo::log::warn("Subayai native FX initialization failed: ", nativeError);
     } else if (dayoFx_.ready()) {
         std::string nativeError;
-        static_cast<void>(dayoFx_.refresh(context, &nativeError));
+        if (!dayoFx_.refresh(context, &nativeError, initializeMaterialRuntime))
+            dayo::log::warn("Subayai native FX refresh failed: ", nativeError);
     }
     if (dayoFx_.ready()) {
         std::vector<handles::DescriptorSetHandle> frameSharedSets;
