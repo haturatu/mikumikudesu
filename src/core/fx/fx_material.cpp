@@ -777,6 +777,15 @@ std::string normalizeTextureToken(std::string_view token) noexcept {
     }
 }
 
+bool isScreenBmpToken(std::string_view token) noexcept {
+    try {
+        const auto normalized = normalizeTextureToken(normalizeTexturePath(token));
+        return std::filesystem::path(normalized).filename() == "screen.bmp";
+    } catch (...) {
+        return false;
+    }
+}
+
 MaterialTextureKey makeTextureKey(const MaterialTextureDesc& desc) {
     return MaterialTextureKey{
         .path = desc.externalId.empty() ? normalizeTexturePath(desc.path) : std::string{},

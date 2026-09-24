@@ -37,18 +37,8 @@ void setError(std::string* error, std::string value) {
     return true;
 }
 
-[[nodiscard]] bool isScreenBmpToken(std::string_view value) {
-    std::string normalized(value);
-    for (auto& character : normalized) {
-        if (character == '\\')
-            character = '/';
-        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
-    }
-    return std::filesystem::path(normalized).filename() == "screen.bmp";
-}
-
 [[nodiscard]] bool isFileBackedTexture(const core::fx::MaterialBindingPlan::ResolvedTextureField& texture) {
-    if (texture.path.empty() || isScreenBmpToken(texture.path))
+    if (texture.path.empty() || core::fx::isScreenBmpToken(texture.path))
         return false;
     const std::filesystem::path assigned(texture.path);
     const auto isRegularFile = [](const std::filesystem::path& path) {
@@ -373,7 +363,8 @@ bool FxMaterialSceneRuntime::sync(Device& device, const core::fx::MaterialTempla
                                           found->second.generation != external->generation))
                             throw std::logic_error("MatDesc external texture identity resolved inconsistently: " +
                                                    external->identity);
-                    } else if (isScreenBmpToken(texture.path) || !material.fileBackedTextures.at(textureIndex)) {
+                    } else if (core::fx::isScreenBmpToken(texture.path) ||
+                               !material.fileBackedTextures.at(textureIndex)) {
                         // Resolve host/deformer resources before considering a file. Unknown symbols and missing
                         // files intentionally map to the dimension-correct fallback instead of a guessed path.
                         texture.physicalTextureIndex.reset();

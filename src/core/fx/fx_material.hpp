@@ -128,6 +128,7 @@ struct MaterialTextureKeyHash {
 
 [[nodiscard]] std::string normalizeTexturePath(std::string_view path);
 [[nodiscard]] std::string normalizeTextureToken(std::string_view token) noexcept;
+[[nodiscard]] bool isScreenBmpToken(std::string_view token) noexcept;
 [[nodiscard]] MaterialTextureKey makeTextureKey(const MaterialTextureDesc& desc);
 [[nodiscard]] std::string textureKeyString(const MaterialTextureKey& key);
 

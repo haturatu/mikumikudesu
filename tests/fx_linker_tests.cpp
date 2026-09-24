@@ -53,6 +53,13 @@ int main() {
     using dayo::core::EffectPassType;
     bool ok = true;
 
+    {
+        ok &= check(isScreenBmpToken("screen.bmp") && isScreenBmpToken("./screen.bmp") &&
+                        isScreenBmpToken("subdir/screen.bmp") && isScreenBmpToken("SCREEN.BMP") &&
+                        !isScreenBmpToken("screen.png"),
+                    "ScreenBMP token detection normalizes paths, basenames, and case consistently");
+    }
+
     // Upstream MatDesc declarations are retained in source order so generated
     // HLSL and subsequent GPU packing share one ABI schema.
     {

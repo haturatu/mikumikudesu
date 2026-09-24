@@ -1,6 +1,7 @@
 #include "graphics/native_renderer.hpp"
 
-#include <cctype>
+#include "core/fx/fx_material.hpp"
+
 #include <ranges>
 #include <sstream>
 #include <stdexcept>
@@ -16,16 +17,6 @@ void appendReason(std::ostringstream& output, std::string_view reason) {
     if (output.tellp() > 0)
         output << ", ";
     output << reason;
-}
-
-[[nodiscard]] bool isScreenBmpToken(std::string_view value) {
-    std::string normalized(value);
-    for (auto& character : normalized) {
-        if (character == '\\')
-            character = '/';
-        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
-    }
-    return normalized == "screen.bmp";
 }
 
 } // namespace
@@ -375,7 +366,7 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
     const FxMaterialTextureResolver textureResolver =
         [this](core::ModelId owner, const core::fx::MaterialTextureSchema& schema,
                std::string_view assigned) -> std::optional<FxMaterialExternalTexture> {
-        if (isScreenBmpToken(assigned)) {
+        if (core::fx::isScreenBmpToken(assigned)) {
             if (schema.dimension != core::fx::MaterialTextureDimension::twoD || !hostResourceProvider_.has_value())
                 return std::nullopt;
             const auto screen = hostResourceProvider_->resolve(DayoSemantic::ScreenBMP);
