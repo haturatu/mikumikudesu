@@ -1,7 +1,7 @@
 #include "graphics/native_renderer.hpp"
 
 #include "core/fx/fx_material.hpp"
-
+#include <iterator>
 #include <ranges>
 #include <sstream>
 #include <stdexcept>
@@ -20,6 +20,28 @@ void appendReason(std::ostringstream& output, std::string_view reason) {
 }
 
 } // namespace
+
+std::vector<NativeFxResourceSnapshot> snapshotFxResources(std::string_view effect, const FxResourceStore& store) {
+    std::vector<NativeFxResourceSnapshot> result;
+    result.reserve(store.size());
+    for (const auto& resource : store.resources()) {
+        const auto kind = resource.kind == FxResourceStore::Kind::texture  ? "Texture"
+                          : resource.kind == FxResourceStore::Kind::buffer ? "Buffer"
+                                                                           : "Sampler";
+        const auto format =
+            resource.kind == FxResourceStore::Kind::texture ? std::string(toString(resource.format)) : std::string{};
+        result.push_back({.effect = std::string(effect),
+                          .name = resource.name,
+                          .kind = kind,
+                          .format = format,
+                          .extent = resource.extent,
+                          .dimension = resource.dimension,
+                          .allocationBytes = resource.allocationBytes,
+                          .elementSize = resource.elementSize,
+                          .elementType = resource.elementType});
+    }
+    return result;
+}
 
 std::string missingEffectFeatures(const DeviceCapabilities& capabilities, const fx::FxRequiredFeatures& required) {
     std::ostringstream output;
@@ -470,6 +492,40 @@ const fx::FxProgram* NativeRendererCoordinator::program() const noexcept {
     if (status_.active == RendererKind::bdpt)
         return bdpt_.program();
     return nullptr;
+}
+
+std::vector<NativeFxResourceSnapshot> NativeRendererCoordinator::liveResources() const {
+    std::vector<NativeFxResourceSnapshot> result;
+    const auto appendEffects = [&result](const GenericRuntimeList& runtimes) {
+        for (const auto& entry : runtimes) {
+            if (entry == nullptr || !entry->runtime.ready())
+                continue;
+            const auto* program = entry->runtime.program();
+            if (program == nullptr)
+                continue;
+            const auto label = program->sourcePath.empty() ? program->label : program->sourcePath.filename().string();
+            auto resources = snapshotFxResources(label, entry->runtime.nativeRuntime().resources().store());
+            result.insert(result.end(), std::make_move_iterator(resources.begin()),
+                          std::make_move_iterator(resources.end()));
+        }
+    };
+    appendEffects(deformRuntimes_);
+    appendEffects(postprocessRuntimes_);
+
+    const FxResourceStore* store = nullptr;
+    const fx::FxProgram* activeProgram = program();
+    if (status_.active == RendererKind::subayai)
+        store = subayai_.liveResourceStore();
+    else if (status_.active == RendererKind::bdpt)
+        store = bdpt_.liveResourceStore();
+    if (store != nullptr && activeProgram != nullptr) {
+        const auto label =
+            activeProgram->sourcePath.empty() ? activeProgram->label : activeProgram->sourcePath.filename().string();
+        auto resources = snapshotFxResources(label, *store);
+        result.insert(result.end(), std::make_move_iterator(resources.begin()),
+                      std::make_move_iterator(resources.end()));
+    }
+    return result;
 }
 
 } // namespace dayo::graphics

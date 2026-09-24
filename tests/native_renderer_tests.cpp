@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <ranges>
 #include <stdexcept>
 #include <string_view>
 
@@ -47,8 +48,56 @@ int main() {
         .extent = {32, 16, 1},
         .format = dayo::graphics::PixelFormat::rgba16Float,
         .dimension = 2,
+        .allocationBytes = 4096,
+        .elementSize = 0,
+        .elementType = {},
     };
     ok &= check(exportedStore.add(exportedTexture), "deformer resource fixture enters physical store");
+    dayo::graphics::FxResourceStore::Resource exportedBuffer{
+        .name = "Particles",
+        .kind = dayo::graphics::FxResourceStore::Kind::buffer,
+        .buffer = {5, 1},
+        .extent = {64, 1, 1},
+        .format = dayo::graphics::PixelFormat::rgba8Unorm,
+        .dimension = 1,
+        .allocationBytes = 2048,
+        .elementSize = 32,
+        .elementType = "Particle",
+    };
+    ok &= check(exportedStore.add(exportedBuffer), "buffer resource fixture enters physical store");
+    dayo::graphics::FxResourceStore::Resource exportedSampler{
+        .name = "LinearSampler",
+        .kind = dayo::graphics::FxResourceStore::Kind::sampler,
+        .sampler = {6, 1},
+        .extent = {},
+        .format = dayo::graphics::PixelFormat::rgba8Unorm,
+        .dimension = 0,
+        .allocationBytes = 0,
+        .elementSize = 0,
+        .elementType = {},
+    };
+    ok &= check(exportedStore.add(exportedSampler), "sampler resource fixture enters physical store");
+    const auto liveResourceFixture = dayo::graphics::snapshotFxResources("deform.fxdayo", exportedStore);
+    const auto findLiveResource = [&liveResourceFixture](std::string_view name) {
+        return std::ranges::find_if(liveResourceFixture,
+                                    [name](const auto& resource) { return resource.name == name; });
+    };
+    const auto liveTexture = findLiveResource("OutBuf");
+    const auto liveBuffer = findLiveResource("Particles");
+    const auto liveSampler = findLiveResource("LinearSampler");
+    ok &= check(liveResourceFixture.size() == 3 && liveTexture != liveResourceFixture.end() &&
+                    liveTexture->effect == "deform.fxdayo" && liveTexture->kind == "Texture" &&
+                    liveTexture->format == "RGBA16_FLOAT" && liveTexture->extent.width == 32 &&
+                    liveTexture->extent.height == 16 && liveTexture->dimension == 2 &&
+                    liveTexture->allocationBytes == 4096,
+                "FX texture snapshots retain format, extent, and allocation size without handles");
+    ok &= check(liveBuffer != liveResourceFixture.end() && liveBuffer->kind == "Buffer" && liveBuffer->format.empty() &&
+                    liveBuffer->allocationBytes == 2048 && liveBuffer->elementSize == 32 &&
+                    liveBuffer->elementType == "Particle",
+                "FX buffer snapshots show byte/type metadata instead of a placeholder pixel format");
+    ok &= check(liveSampler != liveResourceFixture.end() && liveSampler->kind == "Sampler" &&
+                    liveSampler->format.empty() && liveSampler->allocationBytes == 0,
+                "FX sampler snapshots do not claim a texture format or byte allocation");
     dayo::graphics::DeformerResourceRegistry deformerResources;
     deformerResources.publish(7, 101, exportedStore);
     auto exported = deformerResources.resolve(7, "OutBuf");
