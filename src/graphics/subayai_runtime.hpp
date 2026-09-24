@@ -4,6 +4,7 @@
 #include "fx/fx_compiler.hpp"
 #include "graphics/dayo_fx_runtime.hpp"
 #include "graphics/fx_executor.hpp"
+#include "graphics/fx_material_scene_runtime.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
 #include "graphics/subayai_bindings.hpp"
 #include "graphics/subayai_environment.hpp"
@@ -96,7 +97,8 @@ class SubayaiRuntime {
     [[nodiscard]] SubayaiFrame prepareFrame(const fx::FxFrameContext& context,
                                             std::span<const core::MaterialParameterBlock> materials,
                                             std::span<const AliasEntry> lightSampling,
-                                            const EnvironmentGpuResult& environment);
+                                            const EnvironmentGpuResult& environment,
+                                            std::span<const FxMaterialSceneModel> materialModels = {});
     [[nodiscard]] VulkanFxExecutor::Stats execute(SubayaiFrame& frame, CommandList& commands,
                                                   const FxExecutionResources& resources = {}) const;
     [[nodiscard]] std::optional<NativeFrameOutput> output(const SubayaiFrame& frame) const;
@@ -106,6 +108,7 @@ class SubayaiRuntime {
     fx::FxProgram program_;
     std::vector<SubayaiMaterialGpu> materials_;
     SubayaiMaterialGpuRuntime materialRuntime_;
+    FxMaterialSceneRuntime materialSceneRuntime_;
     LightSamplingGpuRuntime lightRuntime_;
     SubayaiBindingRuntime bindings_;
     NativeGeometryRuntime geometry_;

@@ -86,6 +86,7 @@ bool BdptRuntime::initialize(Device& device, fx::FxProgram program, std::string*
 
 void BdptRuntime::reset() noexcept {
     dayoFx_.reset();
+    materialSceneRuntime_.reset();
     geometry_.reset();
     bindings_.reset();
     lightRuntime_.reset();
@@ -213,9 +214,21 @@ bool BdptRuntime::ensureResources(std::uint32_t width, std::uint32_t height, std
 }
 
 BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::DirtyFlag dirty,
-                                    std::span<const AliasEntry> lightSampling) {
+                                    std::span<const AliasEntry> lightSampling,
+                                    std::span<const FxMaterialSceneModel> materialModels) {
     if (!ready_ || device_ == nullptr)
         throw std::logic_error("BDPT runtime is not initialized");
+    const FxMaterialGpuRuntime* materialGpuRuntime = nullptr;
+    if (program_.materialSchema.has_value()) {
+        std::string materialError;
+        if (!materialSceneRuntime_.sync(*device_, *program_.materialSchema, materialModels, context, &materialError))
+            throw std::runtime_error(materialError.empty() ? "BDPT MatDesc synchronization failed" : materialError);
+        materialGpuRuntime = &materialSceneRuntime_.gpuRuntime();
+        if (materialSceneRuntime_.descriptorLayoutChanged() && nativeAttempted_) {
+            dayoFx_.reset();
+            nativeAttempted_ = false;
+        }
+    }
     std::string error;
     if (!ensureResources(context.renderWidth, context.renderHeight, &error))
         throw std::runtime_error(error.empty() ? "BDPT GPU resources are unavailable" : error);
@@ -302,7 +315,8 @@ BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::Dir
         if (externalResourceProvider_ != nullptr)
             dayoFx_.addProvider(*externalResourceProvider_);
         static_cast<void>(dayoFx_.initializeForFrame(*device_, program_, fx::FxShaderCompiler{}, context, sharedLayouts,
-                                                     &nativeError, sharedSets, std::move(sourceOptions)));
+                                                     &nativeError, sharedSets, std::move(sourceOptions),
+                                                     materialGpuRuntime));
     } else if (dayoFx_.ready()) {
         std::string nativeError;
         static_cast<void>(dayoFx_.refresh(context, &nativeError));

@@ -347,7 +347,8 @@ bool NativeRendererCoordinator::updateEnvironment(const EnvironmentDesc& descrip
 std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
     CommandList& commands, const fx::FxFrameContext& context, core::DirtyFlag dirty,
     std::span<const core::MaterialParameterBlock> materials, std::span<const AliasEntry> lightSampling,
-    const EnvironmentGpuResult& environment, const FxExecutionResources& resources, NativeFrameExecution execution) {
+    const EnvironmentGpuResult& environment, const FxExecutionResources& resources, NativeFrameExecution execution,
+    std::span<const FxMaterialSceneModel> materialModels) {
     if (!status_.nativeReady)
         return std::nullopt;
     if (execution.sampleCount == 0 || execution.sampleIndex >= execution.sampleCount)
@@ -363,14 +364,14 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
     std::optional<NativeFrameOutput> rendererOutput;
     switch (status_.active) {
     case RendererKind::subayai: {
-        auto frame = subayai_.prepareFrame(context, materials, lightSampling, activeEnvironment);
+        auto frame = subayai_.prepareFrame(context, materials, lightSampling, activeEnvironment, materialModels);
         const auto stats = subayai_.execute(frame, commands, resources);
         static_cast<void>(stats);
         rendererOutput = subayai_.output(frame);
         break;
     }
     case RendererKind::bdpt: {
-        auto frame = bdpt_.prepareFrame(context, dirty, lightSampling);
+        auto frame = bdpt_.prepareFrame(context, dirty, lightSampling, materialModels);
         const auto stats = bdpt_.execute(frame, commands, resources);
         static_cast<void>(stats);
         rendererOutput = bdpt_.output(frame);
