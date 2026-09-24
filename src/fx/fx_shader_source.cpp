@@ -175,6 +175,12 @@ void appendMaterialDeclarations(std::ostringstream& output, const FxProgram& pro
     core::fx::MaterialTemplateSchema fallbackMaterial;
     const auto& material = parseMaterialTemplate(program, fallbackMaterial);
     const auto& name = program.materialDescriptor->name;
+    const bool has2DTextures = std::ranges::any_of(material.textures, [](const auto& field) {
+        return field.dimension == core::fx::MaterialTextureDimension::twoD;
+    });
+    const bool has3DTextures = std::ranges::any_of(material.textures, [](const auto& field) {
+        return field.dimension == core::fx::MaterialTextureDimension::threeD;
+    });
     const auto registerIndex = [](const FxLogicalBinding& binding) {
         return binding.binding - fxDescriptorBindingBase(binding.descriptorClass);
     };
@@ -189,16 +195,20 @@ void appendMaterialDeclarations(std::ostringstream& output, const FxProgram& pro
         output << ' ' << field.name << ";\n";
     }
     output << "};\n";
-    output << "struct " << identifier(name) << "Texture {\n";
-    for (const auto& field : material.textures)
-        if (field.dimension == core::fx::MaterialTextureDimension::twoD)
-            output << "    bool has" << field.name << "; Texture2D<float4> " << field.name << ";\n";
-    output << "};\n";
-    output << "struct " << identifier(name) << "Texture3D {\n";
-    for (const auto& field : material.textures)
-        if (field.dimension == core::fx::MaterialTextureDimension::threeD)
-            output << "    bool has" << field.name << "; Texture3D<float4> " << field.name << ";\n";
-    output << "};\n";
+    if (has2DTextures) {
+        output << "struct " << identifier(name) << "Texture {\n";
+        for (const auto& field : material.textures)
+            if (field.dimension == core::fx::MaterialTextureDimension::twoD)
+                output << "    bool has" << field.name << "; Texture2D<float4> " << field.name << ";\n";
+        output << "};\n";
+    }
+    if (has3DTextures) {
+        output << "struct " << identifier(name) << "Texture3D {\n";
+        for (const auto& field : material.textures)
+            if (field.dimension == core::fx::MaterialTextureDimension::threeD)
+                output << "    bool has" << field.name << "; Texture3D<float4> " << field.name << ";\n";
+        output << "};\n";
+    }
 
     const auto& descriptors = *passBindings.material;
     const auto indexBinding = registerIndex(descriptors.materialIndices);
@@ -224,34 +234,40 @@ void appendMaterialDeclarations(std::ostringstream& output, const FxProgram& pro
     output << identifier(name) << "Value Get" << identifier(name) << "Value(uint ID, uint subID) {\n"
            << "    uint imat = " << identifier(name) << "_idx[ID] + subID;\n"
            << "    return " << identifier(name) << "_value[imat];\n}\n";
-    output << identifier(name) << "Texture Get" << identifier(name) << "Texture(uint ID, uint subID) {\n"
-           << "    " << identifier(name) << "Texture result = (" << identifier(name) << "Texture)0;\n"
-           << "    uint imat = " << identifier(name) << "_idx[ID] + subID;\n"
-           << "    uint tidx = imat * " << textureSlotCount << ";\n";
-    for (const auto& field : material.textures) {
-        if (field.dimension == core::fx::MaterialTextureDimension::threeD)
-            continue;
-        const auto textureIndex = identifier(name) + "TextureIndex_" + field.name;
-        output << "    uint " << textureIndex << " = " << identifier(name) << "_tex[tidx + " << field.index << "];\n"
-               << "    result.has" << field.name << " = (" << textureIndex << " != 0xffffffff);\n"
-               << "    result." << field.name << " = " << identifier(name) << "_texture[NonUniformResourceIndex("
-               << "result.has" << field.name << " ? " << textureIndex << " : 0)];\n";
+    if (has2DTextures) {
+        output << identifier(name) << "Texture Get" << identifier(name) << "Texture(uint ID, uint subID) {\n"
+               << "    " << identifier(name) << "Texture result;\n"
+               << "    uint imat = " << identifier(name) << "_idx[ID] + subID;\n"
+               << "    uint tidx = imat * " << textureSlotCount << ";\n";
+        for (const auto& field : material.textures) {
+            if (field.dimension == core::fx::MaterialTextureDimension::threeD)
+                continue;
+            const auto textureIndex = identifier(name) + "TextureIndex_" + field.name;
+            output << "    uint " << textureIndex << " = " << identifier(name) << "_tex[tidx + " << field.index
+                   << "];\n"
+                   << "    result.has" << field.name << " = (" << textureIndex << " != 0xffffffff);\n"
+                   << "    result." << field.name << " = " << identifier(name) << "_texture[NonUniformResourceIndex("
+                   << "result.has" << field.name << " ? " << textureIndex << " : 0)];\n";
+        }
+        output << "    return result;\n}\n";
     }
-    output << "    return result;\n}\n";
-    output << identifier(name) << "Texture3D Get" << identifier(name) << "Texture3D(uint ID, uint subID) {\n"
-           << "    " << identifier(name) << "Texture3D result = (" << identifier(name) << "Texture3D)0;\n"
-           << "    uint imat = " << identifier(name) << "_idx[ID] + subID;\n"
-           << "    uint tidx = imat * " << textureSlotCount << ";\n";
-    for (const auto& field : material.textures) {
-        if (field.dimension == core::fx::MaterialTextureDimension::twoD)
-            continue;
-        const auto textureIndex = identifier(name) + "TextureIndex_" + field.name;
-        output << "    uint " << textureIndex << " = " << identifier(name) << "_tex3D[tidx + " << field.index << "];\n"
-               << "    result.has" << field.name << " = (" << textureIndex << " != 0xffffffff);\n"
-               << "    result." << field.name << " = " << identifier(name) << "_texture3D[NonUniformResourceIndex("
-               << "result.has" << field.name << " ? " << textureIndex << " : 0)];\n";
+    if (has3DTextures) {
+        output << identifier(name) << "Texture3D Get" << identifier(name) << "Texture3D(uint ID, uint subID) {\n"
+               << "    " << identifier(name) << "Texture3D result;\n"
+               << "    uint imat = " << identifier(name) << "_idx[ID] + subID;\n"
+               << "    uint tidx = imat * " << textureSlotCount << ";\n";
+        for (const auto& field : material.textures) {
+            if (field.dimension == core::fx::MaterialTextureDimension::twoD)
+                continue;
+            const auto textureIndex = identifier(name) + "TextureIndex_" + field.name;
+            output << "    uint " << textureIndex << " = " << identifier(name) << "_tex3D[tidx + " << field.index
+                   << "];\n"
+                   << "    result.has" << field.name << " = (" << textureIndex << " != 0xffffffff);\n"
+                   << "    result." << field.name << " = " << identifier(name) << "_texture3D[NonUniformResourceIndex("
+                   << "result.has" << field.name << " ? " << textureIndex << " : 0)];\n";
+        }
+        output << "    return result;\n}\n";
     }
-    output << "    return result;\n}\n";
 }
 
 void appendControllerBlock(std::ostringstream& output, const FxProgram& program,
