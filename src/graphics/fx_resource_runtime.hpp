@@ -10,9 +10,18 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace dayo::graphics {
+
+class FxMaterialGpuRuntime;
+
+struct FxPassDescriptorSet {
+    std::uint32_t setIndex{};
+    handles::DescriptorSetLayoutHandle layout{};
+    handles::DescriptorSetHandle set{};
+};
 
 // Owns only physical textures, buffers, and samplers. Descriptor views are
 // deliberately absent: the same physical resource can be an SRV in one pass
@@ -63,8 +72,13 @@ class FxPassDescriptorRuntime {
     FxPassDescriptorRuntime& operator=(const FxPassDescriptorRuntime&) = delete;
 
     [[nodiscard]] bool initialize(Device& device, const fx::FxProgram& program, std::uint32_t resourceSet,
-                                  const FxResourceStore& store, std::string* error = nullptr);
+                                  const FxResourceStore& store, std::string* error = nullptr,
+                                  const FxMaterialGpuRuntime* materialRuntime = nullptr);
     void reset() noexcept;
+
+    [[nodiscard]] std::vector<FxPassDescriptorSet> descriptorSets(const fx::FxDispatch& dispatch) const;
+    [[nodiscard]] std::vector<std::pair<std::uint32_t, handles::DescriptorSetLayoutHandle>>
+    descriptorLayouts(const fx::FxDispatch& dispatch) const;
 
     [[nodiscard]] std::optional<handles::DescriptorSetHandle>
     resolveDescriptorSet(const fx::FxDispatch& dispatch) const;
@@ -78,12 +92,19 @@ class FxPassDescriptorRuntime {
   private:
     struct Entry {
         fx::FxPassBindingPlan plan;
-        handles::DescriptorSetLayoutHandle layout{};
-        handles::DescriptorSetHandle set{};
+        struct Set {
+            std::uint32_t index{};
+            handles::DescriptorSetLayoutHandle layout{};
+            std::vector<handles::DescriptorSetHandle> handles;
+            std::vector<std::vector<DescriptorBindingEx>> bindings;
+        };
+        std::vector<Set> sets;
     };
 
     Device* device_{};
-    std::unordered_map<std::string, Entry> entries_;
+    const FxResourceStore* store_{};
+    const FxMaterialGpuRuntime* materialRuntime_{};
+    mutable std::unordered_map<std::string, Entry> entries_;
 };
 
 // Owns the GPU resources declared by one compiled .fxdayo program. The
@@ -109,7 +130,8 @@ class FxResourceRuntime : public core::fx::FxResourceTable {
     FxResourceRuntime& operator=(const FxResourceRuntime&) = delete;
 
     [[nodiscard]] bool initialize(Device& device, const fx::FxProgram& program, const fx::FxFrameContext& context,
-                                  std::string* error = nullptr, std::uint32_t resourceSet = 0);
+                                  std::string* error = nullptr, std::uint32_t resourceSet = 0,
+                                  const FxMaterialGpuRuntime* materialRuntime = nullptr);
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
@@ -128,6 +150,13 @@ class FxResourceRuntime : public core::fx::FxResourceTable {
     [[nodiscard]] std::optional<handles::DescriptorSetLayoutHandle>
     descriptorLayoutFor(const fx::FxDispatch& dispatch) const {
         return passDescriptors_.resolveDescriptorLayout(dispatch);
+    }
+    [[nodiscard]] std::vector<FxPassDescriptorSet> descriptorSetsFor(const fx::FxDispatch& dispatch) const {
+        return passDescriptors_.descriptorSets(dispatch);
+    }
+    [[nodiscard]] std::vector<std::pair<std::uint32_t, handles::DescriptorSetLayoutHandle>>
+    descriptorLayoutsFor(const fx::FxDispatch& dispatch) const {
+        return passDescriptors_.descriptorLayouts(dispatch);
     }
     [[nodiscard]] std::optional<handles::DescriptorSetHandle> descriptorSetFor(const fx::FxDispatch& dispatch) const {
         return passDescriptors_.resolveDescriptorSet(dispatch);

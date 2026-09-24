@@ -301,6 +301,9 @@ FxPassBindingPlan planPassBindings(const FxProgram& program, const FxDispatch& d
             appendMaterialBinding("@matdesc/texture2D", FxDescriptorClass::sampledImage, resourceSet, sampledBinding++);
         material.textures3D =
             appendMaterialBinding("@matdesc/texture3D", FxDescriptorClass::sampledImage, resourceSet + 1U, 0);
+        result.bindings.insert(result.bindings.end(),
+                               {material.materialIndices, material.textureIndices2D, material.textureIndices3D,
+                                material.values, material.textures2D, material.textures3D});
         result.material = std::move(material);
     }
     return result;

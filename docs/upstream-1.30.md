@@ -17,7 +17,7 @@ installも同じ一覧を使い、拡張子による除外を行わず、第三�
 | --- | --- | --- |
 | 1. baseline・配布 | 1.30 ZIPの固定、SHA256検証、共通manifestによる配布、公式assetの既存互換テスト | 実装済み |
 | 2. データ・solver互換 | Windows 1.30保存fixtureの往復、camera/external parent/制限IKの数値比較 | データ形式は実装済み、実機検証は未実施 |
-| 3. FX 1.30契約 | buffer/size expression、pow、CloneCount/CLONEDVERTEXCOUNT、MatDesc、resource allocation、RT hit groupの接続 | IR/parser/plannerとtyped executorは実装済み。generic MatDesc GPU bindingや上流全FXのruntime検証は未完了 |
+| 3. FX 1.30契約 | buffer/size expression、pow、CloneCount/CLONEDVERTEXCOUNT、MatDesc、resource allocation、RT hit groupの接続 | IR/parser/planner、MatDesc GPU tableとper-pass descriptor binding path、typed executorは実装済み。renderer/material instanceへの本番接続と上流全FXのruntime検証は未完了 |
 | 4. Subayai/BDPT実行 | Vulkan BLAS/TLAS/SBT、各pass実行器、native frame/output bridge、RT対応GPUでの画像比較 | runtime接続・feature fallback・CPU/Mock検証は実装済み、RT対応GPUでの画像比較は未実施 |
 
 `nativeSubayai`/`nativeBdpt`は起動時のGPU capability、選択したFX graphの要求feature、native runtimeの
@@ -58,8 +58,10 @@ CPU側ではモデル→material base index、明示logical slotから2D/3D別ph
 生成HLSLは未割当slotでdescriptor index 0へfallbackし、`hasTexture`をfalseにします。generic `_idx`/`_tex`/`_tex3D`/`_value`
 registerはpass binding planから生成し、Texture3D descriptorは独立したsecondary setの`t0`へ置きます。
 `FxMaterialGpuRuntime`はfallbackをdescriptor index 0へ予約し、dedup済み2D/3D textureとframe-slot別の4つのstructured bufferを生成・更新します。
-画像は現在RGBA8へdecodeし、DDS 2D/3Dと通常画像のmipmapを扱います。pass descriptor setへの割当、renderer/material instanceからの呼び出し、
-`screen.bmp`およびdeformer resourceのMatDesc参照はまだend-to-end未完了です。
+`NativeFxRuntime`/`DayoFxRuntime`はこれらをper-pass descriptor setへ結び、2D/3D descriptor array長とsecondary setを構築し、buffer再確保時にdescriptorを更新できます。
+画像は現在RGBA8へdecodeし、DDS 2D/3Dと通常画像のmipmapを扱います。renderer/material instanceからの本番呼び出し、
+`screen.bmp`およびdeformer resourceのMatDesc参照はまだend-to-end未完了です。なお、現状の生成HLSLがtexture objectを含むstructを返す形はローカルのHLSL→SPIR-V compileで失敗するため、
+texture付きMatDescのshader loweringと実pipeline compileは別途修正・検証が必要です。
 
 ## Windows fixtureの受け入れ条件
 
