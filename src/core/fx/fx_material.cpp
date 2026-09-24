@@ -1270,4 +1270,38 @@ MaterialGpuTableData makeMaterialGpuTableData(const MaterialTemplateSchema& sche
     return result;
 }
 
+MaterialGpuTableData makeMaterialGpuTableData(const MaterialTemplateSchema& schema,
+                                              std::span<const MaterialGpuTableInputModel> models) {
+    std::size_t totalMaterials = 0;
+    for (const auto& model : models) {
+        if (model.materials.size() > std::numeric_limits<std::size_t>::max() - totalMaterials)
+            throw std::overflow_error("FX material input row count overflow");
+        totalMaterials += model.materials.size();
+    }
+    if (totalMaterials > std::numeric_limits<std::uint32_t>::max())
+        throw std::overflow_error("FX material input row count exceeds 32-bit table indices");
+
+    std::vector<MaterialBindingPlan> plans;
+    std::vector<EvaluatedMaterialBinding> evaluated;
+    std::vector<MaterialGpuTableMaterial> linkedMaterials;
+    plans.reserve(totalMaterials);
+    evaluated.reserve(totalMaterials);
+    linkedMaterials.reserve(totalMaterials);
+    std::vector<MaterialGpuTableModel> linkedModels;
+    linkedModels.reserve(models.size());
+
+    for (const auto& model : models) {
+        const auto start = linkedMaterials.size();
+        for (const auto& input : model.materials) {
+            plans.push_back(linkMaterial(schema, input.instance));
+            evaluated.push_back(evaluateMaterialValues(plans.back(), input.context));
+            linkedMaterials.push_back({.binding = &plans.back(), .evaluated = &evaluated.back()});
+        }
+        linkedModels.push_back(
+            {.materials =
+                 std::span<const MaterialGpuTableMaterial>(linkedMaterials).subspan(start, model.materials.size())});
+    }
+    return makeMaterialGpuTableData(schema, linkedModels);
+}
+
 } // namespace dayo::core::fx

@@ -229,6 +229,15 @@ struct MaterialGpuTableModel {
     std::span<const MaterialGpuTableMaterial> materials;
 };
 
+struct MaterialGpuTableInputMaterial {
+    const MaterialInstance* instance{};
+    FxEvalContext context;
+};
+
+struct MaterialGpuTableInputModel {
+    std::span<const MaterialGpuTableInputMaterial> materials;
+};
+
 // CPU upload payload matching the generated MatDesc HLSL accessors:
 // _idx[model] + subID selects a value row, while _tex/_tex3D use the
 // material row and the schema's explicit logical texture index.
@@ -248,6 +257,11 @@ packMaterialStructuredBuffer(const MaterialStructuredBufferLayout& layout,
                              std::span<const EvaluatedMaterialBinding> materials);
 [[nodiscard]] MaterialGpuTableData makeMaterialGpuTableData(const MaterialTemplateSchema& schema,
                                                             std::span<const MaterialGpuTableModel> models);
+// Convenience path for scene adapters: link each instance, evaluate its expressions
+// in its own invocation context, then build the same ordered GPU table as the
+// lower-level binding/evaluation overload.
+[[nodiscard]] MaterialGpuTableData makeMaterialGpuTableData(const MaterialTemplateSchema& schema,
+                                                            std::span<const MaterialGpuTableInputModel> models);
 
 // Alias folding rules (priority: ref > shareTags > shared > concrete):
 // - ref="B"        -> canonical(resolve(B)); missing target keeps "B".
