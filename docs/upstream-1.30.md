@@ -54,8 +54,9 @@ repeat、audio volume/offset、floor collision、録画範囲など、desuに対
 MatDescのordered value payloadは、生成HLSLのfield宣言順とDXCのDirectX buffer row packingに合わせるCPU packerを持ちます
 ([DXC SPIR-V layout rules](https://github.com/microsoft/DirectXShaderCompiler/blob/main/docs/SPIR-V.rst),
 [DXC buffer packing](https://github.com/microsoft/DirectXShaderCompiler/wiki/Buffer-Packing))。
-これは値bufferのpacking foundationです。generic `_idx`/`_tex`/`_tex3D`/`_value` descriptorとbindless textureのGPU runtime、
-`screen.bmp`およびdeformer resourceのMatDesc参照はまだend-to-end接続されていません。
+CPU側ではモデル→material base index、明示logical slotから2D/3D別physical texture indexへの変換、texture dedup tableまで構築します。
+生成HLSLは未割当slotでdescriptor index 0へfallbackし、`hasTexture`をfalseにします。generic `_idx`/`_tex`/`_tex3D`/`_value`
+descriptorとbindless textureのGPU runtime接続、`screen.bmp`およびdeformer resourceのMatDesc参照はまだend-to-end未完了です。
 
 ## Windows fixtureの受け入れ条件
 

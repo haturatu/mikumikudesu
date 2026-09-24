@@ -307,6 +307,62 @@ int main() {
                     "texture-only MatDesc layouts use a one-word private value record");
     }
 
+    // Build the per-model/material index buffers and deduplicated bindless
+    // texture catalogs consumed by the generated MatDesc accessors.
+    {
+        auto schema = parseMaterialTemplateSchema("f.1 : Roughness\n_T3m : AlbedoMap\n_V1 : VolumeMap\n"
+                                                  "Roughness : 0.5\n",
+                                                  "Surface");
+        MaterialInstance first;
+        first.templateName = "Surface";
+        first.annotationOverrides = parseMaterialAnnotation(
+            schema, "_TAlbedoMap : shared/albedo.png\n_VVolumeMap : volume/first.dds\n", "assets");
+        MaterialInstance second;
+        second.templateName = "Surface";
+        second.annotationOverrides = parseMaterialAnnotation(
+            schema, "_TAlbedoMap : shared/albedo.png\n_VVolumeMap : volume/second.dds\n", "assets");
+        MaterialInstance empty;
+        empty.templateName = "Surface";
+
+        const auto firstPlan = linkMaterial(schema, &first);
+        const auto secondPlan = linkMaterial(schema, &second);
+        const auto emptyPlan = linkMaterial(schema, &empty);
+        const auto firstValues = evaluateMaterialValues(firstPlan, FxEvalContext{});
+        const auto secondValues = evaluateMaterialValues(secondPlan, FxEvalContext{});
+        const auto emptyValues = evaluateMaterialValues(emptyPlan, FxEvalContext{});
+        const std::array tableMaterials{MaterialGpuTableMaterial{&firstPlan, &firstValues},
+                                        MaterialGpuTableMaterial{&secondPlan, &secondValues},
+                                        MaterialGpuTableMaterial{&emptyPlan, &emptyValues}};
+        const std::array models{MaterialGpuTableModel{std::span(tableMaterials).first(2)},
+                                MaterialGpuTableModel{std::span<const MaterialGpuTableMaterial>{}},
+                                MaterialGpuTableModel{std::span(tableMaterials).subspan(2)}};
+        const auto table = makeMaterialGpuTableData(schema, models);
+        ok &= check(table.textureSlotCount == 4 && table.materialIndices == std::vector<std::uint32_t>{0, 2, 2},
+                    "MatDesc table preserves model bases and sparse explicit texture slots");
+        ok &= check(table.textures2D.size() == 1 && table.textures3D.size() == 2 &&
+                        table.textureIndices2D.size() == 12 && table.textureIndices3D.size() == 12,
+                    "MatDesc table deduplicates 2D textures and keeps a distinct 3D texture catalog");
+        ok &= check(table.textureIndices2D[3] == 0 && table.textureIndices2D[7] == 0 &&
+                        table.textureIndices2D[11] == kMissingMaterialTextureIndex &&
+                        table.textureIndices3D[1] != table.textureIndices3D[5] &&
+                        table.textureIndices3D[9] == kMissingMaterialTextureIndex,
+                    "MatDesc logical indices map to physical arrays with an explicit missing sentinel");
+        ok &= check(table.values.count == 3 && table.values.bytes.size() == 12,
+                    "MatDesc value rows use the DXC storage stride and align with lookup tables");
+
+        const auto textureOnlySchema = parseMaterialTemplateSchema("_T0 : Albedo\n", "TextureOnly");
+        MaterialInstance textureOnlyInstance;
+        textureOnlyInstance.templateName = "TextureOnly";
+        const auto textureOnlyPlan = linkMaterial(textureOnlySchema, &textureOnlyInstance);
+        const auto textureOnlyValues = evaluateMaterialValues(textureOnlyPlan, FxEvalContext{});
+        const std::array textureOnlyMaterials{MaterialGpuTableMaterial{&textureOnlyPlan, &textureOnlyValues}};
+        const std::array textureOnlyModels{MaterialGpuTableModel{textureOnlyMaterials}};
+        const auto textureOnlyTable = makeMaterialGpuTableData(textureOnlySchema, textureOnlyModels);
+        ok &= check(textureOnlyTable.values.count == 1 && textureOnlyTable.values.layout.fields.empty() &&
+                        textureOnlyTable.values.bytes.size() == sizeof(std::uint32_t),
+                    "texture-only MatDesc produces a valid private value row in the GPU table");
+    }
+
     // Alias folding: shared / ref / shareTags collapse to canonical ids.
     {
         const auto templ = makeAliasTemplate();

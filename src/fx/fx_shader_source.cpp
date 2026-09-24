@@ -174,6 +174,8 @@ void appendMaterialDeclarations(std::ostringstream& output, const FxProgram& pro
     const auto& material = parseMaterialTemplate(program, fallbackMaterial);
     const auto& name = program.materialDescriptor->name;
     output << "struct " << identifier(name) << "Value {\n";
+    if (material.fields.empty())
+        output << "    uint _DayoEmpty;\n";
     for (const auto& field : material.fields) {
         const auto type = field.type == core::fx::MaterialFieldType::floatingPoint ? "float" : "int";
         output << "    " << type;
@@ -223,10 +225,11 @@ void appendMaterialDeclarations(std::ostringstream& output, const FxProgram& pro
     for (const auto& field : material.textures) {
         if (field.dimension == core::fx::MaterialTextureDimension::threeD)
             continue;
-        output << "    result.has" << field.name << " = (" << identifier(name) << "_tex[tidx + " << field.index
-               << "] != 0xffffffff);\n"
+        const auto textureIndex = identifier(name) + "TextureIndex_" + field.name;
+        output << "    uint " << textureIndex << " = " << identifier(name) << "_tex[tidx + " << field.index << "];\n"
+               << "    result.has" << field.name << " = (" << textureIndex << " != 0xffffffff);\n"
                << "    result." << field.name << " = " << identifier(name) << "_texture[NonUniformResourceIndex("
-               << identifier(name) << "_tex[tidx + " << field.index << "])];\n";
+               << "result.has" << field.name << " ? " << textureIndex << " : 0)];\n";
     }
     output << "    return result;\n}\n";
     output << identifier(name) << "Texture3D Get" << identifier(name) << "Texture3D(uint ID, uint subID) {\n"
@@ -236,10 +239,11 @@ void appendMaterialDeclarations(std::ostringstream& output, const FxProgram& pro
     for (const auto& field : material.textures) {
         if (field.dimension == core::fx::MaterialTextureDimension::twoD)
             continue;
-        output << "    result.has" << field.name << " = (" << identifier(name) << "_tex3D[tidx + " << field.index
-               << "] != 0xffffffff);\n"
+        const auto textureIndex = identifier(name) + "TextureIndex_" + field.name;
+        output << "    uint " << textureIndex << " = " << identifier(name) << "_tex3D[tidx + " << field.index << "];\n"
+               << "    result.has" << field.name << " = (" << textureIndex << " != 0xffffffff);\n"
                << "    result." << field.name << " = " << identifier(name) << "_texture3D[NonUniformResourceIndex("
-               << identifier(name) << "_tex3D[tidx + " << field.index << "])];\n";
+               << "result.has" << field.name << " ? " << textureIndex << " : 0)];\n";
     }
     output << "    return result;\n}\n";
     static_cast<void>(dispatch);
