@@ -68,15 +68,15 @@ core::ImageData floatSlice(const FxResourceStore::Resource& resource, std::span<
             const auto* input = bytes.data() + planeBytes * slice + index * pixelBytes + channel * componentBytes;
             std::uint32_t raw = 0;
             for (std::size_t byte = 0; byte < componentBytes; ++byte)
-                raw |= std::uint32_t(input[byte]) << (byte * 8U);
+                raw |= static_cast<std::uint32_t>(input[byte]) << (byte * 8U);
             if (resource.format == PixelFormat::depth24Stencil8)
-                value[channel] = float(raw & 0xFFFFFFU) / 16777215.0F;
+                value[channel] = static_cast<float>(raw & 0xFFFFFFU) / 16777215.0F;
             else if (format.ends_with("_FLOAT"))
                 value[channel] = componentBytes == 2 ? core::halfToFloat(static_cast<std::uint16_t>(raw))
                                                      : std::bit_cast<float>(raw);
             else if (signedInteger || signedNormalized) {
                 const std::int64_t signedValue = (static_cast<std::uint64_t>(raw) & signBit) != 0
-                                                     ? std::int64_t(raw) - (std::int64_t{1} << bits)
+                                                     ? static_cast<std::int64_t>(raw) - (std::int64_t{1} << bits)
                                                      : static_cast<std::int64_t>(raw);
                 value[channel] =
                     signedNormalized
