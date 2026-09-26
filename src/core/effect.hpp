@@ -106,6 +106,7 @@ struct EffectBuffer {
     std::uint32_t elementSize{};
     EffectSize size;
     std::vector<std::string> conditions;
+    std::string filename{};
 };
 
 struct EffectSlider {

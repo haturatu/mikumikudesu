@@ -76,7 +76,7 @@ FxRuntimeDebugSnapshot FxRuntimeInspector::snapshot(const EffectGraph& graph, st
                                     .format = buffer.format,
                                     .view = buffer.view,
                                     .shared = buffer.shared,
-                                    .filename = {},
+                                    .filename = buffer.filename,
                                     .type = buffer.type,
                                     .sizeBase = buffer.size.base,
                                     .conditions = buffer.conditions,
