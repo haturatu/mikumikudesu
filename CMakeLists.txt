@@ -181,6 +181,7 @@ add_library(
   src/core/model_execution.cpp
   src/core/editor.cpp
   src/core/output.cpp
+  src/core/sequence_path.cpp
   src/core/profiling.cpp
   src/core/project.cpp
   src/core/scene.cpp

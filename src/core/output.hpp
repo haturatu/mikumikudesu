@@ -22,9 +22,13 @@ struct OutputSettings {
     std::uint32_t maxPendingFrames{4};
     bool motionBlur{};
     bool overwrite{};
+    // Nonempty enables Dayo numbering, independent of scene frame numbers.
+    // The final numeric suffix selects the starting number; padding is five digits.
+    std::filesystem::path sequenceFile{};
 };
 
 [[nodiscard]] std::filesystem::path outputPath(const OutputSettings& settings, std::uint32_t frame);
+[[nodiscard]] std::filesystem::path firstSequenceOutputPath(const OutputSettings& settings);
 void writeFrame(const std::filesystem::path& path, const ImageRgba8& image, OutputFormat format);
 void writeFrame(const std::filesystem::path& path, const ImageData& image);
 

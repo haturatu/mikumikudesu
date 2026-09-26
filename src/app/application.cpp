@@ -920,6 +920,15 @@ void Application::resetProjectRuntimeState() {
     normalization_ = {};
     projectAssets_.clear();
     projectModelMetadata_.clear();
+#if DAYO_HAS_IMGUI
+    sequenceOutput_ = {};
+    sequenceOutputDirectory_.fill(0);
+    sequenceOutputFilename_.fill(0);
+    const std::string_view defaultDirectory = "output";
+    const std::string_view defaultFilename = "frame_00000.ppm";
+    std::copy(defaultDirectory.begin(), defaultDirectory.end(), sequenceOutputDirectory_.begin());
+    std::copy(defaultFilename.begin(), defaultFilename.end(), sequenceOutputFilename_.begin());
+#endif
     projectEditorState_ = {};
     upstreamDocumentJson_.clear();
     history_.clear();
@@ -1186,6 +1195,11 @@ core::DayoProject Application::currentProject() const {
         video != project.assets.end())
         project.editor.movieFile = video->path;
 #if DAYO_HAS_IMGUI
+    auto sequenceFile = std::filesystem::path(sequenceOutputFilename_.data());
+    sequenceFile.replace_extension(sequenceOutput_.format == core::OutputFormat::png   ? ".png"
+                                   : sequenceOutput_.format == core::OutputFormat::exr ? ".exr"
+                                                                                       : ".ppm");
+    project.editor.outputFile = std::filesystem::path(sequenceOutputDirectory_.data()) / sequenceFile;
     project.editor.samplesPerFrame = sequenceOutput_.samples;
     project.editor.motionBlur = sequenceOutput_.motionBlur;
     project.editor.outputWidth = sequenceWidth_;
@@ -1505,6 +1519,23 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 requestRenderer(graphics::RendererKind::preview);
             playbackSpeed_ = project.editor.animationSpeed;
 #if DAYO_HAS_IMGUI
+            if (!project.editor.outputFile.empty()) {
+                const auto directory = project.editor.outputFile.parent_path().string();
+                const auto filename = project.editor.outputFile.filename().string();
+                if (directory.size() >= sequenceOutputDirectory_.size() ||
+                    filename.size() >= sequenceOutputFilename_.size())
+                    throw std::length_error("project output filename exceeds the editor limit");
+                sequenceOutputDirectory_.fill(0);
+                sequenceOutputFilename_.fill(0);
+                std::copy(directory.begin(), directory.end(), sequenceOutputDirectory_.begin());
+                std::copy(filename.begin(), filename.end(), sequenceOutputFilename_.begin());
+                auto extension = project.editor.outputFile.extension().string();
+                std::ranges::transform(extension, extension.begin(),
+                                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                sequenceOutput_.format = extension == ".png"   ? core::OutputFormat::png
+                                         : extension == ".exr" ? core::OutputFormat::exr
+                                                               : core::OutputFormat::ppm;
+            }
             sequenceOutput_.samples = project.editor.samplesPerFrame;
             sequenceOutput_.motionBlur = project.editor.motionBlur;
             sequenceOutput_.firstFrame = static_cast<std::uint32_t>(std::max(project.editor.recordStart, 0));
@@ -3150,6 +3181,7 @@ void Application::startImageSequenceExport() {
         if (sequenceOutput_.lastFrame < sequenceOutput_.firstFrame)
             throw std::invalid_argument("last frame precedes first frame");
         sequenceOutput_.directory = sequenceOutputDirectory_.data();
+        sequenceOutput_.sequenceFile = sequenceOutputFilename_.data();
         core::OutputQueue output(sequenceOutput_);
         imageSequenceRestoreFrame_ = scene_.timeline().frame;
         imageSequenceRestoreMediaSeconds_ = mediaSeconds_;
@@ -3365,6 +3397,15 @@ void Application::buildImageSequenceExportUi() {
         }
     } else {
         ImGui::InputText("Directory", sequenceOutputDirectory_.data(), sequenceOutputDirectory_.size());
+        if (ImGui::InputText("First filename", sequenceOutputFilename_.data(), sequenceOutputFilename_.size())) {
+            const auto extension = std::filesystem::path(sequenceOutputFilename_.data()).extension().string();
+            if (extension == ".png")
+                sequenceOutput_.format = core::OutputFormat::png;
+            else if (extension == ".exr")
+                sequenceOutput_.format = core::OutputFormat::exr;
+            else if (extension == ".ppm")
+                sequenceOutput_.format = core::OutputFormat::ppm;
+        }
         int first = static_cast<int>(sequenceOutput_.firstFrame);
         int last = static_cast<int>(sequenceOutput_.lastFrame);
         int samples = static_cast<int>(sequenceOutput_.samples);
@@ -3423,6 +3464,16 @@ void Application::buildImageSequenceExportUi() {
         format = std::clamp(format, 0, formatCount - 1);
         if (ImGui::Combo("Format", &format, formatNames))
             sequenceOutput_.format = static_cast<core::OutputFormat>(format);
+        try {
+            auto previewSettings = sequenceOutput_;
+            previewSettings.directory = sequenceOutputDirectory_.data();
+            previewSettings.sequenceFile = sequenceOutputFilename_.data();
+            ImGui::TextWrapped("First output: %s", core::firstSequenceOutputPath(previewSettings).string().c_str());
+            ImGui::TextDisabled("Output numbers are independent of scene frames. Existing numbers are skipped unless "
+                                "overwrite is enabled.");
+        } catch (const std::exception& error) {
+            ImGui::TextWrapped("%s", error.what());
+        }
         if (ImGui::Button("Render sequence"))
             startImageSequenceExport();
     }

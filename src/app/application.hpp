@@ -268,6 +268,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::array<char, 1024> projectDestination_{'p', 'r', 'o', 'j', 'e', 'c', 't', '.', 'd', 'a', 'y', 'o', '\0'};
     std::string projectSaveStatus_;
     std::array<char, 1024> sequenceOutputDirectory_{'o', 'u', 't', 'p', 'u', 't', '\0'};
+    std::array<char, 1024> sequenceOutputFilename_{'f', 'r', 'a', 'm', 'e', '_', '0', '0',
+                                                   '0', '0', '0', '.', 'p', 'p', 'm', '\0'};
     struct TimelineTrack {
         std::string name;
         std::vector<std::uint32_t> frames;

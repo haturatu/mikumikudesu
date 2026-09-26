@@ -1,4 +1,5 @@
 #include "core/output.hpp"
+#include "core/sequence_path.hpp"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
@@ -10,20 +11,115 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <condition_variable>
-#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <fstream>
 #include <limits>
 #include <mutex>
 #include <queue>
+#include <random>
 #include <stdexcept>
 #include <thread>
 
 namespace dayo::core {
 
 namespace {
+
+std::string outputExtension(OutputFormat format) {
+    return format == OutputFormat::png ? ".png" : format == OutputFormat::exr ? ".exr" : ".ppm";
+}
+SequencePathSpec dayoSequence(const OutputSettings& settings) {
+    const auto filename = settings.sequenceFile;
+    if (filename.empty() || filename.has_parent_path() || filename.stem().empty())
+        throw std::invalid_argument("sequence filename must be a filename without a directory");
+    SequencePathSpec spec;
+    const auto stem = filename.stem().string();
+    if (!stem.empty() && stem.back() >= '0' && stem.back() <= '9') {
+        const auto parsed = parseSequencePath(std::filesystem::path(stem + ".tmp"));
+        if (!parsed)
+            throw std::invalid_argument("sequence filename number exceeds uint32 range");
+        spec = *parsed;
+    } else {
+        spec.prefix = stem;
+        spec.start = 0;
+    }
+    spec.digits = 5;
+    spec.extension = outputExtension(settings.format);
+    return spec;
+}
+std::string legacyOutputName(std::string_view pattern, std::uint32_t frame) {
+    std::string result;
+    bool numbered = false;
+    for (std::size_t i = 0; i < pattern.size(); ++i) {
+        if (pattern[i] != '%') {
+            result += pattern[i];
+            continue;
+        }
+        if (++i == pattern.size())
+            throw std::invalid_argument("incomplete output filename conversion");
+        if (pattern[i] == '%') {
+            result += '%';
+            continue;
+        }
+        if (numbered)
+            throw std::invalid_argument("output filename requires exactly one number conversion");
+        const bool zeroPad = pattern[i] == '0';
+        if (zeroPad)
+            ++i;
+        std::uint32_t width = 0;
+        while (i < pattern.size() && pattern[i] >= '0' && pattern[i] <= '9') {
+            width = width * 10U + static_cast<std::uint32_t>(pattern[i++] - '0');
+            if (width > 1024)
+                throw std::invalid_argument("output filename width exceeds 1024");
+        }
+        if (i >= pattern.size() || (pattern[i] != 'u' && pattern[i] != 'd'))
+            throw std::invalid_argument("output filename supports only %d, %u and integer widths");
+        auto number = std::to_string(frame);
+        if (number.size() < width)
+            number.insert(0, width - number.size(), zeroPad ? '0' : ' ');
+        result += number;
+        numbered = true;
+    }
+    if (!numbered)
+        throw std::invalid_argument("output filename requires a number conversion");
+    return result;
+}
+
+// Encode to a same-filesystem temporary file, then publish using a hard link.
+// Creation is atomic and cannot replace an existing frame, even with another
+// process writing to the output directory. The worker advances Dayo numbering
+// on a collision. Unsupported filesystems report an IO error.
+struct EncodedFrame {
+    std::filesystem::path directory;
+    std::filesystem::path file;
+    EncodedFrame(const std::filesystem::path& outputDirectory, const ImageRgba8& image, OutputFormat format) {
+        const auto parent = outputDirectory.empty() ? std::filesystem::path(".") : outputDirectory;
+        std::filesystem::create_directories(parent);
+        std::random_device random;
+        for (unsigned attempt = 0; attempt < 1024; ++attempt) {
+            directory = parent / (".dayo-frame-" + std::to_string(random()) + "-" + std::to_string(random()));
+            if (std::filesystem::create_directory(directory))
+                break;
+            directory.clear();
+        }
+        if (directory.empty())
+            throw std::runtime_error("cannot reserve temporary sequence directory");
+        file = directory / ("frame" + outputExtension(format));
+        try {
+            writeFrame(file, image, format);
+        } catch (...) {
+            std::error_code error;
+            std::filesystem::remove_all(directory, error);
+            throw;
+        }
+    }
+    ~EncodedFrame() {
+        std::error_code error;
+        std::filesystem::remove_all(directory, error);
+    }
+};
 
 OutputSettings normalizeSettings(OutputSettings settings) {
     settings.maxPendingFrames = std::max(settings.maxPendingFrames, 1U);
@@ -33,7 +129,10 @@ OutputSettings normalizeSettings(OutputSettings settings) {
     if (settings.format == OutputFormat::exr)
         throw std::runtime_error("EXR output requires an OpenEXR-enabled build");
 #endif
-    if (!settings.overwrite) {
+    if (!settings.sequenceFile.empty()) {
+        static_cast<void>(dayoSequence(settings));
+        static_cast<void>(firstSequenceOutputPath(settings));
+    } else if (!settings.overwrite) {
         for (std::uint64_t frame = settings.firstFrame; frame <= settings.lastFrame; ++frame) {
             const auto path = outputPath(settings, static_cast<std::uint32_t>(frame));
             if (std::filesystem::exists(path))
@@ -47,16 +146,33 @@ OutputSettings normalizeSettings(OutputSettings settings) {
 } // namespace
 
 std::filesystem::path outputPath(const OutputSettings& settings, std::uint32_t frame) {
-    char name[256]{};
-    std::snprintf(name, sizeof(name), settings.filenamePattern.c_str(), frame);
-    const auto extension = settings.format == OutputFormat::png   ? ".png"
-                           : settings.format == OutputFormat::exr ? ".exr"
-                                                                  : ".ppm";
-    return settings.directory / (std::string(name) + extension);
+    if (!settings.sequenceFile.empty()) {
+        const auto spec = dayoSequence(settings);
+        if (frame < settings.firstFrame)
+            throw std::invalid_argument("output frame precedes sequence start");
+        const auto number = static_cast<std::uint64_t>(spec.start) + frame - settings.firstFrame;
+        if (number > UINT32_MAX)
+            throw std::overflow_error("sequence number exhausted");
+        return formatSequencePath(settings.directory, spec, static_cast<std::uint32_t>(number));
+    }
+    return settings.directory / (legacyOutputName(settings.filenamePattern, frame) + outputExtension(settings.format));
+}
+
+std::filesystem::path firstSequenceOutputPath(const OutputSettings& settings) {
+    if (settings.sequenceFile.empty())
+        return outputPath(settings, settings.firstFrame);
+    const auto spec = dayoSequence(settings);
+    for (std::uint64_t number = spec.start; number <= UINT32_MAX; ++number) {
+        const auto path = formatSequencePath(settings.directory, spec, static_cast<std::uint32_t>(number));
+        if (settings.overwrite || !std::filesystem::exists(path))
+            return path;
+    }
+    throw std::overflow_error("sequence number exhausted");
 }
 
 void writeFrame(const std::filesystem::path& path, const ImageRgba8& image, OutputFormat format) {
-    std::filesystem::create_directories(path.parent_path());
+    if (!path.parent_path().empty())
+        std::filesystem::create_directories(path.parent_path());
     if (format == OutputFormat::png) {
         if (stbi_write_png(path.c_str(), static_cast<int>(image.width), static_cast<int>(image.height), 4,
                            image.pixels.data(), static_cast<int>(image.width * 4U)) == 0) {
@@ -114,7 +230,8 @@ void writeFrame(const std::filesystem::path& path, const ImageData& image) {
             outputPixels[static_cast<int>(y)][static_cast<int>(x)] = pixel;
         }
     }
-    std::filesystem::create_directories(path.parent_path());
+    if (!path.parent_path().empty())
+        std::filesystem::create_directories(path.parent_path());
     Imf::RgbaOutputFile output(path.string().c_str(), static_cast<int>(linear.width), static_cast<int>(linear.height),
                                Imf::WRITE_RGBA);
     output.setFrameBuffer(&outputPixels[0][0], 1, static_cast<std::size_t>(linear.width));
@@ -132,7 +249,8 @@ struct OutputWorker {
         ImageRgba8 image;
     };
     explicit OutputWorker(OutputSettings value)
-        : settings(normalizeSettings(std::move(value))), thread([this] { run(); }) {}
+        : settings(normalizeSettings(std::move(value))),
+          nextNumber(settings.sequenceFile.empty() ? 0 : dayoSequence(settings).start), thread([this] { run(); }) {}
     ~OutputWorker() {
         close();
     }
@@ -151,10 +269,37 @@ struct OutputWorker {
                     queue.pop();
                     condition.notify_all();
                 }
-                const auto path = outputPath(settings, item.frame);
-                if (!settings.overwrite && std::filesystem::exists(path))
-                    throw std::runtime_error(path.string() + " already exists; frame was not overwritten");
-                writeFrame(path, item.image, settings.format);
+                const auto spec =
+                    settings.sequenceFile.empty() ? std::optional<SequencePathSpec>{} : dayoSequence(settings);
+                const auto candidate = [&]() {
+                    if (!spec)
+                        return outputPath(settings, item.frame);
+                    if (nextNumber > UINT32_MAX)
+                        throw std::overflow_error("sequence number exhausted");
+                    return formatSequencePath(settings.directory, *spec, static_cast<std::uint32_t>(nextNumber));
+                };
+                auto path = candidate();
+                if (settings.overwrite) {
+                    writeFrame(path, item.image, settings.format);
+                    if (spec)
+                        ++nextNumber;
+                } else {
+                    EncodedFrame encoded(path.parent_path(), item.image, settings.format);
+                    for (;;) {
+                        std::error_code publicationError;
+                        std::filesystem::create_hard_link(encoded.file, path, publicationError);
+                        if (!publicationError) {
+                            if (spec)
+                                ++nextNumber;
+                            break;
+                        }
+                        if (publicationError != std::errc::file_exists || !spec)
+                            throw std::runtime_error("cannot publish output frame " + path.string() + ": " +
+                                                     publicationError.message());
+                        ++nextNumber;
+                        path = candidate();
+                    }
+                }
                 count.fetch_add(1, std::memory_order_relaxed);
             }
         } catch (...) {
@@ -188,6 +333,7 @@ struct OutputWorker {
             thread.join();
     }
     OutputSettings settings;
+    std::uint64_t nextNumber{};
     std::queue<Item> queue;
     std::mutex mutex;
     std::condition_variable condition;
