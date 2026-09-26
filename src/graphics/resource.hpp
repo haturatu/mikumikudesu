@@ -498,83 +498,49 @@ struct PhysicalResourceRequirements {
 [[nodiscard]] constexpr std::size_t pixelFormatByteSize(PixelFormat format) noexcept {
     switch (format) {
     case PixelFormat::r8Unorm:
-        return 1;
-    case PixelFormat::r16Float:
-        return 2;
-    case PixelFormat::r16g16Float:
-        return 4;
-    case PixelFormat::r32Float:
-        return 4;
-    case PixelFormat::r32g32Float:
-        return 8;
-    case PixelFormat::r32g32Uint:
-        return 8;
-    case PixelFormat::rgba8Unorm:
-        return 4;
-    case PixelFormat::rgba8Srgb:
-        return 4;
-    case PixelFormat::rgba16Float:
-        return 8;
-    case PixelFormat::rgba32Float:
-        return 16;
-    case PixelFormat::depth32Float:
-        return 4;
-    case PixelFormat::depth24Stencil8:
-        return 4;
     case PixelFormat::r8Uint:
-        return 1;
     case PixelFormat::r8Snorm:
-        return 1;
     case PixelFormat::r8Sint:
         return 1;
+    case PixelFormat::r16Float:
     case PixelFormat::r8g8Uint:
-        return 2;
     case PixelFormat::r8g8Snorm:
-        return 2;
     case PixelFormat::r8g8Sint:
-        return 2;
-    case PixelFormat::rgba8Uint:
-        return 4;
-    case PixelFormat::rgba8Snorm:
-        return 4;
-    case PixelFormat::rgba8Sint:
-        return 4;
     case PixelFormat::r16Uint:
-        return 2;
     case PixelFormat::r16Snorm:
-        return 2;
     case PixelFormat::r16Sint:
-        return 2;
-    case PixelFormat::r16g16Uint:
-        return 4;
-    case PixelFormat::r16g16Snorm:
-        return 4;
-    case PixelFormat::r16g16Sint:
-        return 4;
-    case PixelFormat::rgba16Uint:
-        return 8;
-    case PixelFormat::rgba16Snorm:
-        return 8;
-    case PixelFormat::rgba16Sint:
-        return 8;
-    case PixelFormat::r32Uint:
-        return 4;
-    case PixelFormat::r32Sint:
-        return 4;
-    case PixelFormat::r32g32Sint:
-        return 8;
-    case PixelFormat::rgba32Uint:
-        return 16;
-    case PixelFormat::rgba32Sint:
-        return 16;
     case PixelFormat::r8g8Unorm:
-        return 2;
     case PixelFormat::r16Unorm:
         return 2;
+    case PixelFormat::r16g16Float:
+    case PixelFormat::r32Float:
+    case PixelFormat::rgba8Unorm:
+    case PixelFormat::rgba8Srgb:
+    case PixelFormat::depth32Float:
+    case PixelFormat::depth24Stencil8:
+    case PixelFormat::rgba8Uint:
+    case PixelFormat::rgba8Snorm:
+    case PixelFormat::rgba8Sint:
+    case PixelFormat::r16g16Uint:
+    case PixelFormat::r16g16Snorm:
+    case PixelFormat::r16g16Sint:
+    case PixelFormat::r32Uint:
+    case PixelFormat::r32Sint:
     case PixelFormat::r16g16Unorm:
         return 4;
+    case PixelFormat::r32g32Float:
+    case PixelFormat::r32g32Uint:
+    case PixelFormat::rgba16Float:
+    case PixelFormat::rgba16Uint:
+    case PixelFormat::rgba16Snorm:
+    case PixelFormat::rgba16Sint:
+    case PixelFormat::r32g32Sint:
     case PixelFormat::rgba16Unorm:
         return 8;
+    case PixelFormat::rgba32Float:
+    case PixelFormat::rgba32Uint:
+    case PixelFormat::rgba32Sint:
+        return 16;
     }
     return 0;
 }
