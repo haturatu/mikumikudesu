@@ -268,9 +268,10 @@ FxDebugResult readFxDebugResource(Device& device, CommandList& commands, const F
                 writeBytes(request.dumpPath, bytes);
                 writeBytes(metadataPath, {reinterpret_cast<const std::uint8_t*>(metadata.data()), metadata.size()});
             } else if (extension == ".exr")
-                core::writeFrame(request.dumpPath, slice);
+                core::writeFrame(std::filesystem::absolute(request.dumpPath), slice);
             else if (extension == ".png")
-                core::writeFrame(request.dumpPath, core::halfToRgba8(slice), core::OutputFormat::png);
+                core::writeFrame(std::filesystem::absolute(request.dumpPath), core::halfToRgba8(slice),
+                                 core::OutputFormat::png);
             else
                 throw std::invalid_argument("texture debug dump requires .bin, .png or .exr");
         }
