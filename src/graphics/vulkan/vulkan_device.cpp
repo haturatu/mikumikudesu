@@ -187,6 +187,60 @@ VkFormat toVkFormat(PixelFormat format) {
         return VK_FORMAT_D32_SFLOAT;
     case PixelFormat::depth24Stencil8:
         return VK_FORMAT_D24_UNORM_S8_UINT;
+    case PixelFormat::r8Uint:
+        return VK_FORMAT_R8_UINT;
+    case PixelFormat::r8Snorm:
+        return VK_FORMAT_R8_SNORM;
+    case PixelFormat::r8Sint:
+        return VK_FORMAT_R8_SINT;
+    case PixelFormat::r8g8Uint:
+        return VK_FORMAT_R8G8_UINT;
+    case PixelFormat::r8g8Snorm:
+        return VK_FORMAT_R8G8_SNORM;
+    case PixelFormat::r8g8Sint:
+        return VK_FORMAT_R8G8_SINT;
+    case PixelFormat::rgba8Uint:
+        return VK_FORMAT_R8G8B8A8_UINT;
+    case PixelFormat::rgba8Snorm:
+        return VK_FORMAT_R8G8B8A8_SNORM;
+    case PixelFormat::rgba8Sint:
+        return VK_FORMAT_R8G8B8A8_SINT;
+    case PixelFormat::r16Uint:
+        return VK_FORMAT_R16_UINT;
+    case PixelFormat::r16Snorm:
+        return VK_FORMAT_R16_SNORM;
+    case PixelFormat::r16Sint:
+        return VK_FORMAT_R16_SINT;
+    case PixelFormat::r16g16Uint:
+        return VK_FORMAT_R16G16_UINT;
+    case PixelFormat::r16g16Snorm:
+        return VK_FORMAT_R16G16_SNORM;
+    case PixelFormat::r16g16Sint:
+        return VK_FORMAT_R16G16_SINT;
+    case PixelFormat::rgba16Uint:
+        return VK_FORMAT_R16G16B16A16_UINT;
+    case PixelFormat::rgba16Snorm:
+        return VK_FORMAT_R16G16B16A16_SNORM;
+    case PixelFormat::rgba16Sint:
+        return VK_FORMAT_R16G16B16A16_SINT;
+    case PixelFormat::r32Uint:
+        return VK_FORMAT_R32_UINT;
+    case PixelFormat::r32Sint:
+        return VK_FORMAT_R32_SINT;
+    case PixelFormat::r32g32Sint:
+        return VK_FORMAT_R32G32_SINT;
+    case PixelFormat::rgba32Uint:
+        return VK_FORMAT_R32G32B32A32_UINT;
+    case PixelFormat::rgba32Sint:
+        return VK_FORMAT_R32G32B32A32_SINT;
+    case PixelFormat::r8g8Unorm:
+        return VK_FORMAT_R8G8_UNORM;
+    case PixelFormat::r16Unorm:
+        return VK_FORMAT_R16_UNORM;
+    case PixelFormat::r16g16Unorm:
+        return VK_FORMAT_R16G16_UNORM;
+    case PixelFormat::rgba16Unorm:
+        return VK_FORMAT_R16G16B16A16_UNORM;
     }
     return VK_FORMAT_UNDEFINED;
 }
@@ -5352,7 +5406,9 @@ std::vector<std::uint8_t> VulkanDevice::readbackTextureEx(handles::TextureHandle
             .bufferOffset = staging.offset,
             .bufferRowLength = 0,
             .bufferImageHeight = 0,
-            .imageSubresource = {imageAspect(typed.desc.format), mipLevel, arrayLayer, 1},
+            .imageSubresource = {isDepthFormat(typed.desc.format) ? VkImageAspectFlags{VK_IMAGE_ASPECT_DEPTH_BIT}
+                                                                  : imageAspect(typed.desc.format),
+                                 mipLevel, arrayLayer, 1},
             .imageOffset = {0, 0, 0},
             .imageExtent = mipExtent(typed.desc, mipLevel),
         };
@@ -6430,8 +6486,37 @@ std::vector<std::byte> VulkanDevice::readbackBufferEx(handles::BufferHandle hand
         throw std::invalid_argument("stale typed buffer handle");
     if (offset > it->second.desc.size || size > it->second.desc.size - offset)
         throw std::out_of_range("typed buffer readback exceeds allocation");
-    if (it->second.mapped == nullptr)
-        throw std::logic_error("typed buffer readback requires a CPU-visible buffer");
+    if (it->second.mapped == nullptr) {
+        if ((toBits(it->second.desc.usage) & toBits(ResourceUsage::transferSrc)) == 0U)
+            throw std::logic_error("device-local readback requires transfer-source usage");
+        if (size == 0)
+            return {};
+        if (uploadContext_ == nullptr)
+            throw std::logic_error("Vulkan upload context is unavailable");
+        try {
+            uploadContext_->begin();
+            const auto staging = uploadContext_->allocate(size, 4);
+            const auto command = uploadContext_->commandBuffer();
+            const VkMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                           .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                           .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                           .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                           .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT};
+            const VkDependencyInfo dependency{
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
+            vkCmdPipelineBarrier2(command, &dependency);
+            const VkBufferCopy copy{.srcOffset = offset, .dstOffset = staging.offset, .size = size};
+            vkCmdCopyBuffer(command, it->second.resource.buffer, staging.buffer, 1, &copy);
+            const auto signal = uploadContext_->submit();
+            uploadContext_->wait(signal);
+            std::vector<std::byte> bytes(size);
+            std::memcpy(bytes.data(), staging.mapped, size);
+            return bytes;
+        } catch (...) {
+            uploadContext_->abort();
+            throw;
+        }
+    }
     std::vector<std::byte> bytes(size);
     if (!bytes.empty())
         std::memcpy(bytes.data(), static_cast<const std::byte*>(it->second.mapped) + offset, size);

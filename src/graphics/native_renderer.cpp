@@ -6,6 +6,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 
 namespace dayo::graphics {
@@ -17,6 +18,75 @@ void appendReason(std::ostringstream& output, std::string_view reason) {
     if (output.tellp() > 0)
         output << ", ";
     output << reason;
+}
+
+std::vector<std::size_t> sharedEffectOrder(std::span<const core::SceneEffectInstance> effects) {
+    std::unordered_map<std::string, std::size_t> sources;
+    std::vector<std::vector<std::string>> refs(effects.size());
+    for (std::size_t i = 0; i < effects.size(); ++i) {
+        const auto gather = [&](const auto& declarations) {
+            for (const auto& declaration : declarations) {
+                if (fxSharedMode(declaration.shared, "source") && !sources.emplace(declaration.name, i).second)
+                    throw std::invalid_argument("ambiguous shared source: " + declaration.name);
+                if (fxSharedMode(declaration.shared, "ref"))
+                    refs[i].push_back(declaration.name);
+            }
+        };
+        gather(effects[i].graph.textures);
+        gather(effects[i].graph.textures3D);
+        gather(effects[i].graph.buffers);
+    }
+    std::vector<std::size_t> result;
+    std::vector<std::uint8_t> state(effects.size());
+    const auto visit = [&](auto&& self, std::size_t index) -> void {
+        if (state[index] == 2)
+            return;
+        if (state[index] == 1)
+            throw std::invalid_argument("cyclic shared FX dependency at effect " + std::to_string(effects[index].id));
+        state[index] = 1;
+        for (const auto& name : refs[index]) {
+            const auto producer = sources.find(name);
+            if (producer != sources.end())
+                self(self, producer->second);
+        }
+        state[index] = 2;
+        result.push_back(index);
+    };
+    for (std::size_t i = 0; i < effects.size(); ++i)
+        visit(visit, i);
+    return result;
+}
+
+void validateSharedStages(std::span<const core::SceneEffectInstance> deform, const fx::FxProgram* renderer,
+                          std::span<const core::SceneEffectInstance> postprocess) {
+    std::unordered_map<std::string, unsigned> sources;
+    std::vector<std::pair<std::string, unsigned>> refs;
+    const auto gather = [&](const auto& program, unsigned stage) {
+        const auto declarations = [&](const auto& resources) {
+            for (const auto& resource : resources) {
+                if (fxSharedMode(resource.shared, "source") && !sources.emplace(resource.name, stage).second)
+                    throw std::invalid_argument("ambiguous shared source across stages: " + resource.name);
+                if (fxSharedMode(resource.shared, "ref"))
+                    refs.emplace_back(resource.name, stage);
+            }
+        };
+        declarations(program.textures);
+        declarations(program.textures3D);
+        declarations(program.buffers);
+    };
+    for (const auto& effect : deform)
+        gather(effect.graph, 0);
+    if (renderer != nullptr)
+        gather(*renderer, 1);
+    for (const auto& effect : postprocess)
+        gather(effect.graph, 2);
+    for (const auto& [name, stage] : refs) {
+        const auto source = sources.find(name);
+        if (source == sources.end())
+            throw std::invalid_argument("missing shared source: " + name);
+        if (source->second > stage)
+            throw std::invalid_argument("shared source executes after consumer stage: " + name);
+    }
 }
 
 } // namespace
@@ -38,7 +108,8 @@ std::vector<NativeFxResourceSnapshot> snapshotFxResources(std::string_view effec
                           .dimension = resource.dimension,
                           .allocationBytes = resource.allocationBytes,
                           .elementSize = resource.elementSize,
-                          .elementType = resource.elementType});
+                          .elementType = resource.elementType,
+                          .generation = fxDebugGeneration(resource)});
     }
     return result;
 }
@@ -238,7 +309,8 @@ void NativeRendererCoordinator::setControllerDeclarations(std::span<const core::
 
 std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffects(
     std::span<const core::SceneEffectInstance> effects, GenericRuntimeList& runtimes, CommandList& commands,
-    const fx::FxFrameContext& context, const FxExecutionResources& resources, bool publishToScreen) {
+    const fx::FxFrameContext& context, const FxExecutionResources& resources, bool publishToScreen,
+    std::span<const FxMaterialSceneModel> materialModels) {
     if (effects.empty())
         return std::nullopt;
     if (device_ == nullptr)
@@ -251,7 +323,7 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
     const auto layouts = sceneFrameRuntime_->layouts();
     const auto descriptorSets = sceneFrameRuntime_->descriptorSets();
     std::optional<NativeFrameOutput> lastOutput;
-    for (std::size_t index = 0; index < effects.size(); ++index) {
+    for (const auto index : sharedEffectOrder(effects)) {
         const NativeEffectModel* ownerModel = nullptr;
         auto effectContext = context;
         if (!publishToScreen) {
@@ -267,25 +339,57 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
         }
         auto& entry = runtimes[index];
         if (!entry) {
-            auto program = fx::FxCompiler{}.compile(effects[index].graph);
-            std::string error;
             entry = std::make_unique<GenericEffectRuntime>();
             entry->device = device_;
-            if (!entry->globalVariables.initialize(*device_, program.globalVarSize, &error))
+            entry->owner = "effect:" + std::to_string(effects[index].id);
+            entry->program = fx::FxCompiler{}.compile(effects[index].graph);
+            std::string error;
+            if (!entry->globalVariables.initialize(*device_, entry->program.globalVarSize, &error))
                 throw std::runtime_error(error.empty() ? "generic Dayo FX global buffer initialization failed" : error);
             if (!entry->controller.initialize(*device_, effects[index].graph.controllers))
                 throw std::runtime_error("generic Dayo FX controller buffer initialization failed");
             entry->block.emplace(entry->controller.layout());
             entry->runtime.addProvider(sceneHostProvider_);
+            entry->runtime.setSharedResourceResolver(sharedResourceResolver());
+        }
+        // A deformer uses its owner's clone count; table indices remain scene-wide,
+        // matching the canonical Model2Mat and material descriptor ABI.
+        std::vector<FxMaterialSceneModel> effectModels(materialModels.begin(), materialModels.end());
+        if (ownerModel != nullptr) {
+            for (auto& model : effectModels)
+                if (model.id == ownerModel->modelId)
+                    model.cloneCount = entry->program.meshCloneCount;
+        }
+        FxMaterialRuntimeInitializer initializeMaterial;
+        if (entry->program.materialSchema.has_value()) {
+            initializeMaterial = [this, &entry, &effectModels, &effectContext](const FxResourceStore& store,
+                                                                               std::string* error) {
+                entry->materialScene.invalidateLinks();
+                if (!entry->materialScene.sync(*device_, *entry->program.materialSchema, effectModels, effectContext,
+                                               error, materialTextureResolver(&store, false)))
+                    return static_cast<const FxMaterialGpuRuntime*>(nullptr);
+                return &entry->materialScene.gpuRuntime();
+            };
+            if (entry->runtime.ready()) {
+                std::string error;
+                const auto& store = entry->runtime.nativeRuntime().resources().store();
+                if (!entry->materialScene.sync(*device_, *entry->program.materialSchema, effectModels, effectContext,
+                                               &error, materialTextureResolver(&store, false)))
+                    throw std::runtime_error("generic Dayo FX MatDesc synchronization: " + error);
+                if (entry->materialScene.descriptorLayoutChanged())
+                    entry->runtime.reset();
+            }
+        }
+        std::string initializationError;
+        if (!entry->runtime.ready()) {
             fx::FxNativeShaderSourceOptions sourceOptions;
             sourceOptions.controllerDeclarations = effects[index].graph.controllers;
-            if (!entry->runtime.initializeForFrame(*device_, std::move(program), fx::FxShaderCompiler{}, effectContext,
-                                                   layouts, &error, descriptorSets, std::move(sourceOptions)))
-                throw std::runtime_error(error.empty() ? "generic Dayo FX initialization failed" : error);
-        } else {
-            std::string error;
-            if (!entry->runtime.refresh(effectContext, &error))
-                throw std::runtime_error(error.empty() ? "generic Dayo FX refresh failed" : error);
+            if (!entry->runtime.initializeForFrame(*device_, entry->program, fx::FxShaderCompiler{}, effectContext,
+                                                   layouts, &initializationError, descriptorSets,
+                                                   std::move(sourceOptions), nullptr, initializeMaterial))
+                throw std::runtime_error("generic Dayo FX initialization: " + initializationError);
+        } else if (!entry->runtime.refresh(effectContext, &initializationError, initializeMaterial)) {
+            throw std::runtime_error("generic Dayo FX refresh: " + initializationError);
         }
 
         if (!effects[index].graph.controllers.empty()) {
@@ -335,7 +439,9 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
                 output.has_value() && output->texture.valid())
                 stageResources.defaultColorTarget = output->texture;
         }
+        commands.memoryBarrierEx();
         static_cast<void>(entry->runtime.execute(frame, commands, stageResources));
+        commands.memoryBarrierEx();
         if (const auto* program = entry->runtime.program(); program != nullptr) {
             const auto owner = "effect:" + std::to_string(effects[index].id);
             sharedResources_.publish(owner, *program, entry->runtime.nativeRuntime().resources().store());
@@ -412,27 +518,21 @@ bool NativeRendererCoordinator::updateEnvironment(const EnvironmentDesc& descrip
     return environmentService_.update(description);
 }
 
-std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
-    CommandList& commands, const fx::FxFrameContext& context, core::DirtyFlag dirty,
-    std::span<const core::MaterialParameterBlock> materials, std::span<const AliasEntry> lightSampling,
-    const EnvironmentGpuResult& environment, const FxExecutionResources& resources, NativeFrameExecution execution,
-    std::span<const FxMaterialSceneModel> materialModels) {
-    if (!status_.nativeReady)
-        return std::nullopt;
-    if (execution.sampleCount == 0 || execution.sampleIndex >= execution.sampleCount)
-        throw std::invalid_argument("native frame sample index/count is invalid");
-    if (execution.sampleCount == 1)
-        outputSamples_.cancel();
-    environmentService_.record(commands);
-    static_cast<void>(executeGenericEffects(deformEffects_, deformRuntimes_, commands, context, resources, false));
-    publishActiveRendererResources();
-    const auto& activeEnvironment =
-        environment.skybox.valid() || environment.cubemap.valid() || environment.prefiltered.valid()
-            ? environment
-            : environmentService_.gpuResult();
-    const FxMaterialTextureResolver textureResolver =
-        [this](core::ModelId owner, const core::fx::MaterialTextureSchema& schema,
-               std::string_view assigned) -> std::optional<FxMaterialExternalTexture> {
+FxSharedResourceResolver NativeRendererCoordinator::sharedResourceResolver() const {
+    return [this](std::string_view name) -> std::optional<FxResourceStore::Resource> {
+        const auto found = sharedResources_.resolve(name);
+        if (found.status == FxSharedResourceRegistry::LookupStatus::ambiguous)
+            throw std::invalid_argument("ambiguous shared source: " + std::string(name));
+        if (!found.value)
+            return std::nullopt;
+        return found.value->resource;
+    };
+}
+
+FxMaterialTextureResolver NativeRendererCoordinator::materialTextureResolver(const FxResourceStore* localStore,
+                                                                             bool rendererLocal) const {
+    return [this, localStore, rendererLocal](core::ModelId owner, const core::fx::MaterialTextureSchema& schema,
+                                             std::string_view assigned) -> std::optional<FxMaterialExternalTexture> {
         if (core::fx::isScreenBmpToken(assigned)) {
             if (schema.dimension != core::fx::MaterialTextureDimension::twoD || !hostResourceProvider_.has_value())
                 return std::nullopt;
@@ -447,24 +547,25 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
                                              .generation = texture.generation};
         }
 
-        const FxResourceStore* rendererStore = nullptr;
-        switch (status_.active) {
-        case RendererKind::subayai:
-            rendererStore = subayai_.liveResourceStore();
-            break;
-        case RendererKind::bdpt:
-            rendererStore = bdpt_.liveResourceStore();
-            break;
-        case RendererKind::preview:
-            break;
-        }
+        const FxResourceStore* rendererStore = localStore;
+        if (rendererLocal)
+            switch (status_.active) {
+            case RendererKind::subayai:
+                rendererStore = subayai_.liveResourceStore();
+                break;
+            case RendererKind::bdpt:
+                rendererStore = bdpt_.liveResourceStore();
+                break;
+            case RendererKind::preview:
+                break;
+            }
         if (rendererStore != nullptr) {
             const auto* resource = rendererStore->find(assigned);
             const auto expectedDimension = schema.dimension == core::fx::MaterialTextureDimension::twoD ? 2U : 3U;
             if (resource != nullptr && resource->kind == FxResourceStore::Kind::texture && resource->texture.valid() &&
                 resource->dimension == expectedDimension) {
                 const auto* rendererProgram = program();
-                auto identity = std::string("renderer-local:");
+                auto identity = std::string(rendererLocal ? "renderer-local:" : "effect-local:");
                 if (rendererProgram != nullptr)
                     identity += rendererProgram->sourcePath.lexically_normal().generic_string();
                 identity += ":" + resource->name + ":" + std::to_string(resource->texture.index) + ":" +
@@ -510,6 +611,70 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
             .dimension = schema.dimension,
             .generation = exportInfo.generation};
     };
+}
+
+std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
+    CommandList& commands, const fx::FxFrameContext& context, core::DirtyFlag dirty,
+    std::span<const core::MaterialParameterBlock> materials, std::span<const AliasEntry> lightSampling,
+    const EnvironmentGpuResult& environment, const FxExecutionResources& resources, NativeFrameExecution execution,
+    std::span<const FxMaterialSceneModel> materialModels) {
+    auto output = recordFrameImpl(commands, context, dirty, materials, lightSampling, environment, resources, execution,
+                                  materialModels);
+    processDebugReadback(commands);
+    return output;
+}
+
+void NativeRendererCoordinator::processDebugReadback(CommandList& commands) {
+    if (!debugRequest_)
+        return;
+    auto request = std::move(*debugRequest_);
+    debugRequest_.reset();
+    try {
+        const FxResourceStore* store = nullptr;
+        if (request.owner == "renderer") {
+            if (status_.active == RendererKind::subayai)
+                store = subayai_.liveResourceStore();
+            else if (status_.active == RendererKind::bdpt)
+                store = bdpt_.liveResourceStore();
+        } else {
+            for (const auto* runtimes : {&deformRuntimes_, &postprocessRuntimes_})
+                for (const auto& entry : *runtimes)
+                    if (entry && entry->owner == request.owner && entry->runtime.ready())
+                        store = &entry->runtime.nativeRuntime().resources().store();
+        }
+        const auto* resource = store ? store->find(request.name) : nullptr;
+        if (device_ == nullptr || resource == nullptr)
+            throw std::runtime_error("debug resource owner was removed or reloaded");
+        debugResult_ = readFxDebugResource(*device_, commands, *resource, request);
+    } catch (const std::exception& error) {
+        debugResult_ = FxDebugResult{
+            .label = request.owner + " / " + request.name, .message = error.what(), .preview = {}, .buffer = {}};
+    }
+}
+
+std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrameImpl(
+    CommandList& commands, const fx::FxFrameContext& context, core::DirtyFlag dirty,
+    std::span<const core::MaterialParameterBlock> materials, std::span<const AliasEntry> lightSampling,
+    const EnvironmentGpuResult& environment, const FxExecutionResources& resources, NativeFrameExecution execution,
+    std::span<const FxMaterialSceneModel> materialModels) {
+    if (!status_.nativeReady)
+        return std::nullopt;
+    if (execution.sampleCount == 0 || execution.sampleIndex >= execution.sampleCount)
+        throw std::invalid_argument("native frame sample index/count is invalid");
+    if (execution.sampleCount == 1)
+        outputSamples_.cancel();
+    validateSharedStages(deformEffects_, program(), postprocessEffects_);
+    subayai_.setSharedResourceResolver(sharedResourceResolver());
+    bdpt_.setSharedResourceResolver(sharedResourceResolver());
+    environmentService_.record(commands);
+    static_cast<void>(
+        executeGenericEffects(deformEffects_, deformRuntimes_, commands, context, resources, false, materialModels));
+    publishActiveRendererResources();
+    const auto& activeEnvironment =
+        environment.skybox.valid() || environment.cubemap.valid() || environment.prefiltered.valid()
+            ? environment
+            : environmentService_.gpuResult();
+    const auto textureResolver = materialTextureResolver(nullptr, true);
     std::optional<NativeFrameOutput> rendererOutput;
     switch (status_.active) {
     case RendererKind::subayai: {
@@ -556,14 +721,16 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
         commands.transferBarrierEx();
         commands.copyTextureEx(rendererOutput->texture, screen->texture);
     }
-    if (const auto postOutput =
-            executeGenericEffects(postprocessEffects_, postprocessRuntimes_, commands, context, resources, true);
+    if (const auto postOutput = executeGenericEffects(postprocessEffects_, postprocessRuntimes_, commands, context,
+                                                      resources, true, materialModels);
         postOutput.has_value())
         return postOutput;
     return rendererOutput;
 }
 
 void NativeRendererCoordinator::reset() noexcept {
+    debugRequest_.reset();
+    debugResult_.reset();
     deformRuntimes_.clear();
     postprocessRuntimes_.clear();
     deformerResources_.clear();
@@ -599,6 +766,8 @@ std::vector<NativeFxResourceSnapshot> NativeRendererCoordinator::liveResources()
                 continue;
             const auto label = program->sourcePath.empty() ? program->label : program->sourcePath.filename().string();
             auto resources = snapshotFxResources(label, entry->runtime.nativeRuntime().resources().store());
+            for (auto& resource : resources)
+                resource.owner = entry->owner;
             result.insert(result.end(), std::make_move_iterator(resources.begin()),
                           std::make_move_iterator(resources.end()));
         }
@@ -616,6 +785,8 @@ std::vector<NativeFxResourceSnapshot> NativeRendererCoordinator::liveResources()
         const auto label =
             activeProgram->sourcePath.empty() ? activeProgram->label : activeProgram->sourcePath.filename().string();
         auto resources = snapshotFxResources(label, *store);
+        for (auto& resource : resources)
+            resource.owner = "renderer";
         result.insert(result.end(), std::make_move_iterator(resources.begin()),
                       std::make_move_iterator(resources.end()));
     }

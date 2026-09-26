@@ -7,6 +7,7 @@
 #include "graphics/bdpt_runtime.hpp"
 #include "graphics/dayo_fx_runtime.hpp"
 #include "graphics/deformer_resource_registry.hpp"
+#include "graphics/fx_debug_readback.hpp"
 #include "graphics/fx_shared_resource_registry.hpp"
 #include "graphics/native_fx_global_variable_runtime.hpp"
 #include "graphics/native_renderer_requirements.hpp"
@@ -38,6 +39,8 @@ struct NativeFxResourceSnapshot {
     std::uint64_t allocationBytes{};
     std::uint32_t elementSize{};
     std::string elementType;
+    std::string owner{};
+    std::uint64_t generation{};
 };
 
 [[nodiscard]] std::vector<NativeFxResourceSnapshot> snapshotFxResources(std::string_view effect,
@@ -83,6 +86,12 @@ class NativeRendererCoordinator {
         return deformerResources_;
     }
     [[nodiscard]] std::vector<NativeFxResourceSnapshot> liveResources() const;
+    void requestDebugReadback(FxDebugRequest request) {
+        debugRequest_ = std::move(request);
+    }
+    [[nodiscard]] const std::optional<FxDebugResult>& debugResult() const noexcept {
+        return debugResult_;
+    }
     [[nodiscard]] const fx::FxProgram* program() const noexcept;
     [[nodiscard]] SubayaiRuntime* subayai() noexcept {
         return status_.nativeReady && status_.active == RendererKind::subayai ? &subayai_ : nullptr;
@@ -97,8 +106,19 @@ class NativeRendererCoordinator {
                 NativeFrameExecution execution = {}, std::span<const FxMaterialSceneModel> materialModels = {});
 
   private:
+    [[nodiscard]] std::optional<NativeFrameOutput>
+    recordFrameImpl(CommandList& commands, const fx::FxFrameContext& context, core::DirtyFlag dirty,
+                    std::span<const core::MaterialParameterBlock> materials, std::span<const AliasEntry> lightSampling,
+                    const EnvironmentGpuResult& environment, const FxExecutionResources& resources,
+                    NativeFrameExecution execution, std::span<const FxMaterialSceneModel> materialModels);
+    void processDebugReadback(CommandList& commands);
+    std::optional<FxDebugRequest> debugRequest_;
+    std::optional<FxDebugResult> debugResult_;
     struct GenericEffectRuntime {
         Device* device{};
+        fx::FxProgram program;
+        std::string owner;
+        FxMaterialSceneRuntime materialScene;
         DayoFxRuntime runtime;
         NativeControllerRuntime controller;
         NativeFxGlobalVariableRuntime globalVariables;
@@ -111,8 +131,12 @@ class NativeRendererCoordinator {
     [[nodiscard]] std::optional<NativeFrameOutput>
     executeGenericEffects(std::span<const core::SceneEffectInstance> effects, GenericRuntimeList& runtimes,
                           CommandList& commands, const fx::FxFrameContext& context,
-                          const FxExecutionResources& resources, bool publishToScreen);
+                          const FxExecutionResources& resources, bool publishToScreen,
+                          std::span<const FxMaterialSceneModel> materialModels);
+    [[nodiscard]] FxMaterialTextureResolver materialTextureResolver(const FxResourceStore* localStore,
+                                                                    bool rendererLocal) const;
     void publishActiveRendererResources();
+    [[nodiscard]] FxSharedResourceResolver sharedResourceResolver() const;
 
     NativeRendererStatus status_{};
     SubayaiRuntime subayai_;

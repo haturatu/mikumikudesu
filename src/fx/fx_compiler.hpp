@@ -3,6 +3,7 @@
 #include "core/effect.hpp"
 #include "core/fx/fx_material.hpp"
 #include "core/fx/fx_pass.hpp"
+#include "core/fx/fx_size.hpp"
 #include "fx/fx_document.hpp"
 #include "fx/fx_frame.hpp"
 
@@ -300,7 +301,8 @@ class FxCompiler {
     [[nodiscard]] FxProgram compile(const core::EffectGraph& graph) const;
     [[nodiscard]] FxProgram compileSource(const FxSourceDocument& document) const;
     // Plan: FxProgram + frame context -> ordered per-frame dispatches.
-    [[nodiscard]] FxFramePlan plan(const FxProgram& program, const FxFrameContext& context) const;
+    [[nodiscard]] FxFramePlan plan(const FxProgram& program, const FxFrameContext& context,
+                                   const core::fx::FxResourceTable* resources = nullptr) const;
     // Pipeline: validate that every dispatch has backend support short of
     // raytracing (which the executor rejects explicitly at record time).
     bool buildPipelines(const FxProgram& program, std::string* error = nullptr) const;

@@ -2,6 +2,7 @@
 
 #include "core/fx/fx_size.hpp"
 #include "core/image.hpp"
+#include "fx/fx_resource_sizes.hpp"
 #include "graphics/fx_material_gpu_runtime.hpp"
 #include "graphics/native_scene_bindings.hpp"
 
@@ -16,23 +17,6 @@
 namespace dayo::graphics {
 namespace {
 
-class ExtentTable final : public core::fx::FxResourceTable {
-  public:
-    void add(std::string name, core::fx::FxExtent extent) {
-        values_.insert_or_assign(std::move(name), extent);
-    }
-
-    [[nodiscard]] std::optional<core::fx::FxExtent> find(std::string_view name) const override {
-        const auto found = values_.find(std::string(name));
-        if (found == values_.end())
-            return std::nullopt;
-        return found->second;
-    }
-
-  private:
-    std::unordered_map<std::string, core::fx::FxExtent> values_;
-};
-
 [[nodiscard]] std::string upper(std::string_view value) {
     std::string result;
     result.reserve(value.size());
@@ -46,28 +30,7 @@ class ExtentTable final : public core::fx::FxResourceTable {
 }
 
 [[nodiscard]] PixelFormat pixelFormat(std::string_view value) {
-    const auto name = upper(value);
-    if (name.empty() || name == "R8G8B8A8_UNORM")
-        return PixelFormat::rgba8Unorm;
-    if (name == "R8_UNORM")
-        return PixelFormat::r8Unorm;
-    if (name == "R16_FLOAT")
-        return PixelFormat::r16Float;
-    if (name == "R16G16_FLOAT")
-        return PixelFormat::r16g16Float;
-    if (name == "R32_FLOAT")
-        return PixelFormat::r32Float;
-    if (name == "R32G32_FLOAT")
-        return PixelFormat::r32g32Float;
-    if (name == "R16G16B16A16_FLOAT")
-        return PixelFormat::rgba16Float;
-    if (name == "R32G32B32A32_FLOAT")
-        return PixelFormat::rgba32Float;
-    if (name == "D32_FLOAT")
-        return PixelFormat::depth32Float;
-    if (name == "D24_UNORM_S8_UINT" || name == "D24S8")
-        return PixelFormat::depth24Stencil8;
-    throw std::invalid_argument("FX resource format is unsupported: " + std::string(value));
+    return parsePixelFormat(upper(value));
 }
 
 [[nodiscard]] SamplerResourceDesc samplerDesc(const core::EffectSampler& sampler) {
@@ -93,104 +56,6 @@ class ExtentTable final : public core::fx::FxResourceTable {
     result.minLod = sampler.minLod;
     result.maxLod = sampler.maxLod;
     return result;
-}
-
-[[nodiscard]] core::fx::FxEvalContext evaluationContext(const fx::FxFrameContext& context) {
-    const auto checked = [](std::size_t value, std::string_view name) {
-        if (value > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()))
-            throw std::overflow_error("FX resource context is too large: " + std::string(name));
-        return static_cast<std::int64_t>(value);
-    };
-    core::fx::FxEvalContext result;
-    result.rtWidth = context.renderWidth;
-    result.rtHeight = context.renderHeight;
-    result.vertexCount = checked(context.vertexCount, "vertexCount");
-    result.totalMaterial = checked(context.totalMaterial, "totalMaterial");
-    result.modelIndex = context.modelIndex;
-    result.cloneCount = context.cloneCount;
-    result.clonedVertexCount = checked(context.clonedVertexCount, "clonedVertexCount");
-    result.frameIndex = static_cast<std::int64_t>(context.frame);
-    result.sampleIndex = checked(static_cast<std::size_t>(context.sample), "sampleIndex");
-    result.time = context.time;
-    result.namedSymbols = context.expressionSymbols;
-    return result;
-}
-
-[[nodiscard]] std::string sizeConversion(std::string_view base, std::string_view conversion) {
-    if (conversion == "one")
-        return "1";
-    std::string result;
-    const bool scalarBase =
-        base == "VERTEXCOUNT" || base == "CLONEDVERTEXCOUNT" || base == "TOTALMATERIAL" || base == "TOTALMATERIALCOUNT";
-    for (const auto axis : std::array<char, 3>{'x', 'y', 'z'}) {
-        const bool containsAxis = std::ranges::any_of(
-            conversion, [axis](unsigned char character) { return static_cast<char>(std::tolower(character)) == axis; });
-        if (!containsAxis)
-            continue;
-        if (!result.empty())
-            result += '*';
-        if (scalarBase && axis == 'x')
-            result += base;
-        else if (scalarBase)
-            result += '1';
-        else
-            result += std::string(base) + '.' + axis;
-    }
-    if (result.empty())
-        throw std::invalid_argument("unsupported YRZFX size conversion: " + std::string(conversion));
-    return result;
-}
-
-[[nodiscard]] core::fx::FxSizeExpr sizeExpression(const core::EffectSize& source, std::uint32_t dimension,
-                                                  bool defaultToRenderTarget) {
-    core::fx::FxSizeExpr result;
-    result.base = source.absolute ? std::string{} : source.base;
-    result.dimension =
-        source.dimension != 0 ? source.dimension : (!source.base.empty() && !source.absolute ? 0U : dimension);
-    result.widthRatio = source.absolute ? 1.0F : source.widthRatio;
-    result.heightRatio = source.absolute ? 1.0F : source.heightRatio;
-    result.depthRatio = source.absolute ? 1.0F : source.depthRatio;
-    if (source.absolute || source.rounding == "trunc")
-        result.rounding = core::fx::FxSizeExpr::Rounding::truncate;
-    else if (source.rounding == "round")
-        result.rounding = core::fx::FxSizeExpr::Rounding::nearest;
-    else if (source.rounding == "ceil")
-        result.rounding = core::fx::FxSizeExpr::Rounding::ceil;
-    else
-        throw std::invalid_argument("unsupported YRZFX size rounding mode: " + source.rounding);
-    if (source.absolute && source.width != 0)
-        result.xExpr = std::to_string(source.width);
-    if (source.absolute && source.height != 0)
-        result.yExpr = std::to_string(source.height);
-    if (source.absolute && source.depth != 0)
-        result.zExpr = std::to_string(source.depth);
-    if (!source.absolute) {
-        if (result.base.empty() && defaultToRenderTarget)
-            result.base = "DEFAULT_RTSIZE";
-        if (!result.base.empty()) {
-            if (result.xExpr.empty())
-                result.xExpr = sizeConversion(result.base, source.convX);
-            if ((result.dimension == 0 || result.dimension >= 2) && result.yExpr.empty())
-                result.yExpr = sizeConversion(result.base, source.convY);
-            if ((result.dimension == 0 || result.dimension >= 3) && result.zExpr.empty())
-                result.zExpr = sizeConversion(result.base, source.convZ);
-        } else if (result.xExpr.empty()) {
-            result.xExpr = "1";
-            if (result.dimension >= 2)
-                result.yExpr = "1";
-            if (result.dimension >= 3)
-                result.zExpr = "1";
-        }
-    }
-    return result;
-}
-
-[[nodiscard]] core::fx::FxExtent resolveFxExtent(const core::EffectSize& source, std::uint32_t dimension,
-                                                 bool defaultToRenderTarget, const fx::FxFrameContext& context,
-                                                 const ExtentTable& table) {
-    const auto expression = sizeExpression(source, dimension, defaultToRenderTarget);
-    const auto evaluated = evaluationContext(context);
-    return core::fx::FxSizeResolver{}.resolve(expression, evaluated, table);
 }
 
 struct FxTextureUsageSummary {
@@ -248,7 +113,7 @@ struct FxTextureUsageSummary {
 }
 
 [[nodiscard]] ResourceUsage bufferUsage(const fx::FxProgram& program, std::string_view name, std::string_view view) {
-    ResourceUsage usage = ResourceUsage::transferDst;
+    ResourceUsage usage = ResourceUsage::transferDst | ResourceUsage::transferSrc;
     // StructuredBuffer and RWStructuredBuffer both use storage-buffer
     // descriptors; readonly affects shader access, not the descriptor class.
     usage |= ResourceUsage::storageReadWrite;
@@ -273,12 +138,6 @@ struct FxTextureUsageSummary {
     if (value > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
         throw std::overflow_error("FX resource size is too large: " + std::string(name));
     return static_cast<std::size_t>(value);
-}
-
-[[nodiscard]] bool hasExplicitSize(const core::EffectSize& size) noexcept {
-    return size.absolute || !size.base.empty() || size.dimension != 0 || size.widthRatio != 1.0F ||
-           size.heightRatio != 1.0F || size.depthRatio != 1.0F || size.convX != "x" || size.convY != "y" ||
-           size.convZ != "z" || size.rounding != "trunc";
 }
 
 [[nodiscard]] std::uint32_t mipLevels(Extent3D extent, bool enabled) noexcept {
@@ -396,6 +255,30 @@ void appendDescriptorWrites(std::vector<DescriptorBindingEx>& output, const fx::
 }
 
 } // namespace
+
+bool fxSharedMode(std::string_view value, std::string_view mode) {
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())))
+        value.remove_prefix(1);
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())))
+        value.remove_suffix(1);
+    return upper(value) == upper(mode);
+}
+
+bool FxResourceRuntime::sharedReferencesChanged(const fx::FxProgram& program) const {
+    const auto changed = [this](const auto& declarations) {
+        for (const auto& declaration : declarations) {
+            if (!fxSharedMode(declaration.shared, "ref"))
+                continue;
+            const auto source = sharedResolver_ ? sharedResolver_(declaration.name) : std::nullopt;
+            const auto* old = store_.find(declaration.name);
+            if (!source || old == nullptr || source->ownership != old->ownership || source->texture != old->texture ||
+                source->buffer != old->buffer)
+                return true;
+        }
+        return false;
+    };
+    return changed(program.textures) || changed(program.textures3D) || changed(program.buffers);
+}
 
 bool FxResourceStore::add(Resource resource) {
     if (resource.name.empty() || indices_.contains(resource.name))
@@ -632,7 +515,27 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
     reset();
     device_ = &device;
     try {
-        ExtentTable table;
+        const auto borrow = [this](const auto& declarations, FxResourceStore::Kind kind, std::uint32_t dimension) {
+            for (const auto& declaration : declarations) {
+                if (!fxSharedMode(declaration.shared, "ref"))
+                    continue;
+                auto source = sharedResolver_ ? sharedResolver_(declaration.name) : std::nullopt;
+                if (!source)
+                    throw std::invalid_argument("unresolved shared=ref: " + declaration.name);
+                if (!source->ownership)
+                    throw std::invalid_argument("shared source has no lifetime owner: " + declaration.name);
+                if (source->kind != kind || (kind == FxResourceStore::Kind::texture && source->dimension != dimension))
+                    throw std::invalid_argument("shared resource kind/dimension mismatch: " + declaration.name);
+                source->name = declaration.name;
+                if (!store_.add(std::move(*source)))
+                    throw std::invalid_argument("duplicate shared reference: " + declaration.name);
+            }
+        };
+        borrow(program.textures, FxResourceStore::Kind::texture, 2);
+        borrow(program.textures3D, FxResourceStore::Kind::texture, 3);
+        borrow(program.buffers, FxResourceStore::Kind::buffer, 1);
+        fx::FxResourceSizeTable table(program, context, this);
+        table.resolveAll();
         const auto stages = allFxStages();
         std::uint64_t totalBytes = 0;
         constexpr auto maxBytes = core::fx::kMaxTransientBytesPerEffect;
@@ -665,36 +568,38 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             descriptorLayoutDesc_.bindings.push_back({binding, kind, 1, stages});
         };
 
+        const auto bindReference = [&](std::string_view name, std::string_view view, ResourceUsage required) {
+            auto* source = store_.find(name);
+            if (source == nullptr)
+                throw std::logic_error("shared resource was not resolved");
+            if ((toBits(source->usage) & toBits(required)) != toBits(required))
+                throw std::invalid_argument("shared source usage cannot satisfy ref: " + std::string(name));
+            source->legacyBinding = nextBinding(registerClass(view));
+            source->legacyDescriptorKind = source->kind == FxResourceStore::Kind::texture
+                                               ? textureDescriptorKind(view, source->format)
+                                               : bufferDescriptorKind(view);
+            addBinding(source->legacyBinding, source->legacyDescriptorKind);
+        };
+
         for (const auto& declaration : program.textures) {
-            const auto name = addName(declaration.name);
-            const auto format = pixelFormat(declaration.format);
-            std::optional<core::ImageRgba8> external;
-            std::optional<core::DdsImageRgba8> externalDds;
-            if (!declaration.filename.empty()) {
-                if (format != PixelFormat::rgba8Unorm)
-                    throw std::invalid_argument("FX external texture format must be RGBA8_UNORM: " + name);
-                const auto path = externalPath(program, declaration.filename);
-                if (isDdsPath(path)) {
-                    externalDds = core::loadDdsImageRgba8(path);
-                    if (externalDds->dimension != core::DdsDimension::twoD || externalDds->arrayLayers != 1)
-                        throw std::invalid_argument("FX Texture2D external DDS must contain one 2D image: " + name);
-                } else {
-                    external = core::loadImageRgba8(path);
-                }
+            if (fxSharedMode(declaration.shared, "ref")) {
+                const auto* source = store_.find(declaration.name);
+                bindReference(
+                    declaration.name, declaration.view,
+                    textureUsage(declaration.view, source->format, summarizeTextureUsage(program, declaration.name)));
+                continue;
             }
-            const auto hasExternal = external.has_value() || externalDds.has_value();
-            const auto externalWidth =
-                externalDds.has_value() ? externalDds->width : (external.has_value() ? external->width : 0U);
-            const auto externalHeight =
-                externalDds.has_value() ? externalDds->height : (external.has_value() ? external->height : 0U);
-            const auto resolvedFx =
-                hasExternal && !hasExplicitSize(declaration.size)
-                    ? core::fx::FxExtent{.x = externalWidth, .y = externalHeight, .z = 1, .dimension = 2}
-                    : resolveFxExtent(declaration.size, 2, true, context, table);
+
+            const auto name = addName(declaration.name);
+            std::optional<core::TextureImage> externalDds;
+            if (!declaration.filename.empty()) {
+                externalDds = core::loadTextureImage(externalPath(program, declaration.filename));
+                if (externalDds->dimension != core::DdsDimension::twoD || externalDds->arrayLayers != 1)
+                    throw std::invalid_argument("FX Texture2D external image must contain one 2D image: " + name);
+            }
+            const auto format = pixelFormat(externalDds ? externalDds->format : declaration.format);
+            const auto resolvedFx = *table.find(name);
             const Extent3D resolved{resolvedFx.x, resolvedFx.y, resolvedFx.z};
-            if (hasExternal &&
-                (resolved.width != externalWidth || resolved.height != externalHeight || resolved.depth != 1))
-                throw std::invalid_argument("FX external texture extent does not match its declaration: " + name);
             const auto levels = !declaration.mipmap ? 1U
                                                     : (externalDds.has_value() && externalDds->mipLevels > 1
                                                            ? externalDds->mipLevels
@@ -725,51 +630,48 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                                                .elementType = {},
                                                .legacyDescriptorKind = textureDescriptorKind(declaration.view, format),
                                                .legacyBinding = binding};
+            resource.usage = description.usage;
             resource.texture = device.createTextureEx(description);
             if (!resource.texture.valid())
                 throw std::runtime_error("FX texture allocation returned an invalid handle: " + name);
+            if (!store_.add(resource))
+                throw std::invalid_argument("FX resource declaration is duplicated: " + name);
             if (externalDds.has_value()) {
                 const auto uploadedLevels = std::min(levels, externalDds->mipLevels);
                 for (std::uint32_t mip = 0; mip < uploadedLevels; ++mip)
                     device.uploadTextureEx(resource.texture, externalDds->subresource(mip).pixels, mip, 0);
                 if (levels > uploadedLevels)
                     device.generateMipmapsEx(resource.texture);
-            } else if (external.has_value()) {
-                device.uploadTextureEx(resource.texture, external->pixels, 0, 0);
-                if (levels > 1)
-                    device.generateMipmapsEx(resource.texture);
             }
-            if (!store_.add(std::move(resource)))
-                throw std::invalid_argument("FX resource declaration is duplicated: " + name);
-            table.add(name, resolvedFx);
             const auto* stored = store_.find(name);
             addBinding(stored->legacyBinding, stored->legacyDescriptorKind);
         }
         for (const auto& declaration : program.textures3D) {
+            if (fxSharedMode(declaration.shared, "ref")) {
+                const auto* source = store_.find(declaration.name);
+                bindReference(
+                    declaration.name, declaration.view,
+                    textureUsage(declaration.view, source->format, summarizeTextureUsage(program, declaration.name)));
+                continue;
+            }
+
             const auto name = addName(declaration.name);
-            const auto format = pixelFormat(declaration.format);
-            std::optional<core::DdsImageRgba8> externalDds;
+            std::optional<core::TextureImage> externalDds;
             if (!declaration.filename.empty()) {
-                if (format != PixelFormat::rgba8Unorm)
-                    throw std::invalid_argument("FX external 3D texture format must be RGBA8_UNORM: " + name);
                 const auto path = externalPath(program, declaration.filename);
                 if (!isDdsPath(path))
                     throw std::invalid_argument("FX external 3D texture must use DDS: " + name);
-                externalDds = core::loadDdsImageRgba8(path);
+                externalDds = core::loadTextureImage(path);
                 if (externalDds->dimension != core::DdsDimension::threeD || externalDds->arrayLayers != 1)
                     throw std::invalid_argument("FX Texture3D external DDS must contain one volume: " + name);
             }
-            const auto resolvedFx = externalDds.has_value() && !hasExplicitSize(declaration.size)
-                                        ? core::fx::FxExtent{.x = externalDds->width,
-                                                             .y = externalDds->height,
-                                                             .z = externalDds->depth,
-                                                             .dimension = 3}
-                                        : resolveFxExtent(declaration.size, 3, false, context, table);
+            const auto format = pixelFormat(externalDds ? externalDds->format : declaration.format);
+            const auto resolvedFx = externalDds.has_value() ? core::fx::FxExtent{.x = externalDds->width,
+                                                                                 .y = externalDds->height,
+                                                                                 .z = externalDds->depth,
+                                                                                 .dimension = 3}
+                                                            : *table.find(name);
             const Extent3D resolved{resolvedFx.x, resolvedFx.y, resolvedFx.z};
-            if (externalDds.has_value() &&
-                (resolved.width != externalDds->width || resolved.height != externalDds->height ||
-                 resolved.depth != externalDds->depth))
-                throw std::invalid_argument("FX external 3D texture extent does not match its declaration: " + name);
             const auto levels = !declaration.mipmap ? 1U
                                                     : (externalDds.has_value() && externalDds->mipLevels > 1
                                                            ? externalDds->mipLevels
@@ -800,9 +702,12 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                                                .elementType = {},
                                                .legacyDescriptorKind = textureDescriptorKind(declaration.view, format),
                                                .legacyBinding = binding};
+            resource.usage = description.usage;
             resource.texture = device.createTextureEx(description);
             if (!resource.texture.valid())
                 throw std::runtime_error("FX 3D texture allocation returned an invalid handle: " + name);
+            if (!store_.add(resource))
+                throw std::invalid_argument("FX resource declaration is duplicated: " + name);
             if (externalDds.has_value()) {
                 const auto uploadedLevels = std::min(levels, externalDds->mipLevels);
                 for (std::uint32_t mip = 0; mip < uploadedLevels; ++mip)
@@ -810,23 +715,24 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                 if (levels > uploadedLevels)
                     device.generateMipmapsEx(resource.texture);
             }
-            if (!store_.add(std::move(resource)))
-                throw std::invalid_argument("FX resource declaration is duplicated: " + name);
-            table.add(name, resolvedFx);
             const auto* stored = store_.find(name);
             addBinding(stored->legacyBinding, stored->legacyDescriptorKind);
         }
         for (const auto& declaration : program.buffers) {
+            if (fxSharedMode(declaration.shared, "ref")) {
+                const auto* source = store_.find(declaration.name);
+                if ((declaration.elementSize != 0 && declaration.elementSize != source->elementSize) ||
+                    (!declaration.type.empty() && declaration.type != source->elementType))
+                    throw std::invalid_argument("shared buffer stride/type mismatch: " + declaration.name);
+                bindReference(declaration.name, declaration.view,
+                              bufferUsage(program, declaration.name, declaration.view));
+                continue;
+            }
+
             const auto name = addName(declaration.name);
             if (declaration.elementSize == 0)
                 throw std::invalid_argument("FX buffer element size is zero: " + name);
-            auto bufferSize = declaration.size;
-            if (!bufferSize.absolute && bufferSize.base.empty()) {
-                bufferSize.base =
-                    program.category == core::fx::FxCategory::deform ? "CLONEDVERTEXCOUNT" : "DEFAULT_RTSIZE";
-                bufferSize.dimension = program.category == core::fx::FxCategory::deform ? 1U : 2U;
-            }
-            const auto resolvedFx = resolveFxExtent(bufferSize, 1, false, context, table);
+            const auto resolvedFx = *table.find(name);
             const Extent3D resolved{resolvedFx.x, resolvedFx.y, resolvedFx.z};
             const auto bytes = core::fx::FxSizeResolver::bufferBytes(resolvedFx, declaration.elementSize);
             reserveBytes(bytes, name);
@@ -850,15 +756,44 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                                                .elementType = declaration.type,
                                                .legacyDescriptorKind = bufferDescriptorKind(declaration.view),
                                                .legacyBinding = binding};
+            resource.usage = description.usage;
             resource.buffer = device.createBufferEx(description);
             if (!resource.buffer.valid())
                 throw std::runtime_error("FX buffer allocation returned an invalid handle: " + name);
             if (!store_.add(std::move(resource)))
                 throw std::invalid_argument("FX resource declaration is duplicated: " + name);
-            table.add(name, resolvedFx);
             const auto* stored = store_.find(name);
             addBinding(stored->legacyBinding, stored->legacyDescriptorKind);
         }
+        const auto ownSources = [&](const auto& declarations) {
+            for (const auto& declaration : declarations) {
+                if (!fxSharedMode(declaration.shared, "source"))
+                    continue;
+                auto* resource = store_.find(declaration.name);
+                if (resource == nullptr)
+                    throw std::logic_error("shared source allocation is missing");
+                const auto texture = resource->texture;
+                const auto buffer = resource->buffer;
+                // The device outlives its FX runtimes and registry. The final reference
+                // waits for submitted work before releasing the physical allocation.
+                resource->ownership =
+                    std::shared_ptr<void>(new char{}, [owner = &device, texture, buffer](void* token) noexcept {
+                        delete static_cast<char*>(token);
+                        try {
+                            owner->waitIdle();
+                            if (texture.valid())
+                                owner->destroyTextureEx(texture);
+                            if (buffer.valid())
+                                owner->destroyBufferEx(buffer);
+                        } catch (...) {
+                        }
+                    });
+            }
+        };
+        ownSources(program.textures);
+        ownSources(program.textures3D);
+        ownSources(program.buffers);
+
         for (const auto& declaration : program.samplers) {
             const auto name = addName(declaration.name);
             const auto binding = nextBinding(NativeSceneRegisterClass::sampler);
@@ -947,6 +882,8 @@ void FxResourceRuntime::reset() noexcept {
             }
         }
         for (const auto& resource : store_.resources()) {
+            if (resource.ownership)
+                continue;
             try {
                 if (resource.texture.valid())
                     device->destroyTextureEx(resource.texture);
