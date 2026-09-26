@@ -5,6 +5,7 @@
 #include "fx/fx_condition_runtime.hpp"
 #include "fx/fx_frame.hpp"
 #include "fx/fx_preview_path.hpp"
+#include "fx/fx_resource_sizes.hpp"
 #include "fx/fx_scheduler.hpp"
 #include "fx/fx_shader_cache.hpp"
 #include "fx/fx_shader_compiler.hpp"
@@ -2382,6 +2383,57 @@ bool testFxResourceRuntimeMaterializesDeclarations() {
     return ok;
 }
 
+bool testResourceSizeDependencyGraph() {
+    dayo::fx::FxProgram program;
+    dayo::core::EffectTexture derived;
+    derived.name = "First";
+    derived.size.base = "Volume";
+    derived.size.dimension = 2;
+    derived.size.widthRatio = 0.5F;
+    program.textures.push_back(derived);
+    dayo::core::EffectTexture volume;
+    volume.name = "Volume";
+    volume.size.base = "Later";
+    volume.size.dimension = 3;
+    volume.size.convY = "x";
+    volume.size.convZ = "x";
+    program.textures3D.push_back(volume);
+    dayo::core::EffectBuffer buffer;
+    buffer.name = "Later";
+    buffer.type = "uint";
+    buffer.elementSize = 4;
+    buffer.size.absolute = true;
+    buffer.size.width = 1;
+    program.buffers.push_back(buffer);
+    MockDevice device;
+    dayo::graphics::FxResourceRuntime runtime;
+    std::string error;
+    bool ok = check(runtime.initialize(device, program, testContext(), &error),
+                    "resource size dependencies resolve across later declarations and resource kinds");
+    const auto first = runtime.find("First");
+    ok &= check(first.has_value() && first->x == 1 && first->y == 1,
+                "relative sizes below one clamp to one before allocation");
+    const dayo::fx::FxResourceSizeTable extents(program, testContext());
+    ok &= check(extents.find("Volume")->z == 1 && extents.find("First")->x == first->x,
+                "planner and allocator share the same resolved dimensions");
+    runtime.reset();
+    program.buffers[0].size.absolute = false;
+    program.buffers[0].size.base = "First";
+    ok &= check(!runtime.initialize(device, program, testContext(), &error) &&
+                    error.find("cycle") != std::string::npos && error.find("First") != std::string::npos,
+                "cross-kind cycles fail with the dependency chain before GPU allocation");
+    program.buffers[0].size.base = "Missing";
+    ok &=
+        check(!runtime.initialize(device, program, testContext(), &error) && error.find("Missing") != std::string::npos,
+              "missing dependencies are diagnosed separately from cycles");
+    program.buffers[0].size.absolute = true;
+    program.buffers[0].shared = "REF";
+    ok &= check(!runtime.initialize(device, program, testContext(), &error) &&
+                    error.find("shared=ref") != std::string::npos,
+                "Dayo forbids shared refs as size bases");
+    return ok;
+}
+
 bool testDepthTextureUsageIncludesSampling() {
     dayo::fx::FxProgram program;
     dayo::core::EffectTexture depth;
@@ -3255,6 +3307,7 @@ int main() {
     ok &= testRayTracingPayloadIsLossless();
     ok &= testFxResourceDeclarationsAreLossless();
     ok &= testFxResourceRuntimeMaterializesDeclarations();
+    ok &= testResourceSizeDependencyGraph();
     ok &= testDepthTextureUsageIncludesSampling();
     ok &= testFxExternalTextureMetadataAndUpload();
     ok &= testNativeFxRuntimeRefreshesFrameResources();
