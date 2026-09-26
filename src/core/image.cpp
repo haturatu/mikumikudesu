@@ -123,7 +123,43 @@ void checkPeakAllocation(std::uint64_t inputBytes, std::uint64_t outputBytes, st
         throw std::runtime_error("image allocation budget exceeded for " + std::string(field));
 }
 
-[[nodiscard]] std::vector<std::uint8_t> readImageSnapshot(const std::filesystem::path& path) {
+// Windows-authored Dayo assets use case-insensitive paths. Resolve each
+// component on case-sensitive filesystems, rejecting ambiguous alternatives.
+std::filesystem::path resolveImageFile(const std::filesystem::path& requested) {
+    if (std::filesystem::exists(requested))
+        return requested;
+    const auto folded = [](std::string value) {
+        std::ranges::transform(value, value.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return value;
+    };
+    const auto absolute = std::filesystem::absolute(requested).lexically_normal();
+    auto resolved = absolute.root_path();
+    for (const auto& component : absolute.relative_path()) {
+        const auto direct = resolved / component;
+        if (std::filesystem::exists(direct)) {
+            resolved = direct;
+            continue;
+        }
+        if (!std::filesystem::is_directory(resolved))
+            return requested;
+        std::filesystem::path match;
+        for (const auto& candidate : std::filesystem::directory_iterator(resolved)) {
+            if (folded(candidate.path().filename().string()) != folded(component.string()))
+                continue;
+            if (!match.empty())
+                throw std::runtime_error("ambiguous image filename: " + requested.string());
+            match = candidate.path();
+        }
+        if (match.empty())
+            return requested;
+        resolved = std::move(match);
+    }
+    return resolved;
+}
+
+[[nodiscard]] std::vector<std::uint8_t> readImageSnapshot(const std::filesystem::path& requested) {
+    const auto path = resolveImageFile(requested);
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input)
         throw std::runtime_error("cannot open image " + path.string());
@@ -201,7 +237,8 @@ std::uint8_t unpackChannel(std::uint32_t value, std::uint32_t mask, std::uint8_t
     return static_cast<std::uint8_t>(((value & mask) >> shift) * 255U / maximum);
 }
 
-ImageRgba8 decodeDds(const std::filesystem::path& path) {
+ImageRgba8 decodeDds(const std::filesystem::path& requested) {
+    const auto path = resolveImageFile(requested);
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input)
         throw std::runtime_error("cannot open DDS image: " + path.string());
