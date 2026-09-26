@@ -312,7 +312,7 @@ const core::EffectTexture* findTexture(const fx::FxProgram& program, std::string
 PixelFormat attachmentFormat(const fx::FxProgram& program, const core::EffectAttachment& attachment, bool depth) {
     const auto* texture = findTexture(program, attachment.name);
     if (texture != nullptr && !texture->format.empty())
-        return textureFormat(texture->format);
+        return textureFormat(texture->filename.empty() ? texture->format : "R8G8B8A8_UNORM");
     return depth ? PixelFormat::depth32Float : PixelFormat::rgba16Float;
 }
 
@@ -335,8 +335,9 @@ std::vector<PixelFormat> graphicsTargetFormats(const fx::FxProgram& program, con
             if (!resource.write || resource.role != fx::FxResourceRole::colorAttachment)
                 continue;
             const auto* texture = findTexture(program, resource.name);
-            result.push_back(texture == nullptr || texture->format.empty() ? PixelFormat::rgba16Float
-                                                                           : textureFormat(texture->format));
+            result.push_back(texture == nullptr || texture->format.empty()
+                                 ? PixelFormat::rgba16Float
+                                 : textureFormat(texture->filename.empty() ? texture->format : "R8G8B8A8_UNORM"));
         }
     }
     return result;

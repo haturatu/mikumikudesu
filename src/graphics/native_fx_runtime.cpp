@@ -106,7 +106,6 @@ bool NativeFxRuntime::refresh(const fx::FxFrameContext& context, std::string* er
 bool NativeFxRuntime::buildForContext(const fx::FxFrameContext& context, std::string* error,
                                       const FxMaterialRuntimeInitializer& initializeMaterialRuntime) {
     try {
-        const auto framePlan = fx::FxCompiler{}.plan(program_, context);
         resourceSetIndex_ = static_cast<std::uint32_t>(sharedLayouts_.size());
         const auto materialInitializer =
             initializeMaterialRuntime
@@ -120,6 +119,8 @@ bool NativeFxRuntime::buildForContext(const fx::FxFrameContext& context, std::st
                                    materialInitializer))
             throw std::runtime_error(error != nullptr && !error->empty() ? *error
                                                                          : "FX resource initialization failed");
+
+        const auto framePlan = fx::FxCompiler{}.plan(program_, context, &resources_);
 
         for (const auto layout : sharedLayouts_) {
             if (!layout.valid())
@@ -216,7 +217,7 @@ NativeFxFrame NativeFxRuntime::prepareFrame(const fx::FxFrameContext& context,
         throw std::logic_error("native FX runtime is not initialized");
     NativeFxFrame frame;
     frame.context = context;
-    frame.plan = fx::FxCompiler{}.plan(program_, context);
+    frame.plan = fx::FxCompiler{}.plan(program_, context, &resources_);
     if (sharedSets.empty())
         frame.sharedDescriptorSets = sharedDescriptorSets_;
     else
