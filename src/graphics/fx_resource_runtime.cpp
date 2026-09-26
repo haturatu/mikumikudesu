@@ -30,28 +30,7 @@ namespace {
 }
 
 [[nodiscard]] PixelFormat pixelFormat(std::string_view value) {
-    const auto name = upper(value);
-    if (name.empty() || name == "R8G8B8A8_UNORM")
-        return PixelFormat::rgba8Unorm;
-    if (name == "R8_UNORM")
-        return PixelFormat::r8Unorm;
-    if (name == "R16_FLOAT")
-        return PixelFormat::r16Float;
-    if (name == "R16G16_FLOAT")
-        return PixelFormat::r16g16Float;
-    if (name == "R32_FLOAT")
-        return PixelFormat::r32Float;
-    if (name == "R32G32_FLOAT")
-        return PixelFormat::r32g32Float;
-    if (name == "R16G16B16A16_FLOAT")
-        return PixelFormat::rgba16Float;
-    if (name == "R32G32B32A32_FLOAT")
-        return PixelFormat::rgba32Float;
-    if (name == "D32_FLOAT")
-        return PixelFormat::depth32Float;
-    if (name == "D24_UNORM_S8_UINT" || name == "D24S8")
-        return PixelFormat::depth24Stencil8;
-    throw std::invalid_argument("FX resource format is unsupported: " + std::string(value));
+    return parsePixelFormat(upper(value));
 }
 
 [[nodiscard]] SamplerResourceDesc samplerDesc(const core::EffectSampler& sampler) {
@@ -548,28 +527,14 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
 
         for (const auto& declaration : program.textures) {
             const auto name = addName(declaration.name);
-            const auto format =
-                declaration.filename.empty() ? pixelFormat(declaration.format) : PixelFormat::rgba8Unorm;
-            std::optional<core::ImageRgba8> external;
-            std::optional<core::DdsImageRgba8> externalDds;
+            std::optional<core::TextureImage> externalDds;
             if (!declaration.filename.empty()) {
-                const auto path = externalPath(program, declaration.filename);
-                if (isDdsPath(path)) {
-                    externalDds = core::loadDdsImageRgba8(path);
-                    if (externalDds->dimension != core::DdsDimension::twoD || externalDds->arrayLayers != 1)
-                        throw std::invalid_argument("FX Texture2D external DDS must contain one 2D image: " + name);
-                } else {
-                    external = core::loadImageRgba8(path);
-                }
+                externalDds = core::loadTextureImage(externalPath(program, declaration.filename));
+                if (externalDds->dimension != core::DdsDimension::twoD || externalDds->arrayLayers != 1)
+                    throw std::invalid_argument("FX Texture2D external image must contain one 2D image: " + name);
             }
-            const auto hasExternal = external.has_value() || externalDds.has_value();
-            const auto externalWidth =
-                externalDds.has_value() ? externalDds->width : (external.has_value() ? external->width : 0U);
-            const auto externalHeight =
-                externalDds.has_value() ? externalDds->height : (external.has_value() ? external->height : 0U);
-            const auto resolvedFx =
-                hasExternal ? core::fx::FxExtent{.x = externalWidth, .y = externalHeight, .z = 1, .dimension = 2}
-                            : *table.find(name);
+            const auto format = pixelFormat(externalDds ? externalDds->format : declaration.format);
+            const auto resolvedFx = *table.find(name);
             const Extent3D resolved{resolvedFx.x, resolvedFx.y, resolvedFx.z};
             const auto levels = !declaration.mipmap ? 1U
                                                     : (externalDds.has_value() && externalDds->mipLevels > 1
@@ -604,35 +569,30 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             resource.texture = device.createTextureEx(description);
             if (!resource.texture.valid())
                 throw std::runtime_error("FX texture allocation returned an invalid handle: " + name);
+            if (!store_.add(resource))
+                throw std::invalid_argument("FX resource declaration is duplicated: " + name);
             if (externalDds.has_value()) {
                 const auto uploadedLevels = std::min(levels, externalDds->mipLevels);
                 for (std::uint32_t mip = 0; mip < uploadedLevels; ++mip)
                     device.uploadTextureEx(resource.texture, externalDds->subresource(mip).pixels, mip, 0);
                 if (levels > uploadedLevels)
                     device.generateMipmapsEx(resource.texture);
-            } else if (external.has_value()) {
-                device.uploadTextureEx(resource.texture, external->pixels, 0, 0);
-                if (levels > 1)
-                    device.generateMipmapsEx(resource.texture);
             }
-            if (!store_.add(std::move(resource)))
-                throw std::invalid_argument("FX resource declaration is duplicated: " + name);
             const auto* stored = store_.find(name);
             addBinding(stored->legacyBinding, stored->legacyDescriptorKind);
         }
         for (const auto& declaration : program.textures3D) {
             const auto name = addName(declaration.name);
-            const auto format =
-                declaration.filename.empty() ? pixelFormat(declaration.format) : PixelFormat::rgba8Unorm;
-            std::optional<core::DdsImageRgba8> externalDds;
+            std::optional<core::TextureImage> externalDds;
             if (!declaration.filename.empty()) {
                 const auto path = externalPath(program, declaration.filename);
                 if (!isDdsPath(path))
                     throw std::invalid_argument("FX external 3D texture must use DDS: " + name);
-                externalDds = core::loadDdsImageRgba8(path);
+                externalDds = core::loadTextureImage(path);
                 if (externalDds->dimension != core::DdsDimension::threeD || externalDds->arrayLayers != 1)
                     throw std::invalid_argument("FX Texture3D external DDS must contain one volume: " + name);
             }
+            const auto format = pixelFormat(externalDds ? externalDds->format : declaration.format);
             const auto resolvedFx = externalDds.has_value() ? core::fx::FxExtent{.x = externalDds->width,
                                                                                  .y = externalDds->height,
                                                                                  .z = externalDds->depth,
@@ -672,6 +632,8 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             resource.texture = device.createTextureEx(description);
             if (!resource.texture.valid())
                 throw std::runtime_error("FX 3D texture allocation returned an invalid handle: " + name);
+            if (!store_.add(resource))
+                throw std::invalid_argument("FX resource declaration is duplicated: " + name);
             if (externalDds.has_value()) {
                 const auto uploadedLevels = std::min(levels, externalDds->mipLevels);
                 for (std::uint32_t mip = 0; mip < uploadedLevels; ++mip)
@@ -679,8 +641,6 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                 if (levels > uploadedLevels)
                     device.generateMipmapsEx(resource.texture);
             }
-            if (!store_.add(std::move(resource)))
-                throw std::invalid_argument("FX resource declaration is duplicated: " + name);
             const auto* stored = store_.find(name);
             addBinding(stored->legacyBinding, stored->legacyDescriptorKind);
         }

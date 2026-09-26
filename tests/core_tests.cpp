@@ -19,6 +19,7 @@
 #include "core/video_export.hpp"
 #include "core/vmdayo.hpp"
 #include "graphics/render_graph.hpp"
+#include "graphics/resource.hpp"
 #include "graphics/timestamp.hpp"
 
 #include <algorithm>
@@ -230,6 +231,153 @@ int main() {
                         cube.subresource(0, 5).pixels == std::vector<std::uint8_t>{6, 0, 0, 255},
                     "DX10 DDS cubemaps expose their six faces as array layers");
         std::filesystem::remove(cubePath);
+
+        struct TypedFormatCase {
+            std::uint32_t dxgi;
+            std::string_view name;
+            dayo::graphics::PixelFormat pixelFormat;
+            std::size_t payloadBytes;
+            std::size_t decodedBytes;
+        };
+        constexpr auto typedFormats = std::to_array<TypedFormatCase>({
+            {61, "R8_UNORM", dayo::graphics::PixelFormat::r8Unorm, 1, 1},
+            {54, "R16_FLOAT", dayo::graphics::PixelFormat::r16Float, 2, 2},
+            {34, "R16G16_FLOAT", dayo::graphics::PixelFormat::r16g16Float, 4, 4},
+            {41, "R32_FLOAT", dayo::graphics::PixelFormat::r32Float, 4, 4},
+            {16, "R32G32_FLOAT", dayo::graphics::PixelFormat::r32g32Float, 8, 8},
+            {17, "R32G32_UINT", dayo::graphics::PixelFormat::r32g32Uint, 8, 8},
+            {28, "R8G8B8A8_UNORM", dayo::graphics::PixelFormat::rgba8Unorm, 4, 4},
+            {29, "R8G8B8A8_SRGB", dayo::graphics::PixelFormat::rgba8Srgb, 4, 4},
+            {10, "R16G16B16A16_FLOAT", dayo::graphics::PixelFormat::rgba16Float, 8, 8},
+            {2, "R32G32B32A32_FLOAT", dayo::graphics::PixelFormat::rgba32Float, 16, 16},
+            {62, "R8_UINT", dayo::graphics::PixelFormat::r8Uint, 1, 1},
+            {63, "R8_SNORM", dayo::graphics::PixelFormat::r8Snorm, 1, 1},
+            {64, "R8_SINT", dayo::graphics::PixelFormat::r8Sint, 1, 1},
+            {50, "R8G8_UINT", dayo::graphics::PixelFormat::r8g8Uint, 2, 2},
+            {51, "R8G8_SNORM", dayo::graphics::PixelFormat::r8g8Snorm, 2, 2},
+            {52, "R8G8_SINT", dayo::graphics::PixelFormat::r8g8Sint, 2, 2},
+            {30, "R8G8B8A8_UINT", dayo::graphics::PixelFormat::rgba8Uint, 4, 4},
+            {31, "R8G8B8A8_SNORM", dayo::graphics::PixelFormat::rgba8Snorm, 4, 4},
+            {32, "R8G8B8A8_SINT", dayo::graphics::PixelFormat::rgba8Sint, 4, 4},
+            {57, "R16_UINT", dayo::graphics::PixelFormat::r16Uint, 2, 2},
+            {58, "R16_SNORM", dayo::graphics::PixelFormat::r16Snorm, 2, 2},
+            {59, "R16_SINT", dayo::graphics::PixelFormat::r16Sint, 2, 2},
+            {36, "R16G16_UINT", dayo::graphics::PixelFormat::r16g16Uint, 4, 4},
+            {37, "R16G16_SNORM", dayo::graphics::PixelFormat::r16g16Snorm, 4, 4},
+            {38, "R16G16_SINT", dayo::graphics::PixelFormat::r16g16Sint, 4, 4},
+            {12, "R16G16B16A16_UINT", dayo::graphics::PixelFormat::rgba16Uint, 8, 8},
+            {13, "R16G16B16A16_SNORM", dayo::graphics::PixelFormat::rgba16Snorm, 8, 8},
+            {14, "R16G16B16A16_SINT", dayo::graphics::PixelFormat::rgba16Sint, 8, 8},
+            {42, "R32_UINT", dayo::graphics::PixelFormat::r32Uint, 4, 4},
+            {43, "R32_SINT", dayo::graphics::PixelFormat::r32Sint, 4, 4},
+            {18, "R32G32_SINT", dayo::graphics::PixelFormat::r32g32Sint, 8, 8},
+            {3, "R32G32B32A32_UINT", dayo::graphics::PixelFormat::rgba32Uint, 16, 16},
+            {4, "R32G32B32A32_SINT", dayo::graphics::PixelFormat::rgba32Sint, 16, 16},
+            {49, "R8G8_UNORM", dayo::graphics::PixelFormat::r8g8Unorm, 2, 2},
+            {56, "R16_UNORM", dayo::graphics::PixelFormat::r16Unorm, 2, 2},
+            {35, "R16G16_UNORM", dayo::graphics::PixelFormat::r16g16Unorm, 4, 4},
+            {11, "R16G16B16A16_UNORM", dayo::graphics::PixelFormat::rgba16Unorm, 8, 8},
+            {71, "R8G8B8A8_UNORM", dayo::graphics::PixelFormat::rgba8Unorm, 8, 4},
+            {72, "R8G8B8A8_SRGB", dayo::graphics::PixelFormat::rgba8Srgb, 8, 4},
+            {74, "R8G8B8A8_UNORM", dayo::graphics::PixelFormat::rgba8Unorm, 16, 4},
+            {75, "R8G8B8A8_SRGB", dayo::graphics::PixelFormat::rgba8Srgb, 16, 4},
+            {77, "R8G8B8A8_UNORM", dayo::graphics::PixelFormat::rgba8Unorm, 16, 4},
+            {78, "R8G8B8A8_SRGB", dayo::graphics::PixelFormat::rgba8Srgb, 16, 4},
+            {80, "R8G8B8A8_UNORM", dayo::graphics::PixelFormat::rgba8Unorm, 8, 4},
+            {81, "R32_FLOAT", dayo::graphics::PixelFormat::r32Float, 8, 4},
+            {83, "R8G8B8A8_UNORM", dayo::graphics::PixelFormat::rgba8Unorm, 16, 4},
+            {84, "R32G32_FLOAT", dayo::graphics::PixelFormat::r32g32Float, 16, 8},
+            {87, "R8G8B8A8_UNORM", dayo::graphics::PixelFormat::rgba8Unorm, 4, 4},
+            {91, "R8G8B8A8_SRGB", dayo::graphics::PixelFormat::rgba8Srgb, 4, 4},
+        });
+        const auto typedPath = std::filesystem::temp_directory_path() / "mikumikudesu-typed-dxgi-test.dds";
+        for (const auto& format : typedFormats) {
+            std::array<std::uint8_t, 148> header{};
+            const auto put = [&header](std::size_t offset, std::uint32_t value) {
+                header[offset] = static_cast<std::uint8_t>(value);
+                header[offset + 1] = static_cast<std::uint8_t>(value >> 8U);
+                header[offset + 2] = static_cast<std::uint8_t>(value >> 16U);
+                header[offset + 3] = static_cast<std::uint8_t>(value >> 24U);
+            };
+            std::copy_n("DDS ", 4, header.begin());
+            put(4, 124);
+            put(12, 1);
+            put(16, 1);
+            put(76, 32);
+            put(80, 4);
+            put(84, 0x30315844);
+            put(128, format.dxgi);
+            put(132, 3);
+            put(140, 1);
+            {
+                std::ofstream output(typedPath, std::ios::binary | std::ios::trunc);
+                output.write(reinterpret_cast<const char*>(header.data()), static_cast<std::streamsize>(header.size()));
+                const std::vector<std::uint8_t> payload(format.payloadBytes, 0);
+                output.write(reinterpret_cast<const char*>(payload.data()),
+                             static_cast<std::streamsize>(payload.size()));
+            }
+            try {
+                const auto decoded = dayo::core::loadTextureImage(typedPath);
+                ok &= check(decoded.format == format.name &&
+                                dayo::graphics::parsePixelFormat(decoded.format) == format.pixelFormat &&
+                                decoded.subresource(0).pixels.size() == format.decodedBytes,
+                            "DXGI texture decodes to its typed Vulkan format and payload size");
+            } catch (const std::exception& exception) {
+                std::cerr << "DXGI format " << format.dxgi << " failed to decode: " << exception.what() << '\n';
+                ok = false;
+            }
+        }
+        struct LegacyFormatCase {
+            std::uint32_t code;
+            std::string_view name;
+            dayo::graphics::PixelFormat pixelFormat;
+            std::size_t payloadBytes;
+            std::size_t decodedBytes;
+        };
+        constexpr auto legacyFormats = std::to_array<LegacyFormatCase>({
+            {111, "R16_FLOAT", dayo::graphics::PixelFormat::r16Float, 2, 2},
+            {112, "R16G16_FLOAT", dayo::graphics::PixelFormat::r16g16Float, 4, 4},
+            {113, "R16G16B16A16_FLOAT", dayo::graphics::PixelFormat::rgba16Float, 8, 8},
+            {114, "R32_FLOAT", dayo::graphics::PixelFormat::r32Float, 4, 4},
+            {115, "R32G32_FLOAT", dayo::graphics::PixelFormat::r32g32Float, 8, 8},
+            {116, "R32G32B32A32_FLOAT", dayo::graphics::PixelFormat::rgba32Float, 16, 16},
+            {0x53344342, "R32_FLOAT", dayo::graphics::PixelFormat::r32Float, 8, 4},        // BC4S
+            {0x53354342, "R32G32_FLOAT", dayo::graphics::PixelFormat::r32g32Float, 16, 8}, // BC5S
+        });
+        for (const auto& format : legacyFormats) {
+            std::array<std::uint8_t, 128> header{};
+            const auto put = [&header](std::size_t offset, std::uint32_t value) {
+                header[offset] = static_cast<std::uint8_t>(value);
+                header[offset + 1] = static_cast<std::uint8_t>(value >> 8U);
+                header[offset + 2] = static_cast<std::uint8_t>(value >> 16U);
+                header[offset + 3] = static_cast<std::uint8_t>(value >> 24U);
+            };
+            std::copy_n("DDS ", 4, header.begin());
+            put(4, 124);
+            put(12, 1);
+            put(16, 1);
+            put(76, 32);
+            put(80, 4);
+            put(84, format.code);
+            {
+                std::ofstream output(typedPath, std::ios::binary | std::ios::trunc);
+                output.write(reinterpret_cast<const char*>(header.data()), static_cast<std::streamsize>(header.size()));
+                const std::vector<std::uint8_t> payload(format.payloadBytes, 0);
+                output.write(reinterpret_cast<const char*>(payload.data()),
+                             static_cast<std::streamsize>(payload.size()));
+            }
+            try {
+                const auto decoded = dayo::core::loadTextureImage(typedPath);
+                ok &= check(decoded.format == format.name &&
+                                dayo::graphics::parsePixelFormat(decoded.format) == format.pixelFormat &&
+                                decoded.subresource(0).pixels.size() == format.decodedBytes,
+                            "legacy typed DDS and signed BC formats retain scalar type and decoded size");
+            } catch (const std::exception& exception) {
+                std::cerr << "legacy DDS format " << format.code << " failed to decode: " << exception.what() << '\n';
+                ok = false;
+            }
+        }
+        std::filesystem::remove(typedPath);
 
         const auto pngPath = std::filesystem::temp_directory_path() / "mikumikudesu-stbi-budget-test.png";
         const auto putBe32 = [](std::ofstream& output, std::uint32_t value) {
