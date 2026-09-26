@@ -275,12 +275,6 @@ struct FxTextureUsageSummary {
     return static_cast<std::size_t>(value);
 }
 
-[[nodiscard]] bool hasExplicitSize(const core::EffectSize& size) noexcept {
-    return size.absolute || !size.base.empty() || size.dimension != 0 || size.widthRatio != 1.0F ||
-           size.heightRatio != 1.0F || size.depthRatio != 1.0F || size.convX != "x" || size.convY != "y" ||
-           size.convZ != "z" || size.rounding != "trunc";
-}
-
 [[nodiscard]] std::uint32_t mipLevels(Extent3D extent, bool enabled) noexcept {
     if (!enabled)
         return 1;
@@ -667,12 +661,11 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
 
         for (const auto& declaration : program.textures) {
             const auto name = addName(declaration.name);
-            const auto format = pixelFormat(declaration.format);
+            const auto format =
+                declaration.filename.empty() ? pixelFormat(declaration.format) : PixelFormat::rgba8Unorm;
             std::optional<core::ImageRgba8> external;
             std::optional<core::DdsImageRgba8> externalDds;
             if (!declaration.filename.empty()) {
-                if (format != PixelFormat::rgba8Unorm)
-                    throw std::invalid_argument("FX external texture format must be RGBA8_UNORM: " + name);
                 const auto path = externalPath(program, declaration.filename);
                 if (isDdsPath(path)) {
                     externalDds = core::loadDdsImageRgba8(path);
@@ -688,13 +681,9 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             const auto externalHeight =
                 externalDds.has_value() ? externalDds->height : (external.has_value() ? external->height : 0U);
             const auto resolvedFx =
-                hasExternal && !hasExplicitSize(declaration.size)
-                    ? core::fx::FxExtent{.x = externalWidth, .y = externalHeight, .z = 1, .dimension = 2}
-                    : resolveFxExtent(declaration.size, 2, true, context, table);
+                hasExternal ? core::fx::FxExtent{.x = externalWidth, .y = externalHeight, .z = 1, .dimension = 2}
+                            : resolveFxExtent(declaration.size, 2, true, context, table);
             const Extent3D resolved{resolvedFx.x, resolvedFx.y, resolvedFx.z};
-            if (hasExternal &&
-                (resolved.width != externalWidth || resolved.height != externalHeight || resolved.depth != 1))
-                throw std::invalid_argument("FX external texture extent does not match its declaration: " + name);
             const auto levels = !declaration.mipmap ? 1U
                                                     : (externalDds.has_value() && externalDds->mipLevels > 1
                                                            ? externalDds->mipLevels
@@ -747,11 +736,10 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
         }
         for (const auto& declaration : program.textures3D) {
             const auto name = addName(declaration.name);
-            const auto format = pixelFormat(declaration.format);
+            const auto format =
+                declaration.filename.empty() ? pixelFormat(declaration.format) : PixelFormat::rgba8Unorm;
             std::optional<core::DdsImageRgba8> externalDds;
             if (!declaration.filename.empty()) {
-                if (format != PixelFormat::rgba8Unorm)
-                    throw std::invalid_argument("FX external 3D texture format must be RGBA8_UNORM: " + name);
                 const auto path = externalPath(program, declaration.filename);
                 if (!isDdsPath(path))
                     throw std::invalid_argument("FX external 3D texture must use DDS: " + name);
@@ -759,17 +747,13 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                 if (externalDds->dimension != core::DdsDimension::threeD || externalDds->arrayLayers != 1)
                     throw std::invalid_argument("FX Texture3D external DDS must contain one volume: " + name);
             }
-            const auto resolvedFx = externalDds.has_value() && !hasExplicitSize(declaration.size)
+            const auto resolvedFx = externalDds.has_value()
                                         ? core::fx::FxExtent{.x = externalDds->width,
                                                              .y = externalDds->height,
                                                              .z = externalDds->depth,
                                                              .dimension = 3}
                                         : resolveFxExtent(declaration.size, 3, false, context, table);
             const Extent3D resolved{resolvedFx.x, resolvedFx.y, resolvedFx.z};
-            if (externalDds.has_value() &&
-                (resolved.width != externalDds->width || resolved.height != externalDds->height ||
-                 resolved.depth != externalDds->depth))
-                throw std::invalid_argument("FX external 3D texture extent does not match its declaration: " + name);
             const auto levels = !declaration.mipmap ? 1U
                                                     : (externalDds.has_value() && externalDds->mipLevels > 1
                                                            ? externalDds->mipLevels
