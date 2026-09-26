@@ -245,7 +245,6 @@ SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
         throw std::runtime_error(environmentError.empty() ? "Subayai environment binding failed" : environmentError);
     SubayaiFrame frame;
     frame.context = context;
-    frame.plan = fx::FxCompiler{}.plan(program_, context);
     frame.materials = materials_;
     frame.materialBuffer = materialRuntime_.buffer();
     frame.materialDescriptorSet = bindings_.materialSet();
@@ -302,6 +301,7 @@ SubayaiFrame SubayaiRuntime::prepareFrame(const fx::FxFrameContext& context,
         append(environmentRuntime_.layout(), environmentRuntime_.descriptorSet());
         frame.nativeFx = dayoFx_.prepareFrame(context, frameSharedSets);
     }
+    frame.plan = frame.nativeFx.has_value() ? frame.nativeFx->plan : fx::FxCompiler{}.plan(program_, frame.context);
     return frame;
 }
 

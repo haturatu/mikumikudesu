@@ -299,14 +299,16 @@ void appendTextureDeclarations(std::ostringstream& output, const FxProgram& prog
         const auto color = dispatchUsesAsColor(dispatch, texture.name);
         const auto depth = dispatchUsesAsDepth(dispatch, texture.name);
         if (color || depth) {
-            output << "Texture2D<" << elementType(texture.format) << "> " << identifier(texture.name) << ";\n";
+            output << "Texture2D<" << elementType(texture.filename.empty() ? texture.format : "R8G8B8A8_UNORM") << "> "
+                   << identifier(texture.name) << ";\n";
             continue;
         }
         const auto* planned = bindings.find(texture.name);
         if (planned == nullptr)
             throw std::logic_error("FX binding plan omitted texture: " + texture.name);
         const auto binding = planned->binding - fxDescriptorBindingBaseForUse(planned->descriptorClass, write);
-        output << (write ? "RWTexture2D<" : "Texture2D<") << elementType(texture.format) << "> "
+        output << (write ? "RWTexture2D<" : "Texture2D<")
+               << elementType(texture.filename.empty() ? texture.format : "R8G8B8A8_UNORM") << "> "
                << identifier(texture.name) << " : register(" << (write ? 'u' : 't') << binding
                << resourceSetSuffix(resourceSet) << ");\n";
     }
@@ -314,14 +316,16 @@ void appendTextureDeclarations(std::ostringstream& output, const FxProgram& prog
         const auto write = dispatchWrites(dispatch, texture.name);
         const auto color = dispatchUsesAsColor(dispatch, texture.name);
         if (color) {
-            output << "Texture3D<" << elementType(texture.format) << "> " << identifier(texture.name) << ";\n";
+            output << "Texture3D<" << elementType(texture.filename.empty() ? texture.format : "R8G8B8A8_UNORM") << "> "
+                   << identifier(texture.name) << ";\n";
             continue;
         }
         const auto* planned = bindings.find(texture.name);
         if (planned == nullptr)
             throw std::logic_error("FX binding plan omitted 3D texture: " + texture.name);
         const auto binding = planned->binding - fxDescriptorBindingBaseForUse(planned->descriptorClass, write);
-        output << (write ? "RWTexture3D<" : "Texture3D<") << elementType(texture.format) << "> "
+        output << (write ? "RWTexture3D<" : "Texture3D<")
+               << elementType(texture.filename.empty() ? texture.format : "R8G8B8A8_UNORM") << "> "
                << identifier(texture.name) << " : register(" << (write ? 'u' : 't') << binding
                << resourceSetSuffix(resourceSet) << ");\n";
     }
