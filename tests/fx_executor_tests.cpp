@@ -1,5 +1,6 @@
 #include "core/fx/fx_controller_resolver.hpp"
 #include "core/fx/fx_material.hpp"
+#include "core/image.hpp"
 #include "fx/fx_catalog.hpp"
 #include "fx/fx_compiler.hpp"
 #include "fx/fx_condition_runtime.hpp"
@@ -14,6 +15,7 @@
 #include "fx/fx_watcher.hpp"
 #include "graphics/dayo_fx_runtime.hpp"
 #include "graphics/dayo_host_resources.hpp"
+#include "graphics/fx_debug_readback.hpp"
 #include "graphics/fx_executor.hpp"
 #include "graphics/fx_material_gpu_runtime.hpp"
 #include "graphics/fx_material_scene_runtime.hpp"
@@ -161,6 +163,10 @@ struct MockDevice final : public dayo::graphics::Device {
         lastBufferReadbackSize_ = size;
         return bufferReadbackBytes_;
     }
+    std::vector<std::uint8_t> readbackTextureEx(dayo::graphics::handles::TextureHandle, std::uint32_t,
+                                                std::uint32_t) override {
+        return textureReadbackBytes_;
+    }
     void clearTextureEx(dayo::graphics::handles::TextureHandle, const std::array<float, 4>&) override {}
     void clearBufferEx(dayo::graphics::handles::BufferHandle, std::uint32_t) override {
         ++bufferClears_;
@@ -267,6 +273,7 @@ struct MockDevice final : public dayo::graphics::Device {
     std::size_t lastBufferReadbackOffset_{};
     std::size_t lastBufferReadbackSize_{};
     std::vector<std::byte> bufferReadbackBytes_;
+    std::vector<std::uint8_t> textureReadbackBytes_;
     std::size_t bufferClears_{};
     std::size_t generatedMipmaps_{};
     std::vector<BufferUpload> bufferUploads_;
@@ -2603,6 +2610,51 @@ bool testSharedResourceUsageCoversConsumerReads() {
                  "shared producer usage includes write, sampled, vertex, and index consumer roles");
 }
 
+bool testFxDebugFloatTextureCanDumpPng() {
+    namespace fs = std::filesystem;
+    constexpr std::string_view basename = "mikumikudesu-fx-debug-float-dump.png";
+    const auto output = fs::temp_directory_path() / basename;
+    const auto previewDirectory = fs::temp_directory_path() / "mikumikudesu-fx-debug-missing-preview";
+    std::error_code filesystemError;
+    fs::remove(output, filesystemError);
+
+    MockDevice device;
+    MockCommands commands;
+    const std::array<float, 4> rgba{1.0F, 0.25F, 0.0F, 1.0F};
+    device.textureReadbackBytes_.resize(sizeof(rgba));
+    std::memcpy(device.textureReadbackBytes_.data(), rgba.data(), sizeof(rgba));
+
+    dayo::graphics::FxResourceStore::Resource resource;
+    resource.name = "FloatTexture";
+    resource.kind = dayo::graphics::FxResourceStore::Kind::texture;
+    resource.texture = {71, 3};
+    resource.extent = {1, 1, 1};
+    resource.format = dayo::graphics::PixelFormat::rgba32Float;
+    resource.allocationBytes = sizeof(rgba);
+    dayo::graphics::FxDebugRequest request;
+    request.owner = "test";
+    request.name = resource.name;
+    request.generation = dayo::graphics::fxDebugGeneration(resource);
+    request.hlslDirectory = previewDirectory;
+    request.dumpPath = output;
+
+    try {
+        const auto result = dayo::graphics::readFxDebugResource(device, commands, resource, request);
+        const auto decoded = dayo::core::loadImageRgba8(output);
+        const bool pixelMatches = decoded.width == 1 && decoded.height == 1 && decoded.pixels.size() == 4 &&
+                                  decoded.pixels[0] == 255 && decoded.pixels[1] >= 136 && decoded.pixels[1] <= 138 &&
+                                  decoded.pixels[2] == 0 && decoded.pixels[3] == 255;
+        fs::remove(output, filesystemError);
+        fs::remove_all(previewDirectory, filesystemError);
+        return check(pixelMatches && result.message.find("Saved") != std::string::npos,
+                     "FX debug converts float32 texture readback into an sRGB PNG");
+    } catch (const std::exception& exception) {
+        fs::remove(output, filesystemError);
+        fs::remove_all(previewDirectory, filesystemError);
+        return check(false, std::string("FX debug float PNG dump succeeds: ") + exception.what());
+    }
+}
+
 bool testFxExternalTextureMetadataAndUpload() {
     namespace fs = std::filesystem;
     const auto directory = fs::temp_directory_path() / "dayo-fx-external-texture-test";
@@ -3446,6 +3498,7 @@ int main() {
     ok &= testResourceSizeDependencyGraph();
     ok &= testDepthTextureUsageIncludesSampling();
     ok &= testSharedResourceUsageCoversConsumerReads();
+    ok &= testFxDebugFloatTextureCanDumpPng();
     ok &= testFxExternalTextureMetadataAndUpload();
     ok &= testNativeFxRuntimeRefreshesFrameResources();
     ok &= testNativeFxRuntimeBindsResourcesAndPipelines();
