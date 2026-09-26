@@ -1,6 +1,7 @@
 #include "fx/fx_shader_source.hpp"
 
 #include "core/fx/fx_material.hpp"
+#include "core/image.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -48,15 +49,49 @@ namespace {
 
 [[nodiscard]] std::string elementType(std::string_view format) {
     const auto name = upper(format);
-    if (name == "R16G16_FLOAT" || name == "R32G32_FLOAT")
-        return "float2";
-    if (name == "R8G8B8A8_UNORM" || name == "R8G8B8A8_SRGB" || name == "R16G16B16A16_FLOAT" ||
-        name == "R32G32B32A32_FLOAT" || name.empty())
-        return "float4";
-    if (name == "R8_UNORM" || name == "R16_FLOAT" || name == "R32_FLOAT" || name == "D32_FLOAT" ||
-        name == "D24_UNORM_S8_UINT" || name == "D24S8")
-        return "float";
-    throw std::invalid_argument("FX shader source has an unsupported texture format: " + std::string(format));
+    if (!name.empty() && name != "R8_UNORM" && name != "R16_FLOAT" && name != "R16G16_FLOAT" && name != "R32_FLOAT" &&
+        name != "R32G32_FLOAT" && name != "R32G32_UINT" && name != "R8G8B8A8_UNORM" && name != "R8G8B8A8_SRGB" &&
+        name != "R16G16B16A16_FLOAT" && name != "R32G32B32A32_FLOAT" && name != "D32_FLOAT" &&
+        name != "D24_UNORM_S8_UINT" && name != "R8_UINT" && name != "R8_SNORM" && name != "R8_SINT" &&
+        name != "R8G8_UINT" && name != "R8G8_SNORM" && name != "R8G8_SINT" && name != "R8G8B8A8_UINT" &&
+        name != "R8G8B8A8_SNORM" && name != "R8G8B8A8_SINT" && name != "R16_UINT" && name != "R16_SNORM" &&
+        name != "R16_SINT" && name != "R16G16_UINT" && name != "R16G16_SNORM" && name != "R16G16_SINT" &&
+        name != "R16G16B16A16_UINT" && name != "R16G16B16A16_SNORM" && name != "R16G16B16A16_SINT" &&
+        name != "R32_UINT" && name != "R32_SINT" && name != "R32G32_SINT" && name != "R32G32B32A32_UINT" &&
+        name != "R32G32B32A32_SINT" && name != "R8G8_UNORM" && name != "R16_UNORM" && name != "R16G16_UNORM" &&
+        name != "R16G16B16A16_UNORM" && name != "RGBA8_UNORM" && name != "RGBA8_SRGB" && name != "RGBA16_FLOAT" &&
+        name != "RGBA32_FLOAT" && name != "D24S8")
+        throw std::invalid_argument("unsupported FX texture format: " + name);
+    const auto split = name.find('_');
+    const auto components = name.substr(0, split);
+    const auto scalar = name.ends_with("_UINT") ? "uint" : name.ends_with("_SINT") ? "int" : "float";
+    const auto count = name == "D24_UNORM_S8_UINT" || name == "D24S8"              ? 1U
+                       : name.empty() || components.find('A') != std::string::npos ? 4U
+                       : components.find('B') != std::string::npos                 ? 3U
+                       : components.find('G') != std::string::npos                 ? 2U
+                                                                                   : 1U;
+    return std::string(name.starts_with("D") ? "float" : scalar) + (count == 1 ? "" : std::to_string(count));
+}
+
+[[nodiscard]] std::string textureElementType(const core::EffectTexture& texture, const FxProgram& program) {
+    const auto inferred = elementType(effectiveTextureFormat(texture, program.sourcePath));
+    if (texture.type.empty())
+        return inferred;
+    const auto valid = [](std::string_view type) {
+        for (const auto scalar : {"float", "uint", "int"}) {
+            if (type == scalar)
+                return true;
+            for (const char count : {'1', '2', '3', '4'})
+                if (type == std::string(scalar) + count)
+                    return true;
+        }
+        return false;
+    };
+    const auto scalar = [](std::string_view type) { return type.substr(0, type.find_first_of("1234")); };
+    if (!valid(texture.type) || scalar(texture.type) != scalar(inferred))
+        throw std::invalid_argument("FX texture type/format mismatch: " + texture.name + " type=" + texture.type +
+                                    " inferred=" + inferred);
+    return texture.type;
 }
 
 [[nodiscard]] std::string resourceSetSuffix(std::uint32_t resourceSet) {
@@ -299,14 +334,14 @@ void appendTextureDeclarations(std::ostringstream& output, const FxProgram& prog
         const auto color = dispatchUsesAsColor(dispatch, texture.name);
         const auto depth = dispatchUsesAsDepth(dispatch, texture.name);
         if (color || depth) {
-            output << "Texture2D<" << elementType(texture.format) << "> " << identifier(texture.name) << ";\n";
+            output << "Texture2D<" << textureElementType(texture, program) << "> " << identifier(texture.name) << ";\n";
             continue;
         }
         const auto* planned = bindings.find(texture.name);
         if (planned == nullptr)
             throw std::logic_error("FX binding plan omitted texture: " + texture.name);
         const auto binding = planned->binding - fxDescriptorBindingBaseForUse(planned->descriptorClass, write);
-        output << (write ? "RWTexture2D<" : "Texture2D<") << elementType(texture.format) << "> "
+        output << (write ? "RWTexture2D<" : "Texture2D<") << textureElementType(texture, program) << "> "
                << identifier(texture.name) << " : register(" << (write ? 'u' : 't') << binding
                << resourceSetSuffix(resourceSet) << ");\n";
     }
@@ -314,14 +349,14 @@ void appendTextureDeclarations(std::ostringstream& output, const FxProgram& prog
         const auto write = dispatchWrites(dispatch, texture.name);
         const auto color = dispatchUsesAsColor(dispatch, texture.name);
         if (color) {
-            output << "Texture3D<" << elementType(texture.format) << "> " << identifier(texture.name) << ";\n";
+            output << "Texture3D<" << textureElementType(texture, program) << "> " << identifier(texture.name) << ";\n";
             continue;
         }
         const auto* planned = bindings.find(texture.name);
         if (planned == nullptr)
             throw std::logic_error("FX binding plan omitted 3D texture: " + texture.name);
         const auto binding = planned->binding - fxDescriptorBindingBaseForUse(planned->descriptorClass, write);
-        output << (write ? "RWTexture3D<" : "Texture3D<") << elementType(texture.format) << "> "
+        output << (write ? "RWTexture3D<" : "Texture3D<") << textureElementType(texture, program) << "> "
                << identifier(texture.name) << " : register(" << (write ? 'u' : 't') << binding
                << resourceSetSuffix(resourceSet) << ");\n";
     }
@@ -454,6 +489,14 @@ void appendSharedDeclarations(std::ostringstream& output, const FxNativeShaderSo
 }
 
 } // namespace
+
+std::string effectiveTextureFormat(const core::EffectTexture& texture, const std::filesystem::path& sourcePath) {
+    if (!texture.physicalFormat.empty())
+        return texture.physicalFormat;
+    if (!texture.filename.empty())
+        return core::loadTextureImage(sourcePath.parent_path() / texture.filename).format;
+    return texture.format.empty() ? "R8G8B8A8_UNORM" : texture.format;
+}
 
 std::string makeNativeFxShaderSource(const FxProgram& program, const FxDispatch& dispatch, std::uint32_t resourceSet,
                                      const FxNativeShaderSourceOptions& options, const FxResolvedPass* resolved) {
