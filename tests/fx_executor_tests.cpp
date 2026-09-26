@@ -2382,6 +2382,53 @@ bool testFxResourceRuntimeMaterializesDeclarations() {
     return ok;
 }
 
+bool testFxBufferFileInitialization() {
+    namespace fs = std::filesystem;
+    const auto directory = fs::temp_directory_path() / "dayo-fx-buffer-file-test";
+    fs::create_directories(directory);
+    const auto graph = dayo::core::loadEffectGraphFromText(directory / "effect.fxdayo", R"FX([YRZFX]
+{"fx":{"buffers":[{"name":"Data","type":"uint","filename":"data.bin",
+             "size":{"absolute":true,"width":2}}],
+       "passes":[{"name":"load","type":"compute","computeShader":"CS"}]}}
+[HLSL]
+// Buffer initialization fixture.
+)FX");
+    const auto program = dayo::fx::FxCompiler{}.compile(graph);
+    bool ok = check(program.buffers.size() == 1 && program.buffers[0].filename == "data.bin",
+                    "buffer filename survives parsing and FX compilation");
+    MockDevice device;
+    dayo::graphics::FxResourceRuntime runtime;
+    std::string error;
+    for (const auto fileSize : {3U, 8U, 12U}) {
+        {
+            std::ofstream output(directory / "data.bin", std::ios::binary | std::ios::trunc);
+            for (unsigned index = 0; index < fileSize; ++index)
+                output.put(static_cast<char>(index + 1U));
+        }
+        ok &= check(runtime.initialize(device, program, testContext(), &error),
+                    "FX buffer loads data relative to its effect");
+        if (device.bufferUploads_.empty()) {
+            ok &= check(false, "FX buffer data is uploaded");
+            continue;
+        }
+        const auto& uploaded = device.bufferUploads_.back();
+        std::vector<std::byte> expected(8);
+        for (unsigned index = 0; index < std::min(fileSize, 8U); ++index)
+            expected[index] = static_cast<std::byte>(index + 1U);
+        ok &= check(uploaded.bytes == expected && uploaded.offset == 0 &&
+                        runtime.resolveBuffer("Data") == uploaded.handle,
+                    "buffer upload zero-pads short files and truncates excess bytes like Dayo");
+        runtime.reset();
+    }
+    fs::remove(directory / "data.bin");
+    const auto destroyedBefore = device.destroyedBuffers_;
+    ok &= check(!runtime.initialize(device, program, testContext(), &error) && !runtime.ready() &&
+                    error.find("data.bin") != std::string::npos && device.destroyedBuffers_ == destroyedBefore + 1,
+                "missing buffer file fails with its path and releases the GPU allocation");
+    fs::remove_all(directory);
+    return ok;
+}
+
 bool testDepthTextureUsageIncludesSampling() {
     dayo::fx::FxProgram program;
     dayo::core::EffectTexture depth;
@@ -3215,6 +3262,7 @@ int main() {
     ok &= testRayTracingPayloadIsLossless();
     ok &= testFxResourceDeclarationsAreLossless();
     ok &= testFxResourceRuntimeMaterializesDeclarations();
+    ok &= testFxBufferFileInitialization();
     ok &= testDepthTextureUsageIncludesSampling();
     ok &= testFxExternalTextureMetadataAndUpload();
     ok &= testNativeFxRuntimeRefreshesFrameResources();

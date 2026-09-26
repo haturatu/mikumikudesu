@@ -80,6 +80,7 @@ int main() {
         graph.textures3D.push_back(volume);
         dayo::core::EffectBuffer buffer;
         buffer.name = "particles";
+        buffer.filename = "particles.bin";
         buffer.type = "Particle";
         buffer.elementSize = 32;
         buffer.size.width = 2048;
@@ -98,6 +99,7 @@ int main() {
         ok &= check(snapshot.passCount == 1 && snapshot.passes.front().resources.size() == 2 &&
                         snapshot.resources.size() == 2 && snapshot.resources[0].kind == "Texture3D" &&
                         snapshot.resources[0].depth == 16 && snapshot.resources[1].elementSize == 32 &&
+                        snapshot.resources[1].filename == "particles.bin" &&
                         snapshot.passes.front().functionalKind == "clearUAV" &&
                         snapshot.passes.front().conditions.front() == "FRAME > 0" &&
                         snapshot.memos.front() == "SkyboxSampler" && snapshot.globalVarSize == 512,
