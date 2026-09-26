@@ -755,12 +755,12 @@ ImageRgba8 decodeDds(const std::filesystem::path& requested) {
                                 const float second = endpoint(block[1]);
                                 std::array<float, 8> palette{first, second};
                                 if (first > second) {
-                                    for (int i = 1; i <= 6; ++i)
-                                        palette[static_cast<std::size_t>(i + 1)] =
+                                    for (std::size_t i = 1; i <= 6; ++i)
+                                        palette[i + 1] =
                                             (static_cast<float>(7 - i) * first + static_cast<float>(i) * second) / 7.0F;
                                 } else {
-                                    for (int i = 1; i <= 4; ++i)
-                                        palette[static_cast<std::size_t>(i + 1)] =
+                                    for (std::size_t i = 1; i <= 4; ++i)
+                                        palette[i + 1] =
                                             (static_cast<float>(5 - i) * first + static_cast<float>(i) * second) / 5.0F;
                                     palette[6] = -1.0F;
                                     palette[7] = 1.0F;
@@ -817,7 +817,14 @@ const ImageRgba8Subresource& DdsImageRgba8::subresource(std::uint32_t mipLevel, 
 
 DdsImageRgba8 loadDdsImageRgba8(const std::filesystem::path& path) {
     const auto snapshot = readImageSnapshot(path);
-    return decodeDdsTexture(snapshot, path);
+    auto decoded = decodeDdsTexture(snapshot, path);
+    return {.dimension = decoded.dimension,
+            .width = decoded.width,
+            .height = decoded.height,
+            .depth = decoded.depth,
+            .arrayLayers = decoded.arrayLayers,
+            .mipLevels = decoded.mipLevels,
+            .subresources = std::move(decoded.subresources)};
 }
 
 TextureImage loadTextureImage(const std::filesystem::path& path) {
