@@ -95,6 +95,8 @@ struct EffectTexture {
     float widthRatio{1.0F};
     float heightRatio{1.0F};
     std::vector<std::string> conditions;
+    std::string type{};
+    std::string physicalFormat{};
 };
 
 struct EffectBuffer {

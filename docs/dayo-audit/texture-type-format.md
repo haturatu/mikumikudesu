@@ -1,6 +1,6 @@
 # 調査: textureの明示HLSL型とファイル形式の保持
 
-状態: **未実装・調査PR**。基準は `main@7ed41e0` と固定 MikuMikuDayo130。
+状態: **実装済み**。基準は `main@7ed41e0` と固定 MikuMikuDayo130。
 
 本家 `src/YRZFx.ixx::FXRes::type` はTexture2D/3Dにも適用される。
 `createTextureLambda` / `createTexture3DLambda` はtypeが空の場合だけ実DXGI formatから型を推定し、
@@ -25,4 +25,15 @@ image formatを一致させる。対応外の明示型を黙ってfloat4に変�
 
 受け入れ条件は、明示型あり/なしのHLSL生成とSPIR-V reflection、float/HDR/uint/signedの
 fixture、2D/3D各mip、数値のGPU readback、対応外組合せのエラー。
-本PRはソース比較のみで、type field追加や新しいpixel decoderは実装していない。
+
+## 実装
+
+- `EffectTexture.type` を parser から HLSL 生成まで保持する。float/int/uint の1〜4成分を認識し、数値型の不一致を診断する。
+- `loadTextureImage` は DDS の8/16/32 bit、1/2/4成分の対応形式を保持する。float、UNORM、SNORM、UINT、SINT、sRGB と旧形式の浮動小数点 DDS を扱う。
+- HDR は float32、signed BC4/BC5 は符号付き正規化値を float32 に復号する。BC1〜5 UNORM は既存の復号器を再利用する。
+- Vulkan の形式、転送サイズ、shader型、attachment形式を実データに揃える。外部画像の各mip・3D depthを保持する。
+- テクスチャを upload 前に所有対象へ登録し、upload失敗時も解放する。
+
+既存の表示用 RGBA8 API は維持。未対応DXGI形式、パディング付き typed DDS row pitch、FX宣言で表現できないarray/cubeは明示的に拒否する。
+
+ビルド: Linux `mikumikudesu`。テスト・GPU readback・Windows実行は今回行っていない。前提PR: #251。
