@@ -99,6 +99,8 @@ class NativeRendererCoordinator {
   private:
     struct GenericEffectRuntime {
         Device* device{};
+        fx::FxProgram program;
+        FxMaterialSceneRuntime materialScene;
         DayoFxRuntime runtime;
         NativeControllerRuntime controller;
         NativeFxGlobalVariableRuntime globalVariables;
@@ -111,8 +113,12 @@ class NativeRendererCoordinator {
     [[nodiscard]] std::optional<NativeFrameOutput>
     executeGenericEffects(std::span<const core::SceneEffectInstance> effects, GenericRuntimeList& runtimes,
                           CommandList& commands, const fx::FxFrameContext& context,
-                          const FxExecutionResources& resources, bool publishToScreen);
+                          const FxExecutionResources& resources, bool publishToScreen,
+                          std::span<const FxMaterialSceneModel> materialModels);
+    [[nodiscard]] FxMaterialTextureResolver materialTextureResolver(const FxResourceStore* localStore,
+                                                                    bool rendererLocal) const;
     void publishActiveRendererResources();
+    [[nodiscard]] FxSharedResourceResolver sharedResourceResolver() const;
 
     NativeRendererStatus status_{};
     SubayaiRuntime subayai_;

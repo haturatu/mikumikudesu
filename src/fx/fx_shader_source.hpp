@@ -9,6 +9,8 @@
 #include <vector>
 
 namespace dayo::fx {
+[[nodiscard]] std::string effectiveTextureFormat(const core::EffectTexture& texture,
+                                                 const std::filesystem::path& sourcePath);
 
 enum class FxNativeShaderRegister : std::uint8_t {
     uav,

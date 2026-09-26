@@ -576,6 +576,7 @@ std::vector<EffectTexture> textures(const nlohmann::json& parent, std::string_vi
         EffectTexture texture;
         texture.name = value.value("name", "");
         texture.format = value.value("format", "");
+        texture.type = value.value("type", "");
         texture.view = value.value("view", "");
         texture.filename = value.value("filename", "");
         texture.shared = value.value("shared", "");

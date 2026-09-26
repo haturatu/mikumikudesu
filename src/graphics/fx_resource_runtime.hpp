@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -47,6 +48,8 @@ class FxResourceStore {
         // Per-pass descriptors never consult these fields.
         DescriptorKind legacyDescriptorKind{DescriptorKind::sampledImage};
         std::uint32_t legacyBinding{};
+        ResourceUsage usage{};
+        std::shared_ptr<void> ownership{};
     };
 
     [[nodiscard]] bool add(Resource resource);
@@ -64,6 +67,9 @@ class FxResourceStore {
     std::vector<Resource> resources_;
     std::unordered_map<std::string, std::size_t> indices_;
 };
+
+using FxSharedResourceResolver = std::function<std::optional<FxResourceStore::Resource>(std::string_view)>;
+[[nodiscard]] bool fxSharedMode(std::string_view value, std::string_view mode);
 
 using FxMaterialRuntimeInitializer = std::function<const FxMaterialGpuRuntime*(const FxResourceStore&, std::string*)>;
 
@@ -139,6 +145,10 @@ class FxResourceRuntime : public core::fx::FxResourceTable {
                                   std::string* error = nullptr, std::uint32_t resourceSet = 0,
                                   const FxMaterialGpuRuntime* materialRuntime = nullptr,
                                   const FxMaterialRuntimeInitializer& initializeMaterialRuntime = {});
+    void setSharedResourceResolver(FxSharedResourceResolver resolver) {
+        sharedResolver_ = std::move(resolver);
+    }
+    [[nodiscard]] bool sharedReferencesChanged(const fx::FxProgram& program) const;
     void reset() noexcept;
 
     [[nodiscard]] bool ready() const noexcept {
@@ -188,6 +198,7 @@ class FxResourceRuntime : public core::fx::FxResourceTable {
     }
 
   private:
+    FxSharedResourceResolver sharedResolver_;
     Device* device_{};
     FxResourceStore store_;
     FxPassDescriptorRuntime passDescriptors_;
