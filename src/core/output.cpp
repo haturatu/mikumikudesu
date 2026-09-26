@@ -279,10 +279,16 @@ struct OutputWorker {
                     return formatSequencePath(settings.directory, *spec, static_cast<std::uint32_t>(nextNumber));
                 };
                 auto path = candidate();
-                if (settings.overwrite) {
+                if (!spec) {
+                    if (!settings.overwrite && std::filesystem::exists(path))
+                        throw std::runtime_error("output frame already exists: " + path.string());
+                    // Keep filenamePattern output on the regular encoder path.
+                    // Only Dayo sequence publication needs a hard link to claim
+                    // the next available sequence number without replacing it.
                     writeFrame(path, item.image, settings.format);
-                    if (spec)
-                        ++nextNumber;
+                } else if (settings.overwrite) {
+                    writeFrame(path, item.image, settings.format);
+                    ++nextNumber;
                 } else {
                     EncodedFrame encoded(path.parent_path(), item.image, settings.format);
                     for (;;) {

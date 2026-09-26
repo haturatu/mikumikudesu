@@ -1380,7 +1380,24 @@ int main() {
         } catch (const std::runtime_error& error) {
             overwriteBlocked = std::string_view(error.what()).find("already exists") != std::string_view::npos;
         }
-        ok &= check(overwriteBlocked, "sequence output rejects existing range before starting worker");
+        ok &= check(overwriteBlocked, "filenamePattern output rejects existing range before starting worker");
+        dayo::core::OutputSettings sequenceSettings;
+        sequenceSettings.directory = outputDirectory;
+        sequenceSettings.sequenceFile = "shot_00001.png";
+        sequenceSettings.format = dayo::core::OutputFormat::png;
+        sequenceSettings.firstFrame = 0;
+        sequenceSettings.lastFrame = 1;
+        const auto occupiedSequencePath = outputDirectory / "shot_00001.png";
+        dayo::core::writeFrame(occupiedSequencePath, pngImage, dayo::core::OutputFormat::png);
+        dayo::core::OutputQueue sequenceQueue(sequenceSettings);
+        sequenceQueue.push(0, pngImage);
+        sequenceQueue.push(1, pngImage);
+        sequenceQueue.close();
+        sequenceQueue.rethrowIfFailed();
+        ok &= check(sequenceQueue.written() == 2 && std::filesystem::exists(outputDirectory / "shot_00002.png") &&
+                        std::filesystem::exists(outputDirectory / "shot_00003.png") &&
+                        dayo::core::loadImageRgba8(occupiedSequencePath).pixels == pngImage.pixels,
+                    "Dayo sequence output skips occupied numbers and preserves the existing image");
         settings.overwrite = true;
         dayo::core::OutputQueue interactiveQueue(settings);
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
