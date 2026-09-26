@@ -43,6 +43,10 @@ struct BdptFrame {
 // and the device capabilities agree on the full ray-tracing contract.
 class BdptRuntime {
   public:
+    void setSharedResourceResolver(FxSharedResourceResolver resolver) {
+        dayoFx_.setSharedResourceResolver(std::move(resolver));
+    }
+
     BdptRuntime() = default;
 
     bool initialize(Device& device, fx::FxProgram program, std::string* error = nullptr);

@@ -187,6 +187,60 @@ VkFormat toVkFormat(PixelFormat format) {
         return VK_FORMAT_D32_SFLOAT;
     case PixelFormat::depth24Stencil8:
         return VK_FORMAT_D24_UNORM_S8_UINT;
+    case PixelFormat::r8Uint:
+        return VK_FORMAT_R8_UINT;
+    case PixelFormat::r8Snorm:
+        return VK_FORMAT_R8_SNORM;
+    case PixelFormat::r8Sint:
+        return VK_FORMAT_R8_SINT;
+    case PixelFormat::r8g8Uint:
+        return VK_FORMAT_R8G8_UINT;
+    case PixelFormat::r8g8Snorm:
+        return VK_FORMAT_R8G8_SNORM;
+    case PixelFormat::r8g8Sint:
+        return VK_FORMAT_R8G8_SINT;
+    case PixelFormat::rgba8Uint:
+        return VK_FORMAT_R8G8B8A8_UINT;
+    case PixelFormat::rgba8Snorm:
+        return VK_FORMAT_R8G8B8A8_SNORM;
+    case PixelFormat::rgba8Sint:
+        return VK_FORMAT_R8G8B8A8_SINT;
+    case PixelFormat::r16Uint:
+        return VK_FORMAT_R16_UINT;
+    case PixelFormat::r16Snorm:
+        return VK_FORMAT_R16_SNORM;
+    case PixelFormat::r16Sint:
+        return VK_FORMAT_R16_SINT;
+    case PixelFormat::r16g16Uint:
+        return VK_FORMAT_R16G16_UINT;
+    case PixelFormat::r16g16Snorm:
+        return VK_FORMAT_R16G16_SNORM;
+    case PixelFormat::r16g16Sint:
+        return VK_FORMAT_R16G16_SINT;
+    case PixelFormat::rgba16Uint:
+        return VK_FORMAT_R16G16B16A16_UINT;
+    case PixelFormat::rgba16Snorm:
+        return VK_FORMAT_R16G16B16A16_SNORM;
+    case PixelFormat::rgba16Sint:
+        return VK_FORMAT_R16G16B16A16_SINT;
+    case PixelFormat::r32Uint:
+        return VK_FORMAT_R32_UINT;
+    case PixelFormat::r32Sint:
+        return VK_FORMAT_R32_SINT;
+    case PixelFormat::r32g32Sint:
+        return VK_FORMAT_R32G32_SINT;
+    case PixelFormat::rgba32Uint:
+        return VK_FORMAT_R32G32B32A32_UINT;
+    case PixelFormat::rgba32Sint:
+        return VK_FORMAT_R32G32B32A32_SINT;
+    case PixelFormat::r8g8Unorm:
+        return VK_FORMAT_R8G8_UNORM;
+    case PixelFormat::r16Unorm:
+        return VK_FORMAT_R16_UNORM;
+    case PixelFormat::r16g16Unorm:
+        return VK_FORMAT_R16G16_UNORM;
+    case PixelFormat::rgba16Unorm:
+        return VK_FORMAT_R16G16B16A16_UNORM;
     }
     return VK_FORMAT_UNDEFINED;
 }

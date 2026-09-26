@@ -249,6 +249,7 @@ add_library(
   src/fx/fx_catalog.cpp
   src/fx/fx_condition_runtime.cpp
   src/fx/fx_compiler.cpp
+  src/fx/fx_resource_sizes.cpp
   src/fx/fx_preview_path.cpp
   src/fx/fx_resource_registry.cpp
   src/fx/fx_runtime_requirements.cpp
@@ -362,7 +363,11 @@ dayo_compile_hlsl(DAYO_PREVIEW_EDGE_VERTEX_SPV SOURCE shaders/preview.hlsl ENTRY
 dayo_compile_hlsl(DAYO_PREVIEW_FRAGMENT_SPV SOURCE shaders/preview.hlsl ENTRY PS PROFILE ps_6_6 STAGE frag)
 dayo_compile_hlsl(DAYO_NATIVE_OUTPUT_VERTEX_SPV SOURCE shaders/native_output.hlsl ENTRY VS PROFILE vs_6_6 STAGE vert)
 dayo_compile_hlsl(DAYO_NATIVE_OUTPUT_FRAGMENT_SPV SOURCE shaders/native_output.hlsl ENTRY PS PROFILE ps_6_6 STAGE frag)
-dayo_compile_hlsl(DAYO_NATIVE_DEFORM_SPV SOURCE shaders/native_deform.hlsl ENTRY NativeDeform PROFILE cs_6_6 STAGE comp)
+# Recompile the adapter when the pinned upstream algorithms or math change.
+set(DAYO_SKINNING_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/MikuMikuDayo/hlsl")
+file(GLOB DAYO_SKINNING_HEADERS CONFIGURE_DEPENDS "${DAYO_SKINNING_INCLUDE_DIR}/*.hlsli")
+dayo_compile_hlsl(DAYO_NATIVE_DEFORM_SPV SOURCE shaders/native_deform.hlsl ENTRY NativeDeform PROFILE cs_6_6 STAGE comp
+  INCLUDES "${DAYO_SKINNING_INCLUDE_DIR}" DEPENDS ${DAYO_SKINNING_HEADERS})
 dayo_compile_hlsl(
   DAYO_NATIVE_ENVIRONMENT_EQUIRECT_SPV
   SOURCE shaders/native_environment_equirect.hlsl

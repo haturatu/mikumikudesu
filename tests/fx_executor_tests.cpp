@@ -5,6 +5,7 @@
 #include "fx/fx_condition_runtime.hpp"
 #include "fx/fx_frame.hpp"
 #include "fx/fx_preview_path.hpp"
+#include "fx/fx_resource_sizes.hpp"
 #include "fx/fx_scheduler.hpp"
 #include "fx/fx_shader_cache.hpp"
 #include "fx/fx_shader_compiler.hpp"
@@ -2382,6 +2383,57 @@ bool testFxResourceRuntimeMaterializesDeclarations() {
     return ok;
 }
 
+bool testResourceSizeDependencyGraph() {
+    dayo::fx::FxProgram program;
+    dayo::core::EffectTexture derived;
+    derived.name = "First";
+    derived.size.base = "Volume";
+    derived.size.dimension = 2;
+    derived.size.widthRatio = 0.5F;
+    program.textures.push_back(derived);
+    dayo::core::EffectTexture volume;
+    volume.name = "Volume";
+    volume.size.base = "Later";
+    volume.size.dimension = 3;
+    volume.size.convY = "x";
+    volume.size.convZ = "x";
+    program.textures3D.push_back(volume);
+    dayo::core::EffectBuffer buffer;
+    buffer.name = "Later";
+    buffer.type = "uint";
+    buffer.elementSize = 4;
+    buffer.size.absolute = true;
+    buffer.size.width = 1;
+    program.buffers.push_back(buffer);
+    MockDevice device;
+    dayo::graphics::FxResourceRuntime runtime;
+    std::string error;
+    bool ok = check(runtime.initialize(device, program, testContext(), &error),
+                    "resource size dependencies resolve across later declarations and resource kinds");
+    const auto first = runtime.find("First");
+    ok &= check(first.has_value() && first->x == 1 && first->y == 1,
+                "relative sizes below one clamp to one before allocation");
+    const dayo::fx::FxResourceSizeTable extents(program, testContext());
+    ok &= check(extents.find("Volume")->z == 1 && extents.find("First")->x == first->x,
+                "planner and allocator share the same resolved dimensions");
+    runtime.reset();
+    program.buffers[0].size.absolute = false;
+    program.buffers[0].size.base = "First";
+    ok &= check(!runtime.initialize(device, program, testContext(), &error) &&
+                    error.find("cycle") != std::string::npos && error.find("First") != std::string::npos,
+                "cross-kind cycles fail with the dependency chain before GPU allocation");
+    program.buffers[0].size.base = "Missing";
+    ok &=
+        check(!runtime.initialize(device, program, testContext(), &error) && error.find("Missing") != std::string::npos,
+              "missing dependencies are diagnosed separately from cycles");
+    program.buffers[0].size.absolute = true;
+    program.buffers[0].shared = "REF";
+    ok &= check(!runtime.initialize(device, program, testContext(), &error) &&
+                    error.find("shared=ref") != std::string::npos,
+                "Dayo forbids shared refs as size bases");
+    return ok;
+}
+
 bool testDepthTextureUsageIncludesSampling() {
     dayo::fx::FxProgram program;
     dayo::core::EffectTexture depth;
@@ -2438,10 +2490,27 @@ bool testFxExternalTextureMetadataAndUpload() {
     program.sourcePath = directory / "effect.fxdayo";
     dayo::core::EffectTexture texture;
     texture.name = "Input";
+    texture.format = "unknown";
+    texture.size.absolute = true;
+    texture.size.width = 999;
+    texture.size.height = 999;
     texture.filename = imagePath.filename().string();
     texture.mipmap = true;
     texture.view = "SRV";
     program.textures.push_back(std::move(texture));
+    dayo::core::EffectTexture derived;
+    derived.name = "Derived";
+    derived.view = "UAV";
+    derived.size.base = "Input";
+    program.textures.push_back(derived);
+    dayo::fx::FxDispatch dispatch;
+    dispatch.name = "read-image";
+    dispatch.kind = dayo::fx::FxOpKind::compute;
+    dispatch.executable = dayo::fx::FxComputeDispatch{"CS"};
+    dispatch.outputSize.base = "Input";
+    dispatch.numThreads = {1, 1, 1};
+    dispatch.resources.push_back({"Derived", true, dayo::fx::FxResourceRole::storage});
+    program.passes.push_back(dispatch);
     MockDevice device;
     dayo::graphics::FxResourceRuntime runtime;
     std::string runtimeError;
@@ -2449,10 +2518,31 @@ bool testFxExternalTextureMetadataAndUpload() {
                     "FX external texture initializes from a relative filename");
     ok &= check(runtimeError.empty() && runtime.extent("Input").has_value() && runtime.extent("Input")->width == 2 &&
                     runtime.extent("Input")->height == 1,
-                "FX external texture uses decoded dimensions when size is omitted");
+                "FX external texture ignores the declared size and unknown format like Dayo");
     ok &= check(!device.textureDescs_.empty() && device.textureDescs_.front().mipLevels == 2 &&
                     device.uploadedTextureBytes_ == 8 && device.generatedMipmaps_ == 1,
                 "FX external texture uploads base mip and generates remaining mips");
+    const auto plan = dayo::fx::FxCompiler{}.plan(program, testContext(), &runtime);
+    ok &= check(runtime.extent("Derived").has_value() && runtime.extent("Derived")->width == 2 &&
+                    plan.resolved[0].outputExtent.width == 2 && plan.resolved[0].outputExtent.height == 1 &&
+                    plan.resolved[0].dispatchGroups.width == 2 && plan.resolved[0].dispatchGroups.height == 1,
+                "dependent allocations and dispatches use the uploaded image extent");
+    program.passes[0].outputSize = {};
+    const auto implicitPlan = dayo::fx::FxCompiler{}.plan(program, testContext(), &runtime);
+    ok &= check(implicitPlan.resolved[0].outputExtent.width == 2,
+                "implicit UAV output size also uses the physical extent");
+    program.hlsl = "[numthreads(1,1,1)] void CS(uint3 id : SV_DispatchThreadID) { Derived[id.xy] = Input[id.xy]; }";
+    dayo::fx::FxShaderCompiler compiler;
+    if (compiler.available()) {
+        dayo::graphics::NativeFxRuntime native;
+        ok &= check(native.initializeForFrame(device, program, compiler, testContext(), {}, &runtimeError),
+                    "native FX pipelines accept unknown external formats after RGBA8 decoding");
+        if (native.ready()) {
+            const auto frame = native.prepareFrame(testContext());
+            ok &= check(frame.plan.resolved[0].outputExtent.width == 2,
+                        "native frame planning uses physical image dimensions");
+        }
+    }
     runtime.reset();
 
     const auto volumePath = directory / "volume.dds";
@@ -2489,6 +2579,8 @@ bool testFxExternalTextureMetadataAndUpload() {
     volumeProgram.sourcePath = directory / "volume.fxdayo";
     dayo::core::EffectTexture volumeTexture;
     volumeTexture.name = "SmokeVolume";
+    volumeTexture.format = "R32G32B32A32_FLOAT";
+    volumeTexture.size.base = "IgnoredMissingResource";
     volumeTexture.filename = volumePath.filename().string();
     volumeTexture.mipmap = true;
     volumeTexture.view = "SRV";
@@ -2501,7 +2593,7 @@ bool testFxExternalTextureMetadataAndUpload() {
     ok &= check(runtimeError.empty() && volumeRuntime.extent("SmokeVolume").has_value() &&
                     volumeRuntime.extent("SmokeVolume")->width == 2 &&
                     volumeRuntime.extent("SmokeVolume")->height == 1 && volumeRuntime.extent("SmokeVolume")->depth == 2,
-                "external FX volume uses the DDS extent when no explicit size is declared");
+                "external FX volume ignores declared size and format and uses the decoded DDS extent");
     ok &= check(device.textureDescs_.back().dimension == dayo::graphics::TextureDimension::d3 &&
                     device.textureDescs_.back().mipLevels == 2 && device.textureDescs_.back().extent.depth == 2 &&
                     device.textureUploads_ == uploadsBeforeVolume + 2 &&
@@ -3215,6 +3307,7 @@ int main() {
     ok &= testRayTracingPayloadIsLossless();
     ok &= testFxResourceDeclarationsAreLossless();
     ok &= testFxResourceRuntimeMaterializesDeclarations();
+    ok &= testResourceSizeDependencyGraph();
     ok &= testDepthTextureUsageIncludesSampling();
     ok &= testFxExternalTextureMetadataAndUpload();
     ok &= testNativeFxRuntimeRefreshesFrameResources();

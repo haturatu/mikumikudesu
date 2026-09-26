@@ -55,6 +55,10 @@ class DayoSceneHostProvider final : public FxExternalResourceProvider {
 // NativeFxRuntime and only adds provider resolution and pass lifecycle hooks.
 class DayoFxRuntime {
   public:
+    void setSharedResourceResolver(FxSharedResourceResolver resolver) {
+        runtime_.setSharedResourceResolver(std::move(resolver));
+    }
+
     DayoFxRuntime() = default;
     ~DayoFxRuntime() = default;
 

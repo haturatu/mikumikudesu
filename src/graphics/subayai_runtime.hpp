@@ -43,6 +43,10 @@ struct SubayaiFrame {
 // Vulkan command list.
 class SubayaiRuntime {
   public:
+    void setSharedResourceResolver(FxSharedResourceResolver resolver) {
+        dayoFx_.setSharedResourceResolver(std::move(resolver));
+    }
+
     bool initialize(Device& device, fx::FxProgram program, std::string* error = nullptr);
     void reset() noexcept;
 

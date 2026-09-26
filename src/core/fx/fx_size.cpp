@@ -10,7 +10,8 @@
 namespace dayo::core::fx {
 namespace {
 
-[[nodiscard]] std::int64_t toRoundedInt(double scaled, FxSizeExpr::Rounding rounding, std::string_view axis) {
+[[nodiscard]] std::int64_t toRoundedInt(double scaled, FxSizeExpr::Rounding rounding, std::string_view axis,
+                                        bool minimumOne) {
     if (!std::isfinite(scaled))
         throw std::overflow_error("fx size is not finite: " + std::string(axis));
     // DoS guard: reject magnitudes that can never fit before llround().
@@ -32,6 +33,8 @@ namespace {
         rounded = static_cast<long long>(std::ceil(scaled));
         break;
     }
+    if (rounded == 0 && scaled >= 0 && minimumOne)
+        rounded = 1;
     if (rounded <= 0)
         throw std::runtime_error("fx size must be positive: " + std::string(axis));
     if (rounded > static_cast<long long>(std::numeric_limits<std::uint32_t>::max()))
@@ -42,7 +45,7 @@ namespace {
 [[nodiscard]] std::int64_t resolveAxis(std::string_view exprText, std::int64_t inherited, float ratio,
                                        FxSizeExpr::Rounding rounding, std::string_view axis,
                                        const FxEvalContext& context, const FxResourceTable& table,
-                                       FxCompatibilityProfile profile, bool allowPowQuirk) {
+                                       FxCompatibilityProfile profile, bool allowPowQuirk, bool minimumOne) {
     double raw = 0.0;
     bool hasValue = false;
     if (!exprText.empty()) {
@@ -63,10 +66,10 @@ namespace {
     }
     if (!hasValue)
         throw std::runtime_error("fx size is missing value: " + std::string(axis));
-    if (!std::isfinite(ratio) || ratio <= 0.0F)
+    if (!std::isfinite(ratio) || (minimumOne ? ratio < 0.0F : ratio <= 0.0F))
         throw std::runtime_error("fx size ratio must be positive finite: " + std::string(axis));
     const double scaled = raw * static_cast<double>(ratio);
-    return toRoundedInt(scaled, rounding, axis);
+    return toRoundedInt(scaled, rounding, axis, minimumOne);
 }
 
 } // namespace
@@ -154,15 +157,16 @@ FxExtent FxSizeResolver::resolve(const FxSizeExpr& expr, const FxEvalContext& co
     // 3-6. x/y/z expr -> conv -> ratio -> rounding (per axis)
     FxExtent out;
     out.dimension = dimension;
-    const std::int64_t x =
-        resolveAxis(expr.xExpr, baseX, expr.widthRatio, expr.rounding, "x", context, table, profile, allowPowQuirk);
+    const std::int64_t x = resolveAxis(expr.xExpr, baseX, expr.widthRatio, expr.rounding, "x", context, table, profile,
+                                       allowPowQuirk, expr.minimumOne);
     std::int64_t y = 1;
     std::int64_t z = 1;
     if (dimension >= 2)
-        y = resolveAxis(expr.yExpr, baseY, expr.heightRatio, expr.rounding, "y", context, table, profile,
-                        allowPowQuirk);
+        y = resolveAxis(expr.yExpr, baseY, expr.heightRatio, expr.rounding, "y", context, table, profile, allowPowQuirk,
+                        expr.minimumOne);
     if (dimension >= 3)
-        z = resolveAxis(expr.zExpr, baseZ, expr.depthRatio, expr.rounding, "z", context, table, profile, allowPowQuirk);
+        z = resolveAxis(expr.zExpr, baseZ, expr.depthRatio, expr.rounding, "z", context, table, profile, allowPowQuirk,
+                        expr.minimumOne);
 
     // 7. overflow validation
     if (dimension == 1) {
