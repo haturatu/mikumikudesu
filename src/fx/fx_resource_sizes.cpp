@@ -150,16 +150,8 @@ std::optional<core::fx::FxExtent> FxResourceSizeTable::find(std::string_view nam
         const auto& source = node->second;
         if (!extent && !source.filename.empty() && !source.sharedRef) {
             const auto path = directory_ / source.filename;
-            auto extension = path.extension().string();
-            std::ranges::transform(extension, extension.begin(),
-                                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (extension == ".dds") {
-                const auto image = core::inspectDdsImage(path);
-                extent = core::fx::FxExtent{image.width, image.height, image.depth, source.dimension};
-            } else {
-                const auto image = core::loadImageRgba8(path);
-                extent = core::fx::FxExtent{image.width, image.height, 1, source.dimension};
-            }
+            const auto image = core::inspectImageMetadata(path);
+            extent = core::fx::FxExtent{image.width, image.height, image.depth, source.dimension};
         }
         if (!extent)
             extent = resolveEffectSize(source.size, source.dimension, source.screenDefault, context_, *this);
