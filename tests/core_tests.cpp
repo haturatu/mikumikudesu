@@ -124,6 +124,10 @@ int main() {
             output.write(reinterpret_cast<const char*>(ddsHeader.data()),
                          static_cast<std::streamsize>(ddsHeader.size()));
         }
+        const auto ddsMetadata = dayo::core::inspectImageMetadata(ddsPath);
+        ok &= check(ddsMetadata.width == 11'000 && ddsMetadata.height == 11'000 &&
+                        ddsMetadata.dimension == dayo::core::DdsDimension::twoD,
+                    "DDS extent inspection reads dimensions without decoding an absent payload");
         bool rejectedDdsBudget = false;
         try {
             static_cast<void>(dayo::core::loadImageRgba8(ddsPath));
@@ -250,6 +254,10 @@ int main() {
             putBe32(output, 0);
             output.write("IDAT", 4);
         }
+        const auto originalPngTime = std::filesystem::last_write_time(pngPath);
+        const auto pngMetadata = dayo::core::inspectImageMetadata(pngPath);
+        ok &= check(pngMetadata.width == 9'000 && pngMetadata.height == 9'000,
+                    "raster metadata inspection reads dimensions without decoding image pixels");
         bool rejectedStbiBudget = false;
         try {
             static_cast<void>(dayo::core::loadImageRgba8(pngPath));
@@ -257,6 +265,26 @@ int main() {
             rejectedStbiBudget = true;
         }
         ok &= check(rejectedStbiBudget, "stb_image rejects decoded allocation over budget before decode");
+        {
+            std::ofstream output(pngPath, std::ios::binary | std::ios::trunc);
+            output.write("\x89PNG\r\n\x1a\n", 8);
+            putBe32(output, 13);
+            output.write("IHDR", 4);
+            putBe32(output, 2'000);
+            putBe32(output, 9'000);
+            output.put('\x08');
+            output.put('\x06');
+            output.put('\x00');
+            output.put('\x00');
+            output.put('\x00');
+            putBe32(output, 0);
+            putBe32(output, 0);
+            output.write("IDAT", 4);
+        }
+        std::filesystem::last_write_time(pngPath, originalPngTime + std::chrono::seconds(2));
+        const auto changedPngMetadata = dayo::core::inspectImageMetadata(pngPath);
+        ok &= check(changedPngMetadata.width == 2'000 && changedPngMetadata.height == 9'000,
+                    "image metadata cache invalidates when the source modification time changes");
         std::filesystem::remove(pngPath);
     }
     {

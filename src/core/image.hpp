@@ -14,6 +14,15 @@ struct ImageRgba8 {
 
 enum class DdsDimension : std::uint8_t { twoD, threeD, cube };
 
+struct ImageMetadata {
+    DdsDimension dimension{DdsDimension::twoD};
+    std::uint32_t width{};
+    std::uint32_t height{};
+    std::uint32_t depth{1};
+    std::uint32_t arrayLayers{1};
+    std::uint32_t mipLevels{1};
+};
+
 struct ImageRgba8Subresource {
     std::uint32_t width{};
     std::uint32_t height{};
@@ -37,5 +46,7 @@ struct DdsImageRgba8 {
 
 [[nodiscard]] ImageRgba8 loadImageRgba8(const std::filesystem::path& path);
 [[nodiscard]] DdsImageRgba8 loadDdsImageRgba8(const std::filesystem::path& path);
+[[nodiscard]] ImageMetadata inspectDdsImage(const std::filesystem::path& path);
+[[nodiscard]] ImageMetadata inspectImageMetadata(const std::filesystem::path& path);
 
 } // namespace dayo::core
