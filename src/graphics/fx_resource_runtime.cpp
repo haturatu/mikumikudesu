@@ -113,7 +113,7 @@ struct FxTextureUsageSummary {
 }
 
 [[nodiscard]] ResourceUsage bufferUsage(const fx::FxProgram& program, std::string_view name, std::string_view view) {
-    ResourceUsage usage = ResourceUsage::transferDst;
+    ResourceUsage usage = ResourceUsage::transferDst | ResourceUsage::transferSrc;
     // StructuredBuffer and RWStructuredBuffer both use storage-buffer
     // descriptors; readonly affects shader access, not the descriptor class.
     usage |= ResourceUsage::storageReadWrite;

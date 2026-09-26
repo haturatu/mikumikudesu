@@ -4184,8 +4184,51 @@ void Application::buildEditorUi() {
                 }
                 ImGui::PopID();
             }
+            if (const auto& result = nativeRenderer_.debugResult(); result.has_value()) {
+                ImGui::SeparatorText(result->label.c_str());
+                ImGui::TextWrapped("%s", result->message.c_str());
+                const auto& image = result->preview;
+                if (image.width != 0 && image.height != 0) {
+                    const auto columns = std::min(image.width, 128U);
+                    const auto rows = std::min(image.height, 128U);
+                    const float cell =
+                        std::min(3.0F, std::max(1.0F, ImGui::GetContentRegionAvail().x / static_cast<float>(columns)));
+                    const auto origin = ImGui::GetCursorScreenPos();
+                    auto* draw = ImGui::GetWindowDrawList();
+                    for (std::uint32_t y = 0; y < rows; ++y) {
+                        for (std::uint32_t x = 0; x < columns; ++x) {
+                            const auto pixel = (static_cast<std::size_t>(y) * image.height / rows * image.width +
+                                                static_cast<std::size_t>(x) * image.width / columns) *
+                                               4U;
+                            draw->AddRectFilled(
+                                ImVec2(origin.x + static_cast<float>(x) * cell,
+                                       origin.y + static_cast<float>(y) * cell),
+                                ImVec2(origin.x + static_cast<float>(x + 1) * cell,
+                                       origin.y + static_cast<float>(y + 1) * cell),
+                                IM_COL32(image.pixels[pixel], image.pixels[pixel + 1], image.pixels[pixel + 2], 255));
+                        }
+                    }
+                    ImGui::Dummy(ImVec2(static_cast<float>(columns) * cell, static_cast<float>(rows) * cell));
+                    ImGui::Text("Readback: %u x %u", image.width, image.height);
+                }
+                for (std::size_t start = 0; start < std::min<std::size_t>(result->buffer.size(), 256); start += 16) {
+                    std::string line;
+                    for (std::size_t i = start; i < std::min(start + 16, result->buffer.size()); ++i) {
+                        constexpr char hex[] = "0123456789abcdef";
+                        line += hex[result->buffer[i] >> 4U];
+                        line += hex[result->buffer[i] & 15U];
+                        line += ' ';
+                    }
+                    ImGui::TextUnformatted(line.c_str());
+                }
+            }
             const auto liveResources = nativeRenderer_.liveResources();
             ImGui::SeparatorText("Live FX resource allocations");
+            ImGui::InputInt("Mip", &fxDebugMip_);
+            ImGui::InputInt("Depth slice", &fxDebugSlice_);
+            ImGui::Combo("Display", &fxDebugMode_, "RGBA on checker\0RGB\0R hue\0G hue\0B hue\0A hue\0");
+            ImGui::DragFloat("Display scale", &fxDebugScale_, 0.05F);
+            ImGui::InputText("Dump path (.bin / .png / .exr)", fxDebugDumpPath_.data(), fxDebugDumpPath_.size());
             if (liveResources.empty()) {
                 ImGui::TextDisabled("No native FX resource allocations are active.");
             } else {
@@ -4206,6 +4249,27 @@ void Application::buildEditorUi() {
                     } else if (resource.kind == "Texture") {
                         ImGui::TextDisabled("Extent: %u x %u x %u  Dimension: %u", resource.extent.width,
                                             resource.extent.height, resource.extent.depth, resource.dimension);
+                    }
+                    if (resource.kind != "Sampler") {
+                        const bool preview = ImGui::Button("Read / preview");
+                        ImGui::SameLine();
+                        ImGui::BeginDisabled(fxDebugDumpPath_[0] == '\0');
+                        const bool dump = ImGui::Button("Save dump");
+                        ImGui::EndDisabled();
+                        if (preview || dump) {
+                            const auto hlsl = findDayoHlslDirectory(scene_.effects(), nativeRenderer_.program());
+                            nativeRenderer_.requestDebugReadback(
+                                {.owner = resource.owner,
+                                 .name = resource.name,
+                                 .generation = resource.generation,
+                                 .mip = static_cast<std::uint32_t>(std::max(0, fxDebugMip_)),
+                                 .slice = static_cast<std::uint32_t>(std::max(0, fxDebugSlice_)),
+                                 .mode = fxDebugMode_,
+                                 .scale = fxDebugScale_,
+                                 .hlslDirectory = hlsl.value_or(std::filesystem::path{}),
+                                 .dumpPath =
+                                     dump ? std::filesystem::path(fxDebugDumpPath_.data()) : std::filesystem::path{}});
+                        }
                     }
                     ImGui::PopID();
                 }

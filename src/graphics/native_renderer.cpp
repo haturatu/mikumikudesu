@@ -108,7 +108,8 @@ std::vector<NativeFxResourceSnapshot> snapshotFxResources(std::string_view effec
                           .dimension = resource.dimension,
                           .allocationBytes = resource.allocationBytes,
                           .elementSize = resource.elementSize,
-                          .elementType = resource.elementType});
+                          .elementType = resource.elementType,
+                          .generation = fxDebugGeneration(resource)});
     }
     return result;
 }
@@ -340,6 +341,7 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
         if (!entry) {
             entry = std::make_unique<GenericEffectRuntime>();
             entry->device = device_;
+            entry->owner = "effect:" + std::to_string(effects[index].id);
             entry->program = fx::FxCompiler{}.compile(effects[index].graph);
             std::string error;
             if (!entry->globalVariables.initialize(*device_, entry->program.globalVarSize, &error))
@@ -616,6 +618,45 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
     std::span<const core::MaterialParameterBlock> materials, std::span<const AliasEntry> lightSampling,
     const EnvironmentGpuResult& environment, const FxExecutionResources& resources, NativeFrameExecution execution,
     std::span<const FxMaterialSceneModel> materialModels) {
+    auto output = recordFrameImpl(commands, context, dirty, materials, lightSampling, environment, resources, execution,
+                                  materialModels);
+    processDebugReadback(commands);
+    return output;
+}
+
+void NativeRendererCoordinator::processDebugReadback(CommandList& commands) {
+    if (!debugRequest_)
+        return;
+    auto request = std::move(*debugRequest_);
+    debugRequest_.reset();
+    try {
+        const FxResourceStore* store = nullptr;
+        if (request.owner == "renderer") {
+            if (status_.active == RendererKind::subayai)
+                store = subayai_.liveResourceStore();
+            else if (status_.active == RendererKind::bdpt)
+                store = bdpt_.liveResourceStore();
+        } else {
+            for (const auto* runtimes : {&deformRuntimes_, &postprocessRuntimes_})
+                for (const auto& entry : *runtimes)
+                    if (entry && entry->owner == request.owner && entry->runtime.ready())
+                        store = &entry->runtime.nativeRuntime().resources().store();
+        }
+        const auto* resource = store ? store->find(request.name) : nullptr;
+        if (device_ == nullptr || resource == nullptr)
+            throw std::runtime_error("debug resource owner was removed or reloaded");
+        debugResult_ = readFxDebugResource(*device_, commands, *resource, request);
+    } catch (const std::exception& error) {
+        debugResult_ = FxDebugResult{
+            .label = request.owner + " / " + request.name, .message = error.what(), .preview = {}, .buffer = {}};
+    }
+}
+
+std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrameImpl(
+    CommandList& commands, const fx::FxFrameContext& context, core::DirtyFlag dirty,
+    std::span<const core::MaterialParameterBlock> materials, std::span<const AliasEntry> lightSampling,
+    const EnvironmentGpuResult& environment, const FxExecutionResources& resources, NativeFrameExecution execution,
+    std::span<const FxMaterialSceneModel> materialModels) {
     if (!status_.nativeReady)
         return std::nullopt;
     if (execution.sampleCount == 0 || execution.sampleIndex >= execution.sampleCount)
@@ -688,6 +729,8 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
 }
 
 void NativeRendererCoordinator::reset() noexcept {
+    debugRequest_.reset();
+    debugResult_.reset();
     deformRuntimes_.clear();
     postprocessRuntimes_.clear();
     deformerResources_.clear();
@@ -723,6 +766,8 @@ std::vector<NativeFxResourceSnapshot> NativeRendererCoordinator::liveResources()
                 continue;
             const auto label = program->sourcePath.empty() ? program->label : program->sourcePath.filename().string();
             auto resources = snapshotFxResources(label, entry->runtime.nativeRuntime().resources().store());
+            for (auto& resource : resources)
+                resource.owner = entry->owner;
             result.insert(result.end(), std::make_move_iterator(resources.begin()),
                           std::make_move_iterator(resources.end()));
         }
@@ -740,6 +785,8 @@ std::vector<NativeFxResourceSnapshot> NativeRendererCoordinator::liveResources()
         const auto label =
             activeProgram->sourcePath.empty() ? activeProgram->label : activeProgram->sourcePath.filename().string();
         auto resources = snapshotFxResources(label, *store);
+        for (auto& resource : resources)
+            resource.owner = "renderer";
         result.insert(result.end(), std::make_move_iterator(resources.begin()),
                       std::make_move_iterator(resources.end()));
     }
