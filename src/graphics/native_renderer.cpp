@@ -362,11 +362,15 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
         }
         FxMaterialRuntimeInitializer initializeMaterial;
         if (entry->program.materialSchema.has_value()) {
-            initializeMaterial = [this, &entry, &effectModels, &effectContext](const FxResourceStore& store,
-                                                                               std::string* error) {
+            const auto effectIdentity =
+                std::string("effect:") + std::to_string(effects[index].id) + ":" +
+                (effects[index].source.empty() ? entry->program.label
+                                               : effects[index].source.lexically_normal().generic_string());
+            initializeMaterial = [this, &entry, &effectModels, &effectContext,
+                                  effectIdentity](const FxResourceStore& store, std::string* error) {
                 entry->materialScene.invalidateLinks();
                 if (!entry->materialScene.sync(*device_, *entry->program.materialSchema, effectModels, effectContext,
-                                               error, materialTextureResolver(&store, false)))
+                                               error, materialTextureResolver(&store, false, effectIdentity)))
                     return static_cast<const FxMaterialGpuRuntime*>(nullptr);
                 return &entry->materialScene.gpuRuntime();
             };
@@ -374,7 +378,7 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
                 std::string error;
                 const auto& store = entry->runtime.nativeRuntime().resources().store();
                 if (!entry->materialScene.sync(*device_, *entry->program.materialSchema, effectModels, effectContext,
-                                               &error, materialTextureResolver(&store, false)))
+                                               &error, materialTextureResolver(&store, false, effectIdentity)))
                     throw std::runtime_error("generic Dayo FX MatDesc synchronization: " + error);
                 if (entry->materialScene.descriptorLayoutChanged())
                     entry->runtime.reset();
@@ -530,9 +534,11 @@ FxSharedResourceResolver NativeRendererCoordinator::sharedResourceResolver() con
 }
 
 FxMaterialTextureResolver NativeRendererCoordinator::materialTextureResolver(const FxResourceStore* localStore,
-                                                                             bool rendererLocal) const {
-    return [this, localStore, rendererLocal](core::ModelId owner, const core::fx::MaterialTextureSchema& schema,
-                                             std::string_view assigned) -> std::optional<FxMaterialExternalTexture> {
+                                                                             bool rendererLocal,
+                                                                             std::string_view effectIdentity) const {
+    return [this, localStore, rendererLocal, effectIdentity = std::string(effectIdentity)](
+               core::ModelId owner, const core::fx::MaterialTextureSchema& schema,
+               std::string_view assigned) -> std::optional<FxMaterialExternalTexture> {
         if (core::fx::isScreenBmpToken(assigned)) {
             if (schema.dimension != core::fx::MaterialTextureDimension::twoD || !hostResourceProvider_.has_value())
                 return std::nullopt;
@@ -564,10 +570,14 @@ FxMaterialTextureResolver NativeRendererCoordinator::materialTextureResolver(con
             const auto expectedDimension = schema.dimension == core::fx::MaterialTextureDimension::twoD ? 2U : 3U;
             if (resource != nullptr && resource->kind == FxResourceStore::Kind::texture && resource->texture.valid() &&
                 resource->dimension == expectedDimension) {
-                const auto* rendererProgram = program();
                 auto identity = std::string(rendererLocal ? "renderer-local:" : "effect-local:");
-                if (rendererProgram != nullptr)
-                    identity += rendererProgram->sourcePath.lexically_normal().generic_string();
+                if (rendererLocal) {
+                    const auto* rendererProgram = program();
+                    if (rendererProgram != nullptr)
+                        identity += rendererProgram->sourcePath.lexically_normal().generic_string();
+                } else {
+                    identity += effectIdentity;
+                }
                 identity += ":" + resource->name + ":" + std::to_string(resource->texture.index) + ":" +
                             std::to_string(resource->texture.generation);
                 return FxMaterialExternalTexture{.identity = std::move(identity),

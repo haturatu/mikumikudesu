@@ -1,5 +1,6 @@
 #include "core/fx/fx_controller_resolver.hpp"
 #include "core/fx/fx_material.hpp"
+#include "core/image.hpp"
 #include "fx/fx_catalog.hpp"
 #include "fx/fx_compiler.hpp"
 #include "fx/fx_condition_runtime.hpp"
@@ -14,6 +15,7 @@
 #include "fx/fx_watcher.hpp"
 #include "graphics/dayo_fx_runtime.hpp"
 #include "graphics/dayo_host_resources.hpp"
+#include "graphics/fx_debug_readback.hpp"
 #include "graphics/fx_executor.hpp"
 #include "graphics/fx_material_gpu_runtime.hpp"
 #include "graphics/fx_material_scene_runtime.hpp"
@@ -161,6 +163,10 @@ struct MockDevice final : public dayo::graphics::Device {
         lastBufferReadbackSize_ = size;
         return bufferReadbackBytes_;
     }
+    std::vector<std::uint8_t> readbackTextureEx(dayo::graphics::handles::TextureHandle, std::uint32_t,
+                                                std::uint32_t) override {
+        return textureReadbackBytes_;
+    }
     void clearTextureEx(dayo::graphics::handles::TextureHandle, const std::array<float, 4>&) override {}
     void clearBufferEx(dayo::graphics::handles::BufferHandle, std::uint32_t) override {
         ++bufferClears_;
@@ -267,6 +273,7 @@ struct MockDevice final : public dayo::graphics::Device {
     std::size_t lastBufferReadbackOffset_{};
     std::size_t lastBufferReadbackSize_{};
     std::vector<std::byte> bufferReadbackBytes_;
+    std::vector<std::uint8_t> textureReadbackBytes_;
     std::size_t bufferClears_{};
     std::size_t generatedMipmaps_{};
     std::vector<BufferUpload> bufferUploads_;
@@ -2294,6 +2301,37 @@ bool testFxResourceDeclarationsAreLossless() {
                 "compiled FX keeps sampler declarations");
     ok &= check(program.controllers.size() == 1 && program.meshCloneCount == 4,
                 "compiled FX keeps controller and cloning metadata");
+
+    struct TextureTypeCase {
+        std::string_view format;
+        std::string_view elementType;
+    };
+    constexpr auto textureTypes = std::to_array<TextureTypeCase>({
+        {"R8_UNORM", "float"},
+        {"R8G8_UNORM", "float2"},
+        {"R8G8B8A8_UNORM", "float4"},
+        {"R32G32_FLOAT", "float2"},
+        {"R8_UINT", "uint"},
+        {"R8G8_SINT", "int2"},
+        {"R8G8B8A8_UINT", "uint4"},
+        {"R16G16B16A16_SINT", "int4"},
+    });
+    for (const auto& textureType : textureTypes) {
+        dayo::fx::FxProgram typedProgram;
+        dayo::core::EffectTexture typedTexture;
+        typedTexture.name = "TypedTexture";
+        typedTexture.format = textureType.format;
+        typedTexture.type = textureType.elementType;
+        typedProgram.textures.push_back(std::move(typedTexture));
+        dayo::fx::FxDispatch typedPass;
+        typedPass.name = "typed-texture-pass";
+        typedPass.kind = dayo::fx::FxOpKind::compute;
+        typedPass.resources.push_back({"TypedTexture", false, dayo::fx::FxResourceRole::sampled});
+        const auto generated = dayo::fx::makeNativeFxShaderSource(typedProgram, typedPass, 0);
+        const auto declaration = "Texture2D<" + std::string(textureType.elementType) + "> TypedTexture";
+        ok &= check(generated.find(declaration) != std::string::npos,
+                    "DXGI component format and explicit HLSL element type stay aligned");
+    }
     return ok;
 }
 
@@ -2465,6 +2503,156 @@ bool testDepthTextureUsageIncludesSampling() {
     const bool valid = (usage & required) == required;
     runtime.reset();
     return check(valid, "depth texture usage is unioned across attachment writes and sampled reads");
+}
+
+bool testSharedResourceUsageCoversConsumerReads() {
+    dayo::fx::FxProgram sourceProgram;
+    dayo::core::EffectTexture texture2D;
+    texture2D.name = "Shared2D";
+    texture2D.format = "R8G8B8A8_UNORM";
+    texture2D.view = "UAV";
+    texture2D.shared = "source";
+    texture2D.size.absolute = true;
+    texture2D.size.width = 4;
+    texture2D.size.height = 4;
+    sourceProgram.textures.push_back(texture2D);
+    dayo::core::EffectTexture texture3D;
+    texture3D.name = "Shared3D";
+    texture3D.format = "R32_FLOAT";
+    texture3D.view = "UAV";
+    texture3D.shared = "source";
+    texture3D.size.absolute = true;
+    texture3D.size.width = 4;
+    texture3D.size.height = 4;
+    texture3D.size.depth = 2;
+    sourceProgram.textures3D.push_back(texture3D);
+    dayo::core::EffectBuffer buffer;
+    buffer.name = "SharedBuffer";
+    buffer.type = "float4";
+    buffer.view = "UAV";
+    buffer.shared = "source";
+    buffer.elementSize = 16;
+    buffer.size.absolute = true;
+    buffer.size.width = 4;
+    sourceProgram.buffers.push_back(buffer);
+    dayo::fx::FxDispatch producerWrite;
+    producerWrite.name = "producer-write";
+    producerWrite.kind = dayo::fx::FxOpKind::compute;
+    producerWrite.resources = {
+        {"Shared2D", true, dayo::fx::FxResourceRole::storage},
+        {"Shared3D", true, dayo::fx::FxResourceRole::storage},
+        {"SharedBuffer", true, dayo::fx::FxResourceRole::storage},
+    };
+    sourceProgram.passes.push_back(producerWrite);
+
+    MockDevice device;
+    dayo::graphics::FxResourceRuntime sourceRuntime;
+    std::string error;
+    if (!sourceRuntime.initialize(device, sourceProgram, testContext(), &error))
+        return check(false, "shared producer allocates resources before consumers: " + error);
+
+    const auto resolveSource =
+        [&sourceRuntime](std::string_view name) -> std::optional<dayo::graphics::FxResourceStore::Resource> {
+        const auto* resource = sourceRuntime.store().find(name);
+        return resource == nullptr ? std::nullopt : std::optional{*resource};
+    };
+    dayo::fx::FxProgram consumerProgram;
+    auto consumer2D = texture2D;
+    consumer2D.view = "SRV";
+    consumer2D.shared = "ref";
+    auto consumer3D = texture3D;
+    consumer3D.view = "SRV";
+    consumer3D.shared = "ref";
+    consumerProgram.textures.push_back(consumer2D);
+    consumerProgram.textures3D.push_back(consumer3D);
+    dayo::fx::FxDispatch consumerRead;
+    consumerRead.name = "consumer-read";
+    consumerRead.kind = dayo::fx::FxOpKind::compute;
+    consumerRead.resources = {
+        {"Shared2D", false, dayo::fx::FxResourceRole::sampled},
+        {"Shared3D", false, dayo::fx::FxResourceRole::sampled},
+    };
+    consumerProgram.passes.push_back(consumerRead);
+    dayo::graphics::FxResourceRuntime textureConsumer;
+    textureConsumer.setSharedResourceResolver(resolveSource);
+    if (!textureConsumer.initialize(device, consumerProgram, testContext(), &error))
+        return check(false, "shared 2D/3D UAV sources accept consumer SRV reads: " + error);
+
+    dayo::fx::FxProgram bufferConsumerProgram;
+    auto bufferReference = buffer;
+    bufferReference.shared = "ref";
+    bufferConsumerProgram.buffers.push_back(bufferReference);
+    dayo::fx::FxDispatch rasterConsumer;
+    rasterConsumer.name = "buffer-as-geometry";
+    rasterConsumer.kind = dayo::fx::FxOpKind::raster;
+    dayo::fx::FxRasterDispatch raster;
+    raster.vertexBuffer = "SharedBuffer";
+    raster.indexBuffer = "SharedBuffer";
+    rasterConsumer.executable = std::move(raster);
+    rasterConsumer.resources = {{"SharedBuffer", false, dayo::fx::FxResourceRole::storage}};
+    bufferConsumerProgram.passes.push_back(std::move(rasterConsumer));
+    dayo::graphics::FxResourceRuntime bufferConsumer;
+    bufferConsumer.setSharedResourceResolver(resolveSource);
+    if (!bufferConsumer.initialize(device, bufferConsumerProgram, testContext(), &error))
+        return check(false, "shared buffer source accepts consumer vertex/index reads: " + error);
+
+    const auto* allocatedBuffer = sourceRuntime.store().find("SharedBuffer");
+    const auto bufferUsage = allocatedBuffer == nullptr ? 0U : dayo::graphics::toBits(allocatedBuffer->usage);
+    const auto expectedBufferUsage = dayo::graphics::toBits(dayo::graphics::ResourceUsage::storageReadWrite) |
+                                     dayo::graphics::toBits(dayo::graphics::ResourceUsage::vertexRead) |
+                                     dayo::graphics::toBits(dayo::graphics::ResourceUsage::indexRead);
+    const auto* allocated2D = sourceRuntime.store().find("Shared2D");
+    const auto textureUsage = allocated2D == nullptr ? 0U : dayo::graphics::toBits(allocated2D->usage);
+    const auto expectedTextureUsage = dayo::graphics::toBits(dayo::graphics::ResourceUsage::storageReadWrite) |
+                                      dayo::graphics::toBits(dayo::graphics::ResourceUsage::sampledRead);
+    return check((bufferUsage & expectedBufferUsage) == expectedBufferUsage &&
+                     (textureUsage & expectedTextureUsage) == expectedTextureUsage,
+                 "shared producer usage includes write, sampled, vertex, and index consumer roles");
+}
+
+bool testFxDebugFloatTextureCanDumpPng() {
+    namespace fs = std::filesystem;
+    constexpr std::string_view basename = "mikumikudesu-fx-debug-float-dump.png";
+    const auto output = fs::temp_directory_path() / basename;
+    const auto previewDirectory = fs::temp_directory_path() / "mikumikudesu-fx-debug-missing-preview";
+    std::error_code filesystemError;
+    fs::remove(output, filesystemError);
+
+    MockDevice device;
+    MockCommands commands;
+    const std::array<float, 4> rgba{1.0F, 0.25F, 0.0F, 1.0F};
+    device.textureReadbackBytes_.resize(sizeof(rgba));
+    std::memcpy(device.textureReadbackBytes_.data(), rgba.data(), sizeof(rgba));
+
+    dayo::graphics::FxResourceStore::Resource resource;
+    resource.name = "FloatTexture";
+    resource.kind = dayo::graphics::FxResourceStore::Kind::texture;
+    resource.texture = {71, 3};
+    resource.extent = {1, 1, 1};
+    resource.format = dayo::graphics::PixelFormat::rgba32Float;
+    resource.allocationBytes = sizeof(rgba);
+    dayo::graphics::FxDebugRequest request;
+    request.owner = "test";
+    request.name = resource.name;
+    request.generation = dayo::graphics::fxDebugGeneration(resource);
+    request.hlslDirectory = previewDirectory;
+    request.dumpPath = output;
+
+    try {
+        const auto result = dayo::graphics::readFxDebugResource(device, commands, resource, request);
+        const auto decoded = dayo::core::loadImageRgba8(output);
+        const bool pixelMatches = decoded.width == 1 && decoded.height == 1 && decoded.pixels.size() == 4 &&
+                                  decoded.pixels[0] == 255 && decoded.pixels[1] >= 136 && decoded.pixels[1] <= 138 &&
+                                  decoded.pixels[2] == 0 && decoded.pixels[3] == 255;
+        fs::remove(output, filesystemError);
+        fs::remove_all(previewDirectory, filesystemError);
+        return check(pixelMatches && result.message.find("Saved") != std::string::npos,
+                     "FX debug converts float32 texture readback into an sRGB PNG");
+    } catch (const std::exception& exception) {
+        fs::remove(output, filesystemError);
+        fs::remove_all(previewDirectory, filesystemError);
+        return check(false, std::string("FX debug float PNG dump succeeds: ") + exception.what());
+    }
 }
 
 bool testFxExternalTextureMetadataAndUpload() {
@@ -3309,6 +3497,8 @@ int main() {
     ok &= testFxResourceRuntimeMaterializesDeclarations();
     ok &= testResourceSizeDependencyGraph();
     ok &= testDepthTextureUsageIncludesSampling();
+    ok &= testSharedResourceUsageCoversConsumerReads();
+    ok &= testFxDebugFloatTextureCanDumpPng();
     ok &= testFxExternalTextureMetadataAndUpload();
     ok &= testNativeFxRuntimeRefreshesFrameResources();
     ok &= testNativeFxRuntimeBindsResourcesAndPipelines();

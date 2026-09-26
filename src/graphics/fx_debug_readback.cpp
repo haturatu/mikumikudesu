@@ -58,6 +58,10 @@ core::ImageData floatSlice(const FxResourceStore::Resource& resource, std::span<
     const bool signedInteger = format.ends_with("_SINT");
     const bool signedNormalized = format.ends_with("_SNORM");
     const bool normalized = signedNormalized || format.ends_with("_UNORM") || format.ends_with("_SRGB");
+    if (componentBytes == 0 || componentBytes > sizeof(std::uint32_t))
+        throw std::runtime_error("unsupported debug component size");
+    const auto bits = static_cast<unsigned>(componentBytes * 8U);
+    const auto signBit = std::uint64_t{1} << (bits - 1U);
     for (std::size_t index = 0; index < static_cast<std::size_t>(width) * height; ++index) {
         std::array<float, 4> value{0, 0, 0, 1};
         for (std::size_t channel = 0; channel < components; ++channel) {
@@ -71,17 +75,17 @@ core::ImageData floatSlice(const FxResourceStore::Resource& resource, std::span<
                 value[channel] = componentBytes == 2 ? core::halfToFloat(static_cast<std::uint16_t>(raw))
                                                      : std::bit_cast<float>(raw);
             else if (signedInteger || signedNormalized) {
-                const auto bits = static_cast<unsigned>(componentBytes * 8U);
-                const std::int64_t signedValue =
-                    (raw & (1U << (bits - 1U))) != 0 ? std::int64_t(raw) - (std::int64_t{1} << bits) : raw;
-                value[channel] = signedNormalized
-                                     ? std::max(-1.0F, static_cast<float>(signedValue) /
-                                                           static_cast<float>((std::uint64_t{1} << (bits - 1U)) - 1U))
-                                     : static_cast<float>(signedValue);
+                const std::int64_t signedValue = (static_cast<std::uint64_t>(raw) & signBit) != 0
+                                                     ? std::int64_t(raw) - (std::int64_t{1} << bits)
+                                                     : static_cast<std::int64_t>(raw);
+                value[channel] =
+                    signedNormalized
+                        ? std::max(-1.0F, static_cast<float>(signedValue) / static_cast<float>(signBit - 1U))
+                        : static_cast<float>(signedValue);
             } else
-                value[channel] = normalized ? static_cast<float>(raw) /
-                                                  static_cast<float>((std::uint64_t{1} << (componentBytes * 8U)) - 1U)
-                                            : static_cast<float>(raw);
+                value[channel] = normalized
+                                     ? static_cast<float>(raw) / static_cast<float>((std::uint64_t{1} << bits) - 1U)
+                                     : static_cast<float>(raw);
             if (resource.format == PixelFormat::rgba8Srgb && channel < 3)
                 value[channel] = value[channel] <= 0.04045F ? value[channel] / 12.92F
                                                             : std::pow((value[channel] + 0.055F) / 1.055F, 2.4F);
@@ -94,7 +98,7 @@ core::ImageData floatSlice(const FxResourceStore::Resource& resource, std::span<
 // Temporary GPU objects survive both command-list flushes. Destruction always
 // follows completion, including exceptions during readback or file output.
 struct DebugGpuObjects {
-    Device& device;
+    Device* device{};
     handles::TextureHandle source{}, fallback{}, output{};
     handles::BufferHandle constants{};
     handles::DescriptorSetLayoutHandle setLayout{};
@@ -104,7 +108,7 @@ struct DebugGpuObjects {
     handles::PipelineHandle pipeline{};
     ~DebugGpuObjects() {
         try {
-            device.waitIdle();
+            device->waitIdle();
         } catch (...) {
         }
         const auto release = [](auto operation) {
@@ -114,20 +118,20 @@ struct DebugGpuObjects {
             }
         };
         if (set.valid())
-            release([&] { device.destroyDescriptorSetEx(set); });
+            release([&] { device->destroyDescriptorSetEx(set); });
         if (pipeline.valid())
-            release([&] { device.destroyPipelineEx(pipeline); });
+            release([&] { device->destroyPipelineEx(pipeline); });
         if (shader.valid())
-            release([&] { device.destroyShaderEx(shader); });
+            release([&] { device->destroyShaderEx(shader); });
         if (layout.valid())
-            release([&] { device.destroyPipelineLayoutEx(layout); });
+            release([&] { device->destroyPipelineLayoutEx(layout); });
         if (setLayout.valid())
-            release([&] { device.destroyDescriptorSetLayoutEx(setLayout); });
+            release([&] { device->destroyDescriptorSetLayoutEx(setLayout); });
         if (constants.valid())
-            release([&] { device.destroyBufferEx(constants); });
+            release([&] { device->destroyBufferEx(constants); });
         for (const auto texture : {source, fallback, output})
             if (texture.valid())
-                release([&] { device.destroyTextureEx(texture); });
+                release([&] { device->destroyTextureEx(texture); });
     }
 };
 
@@ -167,7 +171,7 @@ core::ImageRgba8 debugPreview(Device& device, CommandList& commands, const core:
                                         .entryPoint = "NativeDebug",
                                         .stage = fx::FxShaderStage::compute,
                                         .includeDirectories = {path.parent_path(), request.hlslDirectory}});
-    DebugGpuObjects gpu{.device = device};
+    DebugGpuObjects gpu{.device = &device};
     TextureResourceDesc desc{.dimension = TextureDimension::d2,
                              .extent = {input.width, input.height, 1},
                              .format = PixelFormat::rgba32Float,
@@ -269,10 +273,12 @@ FxDebugResult readFxDebugResource(Device& device, CommandList& commands, const F
                 writeBytes(metadataPath, {reinterpret_cast<const std::uint8_t*>(metadata.data()), metadata.size()});
             } else if (extension == ".exr")
                 core::writeFrame(std::filesystem::absolute(request.dumpPath), slice);
-            else if (extension == ".png")
-                core::writeFrame(std::filesystem::absolute(request.dumpPath), core::halfToRgba8(slice),
+            else if (extension == ".png") {
+                auto ldr = core::convertImage(slice, core::PixelType::unorm8, core::ColorSpace::srgb);
+                core::writeFrame(std::filesystem::absolute(request.dumpPath),
+                                 core::ImageRgba8{ldr.width, ldr.height, std::move(ldr.bytes)},
                                  core::OutputFormat::png);
-            else
+            } else
                 throw std::invalid_argument("texture debug dump requires .bin, .png or .exr");
         }
         try {
