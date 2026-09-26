@@ -1594,6 +1594,10 @@ void VulkanDevice::destroyNativeOutputPipeline() noexcept {
 }
 
 void VulkanDevice::createNativeDeformPipeline() {
+    if (std::string_view(DAYO_NATIVE_DEFORM_SPV).empty()) {
+        log::warn("Native Dayo skinning unavailable: fetch MikuMikuDayo and configure with DXC before building");
+        return;
+    }
     const auto code = readBinary(DAYO_NATIVE_DEFORM_SPV);
     try {
         nativeDeformDescriptorLayout_ = createDescriptorSetLayoutEx(graphics::nativeDeformDescriptorLayout());

@@ -47,3 +47,5 @@ UVは既存入力経路を維持する。追加UVはNativeDeformedVertexの出�
 
 DXCで上流includeを含むSPIR-V生成とLinux `mikumikudesu` ビルド成功。
 今回テスト・数値readback・Windows比較は行っていない。前提PR: #247。
+
+上流headers/DXCなしのoffline/system-onlyビルドではnative skinningを無効化し、Previewを使用可能にする。native利用には上流取得後の再configure/buildが必要。

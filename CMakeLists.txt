@@ -367,8 +367,21 @@ dayo_compile_hlsl(DAYO_NATIVE_OUTPUT_FRAGMENT_SPV SOURCE shaders/native_output.h
 # Recompile the adapter when the pinned upstream algorithms or math change.
 set(DAYO_SKINNING_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/MikuMikuDayo/hlsl")
 file(GLOB DAYO_SKINNING_HEADERS CONFIGURE_DEPENDS "${DAYO_SKINNING_INCLUDE_DIR}/*.hlsli")
-dayo_compile_hlsl(DAYO_NATIVE_DEFORM_SPV SOURCE shaders/native_deform.hlsl ENTRY NativeDeform PROFILE cs_6_6 STAGE comp
-  INCLUDES "${DAYO_SKINNING_INCLUDE_DIR}" DEPENDS ${DAYO_SKINNING_HEADERS})
+if(EXISTS "${DAYO_SKINNING_INCLUDE_DIR}/skinning.hlsli" AND DAYO_DXC)
+  dayo_compile_hlsl(
+    DAYO_NATIVE_DEFORM_SPV
+    SOURCE shaders/native_deform.hlsl
+    ENTRY NativeDeform
+    PROFILE cs_6_6
+    STAGE comp
+    INCLUDES "${DAYO_SKINNING_INCLUDE_DIR}"
+    DEPENDS ${DAYO_SKINNING_HEADERS}
+  )
+else()
+  set(DAYO_NATIVE_DEFORM_SPV "")
+  message(STATUS "Native Dayo skinning requires fetched runtime headers and DXC; Preview remains available")
+endif()
+
 dayo_compile_hlsl(
   DAYO_NATIVE_ENVIRONMENT_EQUIRECT_SPV
   SOURCE shaders/native_environment_equirect.hlsl
