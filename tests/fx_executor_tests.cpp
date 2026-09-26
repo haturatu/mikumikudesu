@@ -2498,6 +2498,111 @@ bool testDepthTextureUsageIncludesSampling() {
     return check(valid, "depth texture usage is unioned across attachment writes and sampled reads");
 }
 
+bool testSharedResourceUsageCoversConsumerReads() {
+    dayo::fx::FxProgram sourceProgram;
+    dayo::core::EffectTexture texture2D;
+    texture2D.name = "Shared2D";
+    texture2D.format = "R8G8B8A8_UNORM";
+    texture2D.view = "UAV";
+    texture2D.shared = "source";
+    texture2D.size.absolute = true;
+    texture2D.size.width = 4;
+    texture2D.size.height = 4;
+    sourceProgram.textures.push_back(texture2D);
+    dayo::core::EffectTexture texture3D;
+    texture3D.name = "Shared3D";
+    texture3D.format = "R32_FLOAT";
+    texture3D.view = "UAV";
+    texture3D.shared = "source";
+    texture3D.size.absolute = true;
+    texture3D.size.width = 4;
+    texture3D.size.height = 4;
+    texture3D.size.depth = 2;
+    sourceProgram.textures3D.push_back(texture3D);
+    dayo::core::EffectBuffer buffer;
+    buffer.name = "SharedBuffer";
+    buffer.type = "float4";
+    buffer.view = "UAV";
+    buffer.shared = "source";
+    buffer.elementSize = 16;
+    buffer.size.absolute = true;
+    buffer.size.width = 4;
+    sourceProgram.buffers.push_back(buffer);
+    dayo::fx::FxDispatch producerWrite;
+    producerWrite.name = "producer-write";
+    producerWrite.kind = dayo::fx::FxOpKind::compute;
+    producerWrite.resources = {
+        {"Shared2D", true, dayo::fx::FxResourceRole::storage},
+        {"Shared3D", true, dayo::fx::FxResourceRole::storage},
+        {"SharedBuffer", true, dayo::fx::FxResourceRole::storage},
+    };
+    sourceProgram.passes.push_back(producerWrite);
+
+    MockDevice device;
+    dayo::graphics::FxResourceRuntime sourceRuntime;
+    std::string error;
+    if (!sourceRuntime.initialize(device, sourceProgram, testContext(), &error))
+        return check(false, "shared producer allocates resources before consumers: " + error);
+
+    const auto resolveSource =
+        [&sourceRuntime](std::string_view name) -> std::optional<dayo::graphics::FxResourceStore::Resource> {
+        const auto* resource = sourceRuntime.store().find(name);
+        return resource == nullptr ? std::nullopt : std::optional{*resource};
+    };
+    dayo::fx::FxProgram consumerProgram;
+    auto consumer2D = texture2D;
+    consumer2D.view = "SRV";
+    consumer2D.shared = "ref";
+    auto consumer3D = texture3D;
+    consumer3D.view = "SRV";
+    consumer3D.shared = "ref";
+    consumerProgram.textures.push_back(consumer2D);
+    consumerProgram.textures3D.push_back(consumer3D);
+    dayo::fx::FxDispatch consumerRead;
+    consumerRead.name = "consumer-read";
+    consumerRead.kind = dayo::fx::FxOpKind::compute;
+    consumerRead.resources = {
+        {"Shared2D", false, dayo::fx::FxResourceRole::sampled},
+        {"Shared3D", false, dayo::fx::FxResourceRole::sampled},
+    };
+    consumerProgram.passes.push_back(consumerRead);
+    dayo::graphics::FxResourceRuntime textureConsumer;
+    textureConsumer.setSharedResourceResolver(resolveSource);
+    if (!textureConsumer.initialize(device, consumerProgram, testContext(), &error))
+        return check(false, "shared 2D/3D UAV sources accept consumer SRV reads: " + error);
+
+    dayo::fx::FxProgram bufferConsumerProgram;
+    auto bufferReference = buffer;
+    bufferReference.shared = "ref";
+    bufferConsumerProgram.buffers.push_back(bufferReference);
+    dayo::fx::FxDispatch rasterConsumer;
+    rasterConsumer.name = "buffer-as-geometry";
+    rasterConsumer.kind = dayo::fx::FxOpKind::raster;
+    dayo::fx::FxRasterDispatch raster;
+    raster.vertexBuffer = "SharedBuffer";
+    raster.indexBuffer = "SharedBuffer";
+    rasterConsumer.executable = std::move(raster);
+    rasterConsumer.resources = {{"SharedBuffer", false, dayo::fx::FxResourceRole::storage}};
+    bufferConsumerProgram.passes.push_back(std::move(rasterConsumer));
+    dayo::graphics::FxResourceRuntime bufferConsumer;
+    bufferConsumer.setSharedResourceResolver(resolveSource);
+    if (!bufferConsumer.initialize(device, bufferConsumerProgram, testContext(), &error))
+        return check(false, "shared buffer source accepts consumer vertex/index reads: " + error);
+
+    const auto* allocatedBuffer = sourceRuntime.store().find("SharedBuffer");
+    const auto bufferUsage = allocatedBuffer == nullptr ? 0U : dayo::graphics::toBits(allocatedBuffer->usage);
+    const auto expectedBufferUsage = dayo::graphics::toBits(dayo::graphics::ResourceUsage::storageReadWrite) |
+                                     dayo::graphics::toBits(dayo::graphics::ResourceUsage::vertexRead) |
+                                     dayo::graphics::toBits(dayo::graphics::ResourceUsage::indexRead);
+    const auto* allocated2D = sourceRuntime.store().find("Shared2D");
+    const auto textureUsage = allocated2D == nullptr ? 0U : dayo::graphics::toBits(allocated2D->usage);
+    const auto expectedTextureUsage = dayo::graphics::toBits(dayo::graphics::ResourceUsage::storageReadWrite) |
+                                      dayo::graphics::toBits(dayo::graphics::ResourceUsage::sampledRead);
+    return check((bufferUsage & expectedBufferUsage) == expectedBufferUsage &&
+                     (textureUsage & expectedTextureUsage) == expectedTextureUsage,
+                 "shared producer usage includes write, sampled, vertex, and index consumer roles");
+}
+
 bool testFxExternalTextureMetadataAndUpload() {
     namespace fs = std::filesystem;
     const auto directory = fs::temp_directory_path() / "dayo-fx-external-texture-test";
@@ -3340,6 +3445,7 @@ int main() {
     ok &= testFxResourceRuntimeMaterializesDeclarations();
     ok &= testResourceSizeDependencyGraph();
     ok &= testDepthTextureUsageIncludesSampling();
+    ok &= testSharedResourceUsageCoversConsumerReads();
     ok &= testFxExternalTextureMetadataAndUpload();
     ok &= testNativeFxRuntimeRefreshesFrameResources();
     ok &= testNativeFxRuntimeBindsResourcesAndPipelines();
