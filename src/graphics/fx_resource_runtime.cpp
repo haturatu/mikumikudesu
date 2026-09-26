@@ -135,6 +135,15 @@ struct FxTextureUsageSummary {
     // StructuredBuffer and RWStructuredBuffer both use storage-buffer
     // descriptors; readonly affects shader access, not the descriptor class.
     usage |= ResourceUsage::storageReadWrite;
+    const auto sharedSource = std::ranges::any_of(program.buffers, [name](const auto& declaration) {
+        return declaration.name == name && fxSharedMode(declaration.shared, "source");
+    });
+    if (sharedSource) {
+        // A shared buffer can be consumed as raster geometry by another FX.
+        // Include both roles before allocation so a later shared=ref never
+        // needs to add usage flags to the physical buffer.
+        usage |= ResourceUsage::vertexRead | ResourceUsage::indexRead;
+    }
     for (const auto& dispatch : program.passes) {
         const auto* raster = std::get_if<fx::FxRasterDispatch>(&dispatch.executable);
         if (raster == nullptr)

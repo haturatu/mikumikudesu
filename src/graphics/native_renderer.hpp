@@ -20,6 +20,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace dayo::graphics {
@@ -134,7 +135,8 @@ class NativeRendererCoordinator {
                           const FxExecutionResources& resources, bool publishToScreen,
                           std::span<const FxMaterialSceneModel> materialModels);
     [[nodiscard]] FxMaterialTextureResolver materialTextureResolver(const FxResourceStore* localStore,
-                                                                    bool rendererLocal) const;
+                                                                    bool rendererLocal,
+                                                                    std::string_view effectIdentity = {}) const;
     void publishActiveRendererResources();
     [[nodiscard]] FxSharedResourceResolver sharedResourceResolver() const;
 

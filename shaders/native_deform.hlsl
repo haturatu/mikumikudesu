@@ -101,7 +101,9 @@ Dayo::Vertex skinVertex(PreviewVertex source) {
     for (uint influence = 0; influence < 4; ++influence) {
         const int bone = source.bones[influence];
         const bool valid = bone >= 0 && uint(bone) < deform.boneCount;
-        skin.iBone[influence] = valid ? int(influence) : -1;
+        // Keep every influence on the thread-local matrix slot. Invalid PMX
+        // bones retain Dayo's identity-matrix contribution for BDEF/SDEF/QDEF.
+        skin.iBone[influence] = int(influence);
         Dayo::BoneMatrix[influence] = YRZ::Identity44;
         if (valid) {
             const BoneTransform transform = bones[bone];
