@@ -2294,6 +2294,37 @@ bool testFxResourceDeclarationsAreLossless() {
                 "compiled FX keeps sampler declarations");
     ok &= check(program.controllers.size() == 1 && program.meshCloneCount == 4,
                 "compiled FX keeps controller and cloning metadata");
+
+    struct TextureTypeCase {
+        std::string_view format;
+        std::string_view elementType;
+    };
+    constexpr auto textureTypes = std::to_array<TextureTypeCase>({
+        {"R8_UNORM", "float"},
+        {"R8G8_UNORM", "float2"},
+        {"R8G8B8A8_UNORM", "float4"},
+        {"R32G32_FLOAT", "float2"},
+        {"R8_UINT", "uint"},
+        {"R8G8_SINT", "int2"},
+        {"R8G8B8A8_UINT", "uint4"},
+        {"R16G16B16A16_SINT", "int4"},
+    });
+    for (const auto& textureType : textureTypes) {
+        dayo::fx::FxProgram typedProgram;
+        dayo::core::EffectTexture typedTexture;
+        typedTexture.name = "TypedTexture";
+        typedTexture.format = textureType.format;
+        typedTexture.type = textureType.elementType;
+        typedProgram.textures.push_back(std::move(typedTexture));
+        dayo::fx::FxDispatch typedPass;
+        typedPass.name = "typed-texture-pass";
+        typedPass.kind = dayo::fx::FxOpKind::compute;
+        typedPass.resources.push_back({"TypedTexture", false, dayo::fx::FxResourceRole::sampled});
+        const auto generated = dayo::fx::makeNativeFxShaderSource(typedProgram, typedPass, 0);
+        const auto declaration = "Texture2D<" + std::string(textureType.elementType) + "> TypedTexture";
+        ok &= check(generated.find(declaration) != std::string::npos,
+                    "DXGI component format and explicit HLSL element type stay aligned");
+    }
     return ok;
 }
 
