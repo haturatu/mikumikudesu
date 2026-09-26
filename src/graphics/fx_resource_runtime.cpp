@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <exception>
+#include <fstream>
 #include <limits>
 #include <ranges>
 #include <stdexcept>
@@ -855,6 +856,21 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                 throw std::runtime_error("FX buffer allocation returned an invalid handle: " + name);
             if (!store_.add(std::move(resource)))
                 throw std::invalid_argument("FX resource declaration is duplicated: " + name);
+            if (!declaration.filename.empty()) {
+                const auto path = externalPath(program, declaration.filename);
+                std::ifstream input(path, std::ios::binary);
+                if (!input)
+                    throw std::runtime_error("cannot open FX buffer data: " + path.string());
+                // YRZFx.ixx createBufferLambda reads at most the allocation size.
+                // A short file leaves the value-initialized tail zero-filled.
+                std::vector<std::byte> data(checkedSize(bytes, name));
+                if (bytes > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max()))
+                    throw std::overflow_error("FX buffer data exceeds stream size: " + name);
+                input.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
+                if (input.bad() || (input.fail() && !input.eof()))
+                    throw std::runtime_error("cannot read FX buffer data: " + path.string());
+                device.uploadBufferEx(store_.find(name)->buffer, data, 0);
+            }
             table.add(name, resolvedFx);
             const auto* stored = store_.find(name);
             addBinding(stored->legacyBinding, stored->legacyDescriptorKind);
