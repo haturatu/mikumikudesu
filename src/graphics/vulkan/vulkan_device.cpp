@@ -5410,7 +5410,9 @@ std::vector<std::uint8_t> VulkanDevice::readbackTextureEx(handles::TextureHandle
             .bufferOffset = staging.offset,
             .bufferRowLength = 0,
             .bufferImageHeight = 0,
-            .imageSubresource = {imageAspect(typed.desc.format), mipLevel, arrayLayer, 1},
+            .imageSubresource = {isDepthFormat(typed.desc.format) ? VkImageAspectFlags{VK_IMAGE_ASPECT_DEPTH_BIT}
+                                                                  : imageAspect(typed.desc.format),
+                                 mipLevel, arrayLayer, 1},
             .imageOffset = {0, 0, 0},
             .imageExtent = mipExtent(typed.desc, mipLevel),
         };
@@ -6488,8 +6490,37 @@ std::vector<std::byte> VulkanDevice::readbackBufferEx(handles::BufferHandle hand
         throw std::invalid_argument("stale typed buffer handle");
     if (offset > it->second.desc.size || size > it->second.desc.size - offset)
         throw std::out_of_range("typed buffer readback exceeds allocation");
-    if (it->second.mapped == nullptr)
-        throw std::logic_error("typed buffer readback requires a CPU-visible buffer");
+    if (it->second.mapped == nullptr) {
+        if ((toBits(it->second.desc.usage) & toBits(ResourceUsage::transferSrc)) == 0U)
+            throw std::logic_error("device-local readback requires transfer-source usage");
+        if (size == 0)
+            return {};
+        if (uploadContext_ == nullptr)
+            throw std::logic_error("Vulkan upload context is unavailable");
+        try {
+            uploadContext_->begin();
+            const auto staging = uploadContext_->allocate(size, 4);
+            const auto command = uploadContext_->commandBuffer();
+            const VkMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                           .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                           .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                           .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                           .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT};
+            const VkDependencyInfo dependency{
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
+            vkCmdPipelineBarrier2(command, &dependency);
+            const VkBufferCopy copy{.srcOffset = offset, .dstOffset = staging.offset, .size = size};
+            vkCmdCopyBuffer(command, it->second.resource.buffer, staging.buffer, 1, &copy);
+            const auto signal = uploadContext_->submit();
+            uploadContext_->wait(signal);
+            std::vector<std::byte> bytes(size);
+            std::memcpy(bytes.data(), staging.mapped, size);
+            return bytes;
+        } catch (...) {
+            uploadContext_->abort();
+            throw;
+        }
+    }
     std::vector<std::byte> bytes(size);
     if (!bytes.empty())
         std::memcpy(bytes.data(), static_cast<const std::byte*>(it->second.mapped) + offset, size);

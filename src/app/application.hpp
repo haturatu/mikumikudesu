@@ -98,6 +98,11 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     graphics::Device* device_{};
     graphics::RendererKind requestedRenderer_{graphics::RendererKind::preview};
     graphics::NativeRendererCoordinator nativeRenderer_;
+    std::array<char, 1024> fxDebugDumpPath_{};
+    int fxDebugMip_{};
+    int fxDebugSlice_{};
+    int fxDebugMode_{};
+    float fxDebugScale_{1.0F};
     graphics::NativeSceneFrameRuntime nativeSceneFrame_;
     graphics::NativeSceneResourceStore nativeSceneResources_;
     graphics::NativeSceneDerivedRuntime nativeSceneDerivedRuntime_;
