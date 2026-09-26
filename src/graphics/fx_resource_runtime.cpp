@@ -2,6 +2,7 @@
 
 #include "core/fx/fx_size.hpp"
 #include "core/image.hpp"
+#include "fx/fx_resource_sizes.hpp"
 #include "graphics/fx_material_gpu_runtime.hpp"
 #include "graphics/native_scene_bindings.hpp"
 
@@ -15,23 +16,6 @@
 
 namespace dayo::graphics {
 namespace {
-
-class ExtentTable final : public core::fx::FxResourceTable {
-  public:
-    void add(std::string name, core::fx::FxExtent extent) {
-        values_.insert_or_assign(std::move(name), extent);
-    }
-
-    [[nodiscard]] std::optional<core::fx::FxExtent> find(std::string_view name) const override {
-        const auto found = values_.find(std::string(name));
-        if (found == values_.end())
-            return std::nullopt;
-        return found->second;
-    }
-
-  private:
-    std::unordered_map<std::string, core::fx::FxExtent> values_;
-};
 
 [[nodiscard]] std::string upper(std::string_view value) {
     std::string result;
@@ -93,104 +77,6 @@ class ExtentTable final : public core::fx::FxResourceTable {
     result.minLod = sampler.minLod;
     result.maxLod = sampler.maxLod;
     return result;
-}
-
-[[nodiscard]] core::fx::FxEvalContext evaluationContext(const fx::FxFrameContext& context) {
-    const auto checked = [](std::size_t value, std::string_view name) {
-        if (value > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()))
-            throw std::overflow_error("FX resource context is too large: " + std::string(name));
-        return static_cast<std::int64_t>(value);
-    };
-    core::fx::FxEvalContext result;
-    result.rtWidth = context.renderWidth;
-    result.rtHeight = context.renderHeight;
-    result.vertexCount = checked(context.vertexCount, "vertexCount");
-    result.totalMaterial = checked(context.totalMaterial, "totalMaterial");
-    result.modelIndex = context.modelIndex;
-    result.cloneCount = context.cloneCount;
-    result.clonedVertexCount = checked(context.clonedVertexCount, "clonedVertexCount");
-    result.frameIndex = static_cast<std::int64_t>(context.frame);
-    result.sampleIndex = checked(static_cast<std::size_t>(context.sample), "sampleIndex");
-    result.time = context.time;
-    result.namedSymbols = context.expressionSymbols;
-    return result;
-}
-
-[[nodiscard]] std::string sizeConversion(std::string_view base, std::string_view conversion) {
-    if (conversion == "one")
-        return "1";
-    std::string result;
-    const bool scalarBase =
-        base == "VERTEXCOUNT" || base == "CLONEDVERTEXCOUNT" || base == "TOTALMATERIAL" || base == "TOTALMATERIALCOUNT";
-    for (const auto axis : std::array<char, 3>{'x', 'y', 'z'}) {
-        const bool containsAxis = std::ranges::any_of(
-            conversion, [axis](unsigned char character) { return static_cast<char>(std::tolower(character)) == axis; });
-        if (!containsAxis)
-            continue;
-        if (!result.empty())
-            result += '*';
-        if (scalarBase && axis == 'x')
-            result += base;
-        else if (scalarBase)
-            result += '1';
-        else
-            result += std::string(base) + '.' + axis;
-    }
-    if (result.empty())
-        throw std::invalid_argument("unsupported YRZFX size conversion: " + std::string(conversion));
-    return result;
-}
-
-[[nodiscard]] core::fx::FxSizeExpr sizeExpression(const core::EffectSize& source, std::uint32_t dimension,
-                                                  bool defaultToRenderTarget) {
-    core::fx::FxSizeExpr result;
-    result.base = source.absolute ? std::string{} : source.base;
-    result.dimension =
-        source.dimension != 0 ? source.dimension : (!source.base.empty() && !source.absolute ? 0U : dimension);
-    result.widthRatio = source.absolute ? 1.0F : source.widthRatio;
-    result.heightRatio = source.absolute ? 1.0F : source.heightRatio;
-    result.depthRatio = source.absolute ? 1.0F : source.depthRatio;
-    if (source.absolute || source.rounding == "trunc")
-        result.rounding = core::fx::FxSizeExpr::Rounding::truncate;
-    else if (source.rounding == "round")
-        result.rounding = core::fx::FxSizeExpr::Rounding::nearest;
-    else if (source.rounding == "ceil")
-        result.rounding = core::fx::FxSizeExpr::Rounding::ceil;
-    else
-        throw std::invalid_argument("unsupported YRZFX size rounding mode: " + source.rounding);
-    if (source.absolute && source.width != 0)
-        result.xExpr = std::to_string(source.width);
-    if (source.absolute && source.height != 0)
-        result.yExpr = std::to_string(source.height);
-    if (source.absolute && source.depth != 0)
-        result.zExpr = std::to_string(source.depth);
-    if (!source.absolute) {
-        if (result.base.empty() && defaultToRenderTarget)
-            result.base = "DEFAULT_RTSIZE";
-        if (!result.base.empty()) {
-            if (result.xExpr.empty())
-                result.xExpr = sizeConversion(result.base, source.convX);
-            if ((result.dimension == 0 || result.dimension >= 2) && result.yExpr.empty())
-                result.yExpr = sizeConversion(result.base, source.convY);
-            if ((result.dimension == 0 || result.dimension >= 3) && result.zExpr.empty())
-                result.zExpr = sizeConversion(result.base, source.convZ);
-        } else if (result.xExpr.empty()) {
-            result.xExpr = "1";
-            if (result.dimension >= 2)
-                result.yExpr = "1";
-            if (result.dimension >= 3)
-                result.zExpr = "1";
-        }
-    }
-    return result;
-}
-
-[[nodiscard]] core::fx::FxExtent resolveFxExtent(const core::EffectSize& source, std::uint32_t dimension,
-                                                 bool defaultToRenderTarget, const fx::FxFrameContext& context,
-                                                 const ExtentTable& table) {
-    const auto expression = sizeExpression(source, dimension, defaultToRenderTarget);
-    const auto evaluated = evaluationContext(context);
-    return core::fx::FxSizeResolver{}.resolve(expression, evaluated, table);
 }
 
 struct FxTextureUsageSummary {
@@ -273,12 +159,6 @@ struct FxTextureUsageSummary {
     if (value > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
         throw std::overflow_error("FX resource size is too large: " + std::string(name));
     return static_cast<std::size_t>(value);
-}
-
-[[nodiscard]] bool hasExplicitSize(const core::EffectSize& size) noexcept {
-    return size.absolute || !size.base.empty() || size.dimension != 0 || size.widthRatio != 1.0F ||
-           size.heightRatio != 1.0F || size.depthRatio != 1.0F || size.convX != "x" || size.convY != "y" ||
-           size.convZ != "z" || size.rounding != "trunc";
 }
 
 [[nodiscard]] std::uint32_t mipLevels(Extent3D extent, bool enabled) noexcept {
@@ -632,7 +512,8 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
     reset();
     device_ = &device;
     try {
-        ExtentTable table;
+        fx::FxResourceSizeTable table(program, context);
+        table.resolveAll();
         const auto stages = allFxStages();
         std::uint64_t totalBytes = 0;
         constexpr auto maxBytes = core::fx::kMaxTransientBytesPerEffect;
@@ -667,12 +548,11 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
 
         for (const auto& declaration : program.textures) {
             const auto name = addName(declaration.name);
-            const auto format = pixelFormat(declaration.format);
+            const auto format =
+                declaration.filename.empty() ? pixelFormat(declaration.format) : PixelFormat::rgba8Unorm;
             std::optional<core::ImageRgba8> external;
             std::optional<core::DdsImageRgba8> externalDds;
             if (!declaration.filename.empty()) {
-                if (format != PixelFormat::rgba8Unorm)
-                    throw std::invalid_argument("FX external texture format must be RGBA8_UNORM: " + name);
                 const auto path = externalPath(program, declaration.filename);
                 if (isDdsPath(path)) {
                     externalDds = core::loadDdsImageRgba8(path);
@@ -688,13 +568,9 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             const auto externalHeight =
                 externalDds.has_value() ? externalDds->height : (external.has_value() ? external->height : 0U);
             const auto resolvedFx =
-                hasExternal && !hasExplicitSize(declaration.size)
-                    ? core::fx::FxExtent{.x = externalWidth, .y = externalHeight, .z = 1, .dimension = 2}
-                    : resolveFxExtent(declaration.size, 2, true, context, table);
+                hasExternal ? core::fx::FxExtent{.x = externalWidth, .y = externalHeight, .z = 1, .dimension = 2}
+                            : *table.find(name);
             const Extent3D resolved{resolvedFx.x, resolvedFx.y, resolvedFx.z};
-            if (hasExternal &&
-                (resolved.width != externalWidth || resolved.height != externalHeight || resolved.depth != 1))
-                throw std::invalid_argument("FX external texture extent does not match its declaration: " + name);
             const auto levels = !declaration.mipmap ? 1U
                                                     : (externalDds.has_value() && externalDds->mipLevels > 1
                                                            ? externalDds->mipLevels
@@ -741,17 +617,15 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             }
             if (!store_.add(std::move(resource)))
                 throw std::invalid_argument("FX resource declaration is duplicated: " + name);
-            table.add(name, resolvedFx);
             const auto* stored = store_.find(name);
             addBinding(stored->legacyBinding, stored->legacyDescriptorKind);
         }
         for (const auto& declaration : program.textures3D) {
             const auto name = addName(declaration.name);
-            const auto format = pixelFormat(declaration.format);
+            const auto format =
+                declaration.filename.empty() ? pixelFormat(declaration.format) : PixelFormat::rgba8Unorm;
             std::optional<core::DdsImageRgba8> externalDds;
             if (!declaration.filename.empty()) {
-                if (format != PixelFormat::rgba8Unorm)
-                    throw std::invalid_argument("FX external 3D texture format must be RGBA8_UNORM: " + name);
                 const auto path = externalPath(program, declaration.filename);
                 if (!isDdsPath(path))
                     throw std::invalid_argument("FX external 3D texture must use DDS: " + name);
@@ -759,17 +633,12 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                 if (externalDds->dimension != core::DdsDimension::threeD || externalDds->arrayLayers != 1)
                     throw std::invalid_argument("FX Texture3D external DDS must contain one volume: " + name);
             }
-            const auto resolvedFx = externalDds.has_value() && !hasExplicitSize(declaration.size)
-                                        ? core::fx::FxExtent{.x = externalDds->width,
-                                                             .y = externalDds->height,
-                                                             .z = externalDds->depth,
-                                                             .dimension = 3}
-                                        : resolveFxExtent(declaration.size, 3, false, context, table);
+            const auto resolvedFx = externalDds.has_value() ? core::fx::FxExtent{.x = externalDds->width,
+                                                                                 .y = externalDds->height,
+                                                                                 .z = externalDds->depth,
+                                                                                 .dimension = 3}
+                                                            : *table.find(name);
             const Extent3D resolved{resolvedFx.x, resolvedFx.y, resolvedFx.z};
-            if (externalDds.has_value() &&
-                (resolved.width != externalDds->width || resolved.height != externalDds->height ||
-                 resolved.depth != externalDds->depth))
-                throw std::invalid_argument("FX external 3D texture extent does not match its declaration: " + name);
             const auto levels = !declaration.mipmap ? 1U
                                                     : (externalDds.has_value() && externalDds->mipLevels > 1
                                                            ? externalDds->mipLevels
@@ -812,7 +681,6 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             }
             if (!store_.add(std::move(resource)))
                 throw std::invalid_argument("FX resource declaration is duplicated: " + name);
-            table.add(name, resolvedFx);
             const auto* stored = store_.find(name);
             addBinding(stored->legacyBinding, stored->legacyDescriptorKind);
         }
@@ -820,13 +688,7 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             const auto name = addName(declaration.name);
             if (declaration.elementSize == 0)
                 throw std::invalid_argument("FX buffer element size is zero: " + name);
-            auto bufferSize = declaration.size;
-            if (!bufferSize.absolute && bufferSize.base.empty()) {
-                bufferSize.base =
-                    program.category == core::fx::FxCategory::deform ? "CLONEDVERTEXCOUNT" : "DEFAULT_RTSIZE";
-                bufferSize.dimension = program.category == core::fx::FxCategory::deform ? 1U : 2U;
-            }
-            const auto resolvedFx = resolveFxExtent(bufferSize, 1, false, context, table);
+            const auto resolvedFx = *table.find(name);
             const Extent3D resolved{resolvedFx.x, resolvedFx.y, resolvedFx.z};
             const auto bytes = core::fx::FxSizeResolver::bufferBytes(resolvedFx, declaration.elementSize);
             reserveBytes(bytes, name);
@@ -855,7 +717,6 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                 throw std::runtime_error("FX buffer allocation returned an invalid handle: " + name);
             if (!store_.add(std::move(resource)))
                 throw std::invalid_argument("FX resource declaration is duplicated: " + name);
-            table.add(name, resolvedFx);
             const auto* stored = store_.find(name);
             addBinding(stored->legacyBinding, stored->legacyDescriptorKind);
         }

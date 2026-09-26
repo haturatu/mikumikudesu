@@ -2,6 +2,7 @@
 
 #include "core/fx/fx_size.hpp"
 #include "core/log.hpp"
+#include "fx/fx_resource_sizes.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -15,117 +16,6 @@ namespace dayo::fx {
 
 namespace {
 
-class FrameExtentTable final : public core::fx::FxResourceTable {
-  public:
-    void add(std::string name, core::fx::FxExtent extent) {
-        values_.insert_or_assign(std::move(name), extent);
-    }
-
-    [[nodiscard]] std::optional<core::fx::FxExtent> find(std::string_view name) const override {
-        const auto found = values_.find(std::string(name));
-        return found == values_.end() ? std::nullopt : std::optional<core::fx::FxExtent>{found->second};
-    }
-
-  private:
-    std::unordered_map<std::string, core::fx::FxExtent> values_;
-};
-
-[[nodiscard]] std::int64_t fxSizeContextValue(std::size_t value) {
-    if (value > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()))
-        throw std::overflow_error("FX frame size context exceeds signed range");
-    return static_cast<std::int64_t>(value);
-}
-
-[[nodiscard]] core::fx::FxEvalContext makeSizeEvalContext(const FxFrameContext& context) {
-    core::fx::FxEvalContext result;
-    result.rtWidth = context.renderWidth;
-    result.rtHeight = context.renderHeight;
-    result.vertexCount = fxSizeContextValue(context.vertexCount);
-    result.totalMaterial = fxSizeContextValue(context.totalMaterial);
-    result.modelIndex = context.modelIndex;
-    result.cloneCount = context.cloneCount;
-    result.clonedVertexCount = fxSizeContextValue(context.clonedVertexCount);
-    result.frameIndex = static_cast<std::int64_t>(context.frame);
-    result.sampleIndex = fxSizeContextValue(static_cast<std::size_t>(context.sample));
-    result.time = context.time;
-    result.namedSymbols = context.expressionSymbols;
-    return result;
-}
-
-[[nodiscard]] core::fx::FxExtent resolveEffectSize(const core::EffectSize& source, std::uint32_t defaultDimension,
-                                                   bool defaultToScreen, const FxFrameContext& context,
-                                                   const FrameExtentTable& table) {
-    core::fx::FxSizeExpr expression;
-    expression.base = source.absolute ? std::string{} : source.base;
-    expression.dimension =
-        source.dimension != 0 ? source.dimension : (!source.base.empty() && !source.absolute ? 0U : defaultDimension);
-    expression.widthRatio = source.absolute ? 1.0F : source.widthRatio;
-    expression.heightRatio = source.absolute ? 1.0F : source.heightRatio;
-    expression.depthRatio = source.absolute ? 1.0F : source.depthRatio;
-    if (source.absolute || source.rounding == "trunc")
-        expression.rounding = core::fx::FxSizeExpr::Rounding::truncate;
-    else if (source.rounding == "round")
-        expression.rounding = core::fx::FxSizeExpr::Rounding::nearest;
-    else if (source.rounding == "ceil")
-        expression.rounding = core::fx::FxSizeExpr::Rounding::ceil;
-    else
-        throw std::invalid_argument("unsupported YRZFX size rounding mode: " + source.rounding);
-    const auto conversion = [](std::string_view base, std::string_view conv) {
-        if (conv == "one")
-            return std::string{"1"};
-        std::string result;
-        const bool scalarBase = base == "VERTEXCOUNT" || base == "CLONEDVERTEXCOUNT" || base == "TOTALMATERIAL" ||
-                                base == "TOTALMATERIALCOUNT";
-        for (const char axis : std::array<char, 3>{'x', 'y', 'z'}) {
-            const bool containsAxis = std::ranges::any_of(
-                conv, [axis](unsigned char character) { return static_cast<char>(std::tolower(character)) == axis; });
-            if (!containsAxis)
-                continue;
-            if (!result.empty())
-                result += '*';
-            if (scalarBase && axis == 'x')
-                result += base;
-            else if (scalarBase)
-                result += '1';
-            else
-                result += std::string(base) + '.' + axis;
-        }
-        if (result.empty())
-            throw std::invalid_argument("unsupported YRZFX size conversion: " + std::string(conv));
-        return result;
-    };
-    if (source.absolute && source.width != 0)
-        expression.xExpr = std::to_string(source.width);
-    if (source.absolute && source.height != 0)
-        expression.yExpr = std::to_string(source.height);
-    if (source.absolute && source.depth != 0)
-        expression.zExpr = std::to_string(source.depth);
-    if (expression.base.empty() && expression.xExpr.empty()) {
-        if (defaultToScreen) {
-            expression.base = "DEFAULT_RTSIZE";
-            expression.dimension = defaultDimension;
-        } else {
-            expression.xExpr = "1";
-            if (expression.dimension >= 2)
-                expression.yExpr = "1";
-            if (expression.dimension >= 3)
-                expression.zExpr = "1";
-        }
-    }
-    if (!source.absolute) {
-        auto base = expression.base;
-        if (base.empty())
-            base = defaultToScreen ? "DEFAULT_RTSIZE" : "";
-        if (expression.xExpr.empty() && !base.empty())
-            expression.xExpr = conversion(base, source.convX);
-        if (expression.yExpr.empty() && (expression.dimension == 0 || expression.dimension >= 2) && !base.empty())
-            expression.yExpr = conversion(base, source.convY);
-        if (expression.zExpr.empty() && (expression.dimension == 0 || expression.dimension >= 3) && !base.empty())
-            expression.zExpr = conversion(base, source.convZ);
-    }
-    return core::fx::FxSizeResolver{}.resolve(expression, makeSizeEvalContext(context), table);
-}
-
 [[nodiscard]] FxExtent3D fromFxExtent(core::fx::FxExtent extent) noexcept {
     return {.width = extent.x, .height = extent.y, .depth = extent.z, .dimension = extent.dimension};
 }
@@ -137,7 +27,10 @@ class FrameExtentTable final : public core::fx::FxResourceTable {
 }
 
 [[nodiscard]] std::optional<FxExtent3D> declaredExtent(const FxProgram& program, std::string_view name,
-                                                       const FxFrameContext& context, const FrameExtentTable& table) {
+                                                       const FxFrameContext& context,
+                                                       const core::fx::FxResourceTable& table) {
+    if (const auto physical = table.find(name); physical.has_value())
+        return fromFxExtent(*physical);
     for (const auto& texture : program.textures)
         if (texture.name == name)
             return fromFxExtent(resolveEffectSize(texture.size, 2, true, context, table));
@@ -165,7 +58,7 @@ class FrameExtentTable final : public core::fx::FxResourceTable {
 
 [[nodiscard]] std::optional<FxExtent3D> firstOutputExtent(const FxDispatch& dispatch, FxResourceRole role,
                                                           const FxProgram& program, const FxFrameContext& context,
-                                                          const FrameExtentTable& table) {
+                                                          const core::fx::FxResourceTable& table) {
     for (const auto& use : dispatch.resources) {
         if (!use.write || use.role != role)
             continue;
@@ -198,7 +91,8 @@ class FrameExtentTable final : public core::fx::FxResourceTable {
 }
 
 [[nodiscard]] std::uint32_t rasterBufferElementCount(const FxProgram& program, std::string_view name,
-                                                     const FxFrameContext& context, const FrameExtentTable& table) {
+                                                     const FxFrameContext& context,
+                                                     const core::fx::FxResourceTable& table) {
     const auto extent = declaredExtent(program, name, context, table);
     if (!extent.has_value())
         throw std::invalid_argument("FX raster buffer is not declared: " + std::string(name));
@@ -629,30 +523,15 @@ std::uint64_t FxInstance::beginReloadRequest() {
     return request;
 }
 
-FxFramePlan FxCompiler::plan(const FxProgram& program, const FxFrameContext& context) const {
+FxFramePlan FxCompiler::plan(const FxProgram& program, const FxFrameContext& context,
+                             const core::fx::FxResourceTable* resources) const {
     FxFramePlan framePlan;
     framePlan.ordered = program.passes;
     framePlan.programGeneration = program.generation;
     framePlan.renderWidth = context.renderWidth;
     framePlan.renderHeight = context.renderHeight;
-    FrameExtentTable extents;
-    const auto addDeclaredSize = [&](std::string_view name, const core::EffectSize& size, std::uint32_t dimension,
-                                     bool screenDefault) {
-        const auto extent = resolveEffectSize(size, dimension, screenDefault, context, extents);
-        extents.add(std::string(name), extent);
-    };
-    for (const auto& texture : program.textures)
-        addDeclaredSize(texture.name, texture.size, 2, true);
-    for (const auto& texture : program.textures3D)
-        addDeclaredSize(texture.name, texture.size, 3, false);
-    for (const auto& buffer : program.buffers) {
-        auto size = buffer.size;
-        if (!size.absolute && size.base.empty()) {
-            size.base = program.category == core::fx::FxCategory::deform ? "CLONEDVERTEXCOUNT" : "DEFAULT_RTSIZE";
-            size.dimension = program.category == core::fx::FxCategory::deform ? 1U : 2U;
-        }
-        addDeclaredSize(buffer.name, size, 1, false);
-    }
+    FxResourceSizeTable extents(program, context, resources);
+    extents.resolveAll();
 
     framePlan.resolved.reserve(program.passes.size());
     for (std::size_t index = 0; index < program.passes.size(); ++index) {
