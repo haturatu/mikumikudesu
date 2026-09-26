@@ -41,6 +41,12 @@ class InstallerTests(unittest.TestCase):
         (self.install / "postprocess").rmdir()
         self.assertFalse(fetcher.is_current_installation(self.install, self.lock))
 
+    def test_prefilter_source_is_required_at_runtime(self):
+        fetcher.install_archive(self.archive(), self.install, self.lock)
+        self.assertTrue(fetcher.is_current_installation(self.install, self.lock))
+        (self.install / "src/YRZ.ixx").unlink()
+        self.assertFalse(fetcher.is_current_installation(self.install, self.lock))
+
     def test_failed_upgrade_preserves_previous_install(self):
         fetcher.install_archive(self.archive(), self.install, self.lock)
         sentinel = self.install / "keep.txt"

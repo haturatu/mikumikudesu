@@ -36,6 +36,8 @@ installも同じ一覧を使い、拡張子による除外を行わず、第三�
 pointのdispatch group、memoによるpass選択を検証します。Windows 1.30とのGPU数値比較はまだ行っていません。
 
 `SkyboxPrefilter` memoも、上流の2D equirectangular texture向け`PrefilterEnvmap`をGPUで実行します。
+`src/YRZ.ixx`の`PrefilterShader`を配布物から直接読み、pixel shader/helperを再利用します。
+vertex bufferなし描画用の薄いVS adapterだけ追加します。moduleはruntime manifestに含めます。
 元画像をmip 0へコピーし、上流と同じroughness・alpha blend・サンプル数・4 iterationで各mipを生成します。
 Subayai用cubemap prefilterとは別経路です。テストはdispatch計画とmip別render targetを検証しますが、
 Windows 1.30とのGPU数値比較はまだ行っていません。未知memoは保持しますが、既知handlerがないものは未対応です。
