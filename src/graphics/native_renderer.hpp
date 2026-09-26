@@ -120,6 +120,7 @@ class NativeRendererCoordinator {
                                                                     bool rendererLocal,
                                                                     std::string_view effectIdentity = {}) const;
     void publishActiveRendererResources();
+    [[nodiscard]] FxSharedResourceResolver sharedResourceResolver() const;
 
     NativeRendererStatus status_{};
     SubayaiRuntime subayai_;

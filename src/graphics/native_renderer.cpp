@@ -6,6 +6,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 
 namespace dayo::graphics {
@@ -17,6 +18,75 @@ void appendReason(std::ostringstream& output, std::string_view reason) {
     if (output.tellp() > 0)
         output << ", ";
     output << reason;
+}
+
+std::vector<std::size_t> sharedEffectOrder(std::span<const core::SceneEffectInstance> effects) {
+    std::unordered_map<std::string, std::size_t> sources;
+    std::vector<std::vector<std::string>> refs(effects.size());
+    for (std::size_t i = 0; i < effects.size(); ++i) {
+        const auto gather = [&](const auto& declarations) {
+            for (const auto& declaration : declarations) {
+                if (fxSharedMode(declaration.shared, "source") && !sources.emplace(declaration.name, i).second)
+                    throw std::invalid_argument("ambiguous shared source: " + declaration.name);
+                if (fxSharedMode(declaration.shared, "ref"))
+                    refs[i].push_back(declaration.name);
+            }
+        };
+        gather(effects[i].graph.textures);
+        gather(effects[i].graph.textures3D);
+        gather(effects[i].graph.buffers);
+    }
+    std::vector<std::size_t> result;
+    std::vector<std::uint8_t> state(effects.size());
+    const auto visit = [&](auto&& self, std::size_t index) -> void {
+        if (state[index] == 2)
+            return;
+        if (state[index] == 1)
+            throw std::invalid_argument("cyclic shared FX dependency at effect " + std::to_string(effects[index].id));
+        state[index] = 1;
+        for (const auto& name : refs[index]) {
+            const auto producer = sources.find(name);
+            if (producer != sources.end())
+                self(self, producer->second);
+        }
+        state[index] = 2;
+        result.push_back(index);
+    };
+    for (std::size_t i = 0; i < effects.size(); ++i)
+        visit(visit, i);
+    return result;
+}
+
+void validateSharedStages(std::span<const core::SceneEffectInstance> deform, const fx::FxProgram* renderer,
+                          std::span<const core::SceneEffectInstance> postprocess) {
+    std::unordered_map<std::string, unsigned> sources;
+    std::vector<std::pair<std::string, unsigned>> refs;
+    const auto gather = [&](const auto& program, unsigned stage) {
+        const auto declarations = [&](const auto& resources) {
+            for (const auto& resource : resources) {
+                if (fxSharedMode(resource.shared, "source") && !sources.emplace(resource.name, stage).second)
+                    throw std::invalid_argument("ambiguous shared source across stages: " + resource.name);
+                if (fxSharedMode(resource.shared, "ref"))
+                    refs.emplace_back(resource.name, stage);
+            }
+        };
+        declarations(program.textures);
+        declarations(program.textures3D);
+        declarations(program.buffers);
+    };
+    for (const auto& effect : deform)
+        gather(effect.graph, 0);
+    if (renderer != nullptr)
+        gather(*renderer, 1);
+    for (const auto& effect : postprocess)
+        gather(effect.graph, 2);
+    for (const auto& [name, stage] : refs) {
+        const auto source = sources.find(name);
+        if (source == sources.end())
+            throw std::invalid_argument("missing shared source: " + name);
+        if (source->second > stage)
+            throw std::invalid_argument("shared source executes after consumer stage: " + name);
+    }
 }
 
 } // namespace
@@ -252,7 +322,7 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
     const auto layouts = sceneFrameRuntime_->layouts();
     const auto descriptorSets = sceneFrameRuntime_->descriptorSets();
     std::optional<NativeFrameOutput> lastOutput;
-    for (std::size_t index = 0; index < effects.size(); ++index) {
+    for (const auto index : sharedEffectOrder(effects)) {
         const NativeEffectModel* ownerModel = nullptr;
         auto effectContext = context;
         if (!publishToScreen) {
@@ -278,6 +348,7 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
                 throw std::runtime_error("generic Dayo FX controller buffer initialization failed");
             entry->block.emplace(entry->controller.layout());
             entry->runtime.addProvider(sceneHostProvider_);
+            entry->runtime.setSharedResourceResolver(sharedResourceResolver());
         }
         // A deformer uses its owner's clone count; table indices remain scene-wide,
         // matching the canonical Model2Mat and material descriptor ABI.
@@ -370,7 +441,9 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
                 output.has_value() && output->texture.valid())
                 stageResources.defaultColorTarget = output->texture;
         }
+        commands.memoryBarrierEx();
         static_cast<void>(entry->runtime.execute(frame, commands, stageResources));
+        commands.memoryBarrierEx();
         if (const auto* program = entry->runtime.program(); program != nullptr) {
             const auto owner = "effect:" + std::to_string(effects[index].id);
             sharedResources_.publish(owner, *program, entry->runtime.nativeRuntime().resources().store());
@@ -445,6 +518,17 @@ void NativeRendererCoordinator::publishActiveRendererResources() {
 
 bool NativeRendererCoordinator::updateEnvironment(const EnvironmentDesc& description) {
     return environmentService_.update(description);
+}
+
+FxSharedResourceResolver NativeRendererCoordinator::sharedResourceResolver() const {
+    return [this](std::string_view name) -> std::optional<FxResourceStore::Resource> {
+        const auto found = sharedResources_.resolve(name);
+        if (found.status == FxSharedResourceRegistry::LookupStatus::ambiguous)
+            throw std::invalid_argument("ambiguous shared source: " + std::string(name));
+        if (!found.value)
+            return std::nullopt;
+        return found.value->resource;
+    };
 }
 
 FxMaterialTextureResolver NativeRendererCoordinator::materialTextureResolver(const FxResourceStore* localStore,
@@ -548,6 +632,9 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
         throw std::invalid_argument("native frame sample index/count is invalid");
     if (execution.sampleCount == 1)
         outputSamples_.cancel();
+    validateSharedStages(deformEffects_, program(), postprocessEffects_);
+    subayai_.setSharedResourceResolver(sharedResourceResolver());
+    bdpt_.setSharedResourceResolver(sharedResourceResolver());
     environmentService_.record(commands);
     static_cast<void>(
         executeGenericEffects(deformEffects_, deformRuntimes_, commands, context, resources, false, materialModels));
