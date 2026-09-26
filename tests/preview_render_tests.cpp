@@ -2,6 +2,7 @@
 #include "fx/fx_compiler.hpp"
 #include "fx/fx_shader_compiler.hpp"
 #include "graphics/fx_pipeline_runtime.hpp"
+#include "graphics/subayai_deform.hpp"
 #include "graphics/vulkan/vulkan_device.hpp"
 #include "platform/window.hpp"
 #include "ui/theme.hpp"
@@ -15,10 +16,14 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
+#include <memory>
 #include <numbers>
 #include <optional>
 #include <span>
+#include <string>
+#include <vector>
 
 namespace {
 
@@ -632,6 +637,147 @@ bool runCase(dayo::graphics::VulkanDevice& device, PreviewSkinningType type) {
     return imagesMatch(gpuImage, referenceImage);
 }
 
+struct DayoSkinningGpuCase {
+    std::string name;
+    std::vector<PreviewVertex> vertices;
+    std::vector<PreviewBoneTransform> bones;
+    std::array<std::uint32_t, 3> indices{0, 0, 0};
+    std::unique_ptr<dayo::graphics::NativeDeformRuntime> runtime;
+    dayo::graphics::handles::BufferHandle output{};
+    Float3 expectedPosition{};
+};
+
+DayoSkinningGpuCase makeDayoSkinningGpuCase(std::string name, PreviewSkinningType skinningType,
+                                            std::vector<PreviewBoneTransform> bones,
+                                            const std::array<std::int32_t, 4>& boneIndices,
+                                            const std::array<float, 4>& weights, const Float3& expectedPosition,
+                                            std::uint32_t vertexCount = 1, const Float3& sdefCenter = {},
+                                            const Float3& sdefHalfDelta = {}) {
+    PreviewVertex vertex{};
+    vertex.position[0] = 1.0F;
+    vertex.position[1] = 2.0F;
+    vertex.position[2] = 3.0F;
+    vertex.normal[2] = 1.0F;
+    std::copy(boneIndices.begin(), boneIndices.end(), vertex.bones);
+    std::copy(weights.begin(), weights.end(), vertex.weights);
+    std::copy(sdefCenter.begin(), sdefCenter.end(), vertex.sdefC);
+    std::copy(sdefHalfDelta.begin(), sdefHalfDelta.end(), vertex.sdefHalfDelta);
+    vertex.skinningType = static_cast<std::uint32_t>(skinningType);
+    vertex.gpuSkinning = 1;
+    return DayoSkinningGpuCase{.name = std::move(name),
+                               .vertices = std::vector<PreviewVertex>(vertexCount, vertex),
+                               .bones = std::move(bones),
+                               .indices = {0, 0, 0},
+                               .runtime = nullptr,
+                               .output = {},
+                               .expectedPosition = expectedPosition};
+}
+
+bool dayoSkinningGpuReadback(dayo::graphics::VulkanDevice& device) {
+    if (!device.capabilities().hardwareSupportsSubayai()) {
+        std::cout << "INFO: Dayo upstream skinning GPU readback skipped; device lacks Subayai hardware features\n";
+        return true;
+    }
+    if (!device.nativeDeformPipeline().valid() || !device.nativeDeformDescriptorLayout().valid()) {
+        std::cerr << "FAIL: Dayo native deform pipeline is unavailable on an RT-capable device\n";
+        return false;
+    }
+
+    const auto translatedBone = [](float x, float y, float z) {
+        PreviewBoneTransform bone{};
+        bone.translation[0] = x;
+        bone.translation[1] = y;
+        bone.translation[2] = z;
+        return bone;
+    };
+    std::vector<DayoSkinningGpuCase> cases;
+    cases.push_back(makeDayoSkinningGpuCase("BDEF1 valid bone", PreviewSkinningType::bdef1,
+                                            {translatedBone(4.0F, -2.0F, 1.0F)}, {0, -1, -1, -1},
+                                            {1.0F, 0.0F, 0.0F, 0.0F}, {5.0F, 0.0F, 4.0F}));
+    cases.push_back(makeDayoSkinningGpuCase("BDEF2 partial invalid", PreviewSkinningType::bdef2,
+                                            {translatedBone(8.0F, 4.0F, -4.0F)}, {0, -1, -1, -1},
+                                            {0.25F, 0.75F, 0.0F, 0.0F}, {3.0F, 3.0F, 2.0F}));
+    cases.push_back(makeDayoSkinningGpuCase("BDEF4 partial invalid", PreviewSkinningType::bdef4,
+                                            {translatedBone(4.0F, 0.0F, 0.0F), translatedBone(0.0F, 8.0F, 0.0F)},
+                                            {0, 1, -1, 17}, {0.25F, 0.25F, 0.25F, 0.25F}, {2.0F, 4.0F, 3.0F}));
+    cases.push_back(makeDayoSkinningGpuCase("SDEF all invalid", PreviewSkinningType::sdef, {}, {-1, 42, -1, -1},
+                                            {0.5F, 0.0F, 0.0F, 0.0F}, {1.0F, 2.0F, 3.0F}, 1, {0.5F, -0.25F, 0.1F},
+                                            {0.2F, 0.1F, -0.3F}));
+    cases.push_back(makeDayoSkinningGpuCase("QDEF partial invalid", PreviewSkinningType::qdef,
+                                            {translatedBone(8.0F, 0.0F, 0.0F)}, {0, -1, -1, -1},
+                                            {0.25F, 0.25F, 0.25F, 0.25F}, {3.0F, 2.0F, 3.0F}));
+    cases.push_back(makeDayoSkinningGpuCase("BDEF1 all invalid", PreviewSkinningType::bdef1, {}, {-1, -1, -1, -1},
+                                            {1.0F, 0.0F, 0.0F, 0.0F}, {1.0F, 2.0F, 3.0F}));
+    cases.push_back(makeDayoSkinningGpuCase("QDEF all invalid", PreviewSkinningType::qdef, {}, {-1, -1, -1, -1},
+                                            {0.25F, 0.25F, 0.25F, 0.25F}, {1.0F, 2.0F, 3.0F}));
+    for (const auto count : {1U, 63U, 64U, 65U, 1023U, 1024U, 1025U})
+        cases.push_back(makeDayoSkinningGpuCase("BDEF1 vertex-count boundary", PreviewSkinningType::bdef1,
+                                                {translatedBone(0.5F, -0.25F, 1.0F)}, {0, -1, -1, -1},
+                                                {1.0F, 0.0F, 0.0F, 0.0F}, {1.5F, 1.75F, 4.0F}, count));
+
+    const auto descriptorLayout = device.nativeDeformDescriptorLayout();
+    for (auto& testCase : cases) {
+        testCase.runtime = std::make_unique<dayo::graphics::NativeDeformRuntime>();
+        const dayo::graphics::NativeDeformUpload upload{
+            .baseVertices = testCase.vertices,
+            .bones = testCase.bones,
+            .morphDeltas = {},
+            .morphWeights = {},
+            .indices = testCase.indices,
+            .deformedVertices = {},
+        };
+        std::string error;
+        if (!testCase.runtime->initialize(device, upload, device.nativeDeformPipeline(), descriptorLayout, &error)) {
+            std::cerr << "FAIL: cannot initialize GPU skinning fixture " << testCase.name << ": " << error << '\n';
+            return false;
+        }
+    }
+
+    device.setNativeRendererAvailability(true, false);
+    device.selectRenderer(dayo::graphics::RendererKind::subayai);
+    if (device.activeRenderer() != dayo::graphics::RendererKind::subayai) {
+        std::cerr << "FAIL: cannot enable the native deform fixture on a Subayai-capable device\n";
+        device.setNativeRendererAvailability(false, false);
+        return false;
+    }
+    device.setNativeFrameRecorder(
+        [&cases](dayo::graphics::CommandList& commands,
+                 const dayo::graphics::RenderTargetDesc&) -> std::optional<dayo::graphics::NativeFrameOutput> {
+            for (auto& testCase : cases) {
+                testCase.output = testCase.runtime->resources().deformedVertices;
+                testCase.runtime->record(commands);
+            }
+            commands.memoryBarrierEx();
+            return std::nullopt;
+        });
+    static_cast<void>(device.renderToImage({16, 16}));
+    device.waitIdle();
+    device.setNativeFrameRecorder({});
+    device.selectRenderer(dayo::graphics::RendererKind::preview);
+    device.setNativeRendererAvailability(false, false);
+
+    for (const auto& testCase : cases) {
+        const auto bytes = device.readbackBufferEx(
+            testCase.output, 0, testCase.vertices.size() * sizeof(dayo::graphics::NativeDeformedVertex));
+        if (bytes.size() != testCase.vertices.size() * sizeof(dayo::graphics::NativeDeformedVertex)) {
+            std::cerr << "FAIL: GPU skinning readback has wrong size for " << testCase.name << '\n';
+            return false;
+        }
+        for (std::size_t index = 0; index < testCase.vertices.size(); ++index) {
+            dayo::graphics::NativeDeformedVertex actual{};
+            std::memcpy(&actual, bytes.data() + index * sizeof(actual), sizeof(actual));
+            for (std::size_t component = 0; component < testCase.expectedPosition.size(); ++component) {
+                if (std::abs(actual.position[component] - testCase.expectedPosition[component]) > 0.002F) {
+                    std::cerr << "FAIL: GPU Dayo skinning position mismatch in " << testCase.name << " vertex " << index
+                              << '\n';
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
 bool orthographicZoom(dayo::graphics::VulkanDevice& device) {
     dayo::graphics::PreviewScene scene;
     scene.backgroundEnabled = false;
@@ -829,6 +975,8 @@ int main() {
             std::cerr << "FAIL: GPU QDEF output differs from reference rendering\n";
             return 1;
         }
+        if (!dayoSkinningGpuReadback(device))
+            return 1;
         if (!coplanarMaterialsUseStrictDepth(device)) {
             std::cerr << "FAIL: coplanar preview materials did not preserve the first material\n";
             return 1;
