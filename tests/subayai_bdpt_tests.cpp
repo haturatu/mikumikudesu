@@ -673,19 +673,39 @@ int main() {
             std::ofstream output(path, std::ios::binary | std::ios::trunc);
             output << value;
         };
+        const auto composeShader = [](std::string_view first, std::string_view second, std::string_view third) {
+            std::string source;
+            source.reserve(first.size() + second.size() + third.size());
+            source.append(first.data(), first.size());
+            source.append(second.data(), second.size());
+            source.append(third.data(), third.size());
+            return source;
+        };
         const std::string declaration = "const char PrefilterShader[] = R\"(";
         const std::string end = ")\";";
         const std::string upstream = "\r\n// upstream shader\r\nfloat Probe() { return 1; }\r\n";
-        write(declaration + upstream + end);
+        write(composeShader(declaration, upstream, end));
         const auto generated = dayo::graphics::loadDayoSkyboxPrefilterShader(path);
         ok &= check(generated.starts_with(upstream) && generated.find("NativePrefilterVS") != std::string::npos &&
                         generated.find("return VS(") != std::string::npos,
                     "prefilter preserves the upstream literal and adds only the vertex entry adapter");
-        write(declaration + "float Probe() { return 2; }" + end);
+        write(composeShader(declaration, "float Probe() { return 2; }", end));
         ok &= check(dayo::graphics::loadDayoSkyboxPrefilterShader(path).find("return 2;") != std::string::npos,
                     "upstream shader changes are loaded instead of a built-in algorithm copy");
-        for (const auto& invalid : {std::string{"unrelated module"}, declaration + upstream, declaration + end,
-                                    declaration + upstream + end + declaration + upstream + end}) {
+        auto truncated = declaration;
+        truncated.append(upstream);
+        auto empty = declaration;
+        empty.append(end);
+        auto duplicate = declaration;
+        duplicate.reserve((declaration.size() + upstream.size() + end.size()) * 2U);
+        duplicate.append(upstream);
+        duplicate.append(end);
+        duplicate.append(declaration);
+        duplicate.append(upstream);
+        duplicate.append(end);
+        const std::array invalidInputs{std::string{"unrelated module"}, std::move(truncated), std::move(empty),
+                                       std::move(duplicate)};
+        for (const auto& invalid : invalidInputs) {
             write(invalid);
             bool rejected = false;
             try {

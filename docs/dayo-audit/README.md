@@ -1,4 +1,4 @@
-# Dayo再利用・互換性調査（2026-09-26）
+# Dayo再利用・互換性調査（2026-09-27）
 
 基準は `main@7ed41e0` と [MikuMikuDayo130 release](https://github.com/pennennennennennenem/MikuMikuDayo/releases/tag/MikuMikuDayo130)。
 `.cache/mikumikudayo/MikuMikuDayo130.zip` のSHA256はlockの
@@ -10,19 +10,20 @@
 
 | 項目 | 状態 | PR / 根拠 |
 | --- | --- | --- |
-| buffers[].filenameの欠落、初期uploadなし | 修正PR | [#245](https://github.com/haturatu/mikumikudesu/pull/245) |
-| 外部画像のsize/format優先順位とdispatch寸法不一致 | 修正PR | [#246](https://github.com/haturatu/mikumikudesu/pull/246) |
-| 環境光prefilterの内蔵コピーが上流更新に追従しない | 修正PR | [prefilter-reuse.md](prefilter-reuse.md)（このPR） |
-| shared=refを別allocationにしており実体共有しない | 未実装・調査Draft | [#247](https://github.com/haturatu/mikumikudesu/pull/247) |
-| 標準skinningが独自HLSLで上流helperを再利用しない | 未実装・調査Draft | [#248](https://github.com/haturatu/mikumikudesu/pull/248) |
-| FX Debugのtexture preview / buffer・texture dumpが未接続 | 未実装・調査Draft | [#249](https://github.com/haturatu/mikumikudesu/pull/249) |
-| outputFileと末尾番号を画像連番出力へ適用しない | 未実装・調査Draft | [#250](https://github.com/haturatu/mikumikudesu/pull/250) |
-| size.baseの前方参照、相対サイズの最小1の差 | 未実装・調査Draft | [#251](https://github.com/haturatu/mikumikudesu/pull/251) |
-| generic deformer/postprocessへMatDesc GPU tableを渡さない | 未実装・調査Draft | [#253](https://github.com/haturatu/mikumikudesu/pull/253) |
-| texture.typeを保持せず、外部画像のtyped formatも限定 | 未実装・調査Draft | [#254](https://github.com/haturatu/mikumikudesu/pull/254) |
+| buffers[].filenameの欠落、初期uploadなし | 実装済み・PR open | [#245](https://github.com/haturatu/mikumikudesu/pull/245) |
+| 外部画像のsize/format優先順位とdispatch寸法不一致 | 実装済み・PR open | [#246](https://github.com/haturatu/mikumikudesu/pull/246) |
+| 環境光prefilterの内蔵コピーが上流更新に追従しない | 実装済み・PR open | [#252](https://github.com/haturatu/mikumikudesu/pull/252)、[詳細](prefilter-reuse.md) |
+| shared=refを別allocationにしており実体共有しない | 実装済み・PR open | [#247](https://github.com/haturatu/mikumikudesu/pull/247) |
+| 標準skinningが独自HLSLで上流helperを再利用しない | 実装済み・PR open | [#248](https://github.com/haturatu/mikumikudesu/pull/248) |
+| FX Debugのtexture preview / buffer・texture dumpが未接続 | 実装済み・PR open | [#249](https://github.com/haturatu/mikumikudesu/pull/249) |
+| outputFileと末尾番号を画像連番出力へ適用しない | 実装済み・PR open | [#250](https://github.com/haturatu/mikumikudesu/pull/250) |
+| size.baseの前方参照、相対サイズの最小1の差 | 実装済み・PR open | [#251](https://github.com/haturatu/mikumikudesu/pull/251) |
+| generic deformer/postprocessへMatDesc GPU tableを渡さない | 実装済み・PR open | [#253](https://github.com/haturatu/mikumikudesu/pull/253) |
+| texture.typeを保持せず、外部画像のtyped formatも限定 | 実装済み・PR open | [#254](https://github.com/haturatu/mikumikudesu/pull/254) |
 
-調査Draftには実装差分を含めず、上流/現行の関数・影響・接続設計・受け入れ条件を記録した。
-各PRはmainから独立している。表の修正はPR段階であり、mainへmerge済みという意味ではない。
+2026-09-27時点で対象の10 PRはopenで、mainへmerge済みの項目はない。実装状況は各PR headを確認すること。
+stackは `#246 → #251 → #254 → #253 → #247 → #248 → #249 → #250`。
+prefilter再利用の[#252](https://github.com/haturatu/mikumikudesu/pull/252)はmainをbaseとする独立PR。
 
 ## 調査対象の対応関係
 
