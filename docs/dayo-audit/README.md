@@ -18,6 +18,8 @@
 | FX Debugのtexture preview / buffer・texture dumpが未接続 | 未実装・調査Draft | [#249](https://github.com/haturatu/mikumikudesu/pull/249) |
 | outputFileと末尾番号を画像連番出力へ適用しない | 未実装・調査Draft | [#250](https://github.com/haturatu/mikumikudesu/pull/250) |
 | size.baseの前方参照、相対サイズの最小1の差 | 未実装・調査Draft | [#251](https://github.com/haturatu/mikumikudesu/pull/251) |
+| generic deformer/postprocessへMatDesc GPU tableを渡さない | 未実装・調査Draft | [#253](https://github.com/haturatu/mikumikudesu/pull/253) |
+| texture.typeを保持せず、外部画像のtyped formatも限定 | 未実装・調査Draft | [#254](https://github.com/haturatu/mikumikudesu/pull/254) |
 
 調査Draftには実装差分を含めず、上流/現行の関数・影響・接続設計・受け入れ条件を記録した。
 各PRはmainから独立している。表の修正はPR段階であり、mainへmerge済みという意味ではない。
