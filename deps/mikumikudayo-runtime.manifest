@@ -7,3 +7,5 @@ particle/
 sample/
 res/
 licence/
+# PrefilterShader is embedded in this module and loaded by the native runtime.
+src/YRZ.ixx

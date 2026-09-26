@@ -665,6 +665,46 @@ int main() {
     using dayo::graphics::ShaderBindingTableBuilder;
     using dayo::graphics::TlasAction;
     bool ok = true;
+    {
+        const auto directory = std::filesystem::temp_directory_path() / "dayo-prefilter-source-test";
+        std::filesystem::create_directories(directory);
+        const auto path = directory / "YRZ.ixx";
+        const auto write = [&](std::string_view value) {
+            std::ofstream output(path, std::ios::binary | std::ios::trunc);
+            output << value;
+        };
+        const std::string declaration = "const char PrefilterShader[] = R\"(";
+        const std::string end = ")\";";
+        const std::string upstream = "\r\n// upstream shader\r\nfloat Probe() { return 1; }\r\n";
+        write(declaration + upstream + end);
+        const auto generated = dayo::graphics::loadDayoSkyboxPrefilterShader(path);
+        ok &= check(generated.starts_with(upstream) && generated.find("NativePrefilterVS") != std::string::npos &&
+                        generated.find("return VS(") != std::string::npos,
+                    "prefilter preserves the upstream literal and adds only the vertex entry adapter");
+        write(declaration + "float Probe() { return 2; }" + end);
+        ok &= check(dayo::graphics::loadDayoSkyboxPrefilterShader(path).find("return 2;") != std::string::npos,
+                    "upstream shader changes are loaded instead of a built-in algorithm copy");
+        for (const auto& invalid : {std::string{"unrelated module"}, declaration + upstream, declaration + end,
+                                    declaration + upstream + end + declaration + upstream + end}) {
+            write(invalid);
+            bool rejected = false;
+            try {
+                static_cast<void>(dayo::graphics::loadDayoSkyboxPrefilterShader(path));
+            } catch (const std::runtime_error& error) {
+                rejected = std::string_view(error.what()).find("YRZ.ixx") != std::string::npos;
+            }
+            ok &= check(rejected, "missing, truncated, empty, or ambiguous prefilter source has a path diagnostic");
+        }
+        std::filesystem::remove(path);
+        bool missingRejected = false;
+        try {
+            static_cast<void>(dayo::graphics::loadDayoSkyboxPrefilterShader(path));
+        } catch (const std::runtime_error&) {
+            missingRejected = true;
+        }
+        ok &= check(missingRejected, "prefilter cannot silently fall back when upstream source is absent");
+        std::filesystem::remove(directory);
+    }
 
     ok &= testSubayaiNativeFxExecution();
     ok &= testSubayaiMatDescResolvesLocalTextureOnFirstFrame();
