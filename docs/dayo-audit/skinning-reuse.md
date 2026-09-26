@@ -1,6 +1,6 @@
 # 調査: 標準skinningのDayo HLSL再利用
 
-状態: **未実装・調査PR**。基準は `main@7ed41e0` と固定 MikuMikuDayo130。
+状態: **実装済み**。基準は `main@7ed41e0` と固定 MikuMikuDayo130。
 
 ## 確認した差分
 
@@ -31,4 +31,19 @@ OutBufをBLAS refitとrendererの頂点参照へ接続する。アルゴリズ�
 - DXC SPIR-V ABI検証、Vulkan validation、GPU readback、Windows 1.30との差分を記録する。
 - portableなPreview fallbackも維持し、上流source欠損時は診断する。
 
-このPRは調査と接続設計のみ。shader置換・Windows/GPU比較は未実施。
+## 実装
+
+`native_deform.hlsl` は上流 `yrz.hlsli` / `dayotypes.hlsli` / `skinning.hlsli` を直接 include し、
+`Dayo::DefaultSkinning(0)` を呼ぶ。独自 LBS/SDEF/QDEF と quaternion 補間の実装を削除した。
+上流ファイル群をビルド依存に登録し、更新時にSPIR-Vを再生成する。
+
+既存NativeDeformの5 binding ABIを保つため、各threadで1頂点のDayo入力viewと4本の骨行列を構成する。
+骨indexをそのviewへ対応付け、SDEFの半差分を上流weight.yzwに渡す。
+既存のcompact位置morphは呼出前に適用し、上流morph pointerは無効化して二重適用を防ぐ。
+UVは既存入力経路を維持する。追加UVはNativeDeformedVertexの出力ABIに存在せず、既存canonical scene経路が担当する。
+
+64threadのbounds check、非GPU skinningのpassthrough、無効影響骨の診断可能な安定結果を維持する。
+出力buffer、BLAS refit、renderer接続は既存NativeDeformRuntimeを使う。
+
+DXCで上流includeを含むSPIR-V生成とLinux `mikumikudesu` ビルド成功。
+今回テスト・数値readback・Windows比較は行っていない。前提PR: #247。

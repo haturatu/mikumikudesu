@@ -1,5 +1,5 @@
 function(dayo_compile_hlsl output_var)
-  cmake_parse_arguments(ARG "" "SOURCE;ENTRY;PROFILE;STAGE" "INCLUDES;DEFINES" ${ARGN})
+  cmake_parse_arguments(ARG "" "SOURCE;ENTRY;PROFILE;STAGE" "INCLUDES;DEFINES;DEPENDS" ${ARGN})
   if(NOT ARG_SOURCE OR NOT ARG_ENTRY OR NOT ARG_PROFILE OR NOT ARG_STAGE)
     message(FATAL_ERROR "dayo_compile_hlsl requires SOURCE, ENTRY, PROFILE and STAGE")
   endif()
@@ -55,7 +55,7 @@ function(dayo_compile_hlsl output_var)
     OUTPUT "${output}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/shaders"
     COMMAND ${command}
-    DEPENDS "${source_abs}"
+    DEPENDS "${source_abs}" ${ARG_DEPENDS}
     COMMENT "Compiling HLSL ${ARG_SOURCE}:${ARG_ENTRY} to SPIR-V with ${compiler_name}"
     VERBATIM
   )
