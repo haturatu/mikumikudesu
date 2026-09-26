@@ -138,6 +138,8 @@ class FrameExtentTable final : public core::fx::FxResourceTable {
 
 [[nodiscard]] std::optional<FxExtent3D> declaredExtent(const FxProgram& program, std::string_view name,
                                                        const FxFrameContext& context, const FrameExtentTable& table) {
+    if (const auto physical = table.find(name); physical.has_value())
+        return fromFxExtent(*physical);
     for (const auto& texture : program.textures)
         if (texture.name == name)
             return fromFxExtent(resolveEffectSize(texture.size, 2, true, context, table));
@@ -629,7 +631,8 @@ std::uint64_t FxInstance::beginReloadRequest() {
     return request;
 }
 
-FxFramePlan FxCompiler::plan(const FxProgram& program, const FxFrameContext& context) const {
+FxFramePlan FxCompiler::plan(const FxProgram& program, const FxFrameContext& context,
+                             const core::fx::FxResourceTable* resources) const {
     FxFramePlan framePlan;
     framePlan.ordered = program.passes;
     framePlan.programGeneration = program.generation;
@@ -638,6 +641,15 @@ FxFramePlan FxCompiler::plan(const FxProgram& program, const FxFrameContext& con
     FrameExtentTable extents;
     const auto addDeclaredSize = [&](std::string_view name, const core::EffectSize& size, std::uint32_t dimension,
                                      bool screenDefault) {
+        // Native execution supplies the already allocated resource dimensions.
+        // File-backed textures ignore declared sizes in Dayo, including sizes
+        // used as another resource or dispatch's base.
+        if (resources != nullptr) {
+            if (const auto physical = resources->find(name); physical.has_value()) {
+                extents.add(std::string(name), *physical);
+                return;
+            }
+        }
         const auto extent = resolveEffectSize(size, dimension, screenDefault, context, extents);
         extents.add(std::string(name), extent);
     };

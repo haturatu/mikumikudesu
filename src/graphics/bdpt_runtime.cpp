@@ -261,7 +261,6 @@ BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::Dir
     // the same sample that will be accumulated by the native pass.
     frame.context = context;
     frame.context.sample = frame.sampleIndex;
-    frame.plan = fx::FxCompiler{}.plan(program_, frame.context);
     frame.gpu = accumulation_.gpuResources();
     frame.descriptorSet = descriptorSets_[device_->currentFrameSlot() % kNativeFramesInFlight];
     frame.lightSamplingBuffer = lightRuntime_.buffer();
@@ -354,6 +353,7 @@ BdptFrame BdptRuntime::prepareFrame(const fx::FxFrameContext& context, core::Dir
         append(geometry_.descriptorLayout(), geometry_.descriptorSet());
         frame.nativeFx = dayoFx_.prepareFrame(context, frameSharedSets);
     }
+    frame.plan = frame.nativeFx.has_value() ? frame.nativeFx->plan : fx::FxCompiler{}.plan(program_, frame.context);
     return frame;
 }
 
