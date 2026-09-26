@@ -154,7 +154,7 @@ std::optional<core::fx::FxExtent> FxResourceSizeTable::find(std::string_view nam
             std::ranges::transform(extension, extension.begin(),
                                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             if (extension == ".dds") {
-                const auto image = core::loadDdsImageRgba8(path);
+                const auto image = core::inspectDdsImage(path);
                 extent = core::fx::FxExtent{image.width, image.height, image.depth, source.dimension};
             } else {
                 const auto image = core::loadImageRgba8(path);

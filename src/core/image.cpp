@@ -548,6 +548,92 @@ ImageRgba8 decodeDds(const std::filesystem::path& requested) {
 
 } // namespace
 
+DdsImageMetadata inspectDdsImage(const std::filesystem::path& requested) {
+    const auto path = resolveImageFile(requested);
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input)
+        throw std::runtime_error("cannot open DDS image: " + path.string());
+    const auto end = input.tellg();
+    if (end < 128)
+        throw std::runtime_error("invalid DDS header: " + path.string());
+
+    std::array<std::uint8_t, 148> header{};
+    input.seekg(0);
+    input.read(reinterpret_cast<char*>(header.data()), 128);
+    if (!input || std::memcmp(header.data(), "DDS ", 4) != 0 || u32(header.data() + 4) != 124U ||
+        u32(header.data() + 76) != 32U)
+        throw std::runtime_error("invalid DDS file: " + path.string());
+
+    DdsImageMetadata result;
+    result.width = u32(header.data() + 16);
+    result.height = u32(header.data() + 12);
+    result.depth = std::max(u32(header.data() + 24), 1U);
+    result.mipLevels = std::max(u32(header.data() + 28), 1U);
+    if (result.width == 0 || result.height == 0)
+        throw std::runtime_error("invalid DDS dimensions: " + path.string());
+
+    const auto code = u32(header.data() + 84);
+    const auto caps2 = u32(header.data() + 112);
+    if (code == fourCc('D', 'X', '1', '0')) {
+        if (end < 148)
+            throw std::runtime_error("truncated DDS DX10 header: " + path.string());
+        input.read(reinterpret_cast<char*>(header.data() + 128), 20);
+        if (!input)
+            throw std::runtime_error("truncated DDS DX10 header: " + path.string());
+
+        constexpr std::uint32_t kTexture2D = 3;
+        constexpr std::uint32_t kTexture3D = 4;
+        constexpr std::uint32_t kTextureCube = 0x4;
+        const auto resourceDimension = u32(header.data() + 132);
+        const auto miscFlag = u32(header.data() + 136);
+        const auto arraySize = u32(header.data() + 140);
+        if (arraySize == 0)
+            throw std::runtime_error("invalid DDS DX10 array size: " + path.string());
+        if (resourceDimension == kTexture3D) {
+            if (arraySize != 1 || (miscFlag & kTextureCube) != 0 || u32(header.data() + 24) == 0)
+                throw std::runtime_error("invalid DDS DX10 volume metadata: " + path.string());
+            result.dimension = DdsDimension::threeD;
+        } else if (resourceDimension == kTexture2D) {
+            result.depth = 1;
+            if ((miscFlag & kTextureCube) != 0) {
+                result.dimension = DdsDimension::cube;
+                if (arraySize > std::numeric_limits<std::uint32_t>::max() / 6U)
+                    throw std::runtime_error("DDS cubemap array is too large: " + path.string());
+                result.arrayLayers = arraySize * 6U;
+            } else {
+                result.dimension = DdsDimension::twoD;
+                result.arrayLayers = arraySize;
+            }
+        } else {
+            throw std::runtime_error("unsupported DDS DX10 resource dimension: " + path.string());
+        }
+    } else if ((caps2 & 0x200000U) != 0U) {
+        if ((caps2 & 0x200U) != 0U || u32(header.data() + 24) == 0)
+            throw std::runtime_error("invalid DDS volume metadata: " + path.string());
+        result.dimension = DdsDimension::threeD;
+    } else if ((caps2 & 0x200U) != 0U) {
+        constexpr std::uint32_t kAllCubeFaces = 0xFC00U;
+        if ((caps2 & kAllCubeFaces) != kAllCubeFaces)
+            throw std::runtime_error("incomplete DDS cubemap is unsupported: " + path.string());
+        result.dimension = DdsDimension::cube;
+        result.depth = 1;
+        result.arrayLayers = 6;
+    } else {
+        result.dimension = DdsDimension::twoD;
+        result.depth = 1;
+    }
+
+    auto largest = std::max({result.width, result.height, result.depth});
+    std::uint32_t maximumMipLevels = 1;
+    while (largest > 1) {
+        largest >>= 1U;
+        ++maximumMipLevels;
+    }
+    if (result.mipLevels > maximumMipLevels)
+        throw std::runtime_error("DDS mip count exceeds the texture extent: " + path.string());
+    return result;
+}
+
 const ImageRgba8Subresource& DdsImageRgba8::subresource(std::uint32_t mipLevel, std::uint32_t arrayLayer) const {
     if (mipLevel >= mipLevels || arrayLayer >= arrayLayers)
         throw std::out_of_range("DDS subresource index is out of range");
