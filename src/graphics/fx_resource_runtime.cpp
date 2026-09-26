@@ -17,6 +17,24 @@
 namespace dayo::graphics {
 namespace {
 
+struct SharedAllocation {
+    Device* device;
+    handles::TextureHandle texture;
+    handles::BufferHandle buffer;
+    SharedAllocation(Device& owner, handles::TextureHandle image, handles::BufferHandle data)
+        : device(&owner), texture(image), buffer(data) {}
+    ~SharedAllocation() {
+        try {
+            device->waitIdle();
+            if (texture.valid())
+                device->destroyTextureEx(texture);
+            if (buffer.valid())
+                device->destroyBufferEx(buffer);
+        } catch (...) {
+        }
+    }
+};
+
 [[nodiscard]] std::string upper(std::string_view value) {
     std::string result;
     result.reserve(value.size());
@@ -266,16 +284,14 @@ bool fxSharedMode(std::string_view value, std::string_view mode) {
 
 bool FxResourceRuntime::sharedReferencesChanged(const fx::FxProgram& program) const {
     const auto changed = [this](const auto& declarations) {
-        for (const auto& declaration : declarations) {
+        return std::ranges::any_of(declarations, [this](const auto& declaration) {
             if (!fxSharedMode(declaration.shared, "ref"))
-                continue;
+                return false;
             const auto source = sharedResolver_ ? sharedResolver_(declaration.name) : std::nullopt;
             const auto* old = store_.find(declaration.name);
-            if (!source || old == nullptr || source->ownership != old->ownership || source->texture != old->texture ||
-                source->buffer != old->buffer)
-                return true;
-        }
-        return false;
+            return !source || old == nullptr || source->ownership != old->ownership ||
+                   source->texture != old->texture || source->buffer != old->buffer;
+        });
     };
     return changed(program.textures) || changed(program.textures3D) || changed(program.buffers);
 }
@@ -776,18 +792,7 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                 const auto buffer = resource->buffer;
                 // The device outlives its FX runtimes and registry. The final reference
                 // waits for submitted work before releasing the physical allocation.
-                resource->ownership =
-                    std::shared_ptr<void>(new char{}, [owner = &device, texture, buffer](void* token) noexcept {
-                        delete static_cast<char*>(token);
-                        try {
-                            owner->waitIdle();
-                            if (texture.valid())
-                                owner->destroyTextureEx(texture);
-                            if (buffer.valid())
-                                owner->destroyBufferEx(buffer);
-                        } catch (...) {
-                        }
-                    });
+                resource->ownership = std::make_shared<SharedAllocation>(device, texture, buffer);
             }
         };
         ownSources(program.textures);
