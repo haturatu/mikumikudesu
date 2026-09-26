@@ -256,6 +256,30 @@ void appendDescriptorWrites(std::vector<DescriptorBindingEx>& output, const fx::
 
 } // namespace
 
+bool fxSharedMode(std::string_view value, std::string_view mode) {
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())))
+        value.remove_prefix(1);
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())))
+        value.remove_suffix(1);
+    return upper(value) == upper(mode);
+}
+
+bool FxResourceRuntime::sharedReferencesChanged(const fx::FxProgram& program) const {
+    const auto changed = [this](const auto& declarations) {
+        for (const auto& declaration : declarations) {
+            if (!fxSharedMode(declaration.shared, "ref"))
+                continue;
+            const auto source = sharedResolver_ ? sharedResolver_(declaration.name) : std::nullopt;
+            const auto* old = store_.find(declaration.name);
+            if (!source || old == nullptr || source->ownership != old->ownership || source->texture != old->texture ||
+                source->buffer != old->buffer)
+                return true;
+        }
+        return false;
+    };
+    return changed(program.textures) || changed(program.textures3D) || changed(program.buffers);
+}
+
 bool FxResourceStore::add(Resource resource) {
     if (resource.name.empty() || indices_.contains(resource.name))
         return false;
@@ -491,7 +515,26 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
     reset();
     device_ = &device;
     try {
-        fx::FxResourceSizeTable table(program, context);
+        const auto borrow = [this](const auto& declarations, FxResourceStore::Kind kind, std::uint32_t dimension) {
+            for (const auto& declaration : declarations) {
+                if (!fxSharedMode(declaration.shared, "ref"))
+                    continue;
+                auto source = sharedResolver_ ? sharedResolver_(declaration.name) : std::nullopt;
+                if (!source)
+                    throw std::invalid_argument("unresolved shared=ref: " + declaration.name);
+                if (!source->ownership)
+                    throw std::invalid_argument("shared source has no lifetime owner: " + declaration.name);
+                if (source->kind != kind || (kind == FxResourceStore::Kind::texture && source->dimension != dimension))
+                    throw std::invalid_argument("shared resource kind/dimension mismatch: " + declaration.name);
+                source->name = declaration.name;
+                if (!store_.add(std::move(*source)))
+                    throw std::invalid_argument("duplicate shared reference: " + declaration.name);
+            }
+        };
+        borrow(program.textures, FxResourceStore::Kind::texture, 2);
+        borrow(program.textures3D, FxResourceStore::Kind::texture, 3);
+        borrow(program.buffers, FxResourceStore::Kind::buffer, 1);
+        fx::FxResourceSizeTable table(program, context, this);
         table.resolveAll();
         const auto stages = allFxStages();
         std::uint64_t totalBytes = 0;
@@ -525,7 +568,28 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             descriptorLayoutDesc_.bindings.push_back({binding, kind, 1, stages});
         };
 
+        const auto bindReference = [&](std::string_view name, std::string_view view, ResourceUsage required) {
+            auto* source = store_.find(name);
+            if (source == nullptr)
+                throw std::logic_error("shared resource was not resolved");
+            if ((toBits(source->usage) & toBits(required)) != toBits(required))
+                throw std::invalid_argument("shared source usage cannot satisfy ref: " + std::string(name));
+            source->legacyBinding = nextBinding(registerClass(view));
+            source->legacyDescriptorKind = source->kind == FxResourceStore::Kind::texture
+                                               ? textureDescriptorKind(view, source->format)
+                                               : bufferDescriptorKind(view);
+            addBinding(source->legacyBinding, source->legacyDescriptorKind);
+        };
+
         for (const auto& declaration : program.textures) {
+            if (fxSharedMode(declaration.shared, "ref")) {
+                const auto* source = store_.find(declaration.name);
+                bindReference(
+                    declaration.name, declaration.view,
+                    textureUsage(declaration.view, source->format, summarizeTextureUsage(program, declaration.name)));
+                continue;
+            }
+
             const auto name = addName(declaration.name);
             std::optional<core::TextureImage> externalDds;
             if (!declaration.filename.empty()) {
@@ -566,6 +630,7 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                                                .elementType = {},
                                                .legacyDescriptorKind = textureDescriptorKind(declaration.view, format),
                                                .legacyBinding = binding};
+            resource.usage = description.usage;
             resource.texture = device.createTextureEx(description);
             if (!resource.texture.valid())
                 throw std::runtime_error("FX texture allocation returned an invalid handle: " + name);
@@ -582,6 +647,14 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             addBinding(stored->legacyBinding, stored->legacyDescriptorKind);
         }
         for (const auto& declaration : program.textures3D) {
+            if (fxSharedMode(declaration.shared, "ref")) {
+                const auto* source = store_.find(declaration.name);
+                bindReference(
+                    declaration.name, declaration.view,
+                    textureUsage(declaration.view, source->format, summarizeTextureUsage(program, declaration.name)));
+                continue;
+            }
+
             const auto name = addName(declaration.name);
             std::optional<core::TextureImage> externalDds;
             if (!declaration.filename.empty()) {
@@ -629,6 +702,7 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                                                .elementType = {},
                                                .legacyDescriptorKind = textureDescriptorKind(declaration.view, format),
                                                .legacyBinding = binding};
+            resource.usage = description.usage;
             resource.texture = device.createTextureEx(description);
             if (!resource.texture.valid())
                 throw std::runtime_error("FX 3D texture allocation returned an invalid handle: " + name);
@@ -645,6 +719,16 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             addBinding(stored->legacyBinding, stored->legacyDescriptorKind);
         }
         for (const auto& declaration : program.buffers) {
+            if (fxSharedMode(declaration.shared, "ref")) {
+                const auto* source = store_.find(declaration.name);
+                if ((declaration.elementSize != 0 && declaration.elementSize != source->elementSize) ||
+                    (!declaration.type.empty() && declaration.type != source->elementType))
+                    throw std::invalid_argument("shared buffer stride/type mismatch: " + declaration.name);
+                bindReference(declaration.name, declaration.view,
+                              bufferUsage(program, declaration.name, declaration.view));
+                continue;
+            }
+
             const auto name = addName(declaration.name);
             if (declaration.elementSize == 0)
                 throw std::invalid_argument("FX buffer element size is zero: " + name);
@@ -672,6 +756,7 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                                                .elementType = declaration.type,
                                                .legacyDescriptorKind = bufferDescriptorKind(declaration.view),
                                                .legacyBinding = binding};
+            resource.usage = description.usage;
             resource.buffer = device.createBufferEx(description);
             if (!resource.buffer.valid())
                 throw std::runtime_error("FX buffer allocation returned an invalid handle: " + name);
@@ -680,6 +765,35 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
             const auto* stored = store_.find(name);
             addBinding(stored->legacyBinding, stored->legacyDescriptorKind);
         }
+        const auto ownSources = [&](const auto& declarations) {
+            for (const auto& declaration : declarations) {
+                if (!fxSharedMode(declaration.shared, "source"))
+                    continue;
+                auto* resource = store_.find(declaration.name);
+                if (resource == nullptr)
+                    throw std::logic_error("shared source allocation is missing");
+                const auto texture = resource->texture;
+                const auto buffer = resource->buffer;
+                // The device outlives its FX runtimes and registry. The final reference
+                // waits for submitted work before releasing the physical allocation.
+                resource->ownership =
+                    std::shared_ptr<void>(new char{}, [owner = &device, texture, buffer](void* token) noexcept {
+                        delete static_cast<char*>(token);
+                        try {
+                            owner->waitIdle();
+                            if (texture.valid())
+                                owner->destroyTextureEx(texture);
+                            if (buffer.valid())
+                                owner->destroyBufferEx(buffer);
+                        } catch (...) {
+                        }
+                    });
+            }
+        };
+        ownSources(program.textures);
+        ownSources(program.textures3D);
+        ownSources(program.buffers);
+
         for (const auto& declaration : program.samplers) {
             const auto name = addName(declaration.name);
             const auto binding = nextBinding(NativeSceneRegisterClass::sampler);
@@ -768,6 +882,8 @@ void FxResourceRuntime::reset() noexcept {
             }
         }
         for (const auto& resource : store_.resources()) {
+            if (resource.ownership)
+                continue;
             try {
                 if (resource.texture.valid())
                     device->destroyTextureEx(resource.texture);

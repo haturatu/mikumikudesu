@@ -118,6 +118,7 @@ class NativeRendererCoordinator {
     [[nodiscard]] FxMaterialTextureResolver materialTextureResolver(const FxResourceStore* localStore,
                                                                     bool rendererLocal) const;
     void publishActiveRendererResources();
+    [[nodiscard]] FxSharedResourceResolver sharedResourceResolver() const;
 
     NativeRendererStatus status_{};
     SubayaiRuntime subayai_;

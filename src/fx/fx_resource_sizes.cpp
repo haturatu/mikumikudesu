@@ -111,6 +111,11 @@ FxResourceSizeTable::FxResourceSizeTable(const FxProgram& program, const FxFrame
     : context_(context), directory_(program.sourcePath.parent_path()), physical_(physical) {
     const auto add = [&](const auto& declaration, std::uint32_t dimension, bool screenDefault, std::string filename) {
         auto shared = declaration.shared;
+        const auto first = shared.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos)
+            shared.clear();
+        else
+            shared = shared.substr(first, shared.find_last_not_of(" \t\r\n") - first + 1);
         std::ranges::transform(shared, shared.begin(),
                                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         Node node{declaration.size, dimension, screenDefault, shared == "ref", std::move(filename)};

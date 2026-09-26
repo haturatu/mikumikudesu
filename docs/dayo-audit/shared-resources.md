@@ -1,6 +1,6 @@
 # 調査: shared=ref の実体共有と再bind
 
-状態: **未実装・調査PR**。基準は `main@7ed41e0` と固定 MikuMikuDayo130。
+状態: **実装済み**。基準は `main@7ed41e0` と固定 MikuMikuDayo130。
 
 ## 確認した差分
 
@@ -32,4 +32,17 @@ sourceがない場合がある。registry自体もnon-owningで、そのhandle�
 - sourceのresize、reload、削除と複数frame in flightで古いhandleにアクセスしない。
 - postprocess、renderer、deformerをまたぐ依存を検証する。
 
-今回行ったのはソース比較。実行時の共有はこのPRでは実装していない。
+## 実装
+
+2D/3D/buffer の ref を初期化前に解決し、source と同じ物理handleと所有権tokenをstoreへ登録する。
+sourceの次元・buffer stride/type・必要usageを検査する。共有参照は重複確保せず、最終所有者がGPU待機後に解放する。
+refresh はsourceのhandle/token変更を検知してdescriptorとpipelineを再構築する。
+
+generic stage内はsource→refの依存順に実行し、effect間にmemory barrierを置く。
+deform→renderer→postprocessの境界を越えて参照可能で、後続stageへの逆向き参照は診断する。
+全stageのsource名重複、未解決、stage内循環も診断する。上流のdummy fallbackは採用せず明示エラーとする。
+
+sourceは実行後に公開されるため、consumerはproducerの書込みと公開後に初期化される。
+この実装はsourceのサイズがrefに依存する循環構成をサポートしない。
+
+Linux `mikumikudesu` ビルド成功。今回テスト・GPU readbackは行っていない。前提PR: #253。

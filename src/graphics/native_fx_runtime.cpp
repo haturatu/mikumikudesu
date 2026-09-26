@@ -91,7 +91,8 @@ bool NativeFxRuntime::refresh(const fx::FxFrameContext& context, std::string* er
         setError(error, "native FX runtime is not initialized");
         return false;
     }
-    if (ready_ && resourceContext_.has_value() && sameResourceContext(*resourceContext_, context))
+    if (ready_ && resourceContext_.has_value() && sameResourceContext(*resourceContext_, context) &&
+        !resources_.sharedReferencesChanged(program_))
         return true;
 
     ready_ = false;
