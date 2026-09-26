@@ -13,10 +13,12 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace dayo::core {
@@ -806,7 +808,7 @@ ImageRgba8 decodeDds(const std::filesystem::path& requested) {
 
 } // namespace
 
-DdsImageMetadata inspectDdsImage(const std::filesystem::path& requested) {
+ImageMetadata inspectDdsImage(const std::filesystem::path& requested) {
     const auto path = resolveImageFile(requested);
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input)
@@ -822,7 +824,7 @@ DdsImageMetadata inspectDdsImage(const std::filesystem::path& requested) {
         u32(header.data() + 76) != 32U)
         throw std::runtime_error("invalid DDS file: " + path.string());
 
-    DdsImageMetadata result;
+    ImageMetadata result;
     result.width = u32(header.data() + 16);
     result.height = u32(header.data() + 12);
     result.depth = std::max(u32(header.data() + 24), 1U);
@@ -890,6 +892,65 @@ DdsImageMetadata inspectDdsImage(const std::filesystem::path& requested) {
     if (result.mipLevels > maximumMipLevels)
         throw std::runtime_error("DDS mip count exceeds the texture extent: " + path.string());
     return result;
+}
+
+ImageMetadata inspectImageMetadata(const std::filesystem::path& requested) {
+    struct CacheEntry {
+        std::uintmax_t encodedSize{};
+        std::filesystem::file_time_type modified{};
+        ImageMetadata metadata;
+    };
+    static std::mutex cacheMutex;
+    static std::unordered_map<std::string, CacheEntry> cache;
+
+    const auto path = resolveImageFile(requested);
+    const auto key = std::filesystem::absolute(path).lexically_normal().generic_string();
+    std::error_code fileError;
+    const auto encodedSize = std::filesystem::file_size(path, fileError);
+    if (fileError)
+        throw std::runtime_error("cannot inspect image metadata: " + path.string() + ": " + fileError.message());
+    const auto modified = std::filesystem::last_write_time(path, fileError);
+    if (fileError)
+        throw std::runtime_error("cannot inspect image metadata: " + path.string() + ": " + fileError.message());
+    {
+        const std::lock_guard lock(cacheMutex);
+        const auto cached = cache.find(key);
+        if (cached != cache.end() && cached->second.encodedSize == encodedSize && cached->second.modified == modified)
+            return cached->second.metadata;
+    }
+
+    auto extension = path.extension().string();
+    std::ranges::transform(extension, extension.begin(),
+                           [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    ImageMetadata metadata;
+    if (extension == ".dds") {
+        metadata = inspectDdsImage(path);
+    } else {
+        int width = 0;
+        int height = 0;
+        int channels = 0;
+        const auto pathString = path.string();
+        if (!stbi_info(pathString.c_str(), &width, &height, &channels))
+            throw std::runtime_error("cannot inspect image " + path.string() + ": " + stbi_failure_reason());
+        if (width <= 0 || height <= 0)
+            throw std::runtime_error("invalid image dimensions: " + path.string());
+        metadata.width = static_cast<std::uint32_t>(width);
+        metadata.height = static_cast<std::uint32_t>(height);
+        metadata.dimension = DdsDimension::twoD;
+    }
+
+    fileError.clear();
+    const auto currentSize = std::filesystem::file_size(path, fileError);
+    if (!fileError && currentSize == encodedSize) {
+        const auto currentModified = std::filesystem::last_write_time(path, fileError);
+        if (!fileError && currentModified == modified) {
+            const std::lock_guard lock(cacheMutex);
+            if (cache.size() >= 512 && !cache.contains(key))
+                cache.clear();
+            cache.insert_or_assign(key, CacheEntry{encodedSize, modified, metadata});
+        }
+    }
+    return metadata;
 }
 
 const ImageRgba8Subresource& DdsImageRgba8::subresource(std::uint32_t mipLevel, std::uint32_t arrayLayer) const {
