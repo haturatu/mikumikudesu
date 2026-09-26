@@ -1,6 +1,6 @@
 # 調査: deformer/postprocessのMatDesc GPU binding
 
-状態: **未実装・調査PR**。基準は `main@7ed41e0` と固定 MikuMikuDayo130。
+状態: **実装済み**。基準は `main@7ed41e0` と固定 MikuMikuDayo130。
 
 本家 `src/YRZFx.ixx` は `FXTech::matDescs` をcategory共通で保持し、`FX::Load` の
 `hasMatDesc()` 分岐でtemplateを読み、各passへidx/tex/tex3D/value/texture配列を生成する。
@@ -25,4 +25,14 @@ model構成、material override、reload、texture generation、layout長の変�
 値・2D/3D texture・defaultFile・式更新・初回local texture解決をGPU table/descriptorで確認すること。
 複数generic effectで同名field/resourceを使ってもeffect間で混ざらないことも確認する。
 
-本PRは調査・対応設計のみ。generic stackへのMatDesc bindingは実装していない。
+## 実装
+
+GenericEffectRuntime が effect ごとに FxMaterialSceneRuntime とコンパイル済み schema を所有する。
+初回はリソース確保後の initializer で、以後は毎frameの sync と resize時の initializer で
+annotation、defaultFile、式、texture catalogを更新する。配列長変更時はdescriptor/pipelineを再構築する。
+
+共通のtexture resolverを抽出し、generic側は当該effectのlocal storeを最優先にする。
+renderer-localへの暗黙参照を避け、screen、owner deformer、明示shared sourceを順に参照する。
+モデルごとのscene material indexを保持し、deformer ownerにはeffectのclone countを適用する。
+
+Linux `mikumikudesu` ビルド成功。今回テスト・GPU実行は行っていない。前提PR: #254。
