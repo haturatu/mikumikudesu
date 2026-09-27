@@ -98,6 +98,8 @@ class NativeRendererCoordinator {
                 NativeFrameExecution execution = {}, std::span<const FxMaterialSceneModel> materialModels = {});
 
   private:
+    friend struct NativeRendererCoordinatorTestAccess;
+
     struct GenericEffectRuntime {
         Device* device{};
         fx::FxProgram program;
