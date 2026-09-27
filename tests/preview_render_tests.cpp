@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -641,9 +642,9 @@ struct DayoSkinningGpuCase {
     std::string name;
     std::vector<PreviewVertex> vertices;
     std::vector<PreviewBoneTransform> bones;
-    std::array<std::uint32_t, 3> indices{0, 0, 0};
-    std::unique_ptr<dayo::graphics::NativeDeformRuntime> runtime;
+    std::array<dayo::graphics::handles::BufferHandle, 4> inputs{};
     dayo::graphics::handles::BufferHandle output{};
+    dayo::graphics::handles::DescriptorSetHandle descriptorSet{};
     Float3 expectedPosition{};
 };
 
@@ -667,20 +668,21 @@ DayoSkinningGpuCase makeDayoSkinningGpuCase(std::string name, PreviewSkinningTyp
     return DayoSkinningGpuCase{.name = std::move(name),
                                .vertices = std::vector<PreviewVertex>(vertexCount, vertex),
                                .bones = std::move(bones),
-                               .indices = {0, 0, 0},
-                               .runtime = nullptr,
+                               .inputs = {},
                                .output = {},
+                               .descriptorSet = {},
                                .expectedPosition = expectedPosition};
 }
 
 bool dayoSkinningGpuReadback(dayo::graphics::VulkanDevice& device) {
-    if (!device.capabilities().hardwareSupportsSubayai()) {
-        std::cout << "INFO: Dayo upstream skinning GPU readback skipped; device lacks Subayai hardware features\n";
-        return true;
-    }
     if (!device.nativeDeformPipeline().valid() || !device.nativeDeformDescriptorLayout().valid()) {
-        std::cerr << "FAIL: Dayo native deform pipeline is unavailable on an RT-capable device\n";
-        return false;
+        const auto* required = std::getenv("DAYO_UPSTREAM_REQUIRE_DXC");
+        if (required != nullptr && std::string_view(required) == "1") {
+            std::cerr << "FAIL: Dayo native deform compute pipeline is required but unavailable\n";
+            return false;
+        }
+        std::cout << "INFO: Dayo native deform compute readback skipped; upstream compute pipeline is unavailable\n";
+        return true;
     }
 
     const auto translatedBone = [](float x, float y, float z) {
@@ -715,67 +717,125 @@ bool dayoSkinningGpuReadback(dayo::graphics::VulkanDevice& device) {
                                                 {translatedBone(0.5F, -0.25F, 1.0F)}, {0, -1, -1, -1},
                                                 {1.0F, 0.0F, 0.0F, 0.0F}, {1.5F, 1.75F, 4.0F}, count));
 
-    const auto descriptorLayout = device.nativeDeformDescriptorLayout();
-    for (auto& testCase : cases) {
-        testCase.runtime = std::make_unique<dayo::graphics::NativeDeformRuntime>();
-        const dayo::graphics::NativeDeformUpload upload{
-            .baseVertices = testCase.vertices,
-            .bones = testCase.bones,
-            .morphDeltas = {},
-            .morphWeights = {},
-            .indices = testCase.indices,
-            .deformedVertices = {},
-        };
-        std::string error;
-        if (!testCase.runtime->initialize(device, upload, device.nativeDeformPipeline(), descriptorLayout, &error)) {
-            std::cerr << "FAIL: cannot initialize GPU skinning fixture " << testCase.name << ": " << error << '\n';
-            return false;
-        }
-    }
-
-    device.setNativeRendererAvailability(true, false);
-    device.selectRenderer(dayo::graphics::RendererKind::subayai);
-    if (device.activeRenderer() != dayo::graphics::RendererKind::subayai) {
-        std::cerr << "FAIL: cannot enable the native deform fixture on a Subayai-capable device\n";
-        device.setNativeRendererAvailability(false, false);
-        return false;
-    }
-    device.setNativeFrameRecorder(
-        [&cases](dayo::graphics::CommandList& commands,
-                 const dayo::graphics::RenderTargetDesc&) -> std::optional<dayo::graphics::NativeFrameOutput> {
-            for (auto& testCase : cases) {
-                testCase.output = testCase.runtime->resources().deformedVertices;
-                testCase.runtime->record(commands);
+    const auto release = [&device, &cases] {
+        for (const auto& testCase : cases) {
+            if (testCase.descriptorSet.valid()) {
+                try {
+                    device.destroyDescriptorSetEx(testCase.descriptorSet);
+                } catch (...) {
+                }
             }
-            commands.memoryBarrierEx();
-            return std::nullopt;
-        });
-    static_cast<void>(device.renderToImage({16, 16}));
-    device.waitIdle();
-    device.setNativeFrameRecorder({});
-    device.selectRenderer(dayo::graphics::RendererKind::preview);
-    device.setNativeRendererAvailability(false, false);
-
-    for (const auto& testCase : cases) {
-        const auto bytes = device.readbackBufferEx(
-            testCase.output, 0, testCase.vertices.size() * sizeof(dayo::graphics::NativeDeformedVertex));
-        if (bytes.size() != testCase.vertices.size() * sizeof(dayo::graphics::NativeDeformedVertex)) {
-            std::cerr << "FAIL: GPU skinning readback has wrong size for " << testCase.name << '\n';
-            return false;
-        }
-        for (std::size_t index = 0; index < testCase.vertices.size(); ++index) {
-            dayo::graphics::NativeDeformedVertex actual{};
-            std::memcpy(&actual, bytes.data() + index * sizeof(actual), sizeof(actual));
-            for (std::size_t component = 0; component < testCase.expectedPosition.size(); ++component) {
-                if (std::abs(actual.position[component] - testCase.expectedPosition[component]) > 0.002F) {
-                    std::cerr << "FAIL: GPU Dayo skinning position mismatch in " << testCase.name << " vertex " << index
-                              << '\n';
-                    return false;
+            for (const auto input : testCase.inputs) {
+                if (!input.valid())
+                    continue;
+                try {
+                    device.destroyBufferEx(input);
+                } catch (...) {
+                }
+            }
+            if (testCase.output.valid()) {
+                try {
+                    device.destroyBufferEx(testCase.output);
+                } catch (...) {
                 }
             }
         }
+    };
+    bool success = true;
+    try {
+        const std::array<PreviewBoneTransform, 1> emptyBones{};
+        const std::array<dayo::graphics::PreviewMorphDelta, 1> emptyMorphs{};
+        const std::array<float, 1> emptyWeights{};
+        const auto uploadInput = [&device](std::span<const std::byte> bytes) {
+            const auto buffer = device.createBufferEx(
+                {.size = bytes.size(),
+                 .usage = dayo::graphics::ResourceUsage::storageRead | dayo::graphics::ResourceUsage::transferDst});
+            try {
+                device.uploadBufferEx(buffer, bytes);
+            } catch (...) {
+                device.destroyBufferEx(buffer);
+                throw;
+            }
+            return buffer;
+        };
+        for (auto& testCase : cases) {
+            const std::span<const PreviewBoneTransform> bones =
+                testCase.bones.empty() ? std::span<const PreviewBoneTransform>(emptyBones)
+                                       : std::span<const PreviewBoneTransform>(testCase.bones);
+            testCase.inputs[0] = uploadInput(std::as_bytes(std::span(testCase.vertices)));
+            testCase.inputs[1] = uploadInput(std::as_bytes(bones));
+            testCase.inputs[2] = uploadInput(std::as_bytes(std::span(emptyMorphs)));
+            testCase.inputs[3] = uploadInput(std::as_bytes(std::span(emptyWeights)));
+            testCase.output = device.createBufferEx({
+                .size = testCase.vertices.size() * sizeof(dayo::graphics::NativeDeformedVertex),
+                .usage = dayo::graphics::ResourceUsage::storageWrite | dayo::graphics::ResourceUsage::transferSrc,
+            });
+            const std::array bindings{
+                dayo::graphics::DescriptorBindingEx{0, 0, testCase.inputs[0]},
+                dayo::graphics::DescriptorBindingEx{1, 0, testCase.inputs[1]},
+                dayo::graphics::DescriptorBindingEx{2, 0, testCase.inputs[2]},
+                dayo::graphics::DescriptorBindingEx{3, 0, testCase.inputs[3]},
+                dayo::graphics::DescriptorBindingEx{4, 0, testCase.output},
+            };
+            testCase.descriptorSet = device.allocateDescriptorSetEx(device.nativeDeformDescriptorLayout(), bindings);
+        }
+
+        device.setNativeFrameRecorderForComputeTest(
+            [&cases, pipeline = device.nativeDeformPipeline()](
+                dayo::graphics::CommandList& commands,
+                const dayo::graphics::RenderTargetDesc&) -> std::optional<dayo::graphics::NativeFrameOutput> {
+                for (const auto& testCase : cases) {
+                    commands.bindPipelineEx(pipeline);
+                    commands.bindDescriptorSetEx(testCase.descriptorSet);
+                    const dayo::graphics::NativeDeformPushConstants constants{
+                        .vertexCount = static_cast<std::uint32_t>(testCase.vertices.size()),
+                        .boneCount = static_cast<std::uint32_t>(testCase.bones.size()),
+                        .morphDeltaCount = 0,
+                        .morphCount = 0,
+                    };
+                    commands.pushConstantsEx(std::as_bytes(std::span(&constants, 1)));
+                    commands.dispatch((constants.vertexCount + 63U) / 64U, 1, 1);
+                }
+                commands.memoryBarrierEx();
+                return std::nullopt;
+            });
+        static_cast<void>(device.renderToImage({16, 16}));
+        device.waitIdle();
+        device.setNativeFrameRecorder({});
+
+        for (const auto& testCase : cases) {
+            const auto bytes = device.readbackBufferEx(
+                testCase.output, 0, testCase.vertices.size() * sizeof(dayo::graphics::NativeDeformedVertex));
+            if (bytes.size() != testCase.vertices.size() * sizeof(dayo::graphics::NativeDeformedVertex)) {
+                std::cerr << "FAIL: GPU skinning readback has wrong size for " << testCase.name << '\n';
+                success = false;
+                break;
+            }
+            for (std::size_t index = 0; index < testCase.vertices.size(); ++index) {
+                dayo::graphics::NativeDeformedVertex actual{};
+                std::memcpy(&actual, bytes.data() + index * sizeof(actual), sizeof(actual));
+                for (std::size_t component = 0; component < testCase.expectedPosition.size(); ++component) {
+                    if (!std::isfinite(actual.position[component]) ||
+                        std::abs(actual.position[component] - testCase.expectedPosition[component]) > 0.002F) {
+                        std::cerr << "FAIL: GPU Dayo skinning position mismatch in " << testCase.name << " vertex "
+                                  << index << '\n';
+                        success = false;
+                        break;
+                    }
+                }
+                if (!success)
+                    break;
+            }
+            if (!success)
+                break;
+        }
+    } catch (const std::exception& exception) {
+        device.setNativeFrameRecorder({});
+        std::cerr << "FAIL: Dayo native deform compute readback: " << exception.what() << '\n';
+        success = false;
     }
-    return true;
+    release();
+    return success;
 }
 
 bool orthographicZoom(dayo::graphics::VulkanDevice& device) {
