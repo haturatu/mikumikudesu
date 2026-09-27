@@ -1594,6 +1594,10 @@ void VulkanDevice::destroyNativeOutputPipeline() noexcept {
 }
 
 void VulkanDevice::createNativeDeformPipeline() {
+    if (std::string_view(DAYO_NATIVE_DEFORM_SPV).empty()) {
+        log::warn("Native Dayo skinning unavailable: fetch MikuMikuDayo and configure with DXC before building");
+        return;
+    }
     const auto code = readBinary(DAYO_NATIVE_DEFORM_SPV);
     try {
         nativeDeformDescriptorLayout_ = createDescriptorSetLayoutEx(graphics::nativeDeformDescriptorLayout());
@@ -2478,6 +2482,12 @@ void VulkanDevice::selectRenderer(RendererKind requested) {
 
 void VulkanDevice::setNativeFrameRecorder(NativeFrameRecorder recorder) {
     nativeFrameRecorder_ = std::move(recorder);
+    nativeFrameRecorderForPreviewComputeTest_ = false;
+}
+
+void VulkanDevice::setNativeFrameRecorderForComputeTest(NativeFrameRecorder recorder) {
+    nativeFrameRecorder_ = std::move(recorder);
+    nativeFrameRecorderForPreviewComputeTest_ = true;
 }
 
 void VulkanDevice::setNativeRendererAvailability(bool subayai, bool bdpt) {
@@ -3294,7 +3304,8 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     recordPreviewBackgroundUpload(frame.commandBuffer, frame);
 
     std::optional<NativeFrameOutput> nativeOutput;
-    if (nativeFrameRecorder_ && activeRenderer_ != RendererKind::preview) {
+    if (nativeFrameRecorder_ &&
+        (activeRenderer_ != RendererKind::preview || nativeFrameRecorderForPreviewComputeTest_)) {
         VulkanCommandList commands(*this, frame.commandBuffer);
         nativeOutput = nativeFrameRecorder_(commands, target);
         if (nativeOutput.has_value() && !nativeOutput->valid())

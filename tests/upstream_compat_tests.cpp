@@ -628,6 +628,28 @@ bool checkUpstreamAbi(const std::filesystem::path& sourceDirectory) {
     return ok;
 }
 
+bool checkSkinningAdapter(const std::filesystem::path& sourceDirectory) {
+    const auto read = [](const std::filesystem::path& path) {
+        std::ifstream input(path, std::ios::binary);
+        if (!input)
+            throw std::runtime_error("cannot read skinning compatibility source: " + path.string());
+        return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    };
+    const auto adapter = read(std::filesystem::path(DAYO_SOURCE_DIR) / "shaders/native_deform.hlsl");
+    const auto upstream = read(sourceDirectory / "hlsl/skinning.hlsli");
+    bool ok = true;
+    ok &= check(adapter.find("skin.iBone[influence] = int(influence);") != std::string::npos &&
+                    adapter.find("Dayo::BoneMatrix[influence] = YRZ::Identity44;") != std::string::npos,
+                "native skinning maps each influence to its local identity-capable matrix slot");
+    ok &= check(adapter.find("validWeight == 0.0 && source.skinningType != 3") != std::string::npos,
+                "all-invalid BDEF/QDEF vertices bypass upstream normalization");
+    ok &= check(upstream.find("if (s.iBone[i] >= 0)") != std::string::npos &&
+                    upstream.find("s.iBone[i] >= 0 && s.weight[i]") != std::string::npos &&
+                    upstream.find("s.iBone[0]>=0 ? BoneMatrix[s.iBone[0]] : YRZ::Identity44") != std::string::npos,
+                "pinned Dayo skinning guards negative bone indices in LBS, DQS, and SDEF");
+    return ok;
+}
+
 std::string spirvString(std::span<const std::uint32_t> words, std::size_t firstWord, std::size_t wordCount) {
     std::string result;
     for (std::size_t word = firstWord; word < wordCount; ++word) {
@@ -1064,9 +1086,12 @@ int main(int argc, char** argv) {
         return checkAbiSpirvProbe(sourceDirectory) && checkMaterialStructuredBufferLayoutProbes(sourceDirectory) ? 0
                                                                                                                  : 1;
     }
+    if (argc == 2 && std::string_view(argv[1]) == "--skinning-probe-only")
+        return checkSkinningAdapter(sourceDirectory) ? 0 : 1;
 
     try {
         ok &= checkUpstreamAbi(sourceDirectory);
+        ok &= checkSkinningAdapter(sourceDirectory);
         ok &= checkAbiSpirvProbe(sourceDirectory);
         ok &= checkMaterialStructuredBufferLayoutProbes(sourceDirectory);
         ok &= checkDayoEnvironmentShaderProbes(sourceDirectory);
