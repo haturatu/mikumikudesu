@@ -46,6 +46,10 @@ UVは既存入力経路を維持する。追加UVはNativeDeformedVertexの出�
 出力buffer、BLAS refit、renderer接続は既存NativeDeformRuntimeを使う。
 
 DXCで上流includeを含むSPIR-V生成とLinux `mikumikudesu` ビルド成功。
-今回テスト・数値readback・Windows比較は行っていない。前提PR: #247。
+headless fixtureはNativeDeform compute pipeline/layoutの有無でavailabilityを判定する。
+RT/Subayai対応を要求せず、storage bufferへ直接dispatchしGPU readbackで位置を数値比較する。
+BDEF1/2/4、SDEF、QDEF、部分/全invalid bone、1/63/64/65/1023/1024/1025頂点を含む。
+必須DXC設定ではpipeline欠損を失敗とし、通常のsystem-only設定ではskipする。
+Windows比較は未実施。前提PR: #247。
 
 上流headers/DXCなしのoffline/system-onlyビルドではnative skinningを無効化し、Previewを使用可能にする。native利用には上流取得後の再configure/buildが必要。
