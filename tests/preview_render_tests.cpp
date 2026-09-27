@@ -209,7 +209,8 @@ bool typedVulkanFormatRoundTrips(dayo::graphics::VulkanDevice& device) {
             .dimension = dayo::graphics::TextureDimension::d2,
             .extent = {2, 2, 1},
             .format = format,
-            .usage = dayo::graphics::ResourceUsage::transferDst | dayo::graphics::ResourceUsage::transferSrc,
+            .usage = dayo::graphics::ResourceUsage::sampledRead | dayo::graphics::ResourceUsage::transferDst |
+                     dayo::graphics::ResourceUsage::transferSrc,
         };
         dayo::graphics::handles::TextureHandle texture;
         try {

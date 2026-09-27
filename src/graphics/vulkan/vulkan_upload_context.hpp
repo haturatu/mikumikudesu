@@ -40,6 +40,7 @@ class VulkanUploadContext final {
     // Discards a recording batch after an upload failure. This makes the
     // context reusable and releases staging allocations not submitted to GPU.
     void abort() noexcept;
+    // Keeps mapped slices alive for readback until begin() or reclaim().
     void wait(std::uint64_t value);
     void reclaim();
 
