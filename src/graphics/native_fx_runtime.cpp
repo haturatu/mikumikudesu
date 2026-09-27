@@ -120,6 +120,16 @@ bool NativeFxRuntime::buildForContext(const fx::FxFrameContext& context, std::st
             throw std::runtime_error(error != nullptr && !error->empty() ? *error
                                                                          : "FX resource initialization failed");
 
+        const auto applyFormats = [this](auto& textures) {
+            for (auto& texture : textures) {
+                const auto* physical = resources_.store().find(texture.name);
+                if (physical != nullptr)
+                    texture.physicalFormat = std::string(toString(physical->format));
+            }
+        };
+        applyFormats(program_.textures);
+        applyFormats(program_.textures3D);
+
         const auto framePlan = fx::FxCompiler{}.plan(program_, context, &resources_);
 
         for (const auto layout : sharedLayouts_) {

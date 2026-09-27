@@ -29,7 +29,34 @@ enum class PixelFormat : std::uint8_t {
     rgba16Float,
     rgba32Float,
     depth32Float,
-    depth24Stencil8
+    depth24Stencil8,
+    r8Uint,
+    r8Snorm,
+    r8Sint,
+    r8g8Uint,
+    r8g8Snorm,
+    r8g8Sint,
+    rgba8Uint,
+    rgba8Snorm,
+    rgba8Sint,
+    r16Uint,
+    r16Snorm,
+    r16Sint,
+    r16g16Uint,
+    r16g16Snorm,
+    r16g16Sint,
+    rgba16Uint,
+    rgba16Snorm,
+    rgba16Sint,
+    r32Uint,
+    r32Sint,
+    r32g32Sint,
+    rgba32Uint,
+    rgba32Sint,
+    r8g8Unorm,
+    r16Unorm,
+    r16g16Unorm,
+    rgba16Unorm
 };
 
 [[nodiscard]] constexpr std::string_view toString(PixelFormat format) noexcept {
@@ -58,8 +85,157 @@ enum class PixelFormat : std::uint8_t {
         return "D32_FLOAT";
     case PixelFormat::depth24Stencil8:
         return "D24_UNORM_S8_UINT";
+    case PixelFormat::r8Uint:
+        return "R8_UINT";
+    case PixelFormat::r8Snorm:
+        return "R8_SNORM";
+    case PixelFormat::r8Sint:
+        return "R8_SINT";
+    case PixelFormat::r8g8Uint:
+        return "R8G8_UINT";
+    case PixelFormat::r8g8Snorm:
+        return "R8G8_SNORM";
+    case PixelFormat::r8g8Sint:
+        return "R8G8_SINT";
+    case PixelFormat::rgba8Uint:
+        return "R8G8B8A8_UINT";
+    case PixelFormat::rgba8Snorm:
+        return "R8G8B8A8_SNORM";
+    case PixelFormat::rgba8Sint:
+        return "R8G8B8A8_SINT";
+    case PixelFormat::r16Uint:
+        return "R16_UINT";
+    case PixelFormat::r16Snorm:
+        return "R16_SNORM";
+    case PixelFormat::r16Sint:
+        return "R16_SINT";
+    case PixelFormat::r16g16Uint:
+        return "R16G16_UINT";
+    case PixelFormat::r16g16Snorm:
+        return "R16G16_SNORM";
+    case PixelFormat::r16g16Sint:
+        return "R16G16_SINT";
+    case PixelFormat::rgba16Uint:
+        return "R16G16B16A16_UINT";
+    case PixelFormat::rgba16Snorm:
+        return "R16G16B16A16_SNORM";
+    case PixelFormat::rgba16Sint:
+        return "R16G16B16A16_SINT";
+    case PixelFormat::r32Uint:
+        return "R32_UINT";
+    case PixelFormat::r32Sint:
+        return "R32_SINT";
+    case PixelFormat::r32g32Sint:
+        return "R32G32_SINT";
+    case PixelFormat::rgba32Uint:
+        return "R32G32B32A32_UINT";
+    case PixelFormat::rgba32Sint:
+        return "R32G32B32A32_SINT";
+    case PixelFormat::r8g8Unorm:
+        return "R8G8_UNORM";
+    case PixelFormat::r16Unorm:
+        return "R16_UNORM";
+    case PixelFormat::r16g16Unorm:
+        return "R16G16_UNORM";
+    case PixelFormat::rgba16Unorm:
+        return "R16G16B16A16_UNORM";
     }
     return "UNKNOWN";
+}
+
+[[nodiscard]] inline PixelFormat parsePixelFormat(std::string_view name) {
+    if (name == "R8_UNORM")
+        return PixelFormat::r8Unorm;
+    if (name == "R16_FLOAT")
+        return PixelFormat::r16Float;
+    if (name == "R16G16_FLOAT")
+        return PixelFormat::r16g16Float;
+    if (name == "R32_FLOAT")
+        return PixelFormat::r32Float;
+    if (name == "R32G32_FLOAT")
+        return PixelFormat::r32g32Float;
+    if (name == "R32G32_UINT")
+        return PixelFormat::r32g32Uint;
+    if (name == "R8G8B8A8_UNORM")
+        return PixelFormat::rgba8Unorm;
+    if (name == "R8G8B8A8_SRGB")
+        return PixelFormat::rgba8Srgb;
+    if (name == "R16G16B16A16_FLOAT")
+        return PixelFormat::rgba16Float;
+    if (name == "R32G32B32A32_FLOAT")
+        return PixelFormat::rgba32Float;
+    if (name == "D32_FLOAT")
+        return PixelFormat::depth32Float;
+    if (name == "D24_UNORM_S8_UINT")
+        return PixelFormat::depth24Stencil8;
+    if (name == "R8_UINT")
+        return PixelFormat::r8Uint;
+    if (name == "R8_SNORM")
+        return PixelFormat::r8Snorm;
+    if (name == "R8_SINT")
+        return PixelFormat::r8Sint;
+    if (name == "R8G8_UINT")
+        return PixelFormat::r8g8Uint;
+    if (name == "R8G8_SNORM")
+        return PixelFormat::r8g8Snorm;
+    if (name == "R8G8_SINT")
+        return PixelFormat::r8g8Sint;
+    if (name == "R8G8B8A8_UINT")
+        return PixelFormat::rgba8Uint;
+    if (name == "R8G8B8A8_SNORM")
+        return PixelFormat::rgba8Snorm;
+    if (name == "R8G8B8A8_SINT")
+        return PixelFormat::rgba8Sint;
+    if (name == "R16_UINT")
+        return PixelFormat::r16Uint;
+    if (name == "R16_SNORM")
+        return PixelFormat::r16Snorm;
+    if (name == "R16_SINT")
+        return PixelFormat::r16Sint;
+    if (name == "R16G16_UINT")
+        return PixelFormat::r16g16Uint;
+    if (name == "R16G16_SNORM")
+        return PixelFormat::r16g16Snorm;
+    if (name == "R16G16_SINT")
+        return PixelFormat::r16g16Sint;
+    if (name == "R16G16B16A16_UINT")
+        return PixelFormat::rgba16Uint;
+    if (name == "R16G16B16A16_SNORM")
+        return PixelFormat::rgba16Snorm;
+    if (name == "R16G16B16A16_SINT")
+        return PixelFormat::rgba16Sint;
+    if (name == "R32_UINT")
+        return PixelFormat::r32Uint;
+    if (name == "R32_SINT")
+        return PixelFormat::r32Sint;
+    if (name == "R32G32_SINT")
+        return PixelFormat::r32g32Sint;
+    if (name == "R32G32B32A32_UINT")
+        return PixelFormat::rgba32Uint;
+    if (name == "R32G32B32A32_SINT")
+        return PixelFormat::rgba32Sint;
+    if (name == "R8G8_UNORM")
+        return PixelFormat::r8g8Unorm;
+    if (name == "R16_UNORM")
+        return PixelFormat::r16Unorm;
+    if (name == "R16G16_UNORM")
+        return PixelFormat::r16g16Unorm;
+    if (name == "R16G16B16A16_UNORM")
+        return PixelFormat::rgba16Unorm;
+    if (name == "RGBA8_UNORM")
+        return PixelFormat::rgba8Unorm;
+    if (name == "RGBA8_SRGB")
+        return PixelFormat::rgba8Srgb;
+    if (name == "RGBA16_FLOAT")
+        return PixelFormat::rgba16Float;
+    if (name == "RGBA32_FLOAT")
+        return PixelFormat::rgba32Float;
+
+    if (name.empty())
+        return PixelFormat::rgba8Unorm;
+    if (name == "D24S8")
+        return PixelFormat::depth24Stencil8;
+    throw std::invalid_argument("unsupported texture format: " + std::string(name));
 }
 
 enum class SamplerFilter : std::uint8_t { nearest, linear };
@@ -322,26 +498,51 @@ struct PhysicalResourceRequirements {
 [[nodiscard]] constexpr std::size_t pixelFormatByteSize(PixelFormat format) noexcept {
     switch (format) {
     case PixelFormat::r8Unorm:
+    case PixelFormat::r8Uint:
+    case PixelFormat::r8Snorm:
+    case PixelFormat::r8Sint:
         return 1;
     case PixelFormat::r16Float:
+    case PixelFormat::r8g8Uint:
+    case PixelFormat::r8g8Snorm:
+    case PixelFormat::r8g8Sint:
+    case PixelFormat::r16Uint:
+    case PixelFormat::r16Snorm:
+    case PixelFormat::r16Sint:
+    case PixelFormat::r8g8Unorm:
+    case PixelFormat::r16Unorm:
         return 2;
     case PixelFormat::r16g16Float:
     case PixelFormat::r32Float:
-        return 4;
-    case PixelFormat::r32g32Float:
-    case PixelFormat::r32g32Uint:
-        return 8;
     case PixelFormat::rgba8Unorm:
     case PixelFormat::rgba8Srgb:
     case PixelFormat::depth32Float:
     case PixelFormat::depth24Stencil8:
+    case PixelFormat::rgba8Uint:
+    case PixelFormat::rgba8Snorm:
+    case PixelFormat::rgba8Sint:
+    case PixelFormat::r16g16Uint:
+    case PixelFormat::r16g16Snorm:
+    case PixelFormat::r16g16Sint:
+    case PixelFormat::r32Uint:
+    case PixelFormat::r32Sint:
+    case PixelFormat::r16g16Unorm:
         return 4;
+    case PixelFormat::r32g32Float:
+    case PixelFormat::r32g32Uint:
     case PixelFormat::rgba16Float:
+    case PixelFormat::rgba16Uint:
+    case PixelFormat::rgba16Snorm:
+    case PixelFormat::rgba16Sint:
+    case PixelFormat::r32g32Sint:
+    case PixelFormat::rgba16Unorm:
         return 8;
     case PixelFormat::rgba32Float:
+    case PixelFormat::rgba32Uint:
+    case PixelFormat::rgba32Sint:
         return 16;
     }
-    return 4;
+    return 0;
 }
 
 [[nodiscard]] inline std::size_t checkedResourceMul(std::size_t left, std::size_t right) {

@@ -354,7 +354,8 @@ ImageRgba8 decodeDds(const std::filesystem::path& requested) {
     return image;
 }
 
-[[nodiscard]] DdsImageRgba8 decodeDdsTexture(std::span<const std::uint8_t> bytes, const std::filesystem::path& path) {
+[[nodiscard]] TextureImage decodeDdsTexture(std::span<const std::uint8_t> bytes, const std::filesystem::path& path,
+                                            bool typed = false) {
     const auto readU32 = [bytes, &path](std::size_t offset) {
         if (offset > bytes.size() || bytes.size() - offset < sizeof(std::uint32_t))
             throw std::runtime_error("truncated DDS header: " + path.string());
@@ -363,7 +364,9 @@ ImageRgba8 decodeDds(const std::filesystem::path& requested) {
     if (bytes.size() < 128 || std::memcmp(bytes.data(), "DDS ", 4) != 0 || readU32(4) != 124U || readU32(76) != 32U)
         throw std::runtime_error("invalid DDS file: " + path.string());
 
-    DdsImageRgba8 result;
+    TextureImage result;
+    std::uint32_t rawPixelBytes = 0;
+    std::uint32_t signedBlockChannels = 0;
     result.width = readU32(16);
     result.height = readU32(12);
     result.depth = std::max(readU32(24), 1U);
@@ -387,7 +390,177 @@ ImageRgba8 decodeDds(const std::filesystem::path& requested) {
         if (arraySize == 0)
             throw std::runtime_error("invalid DDS DX10 array size: " + path.string());
         dataOffset = 148;
-        if (dxgi == 71 || dxgi == 72)
+        if (typed) {
+            switch (dxgi) {
+            case 61:
+                result.format = "R8_UNORM";
+                rawPixelBytes = 1;
+                break;
+            case 54:
+                result.format = "R16_FLOAT";
+                rawPixelBytes = 2;
+                break;
+            case 34:
+                result.format = "R16G16_FLOAT";
+                rawPixelBytes = 4;
+                break;
+            case 41:
+                result.format = "R32_FLOAT";
+                rawPixelBytes = 4;
+                break;
+            case 16:
+                result.format = "R32G32_FLOAT";
+                rawPixelBytes = 8;
+                break;
+            case 17:
+                result.format = "R32G32_UINT";
+                rawPixelBytes = 8;
+                break;
+            case 28:
+                result.format = "R8G8B8A8_UNORM";
+                rawPixelBytes = 4;
+                break;
+            case 29:
+                result.format = "R8G8B8A8_SRGB";
+                rawPixelBytes = 4;
+                break;
+            case 10:
+                result.format = "R16G16B16A16_FLOAT";
+                rawPixelBytes = 8;
+                break;
+            case 2:
+                result.format = "R32G32B32A32_FLOAT";
+                rawPixelBytes = 16;
+                break;
+            case 62:
+                result.format = "R8_UINT";
+                rawPixelBytes = 1;
+                break;
+            case 63:
+                result.format = "R8_SNORM";
+                rawPixelBytes = 1;
+                break;
+            case 64:
+                result.format = "R8_SINT";
+                rawPixelBytes = 1;
+                break;
+            case 50:
+                result.format = "R8G8_UINT";
+                rawPixelBytes = 2;
+                break;
+            case 51:
+                result.format = "R8G8_SNORM";
+                rawPixelBytes = 2;
+                break;
+            case 52:
+                result.format = "R8G8_SINT";
+                rawPixelBytes = 2;
+                break;
+            case 30:
+                result.format = "R8G8B8A8_UINT";
+                rawPixelBytes = 4;
+                break;
+            case 31:
+                result.format = "R8G8B8A8_SNORM";
+                rawPixelBytes = 4;
+                break;
+            case 32:
+                result.format = "R8G8B8A8_SINT";
+                rawPixelBytes = 4;
+                break;
+            case 57:
+                result.format = "R16_UINT";
+                rawPixelBytes = 2;
+                break;
+            case 58:
+                result.format = "R16_SNORM";
+                rawPixelBytes = 2;
+                break;
+            case 59:
+                result.format = "R16_SINT";
+                rawPixelBytes = 2;
+                break;
+            case 36:
+                result.format = "R16G16_UINT";
+                rawPixelBytes = 4;
+                break;
+            case 37:
+                result.format = "R16G16_SNORM";
+                rawPixelBytes = 4;
+                break;
+            case 38:
+                result.format = "R16G16_SINT";
+                rawPixelBytes = 4;
+                break;
+            case 12:
+                result.format = "R16G16B16A16_UINT";
+                rawPixelBytes = 8;
+                break;
+            case 13:
+                result.format = "R16G16B16A16_SNORM";
+                rawPixelBytes = 8;
+                break;
+            case 14:
+                result.format = "R16G16B16A16_SINT";
+                rawPixelBytes = 8;
+                break;
+            case 42:
+                result.format = "R32_UINT";
+                rawPixelBytes = 4;
+                break;
+            case 43:
+                result.format = "R32_SINT";
+                rawPixelBytes = 4;
+                break;
+            case 18:
+                result.format = "R32G32_SINT";
+                rawPixelBytes = 8;
+                break;
+            case 3:
+                result.format = "R32G32B32A32_UINT";
+                rawPixelBytes = 16;
+                break;
+            case 4:
+                result.format = "R32G32B32A32_SINT";
+                rawPixelBytes = 16;
+                break;
+            case 49:
+                result.format = "R8G8_UNORM";
+                rawPixelBytes = 2;
+                break;
+            case 56:
+                result.format = "R16_UNORM";
+                rawPixelBytes = 2;
+                break;
+            case 35:
+                result.format = "R16G16_UNORM";
+                rawPixelBytes = 4;
+                break;
+            case 11:
+                result.format = "R16G16B16A16_UNORM";
+                rawPixelBytes = 8;
+                break;
+            case 81:
+                signedBlockChannels = 1;
+                result.format = "R32_FLOAT";
+                break;
+            case 84:
+                signedBlockChannels = 2;
+                result.format = "R32G32_FLOAT";
+                break;
+            case 72:
+            case 75:
+            case 78:
+            case 91:
+                result.format = "R8G8B8A8_SRGB";
+                break;
+            default:
+                break;
+            }
+        }
+        if (rawPixelBytes != 0)
+            code = fourCc('R', 'A', 'W', ' ');
+        else if (dxgi == 71 || dxgi == 72)
             code = fourCc('D', 'X', 'T', '1');
         else if (dxgi == 74 || dxgi == 75)
             code = fourCc('D', 'X', 'T', '3');
@@ -441,6 +614,45 @@ ImageRgba8 decodeDds(const std::filesystem::path& requested) {
         result.depth = 1;
     }
 
+    if (typed && rawPixelBytes == 0) {
+        switch (code) {
+        case 111:
+            result.format = "R16_FLOAT";
+            rawPixelBytes = 2;
+            break;
+        case 112:
+            result.format = "R16G16_FLOAT";
+            rawPixelBytes = 4;
+            break;
+        case 113:
+            result.format = "R16G16B16A16_FLOAT";
+            rawPixelBytes = 8;
+            break;
+        case 114:
+            result.format = "R32_FLOAT";
+            rawPixelBytes = 4;
+            break;
+        case 115:
+            result.format = "R32G32_FLOAT";
+            rawPixelBytes = 8;
+            break;
+        case 116:
+            result.format = "R32G32B32A32_FLOAT";
+            rawPixelBytes = 16;
+            break;
+        default:
+            break;
+        }
+    }
+    if (typed && (code == fourCc('B', 'C', '4', 'S') || code == fourCc('B', 'C', '5', 'S'))) {
+        signedBlockChannels = code == fourCc('B', 'C', '4', 'S') ? 1U : 2U;
+        result.format = signedBlockChannels == 1 ? "R32_FLOAT" : "R32G32_FLOAT";
+        code = signedBlockChannels == 1 ? fourCc('B', 'C', '4', 'U') : fourCc('B', 'C', '5', 'U');
+    }
+    if (rawPixelBytes != 0 && (readU32(8) & 8U) != 0 &&
+        readU32(20) != checkedMultiply(result.width, rawPixelBytes, "DDS row pitch"))
+        throw std::runtime_error("padded typed DDS row pitch is unsupported: " + path.string());
+
     auto largest = std::max({result.width, result.height, result.depth});
     std::uint32_t maximumMipLevels = 1;
     while (largest > 1) {
@@ -471,11 +683,11 @@ ImageRgba8 decodeDds(const std::filesystem::path& requested) {
     const bool rgba = code == fourCc('R', 'G', 'B', 'A');
     const bool bgra = code == fourCc('B', 'G', 'R', 'A');
     const auto bits = readU32(88);
-    if (!compressed && !rgba && !bgra && (pixelFlags & 0x40U) == 0U)
+    if (!compressed && rawPixelBytes == 0 && !rgba && !bgra && (pixelFlags & 0x40U) == 0U)
         throw std::runtime_error("unsupported DDS pixel format: " + path.string());
-    if (!compressed && !rgba && !bgra && bits != 32)
+    if (!compressed && rawPixelBytes == 0 && !rgba && !bgra && bits != 32)
         throw std::runtime_error("unsupported DDS pixel depth: " + path.string());
-    if (!compressed && !rgba && !bgra && code != 0)
+    if (!compressed && rawPixelBytes == 0 && !rgba && !bgra && code != 0)
         throw std::runtime_error("unsupported DDS FourCC: " + path.string());
 
     const auto rMask = rgba ? 0x000000FFU : (bgra ? 0x00FF0000U : readU32(92));
@@ -496,7 +708,10 @@ ImageRgba8 decodeDds(const std::filesystem::path& requested) {
             const auto width = std::max(1U, result.width >> mip);
             const auto height = std::max(1U, result.height >> mip);
             const auto depth = result.dimension == DdsDimension::threeD ? std::max(1U, result.depth >> mip) : 1U;
-            const auto outputBytes = checkedRgbaVolumeBytes(width, height, depth, "DDS");
+            const auto outputPixelBytes =
+                rawPixelBytes != 0 ? rawPixelBytes : (signedBlockChannels != 0 ? signedBlockChannels * 4U : 4U);
+            const auto outputBytes = checkedMultiply(checkedRgbaVolumeBytes(width, height, depth, "DDS") / 4U,
+                                                     outputPixelBytes, "DDS typed pixels");
             if (outputBytes > std::numeric_limits<std::uint64_t>::max() - decodedBytes)
                 throw std::runtime_error("DDS decoded size overflow: " + path.string());
             decodedBytes += outputBytes;
@@ -524,12 +739,55 @@ ImageRgba8 decodeDds(const std::filesystem::path& requested) {
                                                   std::vector<std::uint8_t>(static_cast<std::size_t>(outputBytes))};
             const auto payload =
                 bytes.subspan(static_cast<std::size_t>(offset), static_cast<std::size_t>(payloadBytes));
-            if (compressed) {
+            if (signedBlockChannels != 0) {
+                const auto blocksWide = (static_cast<std::uint64_t>(width) + 3U) / 4U;
+                for (std::uint32_t z = 0; z < depth; ++z) {
+                    for (std::uint32_t y = 0; y < height; ++y) {
+                        for (std::uint32_t x = 0; x < width; ++x) {
+                            for (std::uint32_t channel = 0; channel < signedBlockChannels; ++channel) {
+                                const auto blockOffset = blockSliceBytes * z +
+                                                         ((y / 4U) * blocksWide + x / 4U) * (signedBlockChannels * 8U) +
+                                                         channel * 8U;
+                                const auto* block = payload.data() + blockOffset;
+                                const auto endpoint = [](std::uint8_t value) {
+                                    const int signedValue = value < 128 ? value : static_cast<int>(value) - 256;
+                                    return std::max(-1.0F, static_cast<float>(signedValue) / 127.0F);
+                                };
+                                const float first = endpoint(block[0]);
+                                const float second = endpoint(block[1]);
+                                std::array<float, 8> palette{first, second};
+                                if (first > second) {
+                                    for (std::size_t i = 1; i <= 6; ++i)
+                                        palette[i + 1] =
+                                            (static_cast<float>(7 - i) * first + static_cast<float>(i) * second) / 7.0F;
+                                } else {
+                                    for (std::size_t i = 1; i <= 4; ++i)
+                                        palette[i + 1] =
+                                            (static_cast<float>(5 - i) * first + static_cast<float>(i) * second) / 5.0F;
+                                    palette[6] = -1.0F;
+                                    palette[7] = 1.0F;
+                                }
+                                std::uint64_t indices = 0;
+                                for (unsigned i = 0; i < 6; ++i)
+                                    indices |= static_cast<std::uint64_t>(block[i + 2]) << (i * 8U);
+                                const auto index = (indices >> (((y % 4U) * 4U + x % 4U) * 3U)) & 7U;
+                                const auto output =
+                                    ((static_cast<std::size_t>(z) * height + y) * width + x) * signedBlockChannels +
+                                    channel;
+                                std::memcpy(subresource.pixels.data() + output * sizeof(float), &palette[index],
+                                            sizeof(float));
+                            }
+                        }
+                    }
+                }
+            } else if (compressed) {
                 for (std::uint32_t z = 0; z < depth; ++z) {
                     const auto sliceOffset = static_cast<std::size_t>(blockSliceBytes) * z;
                     const auto slice = payload.subspan(sliceOffset, static_cast<std::size_t>(blockSliceBytes));
                     decodeBlockSlice(width, height, slice, blockFormat, subresource.pixels, z, depth);
                 }
+            } else if (rawPixelBytes != 0) {
+                std::copy(payload.begin(), payload.end(), subresource.pixels.begin());
             } else {
                 std::copy(payload.begin(), payload.end(), subresource.pixels.begin());
                 const auto pixels = static_cast<std::size_t>(width) * height * depth;
@@ -706,7 +964,36 @@ const ImageRgba8Subresource& DdsImageRgba8::subresource(std::uint32_t mipLevel, 
 
 DdsImageRgba8 loadDdsImageRgba8(const std::filesystem::path& path) {
     const auto snapshot = readImageSnapshot(path);
-    return decodeDdsTexture(snapshot, path);
+    auto decoded = decodeDdsTexture(snapshot, path);
+    return {.dimension = decoded.dimension,
+            .width = decoded.width,
+            .height = decoded.height,
+            .depth = decoded.depth,
+            .arrayLayers = decoded.arrayLayers,
+            .mipLevels = decoded.mipLevels,
+            .subresources = std::move(decoded.subresources)};
+}
+
+TextureImage loadTextureImage(const std::filesystem::path& path) {
+    auto extension = path.extension().string();
+    std::ranges::transform(extension, extension.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (extension == ".dds")
+        return decodeDdsTexture(readImageSnapshot(path), path, true);
+    TextureImage result;
+    if (extension == ".hdr") {
+        auto hdr = loadImageData(path);
+        result.width = hdr.width;
+        result.height = hdr.height;
+        result.format = "R32G32B32A32_FLOAT";
+        result.subresources.push_back({hdr.width, hdr.height, 1, std::move(hdr.bytes)});
+    } else {
+        auto image = loadImageRgba8(path);
+        result.width = image.width;
+        result.height = image.height;
+        result.subresources.push_back({image.width, image.height, 1, std::move(image.pixels)});
+    }
+    return result;
 }
 
 ImageRgba8 loadImageRgba8(const std::filesystem::path& path) {

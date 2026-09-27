@@ -187,6 +187,60 @@ VkFormat toVkFormat(PixelFormat format) {
         return VK_FORMAT_D32_SFLOAT;
     case PixelFormat::depth24Stencil8:
         return VK_FORMAT_D24_UNORM_S8_UINT;
+    case PixelFormat::r8Uint:
+        return VK_FORMAT_R8_UINT;
+    case PixelFormat::r8Snorm:
+        return VK_FORMAT_R8_SNORM;
+    case PixelFormat::r8Sint:
+        return VK_FORMAT_R8_SINT;
+    case PixelFormat::r8g8Uint:
+        return VK_FORMAT_R8G8_UINT;
+    case PixelFormat::r8g8Snorm:
+        return VK_FORMAT_R8G8_SNORM;
+    case PixelFormat::r8g8Sint:
+        return VK_FORMAT_R8G8_SINT;
+    case PixelFormat::rgba8Uint:
+        return VK_FORMAT_R8G8B8A8_UINT;
+    case PixelFormat::rgba8Snorm:
+        return VK_FORMAT_R8G8B8A8_SNORM;
+    case PixelFormat::rgba8Sint:
+        return VK_FORMAT_R8G8B8A8_SINT;
+    case PixelFormat::r16Uint:
+        return VK_FORMAT_R16_UINT;
+    case PixelFormat::r16Snorm:
+        return VK_FORMAT_R16_SNORM;
+    case PixelFormat::r16Sint:
+        return VK_FORMAT_R16_SINT;
+    case PixelFormat::r16g16Uint:
+        return VK_FORMAT_R16G16_UINT;
+    case PixelFormat::r16g16Snorm:
+        return VK_FORMAT_R16G16_SNORM;
+    case PixelFormat::r16g16Sint:
+        return VK_FORMAT_R16G16_SINT;
+    case PixelFormat::rgba16Uint:
+        return VK_FORMAT_R16G16B16A16_UINT;
+    case PixelFormat::rgba16Snorm:
+        return VK_FORMAT_R16G16B16A16_SNORM;
+    case PixelFormat::rgba16Sint:
+        return VK_FORMAT_R16G16B16A16_SINT;
+    case PixelFormat::r32Uint:
+        return VK_FORMAT_R32_UINT;
+    case PixelFormat::r32Sint:
+        return VK_FORMAT_R32_SINT;
+    case PixelFormat::r32g32Sint:
+        return VK_FORMAT_R32G32_SINT;
+    case PixelFormat::rgba32Uint:
+        return VK_FORMAT_R32G32B32A32_UINT;
+    case PixelFormat::rgba32Sint:
+        return VK_FORMAT_R32G32B32A32_SINT;
+    case PixelFormat::r8g8Unorm:
+        return VK_FORMAT_R8G8_UNORM;
+    case PixelFormat::r16Unorm:
+        return VK_FORMAT_R16_UNORM;
+    case PixelFormat::r16g16Unorm:
+        return VK_FORMAT_R16G16_UNORM;
+    case PixelFormat::rgba16Unorm:
+        return VK_FORMAT_R16G16B16A16_UNORM;
     }
     return VK_FORMAT_UNDEFINED;
 }
@@ -4368,16 +4422,47 @@ handles::TextureHandle VulkanDevice::createTextureEx(const TextureResourceDesc& 
     const VkImageUsageFlags usage = toVkUsage(desc.usage);
     if (usage == 0)
         throw std::invalid_argument("typed texture usage has no Vulkan mapping");
+    const std::uint32_t layerMultiplier = desc.dimension == TextureDimension::cube ? 6U : 1U;
+    const std::uint32_t imageLayers = desc.arrayLayers * layerMultiplier;
+
+    const VkImageCreateFlags imageFlags = desc.dimension == TextureDimension::cube
+                                              ? static_cast<VkImageCreateFlags>(VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT)
+                                              : static_cast<VkImageCreateFlags>(0);
+    VkFormatProperties2 properties{.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
+    vkGetPhysicalDeviceFormatProperties2(physicalDevice_, format, &properties);
+    const auto features = properties.formatProperties.optimalTilingFeatures;
+    const auto requireFeature = [&](VkImageUsageFlags requested, VkFormatFeatureFlags required, const char* purpose) {
+        if ((usage & requested) != 0 && (features & required) != required)
+            throw std::runtime_error("typed texture format " + std::string(toString(desc.format)) +
+                                     " does not support Vulkan " + purpose + " usage");
+    };
+    requireFeature(VK_IMAGE_USAGE_SAMPLED_BIT, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "sampled-image");
+    requireFeature(VK_IMAGE_USAGE_STORAGE_BIT, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT, "storage-image");
+    requireFeature(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT, "color-attachment");
+    requireFeature(VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                   "depth/stencil-attachment");
+
+    VkImageFormatProperties supportedProperties{};
+    const auto supportResult =
+        vkGetPhysicalDeviceImageFormatProperties(physicalDevice_, format, toVkImageType(desc.dimension),
+                                                 VK_IMAGE_TILING_OPTIMAL, usage, imageFlags, &supportedProperties);
+    if (supportResult == VK_ERROR_FORMAT_NOT_SUPPORTED) {
+        throw std::runtime_error("typed texture format " + std::string(toString(desc.format)) +
+                                 " does not support the requested Vulkan image usage");
+    }
+    check(supportResult, "query typed texture format support");
+    if (desc.extent.width > supportedProperties.maxExtent.width ||
+        desc.extent.height > supportedProperties.maxExtent.height ||
+        desc.extent.depth > supportedProperties.maxExtent.depth || desc.mipLevels > supportedProperties.maxMipLevels ||
+        imageLayers > supportedProperties.maxArrayLayers) {
+        throw std::runtime_error("typed texture " + std::string(toString(desc.format)) +
+                                 " exceeds the Vulkan image limits for its requested usage");
+    }
 
     TypedTexture typed{};
     typed.desc = desc;
     typed.mipViews.resize(desc.mipLevels, VK_NULL_HANDLE);
     typed.mipLayouts.resize(desc.mipLevels, VK_IMAGE_LAYOUT_UNDEFINED);
-    const std::uint32_t layerMultiplier = desc.dimension == TextureDimension::cube ? 6U : 1U;
-    const std::uint32_t imageLayers = desc.arrayLayers * layerMultiplier;
-    const VkImageCreateFlags imageFlags = desc.dimension == TextureDimension::cube
-                                              ? static_cast<VkImageCreateFlags>(VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT)
-                                              : static_cast<VkImageCreateFlags>(0);
     const VkImageCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .flags = imageFlags,

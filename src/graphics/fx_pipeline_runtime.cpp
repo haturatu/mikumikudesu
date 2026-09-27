@@ -102,30 +102,7 @@ std::string upper(std::string_view value) {
 }
 
 PixelFormat textureFormat(std::string_view value) {
-    const auto name = upper(value);
-    if (name.empty() || name == "R8G8B8A8_UNORM")
-        return PixelFormat::rgba8Unorm;
-    if (name == "R8G8B8A8_SRGB")
-        return PixelFormat::rgba8Srgb;
-    if (name == "R16G16B16A16_FLOAT")
-        return PixelFormat::rgba16Float;
-    if (name == "R32G32B32A32_FLOAT")
-        return PixelFormat::rgba32Float;
-    if (name == "R8_UNORM")
-        return PixelFormat::r8Unorm;
-    if (name == "R16_FLOAT")
-        return PixelFormat::r16Float;
-    if (name == "R16G16_FLOAT")
-        return PixelFormat::r16g16Float;
-    if (name == "R32_FLOAT")
-        return PixelFormat::r32Float;
-    if (name == "R32G32_FLOAT")
-        return PixelFormat::r32g32Float;
-    if (name == "D32_FLOAT")
-        return PixelFormat::depth32Float;
-    if (name == "D24_UNORM_S8_UINT" || name == "D24S8")
-        return PixelFormat::depth24Stencil8;
-    throw std::invalid_argument("FX graphics target format is unsupported: " + std::string(value));
+    return parsePixelFormat(upper(value));
 }
 
 CullModeEx cullMode(core::EffectCullMode mode) {
@@ -311,8 +288,9 @@ const core::EffectTexture* findTexture(const fx::FxProgram& program, std::string
 
 PixelFormat attachmentFormat(const fx::FxProgram& program, const core::EffectAttachment& attachment, bool depth) {
     const auto* texture = findTexture(program, attachment.name);
-    if (texture != nullptr && !texture->format.empty())
-        return textureFormat(texture->filename.empty() ? texture->format : "R8G8B8A8_UNORM");
+    if (texture != nullptr &&
+        (!texture->format.empty() || !texture->filename.empty() || !texture->physicalFormat.empty()))
+        return textureFormat(fx::effectiveTextureFormat(*texture, program.sourcePath));
     return depth ? PixelFormat::depth32Float : PixelFormat::rgba16Float;
 }
 
@@ -335,9 +313,10 @@ std::vector<PixelFormat> graphicsTargetFormats(const fx::FxProgram& program, con
             if (!resource.write || resource.role != fx::FxResourceRole::colorAttachment)
                 continue;
             const auto* texture = findTexture(program, resource.name);
-            result.push_back(texture == nullptr || texture->format.empty()
+            result.push_back(texture == nullptr || (texture->format.empty() && texture->filename.empty() &&
+                                                    texture->physicalFormat.empty())
                                  ? PixelFormat::rgba16Float
-                                 : textureFormat(texture->filename.empty() ? texture->format : "R8G8B8A8_UNORM"));
+                                 : textureFormat(fx::effectiveTextureFormat(*texture, program.sourcePath)));
         }
     }
     return result;

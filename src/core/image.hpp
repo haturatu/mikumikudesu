@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <string>
 #include <vector>
 
 namespace dayo::core {
@@ -43,6 +44,13 @@ struct DdsImageRgba8 {
 
     [[nodiscard]] const ImageRgba8Subresource& subresource(std::uint32_t mipLevel, std::uint32_t arrayLayer = 0) const;
 };
+
+struct TextureImage : DdsImageRgba8 {
+    std::string format{"R8G8B8A8_UNORM"};
+};
+// Preserves numeric component formats; BC1-5 UNORM decode to RGBA8,
+// signed BC4/5 decode to float, HDR to float32.
+[[nodiscard]] TextureImage loadTextureImage(const std::filesystem::path& path);
 
 [[nodiscard]] ImageRgba8 loadImageRgba8(const std::filesystem::path& path);
 [[nodiscard]] DdsImageRgba8 loadDdsImageRgba8(const std::filesystem::path& path);
