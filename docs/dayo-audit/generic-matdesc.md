@@ -35,4 +35,7 @@ annotation、defaultFile、式、texture catalogを更新する。配列長変�
 renderer-localへの暗黙参照を避け、screen、owner deformer、明示shared sourceを順に参照する。
 モデルごとのscene material indexを保持し、deformer ownerにはeffectのclone countを適用する。
 
-Linux `mikumikudesu` ビルド成功。今回テスト・GPU実行は行っていない。前提PR: #254。
+MockDeviceを使うfixtureが `NativeRendererCoordinator::executeGenericEffects` を直接通す。
+deformerはeffect-local Texture2DとTime式の初回/2 frame目の値更新・pipeline維持を確認する。
+postprocessはTexture2D/3Dの解決、annotationへの2D参照追加に伴うdescriptor/pipeline再構築、
+リサイズ後の実resource generation再linkを確認する。実GPU/Windowsとの比較は未実施。前提PR: #254。
