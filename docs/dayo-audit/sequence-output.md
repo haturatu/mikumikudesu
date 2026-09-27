@@ -27,11 +27,14 @@ OutputSettings.sequenceFile を指定した経路では末尾番号から5桁で
 worker内の番号を使う。既存番号はスキップする。overwrite=trueなら指定番号を上書きする。
 未指定のCLI/既存呼出しは従来のframe番号とfilenamePatternを維持するが、printf呼出しを安全なparserへ置換した。
 
-非上書き出力は同一filesystemの一時ファイルへencode後、hard linkで保存先を作る。
+sequenceFileを指定したDayoモードの非上書き出力は同一filesystemの一時ファイルへencode後、hard linkで保存先を作る。
 他processと衝突しても既存fileを置換せず、Dayoモードでは次番号へ進む。hard link非対応filesystemはIOエラーを返す。
 uint32番号枯渇は明示エラーとし、数字だけのstem・percent・Unicodeを扱う。固定長256byte formatterは廃止した。
 
 UIのFirst filename/Directory/Formatとproject.editor.outputFileを接続し、保存・読込・new project時の状態も同期する。
 初回出力名をUIに表示する。sequence_path.cppをdayo_coreへ登録し、入力/出力で共通利用する。
 
-Linux `mikumikudesu` ビルド成功。今回テスト・実出力検証は行っていない。前提PR: #249。
+legacy filenamePatternは整数変換をちょうど1つ指定する `%d` / `%u`、任意のzero-padding・decimal width、
+およびliteral percentの `%%` に対応する（例: `frame_%06d`）。その他のprintf flag/precision/conversionは拒否する。
+core fixtureは対応patternの実出力と非対応patternの拒否を確認する。
+legacyの非上書き経路は存在確認とwriteFrameを使い、hard linkを要求しない。前提PR: #249。
