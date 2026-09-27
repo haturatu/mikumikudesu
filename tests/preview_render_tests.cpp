@@ -811,11 +811,11 @@ bool dayoSkinningGpuReadback(dayo::graphics::VulkanDevice& device) {
                 .usage = dayo::graphics::ResourceUsage::storageWrite | dayo::graphics::ResourceUsage::transferSrc,
             });
             const std::array bindings{
-                dayo::graphics::DescriptorBindingEx{0, 0, testCase.inputs[0]},
-                dayo::graphics::DescriptorBindingEx{1, 0, testCase.inputs[1]},
-                dayo::graphics::DescriptorBindingEx{2, 0, testCase.inputs[2]},
-                dayo::graphics::DescriptorBindingEx{3, 0, testCase.inputs[3]},
-                dayo::graphics::DescriptorBindingEx{4, 0, testCase.output},
+                dayo::graphics::DescriptorBindingEx{0, 0, testCase.inputs[0], {}, {}, {}, std::nullopt},
+                dayo::graphics::DescriptorBindingEx{1, 0, testCase.inputs[1], {}, {}, {}, std::nullopt},
+                dayo::graphics::DescriptorBindingEx{2, 0, testCase.inputs[2], {}, {}, {}, std::nullopt},
+                dayo::graphics::DescriptorBindingEx{3, 0, testCase.inputs[3], {}, {}, {}, std::nullopt},
+                dayo::graphics::DescriptorBindingEx{4, 0, testCase.output, {}, {}, {}, std::nullopt},
             };
             testCase.descriptorSet = device.allocateDescriptorSetEx(device.nativeDeformDescriptorLayout(), bindings);
         }
