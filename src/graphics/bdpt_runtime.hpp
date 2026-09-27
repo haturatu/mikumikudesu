@@ -43,8 +43,9 @@ struct BdptFrame {
 // and the device capabilities agree on the full ray-tracing contract.
 class BdptRuntime {
   public:
-    void setSharedResourceResolver(FxSharedResourceResolver resolver) {
-        dayoFx_.setSharedResourceResolver(std::move(resolver));
+    void setSharedResourceResolver(FxSharedResourceResolver resolver,
+                                   FxSharedResourceUsageResolver usageResolver = {}) {
+        dayoFx_.setSharedResourceResolver(std::move(resolver), std::move(usageResolver));
     }
 
     BdptRuntime() = default;
