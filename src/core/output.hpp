@@ -14,6 +14,9 @@ enum class OutputFormat { ppm, png, exr };
 
 struct OutputSettings {
     std::filesystem::path directory{"output"};
+    // filenamePattern supports exactly one %d or %u conversion with an
+    // optional zero flag and decimal width (for example %06d), plus %% for
+    // a literal percent. Other printf flags and conversions are rejected.
     std::string filenamePattern{"frame_%06d"};
     OutputFormat format{OutputFormat::ppm};
     std::uint32_t firstFrame{};
