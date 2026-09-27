@@ -36,7 +36,7 @@ VulkanUploadContext::VulkanUploadContext(VkDevice device, VkPhysicalDevice physi
     const VkBufferCreateInfo bufferInfo{
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = capacity,
-        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
     try {
@@ -150,7 +150,7 @@ VulkanUploadContext::Slice VulkanUploadContext::allocateDedicated(VkDeviceSize s
         const VkBufferCreateInfo bufferInfo{
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             .size = size,
-            .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         };
         check(vkCreateBuffer(device_, &bufferInfo, nullptr, &upload.buffer), "create dedicated upload buffer");
@@ -248,8 +248,6 @@ void VulkanUploadContext::wait(std::uint64_t value) {
         .pValues = &value,
     };
     check(vkWaitSemaphores(device_, &waitInfo, UINT64_MAX), "wait for persistent upload command");
-    ring_.reclaim(value);
-    reclaimDedicated(value);
 }
 
 void VulkanUploadContext::reclaim() {

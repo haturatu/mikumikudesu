@@ -209,7 +209,8 @@ bool typedVulkanFormatRoundTrips(dayo::graphics::VulkanDevice& device) {
             .dimension = dayo::graphics::TextureDimension::d2,
             .extent = {2, 2, 1},
             .format = format,
-            .usage = dayo::graphics::ResourceUsage::transferDst | dayo::graphics::ResourceUsage::transferSrc,
+            .usage = dayo::graphics::ResourceUsage::sampledRead | dayo::graphics::ResourceUsage::transferDst |
+                     dayo::graphics::ResourceUsage::transferSrc,
         };
         dayo::graphics::handles::TextureHandle texture;
         try {
@@ -234,6 +235,33 @@ bool typedVulkanFormatRoundTrips(dayo::graphics::VulkanDevice& device) {
         }
     }
     return true;
+}
+
+bool dedicatedStagingReadback(dayo::graphics::VulkanDevice& device) {
+    dayo::graphics::handles::BufferHandle buffer;
+    try {
+        // Exceed the 64 MiB staging ring so the returned slice owns a
+        // dedicated mapping that must survive the GPU completion wait.
+        std::vector<std::byte> input(65U * 1024U * 1024U, std::byte{0x5a});
+        input.front() = std::byte{0x17};
+        input.back() = std::byte{0xe3};
+        buffer = device.createBufferEx(
+            {.size = input.size(),
+             .usage = dayo::graphics::ResourceUsage::transferDst | dayo::graphics::ResourceUsage::transferSrc});
+        device.uploadBufferEx(buffer, input);
+        const auto output = device.readbackBufferEx(buffer, 0, input.size());
+        device.destroyBufferEx(buffer);
+        return input == output;
+    } catch (const std::exception& exception) {
+        if (buffer.valid()) {
+            try {
+                device.destroyBufferEx(buffer);
+            } catch (...) {
+            }
+        }
+        std::cerr << "FAIL: dedicated Vulkan staging readback: " << exception.what() << '\n';
+        return false;
+    }
 }
 
 dayo::core::ImageRgba8 renderCase(dayo::graphics::VulkanDevice& device, std::span<const PreviewVertex> vertices,
@@ -856,7 +884,7 @@ int main() {
         }
         if (!createsD24S8StencilPipeline(device))
             return 1;
-        if (!typedVulkanFormatRoundTrips(device))
+        if (!typedVulkanFormatRoundTrips(device) || !dedicatedStagingReadback(device))
             return 1;
 #if DAYO_HAS_IMGUI
         if (!rendersInteractiveViewport(device)) {
