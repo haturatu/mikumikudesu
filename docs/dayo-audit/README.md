@@ -10,19 +10,19 @@
 
 | 項目 | 状態 | PR / 根拠 |
 | --- | --- | --- |
-| buffers[].filenameの欠落、初期uploadなし | 実装済み・PR open | [#245](https://github.com/haturatu/mikumikudesu/pull/245) |
-| 外部画像のsize/format優先順位とdispatch寸法不一致 | 実装済み・PR open | [#246](https://github.com/haturatu/mikumikudesu/pull/246) |
-| 環境光prefilterの内蔵コピーが上流更新に追従しない | 実装済み・PR open | [#252](https://github.com/haturatu/mikumikudesu/pull/252)、[詳細](prefilter-reuse.md) |
-| shared=refを別allocationにしており実体共有しない | 実装済み・PR open | [#247](https://github.com/haturatu/mikumikudesu/pull/247) |
-| 標準skinningが独自HLSLで上流helperを再利用しない | 実装済み・PR open | [#248](https://github.com/haturatu/mikumikudesu/pull/248) |
-| FX Debugのtexture preview / buffer・texture dumpが未接続 | 実装済み・PR open | [#249](https://github.com/haturatu/mikumikudesu/pull/249) |
-| outputFileと末尾番号を画像連番出力へ適用しない | 実装済み・PR open | [#250](https://github.com/haturatu/mikumikudesu/pull/250) |
-| size.baseの前方参照、相対サイズの最小1の差 | 実装済み・PR open | [#251](https://github.com/haturatu/mikumikudesu/pull/251) |
-| generic deformer/postprocessへMatDesc GPU tableを渡さない | 実装済み・PR open | [#253](https://github.com/haturatu/mikumikudesu/pull/253) |
-| texture.typeを保持せず、外部画像のtyped formatも限定 | 実装済み・PR open | [#254](https://github.com/haturatu/mikumikudesu/pull/254) |
+| buffers[].filenameの欠落、初期uploadなし | 実装済み | [#245](https://github.com/haturatu/mikumikudesu/pull/245) |
+| 外部画像のsize/format優先順位とdispatch寸法不一致 | 実装済み | [#246](https://github.com/haturatu/mikumikudesu/pull/246) |
+| 環境光prefilterの内蔵コピーが上流更新に追従しない | 実装済み | [#252](https://github.com/haturatu/mikumikudesu/pull/252)、[詳細](prefilter-reuse.md) |
+| shared=refを別allocationにしており実体共有しない | 実装済み | [#247](https://github.com/haturatu/mikumikudesu/pull/247) |
+| 標準skinningが独自HLSLで上流helperを再利用しない | 実装済み | [#248](https://github.com/haturatu/mikumikudesu/pull/248) |
+| FX Debugのtexture preview / buffer・texture dumpが未接続 | 実装済み | [#249](https://github.com/haturatu/mikumikudesu/pull/249) |
+| outputFileと末尾番号を画像連番出力へ適用しない | 実装済み | [#250](https://github.com/haturatu/mikumikudesu/pull/250) |
+| size.baseの前方参照、相対サイズの最小1の差 | 実装済み | [#251](https://github.com/haturatu/mikumikudesu/pull/251) |
+| generic deformer/postprocessへMatDesc GPU tableを渡さない | 実装済み | [#253](https://github.com/haturatu/mikumikudesu/pull/253) |
+| texture.typeを保持せず、外部画像のtyped formatも限定 | 実装済み | [#254](https://github.com/haturatu/mikumikudesu/pull/254) |
 
-2026-09-27時点で対象の10 PRはopenで、mainへmerge済みの項目はない。実装状況は各PR headを確認すること。
-stackは `#246 → #251 → #254 → #253 → #247 → #248 → #249 → #250`。
+PRの最新のopen/merged状態と検証結果はリンク先で確認すること。
+実装時のstackは `#246 → #251 → #254 → #253 → #247 → #248 → #249 → #250`。
 prefilter再利用の[#252](https://github.com/haturatu/mikumikudesu/pull/252)はmainをbaseとする独立PR。
 
 ## 調査対象の対応関係
@@ -34,7 +34,7 @@ prefilter再利用の[#252](https://github.com/haturatu/mikumikudesu/pull/252)�
 | PMXLoader.ixx、hokanDayo.h、expDayo.h | external/libmmd、core/solver、animation、motion | データ/solver移植。Windows数値oracleは未実施 |
 | defsDayo.h、saveDayo.h、keyframeDayo.h | core/project、vmdayo、editor | project/track DTOと保存形式を移植 |
 | matDayo.h | core/fx/fx_material、FxMaterialSceneRuntime | template/annotationをlink、GPU tableとdescriptorへ接続 |
-| debDayo.h | core/fx_debug、NativeRendererCoordinator、app | metadata/live allocation表示まで |
+| debDayo.h | core/fx_debug、NativeRendererCoordinator、app | metadata/live allocation、texture previewとdump |
 | dayo.cpp、gizmoDayo.h、YRZImGui.ixx | app/application、core/editor、ImGui/SDL | UI/操作を別hostへ移植 |
 | Wave.ixx | core/media、audio/video export、FFmpeg | platform依存のI/Oを置換 |
 

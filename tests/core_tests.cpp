@@ -1372,6 +1372,25 @@ int main() {
         ok &= check(queue.written() == 16 && std::filesystem::exists(outputDirectory / "frame_000003.ppm") &&
                         std::filesystem::exists(outputDirectory / "frame_000018.ppm"),
                     "asynchronous frame output");
+        dayo::core::OutputSettings patternSettings;
+        patternSettings.directory = outputDirectory;
+        patternSettings.filenamePattern = "shot%%_%04u";
+        ok &= check(dayo::core::outputPath(patternSettings, 3) == outputDirectory / "shot%_0003.ppm",
+                    "filenamePattern supports padded unsigned conversion and escaped percent");
+        patternSettings.filenamePattern = "shot_%6d";
+        ok &= check(dayo::core::outputPath(patternSettings, 3) == outputDirectory / "shot_     3.ppm",
+                    "filenamePattern supports decimal width without zero padding");
+        for (const auto unsupportedPattern :
+             {"shot_%i", "shot_%x", "shot_%08X", "shot_%-6d", "shot_%+06d", "shot_%.6d", "shot_%d_%u"}) {
+            patternSettings.filenamePattern = unsupportedPattern;
+            bool rejected = false;
+            try {
+                static_cast<void>(dayo::core::outputPath(patternSettings, 3));
+            } catch (const std::invalid_argument&) {
+                rejected = true;
+            }
+            ok &= check(rejected, "filenamePattern rejects unsupported printf conversion grammar");
+        }
         dayo::core::ImageRgba8 pngImage{1, 1, {255, 64, 32, 255}};
         dayo::core::writeFrame(outputDirectory / "frame.png", pngImage, dayo::core::OutputFormat::png);
         ok &= check(std::filesystem::file_size(outputDirectory / "frame.png") > 8, "PNG frame output");
@@ -1382,7 +1401,24 @@ int main() {
         } catch (const std::runtime_error& error) {
             overwriteBlocked = std::string_view(error.what()).find("already exists") != std::string_view::npos;
         }
-        ok &= check(overwriteBlocked, "sequence output rejects existing range before starting worker");
+        ok &= check(overwriteBlocked, "filenamePattern output rejects existing range before starting worker");
+        dayo::core::OutputSettings sequenceSettings;
+        sequenceSettings.directory = outputDirectory;
+        sequenceSettings.sequenceFile = "shot_00001.png";
+        sequenceSettings.format = dayo::core::OutputFormat::png;
+        sequenceSettings.firstFrame = 0;
+        sequenceSettings.lastFrame = 1;
+        const auto occupiedSequencePath = outputDirectory / "shot_00001.png";
+        dayo::core::writeFrame(occupiedSequencePath, pngImage, dayo::core::OutputFormat::png);
+        dayo::core::OutputQueue sequenceQueue(sequenceSettings);
+        sequenceQueue.push(0, pngImage);
+        sequenceQueue.push(1, pngImage);
+        sequenceQueue.close();
+        sequenceQueue.rethrowIfFailed();
+        ok &= check(sequenceQueue.written() == 2 && std::filesystem::exists(outputDirectory / "shot_00002.png") &&
+                        std::filesystem::exists(outputDirectory / "shot_00003.png") &&
+                        dayo::core::loadImageRgba8(occupiedSequencePath).pixels == pngImage.pixels,
+                    "Dayo sequence output skips occupied numbers and preserves the existing image");
         settings.overwrite = true;
         dayo::core::OutputQueue interactiveQueue(settings);
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
