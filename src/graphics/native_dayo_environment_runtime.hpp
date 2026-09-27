@@ -53,6 +53,9 @@ struct DayoSkyboxPrefilterDraw {
                                                                                     bool buildSkyboxSampler);
 [[nodiscard]] std::vector<DayoSkyboxPrefilterDraw> buildDayoSkyboxPrefilterPlan(Extent3D extent);
 
+// Extracts the pinned YRZ.ixx PrefilterShader and appends only a Vulkan VS adapter.
+[[nodiscard]] std::string loadDayoSkyboxPrefilterShader(const std::filesystem::path& sourcePath);
+
 // Executes the pinned MikuMikuDayo 1.30 system/skyboxPDF.hlsl and
 // system/skyboxSH.hlsl passes. It owns the output/work buffers and borrows the
 // environment texture produced by NativeEnvironmentBackend.

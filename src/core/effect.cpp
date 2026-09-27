@@ -682,6 +682,7 @@ EffectGraph loadEffectGraphFromText(const std::filesystem::path& path, std::stri
             buffer.format = value.value("format", "");
             buffer.view = value.value("view", "");
             buffer.shared = value.value("shared", "");
+            buffer.filename = value.value("filename", "");
             buffer.elementSize = value.value("elemSize", value.value("elementSize", 0U));
             if (buffer.elementSize == 0)
                 buffer.elementSize = hlslElementSize(buffer.type);
