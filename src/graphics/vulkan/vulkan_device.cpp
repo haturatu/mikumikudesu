@@ -2482,6 +2482,12 @@ void VulkanDevice::selectRenderer(RendererKind requested) {
 
 void VulkanDevice::setNativeFrameRecorder(NativeFrameRecorder recorder) {
     nativeFrameRecorder_ = std::move(recorder);
+    nativeFrameRecorderForPreviewComputeTest_ = false;
+}
+
+void VulkanDevice::setNativeFrameRecorderForComputeTest(NativeFrameRecorder recorder) {
+    nativeFrameRecorder_ = std::move(recorder);
+    nativeFrameRecorderForPreviewComputeTest_ = true;
 }
 
 void VulkanDevice::setNativeRendererAvailability(bool subayai, bool bdpt) {
@@ -3298,7 +3304,8 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     recordPreviewBackgroundUpload(frame.commandBuffer, frame);
 
     std::optional<NativeFrameOutput> nativeOutput;
-    if (nativeFrameRecorder_ && activeRenderer_ != RendererKind::preview) {
+    if (nativeFrameRecorder_ &&
+        (activeRenderer_ != RendererKind::preview || nativeFrameRecorderForPreviewComputeTest_)) {
         VulkanCommandList commands(*this, frame.commandBuffer);
         nativeOutput = nativeFrameRecorder_(commands, target);
         if (nativeOutput.has_value() && !nativeOutput->valid())
