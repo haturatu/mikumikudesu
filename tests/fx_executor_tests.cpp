@@ -3026,9 +3026,9 @@ bool testGenericFxRuntimeMatDescLifecycle() {
         pass.unorderedAccess.push_back({"Output", false, {}});
         graph.passes.push_back(pass);
         core::MaterialEditorState material;
-        material.annotation = "Weight : frac(Time)\n_T0 : Local2D\n";
+        material.annotation = "Weight : frac(Time)\n_TAlbedo : Local2D\n";
         if (postprocess)
-            material.annotation += "_V2 : Local3D\n";
+            material.annotation += "_VVolume : Local3D\n";
         std::array materials{material};
         const std::array models{FxMaterialSceneModel{.id = 18,
                                                      .sourcePath = directory / "avatar.pmx",
@@ -3112,7 +3112,7 @@ bool testGenericFxRuntimeMatDescLifecycle() {
                 ok &= check(containsTexture(refreshedBindings.textures3D, initialStore.find("Local3D")->texture),
                             "postprocess binds effect-local Texture3D through MatDesc");
                 const auto initialTextureCount = refreshedBindings.textures2D.size();
-                materials[0].annotation += "_T1 : LocalExtra\n";
+                materials[0].annotation += "_TDetail : LocalExtra\n";
                 static_cast<void>(execute());
                 ok &= check(gpuBindings().textures2D.size() == initialTextureCount + 1 &&
                                 device.createdComputePipelines_ > pipelineCount,
