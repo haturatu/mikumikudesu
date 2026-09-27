@@ -92,7 +92,7 @@ bool NativeFxRuntime::refresh(const fx::FxFrameContext& context, std::string* er
         return false;
     }
     if (ready_ && resourceContext_.has_value() && sameResourceContext(*resourceContext_, context) &&
-        !resources_.sharedReferencesChanged(program_))
+        !resources_.sharedResourcesChanged(program_))
         return true;
 
     ready_ = false;
