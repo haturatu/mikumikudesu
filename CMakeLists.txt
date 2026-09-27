@@ -249,6 +249,7 @@ add_library(
   src/fx/fx_catalog.cpp
   src/fx/fx_condition_runtime.cpp
   src/fx/fx_compiler.cpp
+  src/fx/fx_resource_sizes.cpp
   src/fx/fx_preview_path.cpp
   src/fx/fx_resource_registry.cpp
   src/fx/fx_runtime_requirements.cpp

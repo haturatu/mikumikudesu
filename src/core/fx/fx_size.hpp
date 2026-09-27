@@ -46,6 +46,7 @@ struct FxSizeExpr {
     float heightRatio{1.0F};
     float depthRatio{1.0F};
     Rounding rounding{Rounding::nearest};
+    bool minimumOne{}; // Dayo relative resource sizes clamp rounded zero to one.
 };
 
 // Read-only view of already resolved resources (for base inheritance).

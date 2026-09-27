@@ -13,10 +13,12 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace dayo::core {
@@ -123,7 +125,43 @@ void checkPeakAllocation(std::uint64_t inputBytes, std::uint64_t outputBytes, st
         throw std::runtime_error("image allocation budget exceeded for " + std::string(field));
 }
 
-[[nodiscard]] std::vector<std::uint8_t> readImageSnapshot(const std::filesystem::path& path) {
+// Windows-authored Dayo assets use case-insensitive paths. Resolve each
+// component on case-sensitive filesystems, rejecting ambiguous alternatives.
+std::filesystem::path resolveImageFile(const std::filesystem::path& requested) {
+    if (std::filesystem::exists(requested))
+        return requested;
+    const auto folded = [](std::string value) {
+        std::ranges::transform(value, value.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return value;
+    };
+    const auto absolute = std::filesystem::absolute(requested).lexically_normal();
+    auto resolved = absolute.root_path();
+    for (const auto& component : absolute.relative_path()) {
+        const auto direct = resolved / component;
+        if (std::filesystem::exists(direct)) {
+            resolved = direct;
+            continue;
+        }
+        if (!std::filesystem::is_directory(resolved))
+            return requested;
+        std::filesystem::path match;
+        for (const auto& candidate : std::filesystem::directory_iterator(resolved)) {
+            if (folded(candidate.path().filename().string()) != folded(component.string()))
+                continue;
+            if (!match.empty())
+                throw std::runtime_error("ambiguous image filename: " + requested.string());
+            match = candidate.path();
+        }
+        if (match.empty())
+            return requested;
+        resolved = std::move(match);
+    }
+    return resolved;
+}
+
+[[nodiscard]] std::vector<std::uint8_t> readImageSnapshot(const std::filesystem::path& requested) {
+    const auto path = resolveImageFile(requested);
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input)
         throw std::runtime_error("cannot open image " + path.string());
@@ -201,7 +239,8 @@ std::uint8_t unpackChannel(std::uint32_t value, std::uint32_t mask, std::uint8_t
     return static_cast<std::uint8_t>(((value & mask) >> shift) * 255U / maximum);
 }
 
-ImageRgba8 decodeDds(const std::filesystem::path& path) {
+ImageRgba8 decodeDds(const std::filesystem::path& requested) {
+    const auto path = resolveImageFile(requested);
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input)
         throw std::runtime_error("cannot open DDS image: " + path.string());
@@ -510,6 +549,151 @@ ImageRgba8 decodeDds(const std::filesystem::path& path) {
 }
 
 } // namespace
+
+ImageMetadata inspectDdsImage(const std::filesystem::path& requested) {
+    const auto path = resolveImageFile(requested);
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input)
+        throw std::runtime_error("cannot open DDS image: " + path.string());
+    const auto end = input.tellg();
+    if (end < 128)
+        throw std::runtime_error("invalid DDS header: " + path.string());
+
+    std::array<std::uint8_t, 148> header{};
+    input.seekg(0);
+    input.read(reinterpret_cast<char*>(header.data()), 128);
+    if (!input || std::memcmp(header.data(), "DDS ", 4) != 0 || u32(header.data() + 4) != 124U ||
+        u32(header.data() + 76) != 32U)
+        throw std::runtime_error("invalid DDS file: " + path.string());
+
+    ImageMetadata result;
+    result.width = u32(header.data() + 16);
+    result.height = u32(header.data() + 12);
+    result.depth = std::max(u32(header.data() + 24), 1U);
+    result.mipLevels = std::max(u32(header.data() + 28), 1U);
+    if (result.width == 0 || result.height == 0)
+        throw std::runtime_error("invalid DDS dimensions: " + path.string());
+
+    const auto code = u32(header.data() + 84);
+    const auto caps2 = u32(header.data() + 112);
+    if (code == fourCc('D', 'X', '1', '0')) {
+        if (end < 148)
+            throw std::runtime_error("truncated DDS DX10 header: " + path.string());
+        input.read(reinterpret_cast<char*>(header.data() + 128), 20);
+        if (!input)
+            throw std::runtime_error("truncated DDS DX10 header: " + path.string());
+
+        constexpr std::uint32_t kTexture2D = 3;
+        constexpr std::uint32_t kTexture3D = 4;
+        constexpr std::uint32_t kTextureCube = 0x4;
+        const auto resourceDimension = u32(header.data() + 132);
+        const auto miscFlag = u32(header.data() + 136);
+        const auto arraySize = u32(header.data() + 140);
+        if (arraySize == 0)
+            throw std::runtime_error("invalid DDS DX10 array size: " + path.string());
+        if (resourceDimension == kTexture3D) {
+            if (arraySize != 1 || (miscFlag & kTextureCube) != 0 || u32(header.data() + 24) == 0)
+                throw std::runtime_error("invalid DDS DX10 volume metadata: " + path.string());
+            result.dimension = DdsDimension::threeD;
+        } else if (resourceDimension == kTexture2D) {
+            result.depth = 1;
+            if ((miscFlag & kTextureCube) != 0) {
+                result.dimension = DdsDimension::cube;
+                if (arraySize > std::numeric_limits<std::uint32_t>::max() / 6U)
+                    throw std::runtime_error("DDS cubemap array is too large: " + path.string());
+                result.arrayLayers = arraySize * 6U;
+            } else {
+                result.dimension = DdsDimension::twoD;
+                result.arrayLayers = arraySize;
+            }
+        } else {
+            throw std::runtime_error("unsupported DDS DX10 resource dimension: " + path.string());
+        }
+    } else if ((caps2 & 0x200000U) != 0U) {
+        if ((caps2 & 0x200U) != 0U || u32(header.data() + 24) == 0)
+            throw std::runtime_error("invalid DDS volume metadata: " + path.string());
+        result.dimension = DdsDimension::threeD;
+    } else if ((caps2 & 0x200U) != 0U) {
+        constexpr std::uint32_t kAllCubeFaces = 0xFC00U;
+        if ((caps2 & kAllCubeFaces) != kAllCubeFaces)
+            throw std::runtime_error("incomplete DDS cubemap is unsupported: " + path.string());
+        result.dimension = DdsDimension::cube;
+        result.depth = 1;
+        result.arrayLayers = 6;
+    } else {
+        result.dimension = DdsDimension::twoD;
+        result.depth = 1;
+    }
+
+    auto largest = std::max({result.width, result.height, result.depth});
+    std::uint32_t maximumMipLevels = 1;
+    while (largest > 1) {
+        largest >>= 1U;
+        ++maximumMipLevels;
+    }
+    if (result.mipLevels > maximumMipLevels)
+        throw std::runtime_error("DDS mip count exceeds the texture extent: " + path.string());
+    return result;
+}
+
+ImageMetadata inspectImageMetadata(const std::filesystem::path& requested) {
+    struct CacheEntry {
+        std::uintmax_t encodedSize{};
+        std::filesystem::file_time_type modified{};
+        ImageMetadata metadata;
+    };
+    static std::mutex cacheMutex;
+    static std::unordered_map<std::string, CacheEntry> cache;
+
+    const auto path = resolveImageFile(requested);
+    const auto key = std::filesystem::absolute(path).lexically_normal().generic_string();
+    std::error_code fileError;
+    const auto encodedSize = std::filesystem::file_size(path, fileError);
+    if (fileError)
+        throw std::runtime_error("cannot inspect image metadata: " + path.string() + ": " + fileError.message());
+    const auto modified = std::filesystem::last_write_time(path, fileError);
+    if (fileError)
+        throw std::runtime_error("cannot inspect image metadata: " + path.string() + ": " + fileError.message());
+    {
+        const std::lock_guard lock(cacheMutex);
+        const auto cached = cache.find(key);
+        if (cached != cache.end() && cached->second.encodedSize == encodedSize && cached->second.modified == modified)
+            return cached->second.metadata;
+    }
+
+    auto extension = path.extension().string();
+    std::ranges::transform(extension, extension.begin(),
+                           [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    ImageMetadata metadata;
+    if (extension == ".dds") {
+        metadata = inspectDdsImage(path);
+    } else {
+        int width = 0;
+        int height = 0;
+        int channels = 0;
+        const auto pathString = path.string();
+        if (!stbi_info(pathString.c_str(), &width, &height, &channels))
+            throw std::runtime_error("cannot inspect image " + path.string() + ": " + stbi_failure_reason());
+        if (width <= 0 || height <= 0)
+            throw std::runtime_error("invalid image dimensions: " + path.string());
+        metadata.width = static_cast<std::uint32_t>(width);
+        metadata.height = static_cast<std::uint32_t>(height);
+        metadata.dimension = DdsDimension::twoD;
+    }
+
+    fileError.clear();
+    const auto currentSize = std::filesystem::file_size(path, fileError);
+    if (!fileError && currentSize == encodedSize) {
+        const auto currentModified = std::filesystem::last_write_time(path, fileError);
+        if (!fileError && currentModified == modified) {
+            const std::lock_guard lock(cacheMutex);
+            if (cache.size() >= 512 && !cache.contains(key))
+                cache.clear();
+            cache.insert_or_assign(key, CacheEntry{encodedSize, modified, metadata});
+        }
+    }
+    return metadata;
+}
 
 const ImageRgba8Subresource& DdsImageRgba8::subresource(std::uint32_t mipLevel, std::uint32_t arrayLayer) const {
     if (mipLevel >= mipLevels || arrayLayer >= arrayLayers)
