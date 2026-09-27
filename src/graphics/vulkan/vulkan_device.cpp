@@ -4422,16 +4422,47 @@ handles::TextureHandle VulkanDevice::createTextureEx(const TextureResourceDesc& 
     const VkImageUsageFlags usage = toVkUsage(desc.usage);
     if (usage == 0)
         throw std::invalid_argument("typed texture usage has no Vulkan mapping");
+    const std::uint32_t layerMultiplier = desc.dimension == TextureDimension::cube ? 6U : 1U;
+    const std::uint32_t imageLayers = desc.arrayLayers * layerMultiplier;
+
+    const VkImageCreateFlags imageFlags = desc.dimension == TextureDimension::cube
+                                              ? static_cast<VkImageCreateFlags>(VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT)
+                                              : static_cast<VkImageCreateFlags>(0);
+    VkFormatProperties2 properties{.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
+    vkGetPhysicalDeviceFormatProperties2(physicalDevice_, format, &properties);
+    const auto features = properties.formatProperties.optimalTilingFeatures;
+    const auto requireFeature = [&](VkImageUsageFlags requested, VkFormatFeatureFlags required, const char* purpose) {
+        if ((usage & requested) != 0 && (features & required) != required)
+            throw std::runtime_error("typed texture format " + std::string(toString(desc.format)) +
+                                     " does not support Vulkan " + purpose + " usage");
+    };
+    requireFeature(VK_IMAGE_USAGE_SAMPLED_BIT, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "sampled-image");
+    requireFeature(VK_IMAGE_USAGE_STORAGE_BIT, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT, "storage-image");
+    requireFeature(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT, "color-attachment");
+    requireFeature(VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                   "depth/stencil-attachment");
+
+    VkImageFormatProperties supportedProperties{};
+    const auto supportResult =
+        vkGetPhysicalDeviceImageFormatProperties(physicalDevice_, format, toVkImageType(desc.dimension),
+                                                 VK_IMAGE_TILING_OPTIMAL, usage, imageFlags, &supportedProperties);
+    if (supportResult == VK_ERROR_FORMAT_NOT_SUPPORTED) {
+        throw std::runtime_error("typed texture format " + std::string(toString(desc.format)) +
+                                 " does not support the requested Vulkan image usage");
+    }
+    check(supportResult, "query typed texture format support");
+    if (desc.extent.width > supportedProperties.maxExtent.width ||
+        desc.extent.height > supportedProperties.maxExtent.height ||
+        desc.extent.depth > supportedProperties.maxExtent.depth || desc.mipLevels > supportedProperties.maxMipLevels ||
+        imageLayers > supportedProperties.maxArrayLayers) {
+        throw std::runtime_error("typed texture " + std::string(toString(desc.format)) +
+                                 " exceeds the Vulkan image limits for its requested usage");
+    }
 
     TypedTexture typed{};
     typed.desc = desc;
     typed.mipViews.resize(desc.mipLevels, VK_NULL_HANDLE);
     typed.mipLayouts.resize(desc.mipLevels, VK_IMAGE_LAYOUT_UNDEFINED);
-    const std::uint32_t layerMultiplier = desc.dimension == TextureDimension::cube ? 6U : 1U;
-    const std::uint32_t imageLayers = desc.arrayLayers * layerMultiplier;
-    const VkImageCreateFlags imageFlags = desc.dimension == TextureDimension::cube
-                                              ? static_cast<VkImageCreateFlags>(VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT)
-                                              : static_cast<VkImageCreateFlags>(0);
     const VkImageCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .flags = imageFlags,
