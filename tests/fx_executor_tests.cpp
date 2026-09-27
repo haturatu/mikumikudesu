@@ -42,6 +42,7 @@
 #include <iostream>
 #include <map>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -3350,11 +3351,11 @@ bool testGenericFxRuntimeMatDescLifecycle() {
         };
         const auto currentValue = [&] {
             const auto valueBuffer = gpuBindings().values;
-            for (auto upload = device.bufferUploads_.rbegin(); upload != device.bufferUploads_.rend(); ++upload) {
-                if (upload->handle != valueBuffer || upload->bytes.size() < sizeof(float))
+            for (const auto& upload : std::views::reverse(device.bufferUploads_)) {
+                if (upload.handle != valueBuffer || upload.bytes.size() < sizeof(float))
                     continue;
                 float value{};
-                std::memcpy(&value, upload->bytes.data(), sizeof(value));
+                std::memcpy(&value, upload.bytes.data(), sizeof(value));
                 return value;
             }
             return -1.0F;
