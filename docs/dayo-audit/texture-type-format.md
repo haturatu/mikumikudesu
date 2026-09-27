@@ -36,4 +36,8 @@ fixture、2D/3D各mip、数値のGPU readback、対応外組合せのエラー�
 
 既存の表示用 RGBA8 API は維持。未対応DXGI形式、パディング付き typed DDS row pitch、FX宣言で表現できないarray/cubeは明示的に拒否する。
 
-ビルド: Linux `mikumikudesu`。テスト・GPU readback・Windows実行は今回行っていない。前提PR: #251。
+`createTextureEx` はoptimal tilingのsampled/storage/color/depth format featureと、
+用途・次元・サイズを含むimage format supportを確保前に検査して診断する。
+headless Vulkan fixtureでR8_UNORM、R16_FLOAT、R8_UINT、R8_SINT、R16G16_SNORM、RGBA16_UINT、RGBA32_SINTの
+create/upload/readbackをbyte単位で比較する。CPU側にはDDS/HLSL型のtable-driven fixtureもある。
+Windowsとの比較は未実施。前提PR: #251。

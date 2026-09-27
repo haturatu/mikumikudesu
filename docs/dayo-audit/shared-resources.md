@@ -45,4 +45,9 @@ deform→renderer→postprocessの境界を越えて参照可能で、後続stag
 sourceは実行後に公開されるため、consumerはproducerの書込みと公開後に初期化される。
 この実装はsourceのサイズがrefに依存する循環構成をサポートしない。
 
-Linux `mikumikudesu` ビルド成功。今回テスト・GPU readbackは行っていない。前提PR: #253。
+effect stack変更時に全consumerの宣言・pass用途を収集し、sourceの実formatに対するusageを集約する。
+renderer/generic sourceの確保にunionを適用し、consumer追加でusageが増えた既存sourceはrefreshで再確保する。
+2D/3D UAV→SRV、SRV→UAV、および2D UAV→RTV、RTV→SRV、depth→sampledのfixtureで
+usage・handle共有・追加consumerによる再確保判定を確認する。
+waitIdle例外でもtexture/bufferを独立して解放し、device lossを模擬するfixtureも追加した。
+実GPU/Windowsとの比較は未実施。前提PR: #253。

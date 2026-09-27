@@ -130,7 +130,10 @@ struct MockDevice final : public dayo::graphics::Device {
     void resize() override {}
     void beginUiFrame() override {}
     void renderFrame() override {}
-    void waitIdle() override {}
+    void waitIdle() override {
+        if (waitIdleFails_)
+            throw std::runtime_error("simulated device loss");
+    }
     void uploadPreviewMesh(std::span<const dayo::graphics::PreviewVertex>, std::span<const std::uint32_t>) override {}
     void updatePreviewVertices(std::span<const dayo::graphics::PreviewVertex>) override {}
     void updatePreviewBones(std::span<const dayo::graphics::PreviewBoneTransform>) override {}
@@ -286,6 +289,7 @@ struct MockDevice final : public dayo::graphics::Device {
     std::uint32_t nextTypedHandle_{1};
     std::size_t destroyedShaders_{};
     std::size_t destroyedPipelines_{};
+    bool waitIdleFails_{};
     std::uint32_t textureGeneration_{1};
     std::size_t createdComputePipelines_{};
     std::size_t destroyedSbt_{};
@@ -2732,6 +2736,31 @@ bool testFxDebugFloatTextureCanDumpPng() {
     }
 }
 
+bool testSharedAllocationCleanupAfterDeviceLoss() {
+    dayo::fx::FxProgram program;
+    dayo::core::EffectTexture texture;
+    texture.name = "Shared";
+    texture.shared = "source";
+    texture.view = "SRV";
+    program.textures.push_back(texture);
+    dayo::core::EffectBuffer buffer;
+    buffer.name = "SharedBuffer";
+    buffer.shared = "source";
+    buffer.view = "UAV";
+    buffer.type = "float4";
+    buffer.elementSize = 16;
+    program.buffers.push_back(buffer);
+    MockDevice device;
+    dayo::graphics::FxResourceRuntime runtime;
+    std::string error;
+    if (!runtime.initialize(device, program, testContext(), &error))
+        return check(false, "device loss cleanup source initializes: " + error);
+    device.waitIdleFails_ = true;
+    runtime.reset();
+    return check(device.destroyedTextures_ == 1 && device.destroyedBuffers_ == 1,
+                 "shared allocations are destroyed even when waitIdle throws");
+}
+
 bool testSharedTextureUsageUnion() {
     using namespace dayo;
     using namespace graphics;
@@ -3828,6 +3857,7 @@ int main() {
     ok &= testSharedResourceUsageCoversConsumerReads();
     ok &= testFxDebugFloatTextureCanDumpPng();
     ok &= testSharedTextureUsageUnion();
+    ok &= testSharedAllocationCleanupAfterDeviceLoss();
     ok &= testFxExternalTextureMetadataAndUpload();
     ok &= testNativeFxRuntimeRefreshesFrameResources();
     ok &= testNativeFxRuntimeBindsResourcesAndPipelines();
