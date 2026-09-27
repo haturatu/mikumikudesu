@@ -26,11 +26,19 @@ struct SharedAllocation {
     ~SharedAllocation() {
         try {
             device->waitIdle();
-            if (texture.valid())
-                device->destroyTextureEx(texture);
-            if (buffer.valid())
-                device->destroyBufferEx(buffer);
         } catch (...) {
+        }
+        if (texture.valid()) {
+            try {
+                device->destroyTextureEx(texture);
+            } catch (...) {
+            }
+        }
+        if (buffer.valid()) {
+            try {
+                device->destroyBufferEx(buffer);
+            } catch (...) {
+            }
         }
     }
 };
@@ -291,7 +299,20 @@ bool fxSharedMode(std::string_view value, std::string_view mode) {
     return upper(value) == upper(mode);
 }
 
-bool FxResourceRuntime::sharedReferencesChanged(const fx::FxProgram& program) const {
+ResourceUsage sharedTextureReferenceUsage(const fx::FxProgram& program, std::string_view name,
+                                          PixelFormat sourceFormat) {
+    ResourceUsage usage{};
+    const auto gather = [&](const auto& declarations) {
+        for (const auto& declaration : declarations)
+            if (declaration.name == name && fxSharedMode(declaration.shared, "ref"))
+                usage |= textureUsage(declaration.view, sourceFormat, summarizeTextureUsage(program, name));
+    };
+    gather(program.textures);
+    gather(program.textures3D);
+    return usage;
+}
+
+bool FxResourceRuntime::sharedResourcesChanged(const fx::FxProgram& program) const {
     const auto changed = [this](const auto& declarations) {
         return std::ranges::any_of(declarations, [this](const auto& declaration) {
             if (!fxSharedMode(declaration.shared, "ref"))
@@ -302,7 +323,19 @@ bool FxResourceRuntime::sharedReferencesChanged(const fx::FxProgram& program) co
                    source->texture != old->texture || source->buffer != old->buffer;
         });
     };
-    return changed(program.textures) || changed(program.textures3D) || changed(program.buffers);
+    const auto sourceUsageChanged = [this](const auto& declarations) {
+        return std::ranges::any_of(declarations, [this](const auto& declaration) {
+            if (!sharedUsageResolver_ || !fxSharedMode(declaration.shared, "source"))
+                return false;
+            const auto* old = store_.find(declaration.name);
+            if (old == nullptr)
+                return true;
+            const auto required = sharedUsageResolver_(declaration.name, old->format);
+            return (toBits(old->usage) & toBits(required)) != toBits(required);
+        });
+    };
+    return changed(program.textures) || changed(program.textures3D) || changed(program.buffers) ||
+           sourceUsageChanged(program.textures) || sourceUsageChanged(program.textures3D);
 }
 
 bool FxResourceStore::add(Resource resource) {
@@ -640,6 +673,8 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                 .usage = textureUsage(declaration.view, format, usageSummary),
                 .lifetime = ResourceLifetime::persistent,
             };
+            if (sharedUsageResolver_ && fxSharedMode(declaration.shared, "source"))
+                description.usage |= sharedUsageResolver_(name, format);
             const auto allocationBytes = static_cast<std::uint64_t>(estimateTextureBytes(description));
             reserveBytes(allocationBytes, name);
             FxResourceStore::Resource resource{.name = name,
@@ -712,6 +747,8 @@ bool FxResourceRuntime::initialize(Device& device, const fx::FxProgram& program,
                 .usage = textureUsage(declaration.view, format, usageSummary),
                 .lifetime = ResourceLifetime::persistent,
             };
+            if (sharedUsageResolver_ && fxSharedMode(declaration.shared, "source"))
+                description.usage |= sharedUsageResolver_(name, format);
             const auto allocationBytes = static_cast<std::uint64_t>(estimateTextureBytes(description));
             reserveBytes(allocationBytes, name);
             FxResourceStore::Resource resource{.name = name,

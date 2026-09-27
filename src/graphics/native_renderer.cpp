@@ -240,6 +240,7 @@ void NativeRendererCoordinator::setHostResourceBindings(const NativeSceneResourc
 void NativeRendererCoordinator::setEffectStack(const core::SceneEffectStack& effects) {
     deformEffects_ = effects.deform;
     postprocessEffects_ = effects.postprocess;
+    collectSharedResourceRequirements();
     deformRuntimes_.clear();
     postprocessRuntimes_.clear();
     deformerResources_.clear();
@@ -285,8 +286,10 @@ void NativeRendererCoordinator::setEffectSchedule(std::span<const fx::ScheduledF
     });
     if (deformChanged)
         deformerResources_.clear();
-    if (deformChanged || postprocessChanged)
+    if (deformChanged || postprocessChanged) {
         sharedResources_.clear();
+        collectSharedResourceRequirements();
+    }
 }
 
 void NativeRendererCoordinator::setControllerDeclarations(std::span<const core::EffectController> declarations) {
@@ -348,7 +351,7 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
                 throw std::runtime_error("generic Dayo FX controller buffer initialization failed");
             entry->block.emplace(entry->controller.layout());
             entry->runtime.addProvider(sceneHostProvider_);
-            entry->runtime.setSharedResourceResolver(sharedResourceResolver());
+            entry->runtime.setSharedResourceResolver(sharedResourceResolver(), sharedResourceUsageResolver());
         }
         // A deformer uses its owner's clone count; table indices remain scene-wide,
         // matching the canonical Model2Mat and material descriptor ABI.
@@ -520,6 +523,27 @@ bool NativeRendererCoordinator::updateEnvironment(const EnvironmentDesc& descrip
     return environmentService_.update(description);
 }
 
+void NativeRendererCoordinator::collectSharedResourceRequirements() {
+    sharedUsagePrograms_.clear();
+    const auto collect = [this](const auto& effects) {
+        for (const auto& effect : effects)
+            sharedUsagePrograms_.push_back(fx::FxCompiler{}.compile(effect.graph));
+    };
+    collect(deformEffects_);
+    collect(postprocessEffects_);
+}
+
+FxSharedResourceUsageResolver NativeRendererCoordinator::sharedResourceUsageResolver() const {
+    return [this](std::string_view name, PixelFormat format) {
+        ResourceUsage usage{};
+        if (const auto* renderer = program(); renderer != nullptr)
+            usage |= sharedTextureReferenceUsage(*renderer, name, format);
+        for (const auto& consumer : sharedUsagePrograms_)
+            usage |= sharedTextureReferenceUsage(consumer, name, format);
+        return usage;
+    };
+}
+
 FxSharedResourceResolver NativeRendererCoordinator::sharedResourceResolver() const {
     return [this](std::string_view name) -> std::optional<FxResourceStore::Resource> {
         const auto found = sharedResources_.resolve(name);
@@ -633,8 +657,8 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
     if (execution.sampleCount == 1)
         outputSamples_.cancel();
     validateSharedStages(deformEffects_, program(), postprocessEffects_);
-    subayai_.setSharedResourceResolver(sharedResourceResolver());
-    bdpt_.setSharedResourceResolver(sharedResourceResolver());
+    subayai_.setSharedResourceResolver(sharedResourceResolver(), sharedResourceUsageResolver());
+    bdpt_.setSharedResourceResolver(sharedResourceResolver(), sharedResourceUsageResolver());
     environmentService_.record(commands);
     static_cast<void>(
         executeGenericEffects(deformEffects_, deformRuntimes_, commands, context, resources, false, materialModels));
@@ -706,6 +730,7 @@ void NativeRendererCoordinator::reset() noexcept {
     outputSamples_.reset();
     deformEffects_.clear();
     postprocessEffects_.clear();
+    sharedUsagePrograms_.clear();
     bdpt_.reset();
     subayai_.reset();
     status_ = {};

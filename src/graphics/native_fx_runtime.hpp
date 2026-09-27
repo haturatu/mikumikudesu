@@ -33,8 +33,9 @@ struct NativeFxFrame {
 // set in the same pipeline layout.
 class NativeFxRuntime {
   public:
-    void setSharedResourceResolver(FxSharedResourceResolver resolver) {
-        resources_.setSharedResourceResolver(std::move(resolver));
+    void setSharedResourceResolver(FxSharedResourceResolver resolver,
+                                   FxSharedResourceUsageResolver usageResolver = {}) {
+        resources_.setSharedResourceResolver(std::move(resolver), std::move(usageResolver));
     }
 
     NativeFxRuntime() = default;
