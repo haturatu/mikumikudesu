@@ -328,6 +328,157 @@ void resetPreviewScene(dayo::graphics::VulkanDevice& device) {
     device.updatePreviewScene(scene);
 }
 
+// Keep the model external; the default fixture reproduces Vivian vertex 9446
+// and ten adjoining triangles without requiring the original PMX in CI.
+bool zeroNormalVerticesStayInModelSpace(dayo::graphics::VulkanDevice& device) {
+    constexpr Float3 center{0.0F, 16.691345F, 0.785809F};
+    std::vector<PreviewVertex> vertices(11);
+    std::vector<std::uint32_t> indices;
+    for (std::size_t index = 0; index < vertices.size(); ++index) {
+        auto& vertex = vertices[index];
+        std::copy(center.begin(), center.end(), vertex.position);
+        vertex.normal[2] = 1.0F;
+        vertex.uv[0] = 0.927500F;
+        vertex.uv[1] = 0.342600F;
+        vertex.bones[0] = 8;
+        vertex.bones[1] = 9;
+        vertex.weights[0] = 0.835283F;
+        vertex.weights[1] = 0.164717F;
+        if (index != 0) {
+            const auto angle = static_cast<float>(index - 1) * 2.0F * std::numbers::pi_v<float> / 10.0F;
+            vertex.position[0] += 0.6F * std::cos(angle);
+            vertex.position[1] += 0.6F * std::sin(angle);
+            indices.insert(indices.end(),
+                           {0, static_cast<std::uint32_t>(index % 10 + 1), static_cast<std::uint32_t>(index)});
+        }
+    }
+    std::size_t zeroIndex = 0;
+    if (const auto* path = std::getenv("DAYO_TEST_VIVIAN_PMX")) {
+        const auto model = dayo::core::loadPmxModel(path);
+        constexpr std::size_t vivianIndex = 9446;
+        if (model.vertices.size() != 31709 || model.indices.size() != 117111 ||
+            model.vertices.at(vivianIndex).normal != Float3{}) {
+            std::cerr << "FAIL: Vivian PMX does not match the reported zero-normal fixture\n";
+            return false;
+        }
+        vertices.clear();
+        for (const auto& source : model.vertices) {
+            PreviewVertex vertex;
+            std::copy(source.position.begin(), source.position.end(), vertex.position);
+            std::copy(source.normal.begin(), source.normal.end(), vertex.normal);
+            std::copy(source.uv.begin(), source.uv.end(), vertex.uv);
+            std::copy(source.bones.begin(), source.bones.end(), vertex.bones);
+            std::copy(source.weights.begin(), source.weights.end(), vertex.weights);
+            vertices.push_back(vertex);
+        }
+        indices.clear();
+        for (std::size_t offset = 0; offset < model.indices.size(); offset += 3) {
+            const auto triangle = std::span(model.indices).subspan(offset, 3);
+            if (std::ranges::find(triangle, vivianIndex) != triangle.end())
+                indices.insert(indices.end(), triangle.begin(), triangle.end());
+        }
+        if (indices.size() != 30) {
+            std::cerr << "FAIL: Vivian zero-normal vertex is not shared by ten triangles\n";
+            return false;
+        }
+        zeroIndex = vivianIndex;
+        std::cout << "INFO: testing Vivian.pmx vertex 9446 and its ten original triangles\n";
+    }
+    std::size_t boneCount = 10;
+    for (const auto& vertex : vertices)
+        for (const auto bone : vertex.bones)
+            if (bone >= 0)
+                boneCount = std::max(boneCount, static_cast<std::size_t>(bone) + 1);
+    std::vector<PreviewBoneTransform> bones(boneCount);
+    bones[8].translation[0] = 0.15F;
+    bones[9].translation[1] = -0.1F;
+    PreviewMaterial material;
+    material.doubleSided = true;
+    material.edgeEnabled = true;
+    material.edgeSize = 0.02F;
+    material.edgeColor[3] = 1.0F;
+    const std::array materials{material};
+    const std::array<PreviewDraw, 1> draws{{{0, static_cast<std::uint32_t>(indices.size()), 0}}};
+    dayo::graphics::PreviewScene scene;
+    scene.backgroundEnabled = false;
+    scene.cameraDistance = 2.0F;
+    std::copy(center.begin(), center.end(), scene.target);
+    scene.cameraRotation[0] = 0.2F;
+    scene.cameraRotation[1] = -0.15F;
+    const auto render = [&]() {
+        device.uploadPreviewMesh(vertices, indices);
+        device.updatePreviewBones(bones);
+        device.updatePreviewMaterials(materials);
+        device.updatePreviewDraws(draws);
+        return device.renderToImage({64, 64});
+    };
+    // Exercise CPU-deformed input and every preview GPU skinning mode, with
+    // both projections and the outline pass. Only the normal changes.
+    for (std::uint32_t mode = 0; mode < 6; ++mode) {
+        for (const bool perspective : {false, true}) {
+            scene.perspective = perspective;
+            scene.outlineEnabled = !perspective;
+            device.updatePreviewScene(scene);
+            for (auto& vertex : vertices) {
+                vertex.gpuSkinning = mode == 0 ? 0U : 1U;
+                vertex.skinningType = mode == 0 ? 0U : mode - 1;
+                if (mode == 1) {
+                    vertex.weights[0] = 1.0F;
+                    vertex.weights[1] = 0.0F;
+                } else {
+                    vertex.weights[0] = 0.835283F;
+                    vertex.weights[1] = 0.164717F;
+                }
+            }
+            auto& normal = vertices[zeroIndex].normal;
+            normal[0] = normal[1] = 0.0F;
+            normal[2] = 1.0F;
+            const auto reference = render();
+            std::size_t visiblePixels = 0;
+            for (std::size_t offset = 0; offset < reference.pixels.size(); offset += 4)
+                visiblePixels += reference.pixels[offset] < 250U ? 1U : 0U;
+            if (visiblePixels < 10) {
+                std::cerr << "FAIL: zero-normal reference geometry is not visible\n";
+                return false;
+            }
+            for (const float length : {0.0F, 1e-8F}) {
+                normal[2] = length;
+                if (render().pixels != reference.pixels) {
+                    std::cerr << "FAIL: zero/tiny normal changed model rendering, mode=" << mode
+                              << ", perspective=" << perspective << ", normal=" << length << '\n';
+                    return false;
+                }
+            }
+        }
+    }
+    resetPreviewScene(device);
+    return true;
+}
+
+bool backgroundUsesExplicitPass(dayo::graphics::VulkanDevice& device) {
+    const std::array<std::uint8_t, 4> color{32, 96, 192, 255};
+    const std::array<PreviewTexture, 1> textures{{{1, 1, color, false}}};
+    device.uploadPreviewBackground(textures);
+    dayo::graphics::PreviewScene scene;
+    scene.screenSource = dayo::graphics::PreviewScene::ScreenSource::backgroundImage;
+    scene.target[1] = 16.691345F; // Keep model geometry outside the view.
+    scene.cameraRotation[0] = 0.5F;
+    scene.debugMaterial = 99; // Model isolation must not hide the background.
+    scene.debugFlags = dayo::graphics::previewDebugNormals;
+    device.updatePreviewScene(scene);
+    const auto vertices = makeFlatTriangle();
+    const auto image = renderCase(device, vertices, std::array<PreviewBoneTransform, 1>{});
+    for (std::size_t offset = 0; offset < image.pixels.size(); offset += 4) {
+        if (!std::equal(color.begin(), color.end(), image.pixels.begin() + static_cast<std::ptrdiff_t>(offset))) {
+            std::cerr << "FAIL: explicit background pass did not cover the framebuffer with its texture\n";
+            return false;
+        }
+    }
+    device.uploadPreviewBackground({});
+    resetPreviewScene(device);
+    return true;
+}
+
 bool missingSphereDoesNotAddWhite(dayo::graphics::VulkanDevice& device) {
     const std::array<std::uint8_t, 4> base{64, 32, 16, 255};
     const std::array<PreviewTexture, 1> textures{{
@@ -1105,6 +1256,8 @@ int main() {
             return 1;
         }
 #endif
+        if (!zeroNormalVerticesStayInModelSpace(device) || !backgroundUsesExplicitPass(device))
+            return 1;
         if (!runCase(device, PreviewSkinningType::sdef)) {
             std::cerr << "FAIL: GPU SDEF output differs from reference rendering\n";
             return 1;
