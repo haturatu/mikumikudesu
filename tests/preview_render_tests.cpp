@@ -243,24 +243,29 @@ bool typedVulkanFormatRoundTrips(dayo::graphics::VulkanDevice& device) {
 }
 
 bool dedicatedStagingReadback(dayo::graphics::VulkanDevice& device) {
-    dayo::graphics::handles::BufferHandle buffer;
+    dayo::graphics::handles::TextureHandle texture;
     try {
         // Exceed the 64 MiB staging ring so the returned slice owns a
         // dedicated mapping that must survive the GPU completion wait.
-        std::vector<std::byte> input(65U * 1024U * 1024U, std::byte{0x5a});
-        input.front() = std::byte{0x17};
-        input.back() = std::byte{0xe3};
-        buffer = device.createBufferEx(
-            {.size = input.size(),
-             .usage = dayo::graphics::ResourceUsage::transferDst | dayo::graphics::ResourceUsage::transferSrc});
-        device.uploadBufferEx(buffer, input);
-        const auto output = device.readbackBufferEx(buffer, 0, input.size());
-        device.destroyBufferEx(buffer);
+        const dayo::graphics::TextureResourceDesc desc{
+            .dimension = dayo::graphics::TextureDimension::d2,
+            .extent = {4097, 4096, 1},
+            .format = dayo::graphics::PixelFormat::rgba8Unorm,
+            .usage = dayo::graphics::ResourceUsage::sampledRead | dayo::graphics::ResourceUsage::transferDst |
+                     dayo::graphics::ResourceUsage::transferSrc,
+        };
+        std::vector<std::uint8_t> input(4097U * 4096U * 4U, 0x5a);
+        input.front() = 0x17;
+        input.back() = 0xe3;
+        texture = device.createTextureEx(desc);
+        device.uploadTextureEx(texture, input, 0, 0);
+        const auto output = device.readbackTextureEx(texture, 0, 0);
+        device.destroyTextureEx(texture);
         return input == output;
     } catch (const std::exception& exception) {
-        if (buffer.valid()) {
+        if (texture.valid()) {
             try {
-                device.destroyBufferEx(buffer);
+                device.destroyTextureEx(texture);
             } catch (...) {
             }
         }
