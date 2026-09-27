@@ -48,6 +48,7 @@ UVは既存入力経路を維持する。追加UVはNativeDeformedVertexの出�
 DXCで上流includeを含むSPIR-V生成とLinux `mikumikudesu` ビルド成功。
 headless fixtureはNativeDeform compute pipeline/layoutの有無でavailabilityを判定する。
 RT/Subayai対応を要求せず、storage bufferへ直接dispatchしGPU readbackで位置を数値比較する。
+出力にはhost-coherent bufferを使い、waitIdle後に数値を読むため、下流#249のdevice-local readback APIに依存しない。
 BDEF1/2/4、SDEF、QDEF、部分/全invalid bone、1/63/64/65/1023/1024/1025頂点を含む。
 必須DXC設定ではpipeline欠損を失敗とし、通常のsystem-only設定ではskipする。
 Windows比較は未実施。前提PR: #247。
