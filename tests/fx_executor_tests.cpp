@@ -129,7 +129,10 @@ struct MockDevice final : public dayo::graphics::Device {
     void resize() override {}
     void beginUiFrame() override {}
     void renderFrame() override {}
-    void waitIdle() override {}
+    void waitIdle() override {
+        if (waitIdleFails_)
+            throw std::runtime_error("simulated device loss");
+    }
     void uploadPreviewMesh(std::span<const dayo::graphics::PreviewVertex>, std::span<const std::uint32_t>) override {}
     void updatePreviewVertices(std::span<const dayo::graphics::PreviewVertex>) override {}
     void updatePreviewBones(std::span<const dayo::graphics::PreviewBoneTransform>) override {}
@@ -281,6 +284,7 @@ struct MockDevice final : public dayo::graphics::Device {
     std::uint32_t nextTypedHandle_{1};
     std::size_t destroyedShaders_{};
     std::size_t destroyedPipelines_{};
+    bool waitIdleFails_{};
     std::uint32_t textureGeneration_{1};
     std::size_t createdComputePipelines_{};
     std::size_t destroyedSbt_{};
@@ -2576,6 +2580,219 @@ bool testDepthTextureUsageIncludesSampling() {
     return check(valid, "depth texture usage is unioned across attachment writes and sampled reads");
 }
 
+bool testSharedResourceUsageCoversConsumerReads() {
+    dayo::fx::FxProgram sourceProgram;
+    dayo::core::EffectTexture texture2D;
+    texture2D.name = "Shared2D";
+    texture2D.format = "R8G8B8A8_UNORM";
+    texture2D.view = "UAV";
+    texture2D.shared = "source";
+    texture2D.size.absolute = true;
+    texture2D.size.width = 4;
+    texture2D.size.height = 4;
+    sourceProgram.textures.push_back(texture2D);
+    dayo::core::EffectTexture texture3D;
+    texture3D.name = "Shared3D";
+    texture3D.format = "R32_FLOAT";
+    texture3D.view = "UAV";
+    texture3D.shared = "source";
+    texture3D.size.absolute = true;
+    texture3D.size.width = 4;
+    texture3D.size.height = 4;
+    texture3D.size.depth = 2;
+    sourceProgram.textures3D.push_back(texture3D);
+    dayo::core::EffectBuffer buffer;
+    buffer.name = "SharedBuffer";
+    buffer.type = "float4";
+    buffer.view = "UAV";
+    buffer.shared = "source";
+    buffer.elementSize = 16;
+    buffer.size.absolute = true;
+    buffer.size.width = 4;
+    sourceProgram.buffers.push_back(buffer);
+    dayo::fx::FxDispatch producerWrite;
+    producerWrite.name = "producer-write";
+    producerWrite.kind = dayo::fx::FxOpKind::compute;
+    producerWrite.resources = {
+        {"Shared2D", true, dayo::fx::FxResourceRole::storage},
+        {"Shared3D", true, dayo::fx::FxResourceRole::storage},
+        {"SharedBuffer", true, dayo::fx::FxResourceRole::storage},
+    };
+    sourceProgram.passes.push_back(producerWrite);
+
+    MockDevice device;
+    dayo::graphics::FxResourceRuntime sourceRuntime;
+    std::string error;
+    if (!sourceRuntime.initialize(device, sourceProgram, testContext(), &error))
+        return check(false, "shared producer allocates resources before consumers: " + error);
+
+    const auto resolveSource =
+        [&sourceRuntime](std::string_view name) -> std::optional<dayo::graphics::FxResourceStore::Resource> {
+        const auto* resource = sourceRuntime.store().find(name);
+        return resource == nullptr ? std::nullopt : std::optional{*resource};
+    };
+    dayo::fx::FxProgram consumerProgram;
+    auto consumer2D = texture2D;
+    consumer2D.view = "SRV";
+    consumer2D.shared = "ref";
+    auto consumer3D = texture3D;
+    consumer3D.view = "SRV";
+    consumer3D.shared = "ref";
+    consumerProgram.textures.push_back(consumer2D);
+    consumerProgram.textures3D.push_back(consumer3D);
+    dayo::fx::FxDispatch consumerRead;
+    consumerRead.name = "consumer-read";
+    consumerRead.kind = dayo::fx::FxOpKind::compute;
+    consumerRead.resources = {
+        {"Shared2D", false, dayo::fx::FxResourceRole::sampled},
+        {"Shared3D", false, dayo::fx::FxResourceRole::sampled},
+    };
+    consumerProgram.passes.push_back(consumerRead);
+    dayo::graphics::FxResourceRuntime textureConsumer;
+    textureConsumer.setSharedResourceResolver(resolveSource);
+    if (!textureConsumer.initialize(device, consumerProgram, testContext(), &error))
+        return check(false, "shared 2D/3D UAV sources accept consumer SRV reads: " + error);
+
+    dayo::fx::FxProgram bufferConsumerProgram;
+    auto bufferReference = buffer;
+    bufferReference.shared = "ref";
+    bufferConsumerProgram.buffers.push_back(bufferReference);
+    dayo::fx::FxDispatch rasterConsumer;
+    rasterConsumer.name = "buffer-as-geometry";
+    rasterConsumer.kind = dayo::fx::FxOpKind::raster;
+    dayo::fx::FxRasterDispatch raster;
+    raster.vertexBuffer = "SharedBuffer";
+    raster.indexBuffer = "SharedBuffer";
+    rasterConsumer.executable = std::move(raster);
+    rasterConsumer.resources = {{"SharedBuffer", false, dayo::fx::FxResourceRole::storage}};
+    bufferConsumerProgram.passes.push_back(std::move(rasterConsumer));
+    dayo::graphics::FxResourceRuntime bufferConsumer;
+    bufferConsumer.setSharedResourceResolver(resolveSource);
+    if (!bufferConsumer.initialize(device, bufferConsumerProgram, testContext(), &error))
+        return check(false, "shared buffer source accepts consumer vertex/index reads: " + error);
+
+    const auto* allocatedBuffer = sourceRuntime.store().find("SharedBuffer");
+    const auto bufferUsage = allocatedBuffer == nullptr ? 0U : dayo::graphics::toBits(allocatedBuffer->usage);
+    const auto expectedBufferUsage = dayo::graphics::toBits(dayo::graphics::ResourceUsage::storageReadWrite) |
+                                     dayo::graphics::toBits(dayo::graphics::ResourceUsage::vertexRead) |
+                                     dayo::graphics::toBits(dayo::graphics::ResourceUsage::indexRead);
+    const auto* allocated2D = sourceRuntime.store().find("Shared2D");
+    const auto textureUsage = allocated2D == nullptr ? 0U : dayo::graphics::toBits(allocated2D->usage);
+    const auto expectedTextureUsage = dayo::graphics::toBits(dayo::graphics::ResourceUsage::storageReadWrite) |
+                                      dayo::graphics::toBits(dayo::graphics::ResourceUsage::sampledRead);
+    return check((bufferUsage & expectedBufferUsage) == expectedBufferUsage &&
+                     (textureUsage & expectedTextureUsage) == expectedTextureUsage,
+                 "shared producer usage includes write, sampled, vertex, and index consumer roles");
+}
+
+bool testSharedAllocationCleanupAfterDeviceLoss() {
+    dayo::fx::FxProgram program;
+    dayo::core::EffectTexture texture;
+    texture.name = "Shared";
+    texture.shared = "source";
+    texture.view = "SRV";
+    program.textures.push_back(texture);
+    dayo::core::EffectBuffer buffer;
+    buffer.name = "SharedBuffer";
+    buffer.shared = "source";
+    buffer.view = "UAV";
+    buffer.type = "float4";
+    buffer.elementSize = 16;
+    program.buffers.push_back(buffer);
+    MockDevice device;
+    dayo::graphics::FxResourceRuntime runtime;
+    std::string error;
+    if (!runtime.initialize(device, program, testContext(), &error))
+        return check(false, "device loss cleanup source initializes: " + error);
+    device.waitIdleFails_ = true;
+    runtime.reset();
+    return check(device.destroyedTextures_ == 1 && device.destroyedBuffers_ == 1,
+                 "shared allocations are destroyed even when waitIdle throws");
+}
+
+bool testSharedTextureUsageUnion() {
+    using namespace dayo;
+    using namespace graphics;
+    struct Case {
+        const char* sourceView;
+        const char* refView;
+        const char* format;
+        fx::FxResourceRole role;
+        ResourceUsage required;
+    };
+    const std::array cases{
+        Case{"UAV", "SRV", "R8G8B8A8_UNORM", fx::FxResourceRole::sampled, ResourceUsage::sampledRead},
+        Case{"SRV", "UAV", "R8G8B8A8_UNORM", fx::FxResourceRole::storage, ResourceUsage::storageReadWrite},
+        Case{"UAV", "RTV", "R8G8B8A8_UNORM", fx::FxResourceRole::colorAttachment, ResourceUsage::colorAttachment},
+        Case{"RTV", "SRV", "R8G8B8A8_UNORM", fx::FxResourceRole::sampled, ResourceUsage::sampledRead},
+        Case{"DSV", "SRV", "D32_FLOAT", fx::FxResourceRole::sampled, ResourceUsage::sampledRead},
+        Case{"SRV", "DSV", "D32_FLOAT", fx::FxResourceRole::depthAttachment,
+             ResourceUsage::depthRead | ResourceUsage::depthWrite},
+    };
+    bool ok = true;
+    for (const auto& fixture : cases) {
+        for (const bool threeD : {false, true}) {
+            if (threeD &&
+                (fixture.required == ResourceUsage::colorAttachment || std::string_view(fixture.format) == "D32_FLOAT"))
+                continue;
+            fx::FxProgram producer;
+            core::EffectTexture source;
+            source.name = "Shared";
+            source.view = fixture.sourceView;
+            source.format = fixture.format;
+            source.shared = "source";
+            source.size.absolute = true;
+            source.size.width = 4;
+            source.size.height = 4;
+            source.size.depth = threeD ? 2 : 1;
+            (threeD ? producer.textures3D : producer.textures).push_back(source);
+            fx::FxProgram consumer;
+            auto ref = source;
+            ref.view = fixture.refView;
+            ref.shared = "ref";
+            (threeD ? consumer.textures3D : consumer.textures).push_back(ref);
+            fx::FxDispatch pass;
+            pass.name = "consumer";
+            pass.resources.push_back({"Shared", fixture.role != fx::FxResourceRole::sampled, fixture.role});
+            consumer.passes.push_back(pass);
+            MockDevice device;
+            FxResourceRuntime sourceRuntime;
+            bool includeConsumer = false;
+            const auto usageResolver = [&](std::string_view name, PixelFormat format) {
+                return includeConsumer ? sharedTextureReferenceUsage(consumer, name, format) : ResourceUsage{};
+            };
+            sourceRuntime.setSharedResourceResolver({}, usageResolver);
+            std::string error;
+            if (!sourceRuntime.initialize(device, producer, testContext(), &error))
+                return check(false, "shared source initializes: " + error);
+            const auto originalUsage = sourceRuntime.store().find("Shared")->usage;
+            includeConsumer = true;
+            const auto required =
+                sharedTextureReferenceUsage(consumer, "Shared", sourceRuntime.store().find("Shared")->format);
+            const bool needsReallocation = (toBits(originalUsage) & toBits(required)) != toBits(required);
+            ok &= check(sourceRuntime.sharedResourcesChanged(producer) == needsReallocation,
+                        "new consumer usage triggers source allocation refresh when required");
+            if (!sourceRuntime.initialize(device, producer, testContext(), &error))
+                return check(false, "shared producer reallocates with consumer usage: " + error);
+            const auto* allocation = sourceRuntime.store().find("Shared");
+            ok &= check((toBits(allocation->usage) & toBits(fixture.required)) == toBits(fixture.required) &&
+                            !sourceRuntime.sharedResourcesChanged(producer),
+                        "producer allocation unions consumer texture usage");
+            FxResourceRuntime refRuntime;
+            refRuntime.setSharedResourceResolver(
+                [&](std::string_view name) -> std::optional<FxResourceStore::Resource> {
+                    const auto* resource = sourceRuntime.store().find(name);
+                    return resource == nullptr ? std::nullopt : std::optional{*resource};
+                });
+            if (!refRuntime.initialize(device, consumer, testContext(), &error))
+                return check(false, "consumer initializes with unioned source usage: " + error);
+            ok &= check(refRuntime.store().find("Shared")->texture == allocation->texture,
+                        "consumer aliases the same producer allocation");
+        }
+    }
+    return ok;
+}
+
 bool testFxExternalTextureMetadataAndUpload() {
     namespace fs = std::filesystem;
     const auto directory = fs::temp_directory_path() / "dayo-fx-external-texture-test";
@@ -3588,6 +3805,9 @@ int main() {
     ok &= testResourceSizeDependencyGraph();
     ok &= testFxBufferFileInitialization();
     ok &= testDepthTextureUsageIncludesSampling();
+    ok &= testSharedResourceUsageCoversConsumerReads();
+    ok &= testSharedTextureUsageUnion();
+    ok &= testSharedAllocationCleanupAfterDeviceLoss();
     ok &= testFxExternalTextureMetadataAndUpload();
     ok &= testNativeFxRuntimeRefreshesFrameResources();
     ok &= testNativeFxRuntimeBindsResourcesAndPipelines();

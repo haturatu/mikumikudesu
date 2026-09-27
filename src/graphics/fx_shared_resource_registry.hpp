@@ -12,9 +12,8 @@
 
 namespace dayo::graphics {
 
-// Non-owning snapshots of resources declared with shared=source. The FX
-// runtime remains the physical owner; consumers must retain the source and
-// generation in their cache identity and relink when either changes.
+// Snapshots retain shared allocation ownership across source reload and resize.
+// Consumers compare physical handles/lifetime tokens before rebuilding bindings.
 class FxSharedResourceRegistry {
   public:
     struct Export {

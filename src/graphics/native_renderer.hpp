@@ -122,6 +122,9 @@ class NativeRendererCoordinator {
                                                                     bool rendererLocal,
                                                                     std::string_view effectIdentity = {}) const;
     void publishActiveRendererResources();
+    void collectSharedResourceRequirements();
+    [[nodiscard]] FxSharedResourceUsageResolver sharedResourceUsageResolver() const;
+    [[nodiscard]] FxSharedResourceResolver sharedResourceResolver() const;
 
     NativeRendererStatus status_{};
     SubayaiRuntime subayai_;
@@ -136,6 +139,7 @@ class NativeRendererCoordinator {
     std::vector<core::SceneEffectInstance> deformEffects_;
     std::vector<core::SceneEffectInstance> postprocessEffects_;
     std::vector<core::EffectController> controllerDeclarations_;
+    std::vector<fx::FxProgram> sharedUsagePrograms_;
     GenericRuntimeList deformRuntimes_;
     GenericRuntimeList postprocessRuntimes_;
     OutputSampleAccumulator outputSamples_;
