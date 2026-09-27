@@ -70,6 +70,10 @@ class VulkanDevice final : public Device {
         return frameIndex_;
     }
     void setNativeFrameRecorder(NativeFrameRecorder recorder) override;
+    // Runs a compute-only native recorder while Preview remains selected.
+    // This is reserved for headless backend fixtures that validate native
+    // compute shaders without requiring the renderer's ray-tracing features.
+    void setNativeFrameRecorderForComputeTest(NativeFrameRecorder recorder);
     void setNativeRendererAvailability(bool subayai, bool bdpt) override;
     void setPreviewViewportExtent(const RenderTargetDesc& target) override;
     [[nodiscard]] PreviewViewport previewViewport() const noexcept override;
@@ -528,6 +532,7 @@ class VulkanDevice final : public Device {
     bool viewportRequested_{};
     VkExtent2D requestedViewportExtent_{};
     NativeFrameRecorder nativeFrameRecorder_;
+    bool nativeFrameRecorderForPreviewComputeTest_{};
 
     std::uint64_t nextResourceHandle_{1};
     std::unordered_map<BufferHandle, VulkanBuffer> buffers_;
