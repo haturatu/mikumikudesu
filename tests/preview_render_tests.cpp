@@ -842,6 +842,7 @@ bool dayoSkinningGpuReadback(dayo::graphics::VulkanDevice& device) {
             testCase.output = device.createBufferEx({
                 .size = testCase.vertices.size() * sizeof(dayo::graphics::NativeDeformedVertex),
                 .usage = dayo::graphics::ResourceUsage::storageWrite | dayo::graphics::ResourceUsage::transferSrc,
+                .cpuVisible = true,
             });
             const std::array bindings{
                 dayo::graphics::DescriptorBindingEx{0, 0, testCase.inputs[0], {}, {}, {}, std::nullopt},
