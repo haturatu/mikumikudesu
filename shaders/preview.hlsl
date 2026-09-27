@@ -30,7 +30,8 @@ struct PreviewSceneConstants {
     float4 light;  // xyz direction, w framebuffer aspect
     uint materialIndex;
     uint instanceCount;
-    uint2 materialPadding;
+    uint backgroundPass; // Explicit clip-space background draw, never inferred from model normals
+    uint materialPadding;
     float4 lightColor;
     float4 viewport; // xy framebuffer size
     float4 debug; // x isolated material, y debug flags
@@ -82,6 +83,11 @@ struct SkinResult {
     float3 position;
     float3 normal;
 };
+
+float3 safeNormalize(float3 value, float3 fallback) {
+    const float len2 = dot(value, value);
+    return len2 > 1e-6 ? value * rsqrt(len2) : fallback;
+}
 
 struct DualQuaternion {
     float4 real;
@@ -146,7 +152,7 @@ SkinResult skinLbs(VertexInput input, uint influenceCount) {
     }
     if (totalWeight > 0.000001) {
         result.position /= totalWeight;
-        result.normal = normalize(result.normal);
+        result.normal = safeNormalize(result.normal, float3(0.0, 0.0, 1.0));
     } else {
         result.position = input.position;
         result.normal = input.normal;
@@ -165,7 +171,7 @@ SkinResult skinSdef(VertexInput input) {
     SkinResult result;
     result.position = rotateQuaternion(rotation, input.position - input.sdefC) +
                       lerp(transformPoint(bone1, cr1), transformPoint(bone0, cr0), weight);
-    result.normal = normalize(rotateQuaternion(rotation, input.normal));
+    result.normal = safeNormalize(rotateQuaternion(rotation, input.normal), float3(0.0, 0.0, 1.0));
     return result;
 }
 
@@ -214,7 +220,7 @@ SkinResult skinQdef(VertexInput input) {
     blended = normalizeDualQuaternion(blended);
     const float4 translationQuaternion = multiplyQuaternion(blended.dual, conjugateQuaternion(blended.real));
     result.position = rotateQuaternion(blended.real, input.position) + 2.0 * translationQuaternion.xyz;
-    result.normal = normalize(rotateQuaternion(blended.real, input.normal));
+    result.normal = safeNormalize(rotateQuaternion(blended.real, input.normal), float3(0.0, 0.0, 1.0));
     return result;
 }
 
@@ -258,7 +264,7 @@ VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, ui
     output.materialIndex = materialIndex;
     output.edgePass = edgePass;
     output.sphereUv = float2(0.5, 0.5);
-    if (input.normal.x == 0.0 && input.normal.y == 0.0 && input.normal.z == 0.0) {
+    if (scene.backgroundPass != 0) {
         output.position = float4(input.position.xy, 0.0, 1.0);
         output.normal = float3(0.0, 0.0, 1.0);
         output.viewPosition = float3(0.0, 0.0, 1.0);
@@ -271,7 +277,7 @@ VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, ui
     const float cloneCenter = (float(scene.instanceCount) - 1.0) * 0.5;
     skin.position.x += (float(instanceIndex) - cloneCenter) * 2.2;
     float3 p = skin.position - scene.target.xyz;
-    float3 n = normalize(skin.normal);
+    float3 n = safeNormalize(skin.normal, float3(0.0, 0.0, 1.0));
     const float3 s = sin(scene.camera.xyz);
     const float3 c = cos(scene.camera.xyz);
     p.yz = float2(c.x * p.y - s.x * p.z, s.x * p.y + c.x * p.z);
@@ -313,7 +319,7 @@ VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, ui
         const float2 viewport = max(scene.viewport.xy, 1.0.xx);
         output.position.xy += screenNormal * (2.0 * pixelWidth / viewport) * baseClip.w;
     }
-    output.normal = normalize(n);
+    output.normal = safeNormalize(n, float3(0.0, 0.0, 1.0));
     output.viewPosition = p;
     output.sphereUv = n.xy * float2(0.5, -0.5) + 0.5;
     output.color = float3(1.0, 1.0, 1.0);
@@ -344,6 +350,9 @@ float4 samplePreviewTextureClamp(uint textureSlot, float2 uv) {
 }
 
 float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0 {
+    if (scene.backgroundPass != 0)
+        return baseTexture.Sample(clampSampler, input.uv);
+
     const PreviewMaterialData material = previewMaterials[input.materialIndex];
     const uint debugFlags = uint(scene.debug.y);
     const uint4 textureSlots = material.textureSlots;
@@ -363,11 +372,11 @@ float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0 {
         discard;
 
     if ((debugFlags & 0x08U) != 0U)
-        return float4(normalize(input.normal) * 0.5 + 0.5, 1.0);
+        return float4(safeNormalize(input.normal, float3(0.0, 0.0, 1.0)) * 0.5 + 0.5, 1.0);
     if ((debugFlags & 0x10U) != 0U)
         return float4(frac(input.uv), 0.0, 1.0);
 
-    const float3 normal = normalize(input.normal);
+    const float3 normal = safeNormalize(input.normal, float3(0.0, 0.0, 1.0));
     const float3 lightDirection = normalize(-scene.light.xyz);
     const float noLight = dot(normal, lightDirection);
     const float3 halfVector = normalize(lightDirection + normalize(-input.viewPosition));

@@ -31,7 +31,7 @@ unit +Z normal, and requires visible reference geometry. It covers:
 - Already deformed input and preview BDEF1, BDEF2, BDEF4, SDEF, and QDEF
 - Zero and near-zero normals
 - Perspective and orthographic projection, camera rotation and translation
-- Outline rendering
+- Outline rendering and normal-debug shading
 - A textured background under model isolation and normal-debug settings
 
 Translations on bones 8 and 9 exercise skinning without rotating the +Z normal.

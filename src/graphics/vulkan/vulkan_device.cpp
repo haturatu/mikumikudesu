@@ -2762,8 +2762,10 @@ void VulkanDevice::recordPreviewPass(VkCommandBuffer command, Frame& frame, VkIm
         vkCmdBindIndexBuffer(command, previewBackgroundIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1,
                                 &previewBackgroundTexture_.descriptor, 0, nullptr);
+        auto backgroundConstants = constants;
+        backgroundConstants.backgroundPass = 1;
         vkCmdPushConstants(command, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                           sizeof(constants), &constants);
+                           sizeof(backgroundConstants), &backgroundConstants);
         vkCmdDrawIndexed(command, previewBackgroundIndexCount_, 1, 0, 0, 0);
         vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
         vkCmdBindVertexBuffers(command, 0, 1, &previewVertexBuffer, &vertexOffset);

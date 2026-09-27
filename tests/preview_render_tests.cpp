@@ -418,6 +418,7 @@ bool zeroNormalVerticesStayInModelSpace(dayo::graphics::VulkanDevice& device) {
         for (const bool perspective : {false, true}) {
             scene.perspective = perspective;
             scene.outlineEnabled = !perspective;
+            scene.debugFlags = perspective ? dayo::graphics::previewDebugNormals : 0U;
             device.updatePreviewScene(scene);
             for (auto& vertex : vertices) {
                 vertex.gpuSkinning = mode == 0 ? 0U : 1U;
