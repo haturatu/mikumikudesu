@@ -3320,10 +3320,12 @@ bool testGenericFxRuntimeMatDescLifecycle() {
                         label + " binds effect-local Texture2D through MatDesc");
             ok &= check(std::abs(currentValue() - 0.25F) < 0.0001F, label + " initializes value expression");
             const auto pipelineCount = device.createdComputePipelines_;
+            const auto descriptorCount = device.descriptorAllocations_.size();
             context.time = 2.5;
             static_cast<void>(execute());
             const auto refreshedBindings = gpuBindings();
             ok &= check(std::abs(currentValue() - 0.5F) < 0.0001F && device.createdComputePipelines_ == pipelineCount &&
+                            device.descriptorAllocations_.size() == descriptorCount &&
                             initialBindings.values == refreshedBindings.values,
                         label + " updates second-frame values while keeping descriptors and pipelines");
             if (postprocess) {
