@@ -238,7 +238,8 @@ void NativeRendererCoordinator::setControllerDeclarations(std::span<const core::
 
 std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffects(
     std::span<const core::SceneEffectInstance> effects, GenericRuntimeList& runtimes, CommandList& commands,
-    const fx::FxFrameContext& context, const FxExecutionResources& resources, bool publishToScreen) {
+    const fx::FxFrameContext& context, const FxExecutionResources& resources, bool publishToScreen,
+    std::span<const FxMaterialSceneModel> materialModels) {
     if (effects.empty())
         return std::nullopt;
     if (device_ == nullptr)
@@ -267,25 +268,59 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::executeGenericEffect
         }
         auto& entry = runtimes[index];
         if (!entry) {
-            auto program = fx::FxCompiler{}.compile(effects[index].graph);
-            std::string error;
             entry = std::make_unique<GenericEffectRuntime>();
             entry->device = device_;
-            if (!entry->globalVariables.initialize(*device_, program.globalVarSize, &error))
+            entry->program = fx::FxCompiler{}.compile(effects[index].graph);
+            std::string error;
+            if (!entry->globalVariables.initialize(*device_, entry->program.globalVarSize, &error))
                 throw std::runtime_error(error.empty() ? "generic Dayo FX global buffer initialization failed" : error);
             if (!entry->controller.initialize(*device_, effects[index].graph.controllers))
                 throw std::runtime_error("generic Dayo FX controller buffer initialization failed");
             entry->block.emplace(entry->controller.layout());
             entry->runtime.addProvider(sceneHostProvider_);
+        }
+        // A deformer uses its owner's clone count; table indices remain scene-wide,
+        // matching the canonical Model2Mat and material descriptor ABI.
+        std::vector<FxMaterialSceneModel> effectModels(materialModels.begin(), materialModels.end());
+        if (ownerModel != nullptr) {
+            for (auto& model : effectModels)
+                if (model.id == ownerModel->modelId)
+                    model.cloneCount = entry->program.meshCloneCount;
+        }
+        FxMaterialRuntimeInitializer initializeMaterial;
+        if (entry->program.materialSchema.has_value()) {
+            const auto effectIdentity =
+                std::string("effect:") + std::to_string(effects[index].id) + ":" +
+                (effects[index].source.empty() ? entry->program.label
+                                               : effects[index].source.lexically_normal().generic_string());
+            initializeMaterial = [this, &entry, &effectModels, &effectContext,
+                                  effectIdentity](const FxResourceStore& store, std::string* error) {
+                entry->materialScene.invalidateLinks();
+                if (!entry->materialScene.sync(*device_, *entry->program.materialSchema, effectModels, effectContext,
+                                               error, materialTextureResolver(&store, false, effectIdentity)))
+                    return static_cast<const FxMaterialGpuRuntime*>(nullptr);
+                return &entry->materialScene.gpuRuntime();
+            };
+            if (entry->runtime.ready()) {
+                std::string error;
+                const auto& store = entry->runtime.nativeRuntime().resources().store();
+                if (!entry->materialScene.sync(*device_, *entry->program.materialSchema, effectModels, effectContext,
+                                               &error, materialTextureResolver(&store, false, effectIdentity)))
+                    throw std::runtime_error("generic Dayo FX MatDesc synchronization: " + error);
+                if (entry->materialScene.descriptorLayoutChanged())
+                    entry->runtime.reset();
+            }
+        }
+        std::string initializationError;
+        if (!entry->runtime.ready()) {
             fx::FxNativeShaderSourceOptions sourceOptions;
             sourceOptions.controllerDeclarations = effects[index].graph.controllers;
-            if (!entry->runtime.initializeForFrame(*device_, std::move(program), fx::FxShaderCompiler{}, effectContext,
-                                                   layouts, &error, descriptorSets, std::move(sourceOptions)))
-                throw std::runtime_error(error.empty() ? "generic Dayo FX initialization failed" : error);
-        } else {
-            std::string error;
-            if (!entry->runtime.refresh(effectContext, &error))
-                throw std::runtime_error(error.empty() ? "generic Dayo FX refresh failed" : error);
+            if (!entry->runtime.initializeForFrame(*device_, entry->program, fx::FxShaderCompiler{}, effectContext,
+                                                   layouts, &initializationError, descriptorSets,
+                                                   std::move(sourceOptions), nullptr, initializeMaterial))
+                throw std::runtime_error("generic Dayo FX initialization: " + initializationError);
+        } else if (!entry->runtime.refresh(effectContext, &initializationError, initializeMaterial)) {
+            throw std::runtime_error("generic Dayo FX refresh: " + initializationError);
         }
 
         if (!effects[index].graph.controllers.empty()) {
@@ -412,26 +447,11 @@ bool NativeRendererCoordinator::updateEnvironment(const EnvironmentDesc& descrip
     return environmentService_.update(description);
 }
 
-std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
-    CommandList& commands, const fx::FxFrameContext& context, core::DirtyFlag dirty,
-    std::span<const core::MaterialParameterBlock> materials, std::span<const AliasEntry> lightSampling,
-    const EnvironmentGpuResult& environment, const FxExecutionResources& resources, NativeFrameExecution execution,
-    std::span<const FxMaterialSceneModel> materialModels) {
-    if (!status_.nativeReady)
-        return std::nullopt;
-    if (execution.sampleCount == 0 || execution.sampleIndex >= execution.sampleCount)
-        throw std::invalid_argument("native frame sample index/count is invalid");
-    if (execution.sampleCount == 1)
-        outputSamples_.cancel();
-    environmentService_.record(commands);
-    static_cast<void>(executeGenericEffects(deformEffects_, deformRuntimes_, commands, context, resources, false));
-    publishActiveRendererResources();
-    const auto& activeEnvironment =
-        environment.skybox.valid() || environment.cubemap.valid() || environment.prefiltered.valid()
-            ? environment
-            : environmentService_.gpuResult();
-    const FxMaterialTextureResolver textureResolver =
-        [this](core::ModelId owner, const core::fx::MaterialTextureSchema& schema,
+FxMaterialTextureResolver NativeRendererCoordinator::materialTextureResolver(const FxResourceStore* localStore,
+                                                                             bool rendererLocal,
+                                                                             std::string_view effectIdentity) const {
+    return [this, localStore, rendererLocal, effectIdentity = std::string(effectIdentity)](
+               core::ModelId owner, const core::fx::MaterialTextureSchema& schema,
                std::string_view assigned) -> std::optional<FxMaterialExternalTexture> {
         if (core::fx::isScreenBmpToken(assigned)) {
             if (schema.dimension != core::fx::MaterialTextureDimension::twoD || !hostResourceProvider_.has_value())
@@ -447,26 +467,31 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
                                              .generation = texture.generation};
         }
 
-        const FxResourceStore* rendererStore = nullptr;
-        switch (status_.active) {
-        case RendererKind::subayai:
-            rendererStore = subayai_.liveResourceStore();
-            break;
-        case RendererKind::bdpt:
-            rendererStore = bdpt_.liveResourceStore();
-            break;
-        case RendererKind::preview:
-            break;
-        }
+        const FxResourceStore* rendererStore = localStore;
+        if (rendererLocal)
+            switch (status_.active) {
+            case RendererKind::subayai:
+                rendererStore = subayai_.liveResourceStore();
+                break;
+            case RendererKind::bdpt:
+                rendererStore = bdpt_.liveResourceStore();
+                break;
+            case RendererKind::preview:
+                break;
+            }
         if (rendererStore != nullptr) {
             const auto* resource = rendererStore->find(assigned);
             const auto expectedDimension = schema.dimension == core::fx::MaterialTextureDimension::twoD ? 2U : 3U;
             if (resource != nullptr && resource->kind == FxResourceStore::Kind::texture && resource->texture.valid() &&
                 resource->dimension == expectedDimension) {
-                const auto* rendererProgram = program();
-                auto identity = std::string("renderer-local:");
-                if (rendererProgram != nullptr)
-                    identity += rendererProgram->sourcePath.lexically_normal().generic_string();
+                auto identity = std::string(rendererLocal ? "renderer-local:" : "effect-local:");
+                if (rendererLocal) {
+                    const auto* rendererProgram = program();
+                    if (rendererProgram != nullptr)
+                        identity += rendererProgram->sourcePath.lexically_normal().generic_string();
+                } else {
+                    identity += effectIdentity;
+                }
                 identity += ":" + resource->name + ":" + std::to_string(resource->texture.index) + ":" +
                             std::to_string(resource->texture.generation);
                 return FxMaterialExternalTexture{.identity = std::move(identity),
@@ -510,6 +535,28 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
             .dimension = schema.dimension,
             .generation = exportInfo.generation};
     };
+}
+
+std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
+    CommandList& commands, const fx::FxFrameContext& context, core::DirtyFlag dirty,
+    std::span<const core::MaterialParameterBlock> materials, std::span<const AliasEntry> lightSampling,
+    const EnvironmentGpuResult& environment, const FxExecutionResources& resources, NativeFrameExecution execution,
+    std::span<const FxMaterialSceneModel> materialModels) {
+    if (!status_.nativeReady)
+        return std::nullopt;
+    if (execution.sampleCount == 0 || execution.sampleIndex >= execution.sampleCount)
+        throw std::invalid_argument("native frame sample index/count is invalid");
+    if (execution.sampleCount == 1)
+        outputSamples_.cancel();
+    environmentService_.record(commands);
+    static_cast<void>(
+        executeGenericEffects(deformEffects_, deformRuntimes_, commands, context, resources, false, materialModels));
+    publishActiveRendererResources();
+    const auto& activeEnvironment =
+        environment.skybox.valid() || environment.cubemap.valid() || environment.prefiltered.valid()
+            ? environment
+            : environmentService_.gpuResult();
+    const auto textureResolver = materialTextureResolver(nullptr, true);
     std::optional<NativeFrameOutput> rendererOutput;
     switch (status_.active) {
     case RendererKind::subayai: {
@@ -556,8 +603,8 @@ std::optional<NativeFrameOutput> NativeRendererCoordinator::recordFrame(
         commands.transferBarrierEx();
         commands.copyTextureEx(rendererOutput->texture, screen->texture);
     }
-    if (const auto postOutput =
-            executeGenericEffects(postprocessEffects_, postprocessRuntimes_, commands, context, resources, true);
+    if (const auto postOutput = executeGenericEffects(postprocessEffects_, postprocessRuntimes_, commands, context,
+                                                      resources, true, materialModels);
         postOutput.has_value())
         return postOutput;
     return rendererOutput;

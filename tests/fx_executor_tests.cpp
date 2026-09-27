@@ -23,20 +23,24 @@
 #include "graphics/native_fx_global_variable_runtime.hpp"
 #include "graphics/native_fx_runtime.hpp"
 #include "graphics/native_oidn_provider.hpp"
+#include "graphics/native_renderer.hpp"
 #include "graphics/native_scene_bindings.hpp"
 #include "graphics/native_scene_data.hpp"
 #include "graphics/native_scene_derived_runtime.hpp"
 #include "graphics/native_scene_frame_runtime.hpp"
+#include "graphics/native_scene_resource_store.hpp"
 #include "graphics/native_screen_runtime.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -44,6 +48,30 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+namespace dayo::graphics {
+struct NativeRendererCoordinatorTestAccess {
+    static std::optional<NativeFrameOutput> execute(NativeRendererCoordinator& coordinator, CommandList& commands,
+                                                    const fx::FxFrameContext& context,
+                                                    const FxExecutionResources& resources, bool postprocess,
+                                                    std::span<const FxMaterialSceneModel> models) {
+        return coordinator.executeGenericEffects(
+            postprocess ? coordinator.postprocessEffects_ : coordinator.deformEffects_,
+            postprocess ? coordinator.postprocessRuntimes_ : coordinator.deformRuntimes_, commands, context, resources,
+            postprocess, models);
+    }
+    static const FxMaterialSceneRuntime& materialScene(const NativeRendererCoordinator& coordinator, bool postprocess) {
+        return (postprocess ? coordinator.postprocessRuntimes_ : coordinator.deformRuntimes_).front()->materialScene;
+    }
+    static const FxResourceStore& store(const NativeRendererCoordinator& coordinator, bool postprocess) {
+        return (postprocess ? coordinator.postprocessRuntimes_ : coordinator.deformRuntimes_)
+            .front()
+            ->runtime.nativeRuntime()
+            .resources()
+            .store();
+    }
+};
+} // namespace dayo::graphics
 
 namespace {
 
@@ -121,7 +149,7 @@ struct MockDevice final : public dayo::graphics::Device {
     }
     dayo::graphics::handles::TextureHandle createTextureEx(const dayo::graphics::TextureResourceDesc& desc) override {
         textureDescs_.push_back(desc);
-        return {nextTypedHandle_++, 1};
+        return {nextTypedHandle_++, textureGeneration_};
     }
     dayo::graphics::handles::BufferHandle createBufferEx(const dayo::graphics::BufferResourceDesc& desc) override {
         bufferDescs_.push_back(desc);
@@ -221,6 +249,7 @@ struct MockDevice final : public dayo::graphics::Device {
     }
     dayo::graphics::handles::PipelineHandle
     createComputePipelineEx(const dayo::graphics::ComputePipelineDescEx&) override {
+        ++createdComputePipelines_;
         return {nextTypedHandle_++, 1};
     }
     dayo::graphics::handles::PipelineHandle
@@ -252,6 +281,8 @@ struct MockDevice final : public dayo::graphics::Device {
     std::uint32_t nextTypedHandle_{1};
     std::size_t destroyedShaders_{};
     std::size_t destroyedPipelines_{};
+    std::uint32_t textureGeneration_{1};
+    std::size_t createdComputePipelines_{};
     std::size_t destroyedSbt_{};
     std::size_t destroyedTextures_{};
     std::size_t destroyedBuffers_{};
@@ -2944,6 +2975,175 @@ bool testNativeFxRuntimeExecutesMatDescDescriptorSets() {
     return ok;
 }
 
+bool testGenericFxRuntimeMatDescLifecycle() {
+    using namespace dayo;
+    using namespace graphics;
+    if (!fx::FxShaderCompiler{}.available())
+        return true;
+    const auto runFixture = [](bool postprocess) {
+        const auto label = postprocess ? std::string("postprocess") : std::string("deformer");
+        const auto directory = std::filesystem::temp_directory_path() / ("dayo-generic-matdesc-" + label);
+        std::filesystem::create_directories(directory);
+        {
+            std::ofstream schema(directory / "Surface.txt");
+            schema << "f.1 : Weight\n_T0 : Albedo\n";
+            if (postprocess)
+                schema << "_T1 : Detail\n_V2 : Volume\n";
+        }
+        core::EffectGraph graph;
+        graph.sourcePath = directory / "effect.fxdayo";
+        graph.category = postprocess ? "postprocess" : "deform";
+        graph.materialDescriptor =
+            core::EffectMaterialDescriptor{.name = "Surface", .templatePath = "Surface.txt", .defaultFile = {}};
+        graph.hlslPrefix = "#define NonUniformResourceIndex(value) (value)\n";
+        graph.hlsl = "#ifdef YRZ_PASS_matdesc\n"
+                     "[numthreads(1,1,1)] void main(uint3 id : SV_DispatchThreadID) "
+                     "{ Output[id.xy] = float4(0,0,0,1); }\n#endif\n";
+        const auto addTexture = [&](std::string name, bool threeD) {
+            core::EffectTexture texture;
+            texture.name = std::move(name);
+            texture.view = "SRV";
+            texture.size.absolute = true;
+            texture.size.width = 1;
+            texture.size.height = 1;
+            texture.size.depth = 1;
+            (threeD ? graph.textures3D : graph.textures).push_back(std::move(texture));
+        };
+        addTexture("Local2D", false);
+        if (postprocess) {
+            addTexture("LocalExtra", false);
+            addTexture("Local3D", true);
+        }
+        core::EffectTexture output;
+        output.name = "Output";
+        output.view = "UAV";
+        output.format = "R16G16B16A16_FLOAT";
+        graph.textures.push_back(output);
+        core::EffectPass pass;
+        pass.name = "matdesc";
+        pass.type = core::EffectPassType::compute;
+        pass.computeShader = "main";
+        pass.numThreads = {1, 1, 1};
+        pass.unorderedAccess.push_back({"Output", false, {}});
+        graph.passes.push_back(pass);
+        core::MaterialEditorState material;
+        material.annotation = "Weight : frac(Time)\n_TAlbedo : Local2D\n";
+        if (postprocess)
+            material.annotation += "_VVolume : Local3D\n";
+        std::array materials{material};
+        const std::array models{FxMaterialSceneModel{.id = 18,
+                                                     .sourcePath = directory / "avatar.pmx",
+                                                     .projectDirectory = directory,
+                                                     .modelIndex = 0,
+                                                     .vertexCount = 3,
+                                                     .cloneCount = 1,
+                                                     .materials = materials}};
+        const std::array nativeModels{NativeEffectModel{.modelId = 18, .vertexCount = 3, .materialCount = 1}};
+        FxExecutionResources resources;
+        resources.effectModels = nativeModels;
+        std::uint32_t ownerUpdates{};
+        resources.updateEffectPassConstants = [&](CommandList&, const NativeEffectModel&) { ++ownerUpdates; };
+        MockDevice device;
+        NativeSceneResourceStore sceneStore;
+        NativeSceneFrameRuntime sceneFrame;
+        NativeRendererCoordinator coordinator;
+        static_cast<void>(coordinator.prepare(device, RendererKind::preview, fx::FxProgram{}));
+        std::string error;
+        if (!sceneStore.initialize(device, {}, &error))
+            return check(false, "generic fixture scene store: " + error);
+        NativeSceneResourceBindings overrides;
+        overrides.tlas = {999, 1};
+        overrides.rtOutput = {998, 1};
+        overrides.screenTexture = {997, 1};
+        if (!sceneStore.compose(overrides, &error) || !sceneFrame.initialize(device, {}, {}, &error))
+            return check(false, "generic fixture scene bindings: " + error);
+        auto context = testContext();
+        context.time = 10.25;
+        if (!sceneFrame.sync(context, sceneStore.bindings(), {}, &error))
+            return check(false, "generic fixture frame sync: " + error);
+        auto bindings = sceneStore.bindings();
+        bindings.viewConstants = sceneFrame.constants().viewBuffer();
+        bindings.passConstants = sceneFrame.constants().passBuffer();
+        bindings.controllerConstants = sceneFrame.controllers().buffer();
+        coordinator.setSceneFrameRuntime(&sceneFrame);
+        coordinator.setHostResourceBindings(bindings);
+        core::SceneEffectStack effects;
+        core::SceneEffectInstance effect{
+            .id = 41, .source = graph.sourcePath, .graph = graph, .controllerModel = 18, .executionOrder = 0};
+        (postprocess ? effects.postprocess : effects.deform).push_back(effect);
+        coordinator.setEffectStack(effects);
+        MockCommands commands;
+        const auto execute = [&] {
+            return NativeRendererCoordinatorTestAccess::execute(coordinator, commands, context, resources, postprocess,
+                                                                models);
+        };
+        const auto gpuBindings = [&] {
+            return NativeRendererCoordinatorTestAccess::materialScene(coordinator, postprocess).gpuRuntime().bindings();
+        };
+        const auto currentValue = [&] {
+            const auto valueBuffer = gpuBindings().values;
+            for (const auto& upload : std::views::reverse(device.bufferUploads_)) {
+                if (upload.handle != valueBuffer || upload.bytes.size() < sizeof(float))
+                    continue;
+                float value{};
+                std::memcpy(&value, upload.bytes.data(), sizeof(value));
+                return value;
+            }
+            return -1.0F;
+        };
+        const auto containsTexture = [](auto textures, handles::TextureHandle expected) {
+            return std::ranges::find(textures, expected) != textures.end();
+        };
+        bool ok = true;
+        try {
+            ok &= check(execute().has_value(), label + " executes through coordinator generic FX path");
+            const auto initialBindings = gpuBindings();
+            const auto& initialStore = NativeRendererCoordinatorTestAccess::store(coordinator, postprocess);
+            ok &= check(containsTexture(initialBindings.textures2D, initialStore.find("Local2D")->texture),
+                        label + " binds effect-local Texture2D through MatDesc");
+            ok &= check(std::abs(currentValue() - 0.25F) < 0.0001F, label + " initializes value expression");
+            const auto pipelineCount = device.createdComputePipelines_;
+            const auto descriptorCount = device.descriptorAllocations_.size();
+            context.time = 2.5;
+            static_cast<void>(execute());
+            const auto refreshedBindings = gpuBindings();
+            ok &= check(std::abs(currentValue() - 0.5F) < 0.0001F && device.createdComputePipelines_ == pipelineCount &&
+                            device.descriptorAllocations_.size() == descriptorCount &&
+                            initialBindings.values == refreshedBindings.values,
+                        label + " updates second-frame values while keeping descriptors and pipelines");
+            if (postprocess) {
+                ok &= check(containsTexture(refreshedBindings.textures3D, initialStore.find("Local3D")->texture),
+                            "postprocess binds effect-local Texture3D through MatDesc");
+                const auto initialTextureCount = refreshedBindings.textures2D.size();
+                materials[0].annotation += "_TDetail : LocalExtra\n";
+                static_cast<void>(execute());
+                ok &= check(gpuBindings().textures2D.size() == initialTextureCount + 1 &&
+                                device.createdComputePipelines_ > pipelineCount,
+                            "annotation adds second 2D texture and rebuilds descriptors/pipeline through coordinator");
+                device.textureGeneration_ = 2;
+                ++context.renderWidth;
+                static_cast<void>(execute());
+                const auto& newStore = NativeRendererCoordinatorTestAccess::store(coordinator, true);
+                const auto newBindings = gpuBindings();
+                ok &= check(newStore.find("Local2D")->texture.generation == 2 &&
+                                containsTexture(newBindings.textures2D, newStore.find("Local2D")->texture) &&
+                                containsTexture(newBindings.textures3D, newStore.find("Local3D")->texture),
+                            "resource refresh relinks actual effect-local 2D/3D texture generations");
+            } else {
+                ok &= check(ownerUpdates == 2, "deformer executes native owner pass constants on both frames");
+            }
+        } catch (const std::exception& exception) {
+            ok &= check(false, label + " coordinator MatDesc lifecycle: " + exception.what());
+        }
+        coordinator.reset();
+        std::filesystem::remove_all(directory);
+        return ok;
+    };
+    bool ok = runFixture(false);
+    ok &= runFixture(true);
+    return ok;
+}
+
 bool testShaderCacheKeys() {
     dayo::fx::FxShaderCache cache;
     dayo::fx::FxShaderKey base;
@@ -3393,6 +3593,7 @@ int main() {
     ok &= testNativeFxRuntimeBindsResourcesAndPipelines();
     ok &= testNativeFxRuntimeBindsFixedSceneSets();
     ok &= testNativeFxRuntimeExecutesMatDescDescriptorSets();
+    ok &= testGenericFxRuntimeMatDescLifecycle();
     ok &= testShaderCacheKeys();
     try {
         ok &= testRealShaderCompilation();
