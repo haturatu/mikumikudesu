@@ -23,6 +23,7 @@
 #include <numbers>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -199,6 +200,45 @@ bool createsD24S8StencilPipeline(dayo::graphics::VulkanDevice& device) {
     if (!built)
         std::cerr << "FAIL: D24S8 stencil pipeline is invalid under Vulkan validation: " << error << '\n';
     return built;
+}
+
+bool typedVulkanFormatRoundTrips(dayo::graphics::VulkanDevice& device) {
+    const std::array formats{
+        dayo::graphics::PixelFormat::r8Unorm,     dayo::graphics::PixelFormat::r16Float,
+        dayo::graphics::PixelFormat::r8Uint,      dayo::graphics::PixelFormat::r8Sint,
+        dayo::graphics::PixelFormat::r16g16Snorm, dayo::graphics::PixelFormat::rgba16Uint,
+        dayo::graphics::PixelFormat::rgba32Sint,
+    };
+    for (const auto format : formats) {
+        const dayo::graphics::TextureResourceDesc desc{
+            .dimension = dayo::graphics::TextureDimension::d2,
+            .extent = {2, 2, 1},
+            .format = format,
+            .usage = dayo::graphics::ResourceUsage::transferDst | dayo::graphics::ResourceUsage::transferSrc,
+        };
+        dayo::graphics::handles::TextureHandle texture;
+        try {
+            texture = device.createTextureEx(desc);
+            std::vector<std::uint8_t> input(dayo::graphics::pixelFormatByteSize(format) * 4U);
+            for (std::size_t index = 0; index < input.size(); ++index)
+                input[index] = static_cast<std::uint8_t>((index * 37U + 11U) & 0xffU);
+            device.uploadTextureEx(texture, input, 0, 0);
+            if (device.readbackTextureEx(texture, 0, 0) != input)
+                throw std::runtime_error("upload/readback payload mismatch");
+            device.destroyTextureEx(texture);
+        } catch (const std::exception& exception) {
+            if (texture.valid()) {
+                try {
+                    device.destroyTextureEx(texture);
+                } catch (...) {
+                }
+            }
+            std::cerr << "FAIL: Vulkan typed image round trip for " << dayo::graphics::toString(format) << ": "
+                      << exception.what() << '\n';
+            return false;
+        }
+    }
+    return true;
 }
 
 dayo::core::ImageRgba8 renderCase(dayo::graphics::VulkanDevice& device, std::span<const PreviewVertex> vertices,
@@ -1020,6 +1060,8 @@ int main() {
             return 1;
         }
         if (!createsD24S8StencilPipeline(device))
+            return 1;
+        if (!typedVulkanFormatRoundTrips(device))
             return 1;
 #if DAYO_HAS_IMGUI
         if (!rendersInteractiveViewport(device)) {

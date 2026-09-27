@@ -22,110 +22,6 @@ constexpr std::uint32_t kPrefilterConstantsBinding = 48; // DXC's Vulkan b0 shif
 constexpr std::uint32_t kPrefilterIterations = 4;
 constexpr std::uint32_t kPrefilterSamplesPerIteration = 64;
 
-// The pixel-shader algorithm is copied from the pinned MikuMikuDayo 1.30
-// YRZ.ixx PrefilterShader. VS uses SV_VertexID to produce the same fullscreen
-// coverage without depending on the upstream post-process vertex buffer.
-constexpr std::string_view kSkyboxPrefilterHlsl = R"hlsl(
-cbuffer CB : register(b0, space1) { uint roughInt; uint iIter; uint AlphaInt; uint Samples; }
-Texture2D<float4> SrcTex : register(t0);
-sampler samp : register(s0);
-static float PI = acos(-1);
-
-struct VSO { float4 pos : SV_POSITION; float2 uv : TEXCOORD; };
-VSO VS(uint vertexId : SV_VertexID) {
-    float2 uv = float2((vertexId << 1) & 2, vertexId & 2);
-    VSO o;
-    o.pos = float4(uv * 2.0 - 1.0, 0.0, 1.0);
-    o.uv = uv;
-    return o;
-}
-
-float4 PSCopy(VSO vso) : SV_TARGET { return SrcTex.SampleLevel(samp, vso.uv, 0); }
-
-float2 LongRat(float3 r) {
-    return float2((atan2(r.y, r.x) / PI + 1) / 2, acos(r.z) / PI);
-}
-
-// PCG4d follows Jarzynski and Olano, "Hash Functions for GPU Rendering":
-// https://jcgt.org/published/0009/03/02/paper.pdf
-uint4 PCG4d(uint4 v) {
-    v = v * 1664525u + 1013904223u;
-    v.x += v.y * v.w; v.y += v.z * v.x; v.z += v.x * v.y; v.w += v.y * v.z;
-    v ^= v >> 16u;
-    v.x += v.y * v.w; v.y += v.z * v.x; v.z += v.x * v.y; v.w += v.y * v.z;
-    return v;
-}
-
-float4 Hash4(uint4 x) {
-    uint4 p = PCG4d(x) & 0x007FFFFF;
-    return p / float(0x00800000);
-}
-
-float2 CosSin(float t) {
-    float2 a;
-    sincos(t, a.y, a.x);
-    return a;
-}
-
-float3 SampleVndf_Hemisphere(float2 u, float3 wi) {
-    // Visible-normal sampling follows Dupuy and Benyoub, "Sampling Visible
-    // GGX Normals with Spherical Caps": https://arxiv.org/abs/2306.05044
-    float z = mad(1 - u.y, 1 + wi.z, -wi.z);
-    float st = sqrt(saturate(1 - z * z));
-    float3 c = float3(st * CosSin(2 * PI * u.x), z);
-    return c + wi;
-}
-
-float3 VNDF(float3 wi, float3x3 TBN, float2 Xi, float2 a) {
-    if (any(a == 0))
-        return TBN[2];
-    float3 wiTan = mul(TBN, wi);
-    float3 wiStd = normalize(float3(wiTan.xy * a, wiTan.z));
-    float3 wmStd = SampleVndf_Hemisphere(Xi, wiStd);
-    float3 wm = float3(wmStd.xy * a, wmStd.z);
-    return mul(normalize(wm), TBN);
-}
-
-float SmithG1(float a2, float NoV) {
-    return 2 / (1 + sqrt(a2 / (NoV * NoV) + (1 - a2)));
-}
-
-bool SameHemisphere(float3 wi, float3 wo, float3 N) {
-    return (dot(wi, N) > 0) && (dot(wo, N) > 0);
-}
-
-float MicrofacetBRDFdivPDF(float a, float3 wi, float3 wo, float3 N) {
-    if (!SameHemisphere(wi, wo, N))
-        return 0;
-    float NoL = max(dot(N, wi), 1e-10);
-    return SmithG1(a * a, NoL);
-}
-
-float4 PS(VSO vso) : SV_TARGET {
-    float roughness = asfloat(roughInt);
-    float a = roughness * roughness;
-    float2 uv = vso.uv;
-    float alpha = asfloat(AlphaInt);
-    float theta = uv.y * PI;
-    float phi = (uv.x * 2 - 1) * PI;
-    float3 N = float3(cos(phi) * sin(theta), sin(phi) * sin(theta), cos(theta));
-    float3 T = float3(cos(phi) * cos(theta), sin(phi) * cos(theta), -sin(theta));
-    float3 B = float3(-sin(phi), cos(phi), 0);
-    float3x3 TBN = {T, B, N};
-    float3 tc = 0;
-    float tw = 0;
-    for (int i = 0; i < Samples; i++) {
-        float2 xi = Hash4(uint4(vso.pos.xy, i, iIter)).xy;
-        float3 H = VNDF(N, TBN, xi, a);
-        float w = MicrofacetBRDFdivPDF(a, N, reflect(-N, H), H);
-        tw += w;
-        float3 c = SrcTex.SampleLevel(samp, LongRat(H), 0).rgb;
-        tc += c * w;
-    }
-    return float4(tc / tw, alpha);
-}
-)hlsl";
-
 struct DayoPrefilterConstants {
     std::uint32_t roughness{};
     std::uint32_t iteration{};
@@ -219,6 +115,35 @@ shBindings(handles::BufferHandle skyboxShX, handles::BufferHandle skyboxSh, hand
 }
 
 } // namespace
+
+std::string loadDayoSkyboxPrefilterShader(const std::filesystem::path& sourcePath) {
+    const auto source = readTextFile(sourcePath);
+    // The pinned release embeds this HLSL in its C++ module. Extract the raw
+    // literal without rewriting the sampling algorithm or the original VS.
+    constexpr std::string_view beginMarker = "const char PrefilterShader[] = R\"(";
+    constexpr std::string_view endMarker = ")\";";
+    const auto declaration = source.find(beginMarker);
+    if (declaration == std::string::npos ||
+        source.find(beginMarker, declaration + beginMarker.size()) != std::string::npos)
+        throw std::runtime_error("pinned Dayo PrefilterShader declaration is missing or ambiguous: " +
+                                 sourcePath.string());
+    const auto begin = declaration + beginMarker.size();
+    const auto end = source.find(endMarker, begin);
+    if (end == std::string::npos || end == begin)
+        throw std::runtime_error("pinned Dayo PrefilterShader literal is empty or unterminated: " +
+                                 sourcePath.string());
+    auto shader = source.substr(begin, end - begin);
+    // Vulkan draws a vertex-bufferless fullscreen triangle. Only this entry
+    // wrapper differs from the upstream vertex-buffer based VS; both pixel
+    // entry points and their helpers remain byte-for-byte upstream source.
+    shader += R"hlsl(
+VSO NativePrefilterVS(uint vertexId : SV_VertexID) {
+    float2 uv = float2((vertexId << 1) & 2, vertexId & 2);
+    return VS(float4(uv * 2.0 - 1.0, 0.0, 1.0), uv);
+}
+)hlsl";
+    return shader;
+}
 
 std::vector<DayoEnvironmentDispatch> buildDayoEnvironmentDispatchPlan(Extent3D extent, bool buildSkyboxSampler) {
     if (extent.width == 0 || extent.height < 2 || extent.depth != 1 ||
@@ -567,12 +492,11 @@ bool NativeDayoEnvironmentRuntime::ensurePrefilterPipelines(Device& device, std:
         if (!pipelineLayout.valid())
             throw std::runtime_error("Dayo SkyboxPrefilter pipeline layout allocation failed");
 
-        const auto sourcePath = hlslDirectory_ / "system" / "skyboxPrefilter.hlsl";
+        const auto sourcePath = hlslDirectory_.parent_path() / "src" / "YRZ.ixx";
+        const auto source = loadDayoSkyboxPrefilterShader(sourcePath);
         const auto compileShader = [&](std::size_t index, std::string entry, fx::FxShaderStage stage) {
-            const auto artifact = compiler.compile({.hlsl = std::string(kSkyboxPrefilterHlsl),
-                                                    .sourcePath = sourcePath,
-                                                    .entryPoint = entry,
-                                                    .stage = stage});
+            const auto artifact =
+                compiler.compile({.hlsl = source, .sourcePath = sourcePath, .entryPoint = entry, .stage = stage});
             shaders[index] = device.createShaderEx(
                 {.spirv = artifact.spirv,
                  .entryPoint = std::move(entry),
@@ -580,7 +504,7 @@ bool NativeDayoEnvironmentRuntime::ensurePrefilterPipelines(Device& device, std:
             if (!shaders[index].valid())
                 throw std::runtime_error("Dayo SkyboxPrefilter shader allocation failed");
         };
-        compileShader(0, "VS", fx::FxShaderStage::vertex);
+        compileShader(0, "NativePrefilterVS", fx::FxShaderStage::vertex);
         compileShader(1, "PSCopy", fx::FxShaderStage::fragment);
         compileShader(2, "PS", fx::FxShaderStage::fragment);
 
