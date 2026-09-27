@@ -248,6 +248,9 @@ void VulkanUploadContext::wait(std::uint64_t value) {
         .pValues = &value,
     };
     check(vkWaitSemaphores(device_, &waitInfo, UINT64_MAX), "wait for persistent upload command");
+    ring_.reclaim(value);
+    // Dedicated mapped storage stays alive until the next begin/reclaim so
+    // readback callers can copy from it after waiting for GPU completion.
 }
 
 void VulkanUploadContext::reclaim() {
