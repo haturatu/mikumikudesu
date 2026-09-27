@@ -903,6 +903,8 @@ bool dayoSkinningGpuReadback(dayo::graphics::VulkanDevice& device) {
         success = false;
     }
     release();
+    if (success)
+        std::cout << "INFO: Dayo native deform compute readback passed " << cases.size() << " fixtures\n";
     return success;
 }
 
