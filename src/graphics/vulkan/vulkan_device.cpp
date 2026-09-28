@@ -4475,6 +4475,8 @@ handles::TextureHandle VulkanDevice::createTextureEx(const TextureResourceDesc& 
     TypedTexture typed{};
     typed.desc = desc;
     typed.mipViews.resize(desc.mipLevels, VK_NULL_HANDLE);
+    if (desc.dimension == TextureDimension::cube && (usage & VK_IMAGE_USAGE_STORAGE_BIT) != 0U)
+        typed.storageMipViews.resize(desc.mipLevels, VK_NULL_HANDLE);
     typed.mipLayouts.resize(desc.mipLevels, VK_IMAGE_LAYOUT_UNDEFINED);
     const VkImageCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -4513,6 +4515,12 @@ handles::TextureHandle VulkanDevice::createTextureEx(const TextureResourceDesc& 
             .subresourceRange = {aspect, 0, desc.mipLevels, 0, imageLayers},
         };
         check(vkCreateImageView(device_, &viewInfo, nullptr, &typed.view), "create typed texture view");
+        if (!typed.storageMipViews.empty()) {
+            auto storageInfo = viewInfo;
+            storageInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+            check(vkCreateImageView(device_, &storageInfo, nullptr, &typed.storageView),
+                  "create typed cube storage view");
+        }
         for (std::uint32_t mipLevel = 0; mipLevel < desc.mipLevels; ++mipLevel) {
             const VkImageViewCreateInfo mipViewInfo{
                 .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -4523,8 +4531,19 @@ handles::TextureHandle VulkanDevice::createTextureEx(const TextureResourceDesc& 
             };
             check(vkCreateImageView(device_, &mipViewInfo, nullptr, &typed.mipViews[mipLevel]),
                   "create typed texture mip view");
+            if (!typed.storageMipViews.empty()) {
+                auto storageMipInfo = mipViewInfo;
+                storageMipInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+                check(vkCreateImageView(device_, &storageMipInfo, nullptr, &typed.storageMipViews[mipLevel]),
+                      "create typed cube storage mip view");
+            }
         }
     } catch (...) {
+        for (const auto mipView : typed.storageMipViews)
+            if (mipView != VK_NULL_HANDLE)
+                vkDestroyImageView(device_, mipView, nullptr);
+        if (typed.storageView != VK_NULL_HANDLE)
+            vkDestroyImageView(device_, typed.storageView, nullptr);
         for (const auto mipView : typed.mipViews)
             if (mipView != VK_NULL_HANDLE)
                 vkDestroyImageView(device_, mipView, nullptr);
@@ -6400,6 +6419,11 @@ void VulkanDevice::updateDescriptorSetEx(handles::DescriptorSetHandle set,
                     throw std::out_of_range("typed image descriptor mip is out of range");
                 imageView = textureIt->second.mipViews[*binding.mipLevel];
             }
+            if (layoutBinding->kind == DescriptorKind::storageImage &&
+                textureIt->second.desc.dimension == TextureDimension::cube)
+                imageView = binding.mipLevel.has_value()
+                                ? textureIt->second.storageMipViews[*binding.mipLevel]
+                                : textureIt->second.storageView;
             VkDescriptorImageInfo info{VK_NULL_HANDLE, imageView,
                                        layoutBinding->kind == DescriptorKind::storageImage
                                            ? VK_IMAGE_LAYOUT_GENERAL
@@ -6576,6 +6600,11 @@ void VulkanDevice::destroyTextureEx(handles::TextureHandle handle) {
     for (const auto mipView : it->second.mipViews)
         if (mipView != VK_NULL_HANDLE)
             vkDestroyImageView(device_, mipView, nullptr);
+    for (const auto mipView : it->second.storageMipViews)
+        if (mipView != VK_NULL_HANDLE)
+            vkDestroyImageView(device_, mipView, nullptr);
+    if (it->second.storageView != VK_NULL_HANDLE)
+        vkDestroyImageView(device_, it->second.storageView, nullptr);
     if (it->second.resource.image != VK_NULL_HANDLE)
         vkDestroyImage(device_, it->second.resource.image, nullptr);
     if (it->second.resource.memory != VK_NULL_HANDLE)
@@ -6670,6 +6699,11 @@ void VulkanDevice::destroyTypedResources() noexcept {
         for (const auto mipView : resource.mipViews)
             if (mipView != VK_NULL_HANDLE)
                 vkDestroyImageView(device_, mipView, nullptr);
+        for (const auto mipView : resource.storageMipViews)
+            if (mipView != VK_NULL_HANDLE)
+                vkDestroyImageView(device_, mipView, nullptr);
+        if (resource.storageView != VK_NULL_HANDLE)
+            vkDestroyImageView(device_, resource.storageView, nullptr);
         if (resource.view != VK_NULL_HANDLE)
             vkDestroyImageView(device_, resource.view, nullptr);
         if (resource.resource.image != VK_NULL_HANDLE)

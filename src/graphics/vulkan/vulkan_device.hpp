@@ -548,6 +548,8 @@ class VulkanDevice final : public Device {
         TextureResourceDesc desc;
         VkImageView view{};
         std::vector<VkImageView> mipViews;
+        VkImageView storageView{};
+        std::vector<VkImageView> storageMipViews;
         std::vector<VkImageLayout> mipLayouts;
     };
     struct TypedSampler {

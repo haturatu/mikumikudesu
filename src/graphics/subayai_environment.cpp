@@ -164,8 +164,9 @@ DescriptorSetLayoutDesc nativeEnvironmentPassLayout() noexcept {
 }
 
 DescriptorSetLayoutDesc nativeEnvironmentPrefilterLayout() noexcept {
-    return {.bindings = {{0, DescriptorKind::storageImage, 1, ShaderStageMask::compute},
-                         {1, DescriptorKind::storageImage, 1, ShaderStageMask::compute}}};
+    return {.bindings = {{0, DescriptorKind::sampledImage, 1, ShaderStageMask::compute},
+                         {1, DescriptorKind::storageImage, 1, ShaderStageMask::compute},
+                         {2, DescriptorKind::sampler, 1, ShaderStageMask::compute}}};
 }
 
 NativeEnvironmentBackend::~NativeEnvironmentBackend() {
@@ -240,9 +241,23 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const Environmen
         device_->uploadTextureEx(resources_.source, image.bytes, 0, 0);
         const auto conversion = passBindings(resources_.source, resources_.cubemap);
         resources_.equirectToCubeSet = device_->allocateDescriptorSetEx(bindings_.equirectToCubeLayout, conversion);
-        const auto prefilter = passBindings(resources_.cubemap, resources_.prefiltered);
-        resources_.prefilterSet = device_->allocateDescriptorSetEx(bindings_.prefilterLayout, prefilter);
-        if (!resources_.equirectToCubeSet.valid() || !resources_.prefilterSet.valid())
+        resources_.prefilterSampler = device_->createSamplerEx({.filter = SamplerFilter::linear,
+                                                                .addressU = SamplerAddressMode::clampToEdge,
+                                                                .addressV = SamplerAddressMode::clampToEdge,
+                                                                .addressW = SamplerAddressMode::clampToEdge});
+        resources_.prefilterSets.reserve(mipLevels_);
+        for (std::uint32_t mip = 0; mip < mipLevels_; ++mip) {
+            const std::array prefilter{
+                DescriptorBindingEx{.slot = 0, .arrayElement = 0, .texture = resources_.cubemap},
+                DescriptorBindingEx{.slot = 1, .arrayElement = 0, .texture = resources_.prefiltered,
+                                    .mipLevel = mip},
+                DescriptorBindingEx{.slot = 2, .arrayElement = 0, .sampler = resources_.prefilterSampler},
+            };
+            resources_.prefilterSets.push_back(device_->allocateDescriptorSetEx(bindings_.prefilterLayout, prefilter));
+        }
+        if (!resources_.equirectToCubeSet.valid() || !resources_.prefilterSampler.valid() ||
+            std::any_of(resources_.prefilterSets.begin(), resources_.prefilterSets.end(),
+                        [](auto set) { return !set.valid(); }))
             throw std::runtime_error("native environment descriptor allocation returned an invalid handle");
     } catch (...) {
         reset();
@@ -260,7 +275,7 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const Environmen
 void NativeEnvironmentBackend::record(CommandList& commands) const {
     if (!ready() || !bindings_.valid())
         throw std::logic_error("native environment backend is not initialized");
-    const NativeEnvironmentPushConstants constants{.faceSize = faceSize_, .mipLevels = mipLevels_, .reserved = {0, 0}};
+    const NativeEnvironmentPushConstants constants{.faceSize = faceSize_, .mipLevels = mipLevels_};
     const auto groups = (faceSize_ + 7U) / 8U;
     commands.transitionEx(resources_.source);
     commands.transitionEx(resources_.cubemap);
@@ -271,32 +286,45 @@ void NativeEnvironmentBackend::record(CommandList& commands) const {
     commands.dispatch(groups, groups, 6);
     commands.memoryBarrierEx();
     commands.bindPipelineEx(bindings_.prefilterPipeline);
-    commands.bindDescriptorSetEx(resources_.prefilterSet);
-    commands.pushConstantsEx(std::as_bytes(std::span<const NativeEnvironmentPushConstants>(&constants, 1)));
-    commands.dispatch(groups, groups, 6);
-    commands.memoryBarrierEx();
-    if (mipLevels_ > 1)
-        commands.generateMipmapsEx(resources_.prefiltered);
+    for (std::uint32_t mip = 0; mip < mipLevels_; ++mip) {
+        auto mipConstants = constants;
+        mipConstants.mipLevel = mip;
+        mipConstants.sampleCount = mip == 0 ? 1U : 64U;
+        const auto mipSize = std::max(faceSize_ >> mip, 1U);
+        commands.bindDescriptorSetEx(resources_.prefilterSets[mip]);
+        commands.pushConstantsEx(std::as_bytes(std::span<const NativeEnvironmentPushConstants>(&mipConstants, 1)));
+        commands.dispatch((mipSize + 7U) / 8U, (mipSize + 7U) / 8U, 6);
+        commands.memoryBarrierEx();
+    }
 }
 
 void NativeEnvironmentBackend::reset() noexcept {
     Device* device = device_;
-    const bool hasResources = resources_.prefilterSet.valid() || resources_.equirectToCubeSet.valid() ||
+    const bool hasResources = !resources_.prefilterSets.empty() || resources_.prefilterSampler.valid() ||
+                              resources_.equirectToCubeSet.valid() ||
                               resources_.prefiltered.valid() || resources_.cubemap.valid() || resources_.source.valid();
     if (device != nullptr && hasResources) {
         try {
             device->waitIdle();
         } catch (...) {
         }
-        if (resources_.prefilterSet.valid()) {
-            try {
-                device->destroyDescriptorSetEx(resources_.prefilterSet);
-            } catch (...) {
+        for (auto set : resources_.prefilterSets) {
+            if (set.valid()) {
+                try {
+                    device->destroyDescriptorSetEx(set);
+                } catch (...) {
+                }
             }
         }
         if (resources_.equirectToCubeSet.valid()) {
             try {
                 device->destroyDescriptorSetEx(resources_.equirectToCubeSet);
+            } catch (...) {
+            }
+        }
+        if (resources_.prefilterSampler.valid()) {
+            try {
+                device->destroySamplerEx(resources_.prefilterSampler);
             } catch (...) {
             }
         }

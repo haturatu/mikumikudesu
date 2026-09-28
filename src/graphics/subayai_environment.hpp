@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace dayo::graphics {
 
@@ -49,7 +50,8 @@ struct EnvironmentPassBindings {
 struct NativeEnvironmentPushConstants {
     std::uint32_t faceSize{};
     std::uint32_t mipLevels{};
-    std::uint32_t reserved[2]{};
+    std::uint32_t mipLevel{};
+    std::uint32_t sampleCount{};
 };
 static_assert(sizeof(NativeEnvironmentPushConstants) == 16);
 
@@ -154,8 +156,9 @@ class NativeEnvironmentBackend final : public IEnvironmentBackend {
         handles::TextureHandle source{};
         handles::TextureHandle cubemap{};
         handles::TextureHandle prefiltered{};
+        handles::SamplerHandle prefilterSampler{};
         handles::DescriptorSetHandle equirectToCubeSet{};
-        handles::DescriptorSetHandle prefilterSet{};
+        std::vector<handles::DescriptorSetHandle> prefilterSets;
     };
 
     [[nodiscard]] EnvironmentGpuResult regenerateLinear(const EnvironmentDesc& desc, const core::ImageData& image);
