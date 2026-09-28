@@ -155,6 +155,12 @@ ProjectModelState readNativeModelState(const Json& item, const std::filesystem::
     state.morphs = readStrings(item.value("morphs", Json::array()));
     state.materials = readStrings(item.value("materials", Json::array()));
     state.materialAnnotations = readStrings(item.value("materialAnnotations", Json::array()));
+    if (item.contains("previewPbrPresets") && item.at("previewPbrPresets").is_array()) {
+        for (const auto& value : item.at("previewPbrPresets"))
+            state.previewPbrPresets.push_back(value.is_number_unsigned() || value.is_number_integer()
+                                                  ? static_cast<std::uint8_t>(std::clamp(value.get<int>(), 0, 6))
+                                                  : 0U);
+    }
     state.motionOrder = item.value("motionOrder", state.motionOrder);
     state.deformOrder = item.value("deformOrder", state.deformOrder);
     state.postprocessOrder = item.value("postprocessOrder", state.postprocessOrder);
@@ -868,6 +874,7 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
                    {"morphs", model.morphs},
                    {"materials", model.materials},
                    {"materialAnnotations", model.materialAnnotations},
+                   {"previewPbrPresets", model.previewPbrPresets},
                    {"motionOrder", model.motionOrder},
                    {"deformOrder", model.deformOrder},
                    {"postprocessOrder", model.postprocessOrder},

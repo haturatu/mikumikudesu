@@ -29,6 +29,7 @@ struct EnvironmentDesc {
 struct EnvironmentGpuResult {
     handles::TextureHandle cubemap{};
     handles::TextureHandle prefiltered{};
+    std::uint32_t prefilteredMipLevels{};
     std::array<float, 27> sphericalHarmonics{};
     std::uint64_t skywalkerVersion{};
     // Original linear equirectangular Texture2D consumed by Dayo::Skybox.
@@ -149,6 +150,9 @@ class NativeEnvironmentBackend final : public IEnvironmentBackend {
     }
     [[nodiscard]] std::uint32_t faceSize() const noexcept {
         return faceSize_;
+    }
+    [[nodiscard]] std::uint32_t mipLevels() const noexcept {
+        return mipLevels_;
     }
 
   private:

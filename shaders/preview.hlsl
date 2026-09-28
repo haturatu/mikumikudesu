@@ -22,6 +22,7 @@ struct VertexOutput {
     [[vk::location(4)]] float2 sphereUv : TEXCOORD2;
     [[vk::location(5)]] nointerpolation uint materialIndex : TEXCOORD3;
     [[vk::location(6)]] nointerpolation uint edgePass : TEXCOORD4;
+    [[vk::location(7)]] float3 worldPosition : TEXCOORD5;
 };
 
 struct PreviewSceneConstants {
@@ -59,6 +60,8 @@ struct PreviewMaterialData {
     uint flags;
     uint2 reserved;
     uint4 textureSlots;
+    float4 pbr;
+    float4 hair;
 };
 [[vk::binding(0, 2)]] StructuredBuffer<PreviewMaterialData> previewMaterials;
 
@@ -72,6 +75,13 @@ struct PreviewMorphDelta
 [[vk::binding(1, 3)]] SamplerState previewClampSampler;
 [[vk::binding(0, 4)]] StructuredBuffer<PreviewMorphDelta> previewMorphDeltas;
 [[vk::binding(1, 4)]] StructuredBuffer<float> previewMorphWeights;
+[[vk::binding(0, 5)]] StructuredBuffer<float4> previewEnvironmentData;
+[[vk::binding(1, 5)]] TextureCube<float4> previewEnvironmentCube;
+[[vk::binding(2, 5)]] SamplerState previewEnvironmentSampler;
+[[vk::binding(0, 6)]] Texture2D<float> previewShadowMap;
+[[vk::binding(1, 6)]] SamplerState previewShadowSampler;
+[[vk::binding(0, 7)]] Texture2D<float4> previewAoMap;
+[[vk::binding(1, 7)]] SamplerState previewAoSampler;
 
 [[vk::binding(0, 0)]] Texture2D<float4> baseTexture;
 [[vk::binding(1, 0)]] Texture2D<float4> toonTexture;
@@ -87,6 +97,16 @@ struct SkinResult {
 float3 safeNormalize(float3 value, float3 fallback) {
     const float len2 = dot(value, value);
     return len2 > 1e-6 ? value * rsqrt(len2) : fallback;
+}
+
+float3 previewShadowCoordinates(float3 worldPosition) {
+    const float3 light = safeNormalize(-scene.light.xyz, float3(0.0, 1.0, 0.0));
+    const float3 right = safeNormalize(cross(float3(0.0, 1.0, 0.0), light), float3(1.0, 0.0, 0.0));
+    const float3 up = cross(light, right);
+    const float span = max(4.0, 1.5 + float(scene.instanceCount) * 1.1);
+    return float3(dot(worldPosition, right) / span,
+                  -dot(worldPosition, up) / span,
+                  (10.0 - dot(worldPosition, light)) / 20.0);
 }
 
 struct DualQuaternion {
@@ -268,6 +288,7 @@ VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, ui
         output.position = float4(input.position.xy, 0.0, 1.0);
         output.normal = float3(0.0, 0.0, 1.0);
         output.viewPosition = float3(0.0, 0.0, 1.0);
+        output.worldPosition = 0.0.xxx;
         output.color = float3(0.0, 0.0, 0.0);
         return output;
     }
@@ -276,6 +297,7 @@ VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, ui
     SkinResult skin = skinVertex(input);
     const float cloneCenter = (float(scene.instanceCount) - 1.0) * 0.5;
     skin.position.x += (float(instanceIndex) - cloneCenter) * 2.2;
+    output.worldPosition = skin.position - scene.target.xyz;
     float3 p = skin.position - scene.target.xyz;
     float3 n = safeNormalize(skin.normal, float3(0.0, 0.0, 1.0));
     const float3 s = sin(scene.camera.xyz);
@@ -319,6 +341,7 @@ VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, ui
         const float2 viewport = max(scene.viewport.xy, 1.0.xx);
         output.position.xy += screenNormal * (2.0 * pixelWidth / viewport) * baseClip.w;
     }
+    output.position.xy += scene.viewport.zw * (2.0 / max(scene.viewport.xy, 1.0.xx)) * output.position.w;
     output.normal = safeNormalize(n, float3(0.0, 0.0, 1.0));
     output.viewPosition = p;
     output.sphereUv = n.xy * float2(0.5, -0.5) + 0.5;
@@ -336,6 +359,26 @@ VertexOutput EdgeVS(VertexInput input, uint instanceIndex : SV_InstanceID) {
     return makeVertex(input, indirect ? instanceIndex : scene.materialIndex, 1, indirect ? 0 : instanceIndex);
 }
 
+struct ShadowOutput {
+    float4 position : SV_Position;
+};
+
+float4 NormalPS(VertexOutput input) : SV_Target0 {
+    return float4(safeNormalize(input.normal, float3(0.0, 0.0, 1.0)) * 0.5 + 0.5, 1.0);
+}
+
+ShadowOutput ShadowVS(VertexInput input, uint instanceIndex : SV_InstanceID) {
+    input.position = applyVertexMorphs(input);
+    const SkinResult skin = skinVertex(input);
+    const float cloneCenter = (float(scene.instanceCount) - 1.0) * 0.5;
+    const float3 world = skin.position + float3((float(instanceIndex) - cloneCenter) * 2.2, 0.0, 0.0)
+                         - scene.target.xyz;
+    const float3 coordinates = previewShadowCoordinates(world);
+    ShadowOutput output;
+    output.position = float4(coordinates.xy, coordinates.z, 1.0);
+    return output;
+}
+
 float4 applyTextureMorphRgb(float4 sample, float4 multiply, float4 add, float3 neutral) {
     sample.rgb = lerp(neutral, sample.rgb * multiply.rgb + add.rgb, multiply.a + add.a);
     return sample;
@@ -347,6 +390,77 @@ float4 samplePreviewTextureRepeat(uint textureSlot, float2 uv) {
 
 float4 samplePreviewTextureClamp(uint textureSlot, float2 uv) {
     return previewTextureTable[textureSlot].Sample(previewClampSampler, uv);
+}
+
+float3 evaluateIrradiance(float3 normal) {
+    const float x = normal.x, y = normal.y, z = normal.z;
+    const float basis[9] = {
+        0.2820947918, 0.4886025119 * y, 0.4886025119 * z, 0.4886025119 * x,
+        1.0925484306 * x * y, 1.0925484306 * y * z, 0.3153915653 * (3.0 * z * z - 1.0),
+        1.0925484306 * x * z, 0.5462742153 * (x * x - y * y)
+    };
+    float3 result = 0;
+    [unroll]
+    for (uint i = 0; i < 9; ++i) {
+        const float convolution = i == 0 ? 1.0 : (i < 4 ? 2.0 / 3.0 : 0.25);
+        result += previewEnvironmentData[i].rgb * basis[i] * convolution;
+    }
+    return max(result, 0.0);
+}
+
+float3 fresnelSchlick(float cosine, float3 f0) {
+    return f0 + (1.0 - f0) * pow(1.0 - saturate(cosine), 5.0);
+}
+
+float distributionGGX(float noH, float roughness) {
+    const float alpha = max(roughness * roughness, 0.0025);
+    const float a2 = alpha * alpha;
+    const float denominator = noH * noH * (a2 - 1.0) + 1.0;
+    return a2 / max(3.14159265359 * denominator * denominator, 1e-5);
+}
+
+float geometrySmith(float noV, float noL, float roughness) {
+    const float k = (roughness + 1.0) * (roughness + 1.0) * 0.125;
+    return (noV / max(noV * (1.0 - k) + k, 1e-5)) *
+           (noL / max(noL * (1.0 - k) + k, 1e-5));
+}
+
+// Polynomial fit to the split-sum GGX BRDF integral; avoids a sampled LUT on small GPUs.
+float2 integratedBrdf(float noV, float roughness) {
+    const float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);
+    const float4 c1 = float4(1.0, 0.0425, 1.04, -0.04);
+    const float4 r = roughness * c0 + c1;
+    const float a004 = min(r.x * r.x, exp2(-9.28 * noV)) * r.x + r.y;
+    return float2(-1.04, 1.04) * a004 + r.zw;
+}
+
+float3 acesFilm(float3 value) {
+    return saturate((value * (2.51 * value + 0.03)) /
+                    max(value * (2.43 * value + 0.59) + 0.14, 1e-5));
+}
+
+float previewShadow(float3 worldPosition, float3 normal, float3 lightDirection) {
+    if (scene.debug.w < 0.0)
+        return 1.0;
+    const float3 coordinates = previewShadowCoordinates(worldPosition);
+    const float2 uv = coordinates.xy * 0.5 + 0.5;
+    if (any(uv < 0.0) || any(uv > 1.0) || coordinates.z <= 0.0 || coordinates.z >= 1.0)
+        return 1.0;
+    const float bias = max(0.0006, 0.002 * (1.0 - saturate(dot(normal, lightDirection))));
+    const int radius = scene.debug.w > 0.5 ? 3 : 1;
+    const float texel = 1.0 / 2048.0;
+    float lit = 0.0;
+    [loop]
+    for (int y = -radius; y <= radius; ++y) {
+        [loop]
+        for (int x = -radius; x <= radius; ++x) {
+            const float sampled = previewShadowMap.SampleLevel(previewShadowSampler,
+                                                                uv + float2(x, y) * texel, 0);
+            lit += coordinates.z - bias <= sampled ? 1.0 : 0.0;
+        }
+    }
+    const float width = float(2 * radius + 1);
+    return lit / (width * width);
 }
 
 float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0 {
@@ -379,11 +493,62 @@ float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0 {
     const float3 normal = safeNormalize(input.normal, float3(0.0, 0.0, 1.0));
     const float3 lightDirection = normalize(-scene.light.xyz);
     const float noLight = dot(normal, lightDirection);
-    const float3 halfVector = normalize(lightDirection + normalize(-input.viewPosition));
-    const float specularLight = pow(max(1e-6, dot(normal, halfVector)), material.ambientShininess.w);
-    const float3 Le = scene.lightColor.rgb;
-    float4 color = float4(saturate(material.ambientShininess.xyz
-                                  + material.diffuse.rgb * Le), material.diffuse.a) * baseSampled;
+    const float3 viewDirection = safeNormalize(-input.viewPosition, float3(0.0, 0.0, 1.0));
+    const float3 halfVector = safeNormalize(lightDirection + viewDirection, normal);
+    const float noL = saturate(noLight);
+    const float noV = saturate(dot(normal, viewDirection));
+    const float noH = saturate(dot(normal, halfVector));
+    const float voH = saturate(dot(viewDirection, halfVector));
+    const float roughness = clamp(material.pbr.x, 0.06, 1.0);
+    const float metallic = saturate(material.pbr.y);
+    const float3 baseColor = material.diffuse.rgb * baseSampled.rgb;
+    const float3 f0 = lerp(0.08 * saturate(material.pbr.z).xxx, baseColor, metallic);
+    const float3 fresnel = fresnelSchlick(voH, f0);
+    const float specularDenominator = max(4.0 * noL * noV, 1e-4);
+    const float3 directSpecular = distributionGGX(noH, roughness) *
+                                  geometrySmith(noV, noL, roughness) * fresnel /
+                                  specularDenominator * noL;
+    const float wrappedLight = saturate((noLight + 0.35) / 1.35);
+    const float diffuseLight = lerp(noL, wrappedLight, saturate(material.pbr.w));
+    const float3 skinTransmission = material.pbr.w * pow(saturate(dot(-normal, lightDirection)), 3.0) *
+                                    float3(1.0, 0.25, 0.18) * 0.08;
+    const float shadow = previewShadow(input.worldPosition, normal, lightDirection);
+    const float3 Le = scene.lightColor.rgb * (scene.debug.z > 0.5 ? 0.4 : 1.0) * shadow;
+    float3 directDiffuse = baseColor * (1.0 - metallic) * (1.0 - fresnel) *
+                           (diffuseLight.xxx + skinTransmission) * Le;
+    float3 hairSpecular = 0;
+    if (material.hair.x > 0.0 && noL > 0.0) {
+        const float3 dpdx = ddx(input.viewPosition);
+        const float3 dpdy = ddy(input.viewPosition);
+        const float2 duvdx = ddx(input.uv);
+        const float2 duvdy = ddy(input.uv);
+        const float3 tangent = safeNormalize(dpdx * duvdy.y - dpdy * duvdx.y,
+                                              safeNormalize(cross(normal, float3(0.0, 1.0, 0.0)),
+                                                            float3(1.0, 0.0, 0.0)));
+        const float tangentDotHalf = dot(tangent, halfVector);
+        const float strand = sqrt(saturate(1.0 - tangentDotHalf * tangentDotHalf));
+        hairSpecular = material.hair.x * pow(strand, lerp(24.0, 100.0, 1.0 - roughness)) *
+                       noL * Le * f0;
+    }
+    float3 iblDiffuse = material.ambientShininess.rgb * baseColor * (1.0 - metallic);
+    float3 iblSpecular = 0;
+    if (scene.debug.z > 0.5) {
+        const float intensity = previewEnvironmentData[9].y;
+        iblDiffuse = evaluateIrradiance(normal) * baseColor * (1.0 - metallic) * intensity;
+        const float3 reflected = reflect(-viewDirection, normal);
+        const float3 prefiltered = previewEnvironmentCube.SampleLevel(
+            previewEnvironmentSampler, reflected, roughness * previewEnvironmentData[9].x).rgb;
+        const float2 brdf = integratedBrdf(noV, roughness);
+        iblSpecular = prefiltered * (f0 * brdf.x + brdf.y) * intensity;
+    }
+    const float ao = (scene.materialPadding & 1U) != 0U
+                         ? previewAoMap.SampleLevel(previewAoSampler,
+                                                    input.position.xy / max(scene.viewport.xy, 1.0.xx), 0).r
+                         : 1.0;
+    iblDiffuse *= ao;
+    iblSpecular *= lerp(1.0, ao, 0.35);
+    float4 color = float4(directDiffuse + directSpecular * Le + hairSpecular +
+                          iblDiffuse + iblSpecular, material.diffuse.a * baseSampled.a);
 
     const uint toonMode = (material.flags >> 1U) & 0x03U;
     if ((debugFlags & 0x04U) == 0U && toonMode == 0U)
@@ -403,7 +568,8 @@ float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0 {
         color.rgb = sphereMode == 1U ? color.rgb * sphere.rgb : color.rgb + sphere.rgb;
     }
 
-    color.rgb += material.specular.rgb * Le * specularLight;
+    if ((scene.materialPadding & 2U) == 0U)
+        color.rgb = acesFilm(color.rgb);
     if (color.a == 0.0) discard;
     if (color.a >= 0.98) color.a = 1.0;
     return color;

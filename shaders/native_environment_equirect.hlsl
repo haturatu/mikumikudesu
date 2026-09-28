@@ -37,7 +37,9 @@ void EquirectToCube(uint3 id : SV_DispatchThreadID) {
     const float latitude = asin(clamp(direction.y, -1.0, 1.0));
     const float2 sourceUv = float2(longitude / (2.0 * 3.14159265359) + 0.5,
                                    0.5 - latitude / 3.14159265359);
-    const uint2 sourceSize = uint2(environment.faceSize * 2, environment.faceSize);
+    uint sourceWidth, sourceHeight;
+    equirectangular.GetDimensions(sourceWidth, sourceHeight);
+    const uint2 sourceSize = uint2(sourceWidth, sourceHeight);
     const uint2 source = min(uint2(sourceUv * float2(sourceSize)), sourceSize - 1);
     cube[id] = equirectangular.Load(int3(source, 0));
 }

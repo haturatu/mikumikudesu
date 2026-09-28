@@ -266,6 +266,7 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const Environmen
     }
     result_ = {.cubemap = resources_.cubemap,
                .prefiltered = resources_.prefiltered,
+               .prefilteredMipLevels = mipLevels_,
                .sphericalHarmonics = harmonics,
                .skywalkerVersion = desc.version,
                .skybox = resources_.source};

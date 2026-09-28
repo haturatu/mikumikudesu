@@ -81,6 +81,9 @@ class VulkanDevice final : public Device {
         return previewGpuNanoseconds_;
     }
     [[nodiscard]] core::ImageRgba8 renderToImage(const RenderTargetDesc& target) override;
+    [[nodiscard]] handles::TextureHandle previewHdrTexture() const noexcept override {
+        return lastPreviewHdrTexture_;
+    }
     void waitIdle() override;
     void uploadPreviewMesh(std::span<const PreviewVertex> vertices, std::span<const std::uint32_t> indices) override;
     void updatePreviewVertices(std::span<const PreviewVertex> vertices) override;
@@ -95,6 +98,9 @@ class VulkanDevice final : public Device {
     void updatePreviewScene(const PreviewScene& scene) override {
         previewGpuScene_.view = scene;
     }
+    void updatePreviewEnvironment(const PreviewEnvironment& environment) override;
+    void setPreviewJitter(float x, float y) override { previewJitter_ = {x, y}; }
+    void setPreviewStillQuality(bool enabled) override { previewStillQuality_ = enabled; }
     [[nodiscard]] BufferHandle createBuffer(const BufferDesc& desc) override;
     [[nodiscard]] TextureHandle createTexture(const TextureDesc& desc) override;
     [[nodiscard]] handles::TextureHandle createTextureEx(const TextureResourceDesc& desc) override;
@@ -159,6 +165,30 @@ class VulkanDevice final : public Device {
     friend class VulkanCommandList;
     friend class VulkanAccelerationBackend;
 
+    struct PreviewAoResource {
+        VkImage depthImage{};
+        VkDeviceMemory depthMemory{};
+        VkImageView depthView{};
+        VkImage normalImage{};
+        VkDeviceMemory normalMemory{};
+        VkImageView normalView{};
+        VkImage images[2]{};
+        VkDeviceMemory memories[2]{};
+        VkImageView views[2]{};
+        VkDescriptorSet computeSets[3]{};
+        VkDescriptorSet sampleSet{};
+        VkExtent2D extent{};
+        bool initialized{};
+    };
+    struct PreviewHdrResource {
+        handles::TextureHandle texture{};
+        VkImage image{};
+        VkImageView view{};
+        VkDescriptorSet descriptor{};
+        VkExtent2D extent{};
+        bool initialized{};
+    };
+
     struct Frame {
         VkCommandPool commandPool{};
         VkCommandBuffer commandBuffer{};
@@ -193,6 +223,8 @@ class VulkanDevice final : public Device {
         void* mappedPreviewMaterials{};
         VkDescriptorSet previewMaterialDescriptor{};
         std::uint64_t previewMaterialGeneration{};
+        PreviewAoResource previewAo;
+        PreviewHdrResource previewHdr;
         VkBuffer previewIndirectBuffer{};
         VkDeviceMemory previewIndirectMemory{};
         void* mappedPreviewIndirect{};
@@ -308,6 +340,16 @@ class VulkanDevice final : public Device {
     [[nodiscard]] PreviewRenderPlan buildPreviewRenderPlan(bool includeUi) const noexcept;
     void recordPreviewModel(VkCommandBuffer command, const PreviewPushConstants& constants,
                             const PreviewRenderPlan& plan);
+    void recordPreviewShadowPass(VkCommandBuffer command, Frame& frame);
+    void recordPreviewAoPass(VkCommandBuffer command, Frame& frame, VkExtent2D extent);
+    void ensurePreviewAoResources(Frame& frame, VkExtent2D extent);
+    void destroyPreviewAoResources(Frame& frame) noexcept;
+    void ensurePreviewHdrResource(Frame& frame, VkExtent2D extent);
+    void destroyPreviewHdrResource(Frame& frame) noexcept;
+    void recordPreviewScenePass(VkCommandBuffer command, Frame& frame, VkImage colorImage, VkImageView colorView,
+                                DepthResource& depth, VkExtent2D extent, bool colorInitialized,
+                                VkImageLayout previousColorLayout, VkPipelineStageFlags2 previousColorStage,
+                                VkAccessFlags2 previousColorAccess, bool preservePreviousFrame);
     void recordPreviewPass(VkCommandBuffer command, Frame& frame, VkImage colorImage, VkImageView colorView,
                            DepthResource& depth, VkExtent2D extent, bool colorInitialized,
                            VkImageLayout previousColorLayout, VkPipelineStageFlags2 previousColorStage,
@@ -447,6 +489,16 @@ class VulkanDevice final : public Device {
     VkPipelineLayout pipelineLayout_{};
     VkPipelineCache pipelineCache_{};
     VkPipeline pipeline_{};
+    VkPipeline shadowPipeline_{};
+    VkPipeline depthPrepassPipeline_{};
+    VkPipeline hdrPipeline_{};
+    VkPipeline hdrTransparentPipeline_{};
+    VkPipeline hdrBackgroundPipeline_{};
+    VkPipeline hdrEdgePipeline_{};
+    VkPipeline previewTonemapPipeline_{};
+    VkPipelineLayout previewTonemapPipelineLayout_{};
+    VkPipeline aoPipelines_[2]{};
+    VkPipelineLayout aoPipelineLayout_{};
     VkPipeline transparentPipeline_{};
     VkPipeline edgePipeline_{};
     VkPipeline backgroundPipeline_{};
@@ -473,10 +525,33 @@ class VulkanDevice final : public Device {
     VkDescriptorSetLayout previewMorphDescriptorSetLayout_{};
     VkDescriptorSetLayout previewMaterialDescriptorSetLayout_{};
     VkDescriptorSetLayout previewBindlessDescriptorSetLayout_{};
+    VkDescriptorSetLayout previewEnvironmentDescriptorSetLayout_{};
+    VkDescriptorSetLayout previewShadowDescriptorSetLayout_{};
+    VkDescriptorSetLayout previewAoDescriptorSetLayout_{};
+    VkDescriptorSetLayout previewAoSampleDescriptorSetLayout_{};
+    VkDescriptorSetLayout previewTonemapDescriptorSetLayout_{};
     VkDescriptorPool previewDescriptorPool_{};
     VkSampler previewSampler_{};
     VkSampler previewClampSampler_{};
     VkDescriptorSet previewBindlessDescriptor_{};
+    VkDescriptorSet previewEnvironmentDescriptor_{};
+    VkDescriptorSet previewShadowDescriptor_{};
+    VkSampler previewShadowSampler_{};
+    VkSampler previewAoSampler_{};
+    VkSampler previewTonemapSampler_{};
+    DepthResource previewShadowDepth_{};
+    bool previewEnvironmentEnabled_{};
+    VkBuffer previewEnvironmentBuffer_{};
+    VkDeviceMemory previewEnvironmentMemory_{};
+    void* mappedPreviewEnvironment_{};
+    VkSampler previewEnvironmentSampler_{};
+    handles::TextureHandle previewEnvironmentTexture_{};
+    handles::TextureHandle previewFallbackEnvironmentTexture_{};
+    std::array<float, 40> previewEnvironmentData_{};
+    std::array<float, 2> previewJitter_{};
+    bool previewStillQuality_{};
+    bool previewHdrActive_{};
+    handles::TextureHandle lastPreviewHdrTexture_{};
     std::uint32_t previewBindlessTextureCapacity_{};
     bool previewBindlessSupported_{};
     bool scalarBlockLayoutSupported_{};

@@ -18,6 +18,7 @@ class Rgba16fSampleAccumulator {
     void begin(Extent3D extent, std::uint32_t sampleCount);
     void add(std::span<const std::uint8_t> rgba16f);
     [[nodiscard]] std::vector<std::uint8_t> resolve() const;
+    [[nodiscard]] std::vector<float> resolveFloat32() const;
 
     [[nodiscard]] bool complete() const noexcept {
         return expectedSamples_ != 0 && receivedSamples_ == expectedSamples_;
