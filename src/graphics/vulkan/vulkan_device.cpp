@@ -660,6 +660,14 @@ VulkanDevice::~VulkanDevice() {
     uploadContext_.reset();
     destroyNativeEnvironmentPipelines();
     destroyNativeDeformPipeline();
+    for (auto& frame : frames_) {
+        destroyPreviewAoResources(frame);
+        destroyPreviewHdrResource(frame);
+    }
+    if (previewFallbackEnvironmentTexture_.valid()) {
+        destroyTextureEx(previewFallbackEnvironmentTexture_);
+        previewFallbackEnvironmentTexture_ = {};
+    }
     destroyTypedResources();
     destroyViewportResources();
     destroyUi();
