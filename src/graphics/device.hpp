@@ -222,7 +222,8 @@ struct PreviewPushConstants {
     std::array<float, 4> light{};
     std::uint32_t materialIndex{};
     std::uint32_t instanceCount{1};
-    std::array<std::uint32_t, 2> materialPadding{};
+    std::uint32_t backgroundPass{}; // Reuses a reserved ABI word; model draws leave this zero.
+    std::uint32_t materialPadding{};
     std::array<float, 4> lightColor{};
     std::array<float, 4> viewport{};
     std::array<float, 4> debug{};
