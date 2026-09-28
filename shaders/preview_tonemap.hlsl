@@ -12,7 +12,7 @@ FullscreenVertex VS(uint vertexId : SV_VertexID) {
                                             : float2(-1.0, 3.0);
     FullscreenVertex output;
     output.position = float4(position, 0.0, 1.0);
-    output.uv = float2(position.x * 0.5 + 0.5, 0.5 - position.y * 0.5);
+    output.uv = position * 0.5 + 0.5;
     return output;
 }
 
