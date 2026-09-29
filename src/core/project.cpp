@@ -203,6 +203,7 @@ DayoProject readUpstreamJson(const Json& root, const std::filesystem::path& base
         result.editor.outputHeight = std::max(editor.value("outputHeight", result.editor.outputHeight), 1U);
         result.editor.outputFile = readPath("outputFile");
         result.editor.movieFile = readPath("movieFile");
+        result.editor.movieVisible = editor.value("movieVisible", result.editor.movieVisible);
         result.editor.recordFps = editor.value("recordFps", result.editor.recordFps);
         result.editor.animationSpeed = editor.value("animationSpeed", result.editor.animationSpeed);
         result.editor.totalEditTime = editor.value("totalEditTime", result.editor.totalEditTime);
@@ -552,6 +553,7 @@ DayoProject loadProject(const std::filesystem::path& path) {
             result.editor.outputHeight = std::max(editor.value("outputHeight", upstream.editor.outputHeight), 1U);
             result.editor.outputFile = readPath("outputFile", upstream.editor.outputFile);
             result.editor.movieFile = readPath("movieFile", upstream.editor.movieFile);
+            result.editor.movieVisible = editor.value("movieVisible", upstream.editor.movieVisible);
             result.editor.recordFps = editor.value("recordFps", upstream.editor.recordFps);
             result.editor.animationSpeed = editor.value("animationSpeed", upstream.editor.animationSpeed);
             result.editor.totalEditTime = editor.value("totalEditTime", upstream.editor.totalEditTime);
@@ -802,6 +804,7 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
     upstreamEditor["outputHeight"] = std::max(project.editor.outputHeight, 1U);
     upstreamEditor["outputFile"] = editorPath(project.editor.outputFile);
     upstreamEditor["movieFile"] = editorPath(project.editor.movieFile);
+    upstreamEditor["movieVisible"] = project.editor.movieVisible;
     upstreamEditor["recordFps"] = project.editor.recordFps;
     upstreamEditor["animationSpeed"] = project.editor.animationSpeed;
     upstreamEditor["totalEditTime"] = project.editor.totalEditTime;
@@ -850,6 +853,7 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
                              {"outputHeight", std::max(project.editor.outputHeight, 1U)},
                              {"outputFile", editorPath(project.editor.outputFile)},
                              {"movieFile", editorPath(project.editor.movieFile)},
+                             {"movieVisible", project.editor.movieVisible},
                              {"recordFps", project.editor.recordFps},
                              {"animationSpeed", project.editor.animationSpeed},
                              {"totalEditTime", project.editor.totalEditTime},

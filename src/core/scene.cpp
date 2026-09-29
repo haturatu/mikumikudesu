@@ -435,10 +435,7 @@ void Scene::attachPose(const std::filesystem::path& path, ModelId target) {
 
 void Scene::setBackgroundImage(const std::filesystem::path& path) {
     background_.image = loadImageRgba8(path);
-    backgroundMedia_.reset();
-    recalculateTimelineDuration();
     background_.imagePath = std::filesystem::absolute(path).lexically_normal();
-    background_.videoPath.reset();
     background_.screenSource = ScreenTextureSource::backgroundImage;
     markDirty(DirtyFlag::background);
 }
@@ -468,6 +465,14 @@ MediaFile* Scene::backgroundMedia() noexcept {
 
 const MediaFile* Scene::backgroundMedia() const noexcept {
     return backgroundMedia_ ? std::addressof(*backgroundMedia_) : nullptr;
+}
+
+void Scene::setBackgroundVideoVisible(bool visible) noexcept {
+    if (visible && background_.videoPath.has_value() && backgroundMedia_.has_value())
+        setBackgroundScreenSource(ScreenTextureSource::backgroundVideo);
+    else
+        setBackgroundScreenSource(background_.image.has_value() ? ScreenTextureSource::backgroundImage
+                                                                : ScreenTextureSource::white);
 }
 
 void Scene::clearBackgroundVideo() {

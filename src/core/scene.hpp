@@ -205,6 +205,7 @@ class Scene {
     void clearMedia();
     void clearBackground();
     void clearBackgroundVideo();
+    void setBackgroundVideoVisible(bool visible) noexcept;
     [[nodiscard]] MediaFile* backgroundMedia() noexcept;
     [[nodiscard]] const MediaFile* backgroundMedia() const noexcept;
     [[nodiscard]] MediaFile* media() noexcept;

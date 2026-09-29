@@ -662,7 +662,8 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                    backgroundState.image.has_value()) {
             nativeBackground = backgroundState.image;
             screenSource = graphics::NativeScreenSource::external;
-        } else if (backgroundState.screenSource == core::ScreenTextureSource::backgroundVideo) {
+        } else if (videoMode_ && videoVisible_ &&
+                   backgroundState.screenSource == core::ScreenTextureSource::backgroundVideo) {
             auto* media = scene_.backgroundMedia();
             if (media != nullptr && media->info().hasVideo)
                 nativeBackground = media->decodeVideoFrame(backgroundVideoSeconds());
@@ -989,6 +990,7 @@ void Application::resetProjectRuntimeState() {
     mediaSeconds_ = 0.0;
     uploadedVideoFrame_ = -1;
     videoMode_ = false;
+    videoVisible_ = false;
     backgroundVideoPath_.fill(0);
     animationFrame_ = 0.0F;
     uploadedAnimationFrame_ = -1;
@@ -1223,8 +1225,9 @@ int Application::run() {
                 log::warn("FX hot reload deferred: ", reloadError);
             }
         }
-        if (videoMode_ && media != nullptr && media->info().hasVideo) {
-            mediaSeconds_ = std::max(0.0, static_cast<double>(animationFrame_) / sceneTimelineFps(scene_));
+        // The shared time follows the timeline even while video is hidden.
+        mediaSeconds_ = std::max(0.0, static_cast<double>(animationFrame_) / sceneTimelineFps(scene_));
+        if (videoMode_ && videoVisible_ && media != nullptr && media->info().hasVideo) {
             const auto videoFrame =
                 static_cast<std::int64_t>(backgroundVideoSeconds() * media->info().videoFramesPerSecond);
             if (videoFrame != uploadedVideoFrame_)
@@ -1273,6 +1276,7 @@ core::DayoProject Application::currentProject() const {
     project.editor.animationSpeed = playbackSpeed_;
     project.editor.recordFps = static_cast<float>(sceneTimelineFps(scene_));
     project.editor.wavFile = audioSource_;
+    project.editor.movieVisible = videoVisible_;
     project.editor.movieFile = videoMode_ && scene_.background().videoPath.has_value() ? *scene_.background().videoPath
                                                                                        : std::filesystem::path{};
 #if DAYO_HAS_IMGUI
@@ -1710,7 +1714,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
                                     // A silent legacy movie still remains a valid background.
                                 }
                             }
-                            loadBackgroundVideo(asset.path);
+                            loadBackgroundVideo(asset.path, project.editor.movieVisible);
                         } else {
                             handleAsset(asset.path);
                         }
@@ -1787,9 +1791,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
         try {
             auto image = core::loadImageRgba8(path);
             scene_.setBackgroundImage(path);
-            videoMode_ = false;
-            std::erase_if(projectAssets_, [](const auto& asset) { return asset.kind == "video"; });
-            projectEditorState_.movieFile.clear();
+            videoVisible_ = false;
             const std::array<graphics::PreviewVertex, 4> vertices{{
                 {{-1.0F, -1.0F, 0.0F}, {}, {0.0F, 1.0F}},
                 {{1.0F, -1.0F, 0.0F}, {}, {1.0F, 1.0F}},
@@ -2541,15 +2543,12 @@ void Application::loadAudioSource(const std::filesystem::path& path) {
     }
 }
 
-void Application::loadBackgroundVideo(const std::filesystem::path& path) {
+void Application::loadBackgroundVideo(const std::filesystem::path& path, bool visible) {
     try {
         scene_.setMedia(path, core::MediaPresentation::backgroundVideo);
         animationFrame_ = scene_.timeline().frame;
         videoMode_ = true;
-        mediaSeconds_ = std::max(0.0, static_cast<double>(animationFrame_) / sceneTimelineFps(scene_));
-        uploadedVideoFrame_ = -1;
-        refreshPreviewBackground();
-        refreshPreviewScene();
+        setVideoVisible(visible);
         std::erase_if(projectAssets_, [](const auto& asset) { return asset.kind == "video"; });
         projectAssets_.emplace_back("video", std::filesystem::absolute(path).lexically_normal());
         lastAsset_ = "Background video " + path.filename().string();
@@ -2560,20 +2559,29 @@ void Application::loadBackgroundVideo(const std::filesystem::path& path) {
     }
 }
 
+void Application::setVideoVisible(bool visible) {
+    const auto* media = scene_.backgroundMedia();
+    videoMode_ = media != nullptr && media->info().hasVideo;
+    videoVisible_ = visible && videoMode_;
+    scene_.setBackgroundVideoVisible(videoVisible_);
+    mediaSeconds_ = std::max(0.0, static_cast<double>(animationFrame_) / sceneTimelineFps(scene_));
+    uploadedVideoFrame_ = -1;
+    refreshPreviewBackground();
+    refreshPreviewScene();
+}
+
 void Application::selectBackgroundSource(core::ScreenTextureSource source) {
     if (source == core::ScreenTextureSource::backgroundVideo) {
-        loadBackgroundVideo(backgroundVideoPath_.data());
+        std::error_code pathError;
+        const auto requested = std::filesystem::absolute(backgroundVideoPath_.data(), pathError).lexically_normal();
+        if (!pathError && videoMode_ && scene_.background().videoPath == requested)
+            setVideoVisible(true);
+        else
+            loadBackgroundVideo(backgroundVideoPath_.data());
         return;
     }
-    scene_.clearBackgroundVideo();
-    videoMode_ = false;
-    std::erase_if(projectAssets_, [](const auto& asset) { return asset.kind == "video"; });
-    projectEditorState_.movieFile.clear();
+    setVideoVisible(false);
     scene_.setBackgroundScreenSource(source);
-    if (animationFrame_ != scene_.timeline().frame) {
-        animationFrame_ = scene_.timeline().frame;
-        restartAudioAtCurrentFrame();
-    }
     refreshPreviewBackground();
     refreshPreviewScene();
 }
@@ -2582,12 +2590,12 @@ void Application::buildMediaBackgroundUi() {
 #if DAYO_HAS_IMGUI
     ImGui::InputTextWithHint("Video file", "MP4 background (optional)", backgroundVideoPath_.data(),
                              backgroundVideoPath_.size());
-    bool show = videoMode_ && scene_.background().screenSource == core::ScreenTextureSource::backgroundVideo;
-    if (ImGui::Checkbox("Show video background", &show)) {
-        selectBackgroundSource(show
-                                   ? core::ScreenTextureSource::backgroundVideo
-                                   : (scene_.background().image.has_value() ? core::ScreenTextureSource::backgroundImage
-                                                                            : core::ScreenTextureSource::white));
+    bool show = videoVisible_;
+    if (ImGui::Checkbox("Show MP4 video", &show)) {
+        if (show)
+            selectBackgroundSource(core::ScreenTextureSource::backgroundVideo);
+        else
+            setVideoVisible(false);
     }
 #endif
 }
@@ -2598,7 +2606,8 @@ void Application::refreshPreviewBackground() {
     const auto& background = scene_.background();
     uploadedVideoFrame_ = -1;
     if (background.screenSource == core::ScreenTextureSource::backgroundVideo) {
-        if (videoMode_ && scene_.backgroundMedia() != nullptr && scene_.backgroundMedia()->info().hasVideo)
+        if (videoMode_ && videoVisible_ && scene_.backgroundMedia() != nullptr &&
+            scene_.backgroundMedia()->info().hasVideo)
             refreshVideoFrame();
         else
             device_->uploadPreviewBackground({});
@@ -2626,7 +2635,7 @@ double Application::backgroundVideoSeconds() const {
 
 void Application::refreshVideoFrame() {
     auto* media = scene_.backgroundMedia();
-    if (!videoMode_ || media == nullptr || device_ == nullptr ||
+    if (!videoMode_ || !videoVisible_ || media == nullptr || device_ == nullptr ||
         scene_.background().screenSource != core::ScreenTextureSource::backgroundVideo)
         return;
     const auto frameIndex = static_cast<std::int64_t>(backgroundVideoSeconds() * media->info().videoFramesPerSecond);
@@ -2855,6 +2864,7 @@ void Application::buildUi() {
         ImGui::Checkbox("Repeat", &repeat_);
         if (ImGui::SliderFloat("Playback speed", &playbackSpeed_, 0.1F, 4.0F, "%.2fx"))
             restartAudioAtCurrentFrame();
+        buildMediaBackgroundUi();
         if (ImGui::SliderFloat("Volume", &audioVolume_, 0.0F, 1.0F))
             audioPlayer_.setVolume(audioVolume_);
         if (ImGui::DragFloat("Audio offset", &audioOffsetSeconds_, 0.01F, -60.0F, 60.0F, "%.2f s"))

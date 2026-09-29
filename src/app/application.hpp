@@ -48,7 +48,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void loadEffectAsset(const std::filesystem::path& path, std::optional<core::ModelId> owner);
     void handleAsset(const std::filesystem::path& path);
     void loadAudioSource(const std::filesystem::path& path);
-    void loadBackgroundVideo(const std::filesystem::path& path);
+    void loadBackgroundVideo(const std::filesystem::path& path, bool visible = true);
+    void setVideoVisible(bool visible);
     void restartAudioAtCurrentFrame();
     void syncMediaAtCurrentFrame();
     [[nodiscard]] double backgroundVideoSeconds() const;
@@ -174,7 +175,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     float audioOffsetSeconds_{};
     core::AudioBuffer loadedAudio_;
     std::vector<float> waveformPeaks_;
-    bool videoMode_{};
+    bool videoMode_{};    // A background video is loaded.
+    bool videoVisible_{}; // Decode and display only when explicitly enabled.
     std::array<char, 1024> backgroundVideoPath_{};
     double mediaSeconds_{};
     std::int64_t uploadedVideoFrame_{-1};

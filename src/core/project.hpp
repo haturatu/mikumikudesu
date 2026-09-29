@@ -57,6 +57,7 @@ struct ProjectEditorState {
     std::uint32_t outputHeight{1080};
     std::filesystem::path outputFile;
     std::filesystem::path movieFile;
+    bool movieVisible{true}; // Older projects implicitly displayed their movie.
     float recordFps{30.0F};
     float animationSpeed{1.0F};
     std::uint64_t totalEditTime{};
