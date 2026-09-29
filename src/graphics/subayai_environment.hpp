@@ -15,7 +15,7 @@ namespace dayo::graphics {
 // an unchanged environment costs no GPU work. RT-incapable GPUs keep Preview.
 struct EnvironmentDesc {
     std::string source;
-    float exposure{1.0F};
+    float exposure{1.0F}; // Finite, non-negative linear RGB multiplier.
     std::uint64_t version{0};
 
     [[nodiscard]] bool operator==(const EnvironmentDesc& other) const noexcept {
@@ -32,7 +32,7 @@ struct EnvironmentGpuResult {
     std::uint32_t prefilteredMipLevels{};
     std::array<float, 27> sphericalHarmonics{};
     std::uint64_t skywalkerVersion{};
-    // Original linear equirectangular Texture2D consumed by Dayo::Skybox.
+    // Bounded, exposure-adjusted linear equirectangular Texture2D consumed by Dayo::Skybox.
     handles::TextureHandle skybox{};
 };
 
@@ -128,6 +128,8 @@ class EnvironmentService {
 // renderer-owned and are supplied through EnvironmentPassBindings.
 class NativeEnvironmentBackend final : public IEnvironmentBackend {
   public:
+    static constexpr std::uint32_t maxFaceSize = 512;
+
     NativeEnvironmentBackend(Device& device, EnvironmentPassBindings bindings)
         : device_(&device), bindings_(bindings) {}
     ~NativeEnvironmentBackend() override;
@@ -161,6 +163,7 @@ class NativeEnvironmentBackend final : public IEnvironmentBackend {
         handles::TextureHandle cubemap{};
         handles::TextureHandle prefiltered{};
         handles::SamplerHandle prefilterSampler{};
+        handles::SamplerHandle conversionSampler{};
         handles::DescriptorSetHandle equirectToCubeSet{};
         std::vector<handles::DescriptorSetHandle> prefilterSets;
     };

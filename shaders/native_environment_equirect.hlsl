@@ -14,6 +14,7 @@ struct NativeEnvironmentConstants {
 [[vk::image_format("rgba16f")]]
 #endif
 RWTexture2DArray<float4> cube;
+[[vk::binding(2, 0)]] SamplerState environmentSampler;
 
 float3 faceDirection(uint face, float2 position) {
     switch (face) {
@@ -43,9 +44,6 @@ void EquirectToCube(uint3 id : SV_DispatchThreadID) {
     const float latitude = asin(clamp(direction.y, -1.0, 1.0));
     const float2 sourceUv = float2(longitude / (2.0 * 3.14159265359) + 0.5,
                                    0.5 - latitude / 3.14159265359);
-    uint sourceWidth, sourceHeight;
-    equirectangular.GetDimensions(sourceWidth, sourceHeight);
-    const uint2 sourceSize = uint2(sourceWidth, sourceHeight);
-    const uint2 source = min(uint2(sourceUv * float2(sourceSize)), sourceSize - 1);
-    cube[id] = equirectangular.Load(int3(source, 0));
+    cube[id] = equirectangular.SampleLevel(environmentSampler,
+                                         float2(frac(sourceUv.x), saturate(sourceUv.y)), 0);
 }

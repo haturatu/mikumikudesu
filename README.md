@@ -31,7 +31,10 @@ AutoNormalをPreview ABIと分離して保持します。Preview側のPBRプリ�
 PreviewはRT機能を使わず、方向光の2048²シャドウマップ、PCF、GGX直接反射、SH拡散IBL、
 GGXでプリフィルタした環境キューブ、深度・法線プリパス、半解像度SSAO、RGBA16F合成と
 ACESトーンマップを使用します。BRDF積分にはLUTの代わりに近似式を使います。
-HDRIのプリフィルタは画像の読み込みまたは更新時に計算します。
+HDRIのプリフィルタは画像の読み込みまたは更新時に計算します。GPUへ送る照明HDRIは
+最大2048×1024、環境キューブは最大512²で、元画像を線形色の面積平均で縮小します。
+環境用RGBA16Fテクスチャ3枚の合計は最大約44 MiBです（デコード時のCPUメモリやstagingは別）。
+SHは元画像から投影し、EnvironmentDesc::exposureはSHと照明画像に同じRGB倍率を適用します。
 
 SceneをInspectorで選択すると、背景画像とは別に2:1のequirectangular HDRIを照明に指定できます。
 HDRIを指定しない場合、2:1の背景画像を照明に使用します。モデルのInspectorでは材質ごとに
