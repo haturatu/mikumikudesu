@@ -26,6 +26,18 @@ Previewへ戻します。要求featureはrenderer名だけでなく、各グラ�
 Subayaiの材質注釈はコア層から専用GPU ABIへリンクされ、標準の`hair.txt`に含まれる異方性、IOR、
 AutoNormalをPreview ABIと分離して保持します。Preview側のPBRプリセットはPMX材質ごとに指定します。
 
+### MP4を音声として使う
+
+MP4をD&Dすると、音声だけを読み込み、波形を表示してタイムラインと同期再生します。
+映像decoderと背景フレームのGPU転送は、背景動画を明示的に選ぶまで実行しません。
+音声を含まないMP4は、音声読み込みエラーとして表示します。
+
+映像も表示する場合はSceneのInspectorで「Video file」を指定し、
+「Show video background」を有効にします。OFFにすると映像decoderを閉じます。
+背景動画と音声は独立しているため、別の音源に差し替えても指定済みの背景を維持します。
+音声と背景の指定はプロジェクトに保存され、音声はseek・ループ・再読み込み時に
+タイムラインの位置とAudio offsetから再生位置を求めます。再生速度の変更は音声にも反映します（ピッチも変化します）。
+
 ### Previewの画質設定
 
 PreviewはRT機能を使わず、方向光の2048²シャドウマップ、PCF、GGX直接反射、SH拡散IBL、
