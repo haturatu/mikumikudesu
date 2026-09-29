@@ -3,6 +3,7 @@
 #include "fx/fx_shader_compiler.hpp"
 #include "graphics/fx_pipeline_runtime.hpp"
 #include "graphics/subayai_deform.hpp"
+#include "graphics/subayai_environment.hpp"
 #include "graphics/vulkan/vulkan_device.hpp"
 #include "platform/window.hpp"
 #include "ui/theme.hpp"
@@ -475,8 +476,218 @@ bool backgroundUsesExplicitPass(dayo::graphics::VulkanDevice& device) {
             return false;
         }
     }
+    const std::array<std::uint8_t, 8> stripes{255, 0, 0, 255, 0, 0, 255, 255};
+    const std::array<PreviewTexture, 1> stripedTextures{{{1, 2, stripes, false}}};
+    device.uploadPreviewBackground(stripedTextures);
+    const auto stripedImage = device.renderToImage({64, 64});
+    if (stripedImage.pixels[0] != 255 || stripedImage.pixels[2] != 0 || stripedImage.pixels[(63U * 64U) * 4U] != 0 ||
+        stripedImage.pixels[(63U * 64U) * 4U + 2U] != 255) {
+        std::cerr << "FAIL: display background orientation or color changed during compositing\n";
+        return false;
+    }
     device.uploadPreviewBackground({});
     resetPreviewScene(device);
+    return true;
+}
+
+bool modelPositiveYAppearsAboveCenter(dayo::graphics::VulkanDevice& device) {
+    auto vertices = makeFlatTriangle();
+    for (auto& vertex : vertices) {
+        vertex.position[0] *= 0.3F;
+        vertex.position[1] = vertex.position[1] * 0.3F + 0.7F;
+    }
+    PreviewMaterial material;
+    material.diffuse[0] = 1.0F;
+    material.diffuse[1] = material.diffuse[2] = 0.0F;
+    std::fill_n(material.ambient, 3, 1.0F);
+    device.uploadPreviewMesh(vertices, std::array<std::uint32_t, 3>{0, 2, 1});
+    device.updatePreviewMaterials(std::array{material});
+    device.updatePreviewDraws(std::array<PreviewDraw, 1>{{{0, 3, 0}}});
+    for (const bool perspective : {true, false}) {
+        dayo::graphics::PreviewScene scene;
+        scene.cameraDistance = 3.0F;
+        scene.perspective = perspective;
+        scene.backgroundEnabled = false;
+        device.updatePreviewScene(scene);
+        const auto image = device.renderToImage({64, 64});
+        std::size_t top = 0, bottom = 0;
+        for (std::uint32_t y = 0; y < image.height; ++y)
+            for (std::uint32_t x = 0; x < image.width; ++x) {
+                const auto offset = (static_cast<std::size_t>(y) * image.width + x) * 4U;
+                if (image.pixels[offset] > 150 && image.pixels[offset + 1] < 80)
+                    (y < image.height / 2 ? top : bottom)++;
+            }
+        if (top == 0 || bottom != 0) {
+            std::cerr << "FAIL: positive model Y did not appear above the image center\n";
+            return false;
+        }
+    }
+    resetPreviewScene(device);
+    return true;
+}
+
+bool generatedEnvironmentDirectionsAndExposureAgree(dayo::graphics::VulkanDevice& device) {
+    using namespace dayo::graphics;
+    NativeEnvironmentBackend backend(
+        device, {device.nativeEnvironmentEquirectPipeline(), device.nativeEnvironmentEquirectLayout(),
+                 device.nativeEnvironmentPrefilterPipeline(), device.nativeEnvironmentPrefilterLayout()});
+    dayo::core::ImageData image{.width = 32,
+                                .height = 16,
+                                .channels = 4,
+                                .type = dayo::core::PixelType::half16,
+                                .space = dayo::core::ColorSpace::linear,
+                                .bytes = {}};
+    image.bytes.resize(image.pixelCount() * 8U);
+    const auto red = [](std::uint32_t x, std::uint32_t y) {
+        if (x >= 14 && x <= 17 && y >= 6 && y <= 9)
+            return 16.0F;                               // Bright +X window.
+        return x == 0 ? 1.0F : (x == 31 ? 3.0F : 0.0F); // Asymmetric longitude seam.
+    };
+    for (std::uint32_t y = 0; y < image.height; ++y)
+        for (std::uint32_t x = 0; x < image.width; ++x)
+            for (std::uint32_t c = 0; c < 4; ++c) {
+                const auto bits = dayo::core::floatToHalf(c == 0 ? red(x, y) : (c == 3 ? 1.0F : 0.0F));
+                std::memcpy(image.bytes.data() + ((y * image.width + x) * 4U + c) * 2U, &bits, 2U);
+            }
+    const auto first = backend.regenerateImage({.source = "synthetic"}, image);
+    const auto render = [&] {
+        device.setNativeFrameRecorderForComputeTest(
+            [&](CommandList& commands, const RenderTargetDesc&) -> std::optional<NativeFrameOutput> {
+                backend.record(commands);
+                return std::nullopt;
+            });
+        static_cast<void>(device.renderToImage({8, 8}));
+        device.setNativeFrameRecorder({});
+        device.selectRenderer(RendererKind::preview);
+    };
+    render();
+    const auto readRed = [](const std::vector<std::uint8_t>& bytes, std::size_t pixel) {
+        std::uint16_t bits{};
+        std::memcpy(&bits, bytes.data() + pixel * 8U, 2U);
+        return dayo::core::halfToFloat(bits);
+    };
+    const auto positive = device.readbackTextureEx(first.cubemap, 0, 0);
+    const auto negative = device.readbackTextureEx(first.cubemap, 0, 1);
+    const auto center =
+        static_cast<std::size_t>(backend.faceSize() / 2U) * backend.faceSize() + backend.faceSize() / 2U;
+    const auto specularPositive = device.readbackTextureEx(first.prefiltered, 0, 0);
+    const auto specularNegative = device.readbackTextureEx(first.prefiltered, 0, 1);
+    if (first.sphericalHarmonics[9] <= 0 || readRed(positive, center) <= readRed(negative, center) ||
+        readRed(specularPositive, center) <= readRed(specularNegative, center)) {
+        std::cerr << "FAIL: SH and generated cubemap disagree on the bright +X window\n";
+        return false;
+    }
+    // Compare the -X face with a CPU bilinear lookup that wraps longitude.
+    // Both sides of the seam must blend first/last columns rather than clamp.
+    const auto size = backend.faceSize();
+    for (std::uint32_t y = 0; y < size; ++y)
+        for (std::uint32_t x = 0; x < size; ++x) {
+            const float px = (static_cast<float>(x) + 0.5F) / static_cast<float>(size) * 2.0F - 1.0F;
+            const float py = (static_cast<float>(y) + 0.5F) / static_cast<float>(size) * 2.0F - 1.0F;
+            const float length = std::sqrt(1.0F + px * px + py * py);
+            const float u = std::atan2(px, -1.0F) / (2.0F * std::numbers::pi_v<float>)+0.5F;
+            const float v = 0.5F - std::asin(-py / length) / std::numbers::pi_v<float>;
+            const float sx = u * static_cast<float>(image.width) - 0.5F,
+                        sy = v * static_cast<float>(image.height) - 0.5F;
+            const auto ix = static_cast<int>(std::floor(sx)), iy = static_cast<int>(std::floor(sy));
+            float expected = 0;
+            for (int dy = 0; dy < 2; ++dy)
+                for (int dx = 0; dx < 2; ++dx) {
+                    const auto wrapped = static_cast<std::uint32_t>((ix + dx + 32) % 32);
+                    const auto clamped = static_cast<std::uint32_t>(std::clamp(iy + dy, 0, 15));
+                    const float wx = dx ? sx - std::floor(sx) : 1.0F - (sx - std::floor(sx));
+                    const float wy = dy ? sy - std::floor(sy) : 1.0F - (sy - std::floor(sy));
+                    expected += red(wrapped, clamped) * wx * wy;
+                }
+            if (std::abs(readRed(negative, static_cast<std::size_t>(y) * size + x) - expected) > 0.03F) {
+                std::cerr << "FAIL: environment conversion did not filter across the longitude seam\n";
+                return false;
+            }
+        }
+    const auto second = backend.regenerateImage({.source = "synthetic", .exposure = 2.0F}, image);
+    render();
+    const auto doubled = device.readbackTextureEx(second.cubemap, 0, 0);
+    if (std::abs(second.sphericalHarmonics[9] - first.sphericalHarmonics[9] * 2.0F) > 1e-5F ||
+        std::abs(readRed(doubled, center) - readRed(positive, center) * 2.0F) > 0.03F) {
+        std::cerr << "FAIL: exposure did not scale both SH and cubemap radiance\n";
+        return false;
+    }
+    return true;
+}
+
+bool environmentLightingStaysInWorldSpace(dayo::graphics::VulkanDevice& device) {
+    using namespace dayo::graphics;
+    const auto cube = device.createTextureEx({.dimension = TextureDimension::cube,
+                                              .extent = {1, 1, 1},
+                                              .format = PixelFormat::rgba8Unorm,
+                                              .mipLevels = 1,
+                                              .arrayLayers = 1,
+                                              .usage = ResourceUsage::sampledRead | ResourceUsage::transferDst});
+    const std::array<std::uint8_t, 4> black{0, 0, 0, 255};
+    for (std::uint32_t face = 0; face < 6; ++face)
+        device.uploadTextureEx(cube, black, 0, face);
+    PreviewEnvironment environment{.prefiltered = cube, .mipLevels = 1};
+    environment.sphericalHarmonics[6] = environment.sphericalHarmonics[7] = environment.sphericalHarmonics[8] = 2.0F;
+    device.updatePreviewEnvironment(environment);
+    PreviewScene scene;
+    scene.backgroundEnabled = false;
+    std::fill_n(scene.lightColor, 3, 0.0F);
+    device.updatePreviewScene(scene);
+    PreviewMaterial material;
+    material.doubleSided = true;
+    material.diffuse[0] = material.diffuse[1] = material.diffuse[2] = 0.5F;
+    const auto reference = centerPixel(renderMaterial(device, {}, material));
+    scene.cameraRotation[1] = 0.7F;
+    device.updatePreviewScene(scene);
+    const auto rotated = centerPixel(device.renderToImage({64, 64}));
+    device.updatePreviewEnvironment({});
+    device.waitIdle();
+    device.destroyTextureEx(cube);
+    resetPreviewScene(device);
+    if (std::abs(static_cast<int>(reference[0]) - static_cast<int>(rotated[0])) > 3 || reference[0] < 80) {
+        std::cerr << "FAIL: camera rotation changes world-space diffuse IBL\n";
+        return false;
+    }
+    return true;
+}
+
+bool transparentCardsDoNotCastSolidShadows(dayo::graphics::VulkanDevice& device) {
+    dayo::graphics::PreviewScene scene;
+    scene.backgroundEnabled = false;
+    std::fill_n(scene.lightDirection, 3, 0.0F);
+    scene.lightDirection[2] = 1.0F;
+    device.updatePreviewScene(scene);
+    PreviewMaterial receiver;
+    receiver.doubleSided = true;
+    auto triangle = makeFlatTriangle();
+    for (auto& vertex : triangle)
+        vertex.normal[2] = -1.0F;
+    const std::array<std::uint32_t, 3> indices{0, 2, 1};
+    device.uploadPreviewMesh(triangle, indices);
+    device.uploadPreviewTextures({});
+    device.updatePreviewMaterials(std::array{receiver});
+    device.updatePreviewDraws(std::array<PreviewDraw, 1>{{{0, 3, 0}}});
+    const auto reference = centerPixel(device.renderToImage({64, 64}));
+    std::vector<PreviewVertex> vertices(triangle.begin(), triangle.end());
+    for (auto vertex : triangle) {
+        vertex.position[2] = -0.5F;
+        vertices.push_back(vertex);
+    }
+    const std::array<std::uint32_t, 6> cardIndices{0, 2, 1, 3, 5, 4};
+    const std::array<std::uint8_t, 4> transparent{255, 255, 255, 0};
+    const std::array<PreviewTexture, 1> textures{{{1, 1, transparent, true}}};
+    auto card = receiver;
+    card.textureSlot = 1;
+    device.uploadPreviewTextures(textures);
+    device.uploadPreviewMesh(vertices, cardIndices);
+    device.updatePreviewMaterials(std::array{receiver, card});
+    device.updatePreviewDraws(std::array<PreviewDraw, 2>{{{0, 3, 0}, {3, 3, 1}}});
+    const auto withCard = centerPixel(device.renderToImage({64, 64}));
+    resetPreviewScene(device);
+    if (std::abs(static_cast<int>(reference[0]) - static_cast<int>(withCard[0])) > 2) {
+        std::cerr << "FAIL: transparent hair card casts a solid polygon shadow\n";
+        return false;
+    }
     return true;
 }
 
@@ -589,6 +800,8 @@ bool lightColorAffectsDiffuse(dayo::graphics::VulkanDevice& device) {
     dayo::graphics::PreviewScene scene;
     scene.cameraDistance = 3.0F;
     scene.backgroundEnabled = false;
+    scene.lightDirection[0] = scene.lightDirection[1] = 0.0F;
+    scene.lightDirection[2] = 1.0F;
     scene.lightColor[0] = 0.0F;
     scene.lightColor[1] = 1.0F;
     scene.lightColor[2] = 0.0F;
@@ -602,7 +815,14 @@ bool lightColorAffectsDiffuse(dayo::graphics::VulkanDevice& device) {
     material.ambient[0] = material.ambient[1] = material.ambient[2] = 0.0F;
     material.specular[0] = material.specular[1] = material.specular[2] = 0.0F;
     material.toonMode = 2;
-    const auto pixel = centerPixel(renderMaterial(device, textures, material));
+    auto vertices = makeFlatTriangle();
+    for (auto& vertex : vertices)
+        vertex.normal[2] = -1.0F; // Face the camera and the incident light.
+    device.uploadPreviewTextures(textures);
+    device.uploadPreviewMesh(vertices, std::array<std::uint32_t, 3>{0, 2, 1});
+    device.updatePreviewMaterials(std::array{material});
+    device.updatePreviewDraws(std::array<PreviewDraw, 1>{{{0, 3, 0}}});
+    const auto pixel = centerPixel(device.renderToImage({64, 64}));
     resetPreviewScene(device);
     return pixel[1] > 200U && pixel[0] < 30U && pixel[2] < 30U;
 }
@@ -628,6 +848,8 @@ bool coplanarMaterialsUseStrictDepth(dayo::graphics::VulkanDevice& device) {
         {1, 1, std::span<const std::uint8_t>(blue), false},
     }};
     std::array<PreviewMaterial, 2> materials{};
+    for (auto& material : materials)
+        std::fill_n(material.ambient, 3, 1.0F);
     materials[0].textureSlot = 1;
     materials[1].textureSlot = 2;
     const std::array<dayo::graphics::PreviewDraw, 2> draws{{{0, 3, 0}, {3, 3, 1}}};
@@ -661,6 +883,8 @@ bool bindlessTextureSlotsSelectTable(dayo::graphics::VulkanDevice& device) {
         {1, 1, std::span<const std::uint8_t>(blue), false},
     }};
     std::array<PreviewMaterial, 2> materials{};
+    for (auto& material : materials)
+        std::fill_n(material.ambient, 3, 1.0F);
     materials[0].textureSlot = 1;
     materials[1].textureSlot = 2;
     const std::array<PreviewDraw, 2> draws{{{0, 3, 0}, {3, 3, 1}}};
@@ -704,6 +928,8 @@ bool multiMaterialDrawUsesIndirectMaterialIndex(dayo::graphics::VulkanDevice& de
         {1, 1, std::span<const std::uint8_t>(blue), false},
     }};
     std::array<PreviewMaterial, 2> materials{};
+    for (auto& material : materials)
+        std::fill_n(material.ambient, 3, 1.0F);
     materials[0].textureSlot = 1;
     materials[1].textureSlot = 2;
     const std::array<dayo::graphics::PreviewDraw, 2> draws{{{0, 3, 0}, {3, 3, 1}}};
@@ -741,6 +967,7 @@ bool singleSidedMaterialsUseClockwiseFrontFaces(dayo::graphics::VulkanDevice& de
     }};
     std::array<PreviewMaterial, 1> materials{};
     materials[0].textureSlot = 1;
+    std::fill_n(materials[0].ambient, 3, 1.0F);
     const std::array<PreviewDraw, 1> draws{{{0, 3, 0}}};
     device.uploadPreviewTextures(textures);
     device.updatePreviewMaterials(materials);
@@ -833,6 +1060,7 @@ bool staticPreviewFallsBackToDynamicVertices(dayo::graphics::VulkanDevice& devic
     }};
     std::array<PreviewMaterial, 1> materials{};
     materials[0].textureSlot = 1;
+    std::fill_n(materials[0].ambient, 3, 1.0F);
     const std::array<PreviewDraw, 1> draws{{{0, 3, 0}}};
 
     device.uploadPreviewTextures(textures);
@@ -1107,6 +1335,7 @@ bool rendersInteractiveViewport(dayo::graphics::VulkanDevice& device) {
     }};
     std::array<PreviewMaterial, 1> materials{};
     materials[0].textureSlot = 1;
+    std::fill_n(materials[0].ambient, 3, 1.0F);
     const std::array<PreviewDraw, 1> draws{{{0, 3, 0}}};
     device.uploadPreviewTextures(textures);
     device.uploadPreviewMesh(vertices, indices);
@@ -1243,6 +1472,8 @@ int main() {
             std::cerr << "FAIL: native environment compute pipelines were not initialized\n";
             return 1;
         }
+        if (!generatedEnvironmentDirectionsAndExposureAgree(device))
+            return 1;
         if (!recordsNativeOffscreenOutput(device)) {
             std::cerr << "FAIL: native renderer was not recorded for offscreen output\n";
             return 1;
@@ -1258,6 +1489,9 @@ int main() {
         }
 #endif
         if (!zeroNormalVerticesStayInModelSpace(device) || !backgroundUsesExplicitPass(device))
+            return 1;
+        if (!modelPositiveYAppearsAboveCenter(device) || !environmentLightingStaysInWorldSpace(device) ||
+            !transparentCardsDoNotCastSolidShadows(device))
             return 1;
         if (!runCase(device, PreviewSkinningType::sdef)) {
             std::cerr << "FAIL: GPU SDEF output differs from reference rendering\n";
@@ -1327,6 +1561,11 @@ int main() {
         }
         if (!lightColorAffectsDiffuse(device)) {
             std::cerr << "FAIL: VMD light color did not affect diffuse shading\n";
+            return 1;
+        }
+        device.waitIdle();
+        if (device.validationErrorCount() != 0) {
+            std::cerr << "FAIL: Preview emitted " << device.validationErrorCount() << " Vulkan validation errors\n";
             return 1;
         }
     } catch (const std::exception& exception) {

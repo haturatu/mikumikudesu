@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace dayo::graphics {
 
@@ -14,7 +15,7 @@ namespace dayo::graphics {
 // an unchanged environment costs no GPU work. RT-incapable GPUs keep Preview.
 struct EnvironmentDesc {
     std::string source;
-    float exposure{1.0F};
+    float exposure{1.0F}; // Finite, non-negative linear RGB multiplier.
     std::uint64_t version{0};
 
     [[nodiscard]] bool operator==(const EnvironmentDesc& other) const noexcept {
@@ -28,9 +29,10 @@ struct EnvironmentDesc {
 struct EnvironmentGpuResult {
     handles::TextureHandle cubemap{};
     handles::TextureHandle prefiltered{};
+    std::uint32_t prefilteredMipLevels{};
     std::array<float, 27> sphericalHarmonics{};
     std::uint64_t skywalkerVersion{};
-    // Original linear equirectangular Texture2D consumed by Dayo::Skybox.
+    // Bounded, exposure-adjusted linear equirectangular Texture2D consumed by Dayo::Skybox.
     handles::TextureHandle skybox{};
 };
 
@@ -49,7 +51,8 @@ struct EnvironmentPassBindings {
 struct NativeEnvironmentPushConstants {
     std::uint32_t faceSize{};
     std::uint32_t mipLevels{};
-    std::uint32_t reserved[2]{};
+    std::uint32_t mipLevel{};
+    std::uint32_t sampleCount{};
 };
 static_assert(sizeof(NativeEnvironmentPushConstants) == 16);
 
@@ -125,6 +128,8 @@ class EnvironmentService {
 // renderer-owned and are supplied through EnvironmentPassBindings.
 class NativeEnvironmentBackend final : public IEnvironmentBackend {
   public:
+    static constexpr std::uint32_t maxFaceSize = 512;
+
     NativeEnvironmentBackend(Device& device, EnvironmentPassBindings bindings)
         : device_(&device), bindings_(bindings) {}
     ~NativeEnvironmentBackend() override;
@@ -148,14 +153,19 @@ class NativeEnvironmentBackend final : public IEnvironmentBackend {
     [[nodiscard]] std::uint32_t faceSize() const noexcept {
         return faceSize_;
     }
+    [[nodiscard]] std::uint32_t mipLevels() const noexcept {
+        return mipLevels_;
+    }
 
   private:
     struct Resources {
         handles::TextureHandle source{};
         handles::TextureHandle cubemap{};
         handles::TextureHandle prefiltered{};
+        handles::SamplerHandle prefilterSampler{};
+        handles::SamplerHandle conversionSampler{};
         handles::DescriptorSetHandle equirectToCubeSet{};
-        handles::DescriptorSetHandle prefilterSet{};
+        std::vector<handles::DescriptorSetHandle> prefilterSets;
     };
 
     [[nodiscard]] EnvironmentGpuResult regenerateLinear(const EnvironmentDesc& desc, const core::ImageData& image);

@@ -34,6 +34,7 @@ function(dayo_compile_hlsl output_var)
       "${DAYO_GLSLC}"
       -x
       hlsl
+      -DDAYO_GLSLC=1
       --target-env=vulkan1.3
       -fshader-stage=${ARG_STAGE}
       -fentry-point=${ARG_ENTRY}

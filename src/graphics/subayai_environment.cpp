@@ -49,16 +49,15 @@ constexpr float kPi = std::numbers::pi_v<float>;
     const auto sampleHeight = std::min<std::uint32_t>(image.height, 128U);
     double totalWeight = 0.0;
     for (std::uint32_t y = 0; y < sampleHeight; ++y) {
-        const auto sourceY = static_cast<std::uint32_t>((static_cast<std::uint64_t>(y) * image.height) / sampleHeight);
+        const auto sourceY = static_cast<std::uint32_t>(((2ULL * y + 1ULL) * image.height) / (2ULL * sampleHeight));
         const float v = (static_cast<float>(y) + 0.5F) / static_cast<float>(sampleHeight);
         const float theta = v * kPi;
         const float sinTheta = std::sin(theta);
         const float cosTheta = std::cos(theta);
         for (std::uint32_t x = 0; x < sampleWidth; ++x) {
-            const auto sourceX =
-                static_cast<std::uint32_t>((static_cast<std::uint64_t>(x) * image.width) / sampleWidth);
+            const auto sourceX = static_cast<std::uint32_t>(((2ULL * x + 1ULL) * image.width) / (2ULL * sampleWidth));
             const float u = (static_cast<float>(x) + 0.5F) / static_cast<float>(sampleWidth);
-            const float phi = u * 2.0F * kPi;
+            const float phi = (u - 0.5F) * 2.0F * kPi; // Match atan2(z, x)/(2*pi) + 0.5 in conversion.
             const float directionX = sinTheta * std::cos(phi);
             const float directionZ = sinTheta * std::sin(phi);
             const auto basis = shBasis(directionX, cosTheta, directionZ);
@@ -89,10 +88,46 @@ constexpr float kPi = std::numbers::pi_v<float>;
     return count;
 }
 
-[[nodiscard]] std::array<DescriptorBindingEx, 2> passBindings(handles::TextureHandle source,
-                                                              handles::TextureHandle destination) noexcept {
-    return {DescriptorBindingEx{.slot = 0, .arrayElement = 0, .texture = source},
-            DescriptorBindingEx{.slot = 1, .arrayElement = 0, .texture = destination}};
+// Area filtering retains small bright emitters when reducing an HDR panorama.
+// Work in linear light, apply the exposure multiplier to RGB only, and keep
+// the upload bounded independently of the decoded source resolution.
+[[nodiscard]] core::ImageData prepareEnvironmentSource(const core::ImageData& image, float exposure) {
+    const auto height = std::min(image.height, NativeEnvironmentBackend::maxFaceSize * 2U);
+    core::ImageData output{.width = height * 2U,
+                           .height = height,
+                           .channels = 4,
+                           .type = core::PixelType::half16,
+                           .space = core::ColorSpace::linear,
+                           .bytes = {}};
+    output.bytes.resize(output.pixelCount() * 4U * sizeof(std::uint16_t));
+    const double scale = static_cast<double>(image.height) / height;
+    for (std::uint32_t y = 0; y < height; ++y) {
+        const double y0 = y * scale, y1 = (y + 1U) * scale;
+        for (std::uint32_t x = 0; x < output.width; ++x) {
+            const double x0 = x * scale, x1 = (x + 1U) * scale;
+            std::array<double, 4> sum{};
+            for (auto sy = static_cast<std::uint32_t>(y0);
+                 sy < std::min(image.height, static_cast<std::uint32_t>(std::ceil(y1))); ++sy) {
+                const double wy = std::min(y1, static_cast<double>(sy + 1U)) - std::max(y0, static_cast<double>(sy));
+                for (auto sx = static_cast<std::uint32_t>(x0);
+                     sx < std::min(image.width, static_cast<std::uint32_t>(std::ceil(x1))); ++sx) {
+                    const double wx =
+                        std::min(x1, static_cast<double>(sx + 1U)) - std::max(x0, static_cast<double>(sx));
+                    const auto offset = (static_cast<std::size_t>(sy) * image.width + sx) * 4U;
+                    for (std::size_t channel = 0; channel < 4; ++channel)
+                        sum[channel] += readImageSample(image, offset + channel) * wx * wy;
+                }
+            }
+            const auto offset = (static_cast<std::size_t>(y) * output.width + x) * 4U;
+            for (std::size_t channel = 0; channel < 4; ++channel) {
+                const float value =
+                    static_cast<float>(sum[channel] / (scale * scale)) * (channel < 3 ? exposure : 1.0F);
+                const auto half = core::floatToHalf(std::clamp(value, 0.0F, 65504.0F));
+                std::memcpy(output.bytes.data() + (offset + channel) * sizeof(half), &half, sizeof(half));
+            }
+        }
+    }
+    return output;
 }
 
 } // namespace
@@ -160,12 +195,14 @@ void EnvironmentService::record(CommandList& commands) const {
 
 DescriptorSetLayoutDesc nativeEnvironmentPassLayout() noexcept {
     return {.bindings = {{0, DescriptorKind::sampledImage, 1, ShaderStageMask::compute},
-                         {1, DescriptorKind::storageImage, 1, ShaderStageMask::compute}}};
+                         {1, DescriptorKind::storageImage, 1, ShaderStageMask::compute},
+                         {2, DescriptorKind::sampler, 1, ShaderStageMask::compute}}};
 }
 
 DescriptorSetLayoutDesc nativeEnvironmentPrefilterLayout() noexcept {
-    return {.bindings = {{0, DescriptorKind::storageImage, 1, ShaderStageMask::compute},
-                         {1, DescriptorKind::storageImage, 1, ShaderStageMask::compute}}};
+    return {.bindings = {{0, DescriptorKind::sampledImage, 1, ShaderStageMask::compute},
+                         {1, DescriptorKind::storageImage, 1, ShaderStageMask::compute},
+                         {2, DescriptorKind::sampler, 1, ShaderStageMask::compute}}};
 }
 
 NativeEnvironmentBackend::~NativeEnvironmentBackend() {
@@ -196,22 +233,27 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateImage(const Environment
         throw std::invalid_argument("native environment requires a non-empty RGBA image");
     if (static_cast<std::uint64_t>(image.height) * 2U != image.width)
         throw std::invalid_argument("native environment source must have a 2:1 equirectangular aspect ratio");
+    if (!std::isfinite(desc.exposure) || desc.exposure < 0.0F)
+        throw std::invalid_argument("native environment exposure must be a finite non-negative multiplier");
     const auto linear = core::convertImage(image, core::PixelType::half16, core::ColorSpace::linear);
     return regenerateLinear(desc, linear);
 }
 
 EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const EnvironmentDesc& desc,
                                                                 const core::ImageData& image) {
+    const auto source = prepareEnvironmentSource(image, desc.exposure);
+    auto harmonics = projectSphericalHarmonics(image);
+    for (auto& coefficient : harmonics)
+        coefficient *= desc.exposure;
     Device* device = device_;
     reset();
     device_ = device;
-    faceSize_ = std::max(image.height / 2U, 1U);
+    faceSize_ = std::min(std::max(image.height / 2U, 1U), maxFaceSize);
     mipLevels_ = mipCount(faceSize_);
-    const auto harmonics = projectSphericalHarmonics(image);
     try {
         resources_.source = device_->createTextureEx({
             .dimension = TextureDimension::d2,
-            .extent = {image.width, image.height, 1},
+            .extent = {source.width, source.height, 1},
             .format = PixelFormat::rgba16Float,
             .mipLevels = 1,
             .arrayLayers = 1,
@@ -224,7 +266,7 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const Environmen
             .format = PixelFormat::rgba16Float,
             .mipLevels = 1,
             .arrayLayers = 1,
-            .usage = ResourceUsage::storageReadWrite | ResourceUsage::sampledRead,
+            .usage = ResourceUsage::storageReadWrite | ResourceUsage::sampledRead | ResourceUsage::transferSrc,
             .lifetime = ResourceLifetime::persistent,
         });
         resources_.prefiltered = device_->createTextureEx({
@@ -237,12 +279,34 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const Environmen
                      ResourceUsage::transferDst,
             .lifetime = ResourceLifetime::persistent,
         });
-        device_->uploadTextureEx(resources_.source, image.bytes, 0, 0);
-        const auto conversion = passBindings(resources_.source, resources_.cubemap);
+        device_->uploadTextureEx(resources_.source, source.bytes, 0, 0);
+        resources_.conversionSampler = device_->createSamplerEx({.filter = SamplerFilter::linear,
+                                                                 .addressU = SamplerAddressMode::repeat,
+                                                                 .addressV = SamplerAddressMode::clampToEdge,
+                                                                 .addressW = SamplerAddressMode::clampToEdge});
+        const std::array conversion{
+            DescriptorBindingEx{.slot = 0, .arrayElement = 0, .texture = resources_.source},
+            DescriptorBindingEx{.slot = 1, .arrayElement = 0, .texture = resources_.cubemap},
+            DescriptorBindingEx{.slot = 2, .arrayElement = 0, .sampler = resources_.conversionSampler},
+        };
         resources_.equirectToCubeSet = device_->allocateDescriptorSetEx(bindings_.equirectToCubeLayout, conversion);
-        const auto prefilter = passBindings(resources_.cubemap, resources_.prefiltered);
-        resources_.prefilterSet = device_->allocateDescriptorSetEx(bindings_.prefilterLayout, prefilter);
-        if (!resources_.equirectToCubeSet.valid() || !resources_.prefilterSet.valid())
+        resources_.prefilterSampler = device_->createSamplerEx({.filter = SamplerFilter::linear,
+                                                                .addressU = SamplerAddressMode::clampToEdge,
+                                                                .addressV = SamplerAddressMode::clampToEdge,
+                                                                .addressW = SamplerAddressMode::clampToEdge});
+        resources_.prefilterSets.reserve(mipLevels_);
+        for (std::uint32_t mip = 0; mip < mipLevels_; ++mip) {
+            const std::array prefilter{
+                DescriptorBindingEx{.slot = 0, .arrayElement = 0, .texture = resources_.cubemap},
+                DescriptorBindingEx{.slot = 1, .arrayElement = 0, .texture = resources_.prefiltered, .mipLevel = mip},
+                DescriptorBindingEx{.slot = 2, .arrayElement = 0, .sampler = resources_.prefilterSampler},
+            };
+            resources_.prefilterSets.push_back(device_->allocateDescriptorSetEx(bindings_.prefilterLayout, prefilter));
+        }
+        if (!resources_.equirectToCubeSet.valid() || !resources_.conversionSampler.valid() ||
+            !resources_.prefilterSampler.valid() ||
+            std::any_of(resources_.prefilterSets.begin(), resources_.prefilterSets.end(),
+                        [](auto set) { return !set.valid(); }))
             throw std::runtime_error("native environment descriptor allocation returned an invalid handle");
     } catch (...) {
         reset();
@@ -251,6 +315,7 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const Environmen
     }
     result_ = {.cubemap = resources_.cubemap,
                .prefiltered = resources_.prefiltered,
+               .prefilteredMipLevels = mipLevels_,
                .sphericalHarmonics = harmonics,
                .skywalkerVersion = desc.version,
                .skybox = resources_.source};
@@ -260,7 +325,7 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const Environmen
 void NativeEnvironmentBackend::record(CommandList& commands) const {
     if (!ready() || !bindings_.valid())
         throw std::logic_error("native environment backend is not initialized");
-    const NativeEnvironmentPushConstants constants{.faceSize = faceSize_, .mipLevels = mipLevels_, .reserved = {0, 0}};
+    const NativeEnvironmentPushConstants constants{.faceSize = faceSize_, .mipLevels = mipLevels_};
     const auto groups = (faceSize_ + 7U) / 8U;
     commands.transitionEx(resources_.source);
     commands.transitionEx(resources_.cubemap);
@@ -271,33 +336,48 @@ void NativeEnvironmentBackend::record(CommandList& commands) const {
     commands.dispatch(groups, groups, 6);
     commands.memoryBarrierEx();
     commands.bindPipelineEx(bindings_.prefilterPipeline);
-    commands.bindDescriptorSetEx(resources_.prefilterSet);
-    commands.pushConstantsEx(std::as_bytes(std::span<const NativeEnvironmentPushConstants>(&constants, 1)));
-    commands.dispatch(groups, groups, 6);
-    commands.memoryBarrierEx();
-    if (mipLevels_ > 1)
-        commands.generateMipmapsEx(resources_.prefiltered);
+    for (std::uint32_t mip = 0; mip < mipLevels_; ++mip) {
+        auto mipConstants = constants;
+        mipConstants.mipLevel = mip;
+        mipConstants.sampleCount = mip == 0 ? 1U : 64U;
+        const auto mipSize = std::max(faceSize_ >> mip, 1U);
+        commands.bindDescriptorSetEx(resources_.prefilterSets[mip]);
+        commands.pushConstantsEx(std::as_bytes(std::span<const NativeEnvironmentPushConstants>(&mipConstants, 1)));
+        commands.dispatch((mipSize + 7U) / 8U, (mipSize + 7U) / 8U, 6);
+        commands.memoryBarrierEx();
+    }
 }
 
 void NativeEnvironmentBackend::reset() noexcept {
     Device* device = device_;
-    const bool hasResources = resources_.prefilterSet.valid() || resources_.equirectToCubeSet.valid() ||
+    const bool hasResources = resources_.conversionSampler.valid() || !resources_.prefilterSets.empty() ||
+                              resources_.prefilterSampler.valid() || resources_.equirectToCubeSet.valid() ||
                               resources_.prefiltered.valid() || resources_.cubemap.valid() || resources_.source.valid();
     if (device != nullptr && hasResources) {
         try {
             device->waitIdle();
         } catch (...) {
         }
-        if (resources_.prefilterSet.valid()) {
-            try {
-                device->destroyDescriptorSetEx(resources_.prefilterSet);
-            } catch (...) {
+        for (auto set : resources_.prefilterSets) {
+            if (set.valid()) {
+                try {
+                    device->destroyDescriptorSetEx(set);
+                } catch (...) {
+                }
             }
         }
         if (resources_.equirectToCubeSet.valid()) {
             try {
                 device->destroyDescriptorSetEx(resources_.equirectToCubeSet);
             } catch (...) {
+            }
+        }
+        for (const auto sampler : {resources_.prefilterSampler, resources_.conversionSampler}) {
+            if (sampler.valid()) {
+                try {
+                    device->destroySamplerEx(sampler);
+                } catch (...) {
+                }
             }
         }
         for (const auto texture : {resources_.prefiltered, resources_.cubemap, resources_.source}) {

@@ -31,6 +31,7 @@ struct ProjectModelState {
     std::vector<std::string> morphs;
     std::vector<std::string> materials;
     std::vector<std::string> materialAnnotations;
+    std::vector<std::uint8_t> previewPbrPresets;
     std::int32_t motionOrder{};
     std::int32_t deformOrder{};
     std::int32_t postprocessOrder{};

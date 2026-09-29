@@ -72,6 +72,9 @@ class NativeRendererCoordinator {
         evaluationSnapshot_ = snapshot;
     }
     [[nodiscard]] bool updateEnvironment(const EnvironmentDesc& description);
+    void recordEnvironment(CommandList& commands) const {
+        environmentService_.record(commands);
+    }
     void clearEnvironment() noexcept {
         environmentService_.clear();
     }

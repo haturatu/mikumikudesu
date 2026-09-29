@@ -159,6 +159,11 @@ struct PreviewMaterial {
     std::uint32_t sphereTextureSlot{};
     std::uint32_t toonMode{};
     std::uint32_t sphereMode{};
+    float roughness{0.5F};
+    float metallic{};
+    float specularStrength{0.5F};
+    float skin{};
+    float anisotropy{};
 };
 
 struct PreviewDraw {
@@ -185,14 +190,23 @@ struct PreviewMaterialGpu {
     std::uint32_t flags{};
     std::uint32_t reserved[2]{};
     std::uint32_t textureSlots[4]{};
+    float pbr[4]{};  // roughness, metallic, specular strength, skin
+    float hair[4]{}; // anisotropy, reserved
 };
-static_assert(sizeof(PreviewMaterialGpu) == 192);
+static_assert(sizeof(PreviewMaterialGpu) == 224);
 
 struct PreviewTexture {
     std::uint32_t width{};
     std::uint32_t height{};
     std::span<const std::uint8_t> rgba;
     bool hasTransparency{};
+};
+
+struct PreviewEnvironment {
+    handles::TextureHandle prefiltered{};
+    std::array<float, 27> sphericalHarmonics{};
+    std::uint32_t mipLevels{};
+    float intensity{1.0F};
 };
 
 struct PreviewScene {
@@ -800,6 +814,12 @@ class Device {
     [[nodiscard]] virtual core::ImageRgba8 renderToImage(const RenderTargetDesc&) {
         throw std::logic_error("offscreen rendering is not implemented by this backend");
     }
+    [[nodiscard]] virtual handles::TextureHandle previewHdrTexture() const noexcept {
+        return {};
+    }
+    [[nodiscard]] virtual core::ImageRgba8 previewDisplayBackground() const {
+        return {1, 1, {255, 255, 255, 255}};
+    }
     virtual void waitIdle() = 0;
     virtual void uploadPreviewMesh(std::span<const PreviewVertex> vertices, std::span<const std::uint32_t> indices) = 0;
     virtual void updatePreviewVertices(std::span<const PreviewVertex> vertices) = 0;
@@ -814,6 +834,9 @@ class Device {
     // lifecycle resets use this to release GPU resources from the old scene.
     virtual void clearPreviewResources() = 0;
     virtual void updatePreviewScene(const PreviewScene& scene) = 0;
+    virtual void updatePreviewEnvironment(const PreviewEnvironment&) {}
+    virtual void setPreviewJitter(float, float) {}
+    virtual void setPreviewStillQuality(bool) {}
 
     [[nodiscard]] virtual BufferHandle createBuffer(const BufferDesc& desc) = 0;
     [[nodiscard]] virtual TextureHandle createTexture(const TextureDesc& desc) = 0;

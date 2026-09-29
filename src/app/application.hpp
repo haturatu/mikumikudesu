@@ -174,6 +174,10 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::vector<core::ProjectAsset> projectAssets_;
     std::vector<core::ProjectModelState> projectModelMetadata_;
     core::ProjectEditorState projectEditorState_;
+    std::array<char, 1024> previewHdriPath_{};
+    std::filesystem::path failedPreviewHdriPath_;
+    std::uint64_t failedPreviewHdriVersion_{};
+    std::string previewHdriError_;
     std::string upstreamDocumentJson_;
     std::optional<std::filesystem::path> currentProjectPath_;
     struct ReloadedEffect {
@@ -208,6 +212,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::uint32_t videoHeight_{1080};
     std::uint32_t sequenceWidth_{1920};
     std::uint32_t sequenceHeight_{1080};
+    int previewStillScale_{1}; // 0: native, 1: 4/3, 2: 2x
     int sequencePreset_{2};
 #endif
     float videoFps_{30.0F};
@@ -303,7 +308,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     bool imageSequenceRestorePlaying_{};
     bool imageSequenceRestoreManualCamera_{};
     core::ImageRgba8 imageSequenceImage_;
-    std::vector<std::uint64_t> imageSequenceSum_;
+    graphics::Rgba16fSampleAccumulator imageSequenceHdrSamples_;
     std::string imageSequenceCompletionStatus_;
 #endif
 };

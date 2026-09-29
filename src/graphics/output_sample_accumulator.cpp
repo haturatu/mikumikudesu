@@ -59,15 +59,23 @@ void Rgba16fSampleAccumulator::add(std::span<const std::uint8_t> rgba16f) {
 }
 
 std::vector<std::uint8_t> Rgba16fSampleAccumulator::resolve() const {
-    if (!complete())
-        throw std::logic_error("RGBA16F accumulator cannot resolve before all samples arrive");
+    const auto averaged = resolveFloat32();
     std::vector<std::uint8_t> result(sum_.size() * sizeof(std::uint16_t));
-    const auto scale = 1.0F / static_cast<float>(expectedSamples_);
     for (std::size_t channel = 0; channel < sum_.size(); ++channel) {
-        const auto half = core::floatToHalf(sum_[channel] * scale);
+        const auto half = core::floatToHalf(averaged[channel]);
         std::memcpy(result.data() + channel * sizeof(half), &half, sizeof(half));
     }
     return result;
+}
+
+std::vector<float> Rgba16fSampleAccumulator::resolveFloat32() const {
+    if (!complete())
+        throw std::logic_error("RGBA16F accumulator cannot resolve before all samples arrive");
+    std::vector<float> averaged(sum_.size());
+    const auto scale = 1.0F / static_cast<float>(expectedSamples_);
+    for (std::size_t channel = 0; channel < sum_.size(); ++channel)
+        averaged[channel] = sum_[channel] * scale;
+    return averaged;
 }
 
 OutputSampleAccumulator::~OutputSampleAccumulator() {

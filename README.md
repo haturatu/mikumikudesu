@@ -24,8 +24,25 @@ Previewへ戻します。要求featureはrenderer名だけでなく、各グラ�
 別の契約です。対応外の環境では従来どおりPreviewを使用します。
 
 Subayaiの材質注釈はコア層から専用GPU ABIへリンクされ、標準の`hair.txt`に含まれる異方性、IOR、
-AutoNormalをPreview ABIと分離して保持します。native passが有効になるまでPreview shaderの
-挙動は変更しません。
+AutoNormalをPreview ABIと分離して保持します。Preview側のPBRプリセットはPMX材質ごとに指定します。
+
+### Previewの画質設定
+
+PreviewはRT機能を使わず、方向光の2048²シャドウマップ、PCF、GGX直接反射、SH拡散IBL、
+GGXでプリフィルタした環境キューブ、深度・法線プリパス、半解像度SSAO、RGBA16F合成と
+ACESトーンマップを使用します。BRDF積分にはLUTの代わりに近似式を使います。
+HDRIのプリフィルタは画像の読み込みまたは更新時に計算します。GPUへ送る照明HDRIは
+最大2048×1024、環境キューブは最大512²で、元画像を線形色の面積平均で縮小します。
+環境用RGBA16Fテクスチャ3枚の合計は最大約44 MiBです（デコード時のCPUメモリやstagingは別）。
+SHは元画像から投影し、EnvironmentDesc::exposureはSHと照明画像に同じRGB倍率を適用します。
+
+SceneをInspectorで選択すると、背景画像とは別に2:1のequirectangular HDRIを照明に指定できます。
+HDRIを指定しない場合、2:1の背景画像を照明に使用します。モデルのInspectorでは材質ごとに
+PMX、Skin、Hair、Cloth、Metal、Plastic、Glassを選べます。これらの選択はプロジェクトに保存されます。
+
+画像連番出力ではPreview render scaleを1x、1.33x、2xから選び、Samplesを増やすと
+Haltonジッタを用いてRGBA16Fの結果を平均します。平均後に出力解像度へ縮小し、ACESで表示用画像へ
+変換します。リアルタイム表示では3×3 PCF、静止画出力では7×7 PCFを使用します。
 
 画像連番出力はOpenEXRが利用できるbuildではEXRをエンコードし、利用できない場合は従来どおり
 PNG/PPMを使います。Subayai/BDPTが選択されている場合は、viewport、offscreen render、画像連番出力が

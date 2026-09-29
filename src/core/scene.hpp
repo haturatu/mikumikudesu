@@ -101,6 +101,8 @@ struct SceneEffectStack {
 struct MaterialEditorState {
     std::filesystem::path annotation;
     MaterialParameterBlock parameters;
+    // Preview-only reflection model. Stored by material in native projects.
+    std::uint8_t previewPbrPreset{};
 };
 
 struct ModelInstance {

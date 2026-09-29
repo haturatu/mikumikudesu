@@ -43,6 +43,53 @@ namespace dayo::app {
 namespace {
 
 #if DAYO_HAS_IMGUI
+float halton(std::uint32_t index, std::uint32_t base) noexcept {
+    float result = 0.0F;
+    float fraction = 1.0F / static_cast<float>(base);
+    while (index != 0) {
+        result += static_cast<float>(index % base) * fraction;
+        index /= base;
+        fraction /= static_cast<float>(base);
+    }
+    return result;
+}
+
+std::uint8_t linearToSrgb(float value) noexcept {
+    const float channel = std::clamp(value, 0.0F, 1.0F);
+    const float encoded = channel <= 0.0031308F ? 12.92F * channel : 1.055F * std::pow(channel, 1.0F / 2.4F) - 0.055F;
+    return static_cast<std::uint8_t>(std::clamp(std::lround(encoded * 255.0F), 0L, 255L));
+}
+
+float srgbToLinear(std::uint8_t value) noexcept {
+    const float encoded = static_cast<float>(value) / 255.0F;
+    return encoded <= 0.04045F ? encoded / 12.92F : std::pow((encoded + 0.055F) / 1.055F, 2.4F);
+}
+
+std::array<float, 4> sampleDisplayBackground(const core::ImageRgba8& image, float u, float v) {
+    const float x = u * static_cast<float>(image.width) - 0.5F;
+    const float y = v * static_cast<float>(image.height) - 0.5F;
+    const auto x0 = static_cast<int>(std::floor(x)), y0 = static_cast<int>(std::floor(y));
+    const float fx = x - std::floor(x), fy = y - std::floor(y);
+    std::array<float, 4> color{};
+    for (int dy = 0; dy < 2; ++dy) {
+        for (int dx = 0; dx < 2; ++dx) {
+            const auto sx = std::clamp(x0 + dx, 0, static_cast<int>(image.width) - 1);
+            const auto sy = std::clamp(y0 + dy, 0, static_cast<int>(image.height) - 1);
+            const auto offset = (static_cast<std::size_t>(sy) * image.width + static_cast<std::size_t>(sx)) * 4U;
+            const float weight = (dx == 0 ? 1.0F - fx : fx) * (dy == 0 ? 1.0F - fy : fy);
+            for (std::size_t channel = 0; channel < 4; ++channel)
+                color[channel] += weight * (channel == 3 ? static_cast<float>(image.pixels[offset + channel]) / 255.0F
+                                                         : srgbToLinear(image.pixels[offset + channel]));
+        }
+    }
+    return color;
+}
+
+float acesFilm(float value) noexcept {
+    const float x = std::max(value, 0.0F);
+    return std::clamp((x * (2.51F * x + 0.03F)) / std::max(x * (2.43F * x + 0.59F) + 0.14F, 1e-5F), 0.0F, 1.0F);
+}
+
 void drawMorphWeightControl(float& value, const std::optional<core::fx::FxMorphControllerUi>& metadata) {
     const core::EffectSlider* slider =
         metadata.has_value() && metadata->slider.has_value() ? &*metadata->slider : nullptr;
@@ -482,8 +529,45 @@ fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTar
 
 std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphics::CommandList& commands,
                                                                           const graphics::RenderTargetDesc& target) {
-    if (device_ == nullptr || device_->activeRenderer() == graphics::RendererKind::preview)
+    if (device_ == nullptr)
         return std::nullopt;
+    if (device_->activeRenderer() == graphics::RendererKind::preview) {
+        const auto& background = scene_.background();
+        std::filesystem::path lightingSource = projectEditorState_.skyboxFile;
+        if (lightingSource.empty() && background.image && background.imagePath &&
+            static_cast<std::uint64_t>(background.image->height) * 2U == background.image->width)
+            lightingSource = *background.imagePath;
+        if (!lightingSource.empty()) {
+            const auto version = environmentFileVersion(lightingSource);
+            if (lightingSource == failedPreviewHdriPath_ && version == failedPreviewHdriVersion_) {
+                device_->updatePreviewEnvironment({});
+            } else {
+                try {
+                    static_cast<void>(nativeRenderer_.updateEnvironment(
+                        {.source = lightingSource.string(), .exposure = 1.0F, .version = version}));
+                    nativeRenderer_.recordEnvironment(commands);
+                    const auto& environment = nativeRenderer_.environment();
+                    device_->updatePreviewEnvironment({.prefiltered = environment.prefiltered,
+                                                       .sphericalHarmonics = environment.sphericalHarmonics,
+                                                       .mipLevels = environment.prefilteredMipLevels});
+                    previewHdriError_.clear();
+                    failedPreviewHdriPath_.clear();
+                } catch (const std::exception& error) {
+                    failedPreviewHdriPath_ = lightingSource;
+                    failedPreviewHdriVersion_ = version;
+                    previewHdriError_ = error.what();
+                    log::warn("Preview HDRI: ", previewHdriError_);
+                    nativeRenderer_.clearEnvironment();
+                    device_->updatePreviewEnvironment({});
+                }
+            }
+        } else {
+            nativeRenderer_.clearEnvironment();
+            device_->updatePreviewEnvironment({});
+            previewHdriError_.clear();
+        }
+        return std::nullopt;
+    }
     graphics::NativeFrameExecution outputExecution;
 #if DAYO_HAS_IMGUI
     if (imageSequenceExportRunning_) {
@@ -930,6 +1014,9 @@ void Application::resetProjectRuntimeState() {
     std::copy(defaultFilename.begin(), defaultFilename.end(), sequenceOutputFilename_.begin());
 #endif
     projectEditorState_ = {};
+    previewHdriPath_.fill(0);
+    failedPreviewHdriPath_.clear();
+    previewHdriError_.clear();
     upstreamDocumentJson_.clear();
     history_.clear();
     frameProfiler_.reset();
@@ -1227,8 +1314,10 @@ core::DayoProject Application::currentProject() const {
                 state.materials.push_back(material.name);
         }
         state.materialAnnotations.reserve(instance.materialSettings.size());
-        for (const auto& material : instance.materialSettings)
+        for (const auto& material : instance.materialSettings) {
             state.materialAnnotations.push_back(material.annotation.string());
+            state.previewPbrPresets.push_back(material.previewPbrPreset);
+        }
         state.motionOrder = instance.order.motion;
         state.deformOrder = instance.order.deform;
         state.postprocessOrder = instance.order.postprocess;
@@ -1505,6 +1594,10 @@ void Application::handleAsset(const std::filesystem::path& path) {
             upstreamDocumentJson_ = project.upstreamDocumentJson;
             projectModelMetadata_ = project.models;
             projectEditorState_ = project.editor;
+            previewHdriPath_.fill(0);
+            const auto lightingPath = projectEditorState_.skyboxFile.string();
+            std::copy_n(lightingPath.data(), std::min(lightingPath.size(), previewHdriPath_.size() - 1U),
+                        previewHdriPath_.data());
             repeat_ = project.editor.animationRepeat;
             audioVolume_ = project.editor.wavVolume;
             audioOffsetSeconds_ = static_cast<float>(project.editor.wavOffset);
@@ -1576,6 +1669,9 @@ void Application::handleAsset(const std::filesystem::path& path) {
                     std::min(instance->materialSettings.size(), state.materialAnnotations.size());
                 for (std::size_t material = 0; material < annotationCount; ++material)
                     instance->materialSettings[material].annotation = state.materialAnnotations[material];
+                const auto presetCount = std::min(instance->materialSettings.size(), state.previewPbrPresets.size());
+                for (std::size_t material = 0; material < presetCount; ++material)
+                    instance->materialSettings[material].previewPbrPreset = state.previewPbrPresets[material];
             }
             for (const auto& asset : project.assets) {
                 if (asset.kind != "effect")
@@ -2302,6 +2398,41 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                 // Edge extrusion is a distance in the same normalized space as the vertices.
                 material.edgeSize = animated.edgeSize * instance.normalization.scale;
             }
+            material.roughness = std::clamp(std::sqrt(2.0F / (std::max(material.shininess, 0.0F) + 2.0F)), 0.18F, 0.9F);
+            material.metallic = 0.0F;
+            material.specularStrength = 0.5F;
+            material.skin = 0.0F;
+            material.anisotropy = 0.0F;
+            const auto preset = materialIndex < instance.materialSettings.size()
+                                    ? instance.materialSettings[materialIndex].previewPbrPreset
+                                    : 0U;
+            switch (preset) {
+            case 1: // Skin
+                material.roughness = 0.45F;
+                material.specularStrength = 0.35F;
+                material.skin = 1.0F;
+                break;
+            case 2: // Hair
+                material.roughness = 0.30F;
+                material.anisotropy = 0.65F;
+                break;
+            case 3: // Cloth
+                material.roughness = 0.70F;
+                break;
+            case 4: // Metal
+                material.roughness = 0.25F;
+                material.metallic = 0.8F;
+                break;
+            case 5: // Plastic
+                material.roughness = 0.38F;
+                break;
+            case 6: // Glass
+                material.roughness = 0.08F;
+                material.specularStrength = 1.0F;
+                break;
+            default:
+                break;
+            }
             auto& draw = draws[materialCursor - 1U];
             draw.firstIndex = firstIndex;
             draw.indexCount = policy.rasterize ? sourceMaterial.indexCount : 0U;
@@ -2939,6 +3070,22 @@ void Application::buildInspectorPanel() {
                 scene_.setBackgroundEnabled(enabled);
                 refreshPreviewScene();
             }
+            ImGui::SeparatorText("Preview lighting");
+            ImGui::InputText("HDRI file", previewHdriPath_.data(), previewHdriPath_.size());
+            if (ImGui::Button("Apply lighting HDRI")) {
+                projectEditorState_.skyboxFile = previewHdriPath_.data();
+                failedPreviewHdriPath_.clear();
+                scene_.markDirty(core::DirtyFlag::lighting);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Use background lighting")) {
+                projectEditorState_.skyboxFile.clear();
+                previewHdriPath_.fill(0);
+                failedPreviewHdriPath_.clear();
+                scene_.markDirty(core::DirtyFlag::lighting);
+            }
+            if (!previewHdriError_.empty())
+                ImGui::TextWrapped("Lighting HDRI: %s", previewHdriError_.c_str());
         }
         ImGui::End();
         return;
@@ -3064,6 +3211,15 @@ void Application::buildInspectorPanel() {
                           .string()
                           .c_str()
                     : "none");
+            if (static_cast<std::size_t>(material) < model->materialSettings.size()) {
+                int preset = model->materialSettings[static_cast<std::size_t>(material)].previewPbrPreset;
+                if (ImGui::Combo("Preview material", &preset, "PMX\0Skin\0Hair\0Cloth\0Metal\0Plastic\0Glass\0")) {
+                    model->materialSettings[static_cast<std::size_t>(material)].previewPbrPreset =
+                        static_cast<std::uint8_t>(preset);
+                    scene_.markDirty(core::DirtyFlag::material);
+                    refreshAnimatedMesh(false);
+                }
+            }
             if (ImGui::Checkbox("Enable PMX outlines (preview)", &previewOutlineEnabled_))
                 refreshPreviewScene();
         }
@@ -3198,7 +3354,7 @@ void Application::startImageSequenceExport() {
         imageSequenceCancelRequested_ = false;
         imageSequenceCompletionStatus_.clear();
         imageSequenceImage_ = {};
-        imageSequenceSum_.clear();
+        imageSequenceHdrSamples_ = {};
         stateMutationStarted = true;
         resetPhysicsSimulation();
         evaluateExportFrame(0.0F, 0.0F, true);
@@ -3246,6 +3402,10 @@ void Application::restoreImageSequenceState() {
 
 void Application::finishImageSequenceExport(std::string status) {
 #if DAYO_HAS_IMGUI
+    if (device_ != nullptr)
+        device_->setPreviewJitter(0.0F, 0.0F);
+    if (device_ != nullptr)
+        device_->setPreviewStillQuality(false);
     try {
         if (imageSequenceOutput_) {
             imageSequenceOutput_->requestClose();
@@ -3264,7 +3424,7 @@ void Application::finishImageSequenceExport(std::string status) {
     imageSequenceCancelRequested_ = false;
     imageSequenceFramesFinished_ = false;
     imageSequenceImage_ = {};
-    imageSequenceSum_.clear();
+    imageSequenceHdrSamples_ = {};
     imageSequenceRestoring_ = true;
     imageSequenceRestoreNextFrame_ = 1U;
     resetPhysicsSimulation();
@@ -3318,11 +3478,29 @@ void Application::advanceImageSequenceExport() {
         evaluateExportFrame(sampleFrame, physicsDelta);
         imageSequencePreviousSampleFrame_ = sampleFrame;
 
-        auto rendered = device_->renderToImage({sequenceWidth_, sequenceHeight_});
+        const bool previewRender = device_->activeRenderer() == graphics::RendererKind::preview;
+        const float previewScale = previewStillScale_ == 2 ? 2.0F : (previewStillScale_ == 1 ? 4.0F / 3.0F : 1.0F);
+        const std::uint32_t renderWidth =
+            previewRender ? static_cast<std::uint32_t>(std::ceil(static_cast<float>(sequenceWidth_) * previewScale))
+                          : sequenceWidth_;
+        const std::uint32_t renderHeight =
+            previewRender ? static_cast<std::uint32_t>(std::ceil(static_cast<float>(sequenceHeight_) * previewScale))
+                          : sequenceHeight_;
+        if (previewRender && imageSequenceSampleCount_ > 1U) {
+            const auto sample = imageSequenceSampleIndex_ + 1U;
+            device_->setPreviewJitter(halton(sample, 2U) - 0.5F, halton(sample, 3U) - 0.5F);
+        }
+        if (previewRender)
+            device_->setPreviewStillQuality(true);
+        auto rendered = device_->renderToImage({renderWidth, renderHeight});
+        if (previewRender) {
+            device_->setPreviewJitter(0.0F, 0.0F);
+            device_->setPreviewStillQuality(false);
+        }
         const auto finishOutputFrame = [&]() {
             if (!imageSequenceOutput_->tryPush(frame, std::move(imageSequenceImage_)))
                 throw std::runtime_error("image output queue unexpectedly full");
-            imageSequenceSum_.clear();
+            imageSequenceHdrSamples_ = {};
             imageSequenceSampleIndex_ = 0;
             if (frame == sequenceOutput_.lastFrame)
                 imageSequenceFramesFinished_ = true;
@@ -3330,7 +3508,7 @@ void Application::advanceImageSequenceExport() {
                 ++imageSequenceNextFrame_;
         };
 
-        if (device_->activeRenderer() != graphics::RendererKind::preview) {
+        if (!previewRender) {
             if (imageSequenceSampleIndex_ + 1U < imageSequenceSampleCount_) {
                 ++imageSequenceSampleIndex_;
                 return;
@@ -3340,25 +3518,56 @@ void Application::advanceImageSequenceExport() {
             return;
         }
 
-        if (imageSequenceSampleIndex_ == 0U) {
-            imageSequenceImage_ = std::move(rendered);
-            imageSequenceSum_.assign(imageSequenceImage_.pixels.size(), 0U);
-            for (std::size_t index = 0; index < imageSequenceImage_.pixels.size(); ++index)
-                imageSequenceSum_[index] += imageSequenceImage_.pixels[index];
-        } else if (rendered.width != imageSequenceImage_.width || rendered.height != imageSequenceImage_.height ||
-                   rendered.pixels.size() != imageSequenceImage_.pixels.size()) {
-            throw std::runtime_error("image sequence samples have inconsistent dimensions");
-        } else {
-            for (std::size_t index = 0; index < imageSequenceImage_.pixels.size(); ++index)
-                imageSequenceSum_[index] += rendered.pixels[index];
-        }
+        const auto hdrTexture = device_->previewHdrTexture();
+        if (!hdrTexture.valid())
+            throw std::runtime_error("preview HDR output is unavailable");
+        const auto hdrSample = device_->readbackTextureEx(hdrTexture, 0U, 0U);
+        if (imageSequenceSampleIndex_ == 0U)
+            imageSequenceHdrSamples_.begin({renderWidth, renderHeight, 1U}, imageSequenceSampleCount_);
+        imageSequenceHdrSamples_.add(hdrSample);
         ++imageSequenceSampleIndex_;
         if (imageSequenceSampleIndex_ < imageSequenceSampleCount_)
             return;
 
-        for (std::size_t index = 0; index < imageSequenceImage_.pixels.size(); ++index)
-            imageSequenceImage_.pixels[index] =
-                static_cast<std::uint8_t>(imageSequenceSum_[index] / imageSequenceSampleCount_);
+        const auto averaged = imageSequenceHdrSamples_.resolveFloat32();
+        const auto displayBackground = device_->previewDisplayBackground();
+        imageSequenceImage_ = {.width = sequenceWidth_, .height = sequenceHeight_, .pixels = {}};
+        imageSequenceImage_.pixels.resize(static_cast<std::size_t>(sequenceWidth_) * sequenceHeight_ * 4U);
+        const float scaleX = static_cast<float>(renderWidth) / static_cast<float>(sequenceWidth_);
+        const float scaleY = static_cast<float>(renderHeight) / static_cast<float>(sequenceHeight_);
+        for (std::uint32_t y = 0; y < sequenceHeight_; ++y) {
+            const float y0 = static_cast<float>(y) * scaleY;
+            const float y1 = static_cast<float>(y + 1U) * scaleY;
+            for (std::uint32_t x = 0; x < sequenceWidth_; ++x) {
+                const float x0 = static_cast<float>(x) * scaleX;
+                const float x1 = static_cast<float>(x + 1U) * scaleX;
+                std::array<float, 4> color{};
+                for (std::uint32_t sy = static_cast<std::uint32_t>(y0);
+                     sy < std::min(renderHeight, static_cast<std::uint32_t>(std::ceil(y1))); ++sy) {
+                    const float wy = std::min(y1, static_cast<float>(sy + 1U)) - std::max(y0, static_cast<float>(sy));
+                    for (std::uint32_t sx = static_cast<std::uint32_t>(x0);
+                         sx < std::min(renderWidth, static_cast<std::uint32_t>(std::ceil(x1))); ++sx) {
+                        const float wx =
+                            std::min(x1, static_cast<float>(sx + 1U)) - std::max(x0, static_cast<float>(sx));
+                        const auto source = (static_cast<std::size_t>(sy) * renderWidth + sx) * 4U;
+                        for (std::size_t channel = 0; channel < 4; ++channel)
+                            color[channel] += averaged[source + channel] * wx * wy;
+                    }
+                }
+                const float denominator = scaleX * scaleY;
+                const auto destination = (static_cast<std::size_t>(y) * sequenceWidth_ + x) * 4U;
+                const float alpha = std::clamp(color[3] / denominator, 0.0F, 1.0F);
+                const auto background = sampleDisplayBackground(
+                    displayBackground, (static_cast<float>(x) + 0.5F) / static_cast<float>(sequenceWidth_),
+                    (static_cast<float>(y) + 0.5F) / static_cast<float>(sequenceHeight_));
+                for (std::size_t channel = 0; channel < 3; ++channel)
+                    imageSequenceImage_.pixels[destination + channel] =
+                        linearToSrgb(acesFilm(color[channel] / denominator / std::max(alpha, 1e-5F)) * alpha +
+                                     background[channel] * (1.0F - alpha));
+                imageSequenceImage_.pixels[destination + 3] = static_cast<std::uint8_t>(
+                    std::clamp(std::lround((alpha + background[3] * (1.0F - alpha)) * 255.0F), 0L, 255L));
+            }
+        }
         finishOutputFrame();
     } catch (const std::exception& error) {
         finishImageSequenceExport(error.what());
@@ -3419,6 +3628,10 @@ void Application::buildImageSequenceExportUi() {
         }
         if (ImGui::InputInt("Samples", &samples))
             sequenceOutput_.samples = static_cast<std::uint32_t>(std::clamp(samples, 1, 4096));
+        ImGui::Combo("Preview render scale", &previewStillScale_,
+                     "1x\0"
+                     "1.33x\0"
+                     "2x\0");
         int width = static_cast<int>(sequenceWidth_);
         int height = static_cast<int>(sequenceHeight_);
         if (ImGui::InputInt("Width", &width)) {
@@ -4000,6 +4213,25 @@ void Application::buildEditorUi() {
         if (!projectSaveStatus_.empty())
             ImGui::TextWrapped("%s", projectSaveStatus_.c_str());
         ImGui::Separator();
+        ImGui::TextUnformatted("Preview lighting HDRI (2:1 equirectangular)");
+        ImGui::InputText("HDRI file", previewHdriPath_.data(), previewHdriPath_.size());
+        if (ImGui::Button("Apply lighting HDRI")) {
+            projectEditorState_.skyboxFile = previewHdriPath_.data();
+            failedPreviewHdriPath_.clear();
+            scene_.markDirty(core::DirtyFlag::lighting);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Use background lighting")) {
+            projectEditorState_.skyboxFile.clear();
+            previewHdriPath_.fill(0);
+            failedPreviewHdriPath_.clear();
+            scene_.markDirty(core::DirtyFlag::lighting);
+        }
+        if (!projectEditorState_.skyboxFile.empty())
+            ImGui::TextWrapped("Active: %s", projectEditorState_.skyboxFile.string().c_str());
+        if (!previewHdriError_.empty())
+            ImGui::TextWrapped("Lighting HDRI: %s", previewHdriError_.c_str());
+        ImGui::Separator();
         auto background = scene_.background();
         int source = static_cast<int>(background.screenSource);
         if (ImGui::Combo("Background source", &source, "Previous frame\0Video\0Image\0White\0")) {
@@ -4038,7 +4270,7 @@ void Application::buildEditorUi() {
                 }
                 ImGui::TreePop();
             }
-            if (!model->materialSettings.empty() && ImGui::TreeNode("Material annotations")) {
+            if (!model->materialSettings.empty() && ImGui::TreeNode("Material settings")) {
                 static int materialIndex = 0;
                 materialIndex = std::clamp(materialIndex, 0, static_cast<int>(model->materialSettings.size() - 1));
                 const auto& materials = model->model->materials;
@@ -4057,6 +4289,13 @@ void Application::buildEditorUi() {
                 if (ImGui::Button("Apply material annotation")) {
                     model->materialSettings[static_cast<std::size_t>(materialIndex)].annotation = annotation.data();
                     scene_.markDirty(core::DirtyFlag::material | core::DirtyFlag::effect);
+                }
+                int preset = model->materialSettings[static_cast<std::size_t>(materialIndex)].previewPbrPreset;
+                if (ImGui::Combo("Preview material", &preset, "PMX\0Skin\0Hair\0Cloth\0Metal\0Plastic\0Glass\0")) {
+                    model->materialSettings[static_cast<std::size_t>(materialIndex)].previewPbrPreset =
+                        static_cast<std::uint8_t>(preset);
+                    scene_.markDirty(core::DirtyFlag::material);
+                    refreshAnimatedMesh(false);
                 }
                 ImGui::TreePop();
             }
