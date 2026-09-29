@@ -363,11 +363,38 @@ include(cmake/CompileHlsl.cmake)
 dayo_compile_hlsl(DAYO_PREVIEW_VERTEX_SPV SOURCE shaders/preview.hlsl ENTRY VS PROFILE vs_6_6 STAGE vert)
 dayo_compile_hlsl(DAYO_PREVIEW_EDGE_VERTEX_SPV SOURCE shaders/preview.hlsl ENTRY EdgeVS PROFILE vs_6_6 STAGE vert)
 dayo_compile_hlsl(DAYO_PREVIEW_SHADOW_VERTEX_SPV SOURCE shaders/preview.hlsl ENTRY ShadowVS PROFILE vs_6_6 STAGE vert)
+dayo_compile_hlsl(DAYO_PREVIEW_SHADOW_FRAGMENT_SPV SOURCE shaders/preview.hlsl ENTRY ShadowPS PROFILE ps_6_6 STAGE frag)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_BACKGROUND_VERTEX_SPV
+  SOURCE shaders/preview_background.hlsl
+  ENTRY BackgroundVS
+  PROFILE vs_6_6
+  STAGE vert
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_BACKGROUND_FRAGMENT_SPV
+  SOURCE shaders/preview_background.hlsl
+  ENTRY BackgroundPS
+  PROFILE ps_6_6
+  STAGE frag
+)
 dayo_compile_hlsl(DAYO_PREVIEW_NORMAL_FRAGMENT_SPV SOURCE shaders/preview.hlsl ENTRY NormalPS PROFILE ps_6_6 STAGE frag)
 dayo_compile_hlsl(DAYO_PREVIEW_AO_SPV SOURCE shaders/preview_ao.hlsl ENTRY ComputeAO PROFILE cs_6_6 STAGE comp)
 dayo_compile_hlsl(DAYO_PREVIEW_AO_BLUR_SPV SOURCE shaders/preview_ao.hlsl ENTRY BlurAO PROFILE cs_6_6 STAGE comp)
-dayo_compile_hlsl(DAYO_PREVIEW_TONEMAP_VERTEX_SPV SOURCE shaders/preview_tonemap.hlsl ENTRY VS PROFILE vs_6_6 STAGE vert)
-dayo_compile_hlsl(DAYO_PREVIEW_TONEMAP_FRAGMENT_SPV SOURCE shaders/preview_tonemap.hlsl ENTRY PS PROFILE ps_6_6 STAGE frag)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_TONEMAP_VERTEX_SPV
+  SOURCE shaders/preview_tonemap.hlsl
+  ENTRY VS
+  PROFILE vs_6_6
+  STAGE vert
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_TONEMAP_FRAGMENT_SPV
+  SOURCE shaders/preview_tonemap.hlsl
+  ENTRY PS
+  PROFILE ps_6_6
+  STAGE frag
+)
 dayo_compile_hlsl(DAYO_PREVIEW_FRAGMENT_SPV SOURCE shaders/preview.hlsl ENTRY PS PROFILE ps_6_6 STAGE frag)
 dayo_compile_hlsl(DAYO_NATIVE_OUTPUT_VERTEX_SPV SOURCE shaders/native_output.hlsl ENTRY VS PROFILE vs_6_6 STAGE vert)
 dayo_compile_hlsl(DAYO_NATIVE_OUTPUT_FRAGMENT_SPV SOURCE shaders/native_output.hlsl ENTRY PS PROFILE ps_6_6 STAGE frag)
@@ -410,6 +437,9 @@ add_custom_target(
     ${DAYO_PREVIEW_VERTEX_SPV}
     ${DAYO_PREVIEW_EDGE_VERTEX_SPV}
     ${DAYO_PREVIEW_SHADOW_VERTEX_SPV}
+    ${DAYO_PREVIEW_SHADOW_FRAGMENT_SPV}
+    ${DAYO_PREVIEW_BACKGROUND_VERTEX_SPV}
+    ${DAYO_PREVIEW_BACKGROUND_FRAGMENT_SPV}
     ${DAYO_PREVIEW_NORMAL_FRAGMENT_SPV}
     ${DAYO_PREVIEW_AO_SPV}
     ${DAYO_PREVIEW_AO_BLUR_SPV}
@@ -429,6 +459,9 @@ target_compile_definitions(
     DAYO_PREVIEW_VERTEX_SPV="${DAYO_PREVIEW_VERTEX_SPV}"
     DAYO_PREVIEW_EDGE_VERTEX_SPV="${DAYO_PREVIEW_EDGE_VERTEX_SPV}"
     DAYO_PREVIEW_SHADOW_VERTEX_SPV="${DAYO_PREVIEW_SHADOW_VERTEX_SPV}"
+    DAYO_PREVIEW_SHADOW_FRAGMENT_SPV="${DAYO_PREVIEW_SHADOW_FRAGMENT_SPV}"
+    DAYO_PREVIEW_BACKGROUND_VERTEX_SPV="${DAYO_PREVIEW_BACKGROUND_VERTEX_SPV}"
+    DAYO_PREVIEW_BACKGROUND_FRAGMENT_SPV="${DAYO_PREVIEW_BACKGROUND_FRAGMENT_SPV}"
     DAYO_PREVIEW_NORMAL_FRAGMENT_SPV="${DAYO_PREVIEW_NORMAL_FRAGMENT_SPV}"
     DAYO_PREVIEW_AO_SPV="${DAYO_PREVIEW_AO_SPV}"
     DAYO_PREVIEW_AO_BLUR_SPV="${DAYO_PREVIEW_AO_BLUR_SPV}"

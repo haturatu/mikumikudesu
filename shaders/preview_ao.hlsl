@@ -9,7 +9,13 @@ struct AoConstants {
 [[vk::binding(0, 0)]] Texture2D<float> depthTexture;
 [[vk::binding(1, 0)]] SamplerState aoSampler;
 [[vk::binding(2, 0)]] Texture2D<float4> inputAo;
-[[vk::binding(3, 0)]] RWTexture2D<float4> outputAo;
+[[vk::binding(3, 0)]]
+#ifdef DAYO_GLSLC
+[[spv::format_rgba16f]]
+#else
+[[vk::image_format("rgba16f")]]
+#endif
+RWTexture2D<float4> outputAo;
 [[vk::binding(4, 0)]] Texture2D<float4> normalTexture;
 
 [numthreads(8, 8, 1)]

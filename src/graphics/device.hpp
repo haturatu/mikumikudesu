@@ -190,7 +190,7 @@ struct PreviewMaterialGpu {
     std::uint32_t flags{};
     std::uint32_t reserved[2]{};
     std::uint32_t textureSlots[4]{};
-    float pbr[4]{}; // roughness, metallic, specular strength, skin
+    float pbr[4]{};  // roughness, metallic, specular strength, skin
     float hair[4]{}; // anisotropy, reserved
 };
 static_assert(sizeof(PreviewMaterialGpu) == 224);
@@ -814,7 +814,12 @@ class Device {
     [[nodiscard]] virtual core::ImageRgba8 renderToImage(const RenderTargetDesc&) {
         throw std::logic_error("offscreen rendering is not implemented by this backend");
     }
-    [[nodiscard]] virtual handles::TextureHandle previewHdrTexture() const noexcept { return {}; }
+    [[nodiscard]] virtual handles::TextureHandle previewHdrTexture() const noexcept {
+        return {};
+    }
+    [[nodiscard]] virtual core::ImageRgba8 previewDisplayBackground() const {
+        return {1, 1, {255, 255, 255, 255}};
+    }
     virtual void waitIdle() = 0;
     virtual void uploadPreviewMesh(std::span<const PreviewVertex> vertices, std::span<const std::uint32_t> indices) = 0;
     virtual void updatePreviewVertices(std::span<const PreviewVertex> vertices) = 0;

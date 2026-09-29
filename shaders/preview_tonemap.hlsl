@@ -23,5 +23,6 @@ float3 acesFilm(float3 value) {
 
 float4 PS(FullscreenVertex input) : SV_Target0 {
     const float4 color = hdrColor.Sample(colorSampler, input.uv);
-    return float4(acesFilm(color.rgb), color.a);
+    const float alpha = saturate(color.a);
+    return float4(acesFilm(color.rgb / max(alpha, 1e-5)) * alpha, alpha);
 }

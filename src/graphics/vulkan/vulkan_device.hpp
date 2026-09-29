@@ -14,6 +14,7 @@ VK_DEFINE_HANDLE(VmaAllocator)
 #include "graphics/vulkan/vulkan_resources.hpp"
 
 #include <array>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <unordered_map>
@@ -28,6 +29,9 @@ class VulkanDevice final : public Device {
   public:
     VulkanDevice(platform::Window& window, bool validation);
     ~VulkanDevice() override;
+    [[nodiscard]] std::size_t validationErrorCount() const noexcept {
+        return validationErrorCount_.load(std::memory_order_relaxed);
+    }
 
     [[nodiscard]] const DeviceCapabilities& capabilities() const noexcept override {
         return capabilities_;
@@ -84,6 +88,7 @@ class VulkanDevice final : public Device {
     [[nodiscard]] handles::TextureHandle previewHdrTexture() const noexcept override {
         return lastPreviewHdrTexture_;
     }
+    [[nodiscard]] core::ImageRgba8 previewDisplayBackground() const override;
     void waitIdle() override;
     void uploadPreviewMesh(std::span<const PreviewVertex> vertices, std::span<const std::uint32_t> indices) override;
     void updatePreviewVertices(std::span<const PreviewVertex> vertices) override;
@@ -99,8 +104,12 @@ class VulkanDevice final : public Device {
         previewGpuScene_.view = scene;
     }
     void updatePreviewEnvironment(const PreviewEnvironment& environment) override;
-    void setPreviewJitter(float x, float y) override { previewJitter_ = {x, y}; }
-    void setPreviewStillQuality(bool enabled) override { previewStillQuality_ = enabled; }
+    void setPreviewJitter(float x, float y) override {
+        previewJitter_ = {x, y};
+    }
+    void setPreviewStillQuality(bool enabled) override {
+        previewStillQuality_ = enabled;
+    }
     [[nodiscard]] BufferHandle createBuffer(const BufferDesc& desc) override;
     [[nodiscard]] TextureHandle createTexture(const TextureDesc& desc) override;
     [[nodiscard]] handles::TextureHandle createTextureEx(const TextureResourceDesc& desc) override;
@@ -193,7 +202,7 @@ class VulkanDevice final : public Device {
         VkCommandPool commandPool{};
         VkCommandBuffer commandBuffer{};
         VkSemaphore imageAvailable{};
-        VkSemaphore renderFinished{};
+        bool timestampsSubmitted{};
         VkFence inFlight{};
         VkQueryPool timestampQueryPool{};
         VkBuffer backgroundStagingBuffer{};
@@ -344,6 +353,7 @@ class VulkanDevice final : public Device {
     void recordPreviewAoPass(VkCommandBuffer command, Frame& frame, VkExtent2D extent);
     void ensurePreviewAoResources(Frame& frame, VkExtent2D extent);
     void destroyPreviewAoResources(Frame& frame) noexcept;
+    void recordPreviewBackground(VkCommandBuffer command);
     void ensurePreviewHdrResource(Frame& frame, VkExtent2D extent);
     void destroyPreviewHdrResource(Frame& frame) noexcept;
     void recordPreviewScenePass(VkCommandBuffer command, Frame& frame, VkImage colorImage, VkImageView colorView,
@@ -458,6 +468,7 @@ class VulkanDevice final : public Device {
     GraphicsConvention convention_;
     RendererKind activeRenderer_{RendererKind::preview};
     bool validation_{};
+    std::atomic_size_t validationErrorCount_{};
     bool swapchainDirty_{};
     VulkanAccelerationBackend accelerationBackend_;
 
@@ -482,6 +493,7 @@ class VulkanDevice final : public Device {
     VkFormat swapchainFormat_{VK_FORMAT_UNDEFINED};
     VkExtent2D swapchainExtent_{};
     std::vector<VkImage> swapchainImages_;
+    std::vector<VkSemaphore> swapchainRenderFinished_;
     std::vector<VkImageView> swapchainViews_;
     std::vector<bool> swapchainInitialized_;
     std::vector<DepthResource> swapchainDepth_;
@@ -493,7 +505,6 @@ class VulkanDevice final : public Device {
     VkPipeline depthPrepassPipeline_{};
     VkPipeline hdrPipeline_{};
     VkPipeline hdrTransparentPipeline_{};
-    VkPipeline hdrBackgroundPipeline_{};
     VkPipeline hdrEdgePipeline_{};
     VkPipeline previewTonemapPipeline_{};
     VkPipelineLayout previewTonemapPipelineLayout_{};
@@ -502,6 +513,7 @@ class VulkanDevice final : public Device {
     VkPipeline transparentPipeline_{};
     VkPipeline edgePipeline_{};
     VkPipeline backgroundPipeline_{};
+    VkPipelineLayout backgroundPipelineLayout_{};
     VkPipeline nativeOutputPipeline_{};
     VkPipelineLayout nativeOutputPipelineLayout_{};
     VkDescriptorSetLayout nativeOutputDescriptorSetLayout_{};
@@ -536,6 +548,8 @@ class VulkanDevice final : public Device {
     VkDescriptorSet previewBindlessDescriptor_{};
     VkDescriptorSet previewEnvironmentDescriptor_{};
     VkDescriptorSet previewShadowDescriptor_{};
+    VkDescriptorSet previewFallbackAoDescriptor_{};
+    handles::TextureHandle previewFallbackAoTexture_{};
     VkSampler previewShadowSampler_{};
     VkSampler previewAoSampler_{};
     VkSampler previewTonemapSampler_{};
@@ -551,11 +565,13 @@ class VulkanDevice final : public Device {
     std::array<float, 2> previewJitter_{};
     bool previewStillQuality_{};
     bool previewHdrActive_{};
+    core::ImageRgba8 previewDisplayBackground_;
     handles::TextureHandle lastPreviewHdrTexture_{};
     std::uint32_t previewBindlessTextureCapacity_{};
     bool previewBindlessSupported_{};
     bool scalarBlockLayoutSupported_{};
     bool shaderDemoteSupported_{};
+    bool multiDrawIndirectSupported_{};
 #if DAYO_HAS_IMGUI
     VkDescriptorPool imguiDescriptorPool_{};
     bool uiInitialized_{};

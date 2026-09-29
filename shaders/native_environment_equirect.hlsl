@@ -7,7 +7,13 @@ struct NativeEnvironmentConstants {
 
 [[vk::push_constant]] ConstantBuffer<NativeEnvironmentConstants> environment;
 [[vk::binding(0, 0)]] Texture2D<float4> equirectangular;
-[[vk::binding(1, 0)]] RWTexture2DArray<float4> cube;
+[[vk::binding(1, 0)]]
+#ifdef DAYO_GLSLC
+[[spv::format_rgba16f]]
+#else
+[[vk::image_format("rgba16f")]]
+#endif
+RWTexture2DArray<float4> cube;
 
 float3 faceDirection(uint face, float2 position) {
     switch (face) {

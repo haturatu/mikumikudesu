@@ -7,7 +7,13 @@ struct NativeEnvironmentConstants {
 
 [[vk::push_constant]] ConstantBuffer<NativeEnvironmentConstants> environment;
 [[vk::binding(0, 0)]] TextureCube<float4> sourceCube;
-[[vk::binding(1, 0)]] RWTexture2DArray<float4> prefilteredCube;
+[[vk::binding(1, 0)]]
+#ifdef DAYO_GLSLC
+[[spv::format_rgba16f]]
+#else
+[[vk::image_format("rgba16f")]]
+#endif
+RWTexture2DArray<float4> prefilteredCube;
 [[vk::binding(2, 0)]] SamplerState cubeSampler;
 
 static const float PI = 3.14159265359;

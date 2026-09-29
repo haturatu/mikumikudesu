@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -96,8 +97,10 @@ bool samePreviewMaterial(const PreviewMaterial& left, const PreviewMaterial& rig
 
 VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
                                              VkDebugUtilsMessageTypeFlagsEXT,
-                                             const VkDebugUtilsMessengerCallbackDataEXT* data, void*) {
+                                             const VkDebugUtilsMessengerCallbackDataEXT* data, void* userData) {
     if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+        if (userData != nullptr)
+            static_cast<std::atomic_size_t*>(userData)->fetch_add(1, std::memory_order_relaxed);
         log::error("Vulkan validation: ", data->pMessage);
     } else if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
         log::warn("Vulkan validation: ", data->pMessage);
@@ -649,6 +652,43 @@ VulkanDevice::VulkanDevice(platform::Window& window, bool validation)
     updatePreviewMorphWeights(std::span<const float>{});
     uploadPreviewTextures(std::span<const PreviewTexture>{});
     updatePreviewMaterials(std::span<const PreviewMaterial>{});
+    updatePreviewEnvironment({});
+    previewFallbackAoTexture_ = createTextureEx({
+        .dimension = TextureDimension::d2,
+        .extent = {1, 1, 1},
+        .format = PixelFormat::rgba8Unorm,
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .usage = ResourceUsage::sampledRead | ResourceUsage::transferDst,
+        .lifetime = ResourceLifetime::persistent,
+    });
+    const std::array<std::uint8_t, 4> whiteAo{255, 255, 255, 255};
+    uploadTextureEx(previewFallbackAoTexture_, whiteAo, 0, 0);
+    const VkDescriptorSetAllocateInfo aoAllocate{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = previewDescriptorPool_,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &previewAoSampleDescriptorSetLayout_,
+    };
+    check(vkAllocateDescriptorSets(device_, &aoAllocate, &previewFallbackAoDescriptor_), "allocate fallback AO set");
+    const VkDescriptorImageInfo aoImage{VK_NULL_HANDLE, typedTextures_.at(previewFallbackAoTexture_).view,
+                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkDescriptorImageInfo aoSampler{previewAoSampler_, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
+    const std::array aoWrites{
+        VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                             .dstSet = previewFallbackAoDescriptor_,
+                             .dstBinding = 0,
+                             .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                             .pImageInfo = &aoImage},
+        VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                             .dstSet = previewFallbackAoDescriptor_,
+                             .dstBinding = 1,
+                             .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+                             .pImageInfo = &aoSampler},
+    };
+    vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(aoWrites.size()), aoWrites.data(), 0, nullptr);
     log::info("Vulkan device ready: ", capabilities_.gpuName, " (", capabilities_.driverName, ")");
 }
 
@@ -667,6 +707,10 @@ VulkanDevice::~VulkanDevice() {
     if (previewFallbackEnvironmentTexture_.valid()) {
         destroyTextureEx(previewFallbackEnvironmentTexture_);
         previewFallbackEnvironmentTexture_ = {};
+    }
+    if (previewFallbackAoTexture_.valid()) {
+        destroyTextureEx(previewFallbackAoTexture_);
+        previewFallbackAoTexture_ = {};
     }
     destroyTypedResources();
     destroyViewportResources();
@@ -780,6 +824,7 @@ void VulkanDevice::createInstance(bool validation) {
                            VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                            VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
             .pfnUserCallback = debugCallback,
+            .pUserData = &validationErrorCount_,
         };
         const auto create = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
             vkGetInstanceProcAddr(instance_, "vkCreateDebugUtilsMessengerEXT"));
@@ -901,6 +946,7 @@ void VulkanDevice::queryCapabilities() {
     capabilities_.independentBlend = features.features.independentBlend == VK_TRUE;
     scalarBlockLayoutSupported_ = vulkan12.scalarBlockLayout == VK_TRUE;
     shaderDemoteSupported_ = vulkan13.shaderDemoteToHelperInvocation == VK_TRUE;
+    multiDrawIndirectSupported_ = features.features.multiDrawIndirect == VK_TRUE;
     previewBindlessSupported_ = vulkan12.runtimeDescriptorArray == VK_TRUE &&
                                 vulkan12.descriptorBindingVariableDescriptorCount == VK_TRUE &&
                                 features.features.shaderSampledImageArrayDynamicIndexing == VK_TRUE;
@@ -986,6 +1032,7 @@ void VulkanDevice::createLogicalDevice() {
     coreFeatures.samplerAnisotropy = capabilities_.samplerAnisotropy;
     coreFeatures.logicOp = capabilities_.logicOp;
     coreFeatures.independentBlend = capabilities_.independentBlend;
+    coreFeatures.multiDrawIndirect = multiDrawIndirectSupported_;
     const VkPhysicalDeviceFeatures2 features{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
         .pNext = &vulkan12,
@@ -1078,6 +1125,10 @@ void VulkanDevice::createSwapchain() {
     check(vkGetSwapchainImagesKHR(device_, swapchain_, &imageCount, swapchainImages_.data()), "get swapchain images");
     swapchainViews_.resize(imageCount);
     swapchainInitialized_.assign(imageCount, false);
+    swapchainRenderFinished_.resize(imageCount);
+    const VkSemaphoreCreateInfo semaphoreInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    for (auto& semaphore : swapchainRenderFinished_)
+        check(vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &semaphore), "create presentation semaphore");
     for (std::size_t i = 0; i < swapchainImages_.size(); ++i) {
         const VkImageViewCreateInfo viewInfo{
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -1127,6 +1178,9 @@ void VulkanDevice::createSwapchain() {
 }
 
 void VulkanDevice::destroySwapchain() {
+    for (const auto semaphore : swapchainRenderFinished_)
+        vkDestroySemaphore(device_, semaphore, nullptr);
+    swapchainRenderFinished_.clear();
     for (const auto& depth : swapchainDepth_) {
         if (depth.view != VK_NULL_HANDLE)
             vkDestroyImageView(device_, depth.view, nullptr);
@@ -1223,6 +1277,18 @@ void VulkanDevice::createPipeline() {
     VkShaderModule shadowVertex{};
     VkShaderModule normalFragment{};
     VkShaderModule fragment{};
+    VkShaderModule shadowFragment{};
+    VkShaderModule backgroundVertex{};
+    VkShaderModule backgroundFragment{};
+    const auto loadModule = [this](const char* path) {
+        const auto code = readBinary(path);
+        const VkShaderModuleCreateInfo info{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                            .codeSize = code.size(),
+                                            .pCode = reinterpret_cast<const std::uint32_t*>(code.data())};
+        VkShaderModule module{};
+        check(vkCreateShaderModule(device_, &info, nullptr, &module), "create Preview shader module");
+        return module;
+    };
     check(vkCreateShaderModule(device_, &vertexInfo, nullptr, &vertex), "create vertex shader");
     try {
         check(vkCreateShaderModule(device_, &edgeVertexInfo, nullptr, &edgeVertex), "create edge vertex shader");
@@ -1240,7 +1306,16 @@ void VulkanDevice::createPipeline() {
         };
         check(vkCreateShaderModule(device_, &normalInfo, nullptr, &normalFragment),
               "create preview normal fragment shader");
+        shadowFragment = loadModule(DAYO_PREVIEW_SHADOW_FRAGMENT_SPV);
+        backgroundVertex = loadModule(DAYO_PREVIEW_BACKGROUND_VERTEX_SPV);
+        backgroundFragment = loadModule(DAYO_PREVIEW_BACKGROUND_FRAGMENT_SPV);
     } catch (...) {
+        if (shadowFragment != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device_, shadowFragment, nullptr);
+        if (backgroundVertex != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device_, backgroundVertex, nullptr);
+        if (backgroundFragment != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device_, backgroundFragment, nullptr);
         if (normalFragment != VK_NULL_HANDLE)
             vkDestroyShaderModule(device_, normalFragment, nullptr);
         if (shadowVertex != VK_NULL_HANDLE)
@@ -1387,10 +1462,10 @@ void VulkanDevice::createPipeline() {
         .size = sizeof(PreviewPushConstants),
     };
     const std::array descriptorLayouts{
-        previewDescriptorSetLayout_,         previewSkinningDescriptorSetLayout_, previewMaterialDescriptorSetLayout_,
-        previewBindlessDescriptorSetLayout_, previewMorphDescriptorSetLayout_, previewEnvironmentDescriptorSetLayout_,
-        previewShadowDescriptorSetLayout_,
-        previewAoSampleDescriptorSetLayout_,
+        previewDescriptorSetLayout_,         previewSkinningDescriptorSetLayout_,
+        previewMaterialDescriptorSetLayout_, previewBindlessDescriptorSetLayout_,
+        previewMorphDescriptorSetLayout_,    previewEnvironmentDescriptorSetLayout_,
+        previewShadowDescriptorSetLayout_,   previewAoSampleDescriptorSetLayout_,
     };
     const VkPipelineLayoutCreateInfo layoutInfo{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -1427,7 +1502,29 @@ void VulkanDevice::createPipeline() {
     transparentPipelineInfo.pColorBlendState = &transparentBlend;
     const auto transparentResult =
         vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &transparentPipelineInfo, nullptr, &transparentPipeline_);
+    const VkPipelineLayoutCreateInfo backgroundLayoutInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = &previewDescriptorSetLayout_,
+    };
+    check(vkCreatePipelineLayout(device_, &backgroundLayoutInfo, nullptr, &backgroundPipelineLayout_),
+          "create background pipeline layout");
+    const std::array backgroundStages{
+        VkPipelineShaderStageCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                        .stage = VK_SHADER_STAGE_VERTEX_BIT,
+                                        .module = backgroundVertex,
+                                        .pName = "BackgroundVS"},
+        VkPipelineShaderStageCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+                                        .module = backgroundFragment,
+                                        .pName = "BackgroundPS"},
+    };
+    auto backgroundRendering = renderingInfo;
+    backgroundRendering.depthAttachmentFormat = VK_FORMAT_UNDEFINED;
     auto backgroundPipelineInfo = pipelineInfo;
+    backgroundPipelineInfo.layout = backgroundPipelineLayout_;
+    backgroundPipelineInfo.pStages = backgroundStages.data();
+    backgroundPipelineInfo.pNext = &backgroundRendering;
     backgroundPipelineInfo.pDepthStencilState = &backgroundDepthStencil;
     const auto backgroundResult =
         vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &backgroundPipelineInfo, nullptr, &backgroundPipeline_);
@@ -1444,6 +1541,13 @@ void VulkanDevice::createPipeline() {
         .module = shadowVertex,
         .pName = "ShadowVS",
     };
+    const std::array shadowStages{
+        shadowStage,
+        VkPipelineShaderStageCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+                                        .module = shadowFragment,
+                                        .pName = "ShadowPS"},
+    };
     const VkPipelineColorBlendStateCreateInfo shadowBlend{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
     };
@@ -1453,16 +1557,19 @@ void VulkanDevice::createPipeline() {
     };
     auto shadowPipelineInfo = pipelineInfo;
     shadowPipelineInfo.pNext = &shadowRendering;
-    shadowPipelineInfo.stageCount = 1;
-    shadowPipelineInfo.pStages = &shadowStage;
+    shadowPipelineInfo.stageCount = static_cast<std::uint32_t>(shadowStages.size());
+    shadowPipelineInfo.pStages = shadowStages.data();
     shadowPipelineInfo.pColorBlendState = &shadowBlend;
     const auto shadowResult =
         vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &shadowPipelineInfo, nullptr, &shadowPipeline_);
     const std::array depthStages{
         VkPipelineShaderStageCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                        .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vertex, .pName = "VS"},
+                                        .stage = VK_SHADER_STAGE_VERTEX_BIT,
+                                        .module = vertex,
+                                        .pName = "VS"},
         VkPipelineShaderStageCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                        .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = normalFragment,
+                                        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+                                        .module = normalFragment,
                                         .pName = "NormalPS"},
     };
     const VkFormat normalFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -1492,18 +1599,17 @@ void VulkanDevice::createPipeline() {
         vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &hdrPipelineInfo, nullptr, &hdrPipeline_);
     hdrPipelineInfo.pDepthStencilState = &transparentDepthStencil;
     hdrPipelineInfo.pColorBlendState = &transparentBlend;
-    const auto hdrTransparentResult = vkCreateGraphicsPipelines(device_, pipelineCache_, 1,
-                                                                &hdrPipelineInfo, nullptr, &hdrTransparentPipeline_);
-    hdrPipelineInfo.pDepthStencilState = &backgroundDepthStencil;
-    hdrPipelineInfo.pColorBlendState = &opaqueBlend;
-    const auto hdrBackgroundResult = vkCreateGraphicsPipelines(device_, pipelineCache_, 1,
-                                                               &hdrPipelineInfo, nullptr, &hdrBackgroundPipeline_);
+    const auto hdrTransparentResult =
+        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &hdrPipelineInfo, nullptr, &hdrTransparentPipeline_);
     hdrPipelineInfo.pStages = edgeStages.data();
     hdrPipelineInfo.pDepthStencilState = &edgeDepthStencil;
     hdrPipelineInfo.pRasterizationState = &edgeRasterizer;
     hdrPipelineInfo.pColorBlendState = &transparentBlend;
     const auto hdrEdgeResult =
         vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &hdrPipelineInfo, nullptr, &hdrEdgePipeline_);
+    vkDestroyShaderModule(device_, shadowFragment, nullptr);
+    vkDestroyShaderModule(device_, backgroundVertex, nullptr);
+    vkDestroyShaderModule(device_, backgroundFragment, nullptr);
     vkDestroyShaderModule(device_, normalFragment, nullptr);
     vkDestroyShaderModule(device_, shadowVertex, nullptr);
     vkDestroyShaderModule(device_, fragment, nullptr);
@@ -1517,7 +1623,6 @@ void VulkanDevice::createPipeline() {
     check(depthResult, "create preview depth prepass pipeline");
     check(hdrResult, "create HDR preview pipeline");
     check(hdrTransparentResult, "create HDR transparent preview pipeline");
-    check(hdrBackgroundResult, "create HDR background preview pipeline");
     check(hdrEdgeResult, "create HDR edge preview pipeline");
 
     const auto aoCode = readBinary(DAYO_PREVIEW_AO_SPV);
@@ -1566,9 +1671,12 @@ void VulkanDevice::createPipeline() {
     const auto toneFragment = createModule(toneFragmentCode);
     const std::array toneStages{
         VkPipelineShaderStageCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                        .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = toneVertex, .pName = "VS"},
+                                        .stage = VK_SHADER_STAGE_VERTEX_BIT,
+                                        .module = toneVertex,
+                                        .pName = "VS"},
         VkPipelineShaderStageCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                        .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = toneFragment,
+                                        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+                                        .module = toneFragment,
                                         .pName = "PS"},
     };
     const VkPipelineLayoutCreateInfo toneLayoutInfo{
@@ -1596,6 +1704,13 @@ void VulkanDevice::createPipeline() {
         .colorAttachmentCount = 1,
         .pColorAttachmentFormats = &swapchainFormat_,
     };
+    auto compositeAttachment = transparentBlendAttachment;
+    compositeAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    const VkPipelineColorBlendStateCreateInfo compositeBlend{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &compositeAttachment,
+    };
     const VkGraphicsPipelineCreateInfo toneInfo{
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .pNext = &toneRendering,
@@ -1607,7 +1722,7 @@ void VulkanDevice::createPipeline() {
         .pRasterizationState = &toneRasterizer,
         .pMultisampleState = &multisample,
         .pDepthStencilState = &noDepth,
-        .pColorBlendState = &opaqueBlend,
+        .pColorBlendState = &compositeBlend,
         .pDynamicState = &dynamic,
         .layout = previewTonemapPipelineLayout_,
     };
@@ -1625,8 +1740,7 @@ void VulkanDevice::destroyPipeline() {
         vkDestroyPipelineLayout(device_, previewTonemapPipelineLayout_, nullptr);
     previewTonemapPipeline_ = VK_NULL_HANDLE;
     previewTonemapPipelineLayout_ = VK_NULL_HANDLE;
-    for (auto& pipeline : {std::ref(hdrPipeline_), std::ref(hdrTransparentPipeline_),
-                           std::ref(hdrBackgroundPipeline_), std::ref(hdrEdgePipeline_)}) {
+    for (auto& pipeline : {std::ref(hdrPipeline_), std::ref(hdrTransparentPipeline_), std::ref(hdrEdgePipeline_)}) {
         if (pipeline.get() != VK_NULL_HANDLE)
             vkDestroyPipeline(device_, pipeline.get(), nullptr);
         pipeline.get() = VK_NULL_HANDLE;
@@ -1653,6 +1767,9 @@ void VulkanDevice::destroyPipeline() {
         vkDestroyPipeline(device_, pipeline_, nullptr);
     if (pipelineLayout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
+    if (backgroundPipelineLayout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device_, backgroundPipelineLayout_, nullptr);
+    backgroundPipelineLayout_ = VK_NULL_HANDLE;
     backgroundPipeline_ = VK_NULL_HANDLE;
     edgePipeline_ = VK_NULL_HANDLE;
     transparentPipeline_ = VK_NULL_HANDLE;
@@ -1975,14 +2092,21 @@ void VulkanDevice::destroyNativeEnvironmentPipelines() noexcept {
 void VulkanDevice::createPreviewDescriptors() {
     if (!previewBindlessSupported_)
         throw std::runtime_error("preview bindless texture table requires sampled image array indexing");
-    constexpr std::uint32_t fixedSampledImageCount = 5;
+    constexpr std::uint32_t fixedSampledImageCount = 3 + 1 + 1 + 1; // material, environment, shadow, AO
     const auto maxDescriptorSetSampledImages = physicalProperties_.limits.maxDescriptorSetSampledImages;
     const auto maxPerStageDescriptorSampledImages = physicalProperties_.limits.maxPerStageDescriptorSampledImages;
     if (maxDescriptorSetSampledImages <= fixedSampledImageCount ||
         maxPerStageDescriptorSampledImages <= fixedSampledImageCount)
         throw std::runtime_error("Vulkan device exposes no sampled image descriptors for preview textures");
-    previewBindlessTextureCapacity_ = std::min(maxDescriptorSetSampledImages - fixedSampledImageCount,
-                                               maxPerStageDescriptorSampledImages - fixedSampledImageCount);
+    constexpr std::uint32_t fixedSamplers = 2 + 2 + 1 + 1 + 1; // legacy, bindless, environment, shadow, AO
+    constexpr std::uint32_t fixedStorageBuffers = 2;           // material and SH
+    constexpr auto fixedFragmentResources = fixedSampledImageCount + fixedSamplers + fixedStorageBuffers;
+    if (physicalProperties_.limits.maxPerStageResources <= fixedFragmentResources)
+        throw std::runtime_error("Vulkan device exposes no fragment resources for preview textures");
+    previewBindlessTextureCapacity_ =
+        std::min({maxDescriptorSetSampledImages - fixedSampledImageCount,
+                  maxPerStageDescriptorSampledImages - fixedSampledImageCount,
+                  physicalProperties_.limits.maxPerStageResources - fixedFragmentResources, 16384U});
 
     const std::array textureBindings{
         VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -2062,8 +2186,9 @@ void VulkanDevice::createPreviewDescriptors() {
         .bindingCount = static_cast<std::uint32_t>(environmentBindings.size()),
         .pBindings = environmentBindings.data(),
     };
-    check(vkCreateDescriptorSetLayout(device_, &environmentLayoutInfo, nullptr, &previewEnvironmentDescriptorSetLayout_),
-          "create preview environment descriptor layout");
+    check(
+        vkCreateDescriptorSetLayout(device_, &environmentLayoutInfo, nullptr, &previewEnvironmentDescriptorSetLayout_),
+        "create preview environment descriptor layout");
     const std::array shadowBindings{
         VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -2150,8 +2275,7 @@ void VulkanDevice::createPreviewDescriptors() {
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
-    check(vkCreateImage(device_, &shadowImageInfo, nullptr, &previewShadowDepth_.image),
-          "create preview shadow image");
+    check(vkCreateImage(device_, &shadowImageInfo, nullptr, &previewShadowDepth_.image), "create preview shadow image");
     VkMemoryRequirements shadowRequirements{};
     vkGetImageMemoryRequirements(device_, previewShadowDepth_.image, &shadowRequirements);
     const VkMemoryAllocateInfo shadowMemoryInfo{
@@ -2176,8 +2300,7 @@ void VulkanDevice::createPreviewDescriptors() {
     shadowSamplerInfo.maxLod = 0.0F;
     check(vkCreateSampler(device_, &shadowSamplerInfo, nullptr, &previewShadowSampler_),
           "create preview shadow sampler");
-    check(vkCreateSampler(device_, &shadowSamplerInfo, nullptr, &previewAoSampler_),
-          "create preview AO sampler");
+    check(vkCreateSampler(device_, &shadowSamplerInfo, nullptr, &previewAoSampler_), "create preview AO sampler");
     check(vkCreateSampler(device_, &shadowSamplerInfo, nullptr, &previewTonemapSampler_),
           "create preview tonemap sampler");
     const VkDescriptorSetAllocateInfo shadowAllocate{
@@ -2193,11 +2316,17 @@ void VulkanDevice::createPreviewDescriptors() {
     const VkDescriptorImageInfo shadowSampler{previewShadowSampler_, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
     const std::array shadowWrites{
         VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                             .dstSet = previewShadowDescriptor_, .dstBinding = 0, .descriptorCount = 1,
-                             .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = &shadowImage},
+                             .dstSet = previewShadowDescriptor_,
+                             .dstBinding = 0,
+                             .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                             .pImageInfo = &shadowImage},
         VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                             .dstSet = previewShadowDescriptor_, .dstBinding = 1, .descriptorCount = 1,
-                             .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .pImageInfo = &shadowSampler},
+                             .dstSet = previewShadowDescriptor_,
+                             .dstBinding = 1,
+                             .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+                             .pImageInfo = &shadowSampler},
     };
     vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(shadowWrites.size()), shadowWrites.data(), 0, nullptr);
 }
@@ -2684,7 +2813,6 @@ void VulkanDevice::createFrames() {
         check(vkAllocateCommandBuffers(device_, &commandInfo, &frame.commandBuffer), "allocate command buffer");
         const VkSemaphoreCreateInfo semaphoreInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         check(vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &frame.imageAvailable), "create image semaphore");
-        check(vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &frame.renderFinished), "create render semaphore");
         const VkFenceCreateInfo fenceInfo{
             .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
             .flags = VK_FENCE_CREATE_SIGNALED_BIT,
@@ -2714,8 +2842,6 @@ void VulkanDevice::destroyFrames() {
             vkDestroyQueryPool(device_, frame.timestampQueryPool, nullptr);
         if (frame.inFlight != VK_NULL_HANDLE)
             vkDestroyFence(device_, frame.inFlight, nullptr);
-        if (frame.renderFinished != VK_NULL_HANDLE)
-            vkDestroySemaphore(device_, frame.renderFinished, nullptr);
         if (frame.imageAvailable != VK_NULL_HANDLE)
             vkDestroySemaphore(device_, frame.imageAvailable, nullptr);
         if (frame.commandPool != VK_NULL_HANDLE)
@@ -2797,7 +2923,7 @@ VulkanDevice::Frame::NativeUploadBuffer& VulkanDevice::allocateNativeUploadBuffe
 
 void VulkanDevice::resolveTimestampQuery(Frame& frame) noexcept {
     previewGpuNanoseconds_ = 0;
-    if (frame.timestampQueryPool == VK_NULL_HANDLE || timestampValidBits_ == 0 ||
+    if (!frame.timestampsSubmitted || frame.timestampQueryPool == VK_NULL_HANDLE || timestampValidBits_ == 0 ||
         physicalProperties_.limits.timestampPeriod <= 0.0F)
         return;
     std::array<std::uint64_t, 2> timestamps{};
@@ -2812,13 +2938,15 @@ void VulkanDevice::resolveTimestampQuery(Frame& frame) noexcept {
 
 void VulkanDevice::createUi() {
 #if DAYO_HAS_IMGUI
-    const std::array<VkDescriptorPoolSize, 1> poolSizes{{
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1024},
-    }};
+    const std::array poolSizes{
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1024},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1024},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 1024},
+    };
     const VkDescriptorPoolCreateInfo poolInfo{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-        .maxSets = 1024,
+        .maxSets = 3072,
         .poolSizeCount = static_cast<std::uint32_t>(poolSizes.size()),
         .pPoolSizes = poolSizes.data(),
     };
@@ -2950,6 +3078,8 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
     auto& frame = frames_[frameIndex_];
     if (!plan.model || frame.previewMaterialDescriptor == VK_NULL_HANDLE)
         return;
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 1, 1,
+                            &frame.previewBoneDescriptor, 0, nullptr);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 2, 1,
                             &frame.previewMaterialDescriptor, 0, nullptr);
     if (previewBindlessDescriptor_ != VK_NULL_HANDLE)
@@ -2958,15 +3088,12 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
     if (frame.previewMorphDescriptor != VK_NULL_HANDLE)
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 4, 1,
                                 &frame.previewMorphDescriptor, 0, nullptr);
-    if (previewEnvironmentDescriptor_ != VK_NULL_HANDLE)
-        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 5, 1,
-                                &previewEnvironmentDescriptor_, 0, nullptr);
-    if (previewShadowDescriptor_ != VK_NULL_HANDLE)
-        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 6, 1,
-                                &previewShadowDescriptor_, 0, nullptr);
-    if (frame.previewAo.sampleSet != VK_NULL_HANDLE)
-        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 7, 1,
-                                &frame.previewAo.sampleSet, 0, nullptr);
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 5, 1,
+                            &previewEnvironmentDescriptor_, 0, nullptr);
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 6, 1, &previewShadowDescriptor_,
+                            0, nullptr);
+    const auto aoSet = frame.previewAo.initialized ? frame.previewAo.sampleSet : previewFallbackAoDescriptor_;
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 7, 1, &aoSet, 0, nullptr);
 
     constexpr auto indirectMaterialSentinel = std::numeric_limits<std::uint32_t>::max();
     const auto validDraw = [&](const PreviewDraw& item) {
@@ -3007,9 +3134,14 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
         vkCmdPushConstants(command, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(drawConstants), &drawConstants);
         const auto drawCount = static_cast<std::uint32_t>(end - begin);
-        vkCmdDrawIndexedIndirect(command, frame.previewIndirectBuffer,
-                                 static_cast<VkDeviceSize>(begin) * sizeof(VkDrawIndexedIndirectCommand), drawCount,
-                                 sizeof(VkDrawIndexedIndirectCommand));
+        const auto batchLimit = multiDrawIndirectSupported_ ? physicalProperties_.limits.maxDrawIndirectCount : 1U;
+        for (std::uint32_t first = 0; first < drawCount;) {
+            const auto count = std::min(drawCount - first, std::max(batchLimit, 1U));
+            vkCmdDrawIndexedIndirect(command, frame.previewIndirectBuffer,
+                                     static_cast<VkDeviceSize>(begin + first) * sizeof(VkDrawIndexedIndirectCommand),
+                                     count, sizeof(VkDrawIndexedIndirectCommand));
+            first += count;
+        }
     };
     const auto drawPass = [&](VkPipeline pipeline) {
         std::size_t indirectBegin = previewGpuScene_.draws.size();
@@ -3037,8 +3169,7 @@ void VulkanDevice::recordPreviewModel(VkCommandBuffer command, const PreviewPush
     if (!plan.transparent) {
         if (!previewTextures_.empty()) {
             const auto descriptor = previewTextures_.front().descriptor;
-            vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                              previewHdrActive_ ? hdrPipeline_ : pipeline_);
+            vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, previewHdrActive_ ? hdrPipeline_ : pipeline_);
             vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1, &descriptor, 0,
                                     nullptr);
             vkCmdPushConstants(command, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
@@ -3063,13 +3194,13 @@ void VulkanDevice::recordPreviewShadowPass(VkCommandBuffer command, Frame& frame
     constexpr std::uint32_t size = 2048U;
     const VkImageMemoryBarrier2 toAttachment{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask = previewShadowDepth_.initialized ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
-                                                        : VK_PIPELINE_STAGE_2_NONE,
+        .srcStageMask =
+            previewShadowDepth_.initialized ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_2_NONE,
         .srcAccessMask = previewShadowDepth_.initialized ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : 0U,
         .dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
         .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-        .oldLayout = previewShadowDepth_.initialized ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                                                      : VK_IMAGE_LAYOUT_UNDEFINED,
+        .oldLayout =
+            previewShadowDepth_.initialized ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
         .newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -3109,6 +3240,10 @@ void VulkanDevice::recordPreviewShadowPass(VkCommandBuffer command, Frame& frame
     if (frame.previewMorphDescriptor != VK_NULL_HANDLE)
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 4, 1,
                                 &frame.previewMorphDescriptor, 0, nullptr);
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 2, 1,
+                            &frame.previewMaterialDescriptor, 0, nullptr);
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 3, 1,
+                            &previewBindlessDescriptor_, 0, nullptr);
     const auto vertexBuffer =
         previewStaticVertexBuffer_ != VK_NULL_HANDLE ? previewStaticVertexBuffer_ : frame.previewVertexBuffer;
     const VkDeviceSize vertexOffset = 0;
@@ -3119,17 +3254,18 @@ void VulkanDevice::recordPreviewShadowPass(VkCommandBuffer command, Frame& frame
     std::copy_n(previewGpuScene_.view.lightDirection, 3, constants.light.begin());
     if (previewGpuScene_.draws.empty() && previewIndexCount_ != 0) {
         constants.instanceCount = 1;
-        vkCmdPushConstants(command, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(constants), &constants);
+        vkCmdPushConstants(command, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(constants), &constants);
         vkCmdDrawIndexed(command, previewIndexCount_, 1, 0, 0, 0);
     }
     for (const auto& draw : previewGpuScene_.draws) {
         if (draw.indexCount == 0 || draw.firstIndex >= previewIndexCount_ ||
             draw.materialIndex >= previewGpuScene_.materials.size())
             continue;
+        constants.materialIndex = draw.materialIndex;
         constants.instanceCount = std::max(draw.instanceCount, 1U);
-        vkCmdPushConstants(command, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(constants), &constants);
+        vkCmdPushConstants(command, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(constants), &constants);
         vkCmdDrawIndexed(command, std::min(draw.indexCount, previewIndexCount_ - draw.firstIndex),
                          constants.instanceCount, draw.firstIndex, 0, 0);
     }
@@ -3229,17 +3365,22 @@ void VulkanDevice::ensurePreviewHdrResource(Frame& frame, VkExtent2D extent) {
             .descriptorSetCount = 1,
             .pSetLayouts = &previewTonemapDescriptorSetLayout_,
         };
-        check(vkAllocateDescriptorSets(device_, &setInfo, &resource.descriptor),
-              "allocate preview tonemap descriptor");
+        check(vkAllocateDescriptorSets(device_, &setInfo, &resource.descriptor), "allocate preview tonemap descriptor");
         const VkDescriptorImageInfo image{VK_NULL_HANDLE, resource.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         const VkDescriptorImageInfo sampler{previewTonemapSampler_, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
         const std::array writes{
             VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                 .dstSet = resource.descriptor, .dstBinding = 0, .descriptorCount = 1,
-                                 .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = &image},
+                                 .dstSet = resource.descriptor,
+                                 .dstBinding = 0,
+                                 .descriptorCount = 1,
+                                 .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                                 .pImageInfo = &image},
             VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                 .dstSet = resource.descriptor, .dstBinding = 1, .descriptorCount = 1,
-                                 .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .pImageInfo = &sampler},
+                                 .dstSet = resource.descriptor,
+                                 .dstBinding = 1,
+                                 .descriptorCount = 1,
+                                 .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+                                 .pImageInfo = &sampler},
         };
         vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
         resource.extent = extent;
@@ -3255,8 +3396,7 @@ void VulkanDevice::ensurePreviewAoResources(Frame& frame, VkExtent2D extent) {
         resource.depthImage != VK_NULL_HANDLE)
         return;
     destroyPreviewAoResources(frame);
-    const VkExtent2D half{std::max(1U, (extent.width + 1U) / 2U),
-                          std::max(1U, (extent.height + 1U) / 2U)};
+    const VkExtent2D half{std::max(1U, (extent.width + 1U) / 2U), std::max(1U, (extent.height + 1U) / 2U)};
     const auto createImage = [this](VkExtent2D size, VkFormat format, VkImageUsageFlags usage,
                                     VkImageAspectFlags aspect, VkImage& image, VkDeviceMemory& memory,
                                     VkImageView& view) {
@@ -3294,14 +3434,13 @@ void VulkanDevice::ensurePreviewAoResources(Frame& frame, VkExtent2D extent) {
     };
     try {
         createImage(extent, VK_FORMAT_D32_SFLOAT,
-                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                    VK_IMAGE_ASPECT_DEPTH_BIT, resource.depthImage, resource.depthMemory, resource.depthView);
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_DEPTH_BIT,
+                    resource.depthImage, resource.depthMemory, resource.depthView);
         createImage(extent, VK_FORMAT_R16G16B16A16_SFLOAT,
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                    VK_IMAGE_ASPECT_COLOR_BIT, resource.normalImage, resource.normalMemory, resource.normalView);
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+                    resource.normalImage, resource.normalMemory, resource.normalView);
         for (std::size_t index = 0; index < 2; ++index)
-            createImage(half, VK_FORMAT_R16G16B16A16_SFLOAT,
-                        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            createImage(half, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                         VK_IMAGE_ASPECT_COLOR_BIT, resource.images[index], resource.memories[index],
                         resource.views[index]);
         const std::array layouts{previewAoDescriptorSetLayout_, previewAoDescriptorSetLayout_,
@@ -3322,8 +3461,7 @@ void VulkanDevice::ensurePreviewAoResources(Frame& frame, VkExtent2D extent) {
         };
         check(vkAllocateDescriptorSets(device_, &sampleAllocate, &resource.sampleSet),
               "allocate preview AO sample descriptor");
-        const VkDescriptorImageInfo depth{VK_NULL_HANDLE, resource.depthView,
-                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        const VkDescriptorImageInfo depth{VK_NULL_HANDLE, resource.depthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         const VkDescriptorImageInfo normal{VK_NULL_HANDLE, resource.normalView,
                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         const VkDescriptorImageInfo sampler{previewAoSampler_, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
@@ -3334,31 +3472,52 @@ void VulkanDevice::ensurePreviewAoResources(Frame& frame, VkExtent2D extent) {
             const VkDescriptorImageInfo output{VK_NULL_HANDLE, resource.views[destination], VK_IMAGE_LAYOUT_GENERAL};
             const std::array writes{
                 VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                     .dstSet = resource.computeSets[pass], .dstBinding = 0, .descriptorCount = 1,
-                                     .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = &depth},
+                                     .dstSet = resource.computeSets[pass],
+                                     .dstBinding = 0,
+                                     .descriptorCount = 1,
+                                     .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                                     .pImageInfo = &depth},
                 VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                     .dstSet = resource.computeSets[pass], .dstBinding = 1, .descriptorCount = 1,
-                                     .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .pImageInfo = &sampler},
+                                     .dstSet = resource.computeSets[pass],
+                                     .dstBinding = 1,
+                                     .descriptorCount = 1,
+                                     .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+                                     .pImageInfo = &sampler},
                 VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                     .dstSet = resource.computeSets[pass], .dstBinding = 2, .descriptorCount = 1,
-                                     .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = &input},
+                                     .dstSet = resource.computeSets[pass],
+                                     .dstBinding = 2,
+                                     .descriptorCount = 1,
+                                     .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                                     .pImageInfo = &input},
                 VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                     .dstSet = resource.computeSets[pass], .dstBinding = 3, .descriptorCount = 1,
-                                     .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &output},
+                                     .dstSet = resource.computeSets[pass],
+                                     .dstBinding = 3,
+                                     .descriptorCount = 1,
+                                     .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                     .pImageInfo = &output},
                 VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                     .dstSet = resource.computeSets[pass], .dstBinding = 4, .descriptorCount = 1,
-                                     .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = &normal},
+                                     .dstSet = resource.computeSets[pass],
+                                     .dstBinding = 4,
+                                     .descriptorCount = 1,
+                                     .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                                     .pImageInfo = &normal},
             };
             vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
         }
         const VkDescriptorImageInfo aoImage{VK_NULL_HANDLE, resource.views[0], VK_IMAGE_LAYOUT_GENERAL};
         const std::array sampleWrites{
             VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                 .dstSet = resource.sampleSet, .dstBinding = 0, .descriptorCount = 1,
-                                 .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = &aoImage},
+                                 .dstSet = resource.sampleSet,
+                                 .dstBinding = 0,
+                                 .descriptorCount = 1,
+                                 .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                                 .pImageInfo = &aoImage},
             VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                 .dstSet = resource.sampleSet, .dstBinding = 1, .descriptorCount = 1,
-                                 .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .pImageInfo = &sampler},
+                                 .dstSet = resource.sampleSet,
+                                 .dstBinding = 1,
+                                 .descriptorCount = 1,
+                                 .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+                                 .pImageInfo = &sampler},
         };
         vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(sampleWrites.size()), sampleWrites.data(), 0,
                                nullptr);
@@ -3464,12 +3623,12 @@ void VulkanDevice::recordPreviewAoPass(VkCommandBuffer command, Frame& frame, Vk
                                                             : -previewGpuScene_.view.verticalFovRadians;
     std::copy_n(previewGpuScene_.view.lightDirection, 3, constants.light.begin());
     constants.light[3] = static_cast<float>(extent.width) / static_cast<float>(extent.height);
-    constants.viewport = {static_cast<float>(extent.width), static_cast<float>(extent.height),
-                          previewJitter_[0], previewJitter_[1]};
+    constants.viewport = {static_cast<float>(extent.width), static_cast<float>(extent.height), previewJitter_[0],
+                          previewJitter_[1]};
     if (previewGpuScene_.draws.empty() && previewIndexCount_ != 0) {
         constants.instanceCount = 1;
-        vkCmdPushConstants(command, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(constants), &constants);
+        vkCmdPushConstants(command, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(constants), &constants);
         vkCmdDrawIndexed(command, previewIndexCount_, 1, 0, 0, 0);
     }
     for (const auto& draw : previewGpuScene_.draws) {
@@ -3478,8 +3637,8 @@ void VulkanDevice::recordPreviewAoPass(VkCommandBuffer command, Frame& frame, Vk
             continue;
         constants.materialIndex = draw.materialIndex;
         constants.instanceCount = std::max(draw.instanceCount, 1U);
-        vkCmdPushConstants(command, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(constants), &constants);
+        vkCmdPushConstants(command, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(constants), &constants);
         vkCmdDrawIndexed(command, std::min(draw.indexCount, previewIndexCount_ - draw.firstIndex),
                          constants.instanceCount, draw.firstIndex, 0, 0);
     }
@@ -3532,8 +3691,8 @@ void VulkanDevice::recordPreviewAoPass(VkCommandBuffer command, Frame& frame, Vk
         .pImageMemoryBarriers = barriers.data(),
     };
     vkCmdPipelineBarrier2(command, &computeBegin);
-    const std::array<std::uint32_t, 4> dispatchConstants{
-        std::max(1U, (extent.width + 1U) / 2U), std::max(1U, (extent.height + 1U) / 2U), 0U, 0U};
+    const std::array<std::uint32_t, 4> dispatchConstants{std::max(1U, (extent.width + 1U) / 2U),
+                                                         std::max(1U, (extent.height + 1U) / 2U), 0U, 0U};
     const VkMemoryBarrier2 computeBarrier{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
         .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -3552,12 +3711,24 @@ void VulkanDevice::recordPreviewAoPass(VkCommandBuffer command, Frame& frame, Vk
                                 &resource.computeSets[pass], 0, nullptr);
         auto passConstants = dispatchConstants;
         passConstants[2] = pass == 1 ? 1U : 0U;
-        vkCmdPushConstants(command, aoPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                           sizeof(passConstants), passConstants.data());
+        vkCmdPushConstants(command, aoPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(passConstants),
+                           passConstants.data());
         vkCmdDispatch(command, (dispatchConstants[0] + 7U) / 8U, (dispatchConstants[1] + 7U) / 8U, 1);
         vkCmdPipelineBarrier2(command, &betweenPasses);
     }
     resource.initialized = true;
+}
+
+void VulkanDevice::recordPreviewBackground(VkCommandBuffer command) {
+    if (!buildPreviewRenderPlan(false).background)
+        return;
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, backgroundPipeline_);
+    const VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(command, 0, 1, &previewBackgroundVertexBuffer_, &offset);
+    vkCmdBindIndexBuffer(command, previewBackgroundIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, backgroundPipelineLayout_, 0, 1,
+                            &previewBackgroundTexture_.descriptor, 0, nullptr);
+    vkCmdDrawIndexed(command, previewBackgroundIndexCount_, 1, 0, 0, 0);
 }
 
 void VulkanDevice::recordPreviewPass(VkCommandBuffer command, Frame& frame, VkImage colorImage, VkImageView colorView,
@@ -3614,7 +3785,10 @@ void VulkanDevice::recordPreviewPass(VkCommandBuffer command, Frame& frame, VkIm
     typedTextures_.at(hdr.texture).mipLayouts[0] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     lastPreviewHdrTexture_ = hdr.texture;
     VkClearValue clear{};
-    clear.color = {{0.0F, 0.0F, 0.0F, 1.0F}};
+    clear.color = !previewGpuScene_.view.backgroundEnabled ||
+                          previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::white
+                      ? VkClearColorValue{{1.0F, 1.0F, 1.0F, 1.0F}}
+                      : VkClearColorValue{{0.025F, 0.035F, 0.055F, 1.0F}};
     const VkRenderingAttachmentInfo outputAttachment{
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .imageView = colorView,
@@ -3636,6 +3810,7 @@ void VulkanDevice::recordPreviewPass(VkCommandBuffer command, Frame& frame, VkIm
     const VkRect2D scissor{{0, 0}, extent};
     vkCmdSetViewport(command, 0, 1, &viewport);
     vkCmdSetScissor(command, 0, 1, &scissor);
+    recordPreviewBackground(command);
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, previewTonemapPipeline_);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, previewTonemapPipelineLayout_, 0, 1,
                             &hdr.descriptor, 0, nullptr);
@@ -3647,8 +3822,8 @@ void VulkanDevice::recordPreviewPass(VkCommandBuffer command, Frame& frame, VkIm
 void VulkanDevice::recordPreviewScenePass(VkCommandBuffer command, Frame& frame, VkImage colorImage,
                                           VkImageView colorView, DepthResource& depth, VkExtent2D extent,
                                           bool colorInitialized, VkImageLayout previousColorLayout,
-                                          VkPipelineStageFlags2 previousColorStage,
-                                          VkAccessFlags2 previousColorAccess, bool preservePreviousFrame) {
+                                          VkPipelineStageFlags2 previousColorStage, VkAccessFlags2 previousColorAccess,
+                                          bool preservePreviousFrame) {
     recordPreviewShadowPass(command, frame);
     recordPreviewAoPass(command, frame, extent);
     const VkImageMemoryBarrier2 toColor{
@@ -3691,6 +3866,8 @@ void VulkanDevice::recordPreviewScenePass(VkCommandBuffer command, Frame& frame,
                       ? VkClearColorValue{{1.0F, 1.0F, 1.0F, 1.0F}}
                   : activeRenderer_ == RendererKind::preview ? VkClearColorValue{{0.025F, 0.035F, 0.055F, 1.0F}}
                                                              : VkClearColorValue{{0.055F, 0.025F, 0.045F, 1.0F}};
+    if (previewHdrActive_)
+        clear.color = {{0.0F, 0.0F, 0.0F, 0.0F}};
     const VkRenderingAttachmentInfo colorAttachment{
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .imageView = colorView,
@@ -3756,30 +3933,12 @@ void VulkanDevice::recordPreviewScenePass(VkCommandBuffer command, Frame& frame,
         extent.height == 0 ? 1.0F : static_cast<float>(extent.width) / static_cast<float>(extent.height);
     std::copy_n(previewGpuScene_.view.lightColor, 3, constants.lightColor.begin());
     constants.debug = {static_cast<float>(previewGpuScene_.view.debugMaterial),
-                       static_cast<float>(previewGpuScene_.view.debugFlags),
-                       previewEnvironmentEnabled_ ? 1.0F : 0.0F,
+                       static_cast<float>(previewGpuScene_.view.debugFlags), previewEnvironmentEnabled_ ? 1.0F : 0.0F,
                        previewShadowDepth_.initialized ? (previewStillQuality_ ? 1.0F : 0.0F) : -1.0F};
     constants.materialPadding = (frame.previewAo.initialized ? 1U : 0U) | (previewHdrActive_ ? 2U : 0U);
-    constants.viewport = {static_cast<float>(extent.width), static_cast<float>(extent.height),
-                          previewJitter_[0], previewJitter_[1]};
+    constants.viewport = {static_cast<float>(extent.width), static_cast<float>(extent.height), previewJitter_[0],
+                          previewJitter_[1]};
     const auto plan = buildPreviewRenderPlan(false);
-    if (plan.background) {
-        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          previewHdrActive_ ? hdrBackgroundPipeline_ : backgroundPipeline_);
-        const VkDeviceSize backgroundOffset = 0;
-        vkCmdBindVertexBuffers(command, 0, 1, &previewBackgroundVertexBuffer_, &backgroundOffset);
-        vkCmdBindIndexBuffer(command, previewBackgroundIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1,
-                                &previewBackgroundTexture_.descriptor, 0, nullptr);
-        auto backgroundConstants = constants;
-        backgroundConstants.backgroundPass = 1;
-        vkCmdPushConstants(command, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                           sizeof(backgroundConstants), &backgroundConstants);
-        vkCmdDrawIndexed(command, previewBackgroundIndexCount_, 1, 0, 0, 0);
-        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, previewHdrActive_ ? hdrPipeline_ : pipeline_);
-        vkCmdBindVertexBuffers(command, 0, 1, &previewVertexBuffer, &vertexOffset);
-        vkCmdBindIndexBuffer(command, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
-    }
     recordPreviewModel(command, constants, plan);
     vkCmdEndRendering(command);
 }
@@ -3878,8 +4037,6 @@ void VulkanDevice::renderFrame() {
             }
         }
     }
-    if (frame.timestampQueryPool != VK_NULL_HANDLE)
-        vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timestampQueryPool, 1);
 
     const VkImageMemoryBarrier2 toColor{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -3966,7 +4123,7 @@ void VulkanDevice::renderFrame() {
     const std::array<VkSemaphore, 2> waitSemaphores{frame.imageAvailable, timelineSemaphore_};
     const std::array<VkPipelineStageFlags, 2> waitStages{VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                                                          VK_PIPELINE_STAGE_VERTEX_INPUT_BIT};
-    const std::array<VkSemaphore, 2> signalSemaphores{frame.renderFinished, timelineSemaphore_};
+    const std::array<VkSemaphore, 2> signalSemaphores{swapchainRenderFinished_[imageIndex], timelineSemaphore_};
     const VkTimelineSemaphoreSubmitInfo timelineSubmit{
         .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
         .waitSemaphoreValueCount = uploadWaitValue == 0 ? 1U : static_cast<std::uint32_t>(waitValues.size()),
@@ -3986,10 +4143,11 @@ void VulkanDevice::renderFrame() {
         .pSignalSemaphores = signalSemaphores.data(),
     };
     check(vkQueueSubmit(queue_, 1, &submitInfo, frame.inFlight), "submit frame");
+    frame.timestampsSubmitted = frame.timestampQueryPool != VK_NULL_HANDLE;
     const VkPresentInfoKHR presentInfo{
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &frame.renderFinished,
+        .pWaitSemaphores = &swapchainRenderFinished_[imageIndex],
         .swapchainCount = 1,
         .pSwapchains = &swapchain_,
         .pImageIndices = &imageIndex,
@@ -4385,6 +4543,7 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
         .pSignalSemaphores = &timelineSemaphore_,
     };
     check(vkQueueSubmit(queue_, 1, &submitInfo, frame.inFlight), "submit offscreen frame");
+    frame.timestampsSubmitted = frame.timestampQueryPool != VK_NULL_HANDLE;
     check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for offscreen frame");
 
     core::ImageRgba8 image;
@@ -4889,6 +5048,7 @@ void VulkanDevice::refreshPreviewBindlessDescriptor() {
 }
 
 void VulkanDevice::destroyPreviewBackground() {
+    previewDisplayBackground_ = {};
     for (auto& frame : frames_) {
         if (frame.mappedBackgroundStaging != nullptr) {
             vkUnmapMemory(device_, frame.backgroundStagingMemory);
@@ -5071,6 +5231,24 @@ void VulkanDevice::uploadPreviewBackground(std::span<const PreviewTexture> textu
     check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for streaming background frame");
     std::memcpy(frame.mappedBackgroundStaging, texture.rgba.data(), texture.rgba.size_bytes());
     frame.backgroundUploadPending = true;
+    previewDisplayBackground_ = {.width = texture.width,
+                                 .height = texture.height,
+                                 .pixels = std::vector<std::uint8_t>(texture.rgba.begin(), texture.rgba.end())};
+}
+
+core::ImageRgba8 VulkanDevice::previewDisplayBackground() const {
+    if (buildPreviewRenderPlan(false).background)
+        return previewDisplayBackground_;
+    const bool white = !previewGpuScene_.view.backgroundEnabled ||
+                       previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::white;
+    const std::array<float, 3> linear = white ? std::array{1.0F, 1.0F, 1.0F} : std::array{0.025F, 0.035F, 0.055F};
+    core::ImageRgba8 image{.width = 1, .height = 1, .pixels = {0, 0, 0, 255}};
+    for (std::size_t channel = 0; channel < 3; ++channel) {
+        const float encoded = linear[channel] <= 0.0031308F ? linear[channel] * 12.92F
+                                                            : 1.055F * std::pow(linear[channel], 1.0F / 2.4F) - 0.055F;
+        image.pixels[channel] = static_cast<std::uint8_t>(std::lround(encoded * 255.0F));
+    }
+    return image;
 }
 
 void VulkanDevice::updatePreviewVertices(std::span<const PreviewVertex> vertices) {
@@ -5298,8 +5476,8 @@ void VulkanDevice::updatePreviewEnvironment(const PreviewEnvironment& environmen
     }
     waitIdle();
     if (previewEnvironmentBuffer_ == VK_NULL_HANDLE) {
-        uploadPreviewBuffer(data.data(), sizeof(data), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                            previewEnvironmentBuffer_, previewEnvironmentMemory_);
+        uploadPreviewBuffer(data.data(), sizeof(data), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, previewEnvironmentBuffer_,
+                            previewEnvironmentMemory_);
         check(vkMapMemory(device_, previewEnvironmentMemory_, 0, sizeof(data), 0, &mappedPreviewEnvironment_),
               "map preview environment coefficients");
         const VkSamplerCreateInfo samplerInfo{
@@ -5331,14 +5509,23 @@ void VulkanDevice::updatePreviewEnvironment(const PreviewEnvironment& environmen
     const VkDescriptorImageInfo sampler{previewEnvironmentSampler_, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
     const std::array writes{
         VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                             .dstSet = previewEnvironmentDescriptor_, .dstBinding = 0, .descriptorCount = 1,
-                             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &coefficients},
+                             .dstSet = previewEnvironmentDescriptor_,
+                             .dstBinding = 0,
+                             .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             .pBufferInfo = &coefficients},
         VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                             .dstSet = previewEnvironmentDescriptor_, .dstBinding = 1, .descriptorCount = 1,
-                             .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = &cube},
+                             .dstSet = previewEnvironmentDescriptor_,
+                             .dstBinding = 1,
+                             .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                             .pImageInfo = &cube},
         VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                             .dstSet = previewEnvironmentDescriptor_, .dstBinding = 2, .descriptorCount = 1,
-                             .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .pImageInfo = &sampler},
+                             .dstSet = previewEnvironmentDescriptor_,
+                             .dstBinding = 2,
+                             .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+                             .pImageInfo = &sampler},
     };
     vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
     previewEnvironmentTexture_ = selected.prefiltered;
@@ -7523,12 +7710,11 @@ void VulkanDevice::updateDescriptorSetEx(handles::DescriptorSetHandle set,
             }
             if (layoutBinding->kind == DescriptorKind::storageImage &&
                 textureIt->second.desc.dimension == TextureDimension::cube)
-                imageView = binding.mipLevel.has_value()
-                                ? textureIt->second.storageMipViews[*binding.mipLevel]
-                                : textureIt->second.storageView;
-            const bool generalLayout = layoutBinding->kind == DescriptorKind::storageImage ||
-                                       (toBits(textureIt->second.desc.usage) &
-                                        toBits(ResourceUsage::storageReadWrite)) != 0U;
+                imageView = binding.mipLevel.has_value() ? textureIt->second.storageMipViews[*binding.mipLevel]
+                                                         : textureIt->second.storageView;
+            const bool generalLayout =
+                layoutBinding->kind == DescriptorKind::storageImage ||
+                (toBits(textureIt->second.desc.usage) & toBits(ResourceUsage::storageReadWrite)) != 0U;
             VkDescriptorImageInfo info{VK_NULL_HANDLE, imageView,
                                        generalLayout ? VK_IMAGE_LAYOUT_GENERAL
                                                      : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};

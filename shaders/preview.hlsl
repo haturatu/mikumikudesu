@@ -23,6 +23,7 @@ struct VertexOutput {
     [[vk::location(5)]] nointerpolation uint materialIndex : TEXCOORD3;
     [[vk::location(6)]] nointerpolation uint edgePass : TEXCOORD4;
     [[vk::location(7)]] float3 worldPosition : TEXCOORD5;
+    [[vk::location(8)]] float3 worldNormal : TEXCOORD6;
 };
 
 struct PreviewSceneConstants {
@@ -289,6 +290,7 @@ VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, ui
         output.normal = float3(0.0, 0.0, 1.0);
         output.viewPosition = float3(0.0, 0.0, 1.0);
         output.worldPosition = 0.0.xxx;
+        output.worldNormal = float3(0, 0, 1);
         output.color = float3(0.0, 0.0, 0.0);
         return output;
     }
@@ -298,6 +300,7 @@ VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, ui
     const float cloneCenter = (float(scene.instanceCount) - 1.0) * 0.5;
     skin.position.x += (float(instanceIndex) - cloneCenter) * 2.2;
     output.worldPosition = skin.position - scene.target.xyz;
+    output.worldNormal = safeNormalize(skin.normal, float3(0, 0, 1));
     float3 p = skin.position - scene.target.xyz;
     float3 n = safeNormalize(skin.normal, float3(0.0, 0.0, 1.0));
     const float3 s = sin(scene.camera.xyz);
@@ -361,6 +364,8 @@ VertexOutput EdgeVS(VertexInput input, uint instanceIndex : SV_InstanceID) {
 
 struct ShadowOutput {
     float4 position : SV_Position;
+    [[vk::location(0)]] float2 uv : TEXCOORD0;
+    [[vk::location(1)]] nointerpolation uint materialIndex : TEXCOORD1;
 };
 
 float4 NormalPS(VertexOutput input) : SV_Target0 {
@@ -376,6 +381,8 @@ ShadowOutput ShadowVS(VertexInput input, uint instanceIndex : SV_InstanceID) {
     const float3 coordinates = previewShadowCoordinates(world);
     ShadowOutput output;
     output.position = float4(coordinates.xy, coordinates.z, 1.0);
+    output.uv = input.uv;
+    output.materialIndex = scene.materialIndex;
     return output;
 }
 
@@ -390,6 +397,22 @@ float4 samplePreviewTextureRepeat(uint textureSlot, float2 uv) {
 
 float4 samplePreviewTextureClamp(uint textureSlot, float2 uv) {
     return previewTextureTable[textureSlot].Sample(previewClampSampler, uv);
+}
+
+void ShadowPS(ShadowOutput input) {
+    const PreviewMaterialData material = previewMaterials[input.materialIndex];
+    const float4 alphaSample = applyTextureMorphRgb(samplePreviewTextureRepeat(material.textureSlots.x, input.uv),
+                                                material.textureMultiply, material.textureAdd, 1.0.xxx);
+    clip(alphaSample.a * material.diffuse.a - 0.5);
+}
+
+float3 viewToWorldDirection(float3 direction) {
+    const float3 s = sin(scene.camera.xyz);
+    const float3 c = cos(scene.camera.xyz);
+    direction.xy = float2(c.z * direction.x + s.z * direction.y, -s.z * direction.x + c.z * direction.y);
+    direction.xz = float2(c.y * direction.x - s.y * direction.z, s.y * direction.x + c.y * direction.z);
+    direction.yz = float2(c.x * direction.y + s.x * direction.z, -s.x * direction.y + c.x * direction.z);
+    return direction;
 }
 
 float3 evaluateIrradiance(float3 normal) {
@@ -490,10 +513,10 @@ float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0 {
     if ((debugFlags & 0x10U) != 0U)
         return float4(frac(input.uv), 0.0, 1.0);
 
-    const float3 normal = safeNormalize(input.normal, float3(0.0, 0.0, 1.0));
+    const float3 normal = safeNormalize(input.worldNormal, float3(0.0, 0.0, 1.0));
     const float3 lightDirection = normalize(-scene.light.xyz);
     const float noLight = dot(normal, lightDirection);
-    const float3 viewDirection = safeNormalize(-input.viewPosition, float3(0.0, 0.0, 1.0));
+    const float3 viewDirection = safeNormalize(viewToWorldDirection(-input.viewPosition), float3(0.0, 0.0, 1.0));
     const float3 halfVector = safeNormalize(lightDirection + viewDirection, normal);
     const float noL = saturate(noLight);
     const float noV = saturate(dot(normal, viewDirection));
@@ -518,8 +541,8 @@ float4 PS(VertexOutput input, bool frontFace : SV_IsFrontFace) : SV_Target0 {
                            (diffuseLight.xxx + skinTransmission) * Le;
     float3 hairSpecular = 0;
     if (material.hair.x > 0.0 && noL > 0.0) {
-        const float3 dpdx = ddx(input.viewPosition);
-        const float3 dpdy = ddy(input.viewPosition);
+        const float3 dpdx = ddx(input.worldPosition);
+        const float3 dpdy = ddy(input.worldPosition);
         const float2 duvdx = ddx(input.uv);
         const float2 duvdy = ddy(input.uv);
         const float3 tangent = safeNormalize(dpdx * duvdy.y - dpdy * duvdx.y,
