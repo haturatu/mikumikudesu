@@ -249,8 +249,7 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const Environmen
         for (std::uint32_t mip = 0; mip < mipLevels_; ++mip) {
             const std::array prefilter{
                 DescriptorBindingEx{.slot = 0, .arrayElement = 0, .texture = resources_.cubemap},
-                DescriptorBindingEx{.slot = 1, .arrayElement = 0, .texture = resources_.prefiltered,
-                                    .mipLevel = mip},
+                DescriptorBindingEx{.slot = 1, .arrayElement = 0, .texture = resources_.prefiltered, .mipLevel = mip},
                 DescriptorBindingEx{.slot = 2, .arrayElement = 0, .sampler = resources_.prefilterSampler},
             };
             resources_.prefilterSets.push_back(device_->allocateDescriptorSetEx(bindings_.prefilterLayout, prefilter));
@@ -302,8 +301,8 @@ void NativeEnvironmentBackend::record(CommandList& commands) const {
 void NativeEnvironmentBackend::reset() noexcept {
     Device* device = device_;
     const bool hasResources = !resources_.prefilterSets.empty() || resources_.prefilterSampler.valid() ||
-                              resources_.equirectToCubeSet.valid() ||
-                              resources_.prefiltered.valid() || resources_.cubemap.valid() || resources_.source.valid();
+                              resources_.equirectToCubeSet.valid() || resources_.prefiltered.valid() ||
+                              resources_.cubemap.valid() || resources_.source.valid();
     if (device != nullptr && hasResources) {
         try {
             device->waitIdle();
