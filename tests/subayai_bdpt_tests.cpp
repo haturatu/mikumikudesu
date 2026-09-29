@@ -1361,10 +1361,11 @@ int main() {
                         layout.bindings[1].kind == dayo::graphics::DescriptorKind::storageImage,
                     "native environment pass layout separates sampled input and storage output");
         const auto prefilterLayout = dayo::graphics::nativeEnvironmentPrefilterLayout();
-        ok &= check(prefilterLayout.bindings.size() == 2 &&
-                        prefilterLayout.bindings[0].kind == dayo::graphics::DescriptorKind::storageImage &&
-                        prefilterLayout.bindings[1].kind == dayo::graphics::DescriptorKind::storageImage,
-                    "native environment prefilter layout uses storage images");
+        ok &= check(prefilterLayout.bindings.size() == 3 &&
+                        prefilterLayout.bindings[0].kind == dayo::graphics::DescriptorKind::sampledImage &&
+                        prefilterLayout.bindings[1].kind == dayo::graphics::DescriptorKind::storageImage &&
+                        prefilterLayout.bindings[2].kind == dayo::graphics::DescriptorKind::sampler,
+                    "native environment prefilter layout samples a cubemap and writes one mip");
         dayo::graphics::NativeEnvironmentBackend backend(device, bindings);
         const dayo::core::ImageData image{.width = 8,
                                           .height = 4,
@@ -1374,18 +1375,25 @@ int main() {
                                           .bytes = std::vector<std::uint8_t>(128, 128)};
         const auto result = backend.regenerateImage({.source = "memory", .exposure = 1.0F, .version = 9}, image);
         ok &= check(backend.ready() && result.skybox.valid() && result.cubemap.valid() && result.prefiltered.valid() &&
-                        result.skywalkerVersion == 9 && result.sphericalHarmonics[0] > 0.0F,
+                        result.skywalkerVersion == 9 && result.sphericalHarmonics[0] > 0.0F &&
+                        result.prefilteredMipLevels == 2,
                     "native environment creates typed outputs and SH coefficients");
+        ok &= check(
+            device.descriptorAllocations.size() == 1 + result.prefilteredMipLevels &&
+                device.descriptorAllocations[1].size() == 3 && device.descriptorAllocations[1][1].mipLevel == 0 &&
+                device.descriptorAllocations[2][1].mipLevel == 1 && device.descriptorAllocations[2][2].sampler.valid(),
+            "native environment binds a separate storage view for each roughness mip");
         MockDeformCommands commands;
         backend.record(commands);
-        ok &= check(commands.events == std::vector<std::string>{"transition", "transition", "transition", "bind",
-                                                                "descriptor", "push", "dispatch:1x1x6", "barrier",
-                                                                "bind", "descriptor", "push", "dispatch:1x1x6",
-                                                                "barrier", "mipmap"},
-                    "native environment records conversion and prefilter stages with barriers");
+        ok &=
+            check(commands.events == std::vector<std::string>{"transition", "transition", "transition", "bind",
+                                                              "descriptor", "push", "dispatch:1x1x6", "barrier", "bind",
+                                                              "descriptor", "push", "dispatch:1x1x6", "barrier",
+                                                              "descriptor", "push", "dispatch:1x1x6", "barrier"},
+                  "native environment records conversion and every prefilter mip with barriers");
         backend.reset();
-        ok &= check(device.destroyedTextures == 3 && device.destroyedDescriptorSets == 2,
-                    "native environment reset releases textures and descriptor sets");
+        ok &= check(device.destroyedTextures == 3 && device.destroyedDescriptorSets == 1 + result.prefilteredMipLevels,
+                    "native environment reset releases textures and per-mip descriptor sets");
     }
     // HDR environment sources are inspected before float decode and remain
     // linear ImageData for the environment conversion path.

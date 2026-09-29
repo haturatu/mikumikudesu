@@ -475,8 +475,129 @@ bool backgroundUsesExplicitPass(dayo::graphics::VulkanDevice& device) {
             return false;
         }
     }
+    const std::array<std::uint8_t, 8> stripes{255, 0, 0, 255, 0, 0, 255, 255};
+    const std::array<PreviewTexture, 1> stripedTextures{{{1, 2, stripes, false}}};
+    device.uploadPreviewBackground(stripedTextures);
+    const auto stripedImage = device.renderToImage({64, 64});
+    if (stripedImage.pixels[0] != 255 || stripedImage.pixels[2] != 0 || stripedImage.pixels[(63U * 64U) * 4U] != 0 ||
+        stripedImage.pixels[(63U * 64U) * 4U + 2U] != 255) {
+        std::cerr << "FAIL: display background orientation or color changed during compositing\n";
+        return false;
+    }
     device.uploadPreviewBackground({});
     resetPreviewScene(device);
+    return true;
+}
+
+bool modelPositiveYAppearsAboveCenter(dayo::graphics::VulkanDevice& device) {
+    auto vertices = makeFlatTriangle();
+    for (auto& vertex : vertices) {
+        vertex.position[0] *= 0.3F;
+        vertex.position[1] = vertex.position[1] * 0.3F + 0.7F;
+    }
+    PreviewMaterial material;
+    material.diffuse[0] = 1.0F;
+    material.diffuse[1] = material.diffuse[2] = 0.0F;
+    std::fill_n(material.ambient, 3, 1.0F);
+    device.uploadPreviewMesh(vertices, std::array<std::uint32_t, 3>{0, 2, 1});
+    device.updatePreviewMaterials(std::array{material});
+    device.updatePreviewDraws(std::array<PreviewDraw, 1>{{{0, 3, 0}}});
+    for (const bool perspective : {true, false}) {
+        dayo::graphics::PreviewScene scene;
+        scene.cameraDistance = 3.0F;
+        scene.perspective = perspective;
+        scene.backgroundEnabled = false;
+        device.updatePreviewScene(scene);
+        const auto image = device.renderToImage({64, 64});
+        std::size_t top = 0, bottom = 0;
+        for (std::uint32_t y = 0; y < image.height; ++y)
+            for (std::uint32_t x = 0; x < image.width; ++x) {
+                const auto offset = (static_cast<std::size_t>(y) * image.width + x) * 4U;
+                if (image.pixels[offset] > 150 && image.pixels[offset + 1] < 80)
+                    (y < image.height / 2 ? top : bottom)++;
+            }
+        if (top == 0 || bottom != 0) {
+            std::cerr << "FAIL: positive model Y did not appear above the image center\n";
+            return false;
+        }
+    }
+    resetPreviewScene(device);
+    return true;
+}
+
+bool environmentLightingStaysInWorldSpace(dayo::graphics::VulkanDevice& device) {
+    using namespace dayo::graphics;
+    const auto cube = device.createTextureEx({.dimension = TextureDimension::cube,
+                                              .extent = {1, 1, 1},
+                                              .format = PixelFormat::rgba8Unorm,
+                                              .mipLevels = 1,
+                                              .arrayLayers = 1,
+                                              .usage = ResourceUsage::sampledRead | ResourceUsage::transferDst});
+    const std::array<std::uint8_t, 4> black{0, 0, 0, 255};
+    for (std::uint32_t face = 0; face < 6; ++face)
+        device.uploadTextureEx(cube, black, 0, face);
+    PreviewEnvironment environment{.prefiltered = cube, .mipLevels = 1};
+    environment.sphericalHarmonics[6] = environment.sphericalHarmonics[7] = environment.sphericalHarmonics[8] = 2.0F;
+    device.updatePreviewEnvironment(environment);
+    PreviewScene scene;
+    scene.backgroundEnabled = false;
+    std::fill_n(scene.lightColor, 3, 0.0F);
+    device.updatePreviewScene(scene);
+    PreviewMaterial material;
+    material.doubleSided = true;
+    material.diffuse[0] = material.diffuse[1] = material.diffuse[2] = 0.5F;
+    const auto reference = centerPixel(renderMaterial(device, {}, material));
+    scene.cameraRotation[1] = 0.7F;
+    device.updatePreviewScene(scene);
+    const auto rotated = centerPixel(device.renderToImage({64, 64}));
+    device.updatePreviewEnvironment({});
+    device.waitIdle();
+    device.destroyTextureEx(cube);
+    resetPreviewScene(device);
+    if (std::abs(static_cast<int>(reference[0]) - static_cast<int>(rotated[0])) > 3 || reference[0] < 80) {
+        std::cerr << "FAIL: camera rotation changes world-space diffuse IBL\n";
+        return false;
+    }
+    return true;
+}
+
+bool transparentCardsDoNotCastSolidShadows(dayo::graphics::VulkanDevice& device) {
+    dayo::graphics::PreviewScene scene;
+    scene.backgroundEnabled = false;
+    std::fill_n(scene.lightDirection, 3, 0.0F);
+    scene.lightDirection[2] = 1.0F;
+    device.updatePreviewScene(scene);
+    PreviewMaterial receiver;
+    receiver.doubleSided = true;
+    auto triangle = makeFlatTriangle();
+    for (auto& vertex : triangle)
+        vertex.normal[2] = -1.0F;
+    const std::array<std::uint32_t, 3> indices{0, 2, 1};
+    device.uploadPreviewMesh(triangle, indices);
+    device.uploadPreviewTextures({});
+    device.updatePreviewMaterials(std::array{receiver});
+    device.updatePreviewDraws(std::array<PreviewDraw, 1>{{{0, 3, 0}}});
+    const auto reference = centerPixel(device.renderToImage({64, 64}));
+    std::vector<PreviewVertex> vertices(triangle.begin(), triangle.end());
+    for (auto vertex : triangle) {
+        vertex.position[2] = -0.5F;
+        vertices.push_back(vertex);
+    }
+    const std::array<std::uint32_t, 6> cardIndices{0, 2, 1, 3, 5, 4};
+    const std::array<std::uint8_t, 4> transparent{255, 255, 255, 0};
+    const std::array<PreviewTexture, 1> textures{{{1, 1, transparent, true}}};
+    auto card = receiver;
+    card.textureSlot = 1;
+    device.uploadPreviewTextures(textures);
+    device.uploadPreviewMesh(vertices, cardIndices);
+    device.updatePreviewMaterials(std::array{receiver, card});
+    device.updatePreviewDraws(std::array<PreviewDraw, 2>{{{0, 3, 0}, {3, 3, 1}}});
+    const auto withCard = centerPixel(device.renderToImage({64, 64}));
+    resetPreviewScene(device);
+    if (std::abs(static_cast<int>(reference[0]) - static_cast<int>(withCard[0])) > 2) {
+        std::cerr << "FAIL: transparent hair card casts a solid polygon shadow\n";
+        return false;
+    }
     return true;
 }
 
@@ -589,6 +710,8 @@ bool lightColorAffectsDiffuse(dayo::graphics::VulkanDevice& device) {
     dayo::graphics::PreviewScene scene;
     scene.cameraDistance = 3.0F;
     scene.backgroundEnabled = false;
+    scene.lightDirection[0] = scene.lightDirection[1] = 0.0F;
+    scene.lightDirection[2] = 1.0F;
     scene.lightColor[0] = 0.0F;
     scene.lightColor[1] = 1.0F;
     scene.lightColor[2] = 0.0F;
@@ -602,7 +725,14 @@ bool lightColorAffectsDiffuse(dayo::graphics::VulkanDevice& device) {
     material.ambient[0] = material.ambient[1] = material.ambient[2] = 0.0F;
     material.specular[0] = material.specular[1] = material.specular[2] = 0.0F;
     material.toonMode = 2;
-    const auto pixel = centerPixel(renderMaterial(device, textures, material));
+    auto vertices = makeFlatTriangle();
+    for (auto& vertex : vertices)
+        vertex.normal[2] = -1.0F; // Face the camera and the incident light.
+    device.uploadPreviewTextures(textures);
+    device.uploadPreviewMesh(vertices, std::array<std::uint32_t, 3>{0, 2, 1});
+    device.updatePreviewMaterials(std::array{material});
+    device.updatePreviewDraws(std::array<PreviewDraw, 1>{{{0, 3, 0}}});
+    const auto pixel = centerPixel(device.renderToImage({64, 64}));
     resetPreviewScene(device);
     return pixel[1] > 200U && pixel[0] < 30U && pixel[2] < 30U;
 }
@@ -628,6 +758,8 @@ bool coplanarMaterialsUseStrictDepth(dayo::graphics::VulkanDevice& device) {
         {1, 1, std::span<const std::uint8_t>(blue), false},
     }};
     std::array<PreviewMaterial, 2> materials{};
+    for (auto& material : materials)
+        std::fill_n(material.ambient, 3, 1.0F);
     materials[0].textureSlot = 1;
     materials[1].textureSlot = 2;
     const std::array<dayo::graphics::PreviewDraw, 2> draws{{{0, 3, 0}, {3, 3, 1}}};
@@ -661,6 +793,8 @@ bool bindlessTextureSlotsSelectTable(dayo::graphics::VulkanDevice& device) {
         {1, 1, std::span<const std::uint8_t>(blue), false},
     }};
     std::array<PreviewMaterial, 2> materials{};
+    for (auto& material : materials)
+        std::fill_n(material.ambient, 3, 1.0F);
     materials[0].textureSlot = 1;
     materials[1].textureSlot = 2;
     const std::array<PreviewDraw, 2> draws{{{0, 3, 0}, {3, 3, 1}}};
@@ -704,6 +838,8 @@ bool multiMaterialDrawUsesIndirectMaterialIndex(dayo::graphics::VulkanDevice& de
         {1, 1, std::span<const std::uint8_t>(blue), false},
     }};
     std::array<PreviewMaterial, 2> materials{};
+    for (auto& material : materials)
+        std::fill_n(material.ambient, 3, 1.0F);
     materials[0].textureSlot = 1;
     materials[1].textureSlot = 2;
     const std::array<dayo::graphics::PreviewDraw, 2> draws{{{0, 3, 0}, {3, 3, 1}}};
@@ -741,6 +877,7 @@ bool singleSidedMaterialsUseClockwiseFrontFaces(dayo::graphics::VulkanDevice& de
     }};
     std::array<PreviewMaterial, 1> materials{};
     materials[0].textureSlot = 1;
+    std::fill_n(materials[0].ambient, 3, 1.0F);
     const std::array<PreviewDraw, 1> draws{{{0, 3, 0}}};
     device.uploadPreviewTextures(textures);
     device.updatePreviewMaterials(materials);
@@ -833,6 +970,7 @@ bool staticPreviewFallsBackToDynamicVertices(dayo::graphics::VulkanDevice& devic
     }};
     std::array<PreviewMaterial, 1> materials{};
     materials[0].textureSlot = 1;
+    std::fill_n(materials[0].ambient, 3, 1.0F);
     const std::array<PreviewDraw, 1> draws{{{0, 3, 0}}};
 
     device.uploadPreviewTextures(textures);
@@ -1107,6 +1245,7 @@ bool rendersInteractiveViewport(dayo::graphics::VulkanDevice& device) {
     }};
     std::array<PreviewMaterial, 1> materials{};
     materials[0].textureSlot = 1;
+    std::fill_n(materials[0].ambient, 3, 1.0F);
     const std::array<PreviewDraw, 1> draws{{{0, 3, 0}}};
     device.uploadPreviewTextures(textures);
     device.uploadPreviewMesh(vertices, indices);
@@ -1259,6 +1398,9 @@ int main() {
 #endif
         if (!zeroNormalVerticesStayInModelSpace(device) || !backgroundUsesExplicitPass(device))
             return 1;
+        if (!modelPositiveYAppearsAboveCenter(device) || !environmentLightingStaysInWorldSpace(device) ||
+            !transparentCardsDoNotCastSolidShadows(device))
+            return 1;
         if (!runCase(device, PreviewSkinningType::sdef)) {
             std::cerr << "FAIL: GPU SDEF output differs from reference rendering\n";
             return 1;
@@ -1327,6 +1469,11 @@ int main() {
         }
         if (!lightColorAffectsDiffuse(device)) {
             std::cerr << "FAIL: VMD light color did not affect diffuse shading\n";
+            return 1;
+        }
+        device.waitIdle();
+        if (device.validationErrorCount() != 0) {
+            std::cerr << "FAIL: Preview emitted " << device.validationErrorCount() << " Vulkan validation errors\n";
             return 1;
         }
     } catch (const std::exception& exception) {
