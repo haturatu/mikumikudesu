@@ -991,6 +991,7 @@ void Application::resetProjectRuntimeState() {
     uploadedVideoFrame_ = -1;
     videoMode_ = false;
     videoVisible_ = false;
+    mediaVideoError_.clear();
     backgroundVideoPath_.fill(0);
     animationFrame_ = 0.0F;
     uploadedAnimationFrame_ = -1;
@@ -2545,6 +2546,7 @@ void Application::loadAudioSource(const std::filesystem::path& path) {
 
 void Application::loadBackgroundVideo(const std::filesystem::path& path, bool visible) {
     try {
+        mediaVideoError_.clear();
         scene_.setMedia(path, core::MediaPresentation::backgroundVideo);
         animationFrame_ = scene_.timeline().frame;
         videoMode_ = true;
@@ -2554,7 +2556,8 @@ void Application::loadBackgroundVideo(const std::filesystem::path& path, bool vi
         lastAsset_ = "Background video " + path.filename().string();
         log::info("Loaded background video: ", path.string());
     } catch (const std::exception& error) {
-        lastAsset_ = "Background video error: " + std::string(error.what());
+        mediaVideoError_ = error.what();
+        lastAsset_ = "Background video error: " + mediaVideoError_;
         log::warn(lastAsset_);
     }
 }
@@ -2564,6 +2567,8 @@ void Application::setVideoVisible(bool visible) {
     videoMode_ = media != nullptr && media->info().hasVideo;
     videoVisible_ = visible && videoMode_;
     scene_.setBackgroundVideoVisible(videoVisible_);
+    if (videoVisible_)
+        scene_.setBackgroundEnabled(true);
     mediaSeconds_ = std::max(0.0, static_cast<double>(animationFrame_) / sceneTimelineFps(scene_));
     uploadedVideoFrame_ = -1;
     refreshPreviewBackground();
@@ -2586,10 +2591,22 @@ void Application::selectBackgroundSource(core::ScreenTextureSource source) {
     refreshPreviewScene();
 }
 
-void Application::buildMediaBackgroundUi() {
+void Application::buildMediaPlaybackControls(bool compact) {
 #if DAYO_HAS_IMGUI
-    ImGui::InputTextWithHint("Video file", "MP4 background (optional)", backgroundVideoPath_.data(),
-                             backgroundVideoPath_.size());
+    if (!audioSource_.empty())
+        ImGui::TextWrapped("Audio: %s", audioSource_.filename().string().c_str());
+    else
+        ImGui::TextDisabled("Drop an MP4 or audio file to load audio.");
+    const auto videoPath = videoMode_ && scene_.background().videoPath.has_value()
+                               ? *scene_.background().videoPath
+                               : std::filesystem::path(backgroundVideoPath_.data());
+    if (!videoPath.empty()) {
+        if (compact && !audioSource_.empty())
+            ImGui::SameLine();
+        ImGui::TextWrapped("Video: %s", videoPath.filename().string().c_str());
+    }
+    const bool canShowVideo = videoMode_ || backgroundVideoPath_[0] != '\0';
+    ImGui::BeginDisabled(!canShowVideo);
     bool show = videoVisible_;
     if (ImGui::Checkbox("Show MP4 video", &show)) {
         if (show)
@@ -2597,6 +2614,37 @@ void Application::buildMediaBackgroundUi() {
         else
             setVideoVisible(false);
     }
+    ImGui::EndDisabled();
+    if (!canShowVideo)
+        ImGui::TextDisabled("Drop an MP4 to enable video display.");
+    if (!mediaVideoError_.empty())
+        ImGui::TextWrapped("Video: %s", mediaVideoError_.c_str());
+    ImGui::BeginDisabled(loadedAudio_.samples.empty());
+    if (compact) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(130.0F);
+    }
+    if (ImGui::SliderFloat("Volume", &audioVolume_, 0.0F, 1.0F))
+        audioPlayer_.setVolume(audioVolume_);
+    if (compact) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(110.0F);
+    }
+    if (ImGui::DragFloat("Audio offset", &audioOffsetSeconds_, 0.01F, -60.0F, 60.0F, "%.2f s"))
+        restartAudioAtCurrentFrame();
+    ImGui::EndDisabled();
+#else
+    (void)compact;
+#endif
+}
+
+void Application::buildMediaBackgroundUi() {
+#if DAYO_HAS_IMGUI
+    ImGui::InputTextWithHint("Video file", "MP4 background (optional)", backgroundVideoPath_.data(),
+                             backgroundVideoPath_.size());
+    if (ImGui::Button("Apply video file"))
+        loadBackgroundVideo(backgroundVideoPath_.data());
+    buildMediaPlaybackControls();
 #endif
 }
 
@@ -2757,7 +2805,7 @@ void Application::buildUi() {
                 const auto imagePosition = ImGui::GetCursorScreenPos();
                 ImGui::Image(ImTextureRef{static_cast<ImTextureID>(preview.textureId)}, available);
                 const bool imageHovered = ImGui::IsItemHovered();
-                if (scene_.models().empty()) {
+                if (scene_.models().empty() && !videoVisible_) {
                     constexpr auto message = "No model loaded\nDrop a PMX file into the window";
                     const auto messageSize = ImGui::CalcTextSize(message);
                     const ImVec2 padding{ImGui::GetStyle().FramePadding.x * 2.0F,
@@ -2864,11 +2912,7 @@ void Application::buildUi() {
         ImGui::Checkbox("Repeat", &repeat_);
         if (ImGui::SliderFloat("Playback speed", &playbackSpeed_, 0.1F, 4.0F, "%.2fx"))
             restartAudioAtCurrentFrame();
-        buildMediaBackgroundUi();
-        if (ImGui::SliderFloat("Volume", &audioVolume_, 0.0F, 1.0F))
-            audioPlayer_.setVolume(audioVolume_);
-        if (ImGui::DragFloat("Audio offset", &audioOffsetSeconds_, 0.01F, -60.0F, 60.0F, "%.2f s"))
-            restartAudioAtCurrentFrame();
+        buildMediaPlaybackControls();
         if (!waveformPeaks_.empty()) {
             ImGui::PlotLines("Waveform", waveformPeaks_.data(), static_cast<int>(waveformPeaks_.size()), 0, nullptr,
                              0.0F, 1.0F, {0.0F, 72.0F});
@@ -3025,6 +3069,14 @@ void Application::buildMainMenuBar() {
         ImGui::MenuItem("Status bar", nullptr, &uiState_.statusBarVisible);
         ImGui::Separator();
         if (ImGui::MenuItem("Reset Layout")) {
+            uiState_.resetLayoutRequested = true;
+        }
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Media")) {
+        buildMediaPlaybackControls();
+        if (ImGui::MenuItem("Open Timeline")) {
+            uiState_.timelineVisible = true;
             uiState_.resetLayoutRequested = true;
         }
         ImGui::EndMenu();
@@ -3931,6 +3983,8 @@ void Application::buildEditorUi() {
         ImGui::SetNextItemWidth(90.0F);
         if (ImGui::DragFloat("Speed", &playbackSpeed_, 0.01F, 0.1F, 4.0F, "%.2fx"))
             restartAudioAtCurrentFrame();
+        ImGui::SeparatorText("Media");
+        buildMediaPlaybackControls(true);
         if (!waveformPeaks_.empty())
             ImGui::PlotLines("Audio", waveformPeaks_.data(), static_cast<int>(waveformPeaks_.size()), 0, nullptr, 0.0F,
                              1.0F, {-1.0F, 44.0F});

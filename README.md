@@ -32,8 +32,11 @@ MP4をD&Dすると、音声だけを読み込み、波形を表示してタイ�
 映像decoderと背景フレームのGPU転送は、背景動画を明示的に選ぶまで実行しません。
 音声を含まないMP4は、音声読み込みエラーとして表示します。
 
-映像も表示する場合はSceneのInspectorで「Video file」を指定し、
-「Show MP4 video」を有効にします。OFF中は動画のdecode・GPU転送を止め、
+読み込んだMP4の映像は、上部の「Media」メニュー、またはTimelineの「Media」欄にある
+「Show MP4 video」でON/OFFを切り替えます。モデル選択中も操作できます。
+同じ欄でVolume・Audio offsetを変更でき、操作エラーも表示されます。
+別の背景動画を指定する場合はSceneのInspectorで「Video file」を入力し、
+「Apply video file」を押します。OFF中は動画のdecode・GPU転送を止め、
 読み込んだ動画とタイムラインは保持します。再度ONにすると現在時刻のフレームへseekします。
 OFF時は読み込んだ背景画像があれば画像、なければ白い背景へ戻ります。
 背景動画と音声は独立しているため、別の音源に差し替えても指定済みの背景を維持します。

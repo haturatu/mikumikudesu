@@ -54,6 +54,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void syncMediaAtCurrentFrame();
     [[nodiscard]] double backgroundVideoSeconds() const;
     void buildMediaBackgroundUi();
+    void buildMediaPlaybackControls(bool compact = false);
     void selectBackgroundSource(core::ScreenTextureSource source);
     void refreshAnimatedMesh(bool initialUpload, float deltaSeconds = 0.0F);
     void resetPhysicsSimulation();
@@ -175,7 +176,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     float audioOffsetSeconds_{};
     core::AudioBuffer loadedAudio_;
     std::vector<float> waveformPeaks_;
-    bool videoMode_{};    // A background video is loaded.
+    bool videoMode_{}; // A background video is loaded.
+    std::string mediaVideoError_;
     bool videoVisible_{}; // Decode and display only when explicitly enabled.
     std::array<char, 1024> backgroundVideoPath_{};
     double mediaSeconds_{};
