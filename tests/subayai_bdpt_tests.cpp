@@ -34,6 +34,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -266,7 +267,8 @@ struct MockNativeDevice final : dayo::graphics::Device {
     dayo::graphics::handles::SamplerHandle createSamplerEx() override {
         return {nextSampler_++, 1};
     }
-    dayo::graphics::handles::SamplerHandle createSamplerEx(const dayo::graphics::SamplerResourceDesc&) override {
+    dayo::graphics::handles::SamplerHandle createSamplerEx(const dayo::graphics::SamplerResourceDesc& desc) override {
+        samplerDescriptions.push_back(desc);
         return createSamplerEx();
     }
     dayo::graphics::handles::PipelineHandle
@@ -292,8 +294,13 @@ struct MockNativeDevice final : dayo::graphics::Device {
         return {nextSbt_++, 1};
     }
     void destroyShaderBindingTable(dayo::graphics::handles::ShaderBindingTableHandle) override {}
-    void uploadTextureEx(dayo::graphics::handles::TextureHandle, std::span<const std::uint8_t>, std::uint32_t,
-                         std::uint32_t) override {}
+    void uploadTextureEx(dayo::graphics::handles::TextureHandle, std::span<const std::uint8_t> bytes, std::uint32_t,
+                         std::uint32_t) override {
+        lastTextureUpload.assign(bytes.begin(), bytes.end());
+    }
+    void destroySamplerEx(dayo::graphics::handles::SamplerHandle) override {
+        ++destroyedSamplers;
+    }
     void uploadBufferEx(dayo::graphics::handles::BufferHandle handle, std::span<const std::byte> bytes,
                         std::size_t offset) override {
         ++uploadBufferCalls;
@@ -346,6 +353,9 @@ struct MockNativeDevice final : dayo::graphics::Device {
     std::vector<std::vector<dayo::graphics::DescriptorBindingEx>> descriptorAllocations;
     std::vector<std::pair<dayo::graphics::handles::BufferHandle, dayo::graphics::ResourceUsage>> typedBufferUsages;
     std::vector<dayo::graphics::TextureResourceDesc> textureDescriptions;
+    std::vector<dayo::graphics::SamplerResourceDesc> samplerDescriptions;
+    std::vector<std::uint8_t> lastTextureUpload;
+    std::size_t destroyedSamplers{};
     std::unordered_map<dayo::graphics::handles::DescriptorSetHandle, std::vector<dayo::graphics::DescriptorBindingEx>>
         descriptorBindings_;
     std::unordered_map<dayo::graphics::handles::BufferHandle, Buffer> typedBuffers_;
@@ -1356,7 +1366,7 @@ int main() {
             .prefilterLayout = {23, 1},
         };
         const auto layout = dayo::graphics::nativeEnvironmentPassLayout();
-        ok &= check(layout.bindings.size() == 2 &&
+        ok &= check(layout.bindings.size() == 3 && layout.bindings[2].kind == dayo::graphics::DescriptorKind::sampler &&
                         layout.bindings[0].kind == dayo::graphics::DescriptorKind::sampledImage &&
                         layout.bindings[1].kind == dayo::graphics::DescriptorKind::storageImage,
                     "native environment pass layout separates sampled input and storage output");
@@ -1392,8 +1402,69 @@ int main() {
                                                               "descriptor", "push", "dispatch:1x1x6", "barrier"},
                   "native environment records conversion and every prefilter mip with barriers");
         backend.reset();
-        ok &= check(device.destroyedTextures == 3 && device.destroyedDescriptorSets == 1 + result.prefilteredMipLevels,
+        ok &= check(device.destroyedTextures == 3 && device.destroyedSamplers == 2 &&
+                        device.destroyedDescriptorSets == 1 + result.prefilteredMipLevels,
                     "native environment reset releases textures and per-mip descriptor sets");
+    }
+    // Exposure affects both SH radiance and the uploaded RGB; alpha is coverage.
+    // Oversized input is area filtered before GPU allocation, including odd sizes.
+    {
+        MockNativeDevice device;
+        dayo::graphics::NativeEnvironmentBackend backend(device, {{20, 1}, {21, 1}, {22, 1}, {23, 1}});
+        dayo::core::ImageData image{.width = 2052,
+                                    .height = 1026,
+                                    .channels = 4,
+                                    .type = dayo::core::PixelType::half16,
+                                    .space = dayo::core::ColorSpace::linear,
+                                    .bytes = {}};
+        image.bytes.resize(image.pixelCount() * 8U);
+        for (std::size_t sample = 0; sample < image.pixelCount() * 4U; ++sample) {
+            const auto bits = dayo::core::floatToHalf(sample % 4 == 3 ? 0.5F : 1.0F);
+            std::memcpy(image.bytes.data() + sample * 2U, &bits, 2U);
+        }
+        const auto first = backend.regenerateImage({.source = "bounded"}, image);
+        ok &= check(backend.faceSize() == 512 && backend.mipLevels() == 10 &&
+                        device.textureDescriptions[0].extent.width == 2048 &&
+                        device.textureDescriptions[0].extent.height == 1024 &&
+                        device.lastTextureUpload.size() == 2048U * 1024U * 8U,
+                    "environment bounds GPU source and cube resolutions");
+        ok &= check(device.samplerDescriptions[0].filter == dayo::graphics::SamplerFilter::linear &&
+                        device.samplerDescriptions[0].addressU == dayo::graphics::SamplerAddressMode::repeat &&
+                        device.samplerDescriptions[0].addressV == dayo::graphics::SamplerAddressMode::clampToEdge &&
+                        device.descriptorAllocations[0][2].sampler.valid(),
+                    "equirect conversion uses linear filtering with repeat U and clamp V");
+        const auto second = backend.regenerateImage({.source = "bounded", .exposure = 2.0F}, image);
+        for (std::size_t i = 0; i < first.sphericalHarmonics.size(); ++i)
+            ok &= check(std::abs(second.sphericalHarmonics[i] - first.sphericalHarmonics[i] * 2.0F) < 1e-5F,
+                        "exposure doubles SH coefficients");
+        for (const auto sample : {0U, 1U, 2U, 3U, 4U * (2048U * 1024U - 1U)}) {
+            std::uint16_t bits{};
+            std::memcpy(&bits, device.lastTextureUpload.data() + sample * 2U, 2U);
+            ok &= check(dayo::core::halfToFloat(bits) == (sample == 3U ? 0.5F : 2.0F),
+                        "bounded upload applies exposure to RGB while retaining alpha");
+        }
+        for (const auto invalid :
+             {-1.0F, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
+            bool rejected = false;
+            try {
+                static_cast<void>(backend.regenerateImage({.source = "bounded", .exposure = invalid}, image));
+            } catch (const std::invalid_argument&) {
+                rejected = true;
+            }
+            ok &= check(rejected && backend.ready(), "invalid exposure leaves the existing environment intact");
+        }
+        // A bright emitter just beyond the first output pixel center must
+        // contribute through its fractional footprint, rather than disappear.
+        std::fill(image.bytes.begin(), image.bytes.end(), 0);
+        const auto emitter = dayo::core::floatToHalf(4.0F);
+        std::memcpy(image.bytes.data() + 8U, &emitter, sizeof(emitter));
+        static_cast<void>(backend.regenerateImage({.source = "small-emitter"}, image));
+        std::uint16_t filtered{};
+        std::memcpy(&filtered, device.lastTextureUpload.data(), sizeof(filtered));
+        const float scale = 1026.0F / 1024.0F;
+        const float expected = 4.0F * (scale - 1.0F) / (scale * scale);
+        ok &= check(std::abs(dayo::core::halfToFloat(filtered) - expected) < 1e-5F,
+                    "area filtering retains fractional bright emitter energy");
     }
     // HDR environment sources are inspected before float decode and remain
     // linear ImageData for the environment conversion path.

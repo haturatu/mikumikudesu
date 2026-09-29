@@ -3,6 +3,7 @@
 #include "fx/fx_shader_compiler.hpp"
 #include "graphics/fx_pipeline_runtime.hpp"
 #include "graphics/subayai_deform.hpp"
+#include "graphics/subayai_environment.hpp"
 #include "graphics/vulkan/vulkan_device.hpp"
 #include "platform/window.hpp"
 #include "ui/theme.hpp"
@@ -522,6 +523,95 @@ bool modelPositiveYAppearsAboveCenter(dayo::graphics::VulkanDevice& device) {
         }
     }
     resetPreviewScene(device);
+    return true;
+}
+
+bool generatedEnvironmentDirectionsAndExposureAgree(dayo::graphics::VulkanDevice& device) {
+    using namespace dayo::graphics;
+    NativeEnvironmentBackend backend(
+        device, {device.nativeEnvironmentEquirectPipeline(), device.nativeEnvironmentEquirectLayout(),
+                 device.nativeEnvironmentPrefilterPipeline(), device.nativeEnvironmentPrefilterLayout()});
+    dayo::core::ImageData image{.width = 32,
+                                .height = 16,
+                                .channels = 4,
+                                .type = dayo::core::PixelType::half16,
+                                .space = dayo::core::ColorSpace::linear,
+                                .bytes = {}};
+    image.bytes.resize(image.pixelCount() * 8U);
+    const auto red = [](std::uint32_t x, std::uint32_t y) {
+        if (x >= 14 && x <= 17 && y >= 6 && y <= 9)
+            return 16.0F;                               // Bright +X window.
+        return x == 0 ? 1.0F : (x == 31 ? 3.0F : 0.0F); // Asymmetric longitude seam.
+    };
+    for (std::uint32_t y = 0; y < image.height; ++y)
+        for (std::uint32_t x = 0; x < image.width; ++x)
+            for (std::uint32_t c = 0; c < 4; ++c) {
+                const auto bits = dayo::core::floatToHalf(c == 0 ? red(x, y) : (c == 3 ? 1.0F : 0.0F));
+                std::memcpy(image.bytes.data() + ((y * image.width + x) * 4U + c) * 2U, &bits, 2U);
+            }
+    const auto first = backend.regenerateImage({.source = "synthetic"}, image);
+    const auto render = [&] {
+        device.setNativeFrameRecorderForComputeTest(
+            [&](CommandList& commands, const RenderTargetDesc&) -> std::optional<NativeFrameOutput> {
+                backend.record(commands);
+                return std::nullopt;
+            });
+        static_cast<void>(device.renderToImage({8, 8}));
+        device.setNativeFrameRecorder({});
+        device.selectRenderer(RendererKind::preview);
+    };
+    render();
+    const auto readRed = [](const std::vector<std::uint8_t>& bytes, std::size_t pixel) {
+        std::uint16_t bits{};
+        std::memcpy(&bits, bytes.data() + pixel * 8U, 2U);
+        return dayo::core::halfToFloat(bits);
+    };
+    const auto positive = device.readbackTextureEx(first.cubemap, 0, 0);
+    const auto negative = device.readbackTextureEx(first.cubemap, 0, 1);
+    const auto center =
+        static_cast<std::size_t>(backend.faceSize() / 2U) * backend.faceSize() + backend.faceSize() / 2U;
+    const auto specularPositive = device.readbackTextureEx(first.prefiltered, 0, 0);
+    const auto specularNegative = device.readbackTextureEx(first.prefiltered, 0, 1);
+    if (first.sphericalHarmonics[9] <= 0 || readRed(positive, center) <= readRed(negative, center) ||
+        readRed(specularPositive, center) <= readRed(specularNegative, center)) {
+        std::cerr << "FAIL: SH and generated cubemap disagree on the bright +X window\n";
+        return false;
+    }
+    // Compare the -X face with a CPU bilinear lookup that wraps longitude.
+    // Both sides of the seam must blend first/last columns rather than clamp.
+    const auto size = backend.faceSize();
+    for (std::uint32_t y = 0; y < size; ++y)
+        for (std::uint32_t x = 0; x < size; ++x) {
+            const float px = (static_cast<float>(x) + 0.5F) / static_cast<float>(size) * 2.0F - 1.0F;
+            const float py = (static_cast<float>(y) + 0.5F) / static_cast<float>(size) * 2.0F - 1.0F;
+            const float length = std::sqrt(1.0F + px * px + py * py);
+            const float u = std::atan2(px, -1.0F) / (2.0F * std::numbers::pi_v<float>)+0.5F;
+            const float v = 0.5F - std::asin(-py / length) / std::numbers::pi_v<float>;
+            const float sx = u * static_cast<float>(image.width) - 0.5F,
+                        sy = v * static_cast<float>(image.height) - 0.5F;
+            const auto ix = static_cast<int>(std::floor(sx)), iy = static_cast<int>(std::floor(sy));
+            float expected = 0;
+            for (int dy = 0; dy < 2; ++dy)
+                for (int dx = 0; dx < 2; ++dx) {
+                    const auto wrapped = static_cast<std::uint32_t>((ix + dx + 32) % 32);
+                    const auto clamped = static_cast<std::uint32_t>(std::clamp(iy + dy, 0, 15));
+                    const float wx = dx ? sx - std::floor(sx) : 1.0F - (sx - std::floor(sx));
+                    const float wy = dy ? sy - std::floor(sy) : 1.0F - (sy - std::floor(sy));
+                    expected += red(wrapped, clamped) * wx * wy;
+                }
+            if (std::abs(readRed(negative, static_cast<std::size_t>(y) * size + x) - expected) > 0.03F) {
+                std::cerr << "FAIL: environment conversion did not filter across the longitude seam\n";
+                return false;
+            }
+        }
+    const auto second = backend.regenerateImage({.source = "synthetic", .exposure = 2.0F}, image);
+    render();
+    const auto doubled = device.readbackTextureEx(second.cubemap, 0, 0);
+    if (std::abs(second.sphericalHarmonics[9] - first.sphericalHarmonics[9] * 2.0F) > 1e-5F ||
+        std::abs(readRed(doubled, center) - readRed(positive, center) * 2.0F) > 0.03F) {
+        std::cerr << "FAIL: exposure did not scale both SH and cubemap radiance\n";
+        return false;
+    }
     return true;
 }
 
@@ -1382,6 +1472,8 @@ int main() {
             std::cerr << "FAIL: native environment compute pipelines were not initialized\n";
             return 1;
         }
+        if (!generatedEnvironmentDirectionsAndExposureAgree(device))
+            return 1;
         if (!recordsNativeOffscreenOutput(device)) {
             std::cerr << "FAIL: native renderer was not recorded for offscreen output\n";
             return 1;
