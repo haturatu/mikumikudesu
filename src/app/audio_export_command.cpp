@@ -20,7 +20,7 @@ std::filesystem::path resolveAudioSource(const Options& options) {
     const auto& exportOptions = *options.audioExport;
     if (exportOptions.source) {
         const auto source = std::filesystem::absolute(*exportOptions.source);
-        core::MediaFile media(source);
+        core::MediaFile media(source, core::MediaOpenMode::audioOnly);
         if (!media.info().hasAudio) {
             throw std::runtime_error("audio source has no audio stream: " + source.string());
         }
@@ -33,7 +33,7 @@ std::filesystem::path resolveAudioSource(const Options& options) {
         if (kind != core::AssetKind::audio && kind != core::AssetKind::video)
             continue;
         const auto source = std::filesystem::absolute(asset);
-        core::MediaFile media(source);
+        core::MediaFile media(source, core::MediaOpenMode::audioOnly);
         if (media.info().hasAudio && std::find(candidates.begin(), candidates.end(), source) == candidates.end()) {
             candidates.push_back(source);
         }

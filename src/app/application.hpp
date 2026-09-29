@@ -47,6 +47,13 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     [[nodiscard]] core::DayoProject currentProject() const;
     void loadEffectAsset(const std::filesystem::path& path, std::optional<core::ModelId> owner);
     void handleAsset(const std::filesystem::path& path);
+    void loadAudioSource(const std::filesystem::path& path);
+    void loadBackgroundVideo(const std::filesystem::path& path);
+    void restartAudioAtCurrentFrame();
+    void syncMediaAtCurrentFrame();
+    [[nodiscard]] double backgroundVideoSeconds() const;
+    void buildMediaBackgroundUi();
+    void selectBackgroundSource(core::ScreenTextureSource source);
     void refreshAnimatedMesh(bool initialUpload, float deltaSeconds = 0.0F);
     void resetPhysicsSimulation();
     void evaluateExportFrame(float frame, float deltaSeconds, bool initialUpload = false);
@@ -168,6 +175,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     core::AudioBuffer loadedAudio_;
     std::vector<float> waveformPeaks_;
     bool videoMode_{};
+    std::array<char, 1024> backgroundVideoPath_{};
     double mediaSeconds_{};
     std::int64_t uploadedVideoFrame_{-1};
     std::string lastAsset_{"Drop PMX/VMD/VPD/media files into the window"};
