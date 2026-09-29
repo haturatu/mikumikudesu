@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 namespace dayo::core {
@@ -29,9 +30,16 @@ struct AudioBuffer {
 using AudioSampleCallback =
     std::function<void(std::span<const float> samples, std::uint32_t sampleRate, std::uint32_t channels)>;
 
+enum class MediaOpenMode { all, audioOnly, videoOnly };
+
+class NoAudioStreamError : public std::runtime_error {
+  public:
+    NoAudioStreamError() : std::runtime_error("media contains no audio stream") {}
+};
+
 class MediaFile {
   public:
-    explicit MediaFile(const std::filesystem::path& path);
+    explicit MediaFile(const std::filesystem::path& path, MediaOpenMode mode = MediaOpenMode::all);
     ~MediaFile();
     MediaFile(MediaFile&&) noexcept;
     MediaFile& operator=(MediaFile&&) noexcept;
@@ -61,6 +69,7 @@ class AudioPlayer {
     void stop();
     void setPaused(bool paused);
     void setVolume(float volume);
+    void setPlaybackSpeed(float speed);
     [[nodiscard]] bool active() const noexcept;
 
   private:
