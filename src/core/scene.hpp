@@ -146,6 +146,8 @@ struct Timeline {
     std::vector<std::pair<std::uint32_t, PhysicsSettings>> gravity;
 };
 
+enum class MediaPresentation { audioOnly, backgroundVideo };
+
 class Scene {
   public:
     Scene();
@@ -187,7 +189,7 @@ class Scene {
     // Realtime playback is the only automatic timeline driver; accumulate
     // keeps the current frame fixed while sampling and idle waits for edits.
     // Returns true when the frame changed.
-    bool advanceFrame(float deltaSeconds, bool playing) noexcept;
+    bool advanceFrame(float deltaSeconds, bool playing, bool repeat = true) noexcept;
     void setPhysicsSettings(PhysicsSettings settings) noexcept;
     bool setModelVisible(ModelId id, bool visible) noexcept;
     bool setCloneCount(ModelId id, std::uint32_t cloneCount) noexcept;
@@ -199,9 +201,13 @@ class Scene {
 
     void setBackgroundImage(const std::filesystem::path& path);
     void setBackgroundVideo(const std::filesystem::path& path);
-    void setMedia(const std::filesystem::path& path);
+    void setMedia(const std::filesystem::path& path, MediaPresentation presentation = MediaPresentation::audioOnly);
     void clearMedia();
     void clearBackground();
+    void clearBackgroundVideo();
+    void setBackgroundVideoVisible(bool visible) noexcept;
+    [[nodiscard]] MediaFile* backgroundMedia() noexcept;
+    [[nodiscard]] const MediaFile* backgroundMedia() const noexcept;
     [[nodiscard]] MediaFile* media() noexcept;
     [[nodiscard]] const MediaFile* media() const noexcept;
 
@@ -278,6 +284,7 @@ class Scene {
     std::vector<ExternalParentLink> externalParents_;
     void syncGlobalMotionTracks();
     std::optional<MediaFile> media_;
+    std::optional<MediaFile> backgroundMedia_;
     EffectId nextEffectId_{1};
     SceneEffectStack effects_;
     DirtyFlag dirty_{DirtyFlag::camera | DirtyFlag::geometry | DirtyFlag::material | DirtyFlag::lighting |

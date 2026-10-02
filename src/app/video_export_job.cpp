@@ -35,7 +35,7 @@ void VideoExportJob::start(core::VideoExportRequest request, std::optional<std::
             try {
                 core::VideoExporter exporter(request);
                 if (audioSource && request.includeAudio) {
-                    core::MediaFile media(*audioSource);
+                    core::MediaFile media(*audioSource, core::MediaOpenMode::audioOnly);
                     const auto maxSamples = static_cast<std::uint64_t>(
                                                 std::ceil(static_cast<double>(totalFrames_) / request.fps * 48'000.0)) *
                                             2U;

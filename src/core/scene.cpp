@@ -101,6 +101,7 @@ void Scene::clearProjectState() {
     externalParents_.clear();
     background_ = {};
     media_.reset();
+    backgroundMedia_.reset();
     clearEffects();
     timeline_ = {};
     timeline_.fps = 30.0F;
@@ -219,6 +220,13 @@ void Scene::recalculateTimelineDuration() noexcept {
     for (const auto& key : timeline_.gravity)
         lastFrame = std::max(lastFrame, key.first);
     timeline_.duration = static_cast<float>(lastFrame);
+    const double fps = timeline_.fps > 0.0F && std::isfinite(timeline_.fps) ? timeline_.fps : 30.0;
+    for (const auto* media : {this->media(), this->backgroundMedia()}) {
+        if (media != nullptr && media->info().durationSeconds > 0.0 && std::isfinite(media->info().durationSeconds))
+            timeline_.duration =
+                std::max(timeline_.duration,
+                         static_cast<float>(std::max(0.0, std::ceil(media->info().durationSeconds * fps) - 1.0)));
+    }
     if (timeline_.duration <= 0.0F || !std::isfinite(timeline_.frame)) {
         timeline_.frame = 0.0F;
     } else {
@@ -252,13 +260,14 @@ void Scene::setGravityTrack(std::vector<std::pair<std::uint32_t, PhysicsSettings
     markDirty(DirtyFlag::geometry | DirtyFlag::lighting);
 }
 
-bool Scene::advanceFrame(float deltaSeconds, bool playing) noexcept {
+bool Scene::advanceFrame(float deltaSeconds, bool playing, bool repeat) noexcept {
     if (!playing || runtimeMode_ != RuntimeMode::realtime || timeline_.duration <= 0.0F ||
         !std::isfinite(deltaSeconds) || deltaSeconds <= 0.0F)
         return false;
     const float fps = timeline_.fps > 0.0F && std::isfinite(timeline_.fps) ? timeline_.fps : 30.0F;
     const float period = timeline_.duration + 1.0F;
-    const float next = std::fmod(std::max(timeline_.frame, 0.0F) + deltaSeconds * fps, period);
+    const float advanced = std::max(timeline_.frame, 0.0F) + deltaSeconds * fps;
+    const float next = repeat ? std::fmod(advanced, period) : std::min(advanced, timeline_.duration);
     if (next == timeline_.frame)
         return false;
     setFrame(next);
@@ -427,7 +436,6 @@ void Scene::attachPose(const std::filesystem::path& path, ModelId target) {
 void Scene::setBackgroundImage(const std::filesystem::path& path) {
     background_.image = loadImageRgba8(path);
     background_.imagePath = std::filesystem::absolute(path).lexically_normal();
-    background_.videoPath.reset();
     background_.screenSource = ScreenTextureSource::backgroundImage;
     markDirty(DirtyFlag::background);
 }
@@ -438,21 +446,56 @@ void Scene::setBackgroundVideo(const std::filesystem::path& path) {
     markDirty(DirtyFlag::background);
 }
 
-void Scene::setMedia(const std::filesystem::path& path) {
-    media_.emplace(path);
-    if (media_->info().hasVideo)
+void Scene::setMedia(const std::filesystem::path& path, MediaPresentation presentation) {
+    auto next = MediaFile(path, presentation == MediaPresentation::audioOnly ? MediaOpenMode::audioOnly
+                                                                             : MediaOpenMode::videoOnly);
+    if (presentation == MediaPresentation::backgroundVideo) {
+        backgroundMedia_.emplace(std::move(next));
         setBackgroundVideo(path);
+    } else {
+        media_.emplace(std::move(next));
+    }
+    recalculateTimelineDuration();
+    markDirty(DirtyFlag::output);
+}
+
+MediaFile* Scene::backgroundMedia() noexcept {
+    return backgroundMedia_ ? std::addressof(*backgroundMedia_) : nullptr;
+}
+
+const MediaFile* Scene::backgroundMedia() const noexcept {
+    return backgroundMedia_ ? std::addressof(*backgroundMedia_) : nullptr;
+}
+
+void Scene::setBackgroundVideoVisible(bool visible) noexcept {
+    if (visible && background_.videoPath.has_value() && backgroundMedia_.has_value())
+        setBackgroundScreenSource(ScreenTextureSource::backgroundVideo);
+    else
+        setBackgroundScreenSource(background_.image.has_value() ? ScreenTextureSource::backgroundImage
+                                                                : ScreenTextureSource::white);
+}
+
+void Scene::clearBackgroundVideo() {
+    backgroundMedia_.reset();
+    background_.videoPath.reset();
+    if (background_.screenSource == ScreenTextureSource::backgroundVideo)
+        background_.screenSource =
+            background_.image.has_value() ? ScreenTextureSource::backgroundImage : ScreenTextureSource::white;
+    recalculateTimelineDuration();
     markDirty(DirtyFlag::background);
 }
 
 void Scene::clearBackground() {
+    backgroundMedia_.reset();
     background_ = {};
+    recalculateTimelineDuration();
     markDirty(DirtyFlag::background);
 }
 
 void Scene::clearMedia() {
     media_.reset();
-    markDirty(DirtyFlag::background);
+    recalculateTimelineDuration();
+    markDirty(DirtyFlag::output);
 }
 
 MediaFile* Scene::media() noexcept {

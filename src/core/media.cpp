@@ -66,13 +66,15 @@ struct MediaFile::Impl {
 #endif
 };
 
-MediaFile::MediaFile(const std::filesystem::path& path) : impl_(std::make_unique<Impl>()) {
+MediaFile::MediaFile(const std::filesystem::path& path, MediaOpenMode mode) : impl_(std::make_unique<Impl>()) {
 #if DAYO_HAS_MEDIA
     auto name = path.string();
     ffmpeg::check(avformat_open_input(&impl_->format, name.c_str(), nullptr, nullptr), "open media");
     ffmpeg::check(avformat_find_stream_info(impl_->format, nullptr), "read media streams");
-    impl_->audioStream = av_find_best_stream(impl_->format, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
-    impl_->videoStream = av_find_best_stream(impl_->format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (mode != MediaOpenMode::videoOnly)
+        impl_->audioStream = av_find_best_stream(impl_->format, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    if (mode != MediaOpenMode::audioOnly)
+        impl_->videoStream = av_find_best_stream(impl_->format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (impl_->audioStream >= 0) {
         impl_->audioCodec = openDecoder(impl_->format, impl_->audioStream);
         impl_->info.hasAudio = true;
@@ -85,13 +87,24 @@ MediaFile::MediaFile(const std::filesystem::path& path) : impl_(std::make_unique
         const auto rate = av_guess_frame_rate(impl_->format, impl_->format->streams[impl_->videoStream], nullptr);
         impl_->info.videoFramesPerSecond = rate.den != 0 ? av_q2d(rate) : 30.0;
     }
+    if (mode == MediaOpenMode::audioOnly && !impl_->info.hasAudio)
+        throw NoAudioStreamError();
+    if (mode == MediaOpenMode::videoOnly && !impl_->info.hasVideo)
+        throw std::runtime_error("media contains no video stream");
     if (!impl_->info.hasAudio && !impl_->info.hasVideo)
         throw std::runtime_error("media contains no audio or video stream");
     if (impl_->format->duration > 0) {
         impl_->info.durationSeconds = static_cast<double>(impl_->format->duration) / AV_TIME_BASE;
     }
+    if (mode != MediaOpenMode::all) {
+        const int selected = mode == MediaOpenMode::audioOnly ? impl_->audioStream : impl_->videoStream;
+        const auto* stream = impl_->format->streams[selected];
+        if (stream->duration > 0 && stream->duration != AV_NOPTS_VALUE)
+            impl_->info.durationSeconds = static_cast<double>(stream->duration) * av_q2d(stream->time_base);
+    }
 #else
     static_cast<void>(path);
+    static_cast<void>(mode);
     throw std::runtime_error("FFmpeg support was not built");
 #endif
 }
@@ -340,6 +353,13 @@ void AudioPlayer::setVolume(float volume) {
     if (impl_ == nullptr || impl_->stream == nullptr)
         return;
     SDL_SetAudioStreamGain(impl_->stream, std::clamp(volume, 0.0F, 1.0F));
+}
+
+void AudioPlayer::setPlaybackSpeed(float speed) {
+    if (impl_ == nullptr || impl_->stream == nullptr)
+        return;
+    if (!SDL_SetAudioStreamFrequencyRatio(impl_->stream, std::clamp(speed, 0.1F, 4.0F)))
+        throw std::runtime_error(std::string("change audio playback speed: ") + SDL_GetError());
 }
 
 bool AudioPlayer::active() const noexcept {

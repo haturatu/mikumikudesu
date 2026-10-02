@@ -662,10 +662,11 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                    backgroundState.image.has_value()) {
             nativeBackground = backgroundState.image;
             screenSource = graphics::NativeScreenSource::external;
-        } else if (backgroundState.screenSource == core::ScreenTextureSource::backgroundVideo) {
-            auto* media = scene_.media();
+        } else if (videoMode_ && videoVisible_ &&
+                   backgroundState.screenSource == core::ScreenTextureSource::backgroundVideo) {
+            auto* media = scene_.backgroundMedia();
             if (media != nullptr && media->info().hasVideo)
-                nativeBackground = media->decodeVideoFrame(mediaSeconds_);
+                nativeBackground = media->decodeVideoFrame(backgroundVideoSeconds());
             if (nativeBackground.has_value())
                 screenSource = graphics::NativeScreenSource::external;
         }
@@ -989,6 +990,9 @@ void Application::resetProjectRuntimeState() {
     mediaSeconds_ = 0.0;
     uploadedVideoFrame_ = -1;
     videoMode_ = false;
+    videoVisible_ = false;
+    mediaVideoError_.clear();
+    backgroundVideoPath_.fill(0);
     animationFrame_ = 0.0F;
     uploadedAnimationFrame_ = -1;
     playing_ = true;
@@ -1191,15 +1195,26 @@ int Application::run() {
                 restoreVideoExportState();
                 videoExportUiActive_ = videoExportRestorePending_;
             }
-        } else if (scene_.advanceFrame(deltaSeconds * playbackSpeed_, playing_)) {
+        } else if (scene_.advanceFrame(deltaSeconds * playbackSpeed_, playing_, repeat_)) {
+            const bool wrapped =
+                repeat_ && static_cast<double>(animationFrame_) +
+                                   deltaSeconds * static_cast<double>(playbackSpeed_) * sceneTimelineFps(scene_) >=
+                               scene_.timeline().duration + 1.0;
+
             animationFrame_ = scene_.timeline().frame;
+            if (wrapped)
+                restartAudioAtCurrentFrame();
+            if (!repeat_ && animationFrame_ >= scene_.timeline().duration) {
+                playing_ = false;
+                audioPlayer_.setPaused(true);
+            }
             const int integerFrame = static_cast<int>(animationFrame_);
             if (integerFrame != uploadedAnimationFrame_ && !scene_.models().empty()) {
                 refreshAnimatedMesh(false, deltaSeconds * playbackSpeed_);
             }
             refreshPreviewScene();
         }
-        auto* media = scene_.media();
+        auto* media = scene_.backgroundMedia();
         for (auto& effect : reloadedEffects_) {
             std::string reloadError;
             if (effect.reloader.poll(&reloadError) && effect.reloader.current() != nullptr) {
@@ -1211,25 +1226,11 @@ int Application::run() {
                 log::warn("FX hot reload deferred: ", reloadError);
             }
         }
-        if (playing_ && videoMode_ && media != nullptr && media->info().hasVideo) {
-            mediaSeconds_ += deltaSeconds * static_cast<double>(playbackSpeed_);
-            if (media->info().durationSeconds > 0.0 && mediaSeconds_ >= media->info().durationSeconds) {
-                if (repeat_)
-                    mediaSeconds_ = std::fmod(mediaSeconds_, media->info().durationSeconds);
-                else {
-                    mediaSeconds_ = media->info().durationSeconds;
-                    playing_ = false;
-                    audioPlayer_.setPaused(true);
-                }
-                uploadedVideoFrame_ = -1;
-                if (repeat_ && media->info().hasAudio) {
-                    if (loadedAudio_.samples.empty())
-                        loadedAudio_ = media->decodeAudio();
-                    audioPlayer_.play(loadedAudio_, std::max(0.0F, audioOffsetSeconds_));
-                    audioPlayer_.setVolume(audioVolume_);
-                }
-            }
-            const auto videoFrame = static_cast<std::int64_t>(mediaSeconds_ * media->info().videoFramesPerSecond);
+        // The shared time follows the timeline even while video is hidden.
+        mediaSeconds_ = std::max(0.0, static_cast<double>(animationFrame_) / sceneTimelineFps(scene_));
+        if (videoMode_ && videoVisible_ && media != nullptr && media->info().hasVideo) {
+            const auto videoFrame =
+                static_cast<std::int64_t>(backgroundVideoSeconds() * media->info().videoFramesPerSecond);
             if (videoFrame != uploadedVideoFrame_)
                 refreshVideoFrame();
         }
@@ -1275,12 +1276,10 @@ core::DayoProject Application::currentProject() const {
     project.editor.floorCollision = scene_.physicsSettings().floorCollision;
     project.editor.animationSpeed = playbackSpeed_;
     project.editor.recordFps = static_cast<float>(sceneTimelineFps(scene_));
-    if (const auto audio = std::ranges::find(project.assets, std::string_view{"audio"}, &core::ProjectAsset::kind);
-        audio != project.assets.end())
-        project.editor.wavFile = audio->path;
-    if (const auto video = std::ranges::find(project.assets, std::string_view{"video"}, &core::ProjectAsset::kind);
-        video != project.assets.end())
-        project.editor.movieFile = video->path;
+    project.editor.wavFile = audioSource_;
+    project.editor.movieVisible = videoVisible_;
+    project.editor.movieFile = videoMode_ && scene_.background().videoPath.has_value() ? *scene_.background().videoPath
+                                                                                       : std::filesystem::path{};
 #if DAYO_HAS_IMGUI
     auto sequenceFile = std::filesystem::path(sequenceOutputFilename_.data());
     sequenceFile.replace_extension(sequenceOutput_.format == core::OutputFormat::png   ? ".png"
@@ -1413,7 +1412,7 @@ int Application::runVideoExport() {
     if (options.includeAudio) {
         if (options.audioSource) {
             const auto source = std::filesystem::absolute(*options.audioSource);
-            core::MediaFile media(source);
+            core::MediaFile media(source, core::MediaOpenMode::audioOnly);
             if (!media.info().hasAudio) {
                 throw std::runtime_error("audio source has no audio stream: " + source.string());
             }
@@ -1425,10 +1424,12 @@ int Application::runVideoExport() {
                 if (kind != core::AssetKind::audio && kind != core::AssetKind::video)
                     continue;
                 const auto source = std::filesystem::absolute(asset);
-                core::MediaFile media(source);
-                if (media.info().hasAudio &&
-                    std::find(candidates.begin(), candidates.end(), source) == candidates.end()) {
-                    candidates.push_back(source);
+                try {
+                    core::MediaFile media(source, core::MediaOpenMode::audioOnly);
+                    if (std::find(candidates.begin(), candidates.end(), source) == candidates.end())
+                        candidates.push_back(source);
+                } catch (const core::NoAudioStreamError&) {
+                    // Silent videos are valid scene assets but cannot supply export audio.
                 }
             }
             if (candidates.size() > 1) {
@@ -1471,7 +1472,7 @@ int Application::runVideoExport() {
 
     core::VideoExporter exporter(request);
     if (audioSource) {
-        core::MediaFile media(*audioSource);
+        core::MediaFile media(*audioSource, core::MediaOpenMode::audioOnly);
         const auto maxSamples =
             static_cast<std::uint64_t>(std::ceil(static_cast<double>(frameCount) / options.fps * 48'000.0)) * 2U;
         std::uint64_t writtenSamples = 0;
@@ -1491,7 +1492,7 @@ int Application::runVideoExport() {
     auto evaluateFrame = [&](float frame, float deltaSeconds, bool initialUpload) {
         animationFrame_ = frame;
         scene_.setFrame(animationFrame_);
-        if (videoMode_ && scene_.media() != nullptr) {
+        if (videoMode_ && scene_.backgroundMedia() != nullptr) {
             mediaSeconds_ = std::max(0.0, static_cast<double>(frame) / sourceFps);
         }
         refreshAnimatedMesh(initialUpload, deltaSeconds);
@@ -1700,7 +1701,24 @@ void Application::handleAsset(const std::filesystem::path& path) {
             for (const auto& asset : project.assets)
                 if (asset.kind != "pmx" && asset.kind != "effect") {
                     try {
-                        handleAsset(asset.path);
+                        if (asset.kind == "video") {
+                            const auto text = asset.path.string();
+                            backgroundVideoPath_.fill(0);
+                            std::copy_n(text.data(), std::min(text.size(), backgroundVideoPath_.size() - 1U),
+                                        backgroundVideoPath_.data());
+                            if (audioSource_.empty() && project.editor.wavFile.empty()) {
+                                // Legacy projects stored movie audio only as a video asset.
+                                try {
+                                    core::MediaFile legacy(asset.path, core::MediaOpenMode::audioOnly);
+                                    loadAudioSource(asset.path);
+                                } catch (const core::NoAudioStreamError&) {
+                                    // A silent legacy movie still remains a valid background.
+                                }
+                            }
+                            loadBackgroundVideo(asset.path, project.editor.movieVisible);
+                        } else {
+                            handleAsset(asset.path);
+                        }
                     } catch (const std::exception& exception) {
                         log::warn("Project asset could not be loaded: ", asset.path.string(), ": ", exception.what());
                     }
@@ -1738,6 +1756,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             animationFrame_ = project.frame;
             scene_.setFrame(animationFrame_);
             playing_ = project.playing;
+            syncMediaAtCurrentFrame();
             if (!scene_.models().empty())
                 refreshAnimatedMesh(false);
             lastAsset_ =
@@ -1757,6 +1776,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             scene_.attachMotion(document.motion, scene_.selectedModelId(), document.modelName);
             animationFrame_ = 0.0F;
             scene_.setFrame(animationFrame_);
+            syncMediaAtCurrentFrame();
             refreshAnimatedMesh(false);
             refreshPreviewScene();
             lastAsset_ = "VMdayo " + path.filename().string();
@@ -1772,7 +1792,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
         try {
             auto image = core::loadImageRgba8(path);
             scene_.setBackgroundImage(path);
-            videoMode_ = false;
+            videoVisible_ = false;
             const std::array<graphics::PreviewVertex, 4> vertices{{
                 {{-1.0F, -1.0F, 0.0F}, {}, {0.0F, 1.0F}},
                 {{1.0F, -1.0F, 0.0F}, {}, {1.0F, 1.0F}},
@@ -1813,7 +1833,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             if (scene_.models().empty() || scene_.selectedModelId() != modelId)
                 throw std::logic_error("PMX model was not retained in the scene");
             log::info("PMX scene state: models=", scene_.models().size(), " selected=", scene_.selectedModelId());
-            videoMode_ = scene_.media() != nullptr && scene_.media()->info().hasVideo;
+            videoMode_ = scene_.backgroundMedia() != nullptr && scene_.backgroundMedia()->info().hasVideo;
             normalization_ = scene_.selectedModel()->normalization;
             if (const auto associatedEffect = core::findAssociatedEffect(path); associatedEffect.has_value()) {
                 try {
@@ -1826,6 +1846,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             refreshPreviewTextures();
             animationFrame_ = 0.0F;
             scene_.setFrame(animationFrame_);
+            syncMediaAtCurrentFrame();
             uploadedAnimationFrame_ = -1;
             refreshAnimatedMesh(true);
             if (videoMode_)
@@ -1845,62 +1866,13 @@ void Application::handleAsset(const std::filesystem::path& path) {
         return;
     }
     if (kind == core::AssetKind::audio || kind == core::AssetKind::video) {
-        try {
-            scene_.setMedia(path);
-            auto* media = scene_.media();
-            mediaSeconds_ = 0.0;
-            uploadedVideoFrame_ = -1;
-            videoMode_ = media->info().hasVideo;
-            if (media->info().hasAudio && !options_.videoExport) {
-                loadedAudio_ = media->decodeAudio();
-                waveformPeaks_.assign(1024, 0.0F);
-                if (!loadedAudio_.samples.empty() && loadedAudio_.channels != 0) {
-                    const auto frames = loadedAudio_.samples.size() / loadedAudio_.channels;
-                    for (std::size_t bucket = 0; bucket < waveformPeaks_.size(); ++bucket) {
-                        const auto begin = bucket * frames / waveformPeaks_.size();
-                        const auto end = std::max((bucket + 1) * frames / waveformPeaks_.size(), begin + 1);
-                        float peak = 0.0F;
-                        for (auto frame = begin; frame < std::min(end, frames); ++frame) {
-                            for (std::uint32_t channel = 0; channel < loadedAudio_.channels; ++channel) {
-                                peak = std::max(
-                                    peak, std::abs(loadedAudio_.samples[frame * loadedAudio_.channels + channel]));
-                            }
-                        }
-                        waveformPeaks_[bucket] = peak;
-                    }
-                }
-                audioPlayer_.play(loadedAudio_, std::max(0.0F, audioOffsetSeconds_));
-                audioPlayer_.setVolume(audioVolume_);
-            }
-            if (media->info().hasAudio) {
-                audioSource_ = std::filesystem::absolute(path);
-                setAudioExportDestinationForSource(path);
-                audioToSeconds_ = static_cast<float>(std::max(0.0, media->info().durationSeconds));
-            }
-            if (videoMode_ && scene_.models().empty()) {
-                const std::array<graphics::PreviewVertex, 4> vertices{{
-                    {{-0.9F, -0.9F, 0.0F}, {0.0F, 0.0F, 1.0F}, {0.0F, 1.0F}},
-                    {{0.9F, -0.9F, 0.0F}, {0.0F, 0.0F, 1.0F}, {1.0F, 1.0F}},
-                    {{0.9F, 0.9F, 0.0F}, {0.0F, 0.0F, 1.0F}, {1.0F, 0.0F}},
-                    {{-0.9F, 0.9F, 0.0F}, {0.0F, 0.0F, 1.0F}, {0.0F, 0.0F}},
-                }};
-                const std::array<std::uint32_t, 6> indices{0, 1, 2, 2, 3, 0};
-                device_->uploadPreviewMesh(vertices, indices);
-                refreshVideoFrame();
-            } else if (!scene_.models().empty()) {
-                refreshPreviewTextures();
-                refreshAnimatedMesh(true);
-                refreshVideoFrame();
-            }
-            lastAsset_ =
-                std::string(core::toString(kind)) + " — " + std::to_string(media->info().durationSeconds) + " s";
-            log::info("Loaded media: ", lastAsset_, " (", path.string(), ")");
-            projectAssets_.emplace_back(kind == core::AssetKind::audio ? "audio" : "video",
-                                        std::filesystem::absolute(path));
-        } catch (const std::exception& exception) {
-            lastAsset_ = "Media error: " + std::string(exception.what());
-            log::warn(lastAsset_);
+        if (kind == core::AssetKind::video) {
+            const auto text = std::filesystem::absolute(path).string();
+            backgroundVideoPath_.fill(0);
+            std::copy_n(text.data(), std::min(text.size(), backgroundVideoPath_.size() - 1U),
+                        backgroundVideoPath_.data());
         }
+        loadAudioSource(path);
         return;
     }
     if (kind == core::AssetKind::vmd) {
@@ -1918,6 +1890,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             manualCamera_ = false;
             animationFrame_ = 0.0F;
             scene_.setFrame(animationFrame_);
+            syncMediaAtCurrentFrame();
             if (selectedModel() != nullptr)
                 refreshAnimatedMesh(false);
             refreshPreviewScene();
@@ -2511,13 +2484,178 @@ void Application::refreshPreviewTextures() {
     device_->uploadPreviewTextures(previewTextures);
 }
 
+void Application::restartAudioAtCurrentFrame() {
+    if (loadedAudio_.samples.empty())
+        return;
+    const double seconds = std::max(0.0, static_cast<double>(animationFrame_) / sceneTimelineFps(scene_) +
+                                             static_cast<double>(audioOffsetSeconds_));
+    audioPlayer_.play(loadedAudio_, seconds);
+    audioPlayer_.setVolume(audioVolume_);
+    audioPlayer_.setPlaybackSpeed(playbackSpeed_);
+    audioPlayer_.setPaused(!playing_);
+}
+
+void Application::syncMediaAtCurrentFrame() {
+    mediaSeconds_ = std::max(0.0, static_cast<double>(animationFrame_) / sceneTimelineFps(scene_));
+    uploadedVideoFrame_ = -1;
+    if (videoMode_)
+        refreshVideoFrame();
+    restartAudioAtCurrentFrame();
+}
+
+void Application::loadAudioSource(const std::filesystem::path& path) {
+    try {
+        core::MediaFile source(path, core::MediaOpenMode::audioOnly);
+        auto audio = options_.videoExport ? core::AudioBuffer{} : source.decodeAudio();
+        scene_.setMedia(path, core::MediaPresentation::audioOnly);
+        animationFrame_ = scene_.timeline().frame;
+        audioPlayer_.stop();
+        loadedAudio_ = std::move(audio);
+        waveformPeaks_.clear();
+        if (!options_.videoExport) {
+            waveformPeaks_.assign(1024, 0.0F);
+            if (!loadedAudio_.samples.empty() && loadedAudio_.channels != 0) {
+                const auto frames = loadedAudio_.samples.size() / loadedAudio_.channels;
+                for (std::size_t bucket = 0; bucket < waveformPeaks_.size(); ++bucket) {
+                    const auto begin = bucket * frames / waveformPeaks_.size();
+                    const auto end = std::max((bucket + 1) * frames / waveformPeaks_.size(), begin + 1);
+                    float peak = 0.0F;
+                    for (auto frame = begin; frame < std::min(end, frames); ++frame) {
+                        for (std::uint32_t channel = 0; channel < loadedAudio_.channels; ++channel) {
+                            peak =
+                                std::max(peak, std::abs(loadedAudio_.samples[frame * loadedAudio_.channels + channel]));
+                        }
+                    }
+                    waveformPeaks_[bucket] = peak;
+                }
+            }
+        }
+        audioSource_ = std::filesystem::absolute(path).lexically_normal();
+        setAudioExportDestinationForSource(path);
+        audioToSeconds_ = static_cast<float>(std::max(0.0, source.info().durationSeconds));
+        std::erase_if(projectAssets_, [](const auto& asset) { return asset.kind == "audio"; });
+        projectAssets_.emplace_back("audio", audioSource_);
+        restartAudioAtCurrentFrame();
+        lastAsset_ = "Audio " + path.filename().string() + " — " + std::to_string(source.info().durationSeconds) + " s";
+        log::info("Loaded audio: ", path.string());
+    } catch (const std::exception& error) {
+        lastAsset_ = "Audio error: " + std::string(error.what());
+        log::warn(lastAsset_);
+    }
+}
+
+void Application::loadBackgroundVideo(const std::filesystem::path& path, bool visible) {
+    try {
+        mediaVideoError_.clear();
+        scene_.setMedia(path, core::MediaPresentation::backgroundVideo);
+        animationFrame_ = scene_.timeline().frame;
+        videoMode_ = true;
+        setVideoVisible(visible);
+        std::erase_if(projectAssets_, [](const auto& asset) { return asset.kind == "video"; });
+        projectAssets_.emplace_back("video", std::filesystem::absolute(path).lexically_normal());
+        lastAsset_ = "Background video " + path.filename().string();
+        log::info("Loaded background video: ", path.string());
+    } catch (const std::exception& error) {
+        mediaVideoError_ = error.what();
+        lastAsset_ = "Background video error: " + mediaVideoError_;
+        log::warn(lastAsset_);
+    }
+}
+
+void Application::setVideoVisible(bool visible) {
+    const auto* media = scene_.backgroundMedia();
+    videoMode_ = media != nullptr && media->info().hasVideo;
+    videoVisible_ = visible && videoMode_;
+    scene_.setBackgroundVideoVisible(videoVisible_);
+    if (videoVisible_)
+        scene_.setBackgroundEnabled(true);
+    mediaSeconds_ = std::max(0.0, static_cast<double>(animationFrame_) / sceneTimelineFps(scene_));
+    uploadedVideoFrame_ = -1;
+    refreshPreviewBackground();
+    refreshPreviewScene();
+}
+
+void Application::selectBackgroundSource(core::ScreenTextureSource source) {
+    if (source == core::ScreenTextureSource::backgroundVideo) {
+        std::error_code pathError;
+        const auto requested = std::filesystem::absolute(backgroundVideoPath_.data(), pathError).lexically_normal();
+        if (!pathError && videoMode_ && scene_.background().videoPath == requested)
+            setVideoVisible(true);
+        else
+            loadBackgroundVideo(backgroundVideoPath_.data());
+        return;
+    }
+    setVideoVisible(false);
+    scene_.setBackgroundScreenSource(source);
+    refreshPreviewBackground();
+    refreshPreviewScene();
+}
+
+void Application::buildMediaPlaybackControls(bool compact) {
+#if DAYO_HAS_IMGUI
+    if (!audioSource_.empty())
+        ImGui::TextWrapped("Audio: %s", audioSource_.filename().string().c_str());
+    else
+        ImGui::TextDisabled("Drop an MP4 or audio file to load audio.");
+    const auto videoPath = videoMode_ && scene_.background().videoPath.has_value()
+                               ? *scene_.background().videoPath
+                               : std::filesystem::path(backgroundVideoPath_.data());
+    if (!videoPath.empty()) {
+        if (compact && !audioSource_.empty())
+            ImGui::SameLine();
+        ImGui::TextWrapped("Video: %s", videoPath.filename().string().c_str());
+    }
+    const bool canShowVideo = videoMode_ || backgroundVideoPath_[0] != '\0';
+    ImGui::BeginDisabled(!canShowVideo);
+    bool show = videoVisible_;
+    if (ImGui::Checkbox("Show MP4 video", &show)) {
+        if (show)
+            selectBackgroundSource(core::ScreenTextureSource::backgroundVideo);
+        else
+            setVideoVisible(false);
+    }
+    ImGui::EndDisabled();
+    if (!canShowVideo)
+        ImGui::TextDisabled("Drop an MP4 to enable video display.");
+    if (!mediaVideoError_.empty())
+        ImGui::TextWrapped("Video: %s", mediaVideoError_.c_str());
+    ImGui::BeginDisabled(loadedAudio_.samples.empty());
+    if (compact) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(130.0F);
+    }
+    if (ImGui::SliderFloat("Volume", &audioVolume_, 0.0F, 1.0F))
+        audioPlayer_.setVolume(audioVolume_);
+    if (compact) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(110.0F);
+    }
+    if (ImGui::DragFloat("Audio offset", &audioOffsetSeconds_, 0.01F, -60.0F, 60.0F, "%.2f s"))
+        restartAudioAtCurrentFrame();
+    ImGui::EndDisabled();
+#else
+    (void)compact;
+#endif
+}
+
+void Application::buildMediaBackgroundUi() {
+#if DAYO_HAS_IMGUI
+    ImGui::InputTextWithHint("Video file", "MP4 background (optional)", backgroundVideoPath_.data(),
+                             backgroundVideoPath_.size());
+    if (ImGui::Button("Apply video file"))
+        loadBackgroundVideo(backgroundVideoPath_.data());
+    buildMediaPlaybackControls();
+#endif
+}
+
 void Application::refreshPreviewBackground() {
     if (device_ == nullptr)
         return;
     const auto& background = scene_.background();
     uploadedVideoFrame_ = -1;
     if (background.screenSource == core::ScreenTextureSource::backgroundVideo) {
-        if (videoMode_ && scene_.media() != nullptr && scene_.media()->info().hasVideo)
+        if (videoMode_ && videoVisible_ && scene_.backgroundMedia() != nullptr &&
+            scene_.backgroundMedia()->info().hasVideo)
             refreshVideoFrame();
         else
             device_->uploadPreviewBackground({});
@@ -2532,15 +2670,26 @@ void Application::refreshPreviewBackground() {
     device_->uploadPreviewBackground(textures);
 }
 
+double Application::backgroundVideoSeconds() const {
+    const auto* media = scene_.backgroundMedia();
+    if (media == nullptr || media->info().durationSeconds <= 0.0)
+        return mediaSeconds_;
+    const auto& info = media->info();
+    if (repeat_)
+        return std::fmod(mediaSeconds_, info.durationSeconds);
+    const double fps = info.videoFramesPerSecond > 0.0 ? info.videoFramesPerSecond : 30.0;
+    return std::min(mediaSeconds_, std::max(0.0, info.durationSeconds - 1.0 / fps));
+}
+
 void Application::refreshVideoFrame() {
-    auto* media = scene_.media();
-    if (!videoMode_ || media == nullptr || device_ == nullptr ||
+    auto* media = scene_.backgroundMedia();
+    if (!videoMode_ || !videoVisible_ || media == nullptr || device_ == nullptr ||
         scene_.background().screenSource != core::ScreenTextureSource::backgroundVideo)
         return;
-    const auto frameIndex = static_cast<std::int64_t>(mediaSeconds_ * media->info().videoFramesPerSecond);
+    const auto frameIndex = static_cast<std::int64_t>(backgroundVideoSeconds() * media->info().videoFramesPerSecond);
     if (frameIndex == uploadedVideoFrame_)
         return;
-    const auto image = media->decodeVideoFrame(mediaSeconds_);
+    const auto image = media->decodeVideoFrame(backgroundVideoSeconds());
     const std::array textures{graphics::PreviewTexture{image.width, image.height, image.pixels}};
     device_->uploadPreviewBackground(textures);
     if (scene_.models().empty()) {
@@ -2604,7 +2753,7 @@ void Application::resetPhysicsSimulation() {
 void Application::evaluateExportFrame(float frame, float deltaSeconds, bool initialUpload) {
     animationFrame_ = frame;
     scene_.setFrame(frame);
-    if (videoMode_ && scene_.media() != nullptr) {
+    if (videoMode_ && scene_.backgroundMedia() != nullptr) {
         mediaSeconds_ = std::max(0.0, static_cast<double>(frame) / sceneTimelineFps(scene_));
         refreshVideoFrame();
     }
@@ -2656,7 +2805,7 @@ void Application::buildUi() {
                 const auto imagePosition = ImGui::GetCursorScreenPos();
                 ImGui::Image(ImTextureRef{static_cast<ImTextureID>(preview.textureId)}, available);
                 const bool imageHovered = ImGui::IsItemHovered();
-                if (scene_.models().empty()) {
+                if (scene_.models().empty() && !videoVisible_) {
                     constexpr auto message = "No model loaded\nDrop a PMX file into the window";
                     const auto messageSize = ImGui::CalcTextSize(message);
                     const ImVec2 padding{ImGui::GetStyle().FramePadding.x * 2.0F,
@@ -2761,15 +2910,9 @@ void Application::buildUi() {
     if (uiState_.physicsVisible && ImGui::Begin(workspaceWindowName("Physics", "physics").c_str())) {
         ImGui::Text("Timeline: %.1f / %.1f frames", animationFrame_, scene_.timeline().duration);
         ImGui::Checkbox("Repeat", &repeat_);
-        ImGui::SliderFloat("Playback speed", &playbackSpeed_, 0.1F, 4.0F, "%.2fx");
-        if (ImGui::SliderFloat("Volume", &audioVolume_, 0.0F, 1.0F))
-            audioPlayer_.setVolume(audioVolume_);
-        if (ImGui::DragFloat("Audio offset", &audioOffsetSeconds_, 0.01F, -60.0F, 60.0F, "%.2f s") &&
-            !loadedAudio_.samples.empty()) {
-            audioPlayer_.play(loadedAudio_, std::max(0.0F, audioOffsetSeconds_));
-            audioPlayer_.setVolume(audioVolume_);
-            audioPlayer_.setPaused(!playing_);
-        }
+        if (ImGui::SliderFloat("Playback speed", &playbackSpeed_, 0.1F, 4.0F, "%.2fx"))
+            restartAudioAtCurrentFrame();
+        buildMediaPlaybackControls();
         if (!waveformPeaks_.empty()) {
             ImGui::PlotLines("Waveform", waveformPeaks_.data(), static_cast<int>(waveformPeaks_.size()), 0, nullptr,
                              0.0F, 1.0F, {0.0F, 72.0F});
@@ -2858,8 +3001,7 @@ void Application::handleEditorShortcuts() {
                                          "Record camera key"));
         } else {
             playing_ = !playing_;
-            if (audioPlayer_.active())
-                audioPlayer_.setPaused(!playing_);
+            restartAudioAtCurrentFrame();
         }
     }
 #endif
@@ -2931,11 +3073,18 @@ void Application::buildMainMenuBar() {
         }
         ImGui::EndMenu();
     }
+    if (ImGui::BeginMenu("Media")) {
+        buildMediaPlaybackControls();
+        if (ImGui::MenuItem("Open Timeline")) {
+            uiState_.timelineVisible = true;
+            uiState_.resetLayoutRequested = true;
+        }
+        ImGui::EndMenu();
+    }
     if (ImGui::BeginMenu("Animation")) {
         if (ImGui::MenuItem(playing_ ? "Pause" : "Play", "Space")) {
             playing_ = !playing_;
-            if (audioPlayer_.active())
-                audioPlayer_.setPaused(!playing_);
+            restartAudioAtCurrentFrame();
         }
         ImGui::MenuItem("Loop", nullptr, &repeat_);
         ImGui::EndMenu();
@@ -3059,9 +3208,7 @@ void Application::buildInspectorPanel() {
                 ImGui::TextUnformatted("Background");
                 ImGui::TableSetColumnIndex(1);
                 if (ImGui::Combo("##background-source", &source, "Previous frame\0Video\0Image\0White\0")) {
-                    scene_.setBackgroundScreenSource(static_cast<core::ScreenTextureSource>(source));
-                    refreshPreviewBackground();
-                    refreshPreviewScene();
+                    selectBackgroundSource(static_cast<core::ScreenTextureSource>(source));
                 }
                 ImGui::EndTable();
             }
@@ -3070,6 +3217,7 @@ void Application::buildInspectorPanel() {
                 scene_.setBackgroundEnabled(enabled);
                 refreshPreviewScene();
             }
+            buildMediaBackgroundUi();
             ImGui::SeparatorText("Preview lighting");
             ImGui::InputText("HDRI file", previewHdriPath_.data(), previewHdriPath_.size());
             if (ImGui::Button("Apply lighting HDRI")) {
@@ -3280,10 +3428,7 @@ void Application::restoreVideoExportState() {
         refreshVideoFrame();
     }
     if (videoExportRestoreAudioActive_ && !loadedAudio_.samples.empty()) {
-        const auto audioStart = std::max(0.0, videoExportRestoreMediaSeconds_ + audioOffsetSeconds_);
-        audioPlayer_.play(loadedAudio_, audioStart);
-        audioPlayer_.setVolume(audioVolume_);
-        audioPlayer_.setPaused(!playing_);
+        restartAudioAtCurrentFrame();
     } else {
         audioPlayer_.stop();
     }
@@ -3389,8 +3534,7 @@ void Application::restoreImageSequenceState() {
     mediaSeconds_ = imageSequenceRestoreMediaSeconds_;
     playing_ = imageSequenceRestorePlaying_;
     manualCamera_ = imageSequenceRestoreManualCamera_;
-    if (audioPlayer_.active())
-        audioPlayer_.setPaused(!playing_);
+    restartAudioAtCurrentFrame();
     refreshAnimatedMesh(false);
     if (videoMode_) {
         uploadedVideoFrame_ = -1;
@@ -3798,6 +3942,7 @@ void Application::buildEditorUi() {
         if (ImGui::Button("|<")) {
             animationFrame_ = 0.0F;
             scene_.setFrame(animationFrame_);
+            syncMediaAtCurrentFrame();
             refreshAnimatedMesh(false);
             refreshPreviewScene();
         }
@@ -3805,19 +3950,20 @@ void Application::buildEditorUi() {
         if (ImGui::Button("<")) {
             animationFrame_ = std::max(0.0F, animationFrame_ - 1.0F);
             scene_.setFrame(animationFrame_);
+            syncMediaAtCurrentFrame();
             refreshAnimatedMesh(false);
             refreshPreviewScene();
         }
         ImGui::SameLine();
         if (ImGui::Button(playing_ ? "Pause" : "Play")) {
             playing_ = !playing_;
-            if (audioPlayer_.active())
-                audioPlayer_.setPaused(!playing_);
+            restartAudioAtCurrentFrame();
         }
         ImGui::SameLine();
         if (ImGui::Button(">")) {
             animationFrame_ = std::min(scene_.timeline().duration, animationFrame_ + 1.0F);
             scene_.setFrame(animationFrame_);
+            syncMediaAtCurrentFrame();
             refreshAnimatedMesh(false);
             refreshPreviewScene();
         }
@@ -3825,6 +3971,7 @@ void Application::buildEditorUi() {
         if (ImGui::Button(">|")) {
             animationFrame_ = scene_.timeline().duration;
             scene_.setFrame(animationFrame_);
+            syncMediaAtCurrentFrame();
             refreshAnimatedMesh(false);
             refreshPreviewScene();
         }
@@ -3834,7 +3981,10 @@ void Application::buildEditorUi() {
         ImGui::Checkbox("Loop", &repeat_);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(90.0F);
-        ImGui::DragFloat("Speed", &playbackSpeed_, 0.01F, 0.1F, 4.0F, "%.2fx");
+        if (ImGui::DragFloat("Speed", &playbackSpeed_, 0.01F, 0.1F, 4.0F, "%.2fx"))
+            restartAudioAtCurrentFrame();
+        ImGui::SeparatorText("Media");
+        buildMediaPlaybackControls(true);
         if (!waveformPeaks_.empty())
             ImGui::PlotLines("Audio", waveformPeaks_.data(), static_cast<int>(waveformPeaks_.size()), 0, nullptr, 0.0F,
                              1.0F, {-1.0F, 44.0F});
@@ -4021,6 +4171,7 @@ void Application::buildEditorUi() {
                             const float frame = (ImGui::GetIO().MousePos.x - left + timelinePan_) / pixelsPerFrame;
                             animationFrame_ = std::clamp(frame, 0.0F, duration);
                             scene_.setFrame(animationFrame_);
+                            syncMediaAtCurrentFrame();
                             refreshAnimatedMesh(false);
                             refreshPreviewScene();
                         }
@@ -4235,10 +4386,9 @@ void Application::buildEditorUi() {
         auto background = scene_.background();
         int source = static_cast<int>(background.screenSource);
         if (ImGui::Combo("Background source", &source, "Previous frame\0Video\0Image\0White\0")) {
-            scene_.setBackgroundScreenSource(static_cast<core::ScreenTextureSource>(source));
-            refreshPreviewBackground();
-            refreshPreviewScene();
+            selectBackgroundSource(static_cast<core::ScreenTextureSource>(source));
         }
+        buildMediaBackgroundUi();
         bool enabled = background.enabled;
         if (ImGui::Checkbox("Background enabled", &enabled)) {
             scene_.setBackgroundEnabled(enabled);
