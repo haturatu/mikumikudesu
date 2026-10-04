@@ -631,36 +631,6 @@ if(DAYO_HAS_OIDN)
   target_link_libraries(dayo_core PUBLIC OpenImageDenoise)
 endif()
 
-set(DAYO_HAS_BULLET 0)
-if(DAYO_ENABLE_PHYSICS)
-  find_package(Bullet QUIET)
-  if(NOT Bullet_FOUND AND DAYO_FETCH_DEPENDENCIES)
-    set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
-    set(BUILD_BULLET2_DEMOS OFF CACHE BOOL "" FORCE)
-    set(BUILD_BULLET3 OFF CACHE BOOL "" FORCE)
-    set(BUILD_EXTRAS OFF CACHE BOOL "" FORCE)
-    set(BUILD_CPU_DEMOS OFF CACHE BOOL "" FORCE)
-    set(BUILD_OPENGL3_DEMOS OFF CACHE BOOL "" FORCE)
-    set(BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
-    set(USE_GRAPHICAL_BENCHMARK OFF CACHE BOOL "" FORCE)
-    set(INSTALL_LIBS OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-      bullet
-      URL https://github.com/bulletphysics/bullet3/archive/refs/tags/3.25.tar.gz
-      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    )
-    FetchContent_MakeAvailable(bullet)
-    set(BULLET_INCLUDE_DIRS "${bullet_SOURCE_DIR}/src")
-    set(BULLET_LIBRARIES BulletDynamics BulletCollision LinearMath)
-    set(Bullet_FOUND TRUE)
-  endif()
-  if(Bullet_FOUND)
-    set(DAYO_HAS_BULLET 1)
-    target_include_directories(dayo_core PRIVATE ${BULLET_INCLUDE_DIRS})
-    target_link_libraries(dayo_core PUBLIC ${BULLET_LIBRARIES})
-  endif()
-endif()
-target_compile_definitions(dayo_core PUBLIC DAYO_HAS_BULLET=${DAYO_HAS_BULLET})
 find_package(cereal CONFIG QUIET)
 find_package(directxtex CONFIG QUIET)
 set(DAYO_HAS_JSONNET 0)
@@ -774,6 +744,22 @@ if(DAYO_HAS_MEDIA)
   target_link_libraries(mikumikudesu PRIVATE PkgConfig::FFMPEG)
 endif()
 
+function(dayo_enable_warnings target)
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    return()
+  endif()
+  target_compile_options(
+    ${target}
+    PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow ${ARGN}
+  )
+  if(DAYO_WARNINGS_AS_ERRORS)
+    target_compile_options(${target} PRIVATE -Werror)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+      target_compile_options(${target} PRIVATE -Wno-error=deprecated-literal-operator)
+    endif()
+  endif()
+endfunction()
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   foreach(
     target
@@ -784,16 +770,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     dayo_cli
     mikumikudesu
   )
-    target_compile_options(
-      ${target}
-      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
-    )
-    if(DAYO_WARNINGS_AS_ERRORS)
-      target_compile_options(${target} PRIVATE -Werror)
-      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        target_compile_options(${target} PRIVATE -Wno-error=deprecated-literal-operator)
-      endif()
-    endif()
+    dayo_enable_warnings(${target})
     if(DAYO_ENABLE_NATIVE_TUNING)
       target_compile_options(${target} PRIVATE -march=native -mtune=native)
     endif()
@@ -862,89 +839,31 @@ endif()
 if(BUILD_TESTING)
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
   add_test(NAME upstream_fetch COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/fetch_mikumikudayo_tests.py")
+  add_library(dayo_test_assets STATIC tests/test_assets.cpp)
+  dayo_enable_warnings(dayo_test_assets)
   add_executable(dayo_cli_tests tests/cli_tests.cpp)
   target_link_libraries(dayo_cli_tests PRIVATE dayo_cli)
   add_executable(dayo_core_tests tests/core_tests.cpp)
-  target_link_libraries(dayo_core_tests PRIVATE dayo_core)
+  target_link_libraries(dayo_core_tests PRIVATE dayo_core dayo_test_assets)
   add_executable(dayo_output_tests tests/output_tests.cpp)
   target_link_libraries(dayo_output_tests PRIVATE dayo_core)
   add_executable(dayo_video_export_job_tests tests/video_export_job_tests.cpp src/app/video_export_job.cpp)
   target_link_libraries(dayo_video_export_job_tests PRIVATE dayo_core)
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(
-      dayo_video_export_job_tests
-      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
-    )
-    if(DAYO_WARNINGS_AS_ERRORS)
-      target_compile_options(dayo_video_export_job_tests PRIVATE -Werror)
-    endif()
-  endif()
+  dayo_enable_warnings(dayo_video_export_job_tests)
   add_executable(dayo_upload_ring_tests tests/upload_ring_tests.cpp)
   target_link_libraries(dayo_upload_ring_tests PRIVATE dayo_core)
   add_executable(dayo_preview_tests tests/preview_render_tests.cpp)
   target_include_directories(dayo_preview_tests PRIVATE src)
   target_link_libraries(dayo_preview_tests PRIVATE dayo_platform dayo_graphics)
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(
-      dayo_preview_tests
-      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
-    )
-    if(DAYO_WARNINGS_AS_ERRORS)
-      target_compile_options(dayo_preview_tests PRIVATE -Werror)
-      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        target_compile_options(dayo_preview_tests PRIVATE -Wno-error=deprecated-literal-operator)
-      endif()
-    endif()
-  endif()
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(
-      dayo_cli_tests
-      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
-    )
-    if(DAYO_WARNINGS_AS_ERRORS)
-      target_compile_options(dayo_cli_tests PRIVATE -Werror)
-      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        target_compile_options(dayo_cli_tests PRIVATE -Wno-error=deprecated-literal-operator)
-      endif()
-    endif()
-  endif()
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(
-      dayo_core_tests
-      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
-    )
-    if(DAYO_WARNINGS_AS_ERRORS)
-      target_compile_options(dayo_core_tests PRIVATE -Werror)
-      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        target_compile_options(dayo_core_tests PRIVATE -Wno-error=deprecated-literal-operator)
-      endif()
-    endif()
-  endif()
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(
-      dayo_output_tests
-      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
-    )
-    if(DAYO_WARNINGS_AS_ERRORS)
-      target_compile_options(dayo_output_tests PRIVATE -Werror)
-    endif()
-  endif()
+  dayo_enable_warnings(dayo_preview_tests)
+  dayo_enable_warnings(dayo_cli_tests)
+  dayo_enable_warnings(dayo_core_tests)
+  dayo_enable_warnings(dayo_output_tests)
 
   add_executable(dayo_graph_device_tests tests/graph_device_tests.cpp)
   target_include_directories(dayo_graph_device_tests PRIVATE src)
   target_link_libraries(dayo_graph_device_tests PRIVATE dayo_graphics)
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(
-      dayo_graph_device_tests
-      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
-    )
-    if(DAYO_WARNINGS_AS_ERRORS)
-      target_compile_options(dayo_graph_device_tests PRIVATE -Werror)
-      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        target_compile_options(dayo_graph_device_tests PRIVATE -Wno-error=deprecated-literal-operator)
-      endif()
-    endif()
-  endif()
+  dayo_enable_warnings(dayo_graph_device_tests)
 
   add_executable(dayo_upstream_compat_tests tests/upstream_compat_tests.cpp)
   target_include_directories(dayo_upstream_compat_tests PRIVATE src)
@@ -952,106 +871,28 @@ if(BUILD_TESTING)
   target_compile_definitions(dayo_upstream_compat_tests PRIVATE DAYO_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   add_executable(dayo_fx_executor_tests tests/fx_executor_tests.cpp)
   target_include_directories(dayo_fx_executor_tests PRIVATE src)
-  target_link_libraries(dayo_fx_executor_tests PRIVATE dayo_fx dayo_graphics)
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(
-      dayo_upstream_compat_tests
-      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
-    )
-    if(DAYO_WARNINGS_AS_ERRORS)
-      target_compile_options(dayo_upstream_compat_tests PRIVATE -Werror)
-      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        target_compile_options(dayo_upstream_compat_tests PRIVATE -Wno-error=deprecated-literal-operator)
-      endif()
-    endif()
-  endif()
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(
-      dayo_fx_executor_tests
-      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
-    )
-    if(DAYO_WARNINGS_AS_ERRORS)
-      target_compile_options(dayo_fx_executor_tests PRIVATE -Werror)
-      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        target_compile_options(dayo_fx_executor_tests PRIVATE -Wno-error=deprecated-literal-operator)
-      endif()
-    endif()
-  endif()
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(
-      dayo_fx
-      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
-    )
-    if(DAYO_WARNINGS_AS_ERRORS)
-      target_compile_options(dayo_fx PRIVATE -Werror)
-      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        target_compile_options(dayo_fx PRIVATE -Wno-error=deprecated-literal-operator)
-      endif()
-    endif()
-  endif()
+  target_link_libraries(dayo_fx_executor_tests PRIVATE dayo_test_assets dayo_fx dayo_graphics)
+  dayo_enable_warnings(dayo_upstream_compat_tests)
+  dayo_enable_warnings(dayo_fx_executor_tests)
 
   add_executable(dayo_fx_linker_tests tests/fx_linker_tests.cpp)
   target_link_libraries(dayo_fx_linker_tests PRIVATE dayo_core)
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(
-      dayo_fx_linker_tests
-      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wno-missing-field-initializers
-    )
-    if(DAYO_WARNINGS_AS_ERRORS)
-      target_compile_options(dayo_fx_linker_tests PRIVATE -Werror)
-      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        target_compile_options(dayo_fx_linker_tests PRIVATE -Wno-error=deprecated-literal-operator)
-      endif()
-    endif()
-  endif()
+  dayo_enable_warnings(dayo_fx_linker_tests -Wno-missing-field-initializers)
 
   add_executable(dayo_fx_semantic_tests tests/fx_semantic_tests.cpp)
   target_link_libraries(dayo_fx_semantic_tests PRIVATE dayo_core)
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(
-      dayo_fx_semantic_tests
-      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
-    )
-    if(DAYO_WARNINGS_AS_ERRORS)
-      target_compile_options(dayo_fx_semantic_tests PRIVATE -Werror)
-      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        target_compile_options(dayo_fx_semantic_tests PRIVATE -Wno-error=deprecated-literal-operator)
-      endif()
-    endif()
-  endif()
+  dayo_enable_warnings(dayo_fx_semantic_tests)
 
   add_executable(dayo_subayai_bdpt_tests tests/subayai_bdpt_tests.cpp)
   target_include_directories(dayo_subayai_bdpt_tests PRIVATE src)
   target_link_libraries(dayo_subayai_bdpt_tests PRIVATE dayo_core dayo_graphics)
   target_compile_definitions(dayo_subayai_bdpt_tests PRIVATE DAYO_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(
-      dayo_subayai_bdpt_tests
-      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
-    )
-    if(DAYO_WARNINGS_AS_ERRORS)
-      target_compile_options(dayo_subayai_bdpt_tests PRIVATE -Werror)
-      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        target_compile_options(dayo_subayai_bdpt_tests PRIVATE -Wno-error=deprecated-literal-operator)
-      endif()
-    endif()
-  endif()
+  dayo_enable_warnings(dayo_subayai_bdpt_tests)
 
   add_executable(dayo_native_renderer_tests tests/native_renderer_tests.cpp)
   target_include_directories(dayo_native_renderer_tests PRIVATE src)
   target_link_libraries(dayo_native_renderer_tests PRIVATE dayo_graphics)
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(
-      dayo_native_renderer_tests
-      PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow
-    )
-    if(DAYO_WARNINGS_AS_ERRORS)
-      target_compile_options(dayo_native_renderer_tests PRIVATE -Werror)
-      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        target_compile_options(dayo_native_renderer_tests PRIVATE -Wno-error=deprecated-literal-operator)
-      endif()
-    endif()
-  endif()
+  dayo_enable_warnings(dayo_native_renderer_tests)
 
   add_test(NAME core COMMAND dayo_core_tests)
   add_test(NAME output COMMAND dayo_output_tests)
@@ -1101,71 +942,38 @@ if(DAYO_ENABLE_SANITIZERS)
   endif()
   set(DAYO_SANITIZER_COMPILE_OPTIONS -fsanitize=address,undefined -fno-omit-frame-pointer)
   set(DAYO_SANITIZER_LINK_OPTIONS -fsanitize=address,undefined)
-  foreach(
-    target
-    dayo_core
-    dayo_fx
-    dayo_platform
-    dayo_graphics
+  set(
+    DAYO_SANITIZER_EXECUTABLES
     mikumikudesu
+    dayo_cli_tests
     dayo_core_tests
     dayo_output_tests
     dayo_video_export_job_tests
-    dayo_cli_tests
     dayo_fx_executor_tests
     dayo_upload_ring_tests
     dayo_preview_tests
     dayo_graph_device_tests
-    dayo_subayai_bdpt_tests
-    dayo_native_renderer_tests
     dayo_upstream_compat_tests
     dayo_fx_linker_tests
     dayo_fx_semantic_tests
+    dayo_subayai_bdpt_tests
+    dayo_native_renderer_tests
+  )
+  foreach(
+    target
+    IN
+    ITEMS dayo_core dayo_fx dayo_platform dayo_graphics dayo_test_assets
   )
     if(TARGET ${target})
       target_compile_options(${target} PRIVATE ${DAYO_SANITIZER_COMPILE_OPTIONS})
     endif()
   endforeach()
-  target_link_options(mikumikudesu PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
-  if(TARGET dayo_cli_tests)
-    target_link_options(dayo_cli_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
-  endif()
-  if(TARGET dayo_core_tests)
-    target_link_options(dayo_core_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
-  endif()
-  if(TARGET dayo_output_tests)
-    target_link_options(dayo_output_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
-  endif()
-  if(TARGET dayo_video_export_job_tests)
-    target_link_options(dayo_video_export_job_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
-  endif()
-  if(TARGET dayo_fx_executor_tests)
-    target_link_options(dayo_fx_executor_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
-  endif()
-  if(TARGET dayo_upload_ring_tests)
-    target_link_options(dayo_upload_ring_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
-  endif()
-  if(TARGET dayo_preview_tests)
-    target_link_options(dayo_preview_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
-  endif()
-  if(TARGET dayo_graph_device_tests)
-    target_link_options(dayo_graph_device_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
-  endif()
-  if(TARGET dayo_upstream_compat_tests)
-    target_link_options(dayo_upstream_compat_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
-  endif()
-  if(TARGET dayo_fx_linker_tests)
-    target_link_options(dayo_fx_linker_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
-  endif()
-  if(TARGET dayo_fx_semantic_tests)
-    target_link_options(dayo_fx_semantic_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
-  endif()
-  if(TARGET dayo_subayai_bdpt_tests)
-    target_link_options(dayo_subayai_bdpt_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
-  endif()
-  if(TARGET dayo_native_renderer_tests)
-    target_link_options(dayo_native_renderer_tests PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
-  endif()
+  foreach(target IN LISTS DAYO_SANITIZER_EXECUTABLES)
+    if(TARGET ${target})
+      target_compile_options(${target} PRIVATE ${DAYO_SANITIZER_COMPILE_OPTIONS})
+      target_link_options(${target} PRIVATE ${DAYO_SANITIZER_LINK_OPTIONS})
+    endif()
+  endforeach()
 endif()
 
 message(STATUS "MikuMikuDayo upstream baseline: ${DAYO_UPSTREAM_VERSION}")

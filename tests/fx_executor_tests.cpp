@@ -1,3 +1,5 @@
+#include "test_assets.hpp"
+
 #include "core/fx/fx_controller_resolver.hpp"
 #include "core/fx/fx_material.hpp"
 #include "core/image.hpp"
@@ -1600,47 +1602,23 @@ bool testFxMaterialGpuRuntimeOwnsTablesAndTextures() {
         return check(false, "MatDesc GPU runtime test directory created");
 
     const auto imagePath = directory / "albedo.ppm";
-    {
-        std::ofstream output(imagePath, std::ios::binary);
-        output << "P6\n2 1\n255\n";
-        output.put(static_cast<char>(255));
-        output.put(static_cast<char>(0));
-        output.put(static_cast<char>(0));
-        output.put(static_cast<char>(0));
-        output.put(static_cast<char>(255));
-        output.put(static_cast<char>(0));
-    }
+    dayo::test::writePpm(imagePath, 2, 1, std::array<std::uint8_t, 6>{255, 0, 0, 0, 255, 0});
 
     const auto volumePath = directory / "volume.dds";
-    std::array<std::uint8_t, 148> volumeHeader{};
-    const auto putVolumeHeader = [&volumeHeader](std::size_t offset, std::uint32_t value) {
-        volumeHeader[offset] = static_cast<std::uint8_t>(value);
-        volumeHeader[offset + 1] = static_cast<std::uint8_t>(value >> 8U);
-        volumeHeader[offset + 2] = static_cast<std::uint8_t>(value >> 16U);
-        volumeHeader[offset + 3] = static_cast<std::uint8_t>(value >> 24U);
-    };
-    std::copy_n("DDS ", 4, volumeHeader.begin());
-    putVolumeHeader(4, 124);
-    putVolumeHeader(12, 1);
-    putVolumeHeader(16, 2);
-    putVolumeHeader(24, 2);
-    putVolumeHeader(28, 2);
-    putVolumeHeader(76, 32);
-    putVolumeHeader(80, 4);
-    putVolumeHeader(84, 0x30315844); // DX10
-    putVolumeHeader(108, 0x1000);
-    putVolumeHeader(112, 0x200000);
-    putVolumeHeader(128, 28); // DXGI_FORMAT_R8G8B8A8_UNORM
-    putVolumeHeader(132, 4);  // D3D10_RESOURCE_DIMENSION_TEXTURE3D
-    putVolumeHeader(140, 1);
-    {
-        std::ofstream output(volumePath, std::ios::binary | std::ios::trunc);
-        output.write(reinterpret_cast<const char*>(volumeHeader.data()),
-                     static_cast<std::streamsize>(volumeHeader.size()));
-        const std::array<std::uint8_t, 20> payload{255, 0,   0,   255, 0, 255, 0,   255, 0,   0,
-                                                   255, 255, 255, 255, 0, 255, 255, 255, 255, 255};
-        output.write(reinterpret_cast<const char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
-    }
+    const std::array<std::uint8_t, 20> payload{255, 0,   0,   255, 0, 255, 0,   255, 0,   0,
+                                               255, 255, 255, 255, 0, 255, 255, 255, 255, 255};
+    dayo::test::writeDds(volumePath,
+                         {.width = 2,
+                          .height = 1,
+                          .depth = 2,
+                          .mipLevels = 2,
+                          .pixelFlags = 4,
+                          .caps = 0x1000,
+                          .caps2 = 0x200000,
+                          .dxgiFormat = 28,
+                          .dimension = 4,
+                          .arraySize = 1},
+                         payload);
 
     dayo::core::fx::MaterialGpuTableData table;
     table.textureSlotCount = 1;
@@ -1842,13 +1820,7 @@ bool testFxMaterialSceneRuntimeEvaluatesProjectAnnotations() {
         output << initialAnnotation;
     }
     const auto imagePath = annotationDirectory / "albedo.ppm";
-    {
-        std::ofstream output(imagePath, std::ios::binary);
-        output << "P6\n1 1\n255\n";
-        output.put(static_cast<char>(64));
-        output.put(static_cast<char>(128));
-        output.put(static_cast<char>(255));
-    }
+    dayo::test::writePpm(imagePath, 1, 1, std::array<std::uint8_t, 3>{64, 128, 255});
     const auto extensionlessImagePath = annotationDirectory / "albedoNoExt";
     fs::copy_file(imagePath, extensionlessImagePath, fs::copy_options::overwrite_existing, filesystemError);
     if (filesystemError)
@@ -2853,16 +2825,7 @@ bool testFxExternalTextureMetadataAndUpload() {
     if (error)
         return check(false, "external FX texture test directory created");
     const auto imagePath = directory / "source.ppm";
-    {
-        std::ofstream output(imagePath, std::ios::binary);
-        output << "P6\n2 1\n255\n";
-        output.put(static_cast<char>(255));
-        output.put(static_cast<char>(0));
-        output.put(static_cast<char>(0));
-        output.put(static_cast<char>(0));
-        output.put(static_cast<char>(255));
-        output.put(static_cast<char>(0));
-    }
+    dayo::test::writePpm(imagePath, 2, 1, std::array<std::uint8_t, 6>{255, 0, 0, 0, 255, 0});
 
     dayo::fx::FxProgram program;
     program.sourcePath = directory / "effect.fxdayo";
@@ -2924,35 +2887,20 @@ bool testFxExternalTextureMetadataAndUpload() {
     runtime.reset();
 
     const auto volumePath = directory / "volume.dds";
-    std::array<std::uint8_t, 148> volumeHeader{};
-    const auto putVolumeHeader = [&volumeHeader](std::size_t offset, std::uint32_t value) {
-        volumeHeader[offset] = static_cast<std::uint8_t>(value);
-        volumeHeader[offset + 1] = static_cast<std::uint8_t>(value >> 8U);
-        volumeHeader[offset + 2] = static_cast<std::uint8_t>(value >> 16U);
-        volumeHeader[offset + 3] = static_cast<std::uint8_t>(value >> 24U);
-    };
-    std::copy_n("DDS ", 4, volumeHeader.begin());
-    putVolumeHeader(4, 124);
-    putVolumeHeader(12, 1);
-    putVolumeHeader(16, 2);
-    putVolumeHeader(24, 2);
-    putVolumeHeader(28, 2);
-    putVolumeHeader(76, 32);
-    putVolumeHeader(80, 4);
-    putVolumeHeader(84, 0x30315844); // DX10
-    putVolumeHeader(108, 0x1000);
-    putVolumeHeader(112, 0x200000);
-    putVolumeHeader(128, 28); // DXGI_FORMAT_R8G8B8A8_UNORM
-    putVolumeHeader(132, 4);  // D3D10_RESOURCE_DIMENSION_TEXTURE3D
-    putVolumeHeader(140, 1);
-    {
-        std::ofstream output(volumePath, std::ios::binary | std::ios::trunc);
-        output.write(reinterpret_cast<const char*>(volumeHeader.data()),
-                     static_cast<std::streamsize>(volumeHeader.size()));
-        const std::array<std::uint8_t, 20> payload{255, 0,   0,   255, 0, 255, 0,   255, 0,   0,
-                                                   255, 255, 255, 255, 0, 255, 255, 255, 255, 255};
-        output.write(reinterpret_cast<const char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
-    }
+    const std::array<std::uint8_t, 20> payload{255, 0,   0,   255, 0, 255, 0,   255, 0,   0,
+                                               255, 255, 255, 255, 0, 255, 255, 255, 255, 255};
+    dayo::test::writeDds(volumePath,
+                         {.width = 2,
+                          .height = 1,
+                          .depth = 2,
+                          .mipLevels = 2,
+                          .pixelFlags = 4,
+                          .caps = 0x1000,
+                          .caps2 = 0x200000,
+                          .dxgiFormat = 28,
+                          .dimension = 4,
+                          .arraySize = 1},
+                         payload);
     dayo::fx::FxProgram volumeProgram;
     volumeProgram.sourcePath = directory / "volume.fxdayo";
     dayo::core::EffectTexture volumeTexture;

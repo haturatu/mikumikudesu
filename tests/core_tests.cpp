@@ -1,3 +1,6 @@
+#include "app/preview_conversion.hpp"
+#include "test_assets.hpp"
+
 #include "core/animation.hpp"
 #include "core/asset.hpp"
 #include "core/audio_export.hpp"
@@ -63,6 +66,40 @@ int main() {
     using dayo::core::AssetKind;
     bool ok = true;
     {
+        const dayo::core::PreviewNormalization normalization{{1.0F, 2.0F, 3.0F}, 2.0F};
+        dayo::core::PmxVertex source;
+        source.position = {4.0F, 5.0F, 6.0F};
+        source.normal = {0.0F, 1.0F, 0.0F};
+        source.uv = {0.25F, 0.75F};
+        source.bones = {0, 1, -1, 3};
+        source.weights = {0.6F, 0.4F, 0.0F, 0.0F};
+        source.sdefC = {2.0F, 3.0F, 4.0F};
+        source.sdefR0 = {3.0F, 4.0F, 5.0F};
+        source.sdefR1 = {1.0F, 2.0F, 3.0F};
+        source.weightType = mmd::PmxWeightType::sdef;
+        source.edgeScale = 0.5F;
+        const auto combined = dayo::app::makePreviewVertex(source, 2, 7, normalization, {11, 2}, true);
+        const auto local = dayo::app::makePreviewVertex(source, 2, 0, normalization, {3, 1}, true);
+        ok &= check(combined.bones[0] == 7 && combined.bones[1] == 8 && combined.bones[2] == -1 &&
+                        combined.bones[3] == -1 && local.bones[0] == 0 && local.bones[1] == 1,
+                    "combined Preview and native vertices retain their distinct bone index spaces");
+        ok &= check(combined.sdefC[0] == 2.0F && combined.sdefHalfDelta[0] == 2.0F && combined.skinningType == 3 &&
+                        combined.weights[1] == 0.4F && combined.edgeScale == 0.5F && combined.morphStart == 11 &&
+                        combined.morphCount == 2 && local.morphStart == 3,
+                    "shared GPU vertex conversion preserves normalized SDEF, weights and local morph ranges");
+        const auto cpu = dayo::app::makePreviewVertex(source, 2, 7, normalization, {11, 2}, false);
+        ok &= check(cpu.gpuSkinning == 0 && cpu.bones[0] == -1 && cpu.morphCount == 0 && cpu.position[2] == 6.0F &&
+                        cpu.normal[1] == 1.0F && cpu.uv[1] == 0.75F,
+                    "CPU-skinned vertices retain evaluated attributes without applying GPU deformation again");
+        dayo::core::AnimatedModelFrame::BoneTransform bone;
+        bone.rotation = {0.0F, 0.0F, 1.0F, 0.0F};
+        bone.translation = {1.0F, 0.0F, 0.0F};
+        const auto converted = dayo::app::makePreviewBone(bone, normalization);
+        ok &= check(converted.rotation[2] == 1.0F && converted.translation[0] == -2.0F &&
+                        converted.translation[1] == -8.0F && converted.translation[2] == 0.0F,
+                    "bone conversion rotates around the model normalization center before scaling translation");
+    }
+    {
         const std::array priorities{2, -1, 2, 0};
         const auto order = dayo::core::stableMotionEvaluationOrder(priorities);
         ok &= check(order == std::vector<std::size_t>{1, 3, 0, 2},
@@ -108,25 +145,7 @@ int main() {
     }
     {
         const auto ddsPath = std::filesystem::temp_directory_path() / "mikumikudesu-dds-budget-test.dds";
-        std::array<std::uint8_t, 128> ddsHeader{};
-        const auto putLe32 = [&](std::size_t offset, std::uint32_t value) {
-            ddsHeader[offset] = static_cast<std::uint8_t>(value);
-            ddsHeader[offset + 1] = static_cast<std::uint8_t>(value >> 8U);
-            ddsHeader[offset + 2] = static_cast<std::uint8_t>(value >> 16U);
-            ddsHeader[offset + 3] = static_cast<std::uint8_t>(value >> 24U);
-        };
-        std::copy_n("DDS ", 4, ddsHeader.begin());
-        putLe32(4, 124);
-        putLe32(12, 11'000);
-        putLe32(16, 11'000);
-        putLe32(76, 32);
-        putLe32(80, 0x4);
-        putLe32(84, 0x35545844); // DXT5: each allocation fits, but their sum exceeds the budget.
-        {
-            std::ofstream output(ddsPath, std::ios::binary | std::ios::trunc);
-            output.write(reinterpret_cast<const char*>(ddsHeader.data()),
-                         static_cast<std::streamsize>(ddsHeader.size()));
-        }
+        dayo::test::writeDds(ddsPath, {.width = 11'000, .height = 11'000, .pixelFlags = 0x4, .fourCc = 0x35545844});
         const auto ddsMetadata = dayo::core::inspectImageMetadata(ddsPath);
         ok &= check(ddsMetadata.width == 11'000 && ddsMetadata.height == 11'000 &&
                         ddsMetadata.dimension == dayo::core::DdsDimension::twoD,
@@ -141,72 +160,37 @@ int main() {
         std::filesystem::remove(ddsPath);
 
         const auto bgraPath = std::filesystem::temp_directory_path() / "mikumikudesu-bgra-test.dds";
-        std::array<std::uint8_t, 128> bgraHeader{};
-        const auto putBgraLe32 = [&](std::size_t offset, std::uint32_t value) {
-            bgraHeader[offset] = static_cast<std::uint8_t>(value);
-            bgraHeader[offset + 1] = static_cast<std::uint8_t>(value >> 8U);
-            bgraHeader[offset + 2] = static_cast<std::uint8_t>(value >> 16U);
-            bgraHeader[offset + 3] = static_cast<std::uint8_t>(value >> 24U);
-        };
-        std::copy_n("DDS ", 4, bgraHeader.begin());
-        putBgraLe32(4, 124);
-        putBgraLe32(12, 1);
-        putBgraLe32(16, 1);
-        putBgraLe32(76, 32);
-        putBgraLe32(80, 0x40);
-        putBgraLe32(88, 32);
-        putBgraLe32(92, 0x00FF0000);
-        putBgraLe32(96, 0x0000FF00);
-        putBgraLe32(100, 0x000000FF);
-        putBgraLe32(104, 0xFF000000);
-        {
-            std::ofstream output(bgraPath, std::ios::binary | std::ios::trunc);
-            output.write(reinterpret_cast<const char*>(bgraHeader.data()),
-                         static_cast<std::streamsize>(bgraHeader.size()));
-            const std::array<std::uint8_t, 4> pixel{30, 20, 10, 40};
-            output.write(reinterpret_cast<const char*>(pixel.data()), static_cast<std::streamsize>(pixel.size()));
-        }
+        const std::array<std::uint8_t, 4> pixel{30, 20, 10, 40};
+        dayo::test::writeDds(bgraPath,
+                             {.width = 1,
+                              .height = 1,
+                              .pixelFlags = 0x40,
+                              .rgbBits = 32,
+                              .redMask = 0x00FF0000,
+                              .greenMask = 0x0000FF00,
+                              .blueMask = 0x000000FF,
+                              .alphaMask = 0xFF000000},
+                             pixel);
         const auto bgra = dayo::core::loadImageRgba8(bgraPath);
         ok &= check(bgra.width == 1 && bgra.height == 1 && bgra.pixels == std::vector<std::uint8_t>{10, 20, 30, 40},
                     "uncompressed BGRA DDS reads directly into the output buffer");
         std::filesystem::remove(bgraPath);
 
-        const auto writeDx10Header = [](std::array<std::uint8_t, 148>& header, std::uint32_t width,
-                                        std::uint32_t height, std::uint32_t depth, std::uint32_t mipLevels,
-                                        std::uint32_t dimension, std::uint32_t miscFlag, std::uint32_t arraySize) {
-            const auto put = [&header](std::size_t offset, std::uint32_t value) {
-                header[offset] = static_cast<std::uint8_t>(value);
-                header[offset + 1] = static_cast<std::uint8_t>(value >> 8U);
-                header[offset + 2] = static_cast<std::uint8_t>(value >> 16U);
-                header[offset + 3] = static_cast<std::uint8_t>(value >> 24U);
-            };
-            std::copy_n("DDS ", 4, header.begin());
-            put(4, 124);
-            put(12, height);
-            put(16, width);
-            put(24, depth);
-            put(28, mipLevels);
-            put(76, 32);
-            put(80, 4);
-            put(84, 0x30315844); // DX10
-            put(108, 0x1000);
-            put(112, dimension == 4 ? 0x200000 : 0);
-            put(128, 28); // DXGI_FORMAT_R8G8B8A8_UNORM
-            put(132, dimension);
-            put(136, miscFlag);
-            put(140, arraySize);
-        };
         const auto volumePath = std::filesystem::temp_directory_path() / "mikumikudesu-volume-test.dds";
-        std::array<std::uint8_t, 148> volumeHeader{};
-        writeDx10Header(volumeHeader, 2, 1, 2, 2, 4, 0, 1);
-        {
-            std::ofstream output(volumePath, std::ios::binary | std::ios::trunc);
-            output.write(reinterpret_cast<const char*>(volumeHeader.data()),
-                         static_cast<std::streamsize>(volumeHeader.size()));
-            const std::array<std::uint8_t, 20> payload{255, 0,   0,   255, 0, 255, 0,   255, 0,   0,
-                                                       255, 255, 255, 255, 0, 255, 255, 255, 255, 255};
-            output.write(reinterpret_cast<const char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
-        }
+        const std::array<std::uint8_t, 20> volumePayload{255, 0,   0,   255, 0, 255, 0,   255, 0,   0,
+                                                         255, 255, 255, 255, 0, 255, 255, 255, 255, 255};
+        dayo::test::writeDds(volumePath,
+                             {.width = 2,
+                              .height = 1,
+                              .depth = 2,
+                              .mipLevels = 2,
+                              .caps = 0x1000,
+                              .caps2 = 0x200000,
+                              .dxgiFormat = 28,
+                              .dimension = 4,
+                              .miscFlag = 0,
+                              .arraySize = 1},
+                             volumePayload);
         const auto volume = dayo::core::loadDdsImageRgba8(volumePath);
         ok &= check(volume.dimension == dayo::core::DdsDimension::threeD && volume.width == 2 && volume.height == 1 &&
                         volume.depth == 2 && volume.arrayLayers == 1 && volume.mipLevels == 2,
@@ -218,16 +202,20 @@ int main() {
         std::filesystem::remove(volumePath);
 
         const auto cubePath = std::filesystem::temp_directory_path() / "mikumikudesu-cube-test.dds";
-        std::array<std::uint8_t, 148> cubeHeader{};
-        writeDx10Header(cubeHeader, 1, 1, 1, 1, 3, 0x4, 1);
-        {
-            std::ofstream output(cubePath, std::ios::binary | std::ios::trunc);
-            output.write(reinterpret_cast<const char*>(cubeHeader.data()),
-                         static_cast<std::streamsize>(cubeHeader.size()));
-            const std::array<std::uint8_t, 24> faces{1, 0, 0, 255, 2, 0, 0, 255, 3, 0, 0, 255,
-                                                     4, 0, 0, 255, 5, 0, 0, 255, 6, 0, 0, 255};
-            output.write(reinterpret_cast<const char*>(faces.data()), static_cast<std::streamsize>(faces.size()));
-        }
+        const std::array<std::uint8_t, 24> faces{1, 0, 0, 255, 2, 0, 0, 255, 3, 0, 0, 255,
+                                                 4, 0, 0, 255, 5, 0, 0, 255, 6, 0, 0, 255};
+        dayo::test::writeDds(cubePath,
+                             {.width = 1,
+                              .height = 1,
+                              .depth = 1,
+                              .mipLevels = 1,
+                              .caps = 0x1000,
+                              .caps2 = 0,
+                              .dxgiFormat = 28,
+                              .dimension = 3,
+                              .miscFlag = 0x4,
+                              .arraySize = 1},
+                             faces);
         const auto cube = dayo::core::loadDdsImageRgba8(cubePath);
         ok &= check(cube.dimension == dayo::core::DdsDimension::cube && cube.arrayLayers == 6 &&
                         cube.subresource(0, 5).pixels == std::vector<std::uint8_t>{6, 0, 0, 255},
@@ -294,30 +282,11 @@ int main() {
         });
         const auto typedPath = std::filesystem::temp_directory_path() / "mikumikudesu-typed-dxgi-test.dds";
         for (const auto& format : typedFormats) {
-            std::array<std::uint8_t, 148> header{};
-            const auto put = [&header](std::size_t offset, std::uint32_t value) {
-                header[offset] = static_cast<std::uint8_t>(value);
-                header[offset + 1] = static_cast<std::uint8_t>(value >> 8U);
-                header[offset + 2] = static_cast<std::uint8_t>(value >> 16U);
-                header[offset + 3] = static_cast<std::uint8_t>(value >> 24U);
-            };
-            std::copy_n("DDS ", 4, header.begin());
-            put(4, 124);
-            put(12, 1);
-            put(16, 1);
-            put(76, 32);
-            put(80, 4);
-            put(84, 0x30315844);
-            put(128, format.dxgi);
-            put(132, 3);
-            put(140, 1);
-            {
-                std::ofstream output(typedPath, std::ios::binary | std::ios::trunc);
-                output.write(reinterpret_cast<const char*>(header.data()), static_cast<std::streamsize>(header.size()));
-                const std::vector<std::uint8_t> payload(format.payloadBytes, 0);
-                output.write(reinterpret_cast<const char*>(payload.data()),
-                             static_cast<std::streamsize>(payload.size()));
-            }
+            const std::vector<std::uint8_t> payload(format.payloadBytes, 0);
+            dayo::test::writeDds(
+                typedPath,
+                {.width = 1, .height = 1, .pixelFlags = 4, .dxgiFormat = format.dxgi, .dimension = 3, .arraySize = 1},
+                payload);
             try {
                 const auto decoded = dayo::core::loadTextureImage(typedPath);
                 ok &= check(decoded.format == format.name &&
@@ -347,27 +316,8 @@ int main() {
             {0x53354342, "R32G32_FLOAT", dayo::graphics::PixelFormat::r32g32Float, 16, 8}, // BC5S
         });
         for (const auto& format : legacyFormats) {
-            std::array<std::uint8_t, 128> header{};
-            const auto put = [&header](std::size_t offset, std::uint32_t value) {
-                header[offset] = static_cast<std::uint8_t>(value);
-                header[offset + 1] = static_cast<std::uint8_t>(value >> 8U);
-                header[offset + 2] = static_cast<std::uint8_t>(value >> 16U);
-                header[offset + 3] = static_cast<std::uint8_t>(value >> 24U);
-            };
-            std::copy_n("DDS ", 4, header.begin());
-            put(4, 124);
-            put(12, 1);
-            put(16, 1);
-            put(76, 32);
-            put(80, 4);
-            put(84, format.code);
-            {
-                std::ofstream output(typedPath, std::ios::binary | std::ios::trunc);
-                output.write(reinterpret_cast<const char*>(header.data()), static_cast<std::streamsize>(header.size()));
-                const std::vector<std::uint8_t> payload(format.payloadBytes, 0);
-                output.write(reinterpret_cast<const char*>(payload.data()),
-                             static_cast<std::streamsize>(payload.size()));
-            }
+            const std::vector<std::uint8_t> payload(format.payloadBytes, 0);
+            dayo::test::writeDds(typedPath, {.width = 1, .height = 1, .pixelFlags = 4, .fourCc = format.code}, payload);
             try {
                 const auto decoded = dayo::core::loadTextureImage(typedPath);
                 ok &= check(decoded.format == format.name &&
