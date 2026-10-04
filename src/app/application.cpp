@@ -1,5 +1,6 @@
 #include "app/application.hpp"
 #include "app/preview_conversion.hpp"
+#include "editor/ui_labels.hpp"
 #include <deque>
 
 #include "graphics/camera_matrices.hpp"
@@ -24,7 +25,10 @@
 #include <SDL3/SDL.h>
 
 #if DAYO_HAS_IMGUI
+// clang-format off
 #include <imgui.h>
+#include <ImGuizmo.h>
+// clang-format on
 #include <imgui_internal.h>
 #endif
 
@@ -116,7 +120,7 @@ void drawMorphWeightControl(float& value, const std::optional<core::fx::FxMorphC
         if (intMin <= intMax) {
             int integerValue = static_cast<int>(std::clamp(std::round(static_cast<double>(value)),
                                                            static_cast<double>(intMin), static_cast<double>(intMax)));
-            changed = ImGui::SliderInt("Weight", &integerValue, intMin, intMax, "%d", flags);
+            changed = ImGui::SliderInt(editor::uiLabel("Weight"), &integerValue, intMin, intMax, "%d", flags);
             value = static_cast<float>(integerValue);
         } else {
             changed = ImGui::SliderFloat("Weight", &value, minimum, maximum, "%.3f", flags);
@@ -139,7 +143,7 @@ void drawMorphWeightControl(float& value, const std::optional<core::fx::FxMorphC
         ImGui::EndTooltip();
     }
     if (slider != nullptr && ImGui::BeginPopupContextItem("morph-weight-options")) {
-        if (ImGui::MenuItem("Reset to controller default"))
+        if (ImGui::MenuItem(editor::uiLabel("Reset to controller default")))
             value = std::clamp(slider->defaultValue, minimum, maximum);
         ImGui::EndPopup();
     }
@@ -361,7 +365,7 @@ bool Application::ensureNativeSceneRuntime(bool restartRenderer, std::string* er
                                                           : runtimeError);
         if (!nativeSceneFrame_.initialize(*device_, controllerDeclarations, counts, &runtimeError))
             throw std::runtime_error(runtimeError.empty() ? "native scene frame initialization failed" : runtimeError);
-        nativeControllerDeclarations_ = controllerDeclarations;
+        nativeControllerDeclarations_ = std::move(controllerDeclarations);
         nativeRenderer_.setSceneFrameRuntime(&nativeSceneFrame_);
     } catch (const std::exception& exception) {
         nativeSceneFrame_.reset();
@@ -432,15 +436,51 @@ void Application::requestRenderer(graphics::RendererKind renderer) {
     }
 }
 
+core::VmdLightKey Application::makeSceneLightState() const {
+    const auto* model = selectedModel();
+    const auto* motion = scene_.cameraMotion();
+    if (!motion && model)
+        motion = model->motion.get();
+    core::VmdLightKey light{0, {0.6F, 0.6F, 0.6F}, {-0.5F, -1, 0.5F}};
+    if (lightModified_)
+        light = editedLight_;
+    else if (motion && !motion->lights.empty())
+        light = core::evaluateLight(*motion, animationFrame_);
+    if (projectEditorState_.syncCamera && model) {
+        const auto* poses = poseBinding_.poses(model->id);
+        const auto bone = poseBinding_.activeBone();
+        if (poses && bone >= 0 && static_cast<std::size_t>(bone) < poses->size())
+            light.position = editor::rotatePoint((*poses)[static_cast<std::size_t>(bone)].rotation, light.position);
+    }
+    return light;
+}
+
 fx::FxCameraState Application::makeSceneCameraState() const {
     const auto* model = selectedModel();
     const auto* motion =
         scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
     fx::FxCameraState camera;
+    camera.position = cameraPan_;
+    if (projectEditorState_.syncCamera && model) {
+        const auto* poses = poseBinding_.poses(model->id);
+        const auto bone = poseBinding_.activeBone();
+        if (poses && bone >= 0 && static_cast<std::size_t>(bone) < poses->size())
+            for (std::size_t axis = 0; axis < 3; ++axis)
+                camera.position[axis] +=
+                    ((*poses)[static_cast<std::size_t>(bone)].worldPosition[axis] - model->normalization.center[axis]) *
+                    model->normalization.scale;
+    }
     camera.rotation = {cameraPitch_, cameraYaw_, 0.0F};
     camera.distance = cameraDistance_;
-    if (!manualCamera_ && motion != nullptr && !motion->cameras.empty()) {
-        const auto evaluated = core::evaluateCamera(*motion, animationFrame_);
+    if (cameraModified_ || (!manualCamera_ && motion != nullptr && !motion->cameras.empty())) {
+        auto evaluated = motion ? core::evaluateCamera(*motion, animationFrame_) : core::VmdCameraState{};
+        if (cameraModified_) {
+            evaluated.position = editedCamera_.position;
+            evaluated.rotation = editedCamera_.rotation;
+            evaluated.distance = editedCamera_.distance;
+            evaluated.viewAngle = editedCamera_.viewAngle;
+            evaluated.perspective = editedCamera_.perspective;
+        }
         const auto normalization = model != nullptr ? model->normalization : normalization_;
         for (std::size_t axis = 0; axis < 3; ++axis)
             camera.position[axis] = (evaluated.position[axis] - normalization.center[axis]) * normalization.scale;
@@ -448,6 +488,25 @@ fx::FxCameraState Application::makeSceneCameraState() const {
         camera.distance = std::max(std::abs(evaluated.distance) * normalization.scale, 0.4F);
         camera.verticalFovRadians = std::clamp(evaluated.viewAngle, 1.0F, 179.0F) * 0.01745329252F;
         camera.perspective = evaluated.perspective;
+        const core::VmdCameraKey* key = cameraModified_ ? &editedCamera_ : nullptr;
+        if (!key && motion)
+            for (const auto& item : motion->cameras)
+                if (static_cast<float>(item.frame) <= animationFrame_)
+                    key = &item;
+        if (key && key->parentModel >= 0) {
+            const auto* parent = scene_.model(static_cast<core::ModelId>(key->parentModel));
+            const auto* poses = parent ? poseBinding_.poses(parent->id) : nullptr;
+            std::size_t bone = key->parentBone < 0 ? 0 : static_cast<std::size_t>(key->parentBone);
+            if (parent && !key->parentBoneName.empty()) {
+                const auto found = std::ranges::find(parent->model->bones, key->parentBoneName, &core::PmxBone::name);
+                if (found != parent->model->bones.end())
+                    bone = static_cast<std::size_t>(std::distance(parent->model->bones.begin(), found));
+            }
+            if (parent && poses && bone < poses->size())
+                for (std::size_t axis = 0; axis < 3; ++axis)
+                    camera.position[axis] += ((*poses)[bone].worldPosition[axis] - parent->normalization.center[axis]) *
+                                             parent->normalization.scale;
+        }
     }
     return camera;
 }
@@ -466,8 +525,8 @@ fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTar
     cameraWithMatrices.projection = matrices.projection;
     cameraWithMatrices.viewProjection = matrices.viewProjection;
     fx::FxLightingState lighting;
-    if (motion != nullptr && !motion->lights.empty()) {
-        const auto evaluated = core::evaluateLight(*motion, animationFrame_);
+    if (lightModified_ || projectEditorState_.syncCamera || (motion != nullptr && !motion->lights.empty())) {
+        const auto evaluated = makeSceneLightState();
         lighting.direction = evaluated.position;
         lighting.color = evaluated.color;
     }
@@ -495,6 +554,7 @@ fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTar
     context.host.backgroundMode =
         !background.enabled || background.screenSource == core::ScreenTextureSource::white ? 2 : 1;
     context.host.playing = playing_;
+    context.host.denoiserEnabled = projectEditorState_.denoiserEnabled;
     context.host.onStart = invocationEvents.onStart;
     context.host.onResize = invocationEvents.onResize;
     context.host.onModelChanged = invocationEvents.onModelChanged;
@@ -528,7 +588,7 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                     previewHdriError_.clear();
                     failedPreviewHdriPath_.clear();
                 } catch (const std::exception& error) {
-                    failedPreviewHdriPath_ = lightingSource;
+                    failedPreviewHdriPath_ = std::move(lightingSource);
                     failedPreviewHdriVersion_ = version;
                     previewHdriError_ = error.what();
                     log::warn("Preview HDRI: ", previewHdriError_);
@@ -623,11 +683,9 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         const graphics::Extent3D screenExtent{target.width, target.height, 1};
         const bool nativeResizeEvent =
             !nativeScreenRuntime_.ready() || !nativeScreenRuntime_.matchesExtent(screenExtent);
-        if (nativeResizeEvent) {
-            if (!nativeScreenRuntime_.initialize(*device_, screenExtent, &sceneError))
-                throw std::runtime_error(sceneError.empty() ? "native screen runtime initialization failed"
-                                                            : sceneError);
-        }
+        if (nativeResizeEvent && !nativeScreenRuntime_.initialize(*device_, screenExtent, &sceneError))
+            throw std::runtime_error(sceneError.empty() ? "native screen runtime initialization failed" : sceneError);
+
         const auto& backgroundState = scene_.background();
         auto screenSource = graphics::NativeScreenSource::previousFrame;
         std::optional<core::ImageRgba8> nativeBackground;
@@ -857,6 +915,7 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                    graphics::CommandList& commandList,
                    const graphics::FxExecutionResources::TypedResourceResolver& resolve) {
                 std::string oidnError;
+                nativeOidnProvider_.setEnabled(projectEditorState_.denoiserEnabled);
                 if (nativeOidnProvider_.execute(dispatch, context, commandList, resolve, &oidnError))
                     return true;
                 log::warn("Native OIDN pass failed: ", oidnError);
@@ -912,6 +971,9 @@ std::string Application::workspaceWindowName(const char* title, const char* id) 
 }
 
 void Application::resetProjectRuntimeState() {
+    cameraRecordingTransaction_.reset();
+    recordCamera_ = false;
+    editorSession_.cancelKeyframeDrag();
 #if DAYO_HAS_IMGUI
     if (imageSequenceExportRunning_) {
         if (imageSequenceOutput_)
@@ -943,6 +1005,7 @@ void Application::resetProjectRuntimeState() {
         device_->clearPreviewResources();
     }
     reloadedEffects_.clear();
+    modelAssetOwners_.clear();
     audioPlayer_.stop();
     audioSource_.clear();
     audioDestination_.fill('\0');
@@ -999,6 +1062,8 @@ void Application::resetProjectRuntimeState() {
     previewHdriError_.clear();
     upstreamDocumentJson_.clear();
     history_.clear();
+    editorSession_.selection().clear();
+    poseBinding_ = {};
     frameProfiler_.reset();
 }
 
@@ -1061,6 +1126,16 @@ int Application::run() {
         return runVideoExport();
     }
 
+    editorConfig_.load(editor::EditorConfig::defaultPath());
+    editor::setUiLanguage(editorConfig_.language);
+#if DAYO_HAS_IMGUI
+    if (editorConfig_.theme == "light")
+        ImGui::StyleColorsLight();
+#endif
+    savedHistoryRevision_ = history_.revision();
+    savedAssetCount_ = projectAssets_.size();
+    savedEditorState_ = projectEditorState_;
+    manualCamera_ = projectEditorState_.freeCamera;
     bool running = true;
     std::uint64_t frameCount = 0;
     auto previousTick = std::chrono::steady_clock::now();
@@ -1068,7 +1143,14 @@ int Application::run() {
         for (const auto& event : window->pollEvents()) {
             switch (event.type) {
             case platform::WindowEvent::Type::quit:
+#if DAYO_HAS_IMGUI
+                if (projectModified())
+                    quitRequested_ = true;
+                else
+                    running = false;
+#else
                 running = false;
+#endif
                 break;
             case platform::WindowEvent::Type::resized:
                 device->resize();
@@ -1094,11 +1176,13 @@ int Application::run() {
                 cameraYaw_ += event.x * 0.008F;
                 cameraPitch_ = std::clamp(cameraPitch_ + event.y * 0.008F, -1.5F, 1.5F);
                 manualCamera_ = true;
+                projectEditorState_.freeCamera = true;
                 refreshPreviewScene();
                 break;
             case platform::WindowEvent::Type::cameraZoomed:
                 cameraDistance_ = std::clamp(cameraDistance_ * std::exp(-event.x * 0.12F), 0.4F, 30.0F);
                 manualCamera_ = true;
+                projectEditorState_.freeCamera = true;
                 refreshPreviewScene();
                 break;
 #endif
@@ -1190,6 +1274,19 @@ int Application::run() {
                                scene_.timeline().duration + 1.0;
 
             animationFrame_ = scene_.timeline().frame;
+            const float rangeStart =
+                std::min(scene_.timeline().duration, static_cast<float>(projectEditorState_.animationStart));
+            const float rangeEnd =
+                projectEditorState_.animationEnd < 0
+                    ? scene_.timeline().duration
+                    : std::min(scene_.timeline().duration, static_cast<float>(projectEditorState_.animationEnd));
+            if (!recordCamera_ && (animationFrame_ < rangeStart || animationFrame_ > rangeEnd)) {
+                animationFrame_ = repeat_ ? rangeStart : rangeEnd;
+                scene_.setFrame(animationFrame_);
+                if (!repeat_)
+                    playing_ = false;
+                restartAudioAtCurrentFrame();
+            }
             if (wrapped)
                 restartAudioAtCurrentFrame();
             if (!repeat_ && animationFrame_ >= scene_.timeline().duration) {
@@ -1204,6 +1301,8 @@ int Application::run() {
         }
         auto* media = scene_.backgroundMedia();
         for (auto& effect : reloadedEffects_) {
+            if (effect.owner && !scene_.model(*effect.owner))
+                continue;
             std::string reloadError;
             if (effect.reloader.poll(&reloadError) && effect.reloader.current() != nullptr) {
                 static_cast<void>(scene_.removeEffect(effect.id));
@@ -1224,6 +1323,8 @@ int Application::run() {
         }
         device->beginUiFrame();
         buildUi();
+        if (quitConfirmed_)
+            running = false;
         if (playing_ && !nativePlaybackWasActive_)
             nativeOnStartPending_ = true;
         nativePlaybackWasActive_ = playing_;
@@ -1243,6 +1344,8 @@ int Application::run() {
         if (options_.frameLimit && frameCount >= *options_.frameLimit)
             running = false;
     }
+    recordCamera_ = false;
+    updateCameraRecording();
     device->waitIdle();
     audioPlayer_.stop();
     log::info(frameProfiler_.report());
@@ -1316,7 +1419,43 @@ core::DayoProject Application::currentProject() const {
         else
             *savedModel = std::move(state);
     }
+    std::erase_if(project.models, [&](const auto& state) {
+        return std::ranges::none_of(scene_.models(),
+                                    [&](const auto& instance) { return instance.sourcePath == state.source; });
+    });
+    std::erase_if(project.assets, [&](const auto& asset) {
+        if (asset.kind == "pmx")
+            return std::ranges::none_of(scene_.models(), [&](const auto& instance) {
+                return instance.sourcePath == std::filesystem::absolute(asset.path).lexically_normal();
+            });
+        const auto assetPath = std::filesystem::absolute(asset.path).lexically_normal();
+        const auto modelAsset =
+            std::ranges::find(modelAssetOwners_, assetPath, &decltype(modelAssetOwners_)::value_type::first);
+        if (modelAsset != modelAssetOwners_.end() && !scene_.model(modelAsset->second))
+            return true;
+        if (asset.kind == "effect") {
+            const auto normalized = std::filesystem::absolute(asset.path).lexically_normal();
+            const auto loaded =
+                std::ranges::find_if(reloadedEffects_, [&](const auto& effect) { return effect.path == normalized; });
+            if (loaded != reloadedEffects_.end() && loaded->owner && !scene_.model(*loaded->owner))
+                return true;
+        }
+        if (asset.ownerModelIndex && *asset.ownerModelIndex < projectModelMetadata_.size()) {
+            const auto& source = projectModelMetadata_[*asset.ownerModelIndex].source;
+            return std::ranges::none_of(project.models, [&](const auto& state) { return state.source == source; });
+        }
+        return false;
+    });
     for (auto& asset : project.assets) {
+        const auto modelAsset =
+            std::ranges::find(modelAssetOwners_, std::filesystem::absolute(asset.path).lexically_normal(),
+                              &decltype(modelAssetOwners_)::value_type::first);
+        if (modelAsset != modelAssetOwners_.end()) {
+            const auto* owner = scene_.model(modelAsset->second);
+            const auto state = std::ranges::find(project.models, owner->sourcePath, &core::ProjectModelState::source);
+            if (state != project.models.end())
+                asset.ownerModelIndex = static_cast<std::size_t>(std::distance(project.models.begin(), state));
+        }
         if (asset.kind != "effect")
             continue;
         const auto normalized = std::filesystem::absolute(asset.path).lexically_normal();
@@ -1717,6 +1856,12 @@ void Application::handleAsset(const std::filesystem::path& path) {
                             }
                             loadBackgroundVideo(asset.path, project.editor.movieVisible);
                         } else {
+                            if ((asset.kind == "vmd" || asset.kind == "vpd") && asset.ownerModelIndex) {
+                                if (const auto* owner = findLoadedModel(*asset.ownerModelIndex))
+                                    scene_.selectModel(owner->id);
+                                else
+                                    continue;
+                            }
                             handleAsset(asset.path);
                         }
                     } catch (const std::exception& exception) {
@@ -1904,6 +2049,8 @@ void Application::handleAsset(const std::filesystem::path& path) {
             }
             log::info("Loaded motion: ", lastAsset_, " (", path.string(), ")");
             projectAssets_.emplace_back("vmd", std::filesystem::absolute(path));
+            if (!cameraOnly && selectedModel())
+                modelAssetOwners_.emplace_back(std::filesystem::absolute(path).lexically_normal(), selectedModel()->id);
         } catch (const std::exception& exception) {
             lastAsset_ = "VMD error: " + std::string(exception.what());
             log::warn(lastAsset_);
@@ -1919,6 +2066,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             lastAsset_ = "VPD pose — " + std::to_string(pose->bones.size()) + " bones";
             log::info("Loaded pose: ", lastAsset_, " (", path.string(), ")");
             projectAssets_.emplace_back("vpd", std::filesystem::absolute(path));
+            modelAssetOwners_.emplace_back(std::filesystem::absolute(path).lexically_normal(), selectedModel()->id);
         } catch (const std::exception& exception) {
             lastAsset_ = "VPD error: " + std::string(exception.what());
             log::warn(lastAsset_);
@@ -1942,8 +2090,26 @@ void Application::handleAsset(const std::filesystem::path& path) {
 
 void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     nativeFxPendingEvents_.latch(scene_.dirty(core::DirtyFlag::geometry), scene_.dirty(core::DirtyFlag::material));
-    if (device_ == nullptr || scene_.models().empty())
+    if (device_ == nullptr)
         return;
+    if (scene_.models().empty()) {
+        animatedVertexCount_ = 0;
+        animatedIndices_.clear();
+        animatedMaterialTemplates_.clear();
+        animatedDraws_.clear();
+        animatedMorphDeltas_.clear();
+        animatedMorphRanges_.clear();
+        animatedTopologyGeneration_ = 0;
+        nativeGeometry_.clear();
+        nativeSceneDraws_.clear();
+        nativeEffectModels_.clear();
+        nativeSceneModelData_.clear();
+        evaluatedModels_.models.clear();
+        // A zero-count draw suppresses the backend's empty-list fallback mesh.
+        const std::array<graphics::PreviewDraw, 1> emptyDraw{};
+        device_->updatePreviewDraws(emptyDraw);
+        return;
+    }
     if (scene_.dirty(core::DirtyFlag::material)) {
         nativeMaterialGeneration_ = nativeMaterialGeneration_ == std::numeric_limits<std::uint64_t>::max()
                                         ? 1U
@@ -2018,14 +2184,80 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         motionOrderValues.reserve(evaluated.size());
         for (const auto& model : evaluated)
             motionOrderValues.push_back(model.instance->order.motion);
-        const auto motionOrder = core::stableMotionEvaluationOrder(motionOrderValues);
+        auto motionOrder = core::stableMotionEvaluationOrder(motionOrderValues);
+        auto externalParents = scene_.effectiveExternalParents(animationFrame_);
+        std::unordered_map<core::ModelId, std::size_t> modelIndices;
+        for (std::size_t i = 0; i < evaluated.size(); ++i)
+            modelIndices[evaluated[i].instance->id] = i;
+        std::vector<std::size_t> sorted;
+        std::vector<std::uint8_t> state(evaluated.size());
+        bool cyclic = false;
+        const auto visit = [&](auto&& self, std::size_t index) -> void {
+            if (state[index] == 2)
+                return;
+            if (state[index] == 1) {
+                cyclic = true;
+                return;
+            }
+            state[index] = 1;
+            for (const auto& link : externalParents)
+                if (link.childModel == evaluated[index].instance->id) {
+                    const auto parent = modelIndices.find(link.parentModel);
+                    if (parent != modelIndices.end())
+                        self(self, parent->second);
+                }
+            state[index] = 2;
+            sorted.push_back(index);
+        };
+        for (const auto index : motionOrder)
+            visit(visit, index);
+        if (cyclic)
+            externalParents.clear();
+        else
+            motionOrder = std::move(sorted);
         // Upstream evaluates models in motion order. Keep this sequential: a
         // later model may depend on state produced by an earlier model.
         for (const auto index : motionOrder) {
             auto& current = evaluated[index];
             const auto& instance = *current.instance;
-            current.frame = instance.animator->evaluate(animationFrame_, deltaSeconds, current.gpuSkinning);
-            if (instance.softBody != nullptr && instance.softBody->available()) {
+            instance.animator->setPhysics(projectEditorState_.physicsMode == 0 ? nullptr : instance.physics.get());
+            const auto boneOverrides = poseBinding_.overrides(instance.id, animationFrame_, scene_.motionRevision());
+            std::vector<mmd::MorphOverride> morphOverrides;
+            if (morphModified_ && morphEditModel_ == instance.id && morphEditIndex_ >= 0 &&
+                editorValuesFrame_ == animationFrame_ && editorValuesRevision_ == scene_.motionRevision())
+                morphOverrides.push_back({static_cast<std::size_t>(morphEditIndex_), editedMorphWeight_, 0, {}});
+            std::vector<mmd::ExternalParentTransform> parentTransforms;
+            for (const auto& link : externalParents)
+                if (link.childModel == instance.id) {
+                    const auto* parent = scene_.model(link.parentModel);
+                    const auto* parentPoses = parent ? poseBinding_.poses(parent->id) : nullptr;
+                    if (!parent || !parentPoses)
+                        continue;
+                    const auto source = std::ranges::find(parent->model->bones, link.parentBone, &core::PmxBone::name);
+                    const auto child = std::ranges::find(instance.model->bones, link.childBone, &core::PmxBone::name);
+                    if (source == parent->model->bones.end() || child == instance.model->bones.end())
+                        continue;
+                    const auto sourceIndex =
+                        static_cast<std::size_t>(std::distance(parent->model->bones.begin(), source));
+                    if (sourceIndex >= parentPoses->size())
+                        continue;
+                    const auto& sourcePose = (*parentPoses)[sourceIndex];
+                    mmd::ExternalParentTransform transform;
+                    transform.index = static_cast<std::size_t>(std::distance(instance.model->bones.begin(), child));
+                    transform.rotation = sourcePose.rotation;
+                    const auto rotatedCenter = editor::rotatePoint(transform.rotation, instance.normalization.center);
+                    for (std::size_t axis = 0; axis < 3; ++axis)
+                        transform.translation[axis] =
+                            instance.normalization.center[axis] - rotatedCenter[axis] +
+                            (sourcePose.worldPosition[axis] - parent->normalization.center[axis]) *
+                                parent->normalization.scale / instance.normalization.scale;
+                    parentTransforms.push_back(transform);
+                }
+            current.frame = instance.animator->evaluate(animationFrame_, deltaSeconds, current.gpuSkinning,
+                                                        morphOverrides, boneOverrides, parentTransforms);
+            poseBinding_.observe(instance.id, current.frame);
+            if (projectEditorState_.physicsMode != 0 && instance.softBody != nullptr &&
+                instance.softBody->available()) {
                 const auto gravity = scene_.evaluatePhysicsSettings(animationFrame_);
                 instance.softBody->step(deltaSeconds, {gravity.gravityDirection[0] * gravity.gravity,
                                                        gravity.gravityDirection[1] * gravity.gravity,
@@ -2547,10 +2779,19 @@ void Application::buildMediaPlaybackControls(bool compact) {
             ImGui::SameLine();
         ImGui::TextWrapped("Video: %s", videoPath.filename().string().c_str());
     }
+    if (!audioSource_.empty() && ImGui::Button(editor::uiLabel("Unload audio"))) {
+        audioPlayer_.stop();
+        loadedAudio_ = {};
+        audioSource_.clear();
+        waveformPeaks_.clear();
+        scene_.clearMedia();
+        projectEditorState_.wavFile.clear();
+        std::erase_if(projectAssets_, [](const auto& asset) { return asset.kind == "audio"; });
+    }
     const bool canShowVideo = videoMode_ || backgroundVideoPath_[0] != '\0';
     ImGui::BeginDisabled(!canShowVideo);
     bool show = videoVisible_;
-    if (ImGui::Checkbox("Show MP4 video", &show)) {
+    if (ImGui::Checkbox(editor::uiLabel("Show MP4 video"), &show)) {
         if (show)
             selectBackgroundSource(core::ScreenTextureSource::backgroundVideo);
         else
@@ -2572,7 +2813,7 @@ void Application::buildMediaPlaybackControls(bool compact) {
         ImGui::SameLine();
         ImGui::SetNextItemWidth(110.0F);
     }
-    if (ImGui::DragFloat("Audio offset", &audioOffsetSeconds_, 0.01F, -60.0F, 60.0F, "%.2f s"))
+    if (ImGui::DragFloat(editor::uiLabel("Audio offset"), &audioOffsetSeconds_, 0.01F, -60.0F, 60.0F, "%.2f s"))
         restartAudioAtCurrentFrame();
     ImGui::EndDisabled();
 #else
@@ -2584,7 +2825,7 @@ void Application::buildMediaBackgroundUi() {
 #if DAYO_HAS_IMGUI
     ImGui::InputTextWithHint("Video file", "MP4 background (optional)", backgroundVideoPath_.data(),
                              backgroundVideoPath_.size());
-    if (ImGui::Button("Apply video file"))
+    if (ImGui::Button(editor::uiLabel("Apply video file")))
         loadBackgroundVideo(backgroundVideoPath_.data());
     buildMediaPlaybackControls();
 #endif
@@ -2675,8 +2916,8 @@ void Application::refreshPreviewScene() {
     scene.debugMaterial = previewDebugMaterial_;
     scene.debugFlags = previewDebugFlags_;
     scene.outlineEnabled = previewOutlineEnabled_;
-    if (motion != nullptr && !motion->lights.empty()) {
-        const auto light = core::evaluateLight(*motion, animationFrame_);
+    if (lightModified_ || projectEditorState_.syncCamera || (motion != nullptr && !motion->lights.empty())) {
+        const auto light = makeSceneLightState();
         std::copy(light.position.begin(), light.position.end(), scene.lightDirection);
         std::copy(light.color.begin(), light.color.end(), scene.lightColor);
     }
@@ -2727,6 +2968,9 @@ bool Application::advanceDeterministicFrameEvaluation(float targetFrame, std::ui
 
 void Application::buildUi() {
 #if DAYO_HAS_IMGUI
+    ImGuizmo::BeginFrame();
+    synchronizeEditorValues();
+    poseBinding_.synchronize(scene_, animationFrame_);
     uiState_.viewportHovered = false;
     uiState_.timelineFocused = false;
     buildMainMenuBar();
@@ -2741,12 +2985,28 @@ void Application::buildUi() {
             const float dpiScale = std::max(imguiViewport->DpiScale, 1.0F);
             const auto pixelWidth = static_cast<std::uint32_t>(std::max(1.0F, std::round(available.x * dpiScale)));
             const auto pixelHeight = static_cast<std::uint32_t>(std::max(1.0F, std::round(available.y * dpiScale)));
-            device_->setPreviewViewportExtent({pixelWidth, pixelHeight});
+            device_->setPreviewViewportExtent(
+                {std::max(1U, pixelWidth / static_cast<std::uint32_t>(previewResolutionDivisor_)),
+                 std::max(1U, pixelHeight / static_cast<std::uint32_t>(previewResolutionDivisor_))});
             const auto preview = device_->previewViewport();
             if (preview) {
                 const auto imagePosition = ImGui::GetCursorScreenPos();
                 ImGui::Image(ImTextureRef{static_cast<ImTextureID>(preview.textureId)}, available);
                 const bool imageHovered = ImGui::IsItemHovered();
+                if (model && model->model) {
+                    auto convention = device_->convention();
+                    convention.framebufferYFlip = false;
+                    const auto matrices =
+                        graphics::makeSceneCameraMatrices(makeSceneCameraState(), pixelWidth, pixelHeight, convention);
+                    if (editorWorkspace_.drawViewport(poseBinding_, *model, matrices,
+                                                      {imagePosition.x, imagePosition.y, available.x, available.y},
+                                                      imageHovered, projectEditorState_.showRigidBodies)) {
+                        playing_ = false;
+                        audioPlayer_.setPaused(true);
+                        refreshAnimatedMesh(false);
+                        refreshPreviewScene();
+                    }
+                }
                 if (scene_.models().empty() && !videoVisible_) {
                     constexpr auto message = "No model loaded\nDrop a PMX file into the window";
                     const auto messageSize = ImGui::CalcTextSize(message);
@@ -2762,11 +3022,23 @@ void Application::buildUi() {
                     drawList->AddText(messagePosition, ImGui::GetColorU32(ImGuiCol_TextDisabled), message);
                 }
                 bool overlayHovered = false;
+                if (projectEditorState_.showInfo) {
+                    const auto label = std::string(graphics::toString(device_->activeRenderer())) + " | frame " +
+                                       std::to_string(static_cast<int>(animationFrame_)) + " | " +
+                                       std::to_string(animatedVertexCount_) + " vertices";
+                    ImGui::GetWindowDrawList()->AddText(
+                        {imagePosition.x + 8, imagePosition.y + available.y - ImGui::GetFontSize() - 8},
+                        ImGui::GetColorU32(ImGuiCol_Text), label.c_str());
+                }
                 if (manualCamera_) {
                     ImGui::SetCursorScreenPos({imagePosition.x + ImGui::GetStyle().ItemSpacing.x,
                                                imagePosition.y + ImGui::GetStyle().ItemSpacing.y});
-                    if (ImGui::Button("Use VMD camera")) {
+                    if (ImGui::Button(editor::uiLabel("Use VMD camera"))) {
                         manualCamera_ = false;
+                        cameraModified_ = false;
+                        projectEditorState_.freeCamera = false;
+                        editorValuesFrame_ = -1;
+                        synchronizeEditorValues();
                         refreshPreviewScene();
                     }
                     overlayHovered = ImGui::IsItemHovered();
@@ -2777,11 +3049,20 @@ void Application::buildUi() {
             device_->setPreviewViewportExtent({});
         }
         const auto& io = ImGui::GetIO();
-        const bool viewportInput = uiState_.viewportHovered && !ImGui::IsAnyItemActive();
+        const bool viewportInput =
+            uiState_.viewportHovered && !ImGui::IsAnyItemActive() && !editorWorkspace_.manipulating();
         bool cameraChanged = false;
         if (viewportInput && ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
             cameraYaw_ += io.MouseDelta.x * 0.008F;
             cameraPitch_ = std::clamp(cameraPitch_ + io.MouseDelta.y * 0.008F, -1.5F, 1.5F);
+            cameraChanged = true;
+        }
+        if (viewportInput && ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+            const core::Float3 delta{-io.MouseDelta.x * cameraDistance_ * 0.002F,
+                                     io.MouseDelta.y * cameraDistance_ * 0.002F, 0};
+            cameraPan_[0] += delta[0] * std::cos(cameraYaw_);
+            cameraPan_[1] += delta[1];
+            cameraPan_[2] += delta[0] * std::sin(cameraYaw_);
             cameraChanged = true;
         }
         if (viewportInput && io.MouseWheel != 0.0F) {
@@ -2789,7 +3070,14 @@ void Application::buildUi() {
             cameraChanged = true;
         }
         if (cameraChanged) {
+            const auto norm = model ? model->normalization : normalization_;
+            for (std::size_t axis = 0; axis < 3; ++axis)
+                editedCamera_.position[axis] = cameraPan_[axis] / norm.scale + norm.center[axis];
+            editedCamera_.rotation = {cameraPitch_, cameraYaw_, 0};
+            editedCamera_.distance = -cameraDistance_ / norm.scale;
+            cameraModified_ = true;
             manualCamera_ = true;
+            projectEditorState_.freeCamera = true;
             refreshPreviewScene();
         }
     } else {
@@ -2806,7 +3094,7 @@ void Application::buildUi() {
         ImGui::Text("Geometry: %llu vertices / %llu draws per frame",
                     static_cast<unsigned long long>(totals.frames == 0 ? 0 : totals.vertices / totals.frames),
                     static_cast<unsigned long long>(totals.frames == 0 ? 0 : totals.draws / totals.frames));
-        if (ImGui::Button("Reset profiler"))
+        if (ImGui::Button(editor::uiLabel("Reset profiler")))
             frameProfiler_.reset();
     }
     if (uiState_.performanceVisible)
@@ -2833,14 +3121,15 @@ void Application::buildUi() {
                 refreshPreviewScene();
             }
             if (ImGui::BeginPopupContextItem("scene-item-context")) {
-                ImGui::MenuItem("Rename", nullptr, false, false);
-                ImGui::MenuItem("Duplicate / Clone", nullptr, false, false);
-                if (ImGui::MenuItem("Open Source Folder")) {
+                ImGui::MenuItem(editor::uiLabel("Rename"), nullptr, false, false);
+                ImGui::MenuItem(editor::uiLabel("Duplicate / Clone"), nullptr, false, false);
+                if (ImGui::MenuItem(editor::uiLabel("Open Source Folder"))) {
                     const auto url = "file://" + instance.sourcePath.parent_path().generic_string();
                     if (!SDL_OpenURL(url.c_str()))
                         lastAsset_ = std::string("Open folder: ") + SDL_GetError();
                 }
-                ImGui::MenuItem("Set External Parent", nullptr, false, false);
+                if (ImGui::MenuItem(editor::uiLabel("Set External Parent")))
+                    modelToolsVisible_ = true;
                 ImGui::EndPopup();
             }
             ImGui::PopID();
@@ -2851,7 +3140,7 @@ void Application::buildUi() {
 
     if (uiState_.physicsVisible && ImGui::Begin(workspaceWindowName("Physics", "physics").c_str())) {
         ImGui::Text("Timeline: %.1f / %.1f frames", animationFrame_, scene_.timeline().duration);
-        ImGui::Checkbox("Repeat", &repeat_);
+        ImGui::Checkbox(editor::uiLabel("Repeat"), &repeat_);
         if (ImGui::SliderFloat("Playback speed", &playbackSpeed_, 0.1F, 4.0F, "%.2fx"))
             restartAudioAtCurrentFrame();
         buildMediaPlaybackControls();
@@ -2860,27 +3149,30 @@ void Application::buildUi() {
                              0.0F, 1.0F, {0.0F, 72.0F});
         }
         auto settings = scene_.physicsSettings();
-        bool physicsChanged = ImGui::DragFloat("Gravity", &settings.gravity, 0.01F, 0.0F, 100.0F);
-        physicsChanged |= ImGui::DragFloat3("Gravity direction", settings.gravityDirection.data(), 0.01F);
-        physicsChanged |= ImGui::DragFloat("Gravity noise amplitude", &settings.noiseAmplitude, 0.01F, 0.0F, 100.0F);
-        physicsChanged |= ImGui::DragFloat("Gravity noise frequency", &settings.noiseFrequency, 0.01F, 0.0F, 100.0F);
-        physicsChanged |= ImGui::Checkbox("Floor collision", &settings.floorCollision);
+        bool physicsChanged = ImGui::DragFloat(editor::uiLabel("Gravity"), &settings.gravity, 0.01F, 0.0F, 100.0F);
+        physicsChanged |=
+            ImGui::DragFloat3(editor::uiLabel("Gravity direction"), settings.gravityDirection.data(), 0.01F);
+        physicsChanged |=
+            ImGui::DragFloat(editor::uiLabel("Gravity noise amplitude"), &settings.noiseAmplitude, 0.01F, 0.0F, 100.0F);
+        physicsChanged |=
+            ImGui::DragFloat(editor::uiLabel("Gravity noise frequency"), &settings.noiseFrequency, 0.01F, 0.0F, 100.0F);
+        physicsChanged |= ImGui::Checkbox(editor::uiLabel("Floor collision"), &settings.floorCollision);
         if (physicsChanged)
             scene_.setPhysicsSettings(settings);
         int runtimeMode = static_cast<int>(scene_.runtimeMode());
-        if (ImGui::Combo("Runtime mode", &runtimeMode, "Accumulate\0Realtime\0Idle\0")) {
+        if (ImGui::Combo(editor::uiLabel("Runtime mode"), &runtimeMode, "Accumulate\0Realtime\0Idle\0")) {
             history_.execute(scene_, std::make_unique<core::SetRuntimeModeCommand>(
                                          scene_.runtimeMode(), static_cast<core::RuntimeMode>(runtimeMode)));
         }
         ImGui::Text("Accumulated samples: %llu", static_cast<unsigned long long>(scene_.accumulatedSamples()));
-        if (ImGui::Button("Reset physics") && model != nullptr && model->physics != nullptr)
+        if (ImGui::Button(editor::uiLabel("Reset physics")) && model != nullptr && model->physics != nullptr)
             model->physics->reset();
         ImGui::SameLine();
-        if (ImGui::Button("Update one frame") && model != nullptr) {
+        if (ImGui::Button(editor::uiLabel("Update one frame")) && model != nullptr) {
             refreshAnimatedMesh(false, 1.0F / 30.0F);
             refreshPreviewScene();
         }
-        ImGui::Checkbox("Rigid body debug", &physicsDebug_);
+        ImGui::Checkbox(editor::uiLabel("Rigid body debug"), &physicsDebug_);
         if (physicsDebug_ && model != nullptr && model->physics != nullptr) {
             const auto count = model->physics->bodyCount();
             if (ImGui::BeginChild("rigid-body-debug", {0.0F, 120.0F}, true)) {
@@ -2900,12 +3192,85 @@ void Application::buildUi() {
     if (uiState_.physicsVisible)
         ImGui::End();
     buildInspectorPanel();
+    const bool preferencesVisible_was = preferencesVisible_;
+    if (preferencesVisible_ && ImGui::Begin("Preferences", &preferencesVisible_)) {
+        int language = editorConfig_.language == "ja" ? 1 : 0;
+        if (ImGui::Combo(editor::uiLabel("Language"), &language, "English\0日本語\0")) {
+            editorConfig_.language = language == 1 ? "ja" : "en";
+            editor::setUiLanguage(editorConfig_.language);
+            editorConfig_.save(editor::EditorConfig::defaultPath());
+        }
+        int theme = editorConfig_.theme == "light" ? 1 : 0;
+        if (ImGui::Combo(editor::uiLabel("Theme"), &theme, "Dark\0Light\0")) {
+            editorConfig_.theme = theme == 1 ? "light" : "dark";
+            if (theme == 1)
+                ImGui::StyleColorsLight();
+            else
+                ui::applyEditorTheme(uiState_.userScale);
+            editorConfig_.save(editor::EditorConfig::defaultPath());
+        }
+        if (ImGui::Button(editor::uiLabel("Reset defaults"))) {
+            editorConfig_ = {};
+            editor::setUiLanguage("en");
+            ui::applyEditorTheme(uiState_.userScale);
+            uiState_.resetLayoutRequested = true;
+            editorConfig_.save(editor::EditorConfig::defaultPath());
+        }
+    }
+    if (preferencesVisible_was)
+        ImGui::End();
+    const bool shortcutsVisible_was = shortcutsVisible_;
+    if (shortcutsVisible_ && ImGui::Begin("Shortcuts", &shortcutsVisible_))
+        ImGui::TextUnformatted(
+            "Space: Play / Pause\nCtrl+S: Save\nCtrl+Z / Ctrl+Y: Undo / Redo\nCtrl+C / X / V: Copy / Cut / Paste "
+            "keys\nDelete: Delete selected keys\nShift+click: Range / Add selection\nCtrl+click: Toggle "
+            "selection\nDrag keys: Move (one undo)\nEsc: Cancel key drag / selection rectangle\nLeft drag empty "
+            "timeline / viewport: Rectangle selection\nShift+drag: Add; Ctrl+drag: Invert\nTimeline Ctrl+wheel: Zoom; "
+            "wheel: Scroll; middle drag: Pan\nViewport right drag: Orbit; middle drag: Pan; wheel: Dolly");
+    if (shortcutsVisible_was)
+        ImGui::End();
+    const bool borrowedAssetsVisible_was = borrowedAssetsVisible_;
+    if (borrowedAssetsVisible_ && ImGui::Begin("Borrowed assets", &borrowedAssetsVisible_)) {
+        std::string text;
+        for (const auto& asset : projectAssets_) {
+            text += asset.kind + ": " + asset.path.string() + "\n";
+        }
+        for (const auto& item : scene_.models())
+            text += item.displayName + "\n" + item.model->metadata.comment + "\n";
+        if (ImGui::Button(editor::uiLabel("Copy list")))
+            ImGui::SetClipboardText(text.c_str());
+        ImGui::TextUnformatted(text.c_str());
+    }
+    if (borrowedAssetsVisible_was)
+        ImGui::End();
     buildEditorUi();
+    updateCameraRecording();
+    if (historyVisible_) {
+        const auto count = history_.undoCount();
+        editorWorkspace_.drawHistory(editorSession_);
+        if (count != history_.undoCount()) {
+            refreshAnimatedMesh(false);
+            refreshPreviewScene();
+        }
+    }
+    if (modelToolsVisible_ && editorWorkspace_.drawModels(editorSession_, animationFrame_)) {
+        refreshAnimatedMesh(true);
+        refreshPreviewScene();
+    }
+    if (editorSession_.flushOperations() != 0) {
+        refreshAnimatedMesh(false);
+        refreshPreviewScene();
+    }
+    if (scene_.dirty(core::DirtyFlag::effect)) {
+        requestRenderer(requestedRenderer_);
+        scene_.clearDirty(core::DirtyFlag::effect);
+    }
     handleEditorShortcuts();
     buildAudioExportUi();
     buildVideoExportUi();
     buildImageSequenceExportUi();
     buildSaveAsDialog();
+    buildQuitDialog();
 #endif
 }
 
@@ -2929,18 +3294,9 @@ void Application::handleEditorShortcuts() {
         return;
     if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
         if (recordCamera_) {
-            core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
-            auto document = core::toMotionDocument(before);
-            core::VmdCameraKey key = editedCamera_;
-            key.frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
-            key.distance = -cameraDistance_ / std::max(normalization_.scale, 0.0001F);
-            key.rotation = {cameraPitch_, cameraYaw_, 0.0F};
-            std::erase_if(document.cameras, [&](const auto& item) { return item.frame == key.frame; });
-            document.cameras.push_back(key);
-            core::MotionEditor::normalize(document);
-            history_.execute(scene_, std::make_unique<core::EditMotionCommand>(
-                                         0, true, before, core::toVmdMotion(std::move(document), before.modelName),
-                                         "Record camera key"));
+            recordCamera_ = false;
+            playing_ = false;
+            updateCameraRecording();
         } else {
             playing_ = !playing_;
             restartAudioAtCurrentFrame();
@@ -2973,76 +3329,135 @@ void Application::buildMainMenuBar() {
 #if DAYO_HAS_IMGUI
     if (!ImGui::BeginMainMenuBar())
         return;
-    if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("Save", "Ctrl+S"))
+    if (ImGui::BeginMenu(editor::uiLabel("File"))) {
+        if (ImGui::MenuItem(editor::uiLabel("Save"), "Ctrl+S"))
             saveProjectNow();
-        if (ImGui::MenuItem("Save As..."))
+        if (ImGui::MenuItem(editor::uiLabel("Save As...")))
             uiState_.saveAsOpen = true;
         ImGui::Separator();
-        if (ImGui::MenuItem("Quit", "Alt+F4")) {
+        if (ImGui::MenuItem(editor::uiLabel("Quit"), "Alt+F4")) {
             SDL_Event event{};
             event.type = SDL_EVENT_QUIT;
             SDL_PushEvent(&event);
         }
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Edit")) {
+    if (ImGui::BeginMenu(editor::uiLabel("Edit"))) {
         const bool canUndo = history_.canUndo();
         const bool canRedo = history_.canRedo();
-        if (ImGui::MenuItem("Undo", "Ctrl+Z", false, canUndo) && history_.undo(scene_)) {
+        if (ImGui::MenuItem(editor::uiLabel("Undo"), "Ctrl+Z", false, canUndo) && history_.undo(scene_)) {
             animationFrame_ = scene_.timeline().frame;
             refreshAnimatedMesh(false);
             refreshPreviewScene();
         }
-        if (ImGui::MenuItem("Redo", "Ctrl+Y", false, canRedo) && history_.redo(scene_)) {
+        if (ImGui::MenuItem(editor::uiLabel("Redo"), "Ctrl+Y", false, canRedo) && history_.redo(scene_)) {
             animationFrame_ = scene_.timeline().frame;
             refreshAnimatedMesh(false);
             refreshPreviewScene();
         }
+        ImGui::MenuItem(editor::uiLabel("Preferences"), nullptr, &preferencesVisible_);
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("View")) {
-        if (ImGui::MenuItem("Scene", nullptr, &uiState_.sceneVisible))
+    if (ImGui::BeginMenu(editor::uiLabel("View"))) {
+        if (ImGui::MenuItem(editor::uiLabel("Scene"), nullptr, &uiState_.sceneVisible))
             uiState_.resetLayoutRequested = true;
-        if (ImGui::MenuItem("Inspector", nullptr, &uiState_.inspectorVisible))
+        if (ImGui::MenuItem(editor::uiLabel("Inspector"), nullptr, &uiState_.inspectorVisible))
             uiState_.resetLayoutRequested = true;
-        if (ImGui::MenuItem("Timeline", nullptr, &uiState_.timelineVisible))
+        if (ImGui::MenuItem(editor::uiLabel("Timeline"), nullptr, &uiState_.timelineVisible))
             uiState_.resetLayoutRequested = true;
-        ImGui::MenuItem("Status bar", nullptr, &uiState_.statusBarVisible);
+        ImGui::MenuItem(editor::uiLabel("Status bar"), nullptr, &uiState_.statusBarVisible);
+        ImGui::MenuItem(editor::uiLabel("Manipulation history"), nullptr, &historyVisible_);
+        ImGui::MenuItem(editor::uiLabel("Models / External parents"), nullptr, &modelToolsVisible_);
+        ImGui::MenuItem(editor::uiLabel("Physics settings"), nullptr, &uiState_.physicsVisible);
+        ImGui::MenuItem(editor::uiLabel("Material settings"), nullptr, &uiState_.materialDebugVisible);
+        bool physicsEnabled = projectEditorState_.physicsMode != 0;
+        if (ImGui::MenuItem(editor::uiLabel("Physics enabled"), nullptr, &physicsEnabled)) {
+            projectEditorState_.physicsMode = physicsEnabled ? 1 : 0;
+            refreshAnimatedMesh(false);
+            refreshPreviewScene();
+        }
+        ImGui::MenuItem(editor::uiLabel("Show info"), nullptr, &projectEditorState_.showInfo);
+        ImGui::MenuItem(editor::uiLabel("Show rigid bodies"), nullptr, &projectEditorState_.showRigidBodies);
+        ImGui::MenuItem(editor::uiLabel("Follow selected model"), nullptr, &projectEditorState_.syncCamera);
+        ImGui::MenuItem(editor::uiLabel("Use denoiser"), nullptr, &projectEditorState_.denoiserEnabled);
+        if (ImGui::MenuItem(editor::uiLabel("Free camera"), nullptr, &projectEditorState_.freeCamera)) {
+            manualCamera_ = projectEditorState_.freeCamera;
+            refreshPreviewScene();
+        }
+        if (ImGui::BeginMenu(editor::uiLabel("Preview resolution"))) {
+            for (const auto divisor : {1, 2, 4})
+                if (ImGui::MenuItem(divisor == 1   ? "1x"
+                                    : divisor == 2 ? "1/2"
+                                                   : "1/4",
+                                    nullptr, previewResolutionDivisor_ == divisor))
+                    previewResolutionDivisor_ = divisor;
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu(editor::uiLabel("Runtime mode"))) {
+            for (int mode = 0; mode < 3; ++mode)
+                if (ImGui::MenuItem(mode == 0   ? "Accumulate"
+                                    : mode == 1 ? "Realtime"
+                                                : "Idle",
+                                    nullptr, static_cast<int>(scene_.runtimeMode()) == mode))
+                    history_.execute(scene_, std::make_unique<core::SetRuntimeModeCommand>(
+                                                 scene_.runtimeMode(), static_cast<core::RuntimeMode>(mode)));
+            ImGui::EndMenu();
+        }
         ImGui::Separator();
-        if (ImGui::MenuItem("Reset Layout")) {
+        if (ImGui::MenuItem(editor::uiLabel("Reset Layout"))) {
             uiState_.resetLayoutRequested = true;
         }
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Media")) {
+    if (ImGui::BeginMenu(editor::uiLabel("Renderer"))) {
+        for (const auto renderer :
+             {graphics::RendererKind::preview, graphics::RendererKind::subayai, graphics::RendererKind::bdpt})
+            if (ImGui::MenuItem(std::string(graphics::toString(renderer)).c_str(), nullptr,
+                                device_->activeRenderer() == renderer))
+                requestRenderer(renderer);
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu(editor::uiLabel("Media"))) {
         buildMediaPlaybackControls();
-        if (ImGui::MenuItem("Open Timeline")) {
+        if (ImGui::MenuItem(editor::uiLabel("Open Timeline"))) {
             uiState_.timelineVisible = true;
             uiState_.resetLayoutRequested = true;
         }
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Animation")) {
+    if (ImGui::BeginMenu(editor::uiLabel("Animation"))) {
+        ImGui::InputInt(editor::uiLabel("Range start"), &projectEditorState_.animationStart);
+        ImGui::InputInt(editor::uiLabel("Range end (-1: motion end)"), &projectEditorState_.animationEnd);
+        projectEditorState_.animationStart = std::max(0, projectEditorState_.animationStart);
+        if (projectEditorState_.animationEnd >= 0)
+            projectEditorState_.animationEnd =
+                std::max(projectEditorState_.animationStart, projectEditorState_.animationEnd);
+        if (ImGui::MenuItem(editor::uiLabel("Seek range start")))
+            seekTimeline(static_cast<float>(projectEditorState_.animationStart));
+        if (ImGui::MenuItem(editor::uiLabel("Seek range end")))
+            seekTimeline(projectEditorState_.animationEnd < 0 ? scene_.timeline().duration
+                                                              : static_cast<float>(projectEditorState_.animationEnd));
         if (ImGui::MenuItem(playing_ ? "Pause" : "Play", "Space")) {
             playing_ = !playing_;
             restartAudioAtCurrentFrame();
         }
-        ImGui::MenuItem("Loop", nullptr, &repeat_);
+        ImGui::MenuItem(editor::uiLabel("Loop"), nullptr, &repeat_);
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Render")) {
-        if (ImGui::MenuItem("Export Video..."))
+    if (ImGui::BeginMenu(editor::uiLabel("Render"))) {
+        if (ImGui::MenuItem(editor::uiLabel("Export Video...")))
             uiState_.videoExportOpen = true;
-        if (ImGui::MenuItem("Export Audio..."))
+        if (ImGui::MenuItem(editor::uiLabel("Export Audio...")))
             uiState_.audioExportOpen = true;
-        if (ImGui::MenuItem("Export Image Sequence...")) {
+        if (ImGui::MenuItem(editor::uiLabel("Export Image Sequence..."))) {
             uiState_.imageSequenceExportOpen = true;
             setWorkspace(ui::Workspace::render);
         }
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Help")) {
+    if (ImGui::BeginMenu(editor::uiLabel("Help"))) {
+        ImGui::MenuItem(editor::uiLabel("Shortcuts"), nullptr, &shortcutsVisible_);
+        ImGui::MenuItem(editor::uiLabel("Borrowed assets"), nullptr, &borrowedAssetsVisible_);
         ImGui::TextUnformatted("Space  Play / Pause");
         ImGui::TextUnformatted("Ctrl+Z / Ctrl+Y  Undo / Redo");
         ImGui::TextUnformatted("Right-drag / Wheel  Viewport camera");
@@ -3149,26 +3564,27 @@ void Application::buildInspectorPanel() {
                 ImGui::TableSetColumnIndex(0);
                 ImGui::TextUnformatted("Background");
                 ImGui::TableSetColumnIndex(1);
-                if (ImGui::Combo("##background-source", &source, "Previous frame\0Video\0Image\0White\0")) {
+                if (ImGui::Combo(editor::uiLabel("##background-source"), &source,
+                                 "Previous frame\0Video\0Image\0White\0")) {
                     selectBackgroundSource(static_cast<core::ScreenTextureSource>(source));
                 }
                 ImGui::EndTable();
             }
             bool enabled = background.enabled;
-            if (ImGui::Checkbox("Enabled", &enabled)) {
+            if (ImGui::Checkbox(editor::uiLabel("Enabled"), &enabled)) {
                 scene_.setBackgroundEnabled(enabled);
                 refreshPreviewScene();
             }
             buildMediaBackgroundUi();
             ImGui::SeparatorText("Preview lighting");
             ImGui::InputText("HDRI file", previewHdriPath_.data(), previewHdriPath_.size());
-            if (ImGui::Button("Apply lighting HDRI")) {
+            if (ImGui::Button(editor::uiLabel("Apply lighting HDRI"))) {
                 projectEditorState_.skyboxFile = previewHdriPath_.data();
                 failedPreviewHdriPath_.clear();
                 scene_.markDirty(core::DirtyFlag::lighting);
             }
             ImGui::SameLine();
-            if (ImGui::Button("Use background lighting")) {
+            if (ImGui::Button(editor::uiLabel("Use background lighting"))) {
                 projectEditorState_.skyboxFile.clear();
                 previewHdriPath_.fill(0);
                 failedPreviewHdriPath_.clear();
@@ -3186,12 +3602,14 @@ void Application::buildInspectorPanel() {
     ImGui::Separator();
     if (ImGui::CollapsingHeader("Model", ImGuiTreeNodeFlags_DefaultOpen)) {
         bool visible = model->visible;
-        if (ImGui::Checkbox("Visible", &visible)) {
+        if (ImGui::Checkbox(editor::uiLabel("Editor visible"), &visible)) {
+            unsavedModelChanges_ = true;
             scene_.setModelVisible(model->id, visible);
             refreshAnimatedMesh(true);
         }
         int clones = static_cast<int>(model->cloneCount);
         if (ImGui::DragInt("Clone count", &clones, 1.0F, 1, 16)) {
+            unsavedModelChanges_ = true;
             scene_.setCloneCount(model->id, static_cast<std::uint32_t>(clones));
             refreshAnimatedMesh(true);
         }
@@ -3199,44 +3617,16 @@ void Application::buildInspectorPanel() {
         ImGui::TextDisabled("%s", model->model->metadata.comment.c_str());
     }
     if (ImGui::CollapsingHeader("Bone / Morph", ImGuiTreeNodeFlags_DefaultOpen)) {
-        const auto& bones = model->model->bones;
-        if (!bones.empty()) {
-            selectedBone_ = std::clamp(selectedBone_, 0, static_cast<int>(bones.size() - 1));
-            if (ImGui::BeginCombo("Bone##InspectorBoneSelector",
-                                  bones[static_cast<std::size_t>(selectedBone_)].name.c_str())) {
-                for (std::size_t index = 0; index < bones.size(); ++index) {
-                    ImGui::PushID(static_cast<int>(index));
-                    if (ImGui::Selectable(bones[index].name.c_str(), selectedBone_ == static_cast<int>(index)))
-                        selectedBone_ = static_cast<int>(index);
-                    ImGui::PopID();
-                }
-                ImGui::EndCombo();
-            }
-            ImGui::DragFloat3("Position", editedBoneTranslation_.data(), 0.01F);
-            ImGui::DragFloat4("Rotation", editedBoneRotation_.data(), 0.01F, -1.0F, 1.0F);
-            ImGui::Checkbox("Physics", &editedBonePhysics_);
-            if (ImGui::Button("Register Bone Key")) {
-                const auto before = model->motion ? *model->motion : core::VmdMotion{};
-                const auto outputModelName = before.modelName.empty() ? model->displayName : before.modelName;
-                auto document = core::toMotionDocument(before);
-                const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
-                const auto& name = bones[static_cast<std::size_t>(selectedBone_)].name;
-                std::erase_if(document.bones, [&](const auto& key) { return key.frame == frame && key.name == name; });
-                document.bones.push_back(
-                    {name, frame, editedBoneTranslation_, editedBoneRotation_, {}, editedBonePhysics_});
-                core::MotionEditor::normalize(document);
-                history_.execute(scene_,
-                                 std::make_unique<core::EditMotionCommand>(
-                                     model->id, false, before, core::toVmdMotion(std::move(document), outputModelName),
-                                     "Register bone key"));
-                refreshAnimatedMesh(false);
-                refreshPreviewScene();
-            }
+        if (editorWorkspace_.drawBonePanel(editorSession_, poseBinding_, *model, animationFrame_)) {
+            playing_ = false;
+            audioPlayer_.setPaused(true);
+            refreshAnimatedMesh(false);
+            refreshPreviewScene();
         }
         const auto& morphs = model->model->morphs;
         if (!morphs.empty()) {
             selectedMorph_ = std::clamp(selectedMorph_, 0, static_cast<int>(morphs.size() - 1));
-            if (ImGui::BeginCombo("Morph##InspectorMorphSelector",
+            if (ImGui::BeginCombo(editor::uiLabel("Morph##InspectorMorphSelector"),
                                   morphs[static_cast<std::size_t>(selectedMorph_)].name.c_str())) {
                 for (std::size_t index = 0; index < morphs.size(); ++index) {
                     ImGui::PushID(static_cast<int>(index));
@@ -3248,8 +3638,27 @@ void Application::buildInspectorPanel() {
             }
             const auto morphUi = core::fx::resolveFxMorphControllerUi(
                 scene_.effects(), *model, morphs[static_cast<std::size_t>(selectedMorph_)].name);
+            const auto weightBefore = editedMorphWeight_;
             drawMorphWeightControl(editedMorphWeight_, morphUi);
-            if (ImGui::Button("Register Morph Key")) {
+            if (weightBefore != editedMorphWeight_) {
+                playing_ = false;
+                audioPlayer_.setPaused(true);
+                morphModified_ = true;
+                refreshAnimatedMesh(false);
+                refreshPreviewScene();
+            }
+            if (ImGui::Button(editor::uiLabel("Revert morph"))) {
+                editedMorphWeight_ = baseMorphWeight_;
+                morphModified_ = false;
+                refreshAnimatedMesh(false);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(editor::uiLabel("Init morph"))) {
+                editedMorphWeight_ = 0;
+                morphModified_ = true;
+                refreshAnimatedMesh(false);
+            }
+            if (ImGui::Button(editor::uiLabel("Register Morph Key"))) {
                 const auto before = model->motion ? *model->motion : core::VmdMotion{};
                 const auto outputModelName = before.modelName.empty() ? model->displayName : before.modelName;
                 auto document = core::toMotionDocument(before);
@@ -3275,7 +3684,7 @@ void Application::buildInspectorPanel() {
                                    uiState_.selectedMaterial < static_cast<std::int32_t>(model->model->materials.size())
                                ? uiState_.selectedMaterial
                                : 0;
-            if (ImGui::BeginCombo("Material##InspectorMaterialSelector",
+            if (ImGui::BeginCombo(editor::uiLabel("Material##InspectorMaterialSelector"),
                                   model->model->materials[static_cast<std::size_t>(material)].name.c_str())) {
                 for (std::size_t index = 0; index < model->model->materials.size(); ++index) {
                     ImGui::PushID(static_cast<int>(index));
@@ -3303,14 +3712,15 @@ void Application::buildInspectorPanel() {
                     : "none");
             if (static_cast<std::size_t>(material) < model->materialSettings.size()) {
                 int preset = model->materialSettings[static_cast<std::size_t>(material)].previewPbrPreset;
-                if (ImGui::Combo("Preview material", &preset, "PMX\0Skin\0Hair\0Cloth\0Metal\0Plastic\0Glass\0")) {
+                if (ImGui::Combo(editor::uiLabel("Preview material"), &preset,
+                                 "PMX\0Skin\0Hair\0Cloth\0Metal\0Plastic\0Glass\0")) {
                     model->materialSettings[static_cast<std::size_t>(material)].previewPbrPreset =
                         static_cast<std::uint8_t>(preset);
                     scene_.markDirty(core::DirtyFlag::material);
                     refreshAnimatedMesh(false);
                 }
             }
-            if (ImGui::Checkbox("Enable PMX outlines (preview)", &previewOutlineEnabled_))
+            if (ImGui::Checkbox(editor::uiLabel("Enable PMX outlines (preview)"), &previewOutlineEnabled_))
                 refreshPreviewScene();
         }
     }
@@ -3329,6 +3739,44 @@ void Application::buildInspectorPanel() {
 #endif
 }
 
+bool Application::projectModified() const {
+    return poseBinding_.modified() || morphModified_ || cameraModified_ || lightModified_ || shadowModified_ ||
+           unsavedModelChanges_ || history_.revision() != savedHistoryRevision_ ||
+           projectAssets_.size() != savedAssetCount_ || projectEditorState_ != savedEditorState_;
+}
+void Application::buildQuitDialog() {
+#if DAYO_HAS_IMGUI
+    if (quitRequested_ && !uiState_.saveAsOpen)
+        ImGui::OpenPopup("Unsaved project");
+    if (!ImGui::BeginPopupModal("Unsaved project", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+    ImGui::TextUnformatted("Save your project before closing?");
+    if (poseBinding_.modified() || morphModified_ || cameraModified_ || lightModified_ || shadowModified_)
+        ImGui::TextWrapped("Unregistered preview edits will be discarded on closing. Register those edits to keep them "
+                           "in the project.");
+    if (ImGui::Button(editor::uiLabel("Save"))) {
+        saveProjectNow();
+        if (projectSaveStatus_ == "Project saved" && currentProjectPath_) {
+            quitConfirmed_ = true;
+            quitRequested_ = false;
+        }
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(editor::uiLabel("Discard"))) {
+        quitConfirmed_ = true;
+        quitRequested_ = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(editor::uiLabel("Cancel"))) {
+        quitRequested_ = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+#endif
+}
+
 void Application::buildSaveAsDialog() {
 #if DAYO_HAS_IMGUI
     if (uiState_.saveAsOpen) {
@@ -3339,13 +3787,21 @@ void Application::buildSaveAsDialog() {
         return;
     ImGui::TextUnformatted("Choose a Dayo project destination.");
     ImGui::InputText("Path", projectDestination_.data(), projectDestination_.size());
-    if (ImGui::Button("Save")) {
+    if (ImGui::Button(editor::uiLabel("Save"))) {
         saveProjectAsNow();
         if (projectSaveStatus_ == "Project saved")
             ImGui::CloseCurrentPopup();
     }
+    if (projectSaveStatus_ == "Destination exists; confirm overwrite." &&
+        ImGui::Button(editor::uiLabel("Confirm overwrite"))) {
+        overwriteApproved_ = true;
+        saveProjectAsNow();
+        if (projectSaveStatus_ == "Project saved")
+            ImGui::CloseCurrentPopup();
+    }
+
     ImGui::SameLine();
-    if (ImGui::Button("Cancel"))
+    if (ImGui::Button(editor::uiLabel("Cancel")))
         ImGui::CloseCurrentPopup();
     if (!projectSaveStatus_.empty())
         ImGui::TextWrapped("%s", projectSaveStatus_.c_str());
@@ -3399,6 +3855,14 @@ void Application::saveProjectNow() {
     try {
         core::saveProject(*currentProjectPath_, currentProject());
         projectSaveStatus_ = "Project saved";
+        if (quitRequested_) {
+            quitConfirmed_ = true;
+            quitRequested_ = false;
+        }
+        savedHistoryRevision_ = history_.revision();
+        savedEditorState_ = projectEditorState_;
+        savedAssetCount_ = projectAssets_.size();
+        unsavedModelChanges_ = false;
     } catch (const std::exception& error) {
         projectSaveStatus_ = error.what();
     }
@@ -3411,6 +3875,12 @@ void Application::saveProjectAsNow() {
         if (projectDestination_[0] == '\0')
             throw std::invalid_argument("project destination is empty");
         const auto destination = std::filesystem::absolute(projectDestination_.data()).lexically_normal();
+        if (std::filesystem::exists(destination) && (!currentProjectPath_ || destination != *currentProjectPath_) &&
+            !overwriteApproved_) {
+            projectSaveStatus_ = "Destination exists; confirm overwrite.";
+            return;
+        }
+        overwriteApproved_ = false;
         core::saveProject(destination, currentProject());
         currentProjectPath_ = destination;
         const auto text = currentProjectPath_->string();
@@ -3418,6 +3888,14 @@ void Application::saveProjectAsNow() {
         std::copy_n(text.data(), count, projectDestination_.data());
         projectDestination_[count] = '\0';
         projectSaveStatus_ = "Project saved";
+        if (quitRequested_) {
+            quitConfirmed_ = true;
+            quitRequested_ = false;
+        }
+        savedHistoryRevision_ = history_.revision();
+        savedEditorState_ = projectEditorState_;
+        savedAssetCount_ = projectAssets_.size();
+        unsavedModelChanges_ = false;
     } catch (const std::exception& error) {
         projectSaveStatus_ = error.what();
     }
@@ -3592,7 +4070,7 @@ void Application::advanceImageSequenceExport() {
             device_->setPreviewJitter(0.0F, 0.0F);
             device_->setPreviewStillQuality(false);
         }
-        const auto finishOutputFrame = [&]() {
+        const auto finishOutputFrame = [&] {
             if (!imageSequenceOutput_->tryPush(frame, std::move(imageSequenceImage_)))
                 throw std::runtime_error("image output queue unexpectedly full");
             imageSequenceHdrSamples_ = {};
@@ -3696,7 +4174,7 @@ void Application::buildImageSequenceExportUi() {
             ImGui::ProgressBar(total == 0U ? 0.0F : static_cast<float>(completed) / static_cast<float>(total),
                                {-1.0F, 0.0F});
             ImGui::Text("Current sample: %u / %u", imageSequenceSampleIndex_ + 1U, imageSequenceSampleCount_);
-            if (ImGui::Button("Cancel"))
+            if (ImGui::Button(editor::uiLabel("Cancel")))
                 imageSequenceCancelRequested_ = true;
         }
     } else {
@@ -3713,31 +4191,31 @@ void Application::buildImageSequenceExportUi() {
         int first = static_cast<int>(sequenceOutput_.firstFrame);
         int last = static_cast<int>(sequenceOutput_.lastFrame);
         int samples = static_cast<int>(sequenceOutput_.samples);
-        if (ImGui::InputInt("First frame", &first)) {
+        if (ImGui::InputInt(editor::uiLabel("First frame"), &first)) {
             sequenceOutput_.firstFrame = static_cast<std::uint32_t>(std::max(first, 0));
             projectEditorState_.recordStart = static_cast<std::int32_t>(sequenceOutput_.firstFrame);
         }
-        if (ImGui::InputInt("Last frame", &last)) {
+        if (ImGui::InputInt(editor::uiLabel("Last frame"), &last)) {
             sequenceOutput_.lastFrame = static_cast<std::uint32_t>(std::max(last, 0));
             projectEditorState_.recordEnd = static_cast<std::int32_t>(sequenceOutput_.lastFrame);
         }
-        if (ImGui::InputInt("Samples", &samples))
+        if (ImGui::InputInt(editor::uiLabel("Samples"), &samples))
             sequenceOutput_.samples = static_cast<std::uint32_t>(std::clamp(samples, 1, 4096));
-        ImGui::Combo("Preview render scale", &previewStillScale_,
+        ImGui::Combo(editor::uiLabel("Preview render scale"), &previewStillScale_,
                      "1x\0"
                      "1.33x\0"
                      "2x\0");
         int width = static_cast<int>(sequenceWidth_);
         int height = static_cast<int>(sequenceHeight_);
-        if (ImGui::InputInt("Width", &width)) {
+        if (ImGui::InputInt(editor::uiLabel("Width"), &width)) {
             sequenceWidth_ = static_cast<std::uint32_t>(std::max(width, 1));
             sequencePreset_ = 0;
         }
-        if (ImGui::InputInt("Height", &height)) {
+        if (ImGui::InputInt(editor::uiLabel("Height"), &height)) {
             sequenceHeight_ = static_cast<std::uint32_t>(std::max(height, 1));
             sequencePreset_ = 0;
         }
-        if (ImGui::Combo("Preset", &sequencePreset_,
+        if (ImGui::Combo(editor::uiLabel("Preset"), &sequencePreset_,
                          "Custom\0"
                          "720p\0"
                          "1080p\0"
@@ -3756,8 +4234,8 @@ void Application::buildImageSequenceExportUi() {
                 sequenceHeight_ = selected[1];
             }
         }
-        ImGui::Checkbox("Motion blur", &sequenceOutput_.motionBlur);
-        ImGui::Checkbox("Overwrite existing frames", &sequenceOutput_.overwrite);
+        ImGui::Checkbox(editor::uiLabel("Motion blur"), &sequenceOutput_.motionBlur);
+        ImGui::Checkbox(editor::uiLabel("Overwrite existing frames"), &sequenceOutput_.overwrite);
         int format = sequenceOutput_.format == core::OutputFormat::png   ? 1
                      : sequenceOutput_.format == core::OutputFormat::exr ? 2
                                                                          : 0;
@@ -3770,7 +4248,7 @@ void Application::buildImageSequenceExportUi() {
         format = std::min(format, formatCount - 1);
 #endif
         format = std::clamp(format, 0, formatCount - 1);
-        if (ImGui::Combo("Format", &format, formatNames))
+        if (ImGui::Combo(editor::uiLabel("Format"), &format, formatNames))
             sequenceOutput_.format = static_cast<core::OutputFormat>(format);
         try {
             auto previewSettings = sequenceOutput_;
@@ -3782,13 +4260,13 @@ void Application::buildImageSequenceExportUi() {
         } catch (const std::exception& error) {
             ImGui::TextWrapped("%s", error.what());
         }
-        if (ImGui::Button("Render sequence"))
+        if (ImGui::Button(editor::uiLabel("Render sequence")))
             startImageSequenceExport();
     }
     if (!sequenceOutputStatus_.empty())
         ImGui::TextWrapped("%s", sequenceOutputStatus_.c_str());
     ImGui::SameLine();
-    if (!imageSequenceExportRunning_ && ImGui::Button("Close"))
+    if (!imageSequenceExportRunning_ && ImGui::Button(editor::uiLabel("Close")))
         ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
 #endif
@@ -3802,47 +4280,201 @@ void Application::buildStatusBar() {
     const float height = ImGui::GetFrameHeightWithSpacing();
     constexpr auto flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDocking |
                            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollbar;
-    if (ImGui::BeginViewportSideBar("##status-bar", viewport, ImGuiDir_Down, height, flags)) {
-        if (ImGui::BeginTable("##editor-status", 5, ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 2.0F);
-            ImGui::TableSetupColumn("Model", ImGuiTableColumnFlags_WidthStretch, 1.0F);
-            ImGui::TableSetupColumn("Frame", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 9.0F);
-            ImGui::TableSetupColumn("FPS", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 5.0F);
-            ImGui::TableSetupColumn("Project", ImGuiTableColumnFlags_WidthStretch, 1.5F);
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0);
-            ImGui::TextUnformatted(lastAsset_.c_str());
-            if (ImGui::IsItemHovered() && !lastAsset_.empty())
-                ImGui::SetTooltip("%s", lastAsset_.c_str());
-            ImGui::TableSetColumnIndex(1);
-            if (const auto* model = selectedModel())
-                ImGui::TextUnformatted(model->displayName.c_str());
-            else
-                ImGui::TextDisabled("Scene");
-            ImGui::TableSetColumnIndex(2);
-            ImGui::Text("Frame %.0f / %.0f", animationFrame_, scene_.timeline().duration);
-            ImGui::TableSetColumnIndex(3);
-            ImGui::Text("%.0f FPS", ImGui::GetIO().Framerate);
-            ImGui::TableSetColumnIndex(4);
-            const std::string projectText = currentProjectPath_ ? currentProjectPath_->string() : "Untitled project";
-            ImGui::TextDisabled("%s", projectText.c_str());
-            ImGui::EndTable();
-        }
+    if (ImGui::BeginViewportSideBar("##status-bar", viewport, ImGuiDir_Down, height, flags) &&
+        ImGui::BeginTable("##editor-status", 5, ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 2.0F);
+        ImGui::TableSetupColumn("Model", ImGuiTableColumnFlags_WidthStretch, 1.0F);
+        ImGui::TableSetupColumn("Frame", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 9.0F);
+        ImGui::TableSetupColumn("FPS", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 5.0F);
+        ImGui::TableSetupColumn("Project", ImGuiTableColumnFlags_WidthStretch, 1.5F);
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextUnformatted(lastAsset_.c_str());
+        if (ImGui::IsItemHovered() && !lastAsset_.empty())
+            ImGui::SetTooltip("%s", lastAsset_.c_str());
+        ImGui::TableSetColumnIndex(1);
+        if (const auto* model = selectedModel())
+            ImGui::TextUnformatted(model->displayName.c_str());
+        else
+            ImGui::TextDisabled("Scene");
+        ImGui::TableSetColumnIndex(2);
+        ImGui::Text("Frame %.0f / %.0f", animationFrame_, scene_.timeline().duration);
+        ImGui::TableSetColumnIndex(3);
+        ImGui::Text("%.0f FPS", ImGui::GetIO().Framerate);
+        ImGui::TableSetColumnIndex(4);
+        const std::string projectText = currentProjectPath_ ? currentProjectPath_->string() : "Untitled project";
+        ImGui::TextDisabled("%s", projectText.c_str());
+        ImGui::EndTable();
     }
+
     ImGui::End();
 #endif
 }
 
+void Application::updateCameraRecording() {
+#if DAYO_HAS_IMGUI
+    if (recordCamera_ && !cameraRecordingTransaction_) {
+        const auto camera = makeSceneCameraState();
+        cameraPan_ = camera.position;
+        cameraYaw_ = camera.rotation[1];
+        cameraPitch_ = camera.rotation[0];
+        cameraDistance_ = camera.distance;
+        cameraModified_ = false;
+        cameraRecordingTransaction_ = std::make_unique<editor::UndoTransaction>(
+            scene_, history_, 0, true, "Record camera range", &editorSession_.stableIds(0, true));
+        auto motion = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
+        const auto start = projectEditorState_.recordStart;
+        const auto end = projectEditorState_.recordEnd < 0 ? static_cast<std::int32_t>(scene_.timeline().duration)
+                                                           : projectEditorState_.recordEnd;
+        std::erase_if(motion.cameras, [&](const auto& key) {
+            return static_cast<std::int64_t>(key.frame) >= start && static_cast<std::int64_t>(key.frame) <= end;
+        });
+        cameraRecordingTransaction_->dragTo(std::move(motion));
+        recordedCameraFrame_ = -1;
+        cameraRecordedAny_ = false;
+        manualCamera_ = true;
+    }
+    if (recordCamera_ && cameraRecordingTransaction_) {
+        const auto currentFrame = static_cast<std::int64_t>(animationFrame_);
+        const auto end = projectEditorState_.recordEnd < 0 ? static_cast<std::int64_t>(scene_.timeline().duration)
+                                                           : projectEditorState_.recordEnd;
+        const auto frame = std::min(currentFrame, end);
+        if (frame >= projectEditorState_.recordStart && frame <= end && frame != recordedCameraFrame_) {
+            auto motion = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
+            const auto camera = makeSceneCameraState();
+            const auto* model = selectedModel();
+            const auto normalization = model ? model->normalization : normalization_;
+            core::VmdCameraKey key = editedCamera_;
+            key.frame = static_cast<std::uint32_t>(frame);
+            key.rotation = camera.rotation;
+            key.distance = -camera.distance / std::max(normalization.scale, 0.0001F);
+            key.viewAngle = camera.verticalFovRadians / 0.01745329252F;
+            key.perspective = camera.perspective;
+            key.parentModel = -1;
+            key.parentBone = -1;
+            key.parentBoneName.clear();
+            for (std::size_t axis = 0; axis < 3; ++axis)
+                key.position[axis] =
+                    camera.position[axis] / std::max(normalization.scale, 0.0001F) + normalization.center[axis];
+            std::erase_if(motion.cameras, [&](const auto& item) { return item.frame == key.frame; });
+            motion.cameras.push_back(key);
+            auto document = core::toMotionDocument(motion);
+            core::MotionEditor::normalize(document);
+            motion = core::toVmdMotion(std::move(document), motion.modelName);
+            cameraRecordingTransaction_->dragTo(std::move(motion));
+            editorSession_.stableIds(0, true).rebuild(core::toMotionDocument(*scene_.cameraMotion()));
+            recordedCameraFrame_ = frame;
+            cameraRecordedAny_ = true;
+        }
+        if (frame >= end) {
+            recordCamera_ = false;
+            playing_ = false;
+            audioPlayer_.setPaused(true);
+        }
+    }
+    if (!recordCamera_ && cameraRecordingTransaction_) {
+        if (cameraRecordedAny_)
+            cameraRecordingTransaction_->commit();
+        else
+            cameraRecordingTransaction_->rollback();
+        cameraRecordingTransaction_.reset();
+        refreshPreviewScene();
+    }
+#endif
+}
+
+void Application::synchronizeEditorValues() {
+    const auto* model = selectedModel();
+    const auto id = model ? model->id : 0;
+    const bool frameChanged = editorValuesFrame_ != animationFrame_ ||
+                              editorValuesRevision_ != scene_.motionRevision() || editorValuesModel_ != id;
+    if (frameChanged) {
+        const auto* motion = scene_.cameraMotion();
+        if (!motion && model)
+            motion = model->motion.get();
+        editedCamera_ = {};
+        editedCamera_.distance = -30;
+        editedCamera_.viewAngle = 30;
+        editedCamera_.perspective = true;
+        editedLight_ = {};
+        editedLight_.color = {1, 1, 1};
+        editedLight_.position = {-0.5F, -1, 0.5F};
+        editedShadow_ = {};
+        if (motion) {
+            if (!motion->cameras.empty()) {
+                for (const auto& key : motion->cameras)
+                    if (static_cast<float>(key.frame) <= animationFrame_)
+                        editedCamera_ = key;
+                const auto evaluated = core::evaluateCamera(*motion, animationFrame_);
+                editedCamera_.position = evaluated.position;
+                editedCamera_.rotation = evaluated.rotation;
+                editedCamera_.distance = evaluated.distance;
+                editedCamera_.viewAngle = evaluated.viewAngle;
+                editedCamera_.perspective = evaluated.perspective;
+            }
+            if (!motion->lights.empty())
+                editedLight_ = core::evaluateLight(*motion, animationFrame_);
+            for (const auto& key : motion->shadows)
+                if (static_cast<float>(key.frame) <= animationFrame_)
+                    editedShadow_ = key;
+        }
+        baseCamera_ = editedCamera_;
+        baseLight_ = editedLight_;
+        baseShadow_ = editedShadow_;
+        cameraModified_ = lightModified_ = shadowModified_ = false;
+        cameraParentBoneName_.fill(0);
+        std::copy_n(editedCamera_.parentBoneName.data(),
+                    std::min(editedCamera_.parentBoneName.size(), cameraParentBoneName_.size() - 1),
+                    cameraParentBoneName_.data());
+    }
+    if (frameChanged || morphEditModel_ != id || morphEditIndex_ != selectedMorph_) {
+        morphEditModel_ = id;
+        morphEditIndex_ = selectedMorph_;
+        morphModified_ = false;
+        editedMorphWeight_ = 0;
+        if (model && model->model && model->motion && selectedMorph_ >= 0 &&
+            static_cast<std::size_t>(selectedMorph_) < model->model->morphs.size()) {
+            const auto& name = model->model->morphs[static_cast<std::size_t>(selectedMorph_)].name;
+            const core::VmdMorphKey* before = nullptr;
+            const core::VmdMorphKey* after = nullptr;
+            for (const auto& key : model->motion->morphs)
+                if (key.name == name) {
+                    if (static_cast<float>(key.frame) <= animationFrame_ && (!before || key.frame >= before->frame))
+                        before = &key;
+                    if (static_cast<float>(key.frame) > animationFrame_ && (!after || key.frame < after->frame))
+                        after = &key;
+                }
+            if (before && after) {
+                const float t = (animationFrame_ - static_cast<float>(before->frame)) /
+                                static_cast<float>(after->frame - before->frame);
+                editedMorphWeight_ = before->weight + (after->weight - before->weight) * t;
+            } else if (before)
+                editedMorphWeight_ = before->weight;
+            else if (after)
+                editedMorphWeight_ = after->weight;
+        }
+        baseMorphWeight_ = editedMorphWeight_;
+    }
+    editorValuesModel_ = id;
+    editorValuesFrame_ = animationFrame_;
+    editorValuesRevision_ = scene_.motionRevision();
+}
+
 void Application::buildEditorUi() {
 #if DAYO_HAS_IMGUI
+    poseBinding_.synchronize(scene_, animationFrame_);
     auto* model = selectedModel();
     const bool global = editGlobalMotion_;
     const auto* active = global ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
     const auto target = model != nullptr ? model->id : core::ModelId{};
+    editorSession_.setTarget(target, global);
+    auto& keySelection = editorSession_.selection();
     const auto cacheModelId = global ? core::ModelId{} : target;
     if (timelineTrackCache_.modelId != cacheModelId || timelineTrackCache_.motion != active ||
         timelineTrackCache_.globalMotion != global || timelineTrackCache_.motionRevision != scene_.motionRevision()) {
-        selectedKeys_.clear();
+        if (timelineTrackCache_.modelId != cacheModelId || timelineTrackCache_.globalMotion != global)
+            timelineAnchor_.reset();
+        keyframeWindow_.refresh(editorSession_);
         timelineTrackCache_ = {};
         timelineTrackCache_.motionRevision = scene_.motionRevision();
         timelineTrackCache_.modelId = cacheModelId;
@@ -3872,6 +4504,8 @@ void Application::buildEditorUi() {
             };
             cacheFrames(active->cameras, timelineTrackCache_.cameras);
             cacheFrames(active->lights, timelineTrackCache_.lights);
+            cacheFrames(active->shadows, timelineTrackCache_.shadows);
+            cacheFrames(active->ik, timelineTrackCache_.ik);
         }
     }
     const auto execute = [&](core::VmdMotion before, core::MotionDocument document, bool globalMotion,
@@ -3879,22 +4513,24 @@ void Application::buildEditorUi() {
         const auto outputModelName =
             before.modelName.empty() && !globalMotion && model != nullptr ? model->displayName : before.modelName;
         auto after = core::toVmdMotion(std::move(document), outputModelName);
-        history_.execute(scene_, std::make_unique<core::EditMotionCommand>(target, globalMotion, std::move(before),
-                                                                           std::move(after), std::move(label)));
-        selectedKeys_.clear();
+        editorSession_.operations().push(
+            editor::ReplaceMotionOperation{target, globalMotion, std::move(after), std::move(label)});
+        editorSession_.flushOperations();
         active = global ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
         refreshAnimatedMesh(false);
         refreshPreviewScene();
     };
     const bool debugWorkspace = uiState_.workspace == ui::Workspace::debug;
+    if (uiState_.workspace == ui::Workspace::animation)
+        editorWorkspace_.drawInterpolation(editorSession_, interpolationWindow_);
 
     if (uiState_.timelineVisible && ImGui::Begin(workspaceWindowName("Timeline", "timeline").c_str())) {
         uiState_.timelineFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
-        if (ImGui::Button("|<")) {
+        if (ImGui::Button(editor::uiLabel("|<"))) {
             seekTimeline(0.0F);
         }
         ImGui::SameLine();
-        if (ImGui::Button("<")) {
+        if (ImGui::Button(editor::uiLabel("<"))) {
             seekTimeline(std::max(0.0F, animationFrame_ - 1.0F));
         }
         ImGui::SameLine();
@@ -3903,30 +4539,30 @@ void Application::buildEditorUi() {
             restartAudioAtCurrentFrame();
         }
         ImGui::SameLine();
-        if (ImGui::Button(">")) {
+        if (ImGui::Button(editor::uiLabel(">"))) {
             seekTimeline(std::min(scene_.timeline().duration, animationFrame_ + 1.0F));
         }
         ImGui::SameLine();
-        if (ImGui::Button(">|")) {
+        if (ImGui::Button(editor::uiLabel(">|"))) {
             seekTimeline(scene_.timeline().duration);
         }
         ImGui::SameLine();
         ImGui::Text("Frame %.0f / %.0f", animationFrame_, scene_.timeline().duration);
         ImGui::SameLine();
-        ImGui::Checkbox("Loop", &repeat_);
+        ImGui::Checkbox(editor::uiLabel("Loop"), &repeat_);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(90.0F);
-        if (ImGui::DragFloat("Speed", &playbackSpeed_, 0.01F, 0.1F, 4.0F, "%.2fx"))
+        if (ImGui::DragFloat(editor::uiLabel("Speed"), &playbackSpeed_, 0.01F, 0.1F, 4.0F, "%.2fx"))
             restartAudioAtCurrentFrame();
         ImGui::SeparatorText("Media");
         buildMediaPlaybackControls(true);
         if (!waveformPeaks_.empty())
             ImGui::PlotLines("Audio", waveformPeaks_.data(), static_cast<int>(waveformPeaks_.size()), 0, nullptr, 0.0F,
                              1.0F, {-1.0F, 44.0F});
-        ImGui::Checkbox("Key List", &timelineKeyListVisible_);
+        ImGui::Checkbox(editor::uiLabel("Key List"), &timelineKeyListVisible_);
         ImGui::SameLine();
-        if (ImGui::Checkbox("Edit global camera/light motion", &editGlobalMotion_))
-            selectedKeys_.clear();
+        if (ImGui::Checkbox(editor::uiLabel("Edit global camera/light motion"), &editGlobalMotion_))
+            keySelection.clear();
         if (active == nullptr) {
             ImGui::TextUnformatted("Load a VMD/VMdayo motion to edit keyframes.");
         } else {
@@ -3935,19 +4571,40 @@ void Application::buildEditorUi() {
                             active->morphs.size(), active->cameras.size(), active->lights.size(),
                             active->shadows.size(), active->ik.size());
             auto row = [&](core::MotionTrack track, std::size_t index, std::uint32_t frame, const std::string& name) {
-                const core::MotionKeyRef key{track, index};
-                const bool selected = std::find(selectedKeys_.begin(), selectedKeys_.end(), key) != selectedKeys_.end();
-                const auto label = name + "  @ " + std::to_string(frame) + "##" +
-                                   std::to_string(static_cast<int>(track)) + ":" + std::to_string(index);
-                if (!ImGui::Selectable(label.c_str(), selected))
+                const auto key = editorSession_.stableIds().keyId(track, index);
+                const auto label = name + "  @ " + std::to_string(frame) + "##" + std::to_string(key.stableId);
+                if (!ImGui::Selectable(label.c_str(), keySelection.contains(key)))
                     return;
-                if (!ImGui::GetIO().KeyCtrl)
-                    selectedKeys_.clear();
-                const auto found = std::find(selectedKeys_.begin(), selectedKeys_.end(), key);
-                if (found == selectedKeys_.end())
-                    selectedKeys_.push_back(key);
-                else
-                    selectedKeys_.erase(found);
+                if (ImGui::GetIO().KeyShift && timelineAnchor_) {
+                    const auto& rows = keyframeWindow_.rows();
+                    const auto anchor = std::find_if(rows.begin(), rows.end(), [&](const auto& item) {
+                        return item.stableId == timelineAnchor_->stableId;
+                    });
+                    const auto clicked = std::find_if(rows.begin(), rows.end(),
+                                                      [&](const auto& item) { return item.stableId == key.stableId; });
+                    if (anchor != rows.end() && clicked != rows.end())
+                        for (auto it = std::min(anchor, clicked); it <= std::max(anchor, clicked); ++it)
+                            keySelection.add({static_cast<core::MotionTrack>(it->track), it->stableId});
+                } else if (ImGui::GetIO().KeyCtrl) {
+                    if (!keySelection.remove(key))
+                        keySelection.add(key);
+                } else {
+                    keySelection.set({key});
+                }
+                timelineAnchor_ = key;
+                playing_ = false;
+                audioPlayer_.setPaused(true);
+                seekTimeline(static_cast<float>(frame));
+                if (model && track == core::MotionTrack::bone) {
+                    const auto found = std::ranges::find(model->model->bones, name, &core::PmxBone::name);
+                    if (found != model->model->bones.end())
+                        poseBinding_.selectBone(static_cast<int>(std::distance(model->model->bones.begin(), found)));
+                }
+                if (model && track == core::MotionTrack::morph) {
+                    const auto found = std::ranges::find(model->model->morphs, name, &core::PmxMorph::name);
+                    if (found != model->model->morphs.end())
+                        selectedMorph_ = static_cast<int>(std::distance(model->model->morphs.begin(), found));
+                }
             };
             const float canvasHeight = std::max(ImGui::GetFrameHeight() * 3.0F, ImGui::GetContentRegionAvail().y);
             if (timelineKeyListVisible_) {
@@ -3990,15 +4647,15 @@ void Application::buildEditorUi() {
                     auto* drawList = ImGui::GetWindowDrawList();
                     const float left = canvasMin.x + ImGui::GetFontSize() * 8.0F;
                     const float top = canvasMin.y + ImGui::GetFrameHeight();
-                    const float right = canvasMin.x + canvasSize.x - 8.0F;
+                    const float right = std::max(left + 1.0F, canvasMin.x + canvasSize.x - 8.0F);
                     const float bottom = canvasMin.y + canvasSize.y - 8.0F;
                     const float duration = std::max(scene_.timeline().duration, 1.0F);
                     float pixelsPerFrame = (right - left) / duration * timelineZoom_;
                     float maxPan = std::max(0.0F, duration * pixelsPerFrame - (right - left));
                     timelinePan_ = std::clamp(timelinePan_, 0.0F, maxPan);
                     const float rowHeight = 22.0F;
-                    const int trackCount = global ? 2
-                                                  : 2 + static_cast<int>(timelineTrackCache_.bones.size() +
+                    const int trackCount = global ? 4
+                                                  : 4 + static_cast<int>(timelineTrackCache_.bones.size() +
                                                                          timelineTrackCache_.morphs.size());
                     const float contentHeight = 16.0F + static_cast<float>(trackCount) * rowHeight;
                     const float visibleHeight = std::max(0.0F, bottom - top);
@@ -4040,6 +4697,8 @@ void Application::buildEditorUi() {
                     };
                     drawTrack("Camera", 0);
                     drawTrack("Light", 1);
+                    drawTrack("Self shadow", 2);
+                    drawTrack("IK / visibility", 3);
                     const auto drawFrames = [&](const std::vector<std::uint32_t>& frames, int trackRow, ImU32 color) {
                         const float firstFrame = (timelinePan_ - 8.0F) / pixelsPerFrame;
                         const float lastFrame = (right - left + timelinePan_ + 8.0F) / pixelsPerFrame;
@@ -4053,13 +4712,17 @@ void Application::buildEditorUi() {
                         for (auto it = first; it != last; ++it)
                             drawDiamond(static_cast<float>(*it), trackRow, color);
                     };
+                    if (trackVisible(2))
+                        drawFrames(timelineTrackCache_.shadows, 2, ImGui::GetColorU32(ImGuiCol_CheckMark));
+                    if (trackVisible(3))
+                        drawFrames(timelineTrackCache_.ik, 3, ImGui::GetColorU32(ImGuiCol_CheckMark));
                     if (global) {
                         if (trackVisible(0))
                             drawFrames(timelineTrackCache_.cameras, 0, ImGui::GetColorU32(ImGuiCol_CheckMark));
                         if (trackVisible(1))
                             drawFrames(timelineTrackCache_.lights, 1, ImGui::GetColorU32(ImGuiCol_CheckMark));
                     } else if (model != nullptr) {
-                        int trackRow = 2;
+                        int trackRow = 4;
                         for (const auto& track : timelineTrackCache_.bones) {
                             if (trackVisible(trackRow)) {
                                 drawTrack(track.name.c_str(), trackRow);
@@ -4074,6 +4737,48 @@ void Application::buildEditorUi() {
                             }
                             ++trackRow;
                         }
+                    }
+                    struct TimelineHit {
+                        editor::MotionKeyId id;
+                        ImVec2 position;
+                    };
+                    std::vector<TimelineHit> hits;
+                    for (const auto& key : keyframeWindow_.rows()) {
+                        const auto track = static_cast<core::MotionTrack>(key.track);
+                        int keyRow = -1;
+                        if (global) {
+                            if (track == core::MotionTrack::camera)
+                                keyRow = 0;
+                            if (track == core::MotionTrack::light)
+                                keyRow = 1;
+                        } else {
+                            const auto& tracks = track == core::MotionTrack::bone ? timelineTrackCache_.bones
+                                                                                  : timelineTrackCache_.morphs;
+                            if (track == core::MotionTrack::bone || track == core::MotionTrack::morph) {
+                                const auto found = std::find_if(tracks.begin(), tracks.end(), [&](const auto& item) {
+                                    return item.name == key.name;
+                                });
+                                if (found != tracks.end())
+                                    keyRow = 4 + static_cast<int>(std::distance(tracks.begin(), found)) +
+                                             (track == core::MotionTrack::morph
+                                                  ? static_cast<int>(timelineTrackCache_.bones.size())
+                                                  : 0);
+                            }
+                        }
+                        if (track == core::MotionTrack::shadow)
+                            keyRow = 2;
+                        if (track == core::MotionTrack::ik)
+                            keyRow = 3;
+                        if (keyRow < 0 || !trackVisible(keyRow))
+                            continue;
+                        const ImVec2 position{frameX(static_cast<float>(key.frame)), trackY(keyRow)};
+                        if (position.x < left || position.x > right || position.y < top || position.y > bottom)
+                            continue;
+                        const editor::MotionKeyId id{track, key.stableId};
+                        hits.push_back({id, position});
+                        if (keySelection.contains(id))
+                            drawDiamond(static_cast<float>(key.frame), keyRow,
+                                        ImGui::GetColorU32(ImGuiCol_PlotHistogram));
                     }
                     const float currentX = frameX(animationFrame_);
                     if (currentX >= left && currentX <= right)
@@ -4103,8 +4808,89 @@ void Application::buildEditorUi() {
                             timelinePan_ = std::clamp(timelinePan_ - ImGui::GetIO().MouseDelta.x, 0.0F, maxPan);
                         }
                         if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-                            const float frame = (ImGui::GetIO().MousePos.x - left + timelinePan_) / pixelsPerFrame;
-                            seekTimeline(std::clamp(frame, 0.0F, duration));
+                            const auto mouse = ImGui::GetIO().MousePos;
+                            const auto hit = std::find_if(hits.begin(), hits.end(), [&](const auto& item) {
+                                return std::abs(item.position.x - mouse.x) + std::abs(item.position.y - mouse.y) <=
+                                       8.0F;
+                            });
+                            if (hit != hits.end()) {
+                                if (ImGui::GetIO().KeyCtrl) {
+                                    if (!keySelection.remove(hit->id))
+                                        keySelection.add(hit->id);
+                                } else if (ImGui::GetIO().KeyShift)
+                                    keySelection.add(hit->id);
+                                else if (!keySelection.contains(hit->id))
+                                    keySelection.set({hit->id});
+                                timelineAnchor_ = hit->id;
+                                const auto hitRow = std::ranges::find_if(keyframeWindow_.rows(), [&](const auto& item) {
+                                    return item.stableId == hit->id.stableId;
+                                });
+                                if (hitRow != keyframeWindow_.rows().end()) {
+                                    playing_ = false;
+                                    audioPlayer_.setPaused(true);
+                                    seekTimeline(static_cast<float>(hitRow->frame));
+                                    if (model && hit->id.track == core::MotionTrack::bone) {
+                                        const auto found =
+                                            std::ranges::find(model->model->bones, hitRow->name, &core::PmxBone::name);
+                                        if (found != model->model->bones.end())
+                                            poseBinding_.selectBone(
+                                                static_cast<int>(std::distance(model->model->bones.begin(), found)));
+                                    }
+                                    if (model && hit->id.track == core::MotionTrack::morph) {
+                                        const auto found = std::ranges::find(model->model->morphs, hitRow->name,
+                                                                             &core::PmxMorph::name);
+                                        if (found != model->model->morphs.end())
+                                            selectedMorph_ =
+                                                static_cast<int>(std::distance(model->model->morphs.begin(), found));
+                                    }
+                                }
+                                if (!keySelection.empty()) {
+                                    editorSession_.beginKeyframeDrag("Move keys");
+                                    timelineDragStartX_ = mouse.x;
+                                }
+                            } else {
+                                timelineBoxSelecting_ = true;
+                                timelineBoxBegin_ = {mouse.x, mouse.y};
+                                timelineBoxOriginal_ = keySelection.ids();
+                            }
+                        }
+                    }
+                    if (editorSession_.dragging()) {
+                        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                            editorSession_.cancelKeyframeDrag();
+                        } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                            editorSession_.commitKeyframeDrag();
+                        } else if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                            editorSession_.moveKeyframeDrag(static_cast<std::int64_t>(
+                                std::llround((ImGui::GetIO().MousePos.x - timelineDragStartX_) / pixelsPerFrame)));
+                        }
+                        active = scene_.motion(target, global);
+                        refreshAnimatedMesh(false);
+                        refreshPreviewScene();
+                    }
+                    if (timelineBoxSelecting_) {
+                        const auto mouse = ImGui::GetIO().MousePos;
+                        const ImVec2 start{timelineBoxBegin_[0], timelineBoxBegin_[1]};
+                        const ImVec2 minimum{std::min(start.x, mouse.x), std::min(start.y, mouse.y)};
+                        const ImVec2 maximum{std::max(start.x, mouse.x), std::max(start.y, mouse.y)};
+                        drawList->AddRectFilled(minimum, maximum, ImGui::GetColorU32(ImGuiCol_CheckMark, 0.15F));
+                        drawList->AddRect(minimum, maximum, ImGui::GetColorU32(ImGuiCol_CheckMark));
+                        if (ImGui::IsKeyPressed(ImGuiKey_Escape))
+                            timelineBoxSelecting_ = false;
+                        else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                            timelineBoxSelecting_ = false;
+                            if (maximum.x - minimum.x < 4.0F && maximum.y - minimum.y < 4.0F) {
+                                seekTimeline((mouse.x - left + timelinePan_) / pixelsPerFrame);
+                            } else {
+                                keySelection.set(ImGui::GetIO().KeyShift || ImGui::GetIO().KeyCtrl
+                                                     ? timelineBoxOriginal_
+                                                     : std::vector<editor::MotionKeyId>{});
+                                for (const auto& hit : hits)
+                                    if ((hit.position.x >= minimum.x && hit.position.x <= maximum.x &&
+                                         hit.position.y >= minimum.y && hit.position.y <= maximum.y) &&
+                                        (!ImGui::GetIO().KeyCtrl || !keySelection.remove(hit.id)))
+                                        keySelection.add(hit.id);
+                            }
                         }
                     }
                 }
@@ -4119,37 +4905,42 @@ void Application::buildEditorUi() {
             const bool pasteShortcut =
                 keyWindowFocused && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V, false);
             const bool deleteShortcut = keyWindowFocused && ImGui::IsKeyPressed(ImGuiKey_Delete, false);
-            if ((ImGui::Button("Copy") || copyShortcut) && !selectedKeys_.empty()) {
-                motionClipboard_ = core::MotionEditor::copy(core::toMotionDocument(*active), selectedKeys_);
+            if ((ImGui::Button(editor::uiLabel("Copy")) || copyShortcut) && !keySelection.empty()) {
+                motionClipboard_ = core::MotionEditor::copy(
+                    core::toMotionDocument(*active),
+                    keySelection.resolveTransient(core::toMotionDocument(*active), editorSession_.stableIds()));
             }
             ImGui::SameLine();
-            if ((ImGui::Button("Cut") || cutShortcut) && !selectedKeys_.empty()) {
+            if ((ImGui::Button(editor::uiLabel("Cut")) || cutShortcut) && !keySelection.empty()) {
                 auto before = *active;
                 auto document = core::toMotionDocument(before);
-                motionClipboard_ = core::MotionEditor::copy(document, selectedKeys_);
-                core::MotionEditor::erase(document, selectedKeys_);
-                selectedKeys_.clear();
+                motionClipboard_ = core::MotionEditor::copy(
+                    document, keySelection.resolveTransient(document, editorSession_.stableIds()));
+                core::MotionEditor::erase(document,
+                                          keySelection.resolveTransient(document, editorSession_.stableIds()));
+                keySelection.clear();
                 execute(std::move(before), std::move(document), global, "Cut keys");
             }
             ImGui::SameLine();
-            if ((ImGui::Button("Paste") || pasteShortcut) && !motionClipboard_.empty()) {
+            if ((ImGui::Button(editor::uiLabel("Paste")) || pasteShortcut) && !motionClipboard_.empty()) {
                 auto before = *active;
                 auto document = core::toMotionDocument(before);
                 static_cast<void>(core::MotionEditor::paste(
                     document, motionClipboard_, static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F))));
-                selectedKeys_.clear();
+                keySelection.clear();
                 execute(std::move(before), std::move(document), global, "Paste keys");
             }
             ImGui::SameLine();
-            if ((ImGui::Button("Delete") || deleteShortcut) && !selectedKeys_.empty()) {
+            if ((ImGui::Button(editor::uiLabel("Delete")) || deleteShortcut) && !keySelection.empty()) {
                 auto before = *active;
                 auto document = core::toMotionDocument(before);
-                core::MotionEditor::erase(document, selectedKeys_);
-                selectedKeys_.clear();
+                core::MotionEditor::erase(document,
+                                          keySelection.resolveTransient(document, editorSession_.stableIds()));
+                keySelection.clear();
                 execute(std::move(before), std::move(document), global, "Delete keys");
             }
             int interpolation = static_cast<int>(active->interpolation);
-            if (ImGui::Combo("Interpolation", &interpolation, "Linear\0VMD Bezier\0Catmull-Rom\0")) {
+            if (ImGui::Combo(editor::uiLabel("Interpolation"), &interpolation, "Linear\0VMD Bezier\0Catmull-Rom\0")) {
                 auto before = *active;
                 auto document = core::toMotionDocument(before);
                 document.interpolation = static_cast<core::InterpolationMode>(interpolation);
@@ -4157,7 +4948,7 @@ void Application::buildEditorUi() {
             }
             static std::array<char, 1024> exportPath{};
             ImGui::InputText("VMD destination", exportPath.data(), exportPath.size());
-            if (ImGui::Button("Export VMD") && exportPath[0] != '\0') {
+            if (ImGui::Button(editor::uiLabel("Export VMD")) && exportPath[0] != '\0') {
                 try {
                     core::saveVmd(exportPath.data(), *active);
                     lastAsset_ = "Exported VMD";
@@ -4174,39 +4965,14 @@ void Application::buildEditorUi() {
         if (model == nullptr || model->model == nullptr) {
             ImGui::TextUnformatted("Select a model to edit bones and morphs.");
         } else {
-            const auto& bones = model->model->bones;
-            if (!bones.empty()) {
-                selectedBone_ = std::clamp(selectedBone_, 0, static_cast<int>(bones.size() - 1));
-                if (ImGui::BeginCombo("Bone##LegacyBoneSelector",
-                                      bones[static_cast<std::size_t>(selectedBone_)].name.c_str())) {
-                    for (std::size_t i = 0; i < bones.size(); ++i) {
-                        ImGui::PushID(static_cast<int>(i));
-                        if (ImGui::Selectable(bones[i].name.c_str(), selectedBone_ == static_cast<int>(i)))
-                            selectedBone_ = static_cast<int>(i);
-                        ImGui::PopID();
-                    }
-                    ImGui::EndCombo();
-                }
-                ImGui::DragFloat3("Translation", editedBoneTranslation_.data(), 0.01F);
-                ImGui::DragFloat4("Rotation quaternion", editedBoneRotation_.data(), 0.01F, -1.0F, 1.0F);
-                ImGui::Checkbox("Bone physics", &editedBonePhysics_);
-                if (ImGui::Button("Register bone")) {
-                    const core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
-                    auto document = core::toMotionDocument(before);
-                    const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
-                    const auto& name = bones[static_cast<std::size_t>(selectedBone_)].name;
-                    std::erase_if(document.bones,
-                                  [&](const auto& key) { return key.frame == frame && key.name == name; });
-                    document.bones.push_back(
-                        {name, frame, editedBoneTranslation_, editedBoneRotation_, {}, editedBonePhysics_});
-                    core::MotionEditor::normalize(document);
-                    execute(before, std::move(document), false, "Register bone key");
-                }
+            if (editorWorkspace_.drawBonePanel(editorSession_, poseBinding_, *model, animationFrame_)) {
+                refreshAnimatedMesh(false);
+                refreshPreviewScene();
             }
             const auto& morphs = model->model->morphs;
             if (!morphs.empty()) {
                 selectedMorph_ = std::clamp(selectedMorph_, 0, static_cast<int>(morphs.size() - 1));
-                if (ImGui::BeginCombo("Morph##LegacyMorphSelector",
+                if (ImGui::BeginCombo(editor::uiLabel("Morph##LegacyMorphSelector"),
                                       morphs[static_cast<std::size_t>(selectedMorph_)].name.c_str())) {
                     for (std::size_t i = 0; i < morphs.size(); ++i) {
                         ImGui::PushID(static_cast<int>(i));
@@ -4218,8 +4984,25 @@ void Application::buildEditorUi() {
                 }
                 const auto morphUi = core::fx::resolveFxMorphControllerUi(
                     scene_.effects(), *model, morphs[static_cast<std::size_t>(selectedMorph_)].name);
+                const auto weightBefore = editedMorphWeight_;
                 drawMorphWeightControl(editedMorphWeight_, morphUi);
-                if (ImGui::Button("Register morph")) {
+                if (weightBefore != editedMorphWeight_) {
+                    morphModified_ = true;
+                    refreshAnimatedMesh(false);
+                    refreshPreviewScene();
+                }
+                if (ImGui::Button(editor::uiLabel("Revert morph"))) {
+                    editedMorphWeight_ = baseMorphWeight_;
+                    morphModified_ = false;
+                    refreshAnimatedMesh(false);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button(editor::uiLabel("Init morph"))) {
+                    editedMorphWeight_ = 0;
+                    morphModified_ = true;
+                    refreshAnimatedMesh(false);
+                }
+                if (ImGui::Button(editor::uiLabel("Register morph"))) {
                     const core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
                     auto document = core::toMotionDocument(before);
                     const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
@@ -4239,30 +5022,122 @@ void Application::buildEditorUi() {
     const bool cameraPanelVisible = debugWorkspace || uiState_.workspace == ui::Workspace::camera;
     if (cameraPanelVisible &&
         ImGui::Begin(workspaceWindowName("Camera / Light / Self Shadow", "legacy-camera").c_str())) {
-        ImGui::Checkbox("Realtime camera recording (Space registers)", &recordCamera_);
-        ImGui::DragFloat3("Camera target", editedCamera_.position.data(), 0.01F);
-        ImGui::DragFloat3("Camera rotation", editedCamera_.rotation.data(), 0.01F);
-        ImGui::DragFloat("Camera distance", &editedCamera_.distance, 0.1F);
+        ImGui::InputInt(editor::uiLabel("Camera record start"), &projectEditorState_.recordStart);
+        ImGui::InputInt(editor::uiLabel("Camera record end (-1: motion end)"), &projectEditorState_.recordEnd);
+        projectEditorState_.recordStart = std::max(0, projectEditorState_.recordStart);
+        if (projectEditorState_.recordEnd >= 0)
+            projectEditorState_.recordEnd = std::max(projectEditorState_.recordStart, projectEditorState_.recordEnd);
+        if (recordCamera_) {
+            if (ImGui::Button(editor::uiLabel("Stop camera recording")))
+                recordCamera_ = false;
+        } else if (ImGui::Button(editor::uiLabel("Record camera range")))
+            ImGui::OpenPopup("Overwrite camera range?");
+        if (ImGui::BeginPopupModal("Overwrite camera range?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextUnformatted("Camera keys in this range will be replaced. Undo restores the entire recording.");
+            if (ImGui::Button(editor::uiLabel("Record"))) {
+                editorSession_.cancelKeyframeDrag();
+                seekTimeline(static_cast<float>(projectEditorState_.recordStart));
+                recordCamera_ = true;
+                playing_ = true;
+                manualCamera_ = true;
+                restartAudioAtCurrentFrame();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(editor::uiLabel("Cancel")))
+                ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        if (ImGui::DragFloat3(editor::uiLabel("Camera target"), editedCamera_.position.data(), 0.01F))
+            cameraModified_ = true;
+        if (ImGui::DragFloat3(editor::uiLabel("Camera rotation"), editedCamera_.rotation.data(), 0.01F))
+            cameraModified_ = true;
+        if (ImGui::DragFloat(editor::uiLabel("Camera distance"), &editedCamera_.distance, 0.1F))
+            cameraModified_ = true;
         int viewAngle = static_cast<int>(editedCamera_.viewAngle == 0 ? 30 : editedCamera_.viewAngle);
-        if (ImGui::SliderInt("FoV", &viewAngle, 1, 179))
+        if (ImGui::SliderInt(editor::uiLabel("FoV"), &viewAngle, 1, 179)) {
             editedCamera_.viewAngle = static_cast<float>(viewAngle);
-        ImGui::Checkbox("Perspective", &editedCamera_.perspective);
-        ImGui::InputInt("Camera parent model", &editedCamera_.parentModel);
-        ImGui::InputInt("Camera parent bone", &editedCamera_.parentBone);
-        ImGui::InputText("Camera parent bone name", cameraParentBoneName_.data(), cameraParentBoneName_.size());
-        if (ImGui::Button("Register camera")) {
+            cameraModified_ = true;
+        }
+        if (ImGui::Checkbox(editor::uiLabel("Perspective"), &editedCamera_.perspective))
+            cameraModified_ = true;
+        if (ImGui::BeginCombo(editor::uiLabel("Track model"),
+                              editedCamera_.parentModel < 0 ? "None" : "Selected parent")) {
+            if (ImGui::Selectable("None", editedCamera_.parentModel < 0)) {
+                editedCamera_.parentModel = -1;
+                editedCamera_.parentBone = -1;
+                cameraModified_ = true;
+            }
+            for (const auto& instance : scene_.models())
+                if (ImGui::Selectable((instance.displayName + "##" + std::to_string(instance.id)).c_str(),
+                                      editedCamera_.parentModel == static_cast<std::int32_t>(instance.id))) {
+                    editedCamera_.parentModel = static_cast<std::int32_t>(instance.id);
+                    editedCamera_.parentBone = 0;
+                    cameraModified_ = true;
+                }
+            ImGui::EndCombo();
+        }
+        if (const auto* parent = scene_.model(static_cast<core::ModelId>(std::max(editedCamera_.parentModel, 0)));
+            parent && parent->model && !parent->model->bones.empty()) {
+            editedCamera_.parentBone =
+                std::clamp(editedCamera_.parentBone, 0, static_cast<int>(parent->model->bones.size() - 1));
+            const auto& bones = parent->model->bones;
+            if (ImGui::BeginCombo(editor::uiLabel("Track bone"),
+                                  bones[static_cast<std::size_t>(editedCamera_.parentBone)].name.c_str())) {
+                for (std::size_t i = 0; i < bones.size(); ++i)
+                    if (ImGui::Selectable((bones[i].name + "##" + std::to_string(i)).c_str(),
+                                          editedCamera_.parentBone == static_cast<int>(i))) {
+                        editedCamera_.parentBone = static_cast<int>(i);
+                        cameraModified_ = true;
+                    }
+                ImGui::EndCombo();
+            }
+            editedCamera_.parentBoneName = bones[static_cast<std::size_t>(editedCamera_.parentBone)].name;
+        }
+        if (ImGui::Button(editor::uiLabel("Revert camera"))) {
+            editedCamera_ = baseCamera_;
+            cameraModified_ = false;
+            refreshPreviewScene();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(editor::uiLabel("Init camera"))) {
+            editedCamera_ = {};
+            editedCamera_.distance = -30;
+            editedCamera_.viewAngle = 30;
+            editedCamera_.perspective = true;
+            cameraModified_ = true;
+        }
+        if (cameraModified_)
+            refreshPreviewScene();
+        if (ImGui::Button(editor::uiLabel("Register camera"))) {
             core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
             auto document = core::toMotionDocument(before);
             editedCamera_.frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
-            editedCamera_.parentBoneName = cameraParentBoneName_.data();
+
             std::erase_if(document.cameras, [&](const auto& key) { return key.frame == editedCamera_.frame; });
             document.cameras.push_back(editedCamera_);
             core::MotionEditor::normalize(document);
             execute(std::move(before), std::move(document), true, "Register camera key");
         }
-        ImGui::ColorEdit3("Light color", editedLight_.color.data());
-        ImGui::DragFloat3("Light direction", editedLight_.position.data(), 0.01F);
-        if (ImGui::Button("Register light")) {
+        if (ImGui::ColorEdit3(editor::uiLabel("Light color"), editedLight_.color.data()))
+            lightModified_ = true;
+        if (ImGui::DragFloat3(editor::uiLabel("Light direction"), editedLight_.position.data(), 0.01F))
+            lightModified_ = true;
+        if (ImGui::Button(editor::uiLabel("Revert light"))) {
+            editedLight_ = baseLight_;
+            lightModified_ = false;
+            refreshPreviewScene();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(editor::uiLabel("Init light"))) {
+            editedLight_ = {};
+            editedLight_.color = {1, 1, 1};
+            editedLight_.position = {-0.5F, -1, 0.5F};
+            lightModified_ = true;
+        }
+        if (lightModified_)
+            refreshPreviewScene();
+        if (ImGui::Button(editor::uiLabel("Register light"))) {
             core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
             auto document = core::toMotionDocument(before);
             editedLight_.frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
@@ -4272,10 +5147,22 @@ void Application::buildEditorUi() {
             execute(std::move(before), std::move(document), true, "Register light key");
         }
         int shadowMode = editedShadow_.mode;
-        if (ImGui::Combo("Self shadow", &shadowMode, "None\0Mode 1\0Mode 2\0"))
+        if (ImGui::Combo(editor::uiLabel("Self shadow"), &shadowMode, "None\0Mode 1\0Mode 2\0")) {
             editedShadow_.mode = static_cast<std::uint8_t>(shadowMode);
-        ImGui::DragFloat("Shadow distance", &editedShadow_.distance, 0.1F, 0.0F, 10'000.0F);
-        if (ImGui::Button("Register self shadow")) {
+            shadowModified_ = true;
+        }
+        if (ImGui::DragFloat(editor::uiLabel("Shadow distance"), &editedShadow_.distance, 0.1F, 0.0F, 10'000.0F))
+            shadowModified_ = true;
+        if (ImGui::Button(editor::uiLabel("Revert shadow"))) {
+            editedShadow_ = baseShadow_;
+            shadowModified_ = false;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(editor::uiLabel("Init shadow"))) {
+            editedShadow_ = {};
+            shadowModified_ = true;
+        }
+        if (ImGui::Button(editor::uiLabel("Register self shadow"))) {
             core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
             auto document = core::toMotionDocument(before);
             editedShadow_.frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
@@ -4290,20 +5177,20 @@ void Application::buildEditorUi() {
 
     if (debugWorkspace && ImGui::Begin(workspaceWindowName("Project tools", "legacy-project").c_str())) {
         ImGui::InputText("Project file", projectDestination_.data(), projectDestination_.size());
-        if (ImGui::Button("Save Dayo 1.30 project"))
+        if (ImGui::Button(editor::uiLabel("Save Dayo 1.30 project")))
             saveProjectAsNow();
         if (!projectSaveStatus_.empty())
             ImGui::TextWrapped("%s", projectSaveStatus_.c_str());
         ImGui::Separator();
         ImGui::TextUnformatted("Preview lighting HDRI (2:1 equirectangular)");
         ImGui::InputText("HDRI file", previewHdriPath_.data(), previewHdriPath_.size());
-        if (ImGui::Button("Apply lighting HDRI")) {
+        if (ImGui::Button(editor::uiLabel("Apply lighting HDRI"))) {
             projectEditorState_.skyboxFile = previewHdriPath_.data();
             failedPreviewHdriPath_.clear();
             scene_.markDirty(core::DirtyFlag::lighting);
         }
         ImGui::SameLine();
-        if (ImGui::Button("Use background lighting")) {
+        if (ImGui::Button(editor::uiLabel("Use background lighting"))) {
             projectEditorState_.skyboxFile.clear();
             previewHdriPath_.fill(0);
             failedPreviewHdriPath_.clear();
@@ -4316,22 +5203,22 @@ void Application::buildEditorUi() {
         ImGui::Separator();
         auto background = scene_.background();
         int source = static_cast<int>(background.screenSource);
-        if (ImGui::Combo("Background source", &source, "Previous frame\0Video\0Image\0White\0")) {
+        if (ImGui::Combo(editor::uiLabel("Background source"), &source, "Previous frame\0Video\0Image\0White\0")) {
             selectBackgroundSource(static_cast<core::ScreenTextureSource>(source));
         }
         buildMediaBackgroundUi();
         bool enabled = background.enabled;
-        if (ImGui::Checkbox("Background enabled", &enabled)) {
+        if (ImGui::Checkbox(editor::uiLabel("Background enabled"), &enabled)) {
             scene_.setBackgroundEnabled(enabled);
             refreshPreviewScene();
         }
         bool crop = background.crop == core::ScreenCropMode::crop4x3;
-        if (ImGui::Checkbox("Crop 4:3", &crop)) {
+        if (ImGui::Checkbox(editor::uiLabel("Crop 4:3"), &crop)) {
             scene_.setBackgroundCrop(crop ? core::ScreenCropMode::crop4x3 : core::ScreenCropMode::none);
             refreshPreviewScene();
         }
         bool alpha = background.mode == core::BackgroundMode::alpha;
-        if (ImGui::Checkbox("Alpha background", &alpha)) {
+        if (ImGui::Checkbox(editor::uiLabel("Alpha background"), &alpha)) {
             scene_.setBackgroundMode(alpha ? core::BackgroundMode::alpha : core::BackgroundMode::opaque);
             refreshPreviewScene();
         }
@@ -4344,7 +5231,7 @@ void Application::buildEditorUi() {
             if (ImGui::TreeNode("Model description")) {
                 ImGui::TextWrapped("%s", model->model->metadata.comment.c_str());
                 ImGui::TextUnformatted(model->sourcePath.parent_path().string().c_str());
-                if (ImGui::Button("Open model folder")) {
+                if (ImGui::Button(editor::uiLabel("Open model folder"))) {
                     const auto url = "file://" + model->sourcePath.parent_path().generic_string();
                     if (!SDL_OpenURL(url.c_str()))
                         lastAsset_ = std::string("Open folder: ") + SDL_GetError();
@@ -4356,7 +5243,7 @@ void Application::buildEditorUi() {
                 materialIndex = std::clamp(materialIndex, 0, static_cast<int>(model->materialSettings.size() - 1));
                 const auto& materials = model->model->materials;
                 const char* preview = materials[static_cast<std::size_t>(materialIndex)].name.c_str();
-                if (ImGui::BeginCombo("Material##MaterialAnnotationSelector", preview)) {
+                if (ImGui::BeginCombo(editor::uiLabel("Material##MaterialAnnotationSelector"), preview)) {
                     for (std::size_t i = 0; i < materials.size(); ++i) {
                         ImGui::PushID(static_cast<int>(i));
                         if (ImGui::Selectable(materials[i].name.c_str(), materialIndex == static_cast<int>(i)))
@@ -4367,12 +5254,13 @@ void Application::buildEditorUi() {
                 }
                 static std::array<char, 1024> annotation{};
                 ImGui::InputText("Annotation / MatDesc", annotation.data(), annotation.size());
-                if (ImGui::Button("Apply material annotation")) {
+                if (ImGui::Button(editor::uiLabel("Apply material annotation"))) {
                     model->materialSettings[static_cast<std::size_t>(materialIndex)].annotation = annotation.data();
                     scene_.markDirty(core::DirtyFlag::material | core::DirtyFlag::effect);
                 }
                 int preset = model->materialSettings[static_cast<std::size_t>(materialIndex)].previewPbrPreset;
-                if (ImGui::Combo("Preview material", &preset, "PMX\0Skin\0Hair\0Cloth\0Metal\0Plastic\0Glass\0")) {
+                if (ImGui::Combo(editor::uiLabel("Preview material"), &preset,
+                                 "PMX\0Skin\0Hair\0Cloth\0Metal\0Plastic\0Glass\0")) {
                     model->materialSettings[static_cast<std::size_t>(materialIndex)].previewPbrPreset =
                         static_cast<std::uint8_t>(preset);
                     scene_.markDirty(core::DirtyFlag::material);
@@ -4380,44 +5268,10 @@ void Application::buildEditorUi() {
                 }
                 ImGui::TreePop();
             }
-            if (scene_.models().size() > 1 && ImGui::TreeNode("External parent")) {
-                static int parentIndex = 0;
-                static std::array<char, 256> parentBone{};
-                static std::array<char, 256> childBone{};
-                parentIndex = std::clamp(parentIndex, 0, static_cast<int>(scene_.models().size() - 1));
-                if (ImGui::BeginCombo("Parent model##ExternalParentModelSelector",
-                                      scene_.models()[static_cast<std::size_t>(parentIndex)].displayName.c_str())) {
-                    for (std::size_t i = 0; i < scene_.models().size(); ++i) {
-                        ImGui::PushID(static_cast<int>(scene_.models()[i].id));
-                        if (ImGui::Selectable(scene_.models()[i].displayName.c_str(),
-                                              parentIndex == static_cast<int>(i)))
-                            parentIndex = static_cast<int>(i);
-                        ImGui::PopID();
-                    }
-                    ImGui::EndCombo();
-                }
-                ImGui::InputText("Parent bone", parentBone.data(), parentBone.size());
-                ImGui::InputText("Child bone", childBone.data(), childBone.size());
-                if (ImGui::Button("Add external parent")) {
-                    std::string error;
-                    const auto& parent = scene_.models()[static_cast<std::size_t>(parentIndex)];
-                    if (!scene_.addExternalParent({parent.id, parentBone.data(), model->id, childBone.data()},
-                                                  &error)) {
-                        lastAsset_ = "External parent: " + error;
-                    } else {
-                        const core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
-                        auto document = core::toMotionDocument(before);
-                        const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
-                        document.externalParents.push_back(
-                            {frame, static_cast<std::int32_t>(parent.id), parentBone.data(), childBone.data()});
-                        core::MotionEditor::normalize(document);
-                        execute(before, std::move(document), false, "Register external parent key");
-                    }
-                }
-                ImGui::TreePop();
-            }
+            if (ImGui::Button(editor::uiLabel("External parent editor")))
+                modelToolsVisible_ = true;
         }
-        if (ImGui::Button("Copy borrowed-list")) {
+        if (ImGui::Button(editor::uiLabel("Copy borrowed-list"))) {
             std::string credits;
             std::vector<std::filesystem::path> scanned;
             for (const auto& asset : projectAssets_) {
@@ -4459,7 +5313,7 @@ void Application::buildEditorUi() {
     if (uiState_.materialDebugVisible &&
         ImGui::Begin(workspaceWindowName("Preview Material Inspector", "material-debug").c_str())) {
         bool previewChanged = false;
-        previewChanged |= ImGui::Checkbox("Optional PMX outline", &previewOutlineEnabled_);
+        previewChanged |= ImGui::Checkbox(editor::uiLabel("Optional PMX outline"), &previewOutlineEnabled_);
         if (model != nullptr && !model->model->materials.empty()) {
             const auto materialBase = static_cast<std::int32_t>(scene_.materialBase(model->id));
             const auto localCount = static_cast<int>(model->model->materials.size());
@@ -4468,7 +5322,8 @@ void Application::buildEditorUi() {
                     ? previewDebugMaterial_ - materialBase
                     : 0;
             const auto& selectedMaterial = model->model->materials[static_cast<std::size_t>(localMaterial)];
-            if (ImGui::BeginCombo("Material##PreviewMaterialSelector", selectedMaterial.name.c_str())) {
+            if (ImGui::BeginCombo(editor::uiLabel("Material##PreviewMaterialSelector"),
+                                  selectedMaterial.name.c_str())) {
                 for (std::size_t index = 0; index < model->model->materials.size(); ++index) {
                     ImGui::PushID(static_cast<int>(index));
                     if (ImGui::Selectable(model->model->materials[index].name.c_str(),
@@ -4481,7 +5336,26 @@ void Application::buildEditorUi() {
                 }
                 ImGui::EndCombo();
             }
-            if (ImGui::Button("Show all materials")) {
+            if (static_cast<std::size_t>(localMaterial) < model->materialSettings.size()) {
+                if (annotationModel_ != model->id || annotationMaterial_ != localMaterial) {
+                    annotationModel_ = model->id;
+                    annotationMaterial_ = localMaterial;
+                    materialAnnotation_.fill(0);
+                    const auto text =
+                        model->materialSettings[static_cast<std::size_t>(localMaterial)].annotation.string();
+                    std::copy_n(text.data(), std::min(text.size(), materialAnnotation_.size() - 1),
+                                materialAnnotation_.data());
+                }
+                ImGui::InputText("Annotation / MatDesc", materialAnnotation_.data(), materialAnnotation_.size());
+                if (ImGui::Button(editor::uiLabel("Register material annotation"))) {
+                    auto state = model->materialSettings[static_cast<std::size_t>(localMaterial)];
+                    state.annotation = materialAnnotation_.data();
+                    editorSession_.operations().push(
+                        editor::MaterialEditOperation{model->id, static_cast<std::size_t>(localMaterial),
+                                                      std::move(state), "Set material annotation"});
+                }
+            }
+            if (ImGui::Button(editor::uiLabel("Show all materials"))) {
                 previewDebugMaterial_ = -1;
                 previewChanged = true;
             }
@@ -4595,10 +5469,11 @@ void Application::buildEditorUi() {
             }
             const auto liveResources = nativeRenderer_.liveResources();
             ImGui::SeparatorText("Live FX resource allocations");
-            ImGui::InputInt("Mip", &fxDebugMip_);
-            ImGui::InputInt("Depth slice", &fxDebugSlice_);
-            ImGui::Combo("Display", &fxDebugMode_, "RGBA on checker\0RGB\0R hue\0G hue\0B hue\0A hue\0");
-            ImGui::DragFloat("Display scale", &fxDebugScale_, 0.05F);
+            ImGui::InputInt(editor::uiLabel("Mip"), &fxDebugMip_);
+            ImGui::InputInt(editor::uiLabel("Depth slice"), &fxDebugSlice_);
+            ImGui::Combo(editor::uiLabel("Display"), &fxDebugMode_,
+                         "RGBA on checker\0RGB\0R hue\0G hue\0B hue\0A hue\0");
+            ImGui::DragFloat(editor::uiLabel("Display scale"), &fxDebugScale_, 0.05F);
             ImGui::InputText("Dump path (.bin / .png / .exr)", fxDebugDumpPath_.data(), fxDebugDumpPath_.size());
             if (liveResources.empty()) {
                 ImGui::TextDisabled("No native FX resource allocations are active.");
@@ -4622,10 +5497,10 @@ void Application::buildEditorUi() {
                                             resource.extent.height, resource.extent.depth, resource.dimension);
                     }
                     if (resource.kind != "Sampler") {
-                        const bool preview = ImGui::Button("Read / preview");
+                        const bool preview = ImGui::Button(editor::uiLabel("Read / preview"));
                         ImGui::SameLine();
                         ImGui::BeginDisabled(fxDebugDumpPath_[0] == '\0');
-                        const bool dump = ImGui::Button("Save dump");
+                        const bool dump = ImGui::Button(editor::uiLabel("Save dump"));
                         ImGui::EndDisabled();
                         if (preview || dump) {
                             const auto hlsl = findDayoHlslDirectory(scene_.effects(), nativeRenderer_.program());
@@ -4716,18 +5591,18 @@ void Application::buildAudioExportUi() {
             else
                 ImGui::TextWrapped("%s", audioSource_.string().c_str());
 
-            ImGui::SliderInt("Bitrate (kbps)", &audioBitrateKbps_, 64, 512);
+            ImGui::SliderInt(editor::uiLabel("Bitrate (kbps)"), &audioBitrateKbps_, 64, 512);
             ImGui::TextUnformatted("Range");
             ImGui::SameLine(120.0F);
             ImGui::RadioButton("Full", &audioRangeMode_, 0);
             ImGui::SameLine();
             ImGui::RadioButton("Selection", &audioRangeMode_, 1);
             if (audioRangeMode_ == 1) {
-                ImGui::DragFloat("From (seconds)", &audioFromSeconds_, 0.1F, 0.0F, audioToSeconds_);
-                ImGui::DragFloat("To (seconds)", &audioToSeconds_, 0.1F, audioFromSeconds_, 0.0F);
+                ImGui::DragFloat(editor::uiLabel("From (seconds)"), &audioFromSeconds_, 0.1F, 0.0F, audioToSeconds_);
+                ImGui::DragFloat(editor::uiLabel("To (seconds)"), &audioToSeconds_, 0.1F, audioFromSeconds_, 0.0F);
             }
             ImGui::InputText("Output", audioDestination_.data(), audioDestination_.size());
-            ImGui::Checkbox("Overwrite existing file", &audioOverwrite_);
+            ImGui::Checkbox(editor::uiLabel("Overwrite existing file"), &audioOverwrite_);
             ImGui::Separator();
 
             if (audioExportJob_.running()) {
@@ -4738,7 +5613,7 @@ void Application::buildAudioExportUi() {
                     ImGui::SameLine();
                     ImGui::Text("%.2f / %.2f s", audioExportJob_.processedSeconds(), audioExportJob_.totalSeconds());
                 }
-                if (ImGui::Button("Cancel"))
+                if (ImGui::Button(editor::uiLabel("Cancel")))
                     audioExportJob_.cancel();
             } else {
                 const auto error = audioExportJob_.error();
@@ -4747,7 +5622,7 @@ void Application::buildAudioExportUi() {
                 const auto result = audioExportJob_.result();
                 if (result)
                     ImGui::TextWrapped("Exported: %s", result->output.string().c_str());
-                if (ImGui::Button("Export")) {
+                if (ImGui::Button(editor::uiLabel("Export"))) {
                     core::AudioExportRequest request;
                     request.source = audioSource_;
                     request.destination = std::filesystem::path(audioDestination_.data());
@@ -4767,7 +5642,7 @@ void Application::buildAudioExportUi() {
         }
         if (!audioExportJob_.running()) {
             ImGui::Separator();
-            if (ImGui::Button("Close"))
+            if (ImGui::Button(editor::uiLabel("Close")))
                 ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -4812,23 +5687,23 @@ void Application::buildVideoExportUi() {
             ImGui::InputText("Output", videoDestination_.data(), videoDestination_.size());
             int width = static_cast<int>(videoWidth_);
             int height = static_cast<int>(videoHeight_);
-            if (ImGui::InputInt("Width", &width))
+            if (ImGui::InputInt(editor::uiLabel("Width"), &width))
                 videoWidth_ = static_cast<std::uint32_t>(std::max(width, 1));
-            if (ImGui::InputInt("Height", &height))
+            if (ImGui::InputInt(editor::uiLabel("Height"), &height))
                 videoHeight_ = static_cast<std::uint32_t>(std::max(height, 1));
             ImGui::InputFloat("FPS", &videoFps_, 0.0F, 0.0F, "%.3f");
             videoFps_ = std::max(videoFps_, 1.0F);
-            ImGui::Combo("Codec", &videoCodec_, "H.264\0H.265 / HEVC\0AV1\0");
-            ImGui::SliderInt("Video bitrate (kbps)", &videoBitrateKbps_, 500, 50000);
-            ImGui::SliderInt("Audio bitrate (kbps)", &videoAudioBitrateKbps_, 64, 512);
-            ImGui::Checkbox("Include audio", &videoIncludeAudio_);
+            ImGui::Combo(editor::uiLabel("Codec"), &videoCodec_, "H.264\0H.265 / HEVC\0AV1\0");
+            ImGui::SliderInt(editor::uiLabel("Video bitrate (kbps)"), &videoBitrateKbps_, 500, 50000);
+            ImGui::SliderInt(editor::uiLabel("Audio bitrate (kbps)"), &videoAudioBitrateKbps_, 64, 512);
+            ImGui::Checkbox(editor::uiLabel("Include audio"), &videoIncludeAudio_);
             auto from = static_cast<unsigned long long>(videoFromFrame_);
             auto to = static_cast<unsigned long long>(videoToFrame_);
             if (ImGui::InputScalar("From frame", ImGuiDataType_U64, &from))
                 videoFromFrame_ = from;
             if (ImGui::InputScalar("To frame", ImGuiDataType_U64, &to))
                 videoToFrame_ = to;
-            ImGui::Checkbox("Overwrite existing file", &audioOverwrite_);
+            ImGui::Checkbox(editor::uiLabel("Overwrite existing file"), &audioOverwrite_);
             ImGui::EndDisabled();
             ImGui::Separator();
 
@@ -4841,7 +5716,7 @@ void Application::buildVideoExportUi() {
                                 static_cast<unsigned long long>(videoFromFrame_));
                 ImGui::ProgressBar(videoExportJob_.progress(), {-1.0F, 0.0F});
                 ImGui::Text("%.1f%%", static_cast<double>(videoExportJob_.progress()) * 100.0);
-                if (ImGui::Button("Cancel video export")) {
+                if (ImGui::Button(editor::uiLabel("Cancel video export"))) {
                     videoExportJob_.requestCancel();
                     videoExportFramesFinished_ = true;
                     videoExportStatus_ = "Cancelled";
@@ -4856,7 +5731,7 @@ void Application::buildVideoExportUi() {
                     ImGui::TextWrapped("Exported: %s (%.2f s)", result->output.string().c_str(),
                                        result->durationSeconds);
                 }
-                if (ImGui::Button("Export video")) {
+                if (ImGui::Button(editor::uiLabel("Export video"))) {
                     try {
                         if (videoDestination_[0] == '\0')
                             throw std::invalid_argument("video output is empty");
@@ -4917,7 +5792,7 @@ void Application::buildVideoExportUi() {
         }
         if (!videoExportUiActive_) {
             ImGui::Separator();
-            if (ImGui::Button("Close"))
+            if (ImGui::Button(editor::uiLabel("Close")))
                 ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();

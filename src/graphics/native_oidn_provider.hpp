@@ -22,6 +22,9 @@ class NativeOidnProvider {
     NativeOidnProvider() = default;
     explicit NativeOidnProvider(Device& device) noexcept : device_(&device) {}
 
+    void setEnabled(bool enabled) noexcept {
+        enabled_ = enabled;
+    }
     void setDevice(Device* device) noexcept {
         device_ = device;
     }
@@ -43,6 +46,7 @@ class NativeOidnProvider {
     [[nodiscard]] static std::uint16_t floatToHalf(float value) noexcept;
     static void setError(std::string* error, std::string message);
 
+    bool enabled_{true};
     Device* device_{};
     core::DenoiserRuntime denoiser_;
 };

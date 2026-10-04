@@ -11,6 +11,12 @@
 #include "core/project.hpp"
 #include "core/scene.hpp"
 #include "core/video_export.hpp"
+#include "editor/config.hpp"
+#include "editor/editor_session.hpp"
+#include "editor/interpolation_window.hpp"
+#include "editor/keyframe_window.hpp"
+#include "editor/pose_binding.hpp"
+#include "editor/workspace.hpp"
 #include "fx/fx_frame.hpp"
 #include "fx/fx_scheduler.hpp"
 #include "graphics/device.hpp"
@@ -93,6 +99,11 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void buildAudioExportUi();
     void buildVideoExportUi();
     void buildEditorUi();
+    void synchronizeEditorValues();
+    void buildQuitDialog();
+    void updateCameraRecording();
+    [[nodiscard]] core::VmdLightKey makeSceneLightState() const;
+    [[nodiscard]] bool projectModified() const;
     int runVideoExport();
     [[nodiscard]] core::ModelInstance* selectedModel() noexcept {
         return scene_.selectedModel();
@@ -125,6 +136,16 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     core::FrameScratch frameScratch_;
     core::FrameProfiler frameProfiler_;
     core::CommandHistory history_;
+    editor::EditorSession editorSession_{&scene_, &history_};
+    editor::PoseBinding poseBinding_;
+    editor::Workspace editorWorkspace_;
+    editor::InterpolationWindow interpolationWindow_;
+    editor::KeyframeWindow keyframeWindow_;
+    std::optional<editor::MotionKeyId> timelineAnchor_;
+    float timelineDragStartX_{};
+    bool timelineBoxSelecting_{};
+    std::array<float, 2> timelineBoxBegin_{};
+    std::vector<editor::MotionKeyId> timelineBoxOriginal_;
     core::AudioPlayer audioPlayer_;
     AudioExportJob audioExportJob_;
     VideoExportJob videoExportJob_;
@@ -187,8 +208,16 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::int64_t uploadedVideoFrame_{-1};
     std::string lastAsset_{"Drop PMX/VMD/VPD/media files into the window"};
     std::vector<core::ProjectAsset> projectAssets_;
+    std::vector<std::pair<std::filesystem::path, core::ModelId>> modelAssetOwners_;
     std::vector<core::ProjectModelState> projectModelMetadata_;
     core::ProjectEditorState projectEditorState_;
+    core::ProjectEditorState savedEditorState_;
+    std::uint64_t savedHistoryRevision_{};
+    std::size_t savedAssetCount_{};
+    bool unsavedModelChanges_{};
+    bool quitRequested_{};
+    bool quitConfirmed_{};
+    bool overwriteApproved_{};
     std::array<char, 1024> previewHdriPath_{};
     std::filesystem::path failedPreviewHdriPath_;
     std::uint64_t failedPreviewHdriVersion_{};
@@ -209,6 +238,17 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     fx::FrameEffectScheduler effectScheduler_;
     std::vector<fx::ScheduledFx> scheduledEffects_;
     core::PreviewNormalization normalization_;
+    core::Float3 cameraPan_{};
+    int previewResolutionDivisor_{1};
+    editor::EditorConfig editorConfig_;
+    bool preferencesVisible_{};
+    bool borrowedAssetsVisible_{};
+    bool shortcutsVisible_{};
+    bool historyVisible_{};
+    bool modelToolsVisible_{};
+    core::ModelId annotationModel_{};
+    int annotationMaterial_{-1};
+    std::array<char, 1024> materialAnnotation_{};
     float cameraYaw_{};
     float cameraPitch_{};
     float cameraDistance_{3.0F};
@@ -263,10 +303,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     bool videoExportRestoreAudioActive_{};
     bool videoRangeInitialized_{};
     std::string videoExportStatus_;
-#if DAYO_HAS_IMGUI
     ui::UiState uiState_;
     core::MotionClipboard motionClipboard_;
-    std::vector<core::MotionKeyRef> selectedKeys_;
     float timelineZoom_{1.0F};
     float timelinePan_{};
     float timelineScrollY_{};
@@ -274,6 +312,22 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     bool recordCamera_{};
     int selectedBone_{};
     int selectedMorph_{};
+    core::ModelId editorValuesModel_{};
+    float editorValuesFrame_{-1};
+    std::uint64_t editorValuesRevision_{};
+    core::ModelId morphEditModel_{};
+    int morphEditIndex_{-1};
+    bool morphModified_{};
+    std::unique_ptr<editor::UndoTransaction> cameraRecordingTransaction_;
+    std::int64_t recordedCameraFrame_{-1};
+    bool cameraRecordedAny_{};
+    bool cameraModified_{};
+    bool lightModified_{};
+    bool shadowModified_{};
+    float baseMorphWeight_{};
+    core::VmdCameraKey baseCamera_;
+    core::VmdLightKey baseLight_;
+    core::VmdShadowKey baseShadow_;
     core::Float3 editedBoneTranslation_{};
     core::Float4 editedBoneRotation_{0.0F, 0.0F, 0.0F, 1.0F};
     bool editedBonePhysics_{true};
@@ -303,6 +357,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
         std::vector<TimelineTrack> morphs;
         std::vector<std::uint32_t> cameras;
         std::vector<std::uint32_t> lights;
+        std::vector<std::uint32_t> shadows;
+        std::vector<std::uint32_t> ik;
     };
     TimelineTrackCache timelineTrackCache_;
     bool timelineKeyListVisible_{};
@@ -325,7 +381,6 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     core::ImageRgba8 imageSequenceImage_;
     graphics::Rgba16fSampleAccumulator imageSequenceHdrSamples_;
     std::string imageSequenceCompletionStatus_;
-#endif
 };
 
 } // namespace dayo::app
