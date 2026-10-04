@@ -368,10 +368,38 @@ dayo_compile_hlsl(
   PROFILE cs_6_6
   STAGE comp
 )
-dayo_compile_hlsl(DAYO_PREVIEW_VERTEX_SPV SOURCE shaders/preview.hlsl ENTRY VS PROFILE vs_6_6 STAGE vert DEPENDS shaders/preview_normal.hlsli)
-dayo_compile_hlsl(DAYO_PREVIEW_EDGE_VERTEX_SPV SOURCE shaders/preview.hlsl ENTRY EdgeVS PROFILE vs_6_6 STAGE vert DEPENDS shaders/preview_normal.hlsli)
-dayo_compile_hlsl(DAYO_PREVIEW_SHADOW_VERTEX_SPV SOURCE shaders/preview.hlsl ENTRY ShadowVS PROFILE vs_6_6 STAGE vert DEPENDS shaders/preview_normal.hlsli)
-dayo_compile_hlsl(DAYO_PREVIEW_SHADOW_FRAGMENT_SPV SOURCE shaders/preview.hlsl ENTRY ShadowPS PROFILE ps_6_6 STAGE frag DEPENDS shaders/preview_normal.hlsli)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_VERTEX_SPV
+  SOURCE shaders/preview.hlsl
+  ENTRY VS
+  PROFILE vs_6_6
+  STAGE vert
+  DEPENDS shaders/preview_normal.hlsli
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_EDGE_VERTEX_SPV
+  SOURCE shaders/preview.hlsl
+  ENTRY EdgeVS
+  PROFILE vs_6_6
+  STAGE vert
+  DEPENDS shaders/preview_normal.hlsli
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_SHADOW_VERTEX_SPV
+  SOURCE shaders/preview.hlsl
+  ENTRY ShadowVS
+  PROFILE vs_6_6
+  STAGE vert
+  DEPENDS shaders/preview_normal.hlsli
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_SHADOW_FRAGMENT_SPV
+  SOURCE shaders/preview.hlsl
+  ENTRY ShadowPS
+  PROFILE ps_6_6
+  STAGE frag
+  DEPENDS shaders/preview_normal.hlsli
+)
 dayo_compile_hlsl(
   DAYO_PREVIEW_BACKGROUND_VERTEX_SPV
   SOURCE shaders/preview_background.hlsl
@@ -386,9 +414,30 @@ dayo_compile_hlsl(
   PROFILE ps_6_6
   STAGE frag
 )
-dayo_compile_hlsl(DAYO_PREVIEW_NORMAL_FRAGMENT_SPV SOURCE shaders/preview.hlsl ENTRY NormalPS PROFILE ps_6_6 STAGE frag DEPENDS shaders/preview_normal.hlsli)
-dayo_compile_hlsl(DAYO_PREVIEW_AO_SPV SOURCE shaders/preview_ao.hlsl ENTRY ComputeAO PROFILE cs_6_6 STAGE comp DEPENDS shaders/preview_normal.hlsli)
-dayo_compile_hlsl(DAYO_PREVIEW_AO_BLUR_SPV SOURCE shaders/preview_ao.hlsl ENTRY BlurAO PROFILE cs_6_6 STAGE comp DEPENDS shaders/preview_normal.hlsli)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_NORMAL_FRAGMENT_SPV
+  SOURCE shaders/preview.hlsl
+  ENTRY NormalPS
+  PROFILE ps_6_6
+  STAGE frag
+  DEPENDS shaders/preview_normal.hlsli
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_AO_SPV
+  SOURCE shaders/preview_ao.hlsl
+  ENTRY ComputeAO
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS shaders/preview_normal.hlsli
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_AO_BLUR_SPV
+  SOURCE shaders/preview_ao.hlsl
+  ENTRY BlurAO
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS shaders/preview_normal.hlsli
+)
 dayo_compile_hlsl(
   DAYO_PREVIEW_AO16_SPV
   SOURCE shaders/preview_ao16.hlsl
@@ -435,7 +484,14 @@ dayo_compile_hlsl(
   PROFILE ps_6_6
   STAGE frag
 )
-dayo_compile_hlsl(DAYO_PREVIEW_FRAGMENT_SPV SOURCE shaders/preview.hlsl ENTRY PS PROFILE ps_6_6 STAGE frag DEPENDS shaders/preview_normal.hlsli)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_FRAGMENT_SPV
+  SOURCE shaders/preview.hlsl
+  ENTRY PS
+  PROFILE ps_6_6
+  STAGE frag
+  DEPENDS shaders/preview_normal.hlsli
+)
 dayo_compile_hlsl(DAYO_NATIVE_OUTPUT_VERTEX_SPV SOURCE shaders/native_output.hlsl ENTRY VS PROFILE vs_6_6 STAGE vert)
 dayo_compile_hlsl(DAYO_NATIVE_OUTPUT_FRAGMENT_SPV SOURCE shaders/native_output.hlsl ENTRY PS PROFILE ps_6_6 STAGE frag)
 # Recompile the adapter when the pinned upstream algorithms or math change.
@@ -501,8 +557,9 @@ add_dependencies(dayo_graphics dayo_shaders)
 file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/native_environment_equirect.hlsl" DAYO_ENV_EQUIRECT_DIGEST)
 file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/native_environment_prefilter.hlsl" DAYO_ENV_PREFILTER_DIGEST)
 set_property(
-  DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-  shaders/native_environment_equirect.hlsl shaders/native_environment_prefilter.hlsl
+  DIRECTORY
+  APPEND
+  PROPERTY CMAKE_CONFIGURE_DEPENDS shaders/native_environment_equirect.hlsl shaders/native_environment_prefilter.hlsl
 )
 target_compile_definitions(
   dayo_graphics
@@ -1019,7 +1076,9 @@ if(BUILD_TESTING)
   add_test(NAME preview_render_high COMMAND dayo_preview_tests --high)
   add_test(NAME preview_render_async COMMAND dayo_preview_tests --async-compute)
   set_tests_properties(
-    preview_render preview_render_high preview_render_async
+    preview_render
+    preview_render_high
+    preview_render_async
     PROPERTIES TIMEOUT 40 RUN_SERIAL TRUE ENVIRONMENT "VK_LAYER_VALIDATE_SYNC=1"
   )
   if(DAYO_HAS_MEDIA)

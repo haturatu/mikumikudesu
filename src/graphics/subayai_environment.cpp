@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -255,6 +256,9 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const Environmen
     std::string keyInput(reinterpret_cast<const char*>(source.bytes.data()), source.bytes.size());
     keyInput += "|" + std::to_string(source.width) + "|" + std::to_string(source.height) + "|" +
                 std::to_string(faceSize_) + "|" + DAYO_ENVIRONMENT_CACHE_VERSION;
+    keyInput += "|" + std::to_string(image.width) + "|" + std::to_string(image.height) + "|" +
+                core::toHex(core::fnv1a64({reinterpret_cast<const char*>(image.bytes.data()), image.bytes.size()})) +
+                "|" + std::to_string(std::bit_cast<std::uint32_t>(desc.exposure));
     cachePath_ = environmentCachePath(core::toHex(core::fnv1a64(keyInput)));
     const auto cached =
         cachePath_ ? readEnvironmentCache(*cachePath_, faceSize_, mipLevels_) : std::vector<std::uint8_t>{};

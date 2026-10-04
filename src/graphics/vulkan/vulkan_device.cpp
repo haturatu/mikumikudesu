@@ -1172,6 +1172,8 @@ void VulkanDevice::updatePreviewQualityBudget() {
 #if DAYO_ENABLE_VMA
     if (!memoryBudgetSupported_ || options_.quality != PreviewQuality::automatic)
         return;
+    // Advance VMA telemetry so external/raw Vulkan allocations and other processes are refreshed too.
+    vmaSetCurrentFrameIndex(allocator_, budgetFrameCounter_);
     VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
     vmaGetHeapBudgets(allocator_, budgets);
     VkPhysicalDeviceMemoryProperties memory{};
