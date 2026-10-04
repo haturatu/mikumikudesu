@@ -3,13 +3,16 @@
 #include <unordered_map>
 namespace dayo::editor {
 namespace {
-bool japanese{};
+bool& japanese() {
+    static bool value{};
+    return value;
 }
+} // namespace
 void setUiLanguage(std::string_view language) {
-    japanese = language == "ja" || language == "jp";
+    japanese() = language == "ja" || language == "jp";
 }
 const char* uiLabel(const char* english) {
-    if (!japanese)
+    if (!japanese())
         return english;
     static const std::unordered_map<std::string, std::string> translations{
         {"File", "ファイル"},

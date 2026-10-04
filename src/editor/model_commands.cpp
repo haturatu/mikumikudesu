@@ -3,7 +3,7 @@
 #include <stdexcept>
 namespace dayo::editor {
 DeleteModelCommand::DeleteModelCommand(const core::Scene& scene, core::ModelId id)
-    : id_(id), selection_(scene.selectedModelId()), links_(scene.externalParents()) {
+    : effects_(scene.effects()), id_(id), selection_(scene.selectedModelId()), links_(scene.externalParents()) {
     const auto& models = scene.models();
     const auto found = std::ranges::find_if(models, [id](const auto& model) { return model.id == id; });
     index_ = static_cast<std::size_t>(std::distance(models.begin(), found));
@@ -18,6 +18,7 @@ void DeleteModelCommand::undo(core::Scene& scene) {
     removed_.reset();
     if (!scene.setExternalParents(links_))
         throw std::runtime_error("cannot restore external parents");
+    scene.restoreEffects(effects_);
     scene.selectModel(selection_);
 }
 SetModelOrdersCommand::SetModelOrdersCommand(const core::Scene& scene, const std::vector<core::ModelId>& ids, int stage)

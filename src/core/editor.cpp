@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <ranges>
 #include <tuple>
 #include <utility>
 
@@ -43,14 +44,14 @@ bool CommandHistory::redo(Scene& scene) {
 
 std::vector<std::string> CommandHistory::undoNames() const {
     std::vector<std::string> names;
-    for (auto it = undo_.rbegin(); it != undo_.rend(); ++it)
-        names.emplace_back((*it)->name());
+    for (const auto& command : std::views::reverse(undo_))
+        names.emplace_back(command->name());
     return names;
 }
 std::vector<std::string> CommandHistory::redoNames() const {
     std::vector<std::string> names;
-    for (auto it = redo_.rbegin(); it != redo_.rend(); ++it)
-        names.emplace_back((*it)->name());
+    for (const auto& command : std::views::reverse(redo_))
+        names.emplace_back(command->name());
     return names;
 }
 void CommandHistory::clear() noexcept {

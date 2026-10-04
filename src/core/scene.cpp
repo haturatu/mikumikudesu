@@ -72,6 +72,10 @@ std::optional<ModelInstance> Scene::takeModel(ModelId id) {
         return std::nullopt;
     std::optional<ModelInstance> removed{std::move(*found)};
     models_.erase(found);
+    std::erase_if(effects_.deform, [id](const auto& effect) { return effect.controllerModel == id; });
+    std::erase_if(effects_.postprocess, [id](const auto& effect) { return effect.controllerModel == id; });
+    if (effects_.renderer && effects_.renderer->controllerModel == id)
+        effects_.renderer.reset();
     ++topologyGeneration_;
     ++motionRevision_;
     if (selectedModel_ == id)
@@ -704,4 +708,14 @@ void Scene::refreshModelResources(ModelInstance& instance) {
     }
 }
 
+void Scene::restoreEffects(SceneEffectStack effects) {
+    for (const auto& effect : effects.deform)
+        nextEffectId_ = std::max(nextEffectId_, effect.id + 1);
+    for (const auto& effect : effects.postprocess)
+        nextEffectId_ = std::max(nextEffectId_, effect.id + 1);
+    if (effects.renderer)
+        nextEffectId_ = std::max(nextEffectId_, effects.renderer->id + 1);
+    effects_ = std::move(effects);
+    markDirty(DirtyFlag::effect);
+}
 } // namespace dayo::core

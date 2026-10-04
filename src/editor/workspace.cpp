@@ -491,6 +491,8 @@ bool Workspace::drawViewport(PoseBinding& binding, const core::ModelInstance& mo
     bool safe = edit && active >= 0;
     for (const auto index : binding.selectedBones()) {
         const auto& bone = model.model->bones[static_cast<std::size_t>(index)];
+        if ((bone.flags & (rotate_ ? 0x0002U : 0x0004U)) == 0)
+            safe = false;
         if ((bone.flags & (0x0020U | 0x0100U | 0x0200U)) != 0)
             safe = false;
         for (const auto& source : model.model->bones)

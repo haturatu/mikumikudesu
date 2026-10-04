@@ -219,6 +219,7 @@ class Scene {
     [[nodiscard]] EffectId addEffect(EffectGraph graph, std::optional<ModelId> controllerModel = std::nullopt,
                                      std::int32_t executionOrder = 0);
     bool removeEffect(EffectId id);
+    void restoreEffects(SceneEffectStack effects);
     void clearEffects();
     void clearEffect();
     [[nodiscard]] EffectGraph* effect() noexcept;

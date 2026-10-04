@@ -27,7 +27,7 @@ struct MotionKeyIdHash {
 };
 
 // Fingerprint used to re-resolve a stable id after sorts/inserts.
-// Identity is (track, name); frame is mutable and updated via notifyMoved.
+// Identity includes track/name/frame/duplicate ordinal; moves update it explicitly.
 class StableIdTable {
   public:
     StableIdTable() = default;

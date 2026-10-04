@@ -11,6 +11,7 @@ class DeleteModelCommand final : public core::EditCommand {
     }
 
   private:
+    core::SceneEffectStack effects_;
     core::ModelId id_{};
     core::ModelId selection_{};
     std::size_t index_{};

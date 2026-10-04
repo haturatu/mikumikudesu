@@ -129,9 +129,9 @@ void PoseBinding::registerBones(EditorSession& session, std::uint32_t frame) {
     }
     core::MotionEditor::normalize(document);
     if (model->pose) {
-        session.history()->execute(
-            *scene, std::make_unique<RegisterPoseCommand>(
-                        *model, core::toVmdMotion(std::move(document), before.modelName), std::move(names)));
+        session.history()->execute(*scene, std::make_unique<RegisterPoseCommand>(
+                                               *model, core::toVmdMotion(std::move(document), before.modelName),
+                                               std::move(names), &session.stableIds(target_, false)));
     } else
         session.operations().push(ReplaceMotionOperation{
             target_, false, core::toVmdMotion(std::move(document), before.modelName), "Register bone keys"});
