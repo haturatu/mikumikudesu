@@ -36,6 +36,17 @@ void DeleteModelCommand::undo(core::Scene& scene) {
     scene.restoreEffects(effects_);
     scene.selectModel(selection_);
 }
+void SetModelOrderCommand::set(core::Scene& scene, core::ModelExecutionOrder order) {
+    if (auto* model = scene.model(id_))
+        model->order = order;
+    scene.markDirty(core::DirtyFlag::geometry | core::DirtyFlag::effect);
+}
+void SetModelOrderCommand::apply(core::Scene& scene) {
+    set(scene, after_);
+}
+void SetModelOrderCommand::undo(core::Scene& scene) {
+    set(scene, before_);
+}
 SetModelOrdersCommand::SetModelOrdersCommand(const core::Scene& scene, const std::vector<core::ModelId>& ids, int stage)
     : ids_(ids) {
     for (std::size_t index = 0; index < ids.size(); ++index) {

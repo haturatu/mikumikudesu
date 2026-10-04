@@ -974,6 +974,7 @@ std::string Application::workspaceWindowName(const char* title, const char* id) 
 void Application::resetProjectRuntimeState() {
     cameraRecordingTransaction_.reset();
     recordCamera_ = false;
+    cameraRecordKeyRequested_ = false;
     editorSession_.cancelKeyframeDrag();
 #if DAYO_HAS_IMGUI
     if (imageSequenceExportRunning_) {
@@ -1065,6 +1066,11 @@ void Application::resetProjectRuntimeState() {
     history_.clear();
     editorSession_.selection().clear();
     poseBinding_ = {};
+    morphModified_ = false;
+    cameraModified_ = false;
+    lightModified_ = false;
+    shadowModified_ = false;
+    editorValuesFrame_ = -1;
     frameProfiler_.reset();
 }
 
@@ -1133,9 +1139,10 @@ int Application::run() {
     if (editorConfig_.theme == "light")
         ImGui::StyleColorsLight();
 #endif
-    savedHistoryRevision_ = history_.revision();
+    savedHistoryPosition_ = history_.position();
     savedAssetCount_ = projectAssets_.size();
-    savedEditorState_ = projectEditorState_;
+    savedRenderer_ = requestedRenderer_;
+    savedEditorState_ = currentEditorState();
     manualCamera_ = projectEditorState_.freeCamera;
     bool running = true;
     std::uint64_t frameCount = 0;
@@ -1355,6 +1362,32 @@ int Application::run() {
     return 0;
 }
 
+core::ProjectEditorState Application::currentEditorState() const {
+    auto state = projectEditorState_;
+    state.animationRepeat = repeat_;
+    state.wavVolume = audioVolume_;
+    state.wavOffset = audioOffsetSeconds_;
+    state.floorCollision = scene_.physicsSettings().floorCollision;
+    state.animationSpeed = playbackSpeed_;
+    state.recordFps = static_cast<float>(sceneTimelineFps(scene_));
+    state.wavFile = audioSource_;
+    state.movieVisible = videoVisible_;
+    state.movieFile = videoMode_ && scene_.background().videoPath.has_value() ? *scene_.background().videoPath
+                                                                              : std::filesystem::path{};
+#if DAYO_HAS_IMGUI
+    auto sequenceFile = std::filesystem::path(sequenceOutputFilename_.data());
+    sequenceFile.replace_extension(sequenceOutput_.format == core::OutputFormat::png   ? ".png"
+                                   : sequenceOutput_.format == core::OutputFormat::exr ? ".exr"
+                                                                                       : ".ppm");
+    state.outputFile = std::filesystem::path(sequenceOutputDirectory_.data()) / sequenceFile;
+    state.samplesPerFrame = sequenceOutput_.samples;
+    state.motionBlur = sequenceOutput_.motionBlur;
+    state.outputWidth = sequenceWidth_;
+    state.outputHeight = sequenceHeight_;
+#endif
+    return state;
+}
+
 core::DayoProject Application::currentProject() const {
     core::DayoProject project;
     project.renderer = std::string(graphics::toString(requestedRenderer_));
@@ -1362,28 +1395,7 @@ core::DayoProject Application::currentProject() const {
     project.playing = playing_;
     project.upstreamDocumentJson = upstreamDocumentJson_;
     project.assets = projectAssets_;
-    project.editor = projectEditorState_;
-    project.editor.animationRepeat = repeat_;
-    project.editor.wavVolume = audioVolume_;
-    project.editor.wavOffset = audioOffsetSeconds_;
-    project.editor.floorCollision = scene_.physicsSettings().floorCollision;
-    project.editor.animationSpeed = playbackSpeed_;
-    project.editor.recordFps = static_cast<float>(sceneTimelineFps(scene_));
-    project.editor.wavFile = audioSource_;
-    project.editor.movieVisible = videoVisible_;
-    project.editor.movieFile = videoMode_ && scene_.background().videoPath.has_value() ? *scene_.background().videoPath
-                                                                                       : std::filesystem::path{};
-#if DAYO_HAS_IMGUI
-    auto sequenceFile = std::filesystem::path(sequenceOutputFilename_.data());
-    sequenceFile.replace_extension(sequenceOutput_.format == core::OutputFormat::png   ? ".png"
-                                   : sequenceOutput_.format == core::OutputFormat::exr ? ".exr"
-                                                                                       : ".ppm");
-    project.editor.outputFile = std::filesystem::path(sequenceOutputDirectory_.data()) / sequenceFile;
-    project.editor.samplesPerFrame = sequenceOutput_.samples;
-    project.editor.motionBlur = sequenceOutput_.motionBlur;
-    project.editor.outputWidth = sequenceWidth_;
-    project.editor.outputHeight = sequenceHeight_;
-#endif
+    project.editor = currentEditorState();
     project.models = projectModelMetadata_;
     for (const auto& instance : scene_.models()) {
         core::ProjectModelState state;
@@ -1917,6 +1929,11 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 refreshAnimatedMesh(false);
             lastAsset_ =
                 "Project " + path.filename().string() + " — " + std::to_string(project.assets.size()) + " assets";
+            savedHistoryPosition_ = history_.position();
+            savedAssetCount_ = projectAssets_.size();
+            savedRenderer_ = requestedRenderer_;
+            savedEditorState_ = currentEditorState();
+            unsavedModelChanges_ = false;
             log::info("Loaded project: ", lastAsset_);
         } catch (const std::exception& exception) {
             lastAsset_ = "Project error: " + std::string(exception.what());
@@ -2254,14 +2271,9 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                         continue;
                     const auto& sourcePose = (*parentPoses)[sourceIndex];
                     mmd::ExternalParentTransform transform;
-                    transform.index = static_cast<std::size_t>(std::distance(instance.model->bones.begin(), child));
-                    transform.rotation = sourcePose.rotation;
-                    const auto rotatedCenter = editor::rotatePoint(transform.rotation, instance.normalization.center);
-                    for (std::size_t axis = 0; axis < 3; ++axis)
-                        transform.translation[axis] =
-                            instance.normalization.center[axis] - rotatedCenter[axis] +
-                            (sourcePose.worldPosition[axis] - parent->normalization.center[axis]) *
-                                parent->normalization.scale / instance.normalization.scale;
+                    transform.childBone = static_cast<std::size_t>(std::distance(instance.model->bones.begin(), child));
+                    transform.parentRotation = sourcePose.rotation;
+                    transform.parentPosition = sourcePose.worldPosition;
                     parentTransforms.push_back(transform);
                 }
             current.frame = instance.animator->evaluate(animationFrame_, deltaSeconds, current.gpuSkinning,
@@ -3233,7 +3245,8 @@ void Application::buildUi() {
     const bool shortcutsVisible_was = shortcutsVisible_;
     if (shortcutsVisible_ && ImGui::Begin("Shortcuts", &shortcutsVisible_))
         ImGui::TextUnformatted(
-            "Space: Play / Pause\nCtrl+S: Save\nCtrl+Z / Ctrl+Y: Undo / Redo\nCtrl+C / X / V: Copy / Cut / Paste "
+            "Space: Play / Pause (recording: register camera key)\nCtrl+S: Save\nCtrl+Z / Ctrl+Y: Undo / Redo\nCtrl+C "
+            "/ X / V: Copy / Cut / Paste "
             "keys\nDelete: Delete selected keys\nShift+click: Range / Add selection\nCtrl+click: Toggle "
             "selection\nDrag keys: Move (one undo)\nEsc: Cancel key drag / selection rectangle\nLeft drag empty "
             "timeline / viewport: Rectangle selection\nShift+drag: Add; Ctrl+drag: Invert\nTimeline Ctrl+wheel: Zoom; "
@@ -3255,7 +3268,6 @@ void Application::buildUi() {
     if (borrowedAssetsVisible_was)
         ImGui::End();
     buildEditorUi();
-    updateCameraRecording();
     if (historyVisible_) {
         const auto count = history_.undoCount();
         editorWorkspace_.drawHistory(editorSession_);
@@ -3277,6 +3289,7 @@ void Application::buildUi() {
         scene_.clearDirty(core::DirtyFlag::effect);
     }
     handleEditorShortcuts();
+    updateCameraRecording();
     buildAudioExportUi();
     buildVideoExportUi();
     buildImageSequenceExportUi();
@@ -3301,13 +3314,11 @@ void Application::handleEditorShortcuts() {
         refreshPreviewScene();
     }
     const bool editorShortcutScope = uiState_.viewportHovered || uiState_.timelineFocused;
-    if (!editorShortcutScope || io.WantTextInput)
+    if ((!editorShortcutScope && !recordCamera_) || io.WantTextInput)
         return;
     if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
         if (recordCamera_) {
-            recordCamera_ = false;
-            playing_ = false;
-            updateCameraRecording();
+            cameraRecordKeyRequested_ = true;
         } else {
             playing_ = !playing_;
             restartAudioAtCurrentFrame();
@@ -3469,7 +3480,7 @@ void Application::buildMainMenuBar() {
     if (ImGui::BeginMenu(editor::uiLabel("Help"))) {
         ImGui::MenuItem(editor::uiLabel("Shortcuts"), nullptr, &shortcutsVisible_);
         ImGui::MenuItem(editor::uiLabel("Borrowed assets"), nullptr, &borrowedAssetsVisible_);
-        ImGui::TextUnformatted("Space  Play / Pause");
+        ImGui::TextUnformatted("Space  Play / Pause; register camera key while recording");
         ImGui::TextUnformatted("Ctrl+Z / Ctrl+Y  Undo / Redo");
         ImGui::TextUnformatted("Right-drag / Wheel  Viewport camera");
         ImGui::EndMenu();
@@ -3723,9 +3734,10 @@ void Application::buildInspectorPanel() {
                 int preset = model->materialSettings[static_cast<std::size_t>(material)].previewPbrPreset;
                 if (ImGui::Combo(editor::uiLabel("Preview material"), &preset,
                                  "PMX\0Skin\0Hair\0Cloth\0Metal\0Plastic\0Glass\0")) {
-                    model->materialSettings[static_cast<std::size_t>(material)].previewPbrPreset =
-                        static_cast<std::uint8_t>(preset);
-                    scene_.markDirty(core::DirtyFlag::material);
+                    auto state = model->materialSettings[static_cast<std::size_t>(material)];
+                    state.previewPbrPreset = static_cast<std::uint8_t>(preset);
+                    editorSession_.operations().push(editor::MaterialEditOperation{
+                        model->id, static_cast<std::size_t>(material), std::move(state), "Edit preview material"});
                     refreshAnimatedMesh(false);
                 }
             }
@@ -3736,8 +3748,9 @@ void Application::buildInspectorPanel() {
     if (uiState_.workspace == ui::Workspace::debug && ImGui::CollapsingHeader("Evaluation Order (experimental)")) {
         ImGui::TextDisabled("Motion order drives animation evaluation. Other order fields are persisted; runtime "
                             "scheduling support is partial.");
-        if (ImGui::DragInt("Motion", &model->order.motion, 1.0F, 0, 1024))
-            scene_.markDirty(core::DirtyFlag::geometry);
+        auto order = model->order;
+        if (ImGui::DragInt("Motion", &order.motion, 1.0F, 0, 1024))
+            history_.execute(scene_, std::make_unique<editor::SetModelOrderCommand>(model->id, model->order, order));
         ImGui::BeginDisabled();
         ImGui::DragInt("Deform", &model->order.deform, 1.0F, 0, 1024);
         ImGui::DragInt("Postprocess", &model->order.postprocess, 1.0F, 0, 1024);
@@ -3750,8 +3763,9 @@ void Application::buildInspectorPanel() {
 
 bool Application::projectModified() const {
     return poseBinding_.modified() || morphModified_ || cameraModified_ || lightModified_ || shadowModified_ ||
-           unsavedModelChanges_ || history_.revision() != savedHistoryRevision_ ||
-           projectAssets_.size() != savedAssetCount_ || projectEditorState_ != savedEditorState_;
+           unsavedModelChanges_ || history_.position() != savedHistoryPosition_ ||
+           projectAssets_.size() != savedAssetCount_ || requestedRenderer_ != savedRenderer_ ||
+           currentEditorState() != savedEditorState_;
 }
 void Application::buildQuitDialog() {
 #if DAYO_HAS_IMGUI
@@ -3868,9 +3882,10 @@ void Application::saveProjectNow() {
             quitConfirmed_ = true;
             quitRequested_ = false;
         }
-        savedHistoryRevision_ = history_.revision();
-        savedEditorState_ = projectEditorState_;
+        savedHistoryPosition_ = history_.position();
+        savedEditorState_ = currentEditorState();
         savedAssetCount_ = projectAssets_.size();
+        savedRenderer_ = requestedRenderer_;
         unsavedModelChanges_ = false;
     } catch (const std::exception& error) {
         projectSaveStatus_ = error.what();
@@ -3901,9 +3916,10 @@ void Application::saveProjectAsNow() {
             quitConfirmed_ = true;
             quitRequested_ = false;
         }
-        savedHistoryRevision_ = history_.revision();
-        savedEditorState_ = projectEditorState_;
+        savedHistoryPosition_ = history_.position();
+        savedEditorState_ = currentEditorState();
         savedAssetCount_ = projectAssets_.size();
+        savedRenderer_ = requestedRenderer_;
         unsavedModelChanges_ = false;
     } catch (const std::exception& error) {
         projectSaveStatus_ = error.what();
@@ -4329,35 +4345,26 @@ void Application::updateCameraRecording() {
         cameraPitch_ = camera.rotation[0];
         cameraDistance_ = camera.distance;
         cameraModified_ = false;
-        cameraRecordingTransaction_ = std::make_unique<editor::UndoTransaction>(
-            scene_, history_, 0, true, "Record camera range", &editorSession_.stableIds(0, true));
-        auto motion = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
         const auto start = projectEditorState_.recordStart;
         const auto end = projectEditorState_.recordEnd < 0 ? static_cast<std::int32_t>(scene_.timeline().duration)
                                                            : projectEditorState_.recordEnd;
-        std::erase_if(motion.cameras, [&](const auto& key) {
-            return static_cast<std::int64_t>(key.frame) >= start && static_cast<std::int64_t>(key.frame) <= end;
-        });
-        cameraRecordingEnd_ = std::max<std::int64_t>(start, end);
         cameraRecordingMode_ = scene_.runtimeMode();
         scene_.setRuntimeMode(core::RuntimeMode::realtime);
-        cameraRecordingTransaction_->dragTo(std::move(motion));
-        scene_.setTimelineDuration(std::max(scene_.timeline().duration, static_cast<float>(cameraRecordingEnd_)));
-        recordedCameraFrame_ = -1;
-        cameraRecordedAny_ = false;
+        cameraRecordingTransaction_ =
+            std::make_unique<editor::CameraRecording>(scene_, history_, editorSession_.stableIds(0, true), start, end);
         manualCamera_ = true;
     }
     if (recordCamera_ && cameraRecordingTransaction_) {
         const auto currentFrame = static_cast<std::int64_t>(animationFrame_);
-        const auto end = cameraRecordingEnd_;
-        const auto frame = std::min(currentFrame, end);
-        if (frame >= projectEditorState_.recordStart && frame <= end && frame != recordedCameraFrame_) {
-            auto motion = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
+        const auto end = cameraRecordingTransaction_->end();
+        if (cameraRecordKeyRequested_)
+            cameraRecordingTransaction_->requestKey();
+        if (cameraRecordingTransaction_->keyRequested()) {
             const auto camera = makeSceneCameraState();
             const auto* model = selectedModel();
             const auto normalization = model ? model->normalization : normalization_;
             core::VmdCameraKey key = editedCamera_;
-            key.frame = static_cast<std::uint32_t>(frame);
+            key.frame = static_cast<std::uint32_t>(std::max<std::int64_t>(0, currentFrame));
             key.rotation = camera.rotation;
             key.distance = -camera.distance / std::max(normalization.scale, 0.0001F);
             key.viewAngle = camera.verticalFovRadians / 0.01745329252F;
@@ -4368,29 +4375,24 @@ void Application::updateCameraRecording() {
             for (std::size_t axis = 0; axis < 3; ++axis)
                 key.position[axis] =
                     camera.position[axis] / std::max(normalization.scale, 0.0001F) + normalization.center[axis];
-            std::erase_if(motion.cameras, [&](const auto& item) { return item.frame == key.frame; });
-            motion.cameras.push_back(key);
-            auto document = core::toMotionDocument(motion);
-            core::MotionEditor::normalize(document);
-            motion = core::toVmdMotion(std::move(document), motion.modelName);
-            cameraRecordingTransaction_->dragTo(std::move(motion));
-            scene_.setTimelineDuration(std::max(scene_.timeline().duration, static_cast<float>(end)));
-            editorSession_.stableIds(0, true).rebuild(core::toMotionDocument(*scene_.cameraMotion()));
-            recordedCameraFrame_ = frame;
-            cameraRecordedAny_ = true;
+            cameraRecordingTransaction_->update(std::move(key));
         }
-        if (frame >= end) {
+        cameraRecordKeyRequested_ = false;
+        if (currentFrame >= end) {
             recordCamera_ = false;
             playing_ = false;
             audioPlayer_.setPaused(true);
         }
     }
     if (!recordCamera_ && cameraRecordingTransaction_) {
-        if (cameraRecordedAny_)
-            cameraRecordingTransaction_->commit();
-        else
-            cameraRecordingTransaction_->rollback();
+        auto recorded = cameraRecordingTransaction_->finish();
+        if (!recorded.empty()) {
+            editGlobalMotion_ = true;
+            editorSession_.setTarget(0, true);
+            editorSession_.selection().set(std::move(recorded));
+        }
         cameraRecordingTransaction_.reset();
+        cameraRecordKeyRequested_ = false;
         scene_.setRuntimeMode(cameraRecordingMode_);
         refreshPreviewScene();
     }
@@ -5042,8 +5044,12 @@ void Application::buildEditorUi() {
         if (projectEditorState_.recordEnd >= 0)
             projectEditorState_.recordEnd = std::max(projectEditorState_.recordStart, projectEditorState_.recordEnd);
         if (recordCamera_) {
-            if (ImGui::Button(editor::uiLabel("Stop camera recording")))
+            ImGui::TextUnformatted("Space registers a camera key; playback alone does not create keys.");
+            if (ImGui::Button(editor::uiLabel("Stop camera recording"))) {
                 recordCamera_ = false;
+                playing_ = false;
+                audioPlayer_.setPaused(true);
+            }
         } else if (ImGui::Button(editor::uiLabel("Record camera range")))
             ImGui::OpenPopup("Overwrite camera range?");
         if (ImGui::BeginPopupModal("Overwrite camera range?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
@@ -5053,7 +5059,6 @@ void Application::buildEditorUi() {
                 seekTimeline(static_cast<float>(projectEditorState_.recordStart));
                 recordCamera_ = true;
                 playing_ = true;
-                manualCamera_ = true;
                 restartAudioAtCurrentFrame();
                 ImGui::CloseCurrentPopup();
             }
@@ -5238,10 +5243,15 @@ void Application::buildEditorUi() {
         }
         if (model != nullptr) {
             ImGui::SeparatorText("Model order");
-            ImGui::DragInt("Motion order", &model->order.motion, 1.0F, 0, 1024);
-            ImGui::DragInt("Deform order", &model->order.deform, 1.0F, 0, 1024);
-            ImGui::DragInt("Postprocess order", &model->order.postprocess, 1.0F, 0, 1024);
-            ImGui::DragInt("Raster order", &model->order.raster, 1.0F, 0, 1024);
+            auto order = model->order;
+            bool orderChanged = false;
+            orderChanged |= ImGui::DragInt("Motion order", &order.motion, 1.0F, 0, 1024);
+            orderChanged |= ImGui::DragInt("Deform order", &order.deform, 1.0F, 0, 1024);
+            orderChanged |= ImGui::DragInt("Postprocess order", &order.postprocess, 1.0F, 0, 1024);
+            orderChanged |= ImGui::DragInt("Raster order", &order.raster, 1.0F, 0, 1024);
+            if (orderChanged)
+                history_.execute(scene_,
+                                 std::make_unique<editor::SetModelOrderCommand>(model->id, model->order, order));
             if (ImGui::TreeNode("Model description")) {
                 ImGui::TextWrapped("%s", model->model->metadata.comment.c_str());
                 ImGui::TextUnformatted(model->sourcePath.parent_path().string().c_str());
@@ -5269,15 +5279,19 @@ void Application::buildEditorUi() {
                 static std::array<char, 1024> annotation{};
                 ImGui::InputText("Annotation / MatDesc", annotation.data(), annotation.size());
                 if (ImGui::Button(editor::uiLabel("Apply material annotation"))) {
-                    model->materialSettings[static_cast<std::size_t>(materialIndex)].annotation = annotation.data();
-                    scene_.markDirty(core::DirtyFlag::material | core::DirtyFlag::effect);
+                    auto state = model->materialSettings[static_cast<std::size_t>(materialIndex)];
+                    state.annotation = annotation.data();
+                    editorSession_.operations().push(
+                        editor::MaterialEditOperation{model->id, static_cast<std::size_t>(materialIndex),
+                                                      std::move(state), "Edit material annotation"});
                 }
                 int preset = model->materialSettings[static_cast<std::size_t>(materialIndex)].previewPbrPreset;
                 if (ImGui::Combo(editor::uiLabel("Preview material"), &preset,
                                  "PMX\0Skin\0Hair\0Cloth\0Metal\0Plastic\0Glass\0")) {
-                    model->materialSettings[static_cast<std::size_t>(materialIndex)].previewPbrPreset =
-                        static_cast<std::uint8_t>(preset);
-                    scene_.markDirty(core::DirtyFlag::material);
+                    auto state = model->materialSettings[static_cast<std::size_t>(materialIndex)];
+                    state.previewPbrPreset = static_cast<std::uint8_t>(preset);
+                    editorSession_.operations().push(editor::MaterialEditOperation{
+                        model->id, static_cast<std::size_t>(materialIndex), std::move(state), "Edit preview material"});
                     refreshAnimatedMesh(false);
                 }
                 ImGui::TreePop();
@@ -5316,7 +5330,8 @@ void Application::buildEditorUi() {
             ImGui::SetClipboardText(credits.c_str());
         }
         if (ImGui::TreeNode("Shortcuts")) {
-            ImGui::TextUnformatted("Space: Play / Pause\nCtrl+Z: Undo\nCtrl+Y: Redo\nCtrl+C/X/V: Copy/Cut/Paste "
+            ImGui::TextUnformatted("Space: Play / Pause (recording: register camera key)\nCtrl+Z: Undo\nCtrl+Y: "
+                                   "Redo\nCtrl+C/X/V: Copy/Cut/Paste "
                                    "keys\nDelete: Delete selected keys");
             ImGui::TreePop();
         }

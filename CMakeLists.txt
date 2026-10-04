@@ -736,6 +736,7 @@ add_library(
   dayo_editor
   src/editor/bone_window.cpp
   src/editor/config.cpp
+  src/editor/camera_recording.cpp
   src/editor/editor_operation.cpp
   src/editor/editor_session.cpp
   src/editor/external_parent_window.cpp

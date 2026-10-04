@@ -23,6 +23,10 @@ class CommandHistory {
     [[nodiscard]] std::uint64_t revision() const noexcept {
         return revision_;
     }
+    // State identity is restored by Undo/Redo; discarded branches never reuse IDs.
+    [[nodiscard]] std::uint64_t position() const noexcept {
+        return undoPositions_.empty() ? rootPosition_ : undoPositions_.back();
+    }
     void execute(Scene& scene, std::unique_ptr<EditCommand> command);
     bool undo(Scene& scene);
     bool redo(Scene& scene);
@@ -44,6 +48,9 @@ class CommandHistory {
 
   private:
     std::uint64_t revision_{};
+    std::uint64_t nextPosition_{};
+    std::uint64_t rootPosition_{};
+    std::vector<std::uint64_t> undoPositions_, redoPositions_;
     std::vector<std::unique_ptr<EditCommand>> undo_;
     std::vector<std::unique_ptr<EditCommand>> redo_;
 };

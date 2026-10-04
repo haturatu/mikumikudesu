@@ -11,6 +11,7 @@
 #include "core/project.hpp"
 #include "core/scene.hpp"
 #include "core/video_export.hpp"
+#include "editor/camera_recording.hpp"
 #include "editor/config.hpp"
 #include "editor/editor_session.hpp"
 #include "editor/interpolation_window.hpp"
@@ -50,6 +51,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
 
   private:
     void resetProjectRuntimeState();
+    [[nodiscard]] core::ProjectEditorState currentEditorState() const;
     [[nodiscard]] core::DayoProject currentProject() const;
     void loadEffectAsset(const std::filesystem::path& path, std::optional<core::ModelId> owner);
     void handleAsset(const std::filesystem::path& path);
@@ -212,7 +214,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::vector<core::ProjectModelState> projectModelMetadata_;
     core::ProjectEditorState projectEditorState_;
     core::ProjectEditorState savedEditorState_;
-    std::uint64_t savedHistoryRevision_{};
+    std::uint64_t savedHistoryPosition_{};
+    graphics::RendererKind savedRenderer_{graphics::RendererKind::preview};
     std::size_t savedAssetCount_{};
     bool unsavedModelChanges_{};
     bool quitRequested_{};
@@ -317,11 +320,9 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     core::ModelId morphEditModel_{};
     int morphEditIndex_{-1};
     bool morphModified_{};
-    std::unique_ptr<editor::UndoTransaction> cameraRecordingTransaction_;
-    std::int64_t recordedCameraFrame_{-1};
-    std::int64_t cameraRecordingEnd_{};
+    std::unique_ptr<editor::CameraRecording> cameraRecordingTransaction_;
+    bool cameraRecordKeyRequested_{};
     core::RuntimeMode cameraRecordingMode_{core::RuntimeMode::realtime};
-    bool cameraRecordedAny_{};
     bool cameraModified_{};
     bool lightModified_{};
     bool shadowModified_{};

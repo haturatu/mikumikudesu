@@ -15,7 +15,9 @@ void CommandHistory::execute(Scene& scene, std::unique_ptr<EditCommand> command)
     command->apply(scene);
     ++revision_;
     undo_.push_back(std::move(command));
+    undoPositions_.push_back(++nextPosition_);
     redo_.clear();
+    redoPositions_.clear();
 }
 
 bool CommandHistory::undo(Scene& scene) {
@@ -26,6 +28,8 @@ bool CommandHistory::undo(Scene& scene) {
     auto command = std::move(undo_.back());
     undo_.pop_back();
     command->undo(scene);
+    redoPositions_.push_back(undoPositions_.back());
+    undoPositions_.pop_back();
     redo_.push_back(std::move(command));
     return true;
 }
@@ -38,6 +42,8 @@ bool CommandHistory::redo(Scene& scene) {
     auto command = std::move(redo_.back());
     redo_.pop_back();
     command->apply(scene);
+    undoPositions_.push_back(redoPositions_.back());
+    redoPositions_.pop_back();
     undo_.push_back(std::move(command));
     return true;
 }
@@ -57,6 +63,9 @@ std::vector<std::string> CommandHistory::redoNames() const {
 void CommandHistory::clear() noexcept {
     undo_.clear();
     redo_.clear();
+    undoPositions_.clear();
+    redoPositions_.clear();
+    rootPosition_ = ++nextPosition_;
 }
 
 void SetFrameCommand::set(Scene& scene, float frame) {

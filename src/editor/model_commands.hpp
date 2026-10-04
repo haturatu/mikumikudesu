@@ -21,6 +21,21 @@ class DeleteModelCommand final : public core::EditCommand {
     std::optional<core::ModelInstance> removed_;
     std::vector<core::ExternalParentLink> links_;
 };
+class SetModelOrderCommand final : public core::EditCommand {
+  public:
+    SetModelOrderCommand(core::ModelId id, core::ModelExecutionOrder before, core::ModelExecutionOrder after)
+        : id_(id), before_(before), after_(after) {}
+    void apply(core::Scene& scene) override;
+    void undo(core::Scene& scene) override;
+    const char* name() const noexcept override {
+        return "Edit model order";
+    }
+
+  private:
+    void set(core::Scene& scene, core::ModelExecutionOrder order);
+    core::ModelId id_{};
+    core::ModelExecutionOrder before_, after_;
+};
 class SetModelOrdersCommand final : public core::EditCommand {
   public:
     SetModelOrdersCommand(const core::Scene& scene, const std::vector<core::ModelId>& ids, int stage);

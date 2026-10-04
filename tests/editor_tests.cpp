@@ -1,3 +1,4 @@
+#include "editor/camera_recording.hpp"
 #include "editor/editor_session.hpp"
 #include "editor/interpolation_window.hpp"
 #include "editor/material_window.hpp"
@@ -43,6 +44,22 @@ int main() {
         addModel(scene, 2);
         scene.selectModel(1);
         core::CommandHistory history;
+        const auto rootPosition = history.position();
+        history.execute(scene, std::make_unique<core::SetFrameCommand>(0, 10));
+        const auto savedPosition = history.position();
+        history.execute(scene, std::make_unique<core::SetFrameCommand>(10, 20));
+        const auto discardedPosition = history.position();
+        require(history.undo(scene) && history.position() == savedPosition, "Undo returns to savepoint");
+        require(history.redo(scene) && history.position() == discardedPosition, "Redo restores state identity");
+        history.undo(scene);
+        history.execute(scene, std::make_unique<core::SetFrameCommand>(10, 30));
+        require(history.position() != discardedPosition && !history.canRedo(), "new branch has a unique position");
+        history.undo(scene);
+        require(history.position() == savedPosition, "branching preserves an earlier savepoint");
+        history.undo(scene);
+        require(history.position() == rootPosition, "Undo reaches original clean state");
+        history.clear();
+        require(history.position() != rootPosition, "loading a new project creates a fresh history root");
         editor::EditorSession session(&scene, &history);
         session.setTarget(1, false);
         core::VmdMotion motion;
@@ -170,6 +187,25 @@ int main() {
         history.undo(scene);
         require(scene.model(1)->materialSettings[0].parameters.find("roughness") == nullptr,
                 "material parameter edit is undoable without a fake motion mutation");
+        const auto materialSavepoint = history.position();
+        auto materialState = scene.model(1)->materialSettings[0];
+        materialState.previewPbrPreset = 3;
+        materialState.annotation = "example.fx";
+        session.operations().push(editor::MaterialEditOperation{1, 0, materialState});
+        session.flushOperations();
+        require(history.position() != materialSavepoint && scene.model(1)->materialSettings[0].previewPbrPreset == 3,
+                "PBR and annotation changes enter persistent history");
+        history.undo(scene);
+        require(history.position() == materialSavepoint && scene.model(1)->materialSettings[0].annotation.empty(),
+                "Undo material changes returns to savepoint");
+        auto numericOrder = scene.model(1)->order;
+        numericOrder.motion = 7;
+        history.execute(scene, std::make_unique<editor::SetModelOrderCommand>(1, scene.model(1)->order, numericOrder));
+        require(history.position() != materialSavepoint && scene.model(1)->order.motion == 7,
+                "legacy numeric order is dirty");
+        history.undo(scene);
+        require(history.position() == materialSavepoint && scene.model(1)->order.motion != 7,
+                "numeric order undo is clean");
         const auto orderBefore = scene.model(1)->order;
         history.execute(scene,
                         std::make_unique<editor::SetModelOrdersCommand>(scene, std::vector<core::ModelId>{2, 1}, 2));
@@ -255,6 +291,46 @@ int main() {
         require(recordingHistory.undoCount() == 1, "camera range recording creates one history entry");
         recordingHistory.undo(recordingScene);
         require(recordingScene.cameraMotion()->cameras[0].frame == 30, "recording undo restores original range");
+        {
+            editor::StableIdTable cameraIds;
+            editor::CameraRecording recording(recordingScene, recordingHistory, cameraIds, 0, 30);
+            auto key = tracking;
+            for (std::uint32_t frame = 0; frame < 10; ++frame) {
+                key.frame = frame;
+                require(!recording.update(key), "advancing frames alone never records camera keys");
+            }
+            require(recordingScene.cameraMotion()->cameras.empty(), "no automatic keys during recording");
+            key.frame = 10;
+            recording.requestKey();
+            require(recording.update(key), "Space records the current frame");
+            key.position[0] = 3;
+            recording.requestKey();
+            require(recording.update(key), "another Space at the same frame replaces its key");
+            key.frame = 20;
+            recording.requestKey();
+            require(recording.update(key), "Space can be pressed repeatedly without stopping recording");
+            key.frame = 31;
+            recording.requestKey();
+            require(!recording.update(key), "out-of-range request is consumed without clamping to the endpoint");
+            key.frame = 30;
+            require(!recording.update(key), "consumed request does not leak to another frame");
+            editor::Selection recordedSelection;
+            recordedSelection.set(recording.finish());
+            const auto recordedDocument = core::toMotionDocument(*recordingScene.cameraMotion());
+            const auto refs = recordedSelection.resolveTransient(recordedDocument, cameraIds);
+            require(refs.size() == 2 && recordedDocument.cameras.size() == 2,
+                    "completion selects only recorded stable IDs");
+            require(recordedDocument.cameras[0].frame == 10 && recordedDocument.cameras[1].frame == 20,
+                    "only requested frames are stored");
+            require(recordingHistory.undoCount() == 1, "sparse recording remains one undo transaction");
+            recordingHistory.undo(recordingScene);
+            require(recordingScene.cameraMotion()->cameras[0].frame == 30, "Undo restores overwritten camera range");
+            const auto recordingSavepoint = recordingHistory.position();
+            editor::CameraRecording empty(recordingScene, recordingHistory, cameraIds, 0, 30);
+            require(empty.finish().empty() && recordingHistory.position() == recordingSavepoint,
+                    "recording without Space rolls back and preserves the savepoint");
+            require(recordingScene.cameraMotion()->cameras[0].frame == 30, "empty recording preserves original keys");
+        }
         editor::StableIdTable identityIds;
         auto original = core::toMotionDocument(motion);
         identityIds.rebuild(original);
