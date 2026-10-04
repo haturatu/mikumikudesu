@@ -127,6 +127,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     core::AudioPlayer audioPlayer_;
     AudioExportJob audioExportJob_;
     VideoExportJob videoExportJob_;
+    std::vector<std::uint64_t> videoReadbacks_;
+    void drainVideoReadbacks();
     std::vector<core::ImageRgba8> textures_;
     std::vector<std::uint32_t> animatedIndices_;
     std::vector<graphics::PreviewMorphDelta> animatedMorphDeltas_;

@@ -13,8 +13,8 @@ namespace dayo::graphics {
 
 // Native ray-query/RT shaders consume positions after PMX morphing and
 // skinning. PreviewVertex is intentionally not used as the AS vertex format:
-// it contains source skinning attributes which are evaluated by the Preview
-// vertex shader rather than actual deformed positions.
+// it contains source skinning attributes consumed by Preview compute deformation
+// rather than actual deformed positions.
 struct alignas(16) NativeDeformedVertex {
     float position[4]{};
     float normal[4]{};

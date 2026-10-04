@@ -39,6 +39,7 @@ struct Options {
     bool probeOnly{};
     bool hidden{};
     bool validation{true};
+    graphics::VulkanOptions vulkan;
     std::optional<std::uint64_t> frameLimit;
     std::optional<std::filesystem::path> saveProject;
     std::optional<AudioExportOptions> audioExport;
