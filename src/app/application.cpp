@@ -3678,10 +3678,8 @@ void Application::buildInspectorPanel() {
                 std::erase_if(document.morphs, [&](const auto& key) { return key.frame == frame && key.name == name; });
                 document.morphs.push_back({name, frame, editedMorphWeight_});
                 core::MotionEditor::normalize(document);
-                history_.execute(scene_,
-                                 std::make_unique<core::EditMotionCommand>(
-                                     model->id, false, before, core::toVmdMotion(std::move(document), outputModelName),
-                                     "Register morph key"));
+                editorSession_.operations().push(editor::ReplaceMotionOperation{
+                    model->id, false, core::toVmdMotion(std::move(document), outputModelName), "Register morph key"});
                 refreshAnimatedMesh(false);
                 refreshPreviewScene();
             }
