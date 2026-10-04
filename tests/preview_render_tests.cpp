@@ -272,6 +272,63 @@ bool typedVulkanFormatRoundTrips(dayo::graphics::VulkanDevice& device) {
     return true;
 }
 
+bool batchedTextureReadback(dayo::graphics::VulkanDevice& device) {
+    using namespace dayo::graphics;
+    const auto cube = device.createTextureEx(
+        {.dimension = TextureDimension::cube,
+         .extent = {8, 8, 1},
+         .format = PixelFormat::rgba16Float,
+         .mipLevels = 4,
+         .usage = ResourceUsage::sampledRead | ResourceUsage::transferDst | ResourceUsage::transferSrc});
+    const auto scalar = device.createTextureEx(
+        {.extent = {1, 1, 1},
+         .format = PixelFormat::r8Unorm,
+         .usage = ResourceUsage::sampledRead | ResourceUsage::transferDst | ResourceUsage::transferSrc});
+    try {
+        std::vector<TextureReadbackRequest> requests;
+        std::vector<std::uint8_t> expected;
+        for (std::uint32_t mip = 0; mip < 4; ++mip) {
+            for (std::uint32_t face = 0; face < 6; ++face) {
+                const auto size = 8U >> mip;
+                std::vector<std::uint8_t> bytes(size * size * 8U, static_cast<std::uint8_t>(mip * 6 + face));
+                device.uploadTextureEx(cube, bytes, mip, face);
+                requests.push_back({cube, mip, face});
+                expected.insert(expected.end(), bytes.begin(), bytes.end());
+            }
+        }
+        if (device.readbackTextureSubresources(requests) != expected)
+            throw std::runtime_error("cube face/mip batch order differs from uploaded payloads");
+        const std::array<std::uint8_t, 1> scalarBytes{0x51};
+        device.uploadTextureEx(scalar, scalarBytes, 0, 0);
+        // A one-byte texture followed by RGBA16F requires staging padding, excluded from the output.
+        const std::array mixed{TextureReadbackRequest{scalar, 0, 0}, TextureReadbackRequest{cube, 3, 5},
+                               TextureReadbackRequest{scalar, 0, 0}};
+        std::vector<std::uint8_t> mixedExpected{0x51};
+        mixedExpected.insert(mixedExpected.end(), 8, 23);
+        mixedExpected.push_back(0x51);
+        if (device.readbackTextureSubresources(mixed) != mixedExpected ||
+            !device.readbackTextureSubresources({}).empty())
+            throw std::runtime_error("mixed-format batch padding or empty batch is incorrect");
+        const std::array invalid{TextureReadbackRequest{cube, 0, 0}, TextureReadbackRequest{cube, 4, 0}};
+        bool rejected = false;
+        try {
+            static_cast<void>(device.readbackTextureSubresources(invalid));
+        } catch (const std::out_of_range&) {
+            rejected = true;
+        }
+        if (!rejected || device.readbackTextureSubresources(mixed) != mixedExpected)
+            throw std::runtime_error("invalid batch was not rejected before recording GPU work");
+        device.destroyTextureEx(cube);
+        device.destroyTextureEx(scalar);
+        return true;
+    } catch (const std::exception& exception) {
+        device.destroyTextureEx(cube);
+        device.destroyTextureEx(scalar);
+        std::cerr << "FAIL: batched Vulkan texture readback: " << exception.what() << '\n';
+        return false;
+    }
+}
+
 bool dedicatedStagingReadback(dayo::graphics::VulkanDevice& device) {
     dayo::graphics::handles::TextureHandle texture;
     try {
@@ -1586,7 +1643,8 @@ int main(int argc, char** argv) {
         }
         if (!createsD24S8StencilPipeline(device))
             return 1;
-        if (!typedVulkanFormatRoundTrips(device) || !dedicatedStagingReadback(device))
+        if (!typedVulkanFormatRoundTrips(device) || !batchedTextureReadback(device) ||
+            !dedicatedStagingReadback(device))
             return 1;
 #if DAYO_HAS_IMGUI
         if (!rendersInteractiveViewport(device)) {
