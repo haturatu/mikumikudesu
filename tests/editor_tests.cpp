@@ -212,6 +212,33 @@ int main() {
         require(loaded.cameras[0].parentModel == 9 && loaded.externalParents[0].parentModel == 9 &&
                     loaded.externalParents[1].parentModel == -1,
                 "project restores camera and external-parent targets");
+        core::Scene recordingScene;
+        core::VmdMotion recordingBefore;
+        tracking.frame = 30;
+        recordingBefore.cameras.push_back(tracking);
+        recordingBefore.lastFrame = 30;
+        recordingScene.replaceMotion(recordingBefore, 0, true);
+        const auto recordingEnd = recordingScene.timeline().duration;
+        core::CommandHistory recordingHistory;
+        {
+            editor::UndoTransaction recording(recordingScene, recordingHistory, 0, true, "Record camera range");
+            recording.dragTo({});
+            recordingScene.setTimelineDuration(recordingEnd);
+            require(recordingScene.advanceFrame(0.5F, true, false) && near(recordingScene.timeline().frame, 15),
+                    "camera-only recording advances after replacement removes all original keys");
+            core::VmdMotion partial;
+            tracking.frame = 15;
+            partial.cameras.push_back(tracking);
+            partial.lastFrame = 15;
+            recording.dragTo(partial);
+            recordingScene.setTimelineDuration(recordingEnd);
+            recordingScene.advanceFrame(1.0F, true, false);
+            require(near(recordingScene.timeline().frame, 30), "recording clamps to fixed end without wrapping");
+            recording.commit();
+        }
+        require(recordingHistory.undoCount() == 1, "camera range recording creates one history entry");
+        recordingHistory.undo(recordingScene);
+        require(recordingScene.cameraMotion()->cameras[0].frame == 30, "recording undo restores original range");
         editor::StableIdTable identityIds;
         auto original = core::toMotionDocument(motion);
         identityIds.rebuild(original);

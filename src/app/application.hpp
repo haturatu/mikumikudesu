@@ -319,6 +319,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     bool morphModified_{};
     std::unique_ptr<editor::UndoTransaction> cameraRecordingTransaction_;
     std::int64_t recordedCameraFrame_{-1};
+    std::int64_t cameraRecordingEnd_{};
+    core::RuntimeMode cameraRecordingMode_{core::RuntimeMode::realtime};
     bool cameraRecordedAny_{};
     bool cameraModified_{};
     bool lightModified_{};

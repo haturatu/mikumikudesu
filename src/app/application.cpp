@@ -1268,11 +1268,12 @@ int Application::run() {
                 restoreVideoExportState();
                 videoExportUiActive_ = videoExportRestorePending_;
             }
-        } else if (scene_.advanceFrame(deltaSeconds * playbackSpeed_, playing_, repeat_)) {
-            const bool wrapped =
-                repeat_ && static_cast<double>(animationFrame_) +
-                                   deltaSeconds * static_cast<double>(playbackSpeed_) * sceneTimelineFps(scene_) >=
-                               scene_.timeline().duration + 1.0;
+        } else if (scene_.advanceFrame(deltaSeconds * playbackSpeed_, playing_, repeat_ && !recordCamera_)) {
+            const bool wrapped = repeat_ && !recordCamera_ &&
+                                 static_cast<double>(animationFrame_) + deltaSeconds *
+                                                                            static_cast<double>(playbackSpeed_) *
+                                                                            sceneTimelineFps(scene_) >=
+                                     scene_.timeline().duration + 1.0;
 
             animationFrame_ = scene_.timeline().frame;
             const float rangeStart =
@@ -4339,15 +4340,18 @@ void Application::updateCameraRecording() {
         std::erase_if(motion.cameras, [&](const auto& key) {
             return static_cast<std::int64_t>(key.frame) >= start && static_cast<std::int64_t>(key.frame) <= end;
         });
+        cameraRecordingEnd_ = std::max<std::int64_t>(start, end);
+        cameraRecordingMode_ = scene_.runtimeMode();
+        scene_.setRuntimeMode(core::RuntimeMode::realtime);
         cameraRecordingTransaction_->dragTo(std::move(motion));
+        scene_.setTimelineDuration(std::max(scene_.timeline().duration, static_cast<float>(cameraRecordingEnd_)));
         recordedCameraFrame_ = -1;
         cameraRecordedAny_ = false;
         manualCamera_ = true;
     }
     if (recordCamera_ && cameraRecordingTransaction_) {
         const auto currentFrame = static_cast<std::int64_t>(animationFrame_);
-        const auto end = projectEditorState_.recordEnd < 0 ? static_cast<std::int64_t>(scene_.timeline().duration)
-                                                           : projectEditorState_.recordEnd;
+        const auto end = cameraRecordingEnd_;
         const auto frame = std::min(currentFrame, end);
         if (frame >= projectEditorState_.recordStart && frame <= end && frame != recordedCameraFrame_) {
             auto motion = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
@@ -4372,6 +4376,7 @@ void Application::updateCameraRecording() {
             core::MotionEditor::normalize(document);
             motion = core::toVmdMotion(std::move(document), motion.modelName);
             cameraRecordingTransaction_->dragTo(std::move(motion));
+            scene_.setTimelineDuration(std::max(scene_.timeline().duration, static_cast<float>(end)));
             editorSession_.stableIds(0, true).rebuild(core::toMotionDocument(*scene_.cameraMotion()));
             recordedCameraFrame_ = frame;
             cameraRecordedAny_ = true;
@@ -4388,6 +4393,7 @@ void Application::updateCameraRecording() {
         else
             cameraRecordingTransaction_->rollback();
         cameraRecordingTransaction_.reset();
+        scene_.setRuntimeMode(cameraRecordingMode_);
         refreshPreviewScene();
     }
 #endif

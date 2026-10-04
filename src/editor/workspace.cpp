@@ -201,7 +201,7 @@ bool Workspace::drawModels(EditorSession& session, float frame) {
         ImGui::TableHeadersRow();
         const auto effectiveLinks = scene.effectiveExternalParents(frame);
         for (std::size_t i = 0; i < effectiveLinks.size(); ++i) {
-            const auto link = effectiveLinks[i];
+            const auto& link = effectiveLinks[i];
             ImGui::PushID(static_cast<int>(i));
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
