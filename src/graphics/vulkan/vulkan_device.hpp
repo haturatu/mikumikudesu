@@ -595,7 +595,6 @@ class VulkanDevice final : public Device {
     handles::TextureHandle previewFallbackAoTexture_{};
     VkSampler previewShadowSampler_{};
     VkSampler previewAoSampler_{};
-    VkSampler previewTonemapSampler_{};
     DepthResource previewShadowDepth_{};
     bool previewEnvironmentEnabled_{};
     VkBuffer previewEnvironmentBuffer_{};
@@ -675,6 +674,7 @@ class VulkanDevice final : public Device {
         VkDeviceSize capacity{};
         VkExtent2D extent{};
         std::uint64_t readyValue{};
+        bool everWritten{}; // GPU access history survives collection of the ticket.
         VkFormat format{};
     };
     std::array<ReadbackSlot, 3> readbackSlots_{};

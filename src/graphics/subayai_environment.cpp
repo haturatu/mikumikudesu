@@ -1,5 +1,4 @@
 #include "graphics/subayai_environment.hpp"
-#include "core/log.hpp"
 #include "graphics/environment_cache.hpp"
 
 #include "core/image_hdr.hpp"
@@ -253,7 +252,8 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const Environmen
     device_ = device;
     faceSize_ = std::min(std::max(image.height / 2U, 1U), std::min(maxFaceSize, device_->environmentFaceSizeLimit()));
     mipLevels_ = mipCount(faceSize_);
-    std::string keyInput(reinterpret_cast<const char*>(source.bytes.data()), source.bytes.size());
+    const auto sourceHash = core::fnv1a64({reinterpret_cast<const char*>(source.bytes.data()), source.bytes.size()});
+    std::string keyInput = core::toHex(sourceHash);
     keyInput += "|" + std::to_string(source.width) + "|" + std::to_string(source.height) + "|" +
                 std::to_string(faceSize_) + "|" + DAYO_ENVIRONMENT_CACHE_VERSION;
     keyInput += "|" + std::to_string(image.width) + "|" + std::to_string(image.height) + "|" +

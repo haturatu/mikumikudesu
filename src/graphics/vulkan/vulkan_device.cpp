@@ -2326,8 +2326,6 @@ void VulkanDevice::createPreviewDescriptors() {
     auto shadowSamplerInfo = clampSamplerInfo;
     shadowSamplerInfo.maxLod = 0.0F;
     check(vkCreateSampler(device_, &shadowSamplerInfo, nullptr, &previewAoSampler_), "create preview AO sampler");
-    check(vkCreateSampler(device_, &shadowSamplerInfo, nullptr, &previewTonemapSampler_),
-          "create preview tonemap sampler");
     shadowSamplerInfo.compareEnable = VK_TRUE;
     shadowSamplerInfo.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     VkFormatProperties shadowProperties{};
@@ -2570,21 +2568,12 @@ void VulkanDevice::destroyPreviewDescriptors() {
     if (previewFallbackEnvironmentTexture_.valid())
         destroyTextureEx(previewFallbackEnvironmentTexture_);
     previewFallbackEnvironmentTexture_ = {};
-    if (previewTonemapSampler_ != VK_NULL_HANDLE)
-        vkDestroySampler(device_, previewTonemapSampler_, nullptr);
-    previewTonemapSampler_ = VK_NULL_HANDLE;
-    if (previewAoSampler_ != VK_NULL_HANDLE)
-        vkDestroySampler(device_, previewAoSampler_, nullptr);
-    previewAoSampler_ = VK_NULL_HANDLE;
-    if (previewShadowSampler_ != VK_NULL_HANDLE)
-        vkDestroySampler(device_, previewShadowSampler_, nullptr);
     if (previewShadowDepth_.view != VK_NULL_HANDLE)
         vkDestroyImageView(device_, previewShadowDepth_.view, nullptr);
     if (previewShadowDepth_.image != VK_NULL_HANDLE)
         vkDestroyImage(device_, previewShadowDepth_.image, nullptr);
     if (previewShadowDepth_.memory != VK_NULL_HANDLE)
         vkFreeMemory(device_, previewShadowDepth_.memory, nullptr);
-    previewShadowSampler_ = VK_NULL_HANDLE;
     previewShadowDescriptor_ = VK_NULL_HANDLE;
     previewShadowDepth_ = {};
     if (mappedPreviewEnvironment_ != nullptr)
@@ -2604,10 +2593,6 @@ void VulkanDevice::destroyPreviewDescriptors() {
     previewEnvironmentTexture_ = {};
     destroyPreviewMaterialDescriptors();
     destroyPreviewBindlessDescriptor();
-    if (previewClampSampler_ != VK_NULL_HANDLE)
-        vkDestroySampler(device_, previewClampSampler_, nullptr);
-    if (previewSampler_ != VK_NULL_HANDLE)
-        vkDestroySampler(device_, previewSampler_, nullptr);
     if (previewDescriptorPool_ != VK_NULL_HANDLE)
         vkDestroyDescriptorPool(device_, previewDescriptorPool_, nullptr);
     if (previewDescriptorSetLayout_ != VK_NULL_HANDLE) {
@@ -2635,6 +2620,17 @@ void VulkanDevice::destroyPreviewDescriptors() {
         vkDestroyDescriptorSetLayout(device_, previewAoDescriptorSetLayout_, nullptr);
     if (previewTonemapDescriptorSetLayout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, previewTonemapDescriptorSetLayout_, nullptr);
+    // Immutable samplers must outlive every pool/set and layout that copied them.
+    if (previewAoSampler_ != VK_NULL_HANDLE)
+        vkDestroySampler(device_, previewAoSampler_, nullptr);
+    if (previewShadowSampler_ != VK_NULL_HANDLE)
+        vkDestroySampler(device_, previewShadowSampler_, nullptr);
+    if (previewClampSampler_ != VK_NULL_HANDLE)
+        vkDestroySampler(device_, previewClampSampler_, nullptr);
+    if (previewSampler_ != VK_NULL_HANDLE)
+        vkDestroySampler(device_, previewSampler_, nullptr);
+    previewAoSampler_ = VK_NULL_HANDLE;
+    previewShadowSampler_ = VK_NULL_HANDLE;
     previewClampSampler_ = VK_NULL_HANDLE;
     previewSampler_ = VK_NULL_HANDLE;
     previewDescriptorPool_ = VK_NULL_HANDLE;
@@ -3619,7 +3615,6 @@ void VulkanDevice::ensurePreviewHdrResource(Frame& frame, VkExtent2D extent) {
         };
         check(vkAllocateDescriptorSets(device_, &setInfo, &resource.descriptor), "allocate preview tonemap descriptor");
         const VkDescriptorImageInfo image{VK_NULL_HANDLE, resource.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        const VkDescriptorImageInfo sampler{previewTonemapSampler_, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
         const std::array writes{
             VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                  .dstSet = resource.descriptor,
@@ -3627,12 +3622,6 @@ void VulkanDevice::ensurePreviewHdrResource(Frame& frame, VkExtent2D extent) {
                                  .descriptorCount = 1,
                                  .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                                  .pImageInfo = &image},
-            VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                 .dstSet = resource.descriptor,
-                                 .dstBinding = 1,
-                                 .descriptorCount = 1,
-                                 .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
-                                 .pImageInfo = &sampler},
         };
         updatePreviewImageDescriptors(writes);
         resource.extent = extent;
@@ -4939,6 +4928,27 @@ std::uint64_t VulkanDevice::enqueueRenderToImage(const RenderTargetDesc& target)
         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
         .imageExtent = {extent.width, extent.height, 1},
     };
+    if (slot.everWritten) {
+        // A host timeline wait releases the ticket, but does not order the next GPU write.
+        const VkBufferMemoryBarrier2 reuseBarrier{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = slot.buffer,
+            .offset = 0,
+            .size = slot.capacity,
+        };
+        const VkDependencyInfo reuseDependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .bufferMemoryBarrierCount = 1,
+            .pBufferMemoryBarriers = &reuseBarrier,
+        };
+        vkCmdPipelineBarrier2(frame.commandBuffer, &reuseDependency);
+    }
     vkCmdCopyImageToBuffer(frame.commandBuffer, offscreen_.colorImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            slot.buffer, 1, &copy);
     const VkBufferMemoryBarrier2 toHost{
@@ -4993,6 +5003,7 @@ std::uint64_t VulkanDevice::enqueueRenderToImage(const RenderTargetDesc& target)
     check(vkQueueSubmit(queue_, 1, &submitInfo, frame.inFlight), "submit offscreen frame");
     frame.timestampsSubmitted = frame.timestampQueryPool != VK_NULL_HANDLE;
     slot.readyValue = signalValue;
+    slot.everWritten = true;
     frameIndex_ = (frameIndex_ + 1) % frames_.size();
     return signalValue;
 }
@@ -7246,13 +7257,42 @@ std::vector<std::uint8_t> VulkanDevice::readbackTextureEx(handles::TextureHandle
     const auto expected = mipBytes(typed.desc, mipLevel);
     if (uploadContext_ == nullptr)
         throw std::logic_error("Vulkan upload context is unavailable");
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    const auto release = [&] {
+        if (mapped != nullptr)
+            vkUnmapMemory(device_, memory);
+        if (buffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, buffer, nullptr);
+        if (memory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, memory, nullptr);
+    };
     try {
+        // Texture/cache readback is infrequent. Keep GPU writes out of the upload-only ring.
+        const VkBufferCreateInfo bufferInfo{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = expected,
+            .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        };
+        check(vkCreateBuffer(device_, &bufferInfo, nullptr, &buffer), "create texture readback buffer");
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(device_, buffer, &requirements);
+        const VkMemoryAllocateInfo allocation{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = requirements.size,
+            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+        };
+        check(vkAllocateMemory(device_, &allocation, nullptr, &memory), "allocate texture readback memory");
+        check(vkBindBufferMemory(device_, buffer, memory, 0), "bind texture readback memory");
+        check(vkMapMemory(device_, memory, 0, expected, 0, &mapped), "map texture readback memory");
         uploadContext_->begin();
-        const auto staging = uploadContext_->allocate(expected, 16);
         const auto commandBuffer = uploadContext_->commandBuffer();
         recordTextureTransition(commandBuffer, texture, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         const VkBufferImageCopy region{
-            .bufferOffset = staging.offset,
+            .bufferOffset = 0,
             .bufferRowLength = 0,
             .bufferImageHeight = 0,
             .imageSubresource = {isDepthFormat(typed.desc.format) ? VkImageAspectFlags{VK_IMAGE_ASPECT_DEPTH_BIT}
@@ -7261,16 +7301,34 @@ std::vector<std::uint8_t> VulkanDevice::readbackTextureEx(handles::TextureHandle
             .imageOffset = {0, 0, 0},
             .imageExtent = mipExtent(typed.desc, mipLevel),
         };
-        vkCmdCopyImageToBuffer(commandBuffer, typed.resource.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                               staging.buffer, 1, &region);
+        vkCmdCopyImageToBuffer(commandBuffer, typed.resource.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1,
+                               &region);
+        const VkBufferMemoryBarrier2 toHost{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+            .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = buffer,
+            .offset = 0,
+            .size = expected,
+        };
+        const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                          .bufferMemoryBarrierCount = 1,
+                                          .pBufferMemoryBarriers = &toHost};
+        vkCmdPipelineBarrier2(commandBuffer, &dependency);
         recordTextureTransition(commandBuffer, texture, typedTextureFinalLayout(typed));
         const auto signal = uploadContext_->submit();
         uploadContext_->wait(signal);
         std::vector<std::uint8_t> result(expected);
-        std::memcpy(result.data(), staging.mapped, expected);
+        std::memcpy(result.data(), mapped, expected);
+        release();
         return result;
     } catch (...) {
         uploadContext_->abort();
+        release();
         throw;
     }
 }
@@ -8352,9 +8410,12 @@ std::vector<std::byte> VulkanDevice::readbackBufferEx(handles::BufferHandle hand
             return {};
         if (uploadContext_ == nullptr)
             throw std::logic_error("Vulkan upload context is unavailable");
+        const auto sourceBuffer = it->second.resource.buffer;
+        const auto readback = createBufferEx({.size = size, .usage = ResourceUsage::transferDst, .cpuVisible = true});
+        const auto destinationBuffer = typedBuffers_.at(readback).resource.buffer;
+        const auto* mapped = typedBuffers_.at(readback).mapped;
         try {
             uploadContext_->begin();
-            const auto staging = uploadContext_->allocate(size, 4);
             const auto command = uploadContext_->commandBuffer();
             const VkMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                                            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -8364,15 +8425,33 @@ std::vector<std::byte> VulkanDevice::readbackBufferEx(handles::BufferHandle hand
             const VkDependencyInfo dependency{
                 .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
             vkCmdPipelineBarrier2(command, &dependency);
-            const VkBufferCopy copy{.srcOffset = offset, .dstOffset = staging.offset, .size = size};
-            vkCmdCopyBuffer(command, it->second.resource.buffer, staging.buffer, 1, &copy);
+            const VkBufferCopy copy{.srcOffset = offset, .dstOffset = 0, .size = size};
+            vkCmdCopyBuffer(command, sourceBuffer, destinationBuffer, 1, &copy);
+            const VkBufferMemoryBarrier2 toHost{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .buffer = destinationBuffer,
+                .offset = 0,
+                .size = size,
+            };
+            const VkDependencyInfo hostDependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                                  .bufferMemoryBarrierCount = 1,
+                                                  .pBufferMemoryBarriers = &toHost};
+            vkCmdPipelineBarrier2(command, &hostDependency);
             const auto signal = uploadContext_->submit();
             uploadContext_->wait(signal);
             std::vector<std::byte> bytes(size);
-            std::memcpy(bytes.data(), staging.mapped, size);
+            std::memcpy(bytes.data(), mapped, size);
+            destroyBufferEx(readback);
             return bytes;
         } catch (...) {
             uploadContext_->abort();
+            destroyBufferEx(readback);
             throw;
         }
     }
