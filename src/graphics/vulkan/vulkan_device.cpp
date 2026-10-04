@@ -5198,10 +5198,10 @@ void VulkanDevice::rebuildPreviewMorphBuffers() {
         uploadPreviewBuffer(previewGpuScene_.morphWeights.data(), previewMorphWeightSize_,
                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, frame.previewMorphWeightBuffer,
                             frame.previewMorphWeightMemory, previewMorphWeightCapacity_);
-        check(vkMapMemory(device_, frame.previewMorphDeltaMemory, 0, previewMorphDeltaSize_, 0,
+        check(vkMapMemory(device_, frame.previewMorphDeltaMemory, 0, previewMorphDeltaCapacity_, 0,
                           &frame.mappedPreviewMorphDeltas),
               "persistently map preview morph deltas");
-        check(vkMapMemory(device_, frame.previewMorphWeightMemory, 0, previewMorphWeightSize_, 0,
+        check(vkMapMemory(device_, frame.previewMorphWeightMemory, 0, previewMorphWeightCapacity_, 0,
                           &frame.mappedPreviewMorphWeights),
               "persistently map preview morph weights");
         const VkDescriptorSetAllocateInfo setInfo{
@@ -5753,7 +5753,7 @@ void VulkanDevice::updatePreviewVertices(std::span<const PreviewVertex> vertices
         for (auto& frame : frames_) {
             uploadPreviewBuffer(vertices.data(), vertices.size_bytes(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                 frame.previewVertexBuffer, frame.previewVertexMemory, previewVertexCapacity_);
-            check(vkMapMemory(device_, frame.previewVertexMemory, 0, vertices.size_bytes(), 0,
+            check(vkMapMemory(device_, frame.previewVertexMemory, 0, previewVertexCapacity_, 0,
                               &frame.mappedPreviewVertices),
                   "persistently map animated preview vertices");
             frame.previewVertexGeneration = previewVertexGeneration_;
@@ -5789,7 +5789,7 @@ void VulkanDevice::updatePreviewBones(std::span<const PreviewBoneTransform> bone
         for (auto& frame : frames_) {
             uploadPreviewBuffer(bones.data(), byteSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, frame.previewBoneBuffer,
                                 frame.previewBoneMemory, previewBoneCapacity_);
-            check(vkMapMemory(device_, frame.previewBoneMemory, 0, byteSize, 0, &frame.mappedPreviewBones),
+            check(vkMapMemory(device_, frame.previewBoneMemory, 0, previewBoneCapacity_, 0, &frame.mappedPreviewBones),
                   "persistently map preview bones");
             const VkDescriptorSetAllocateInfo setInfo{
                 .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -5882,7 +5882,8 @@ void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> mater
         for (auto& frame : frames_) {
             uploadPreviewBuffer(previewGpuScene_.materialData.data(), byteSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                 frame.previewMaterialBuffer, frame.previewMaterialMemory, previewMaterialCapacity_);
-            check(vkMapMemory(device_, frame.previewMaterialMemory, 0, byteSize, 0, &frame.mappedPreviewMaterials),
+            check(vkMapMemory(device_, frame.previewMaterialMemory, 0, previewMaterialCapacity_, 0,
+                              &frame.mappedPreviewMaterials),
                   "persistently map preview materials");
             const VkDescriptorSetAllocateInfo setInfo{
                 .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
