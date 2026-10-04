@@ -2,6 +2,7 @@
 
 #include "core/image.hpp"
 #include "graphics/handles.hpp"
+#include "graphics/preview_quality.hpp"
 #include "graphics/resource.hpp"
 
 #include <array>
@@ -814,6 +815,16 @@ class Device {
     [[nodiscard]] virtual core::ImageRgba8 renderToImage(const RenderTargetDesc&) {
         throw std::logic_error("offscreen rendering is not implemented by this backend");
     }
+    [[nodiscard]] virtual bool supportsPipelinedReadback() const noexcept {
+        return false;
+    }
+    // At most three outstanding tickets. Collect each ticket exactly once before reusing its slot.
+    [[nodiscard]] virtual std::uint64_t enqueueRenderToImage(const RenderTargetDesc&) {
+        throw std::logic_error("pipelined readback is not implemented by this backend");
+    }
+    [[nodiscard]] virtual std::optional<core::ImageRgba8> collectRenderedImage(std::uint64_t, bool = true) {
+        throw std::logic_error("pipelined readback is not implemented by this backend");
+    }
     [[nodiscard]] virtual handles::TextureHandle previewHdrTexture() const noexcept {
         return {};
     }
@@ -835,6 +846,12 @@ class Device {
     virtual void clearPreviewResources() = 0;
     virtual void updatePreviewScene(const PreviewScene& scene) = 0;
     virtual void updatePreviewEnvironment(const PreviewEnvironment&) {}
+    [[nodiscard]] virtual bool supportsTextureFormat(PixelFormat, ResourceUsage) const noexcept {
+        return false;
+    }
+    [[nodiscard]] virtual std::uint32_t environmentFaceSizeLimit() const noexcept {
+        return 512;
+    }
     virtual void setPreviewJitter(float, float) {}
     virtual void setPreviewStillQuality(bool) {}
 
@@ -1038,7 +1055,8 @@ class Device {
     Device() = default;
 };
 
-[[nodiscard]] std::unique_ptr<Device> createVulkanDevice(platform::Window& window, bool validation);
+[[nodiscard]] std::unique_ptr<Device> createVulkanDevice(platform::Window& window, bool validation,
+                                                         VulkanOptions options = {});
 [[nodiscard]] std::string_view toString(RendererKind renderer) noexcept;
 
 } // namespace dayo::graphics

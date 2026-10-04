@@ -175,6 +175,9 @@ class NativeEnvironmentBackend final : public IEnvironmentBackend {
     EnvironmentGpuResult result_;
     std::uint32_t faceSize_{};
     std::uint32_t mipLevels_{};
+    std::optional<std::filesystem::path> cachePath_;
+    bool cacheHit_{};
+    mutable bool recorded_{};
 };
 
 } // namespace dayo::graphics

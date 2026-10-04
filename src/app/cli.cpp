@@ -21,7 +21,10 @@ struct RawCliOptions {
     bool probe{};
     bool hidden{};
     bool validation{true};
+    bool asyncCompute{};
     std::string renderer{"preview"};
+    std::string previewQuality{"auto"};
+    std::string present{"fifo"};
     std::optional<std::uint64_t> frames;
     std::vector<std::string> assets;
     std::optional<std::string> saveProject;
@@ -121,7 +124,15 @@ Options normalizeOptions(const RawCliOptions& raw) {
     options.probeOnly = raw.probe;
     options.hidden = raw.hidden;
     options.validation = raw.validation;
+    options.vulkan.asyncCompute = raw.asyncCompute;
     options.renderer = rendererKind(raw.renderer);
+    options.vulkan.quality = raw.previewQuality == "apu"    ? graphics::PreviewQuality::apu
+                             : raw.previewQuality == "high" ? graphics::PreviewQuality::high
+                                                            : graphics::PreviewQuality::automatic;
+    options.vulkan.present = raw.present == "immediate"      ? graphics::PresentMode::immediate
+                             : raw.present == "mailbox"      ? graphics::PresentMode::mailbox
+                             : raw.present == "fifo-relaxed" ? graphics::PresentMode::fifoRelaxed
+                                                             : graphics::PresentMode::fifo;
     options.frameLimit = raw.frames;
     options.saveProject = pathOption(raw.saveProject);
 
@@ -200,7 +211,10 @@ RawCliOptions extractOptions(const argparse::ArgumentParser& program) {
     raw.probe = program.get<bool>("--probe");
     raw.hidden = program.get<bool>("--hidden");
     raw.validation = !program.get<bool>("--no-validation");
+    raw.asyncCompute = program.get<bool>("--async-compute");
     raw.renderer = program.get<std::string>("--renderer");
+    raw.previewQuality = program.get<std::string>("--preview-quality");
+    raw.present = program.get<std::string>("--present");
     raw.frames = present<std::uint64_t>(program, "--frames");
     raw.assets = present<std::vector<std::string>>(program, "--asset").value_or(std::vector<std::string>{});
     raw.saveProject = present<std::string>(program, "--save-project");
@@ -232,6 +246,17 @@ void configureParser(ConfiguredParser& parser) {
     program.add_argument("--probe").flag().help("Print renderer/device capabilities and exit");
     program.add_argument("--hidden").flag().help("Create the application window hidden");
     program.add_argument("--no-validation").flag().help("Disable Vulkan validation");
+    program.add_argument("--async-compute")
+        .flag()
+        .help("Experimental Preview deform on a second queue; benchmark before enabling");
+    parser.addValueArgument("--preview-quality")
+        .default_value(std::string{"auto"})
+        .choices("auto", "apu", "high")
+        .help("Preview quality: auto uses integrated-GPU and memory-budget limits");
+    parser.addValueArgument("--present")
+        .default_value(std::string{"fifo"})
+        .choices("fifo", "fifo-relaxed", "mailbox", "immediate")
+        .help("Vulkan present mode (unsupported modes fall back to FIFO)");
     parser.addValueArgument("--renderer")
         .default_value(std::string{"preview"})
         .choices("preview", "subayai", "bdpt")

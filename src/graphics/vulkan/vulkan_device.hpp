@@ -27,7 +27,7 @@ class VulkanCommandList;
 
 class VulkanDevice final : public Device {
   public:
-    VulkanDevice(platform::Window& window, bool validation);
+    VulkanDevice(platform::Window& window, bool validation, VulkanOptions options = {});
     ~VulkanDevice() override;
     [[nodiscard]] std::size_t validationErrorCount() const noexcept {
         return validationErrorCount_.load(std::memory_order_relaxed);
@@ -66,6 +66,10 @@ class VulkanDevice final : public Device {
     [[nodiscard]] IAccelerationBackend* nativeAccelerationBackend() noexcept override {
         return &accelerationBackend_;
     }
+    [[nodiscard]] bool supportsTextureFormat(PixelFormat format, ResourceUsage usage) const noexcept override;
+    [[nodiscard]] std::uint32_t environmentFaceSizeLimit() const noexcept override {
+        return previewQuality_.environmentFaceSize;
+    }
     void selectRenderer(RendererKind requested) override;
     void resize() override;
     void beginUiFrame() override;
@@ -85,6 +89,11 @@ class VulkanDevice final : public Device {
         return previewGpuNanoseconds_;
     }
     [[nodiscard]] core::ImageRgba8 renderToImage(const RenderTargetDesc& target) override;
+    [[nodiscard]] bool supportsPipelinedReadback() const noexcept override {
+        return true;
+    }
+    [[nodiscard]] std::uint64_t enqueueRenderToImage(const RenderTargetDesc& target) override;
+    [[nodiscard]] std::optional<core::ImageRgba8> collectRenderedImage(std::uint64_t ticket, bool wait = true) override;
     [[nodiscard]] handles::TextureHandle previewHdrTexture() const noexcept override {
         return lastPreviewHdrTexture_;
     }
@@ -187,6 +196,7 @@ class VulkanDevice final : public Device {
         VkDescriptorSet computeSets[3]{};
         VkDescriptorSet sampleSet{};
         VkExtent2D extent{};
+        std::uint32_t divisor{};
         bool initialized{};
     };
     struct PreviewHdrResource {
@@ -201,6 +211,10 @@ class VulkanDevice final : public Device {
     struct Frame {
         VkCommandPool commandPool{};
         VkCommandBuffer commandBuffer{};
+        VkCommandPool deformCommandPool{};
+        VkCommandBuffer deformCommandBuffer{};
+        bool deformRecorded{};
+        std::uint64_t deformReadyValue{};
         VkSemaphore imageAvailable{};
         bool timestampsSubmitted{};
         VkFence inFlight{};
@@ -209,6 +223,11 @@ class VulkanDevice final : public Device {
         VkDeviceMemory backgroundStagingMemory{};
         void* mappedBackgroundStaging{};
         bool backgroundUploadPending{};
+        std::uint64_t previewBackgroundGeneration{};
+        VkBuffer previewDeformedBuffer{};
+        VkDeviceMemory previewDeformedMemory{};
+        VkDeviceSize previewDeformedCapacity{};
+        VkDescriptorSet previewDeformDescriptor{};
         VkBuffer previewVertexBuffer{};
         VkDeviceMemory previewVertexMemory{};
         void* mappedPreviewVertices{};
@@ -232,6 +251,7 @@ class VulkanDevice final : public Device {
         void* mappedPreviewMaterials{};
         VkDescriptorSet previewMaterialDescriptor{};
         std::uint64_t previewMaterialGeneration{};
+        PreviewDirtyRange previewMaterialDirty;
         PreviewAoResource previewAo;
         PreviewHdrResource previewHdr;
         VkBuffer previewIndirectBuffer{};
@@ -286,6 +306,22 @@ class VulkanDevice final : public Device {
         bool colorInitialized{};
     };
 
+    void retirePreviewResource(std::function<void()> destroy);
+    void collectPreviewRetirements();
+    struct PendingPreviewDeletion {
+        std::uint64_t timeline;
+        std::uint64_t computeTimeline;
+        std::function<void()> destroy;
+    };
+    std::vector<PendingPreviewDeletion> pendingPreviewDeletions_;
+    bool destroying_{};
+    void updatePreviewQualityBudget();
+    void ensurePreviewShadowResource();
+    VulkanOptions options_;
+    PreviewQualitySettings previewQuality_;
+    std::uint32_t previewShadowSize_{};
+    bool memoryBudgetSupported_{};
+    std::uint32_t budgetFrameCounter_{};
     void createInstance(bool validation);
     void createSurface();
     void selectPhysicalDevice();
@@ -306,6 +342,7 @@ class VulkanDevice final : public Device {
     void createNativeEnvironmentPipelines();
     void destroyNativeEnvironmentPipelines() noexcept;
     void createPreviewDescriptors();
+    void updatePreviewImageDescriptors(std::span<const VkWriteDescriptorSet> writes);
     void destroyPreviewDescriptors();
     void destroyPreviewTextures();
     void destroyPreviewBackground();
@@ -349,6 +386,8 @@ class VulkanDevice final : public Device {
     [[nodiscard]] PreviewRenderPlan buildPreviewRenderPlan(bool includeUi) const noexcept;
     void recordPreviewModel(VkCommandBuffer command, const PreviewPushConstants& constants,
                             const PreviewRenderPlan& plan);
+    void recordPreviewDeform(VkCommandBuffer command, Frame& frame);
+    void destroyPreviewDeformBuffers(Frame& frame);
     void recordPreviewShadowPass(VkCommandBuffer command, Frame& frame);
     void recordPreviewAoPass(VkCommandBuffer command, Frame& frame, VkExtent2D extent);
     void ensurePreviewAoResources(Frame& frame, VkExtent2D extent);
@@ -483,8 +522,12 @@ class VulkanDevice final : public Device {
     VmaAllocator allocator_{};
 #endif
     std::uint32_t queueFamily_{};
+    std::uint32_t computeQueueFamily_{};
     std::uint32_t timestampValidBits_{};
     VkQueue queue_{};
+    VkQueue computeQueue_{};
+    VkSemaphore computeTimelineSemaphore_{};
+    std::uint64_t nextComputeTimelineValue_{};
     VkSemaphore timelineSemaphore_{};
     std::uint64_t nextTimelineValue_{};
     std::unique_ptr<VulkanUploadContext> uploadContext_;
@@ -552,7 +595,6 @@ class VulkanDevice final : public Device {
     handles::TextureHandle previewFallbackAoTexture_{};
     VkSampler previewShadowSampler_{};
     VkSampler previewAoSampler_{};
-    VkSampler previewTonemapSampler_{};
     DepthResource previewShadowDepth_{};
     bool previewEnvironmentEnabled_{};
     VkBuffer previewEnvironmentBuffer_{};
@@ -582,6 +624,12 @@ class VulkanDevice final : public Device {
     std::uint64_t previewGpuNanoseconds_{};
     VkBuffer previewStaticVertexBuffer_{};
     VkDeviceMemory previewStaticVertexMemory_{};
+    VkDescriptorSetLayout previewDeformDescriptorLayout_{};
+    VkPipelineLayout previewDeformPipelineLayout_{};
+    VkPipeline previewDeformPipeline_{};
+    VkFormat previewAoFormat_{VK_FORMAT_R16_SFLOAT};
+    VkFormat previewNormalFormat_{VK_FORMAT_R16G16_SNORM};
+    bool storageImageExtendedFormats_{};
     VkDeviceSize previewVertexSize_{};
     VkDeviceSize previewVertexCapacity_{};
     std::uint64_t previewVertexGeneration_{};
@@ -617,7 +665,19 @@ class VulkanDevice final : public Device {
     VkExtent2D previewBackgroundExtent_{};
     VkDeviceSize previewBackgroundByteSize_{};
     bool previewBackgroundInitialized_{};
+    std::uint64_t previewBackgroundGeneration_{};
     PreviewGpuScene previewGpuScene_;
+    struct ReadbackSlot {
+        VkBuffer buffer{};
+        VkDeviceMemory memory{};
+        void* mapped{};
+        VkDeviceSize capacity{};
+        VkExtent2D extent{};
+        std::uint64_t readyValue{};
+        bool everWritten{}; // GPU access history survives collection of the ticket.
+        VkFormat format{};
+    };
+    std::array<ReadbackSlot, 3> readbackSlots_{};
     OffscreenResource offscreen_;
     std::array<ViewportResource, 2> viewportResources_{};
     bool viewportRequested_{};

@@ -1,0 +1,17 @@
+name: Set up Vulkan validation
+description: Install a pinned LunarG validation layer with Synchronization2 semaphore fixes
+runs:
+  using: composite
+  steps:
+    - name: Install validation layer
+      shell: bash
+      run: |
+        # Ubuntu 24.04's VVL 1.3.275 predates the ALL_COMMANDS layout-transition
+        # signal-scope fix: KhronosGroup/Vulkan-ValidationLayers#7480.
+        # Install only validation layers; keep the distribution's Mesa and loader.
+        package_file="$RUNNER_TEMP/vulkan-validationlayers-1.4.313.deb"
+        package_url='https://packages.lunarg.com/vulkan/pool/main/v/vulkan-validationlayers/vulkan-validationlayers_1.4.313.0~rc2-1lunarg24.04-1_amd64.deb'
+        curl --fail --location --retry 3 --silent --show-error "$package_url" -o "$package_file"
+        printf '%s  %s\n' 'b100bfafac3df98c5d8ef5a572b423bcd9ebf3fab963e2e68957f4bf6f2423f0' "$package_file" | sha256sum --check
+        sudo apt-get install --no-install-recommends -y "$package_file"
+        dpkg-query --show vulkan-validationlayers

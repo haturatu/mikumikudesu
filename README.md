@@ -45,8 +45,8 @@ OFF時は読み込んだ背景画像があれば画像、なければ白い背�
 
 ### Previewの画質設定
 
-PreviewはRT機能を使わず、方向光の2048²シャドウマップ、PCF、GGX直接反射、SH拡散IBL、
-GGXでプリフィルタした環境キューブ、深度・法線プリパス、半解像度SSAO、RGBA16F合成と
+PreviewはRT機能を使わず、方向光の1024²/2048²シャドウマップ、comparison PCF、GGX直接反射、SH拡散IBL、
+GGXでプリフィルタした環境キューブ、圧縮法線プリパス、scalar SSAO、RGBA16F合成と
 ACESトーンマップを使用します。BRDF積分にはLUTの代わりに近似式を使います。
 HDRIのプリフィルタは画像の読み込みまたは更新時に計算します。GPUへ送る照明HDRIは
 最大2048×1024、環境キューブは最大512²で、元画像を線形色の面積平均で縮小します。
@@ -59,7 +59,11 @@ PMX、Skin、Hair、Cloth、Metal、Plastic、Glassを選べます。これら�
 
 画像連番出力ではPreview render scaleを1x、1.33x、2xから選び、Samplesを増やすと
 Haltonジッタを用いてRGBA16Fの結果を平均します。平均後に出力解像度へ縮小し、ACESで表示用画像へ
-変換します。リアルタイム表示では3×3 PCF、静止画出力では7×7 PCFを使用します。
+変換します。APU profileではhardware PCF 1 tap、highでは3×3、静止画出力では7×7 comparison PCFを使用します。
+
+`--preview-quality auto|apu|high`で画質を選べます。既定のautoはintegrated GPUとmemory budgetを考慮します。
+Morph/skinningはframeごとのcompute結果を共有し、動画出力は3本のreadback ringを使います。
+Present mode、experimental async compute、HDRI cacheと測定方法は[Preview performance](docs/preview-performance.md)を参照してください。
 
 画像連番出力はOpenEXRが利用できるbuildではEXRをエンコードし、利用できない場合は従来どおり
 PNG/PPMを使います。Subayai/BDPTが選択されている場合は、viewport、offscreen render、画像連番出力が
@@ -222,6 +226,9 @@ because profile data is workload-specific and must not be committed.
 
 ```text
 --renderer preview|subayai|bdpt  要求renderer（利用不可なら理由を表示してPreview）
+--preview-quality auto|apu|high  Preview quality profile（既定: auto）
+--present fifo|fifo-relaxed|mailbox|immediate  Present mode（既定: fifo）
+--async-compute                 experimental Preview deform offload（既定: 無効）
 --asset PATH                     起動時asset。複数指定可
 --save-project PATH              読み込んだassetと状態を.dayoへ保存
 --probe                          GPU featureをJSONで出力して終了

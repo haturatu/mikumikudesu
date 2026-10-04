@@ -92,7 +92,6 @@ jobs:
             libvulkan-dev \
             mesa-vulkan-drivers \
             ninja-build \
-            vulkan-validationlayers \
             xvfb
 
       - name: Install DXC for upstream oracle
@@ -109,6 +108,9 @@ jobs:
           echo "$RUNNER_TEMP/dxc/bin" >> "$GITHUB_PATH"
           echo "LD_LIBRARY_PATH=$RUNNER_TEMP/dxc/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
           "$RUNNER_TEMP/dxc/bin/dxc" --version
+
+      - name: Set up Vulkan validation
+        uses: ./.github/actions/setup-vulkan-validation
 
       - name: Restore or build SDL3
         uses: ./.github/actions/setup-sdl3
@@ -203,8 +205,10 @@ jobs:
             mesa-vulkan-drivers \
             ninja-build \
             nlohmann-json3-dev \
-            vulkan-validationlayers \
             xvfb
+
+      - name: Set up Vulkan validation
+        uses: ./.github/actions/setup-vulkan-validation
 
       - name: Restore or build SDL3
         uses: ./.github/actions/setup-sdl3

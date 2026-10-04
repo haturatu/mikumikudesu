@@ -1,5 +1,6 @@
 #include "core/image.hpp"
 #include "graphics/device.hpp"
+#include "graphics/environment_cache.hpp"
 #include "graphics/handles.hpp"
 #include "graphics/render_graph.hpp"
 #include "graphics/resource.hpp"
@@ -717,6 +718,33 @@ int main() {
             retireThrew = true;
         }
         ok &= check(retireThrew, "mock texture retirement reports unimplemented");
+    }
+
+    {
+        using namespace dayo::graphics;
+        const auto directory = std::filesystem::temp_directory_path() /
+                               ("dayo-environment-cache-test-" + dayo::core::toHex(std::random_device{}()));
+        const auto path = directory / "test.bin";
+        std::vector<std::uint8_t> bytes(environmentCacheBytes(2, 2), 42);
+        writeEnvironmentCache(path, 2, 2, bytes);
+        ok &=
+            check(readEnvironmentCache(path, 2, 2) == bytes, "environment cache preserves every cubemap face and mip");
+        ok &= check(readEnvironmentCache(path, 4, 3).empty(), "environment cache rejects incompatible dimensions");
+        {
+            std::ofstream corrupt(path, std::ios::binary | std::ios::app);
+            corrupt.put('x');
+        }
+        ok &= check(readEnvironmentCache(path, 2, 2).empty(), "environment cache rejects trailing bytes");
+        writeEnvironmentCache(path, 2, 2, bytes);
+        {
+            std::fstream corrupt(path, std::ios::binary | std::ios::in | std::ios::out);
+            corrupt.seekp(24);
+            corrupt.put('x');
+        }
+        ok &= check(readEnvironmentCache(path, 2, 2).empty(), "environment cache rejects checksum mismatch");
+        std::filesystem::resize_file(path, 10);
+        ok &= check(readEnvironmentCache(path, 2, 2).empty(), "environment cache rejects truncated headers");
+        std::filesystem::remove_all(directory);
     }
 
     if (!ok)

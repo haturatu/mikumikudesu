@@ -153,6 +153,12 @@ bool imagesMatch(const dayo::core::ImageRgba8& left, const dayo::core::ImageRgba
 }
 
 bool createsD24S8StencilPipeline(dayo::graphics::VulkanDevice& device) {
+    if (!device.supportsTextureFormat(dayo::graphics::PixelFormat::depth24Stencil8,
+                                      dayo::graphics::ResourceUsage::depthWrite)) {
+        std::cout << "SKIP: GPU does not support D24S8 depth attachments\n";
+        return true;
+    }
+
     dayo::fx::FxShaderCompiler compiler;
     if (!compiler.available())
         return true;
@@ -224,9 +230,12 @@ bool typedVulkanFormatRoundTrips(dayo::graphics::VulkanDevice& device) {
             std::vector<std::uint8_t> input(dayo::graphics::pixelFormatByteSize(format) * 4U);
             for (std::size_t index = 0; index < input.size(); ++index)
                 input[index] = static_cast<std::uint8_t>((index * 37U + 11U) & 0xffU);
-            device.uploadTextureEx(texture, input, 0, 0);
-            if (device.readbackTextureEx(texture, 0, 0) != input)
-                throw std::runtime_error("upload/readback payload mismatch");
+            for (unsigned cycle = 0; cycle < 4; ++cycle) {
+                input.front() = static_cast<std::uint8_t>(cycle * 19U + 3U);
+                device.uploadTextureEx(texture, input, 0, 0);
+                if (device.readbackTextureEx(texture, 0, 0) != input)
+                    throw std::runtime_error("repeated upload/readback payload mismatch");
+            }
             device.destroyTextureEx(texture);
         } catch (const std::exception& exception) {
             if (texture.valid()) {
@@ -240,14 +249,34 @@ bool typedVulkanFormatRoundTrips(dayo::graphics::VulkanDevice& device) {
             return false;
         }
     }
+    // Buffer readback must not write into staging subsequently used by texture uploads.
+    dayo::graphics::handles::BufferHandle buffer;
+    try {
+        buffer = device.createBufferEx(
+            {.size = 64,
+             .usage = dayo::graphics::ResourceUsage::transferSrc | dayo::graphics::ResourceUsage::transferDst});
+        std::vector<std::byte> input(64, std::byte{0x37});
+        for (unsigned cycle = 0; cycle < 4; ++cycle) {
+            input.front() = static_cast<std::byte>(cycle + 1);
+            device.uploadBufferEx(buffer, input);
+            if (device.readbackBufferEx(buffer, 0, input.size()) != input)
+                throw std::runtime_error("repeated buffer upload/readback payload mismatch");
+        }
+        device.destroyBufferEx(buffer);
+    } catch (const std::exception& exception) {
+        if (buffer.valid())
+            device.destroyBufferEx(buffer);
+        std::cerr << "FAIL: Vulkan buffer upload/readback round trip: " << exception.what() << '\n';
+        return false;
+    }
     return true;
 }
 
 bool dedicatedStagingReadback(dayo::graphics::VulkanDevice& device) {
     dayo::graphics::handles::TextureHandle texture;
     try {
-        // Exceed the 64 MiB staging ring so the returned slice owns a
-        // dedicated mapping that must survive the GPU completion wait.
+        // Exceed the 64 MiB upload ring and verify the separate readback
+        // allocation survives the GPU completion wait.
         const dayo::graphics::TextureResourceDesc desc{
             .dimension = dayo::graphics::TextureDimension::d2,
             .extent = {4097, 4096, 1},
@@ -1439,9 +1468,77 @@ bool recordsNativeOffscreenOutput(dayo::graphics::VulkanDevice& device) {
     return called && outputMatches && mipClearMatches;
 }
 
+bool pipelinedReadbackPreservesFrames(dayo::graphics::VulkanDevice& device) {
+    auto vertices = makeFlatTriangle();
+    const std::array<std::uint32_t, 3> indices{0, 2, 1};
+    device.uploadPreviewMesh(vertices, indices);
+    device.uploadPreviewTextures({});
+    std::array<PreviewMaterial, 1> materials{};
+    std::fill_n(materials[0].ambient, 3, 1.0F);
+    const std::array<PreviewDraw, 1> draws{{{0, 3, 0}}};
+    device.updatePreviewDraws(draws);
+    device.uploadPreviewMorphDeltas({});
+    device.updatePreviewMorphWeights({});
+    dayo::graphics::PreviewScene scene;
+    scene.backgroundEnabled = false;
+    scene.cameraDistance = 3.0F;
+    device.updatePreviewScene(scene);
+    std::array<dayo::core::ImageRgba8, 3> expected;
+    const auto update = [&](std::size_t i) {
+        materials[0].diffuse[0] = i == 0 ? 1.0F : 0.0F;
+        materials[0].diffuse[1] = i == 1 ? 1.0F : 0.0F;
+        materials[0].diffuse[2] = i == 2 ? 1.0F : 0.0F;
+        device.updatePreviewMaterials(materials);
+    };
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        update(i);
+        expected[i] = device.renderToImage({65, 63});
+    }
+    // Synchronous callers repeatedly recycle the first slot. Preserve its GPU write history.
+    for (std::size_t cycle = 0; cycle < 12; ++cycle) {
+        const auto index = cycle % expected.size();
+        update(index);
+        if (!imagesMatch(expected[index], device.renderToImage({65, 63})))
+            return false;
+    }
+    std::array<std::uint64_t, 3> tickets{};
+    for (std::size_t i = 0; i < tickets.size(); ++i) {
+        update(i);
+        tickets[i] = device.enqueueRenderToImage({65, 63});
+    }
+    bool rejectedFull = false;
+    try {
+        static_cast<void>(device.enqueueRenderToImage({65, 63}));
+    } catch (const std::logic_error&) {
+        rejectedFull = true;
+    }
+    // Replace a mesh and grow buffers while old frames remain outstanding.
+    device.uploadPreviewMesh(vertices, indices);
+    const std::array<PreviewBoneTransform, 32> bones{};
+    device.updatePreviewBones(bones);
+    const std::array<float, 32> weights{};
+    device.updatePreviewMorphWeights(weights);
+    bool ok = rejectedFull;
+    for (std::size_t i = 0; i < tickets.size(); ++i)
+        ok &= imagesMatch(expected[i], device.collectRenderedImage(tickets[i]).value());
+    try {
+        static_cast<void>(device.collectRenderedImage(tickets[0]));
+        ok = false;
+    } catch (const std::invalid_argument&) {
+    }
+    const auto small = device.enqueueRenderToImage({17, 19});
+    const auto large = device.enqueueRenderToImage({71, 67});
+    const auto smallImage = device.collectRenderedImage(small).value();
+    const auto largeImage = device.collectRenderedImage(large).value();
+    ok &= smallImage.width == 17 && smallImage.height == 19 && largeImage.width == 71 && largeImage.height == 67;
+    if (!ok)
+        std::cerr << "FAIL: readback ring lost frame state, dimensions, or ticket ownership\n";
+    return ok;
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
 #if DAYO_HAS_IMGUI
     ImGui::CreateContext();
     dayo::ui::applyEditorTheme(2.0F);
@@ -1461,7 +1558,14 @@ int main() {
 #endif
     try {
         const auto window = dayo::platform::createWindow({"preview shader test", 64, 64, true});
-        dayo::graphics::VulkanDevice device(*window, true);
+        dayo::graphics::VulkanOptions options;
+        for (int i = 1; i < argc; ++i) {
+            if (std::string_view(argv[i]) == "--async-compute")
+                options.asyncCompute = true;
+            if (std::string_view(argv[i]) == "--high")
+                options.quality = dayo::graphics::PreviewQuality::high;
+        }
+        dayo::graphics::VulkanDevice device(*window, true, options);
         dayo::graphics::PreviewScene scene;
         scene.cameraDistance = 3.0F;
         scene.backgroundEnabled = false;
@@ -1472,6 +1576,8 @@ int main() {
             std::cerr << "FAIL: native environment compute pipelines were not initialized\n";
             return 1;
         }
+        if (!pipelinedReadbackPreservesFrames(device))
+            return 1;
         if (!generatedEnvironmentDirectionsAndExposureAgree(device))
             return 1;
         if (!recordsNativeOffscreenOutput(device)) {

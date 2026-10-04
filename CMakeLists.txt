@@ -173,6 +173,7 @@ add_library(
   src/core/fx_debug.cpp
   src/core/fx/fx_size.cpp
   src/core/fx/fx_symbol.cpp
+  src/core/cache_key.cpp
   src/core/image.cpp
   src/core/image_hdr.cpp
   src/core/audio_export.cpp
@@ -360,10 +361,45 @@ endif()
 target_compile_definitions(dayo_core PUBLIC DAYO_HAS_BULLET=${DAYO_HAS_BULLET})
 
 include(cmake/CompileHlsl.cmake)
-dayo_compile_hlsl(DAYO_PREVIEW_VERTEX_SPV SOURCE shaders/preview.hlsl ENTRY VS PROFILE vs_6_6 STAGE vert)
-dayo_compile_hlsl(DAYO_PREVIEW_EDGE_VERTEX_SPV SOURCE shaders/preview.hlsl ENTRY EdgeVS PROFILE vs_6_6 STAGE vert)
-dayo_compile_hlsl(DAYO_PREVIEW_SHADOW_VERTEX_SPV SOURCE shaders/preview.hlsl ENTRY ShadowVS PROFILE vs_6_6 STAGE vert)
-dayo_compile_hlsl(DAYO_PREVIEW_SHADOW_FRAGMENT_SPV SOURCE shaders/preview.hlsl ENTRY ShadowPS PROFILE ps_6_6 STAGE frag)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_DEFORM_SPV
+  SOURCE shaders/preview_deform.hlsl
+  ENTRY PreviewDeform
+  PROFILE cs_6_6
+  STAGE comp
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_VERTEX_SPV
+  SOURCE shaders/preview.hlsl
+  ENTRY VS
+  PROFILE vs_6_6
+  STAGE vert
+  DEPENDS shaders/preview_normal.hlsli
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_EDGE_VERTEX_SPV
+  SOURCE shaders/preview.hlsl
+  ENTRY EdgeVS
+  PROFILE vs_6_6
+  STAGE vert
+  DEPENDS shaders/preview_normal.hlsli
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_SHADOW_VERTEX_SPV
+  SOURCE shaders/preview.hlsl
+  ENTRY ShadowVS
+  PROFILE vs_6_6
+  STAGE vert
+  DEPENDS shaders/preview_normal.hlsli
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_SHADOW_FRAGMENT_SPV
+  SOURCE shaders/preview.hlsl
+  ENTRY ShadowPS
+  PROFILE ps_6_6
+  STAGE frag
+  DEPENDS shaders/preview_normal.hlsli
+)
 dayo_compile_hlsl(
   DAYO_PREVIEW_BACKGROUND_VERTEX_SPV
   SOURCE shaders/preview_background.hlsl
@@ -378,9 +414,62 @@ dayo_compile_hlsl(
   PROFILE ps_6_6
   STAGE frag
 )
-dayo_compile_hlsl(DAYO_PREVIEW_NORMAL_FRAGMENT_SPV SOURCE shaders/preview.hlsl ENTRY NormalPS PROFILE ps_6_6 STAGE frag)
-dayo_compile_hlsl(DAYO_PREVIEW_AO_SPV SOURCE shaders/preview_ao.hlsl ENTRY ComputeAO PROFILE cs_6_6 STAGE comp)
-dayo_compile_hlsl(DAYO_PREVIEW_AO_BLUR_SPV SOURCE shaders/preview_ao.hlsl ENTRY BlurAO PROFILE cs_6_6 STAGE comp)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_NORMAL_FRAGMENT_SPV
+  SOURCE shaders/preview.hlsl
+  ENTRY NormalPS
+  PROFILE ps_6_6
+  STAGE frag
+  DEPENDS shaders/preview_normal.hlsli
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_AO_SPV
+  SOURCE shaders/preview_ao.hlsl
+  ENTRY ComputeAO
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS shaders/preview_normal.hlsli
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_AO_BLUR_SPV
+  SOURCE shaders/preview_ao.hlsl
+  ENTRY BlurAO
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS shaders/preview_normal.hlsli
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_AO16_SPV
+  SOURCE shaders/preview_ao16.hlsl
+  ENTRY ComputeAO
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS shaders/preview_ao.hlsl shaders/preview_normal.hlsli
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_AO16_BLUR_SPV
+  SOURCE shaders/preview_ao16.hlsl
+  ENTRY BlurAO
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS shaders/preview_ao.hlsl shaders/preview_normal.hlsli
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_AO32_SPV
+  SOURCE shaders/preview_ao32.hlsl
+  ENTRY ComputeAO
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS shaders/preview_ao.hlsl shaders/preview_normal.hlsli
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_AO32_BLUR_SPV
+  SOURCE shaders/preview_ao32.hlsl
+  ENTRY BlurAO
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS shaders/preview_ao.hlsl shaders/preview_normal.hlsli
+)
 dayo_compile_hlsl(
   DAYO_PREVIEW_TONEMAP_VERTEX_SPV
   SOURCE shaders/preview_tonemap.hlsl
@@ -395,7 +484,14 @@ dayo_compile_hlsl(
   PROFILE ps_6_6
   STAGE frag
 )
-dayo_compile_hlsl(DAYO_PREVIEW_FRAGMENT_SPV SOURCE shaders/preview.hlsl ENTRY PS PROFILE ps_6_6 STAGE frag)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_FRAGMENT_SPV
+  SOURCE shaders/preview.hlsl
+  ENTRY PS
+  PROFILE ps_6_6
+  STAGE frag
+  DEPENDS shaders/preview_normal.hlsli
+)
 dayo_compile_hlsl(DAYO_NATIVE_OUTPUT_VERTEX_SPV SOURCE shaders/native_output.hlsl ENTRY VS PROFILE vs_6_6 STAGE vert)
 dayo_compile_hlsl(DAYO_NATIVE_OUTPUT_FRAGMENT_SPV SOURCE shaders/native_output.hlsl ENTRY PS PROFILE ps_6_6 STAGE frag)
 # Recompile the adapter when the pinned upstream algorithms or math change.
@@ -435,6 +531,7 @@ add_custom_target(
   ALL
   DEPENDS
     ${DAYO_PREVIEW_VERTEX_SPV}
+    ${DAYO_PREVIEW_DEFORM_SPV}
     ${DAYO_PREVIEW_EDGE_VERTEX_SPV}
     ${DAYO_PREVIEW_SHADOW_VERTEX_SPV}
     ${DAYO_PREVIEW_SHADOW_FRAGMENT_SPV}
@@ -443,6 +540,10 @@ add_custom_target(
     ${DAYO_PREVIEW_NORMAL_FRAGMENT_SPV}
     ${DAYO_PREVIEW_AO_SPV}
     ${DAYO_PREVIEW_AO_BLUR_SPV}
+    ${DAYO_PREVIEW_AO16_SPV}
+    ${DAYO_PREVIEW_AO16_BLUR_SPV}
+    ${DAYO_PREVIEW_AO32_SPV}
+    ${DAYO_PREVIEW_AO32_BLUR_SPV}
     ${DAYO_PREVIEW_TONEMAP_VERTEX_SPV}
     ${DAYO_PREVIEW_TONEMAP_FRAGMENT_SPV}
     ${DAYO_PREVIEW_FRAGMENT_SPV}
@@ -453,10 +554,19 @@ add_custom_target(
     ${DAYO_NATIVE_ENVIRONMENT_PREFILTER_SPV}
 )
 add_dependencies(dayo_graphics dayo_shaders)
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/native_environment_equirect.hlsl" DAYO_ENV_EQUIRECT_DIGEST)
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/native_environment_prefilter.hlsl" DAYO_ENV_PREFILTER_DIGEST)
+set_property(
+  DIRECTORY
+  APPEND
+  PROPERTY CMAKE_CONFIGURE_DEPENDS shaders/native_environment_equirect.hlsl shaders/native_environment_prefilter.hlsl
+)
 target_compile_definitions(
   dayo_graphics
   PRIVATE
+    DAYO_ENVIRONMENT_CACHE_VERSION="${DAYO_ENV_EQUIRECT_DIGEST}-${DAYO_ENV_PREFILTER_DIGEST}-samples-1-64-48-32-16-v1"
     DAYO_PREVIEW_VERTEX_SPV="${DAYO_PREVIEW_VERTEX_SPV}"
+    DAYO_PREVIEW_DEFORM_SPV="${DAYO_PREVIEW_DEFORM_SPV}"
     DAYO_PREVIEW_EDGE_VERTEX_SPV="${DAYO_PREVIEW_EDGE_VERTEX_SPV}"
     DAYO_PREVIEW_SHADOW_VERTEX_SPV="${DAYO_PREVIEW_SHADOW_VERTEX_SPV}"
     DAYO_PREVIEW_SHADOW_FRAGMENT_SPV="${DAYO_PREVIEW_SHADOW_FRAGMENT_SPV}"
@@ -465,6 +575,10 @@ target_compile_definitions(
     DAYO_PREVIEW_NORMAL_FRAGMENT_SPV="${DAYO_PREVIEW_NORMAL_FRAGMENT_SPV}"
     DAYO_PREVIEW_AO_SPV="${DAYO_PREVIEW_AO_SPV}"
     DAYO_PREVIEW_AO_BLUR_SPV="${DAYO_PREVIEW_AO_BLUR_SPV}"
+    DAYO_PREVIEW_AO16_SPV="${DAYO_PREVIEW_AO16_SPV}"
+    DAYO_PREVIEW_AO16_BLUR_SPV="${DAYO_PREVIEW_AO16_BLUR_SPV}"
+    DAYO_PREVIEW_AO32_SPV="${DAYO_PREVIEW_AO32_SPV}"
+    DAYO_PREVIEW_AO32_BLUR_SPV="${DAYO_PREVIEW_AO32_BLUR_SPV}"
     DAYO_PREVIEW_TONEMAP_VERTEX_SPV="${DAYO_PREVIEW_TONEMAP_VERTEX_SPV}"
     DAYO_PREVIEW_TONEMAP_FRAGMENT_SPV="${DAYO_PREVIEW_TONEMAP_FRAGMENT_SPV}"
     DAYO_PREVIEW_FRAGMENT_SPV="${DAYO_PREVIEW_FRAGMENT_SPV}"
@@ -959,7 +1073,14 @@ if(BUILD_TESTING)
   add_test(NAME vulkan_probe COMMAND mikumikudesu --probe --hidden)
   add_test(NAME preview_render COMMAND dayo_preview_tests)
   set_tests_properties(vulkan_probe PROPERTIES TIMEOUT 60)
-  set_tests_properties(preview_render PROPERTIES TIMEOUT 20)
+  add_test(NAME preview_render_high COMMAND dayo_preview_tests --high)
+  add_test(NAME preview_render_async COMMAND dayo_preview_tests --async-compute)
+  set_tests_properties(
+    preview_render
+    preview_render_high
+    preview_render_async
+    PROPERTIES TIMEOUT 40 RUN_SERIAL TRUE ENVIRONMENT "VK_LAYER_VALIDATE_SYNC=1"
+  )
   if(DAYO_HAS_MEDIA)
     add_test(
       NAME audio_export_cli
