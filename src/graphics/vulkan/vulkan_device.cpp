@@ -971,8 +971,7 @@ void VulkanDevice::queryCapabilities() {
     }
     if (!supports(previewAoFormat_, aoFeatures))
         throw std::runtime_error("GPU lacks a sampled, linearly filtered scalar AO storage format");
-    const auto normalFeatures = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-                                VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    const auto normalFeatures = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
     if (!supports(previewNormalFormat_, normalFeatures))
         previewNormalFormat_ = VK_FORMAT_R16G16_SFLOAT;
     if (!supports(previewNormalFormat_, normalFeatures))
@@ -7246,15 +7245,50 @@ void VulkanDevice::uploadTextureEx(handles::TextureHandle texture, std::span<con
 
 std::vector<std::uint8_t> VulkanDevice::readbackTextureEx(handles::TextureHandle texture, std::uint32_t mipLevel,
                                                           std::uint32_t arrayLayer) {
-    const auto it = typedTextures_.find(texture);
-    if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(texture))
-        throw std::invalid_argument("typed texture readback references a stale texture handle");
-    const auto& typed = it->second;
-    if (mipLevel >= typed.desc.mipLevels || arrayLayer >= imageLayerCount(typed.desc))
-        throw std::out_of_range("typed texture readback subresource is out of range");
-    if ((toBits(typed.desc.usage) & toBits(ResourceUsage::transferSrc)) == 0U)
-        throw std::invalid_argument("typed texture readback requires transfer-source usage");
-    const auto expected = mipBytes(typed.desc, mipLevel);
+    return readbackTextureSubresources(std::array{TextureReadbackRequest{texture, mipLevel, arrayLayer}});
+}
+
+std::vector<std::uint8_t> VulkanDevice::readbackTextureSubresources(std::span<const TextureReadbackRequest> requests) {
+    if (requests.empty())
+        return {};
+    struct Copy {
+        TextureReadbackRequest request;
+        VkBufferImageCopy region;
+        std::size_t size;
+    };
+    std::vector<Copy> copies;
+    copies.reserve(requests.size());
+    std::size_t stagingSize = 0, packedSize = 0;
+    for (const auto& request : requests) {
+        const auto it = typedTextures_.find(request.texture);
+        if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(request.texture))
+            throw std::invalid_argument("typed texture readback references a stale texture handle");
+        const auto& typed = it->second;
+        if (request.mipLevel >= typed.desc.mipLevels || request.arrayLayer >= imageLayerCount(typed.desc))
+            throw std::out_of_range("typed texture readback subresource is out of range");
+        if ((toBits(typed.desc.usage) & toBits(ResourceUsage::transferSrc)) == 0U)
+            throw std::invalid_argument("typed texture readback requires transfer-source usage");
+        const auto size = mipBytes(typed.desc, request.mipLevel);
+        const auto alignment = std::max<std::size_t>(4, pixelFormatByteSize(typed.desc.format));
+        const auto padding = (alignment - stagingSize % alignment) % alignment;
+        const auto limit = std::numeric_limits<std::size_t>::max();
+        if (stagingSize > limit - padding || size > limit - (stagingSize + padding) || size > limit - packedSize)
+            throw std::overflow_error("texture readback batch size overflow");
+        stagingSize += padding;
+        copies.push_back(
+            {request,
+             {.bufferOffset = stagingSize,
+              .bufferRowLength = 0,
+              .bufferImageHeight = 0,
+              .imageSubresource = {isDepthFormat(typed.desc.format) ? VkImageAspectFlags{VK_IMAGE_ASPECT_DEPTH_BIT}
+                                                                    : imageAspect(typed.desc.format),
+                                   request.mipLevel, request.arrayLayer, 1},
+              .imageOffset = {0, 0, 0},
+              .imageExtent = mipExtent(typed.desc, request.mipLevel)},
+             size});
+        stagingSize += size;
+        packedSize += size;
+    }
     if (uploadContext_ == nullptr)
         throw std::logic_error("Vulkan upload context is unavailable");
     VkBuffer buffer = VK_NULL_HANDLE;
@@ -7272,7 +7306,7 @@ std::vector<std::uint8_t> VulkanDevice::readbackTextureEx(handles::TextureHandle
         // Texture/cache readback is infrequent. Keep GPU writes out of the upload-only ring.
         const VkBufferCreateInfo bufferInfo{
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            .size = expected,
+            .size = stagingSize,
             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         };
@@ -7287,22 +7321,18 @@ std::vector<std::uint8_t> VulkanDevice::readbackTextureEx(handles::TextureHandle
         };
         check(vkAllocateMemory(device_, &allocation, nullptr, &memory), "allocate texture readback memory");
         check(vkBindBufferMemory(device_, buffer, memory, 0), "bind texture readback memory");
-        check(vkMapMemory(device_, memory, 0, expected, 0, &mapped), "map texture readback memory");
+        check(vkMapMemory(device_, memory, 0, stagingSize, 0, &mapped), "map texture readback memory");
         uploadContext_->begin();
         const auto commandBuffer = uploadContext_->commandBuffer();
-        recordTextureTransition(commandBuffer, texture, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-        const VkBufferImageCopy region{
-            .bufferOffset = 0,
-            .bufferRowLength = 0,
-            .bufferImageHeight = 0,
-            .imageSubresource = {isDepthFormat(typed.desc.format) ? VkImageAspectFlags{VK_IMAGE_ASPECT_DEPTH_BIT}
-                                                                  : imageAspect(typed.desc.format),
-                                 mipLevel, arrayLayer, 1},
-            .imageOffset = {0, 0, 0},
-            .imageExtent = mipExtent(typed.desc, mipLevel),
-        };
-        vkCmdCopyImageToBuffer(commandBuffer, typed.resource.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1,
-                               &region);
+        // Each mip transitions once even when several faces of it are requested.
+        for (const auto& copy : copies)
+            recordTextureTransition(commandBuffer, copy.request.texture, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                    copy.request.mipLevel, 1);
+        for (const auto& copy : copies) {
+            const auto& typed = typedTextures_.at(copy.request.texture);
+            vkCmdCopyImageToBuffer(commandBuffer, typed.resource.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1,
+                                   &copy.region);
+        }
         const VkBufferMemoryBarrier2 toHost{
             .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
             .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -7313,17 +7343,30 @@ std::vector<std::uint8_t> VulkanDevice::readbackTextureEx(handles::TextureHandle
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .buffer = buffer,
             .offset = 0,
-            .size = expected,
+            .size = stagingSize,
         };
         const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                                           .bufferMemoryBarrierCount = 1,
                                           .pBufferMemoryBarriers = &toHost};
         vkCmdPipelineBarrier2(commandBuffer, &dependency);
-        recordTextureTransition(commandBuffer, texture, typedTextureFinalLayout(typed));
+        for (const auto& copy : copies)
+            recordTextureTransition(commandBuffer, copy.request.texture,
+                                    typedTextureFinalLayout(typedTextures_.at(copy.request.texture)),
+                                    copy.request.mipLevel, 1);
         const auto signal = uploadContext_->submit();
         uploadContext_->wait(signal);
-        std::vector<std::uint8_t> result(expected);
-        std::memcpy(result.data(), mapped, expected);
+        std::vector<std::uint8_t> result(packedSize);
+        if (stagingSize == packedSize) {
+            // RGBA16F cube faces/mips are naturally aligned and need just one CPU copy.
+            std::memcpy(result.data(), mapped, packedSize);
+        } else {
+            std::size_t offset = 0;
+            for (const auto& copy : copies) {
+                std::memcpy(result.data() + offset, static_cast<const std::uint8_t*>(mapped) + copy.region.bufferOffset,
+                            copy.size);
+                offset += copy.size;
+            }
+        }
         release();
         return result;
     } catch (...) {

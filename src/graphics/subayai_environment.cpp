@@ -389,21 +389,19 @@ void NativeEnvironmentBackend::reset() noexcept {
     if (device != nullptr && hasResources) {
         if (recorded_ && !cacheHit_ && cachePath_) {
             try {
-                device->waitIdle(); // Only the first bake's cache write requires host readback.
-                std::vector<std::uint8_t> bytes;
-                bytes.reserve(environmentCacheBytes(faceSize_, mipLevels_));
+                std::vector<TextureReadbackRequest> requests;
+                requests.reserve(6U * (mipLevels_ + 1U));
                 const auto appendFaces = [&](handles::TextureHandle texture, std::uint32_t mip) {
-                    for (std::uint32_t face = 0; face < 6; ++face) {
-                        const auto pixels = device->readbackTextureEx(texture, mip, face);
-                        bytes.insert(bytes.end(), pixels.begin(), pixels.end());
-                    }
+                    for (std::uint32_t face = 0; face < 6; ++face)
+                        requests.push_back({texture, mip, face});
                 };
                 appendFaces(resources_.cubemap, 0);
                 for (std::uint32_t mip = 0; mip < mipLevels_; ++mip)
                     appendFaces(resources_.prefiltered, mip);
+                const auto bytes = device->readbackTextureSubresources(requests);
                 writeEnvironmentCache(*cachePath_, faceSize_, mipLevels_, bytes);
             } catch (const std::exception& exception) {
-                log::warn("Environment cache write skipped: ", exception.what());
+                log::warn("Environment cache persistence failed: ", exception.what());
             }
         }
         for (auto set : resources_.prefilterSets) {

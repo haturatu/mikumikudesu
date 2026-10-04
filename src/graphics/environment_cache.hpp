@@ -62,9 +62,46 @@ inline std::vector<std::uint8_t> readEnvironmentCache(const std::filesystem::pat
     return bytes;
 }
 
+// Prune published hash-named entries, never active temporary files or symlinks.
+// Oldest writes go first; simultaneous writers may temporarily exceed the limits.
+inline void pruneEnvironmentCache(const std::filesystem::path& directory,
+                                  std::uintmax_t maxBytes = 512ULL * 1024 * 1024, std::size_t maxEntries = 32) {
+    struct Entry {
+        std::filesystem::path path;
+        std::filesystem::file_time_type modified;
+        std::uintmax_t size;
+    };
+    std::vector<Entry> entries;
+    std::uintmax_t totalBytes = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+        const auto name = entry.path().filename().string();
+        if (name.size() != 20 || name.substr(16) != ".bin" ||
+            !std::all_of(name.begin(), name.begin() + 16,
+                         [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }) ||
+            !std::filesystem::is_regular_file(entry.symlink_status()))
+            continue;
+        const auto size = entry.file_size();
+        entries.push_back({entry.path(), entry.last_write_time(), size});
+        totalBytes += size;
+    }
+    std::sort(entries.begin(), entries.end(), [](const Entry& left, const Entry& right) {
+        return left.modified != right.modified ? left.modified < right.modified : left.path < right.path;
+    });
+    auto remaining = entries.size();
+    for (const auto& entry : entries) {
+        if (totalBytes <= maxBytes && remaining <= maxEntries)
+            break;
+        if (std::filesystem::remove(entry.path)) {
+            totalBytes -= entry.size;
+            --remaining;
+        }
+    }
+}
+
 inline void writeEnvironmentCache(const std::filesystem::path& path, std::uint32_t faceSize, std::uint32_t mipLevels,
                                   std::span<const std::uint8_t> bytes) {
-    if (bytes.size() != environmentCacheBytes(faceSize, mipLevels))
+    if (faceSize == 0 || faceSize > 512 || mipLevels == 0 || mipLevels > 10 ||
+        bytes.size() != environmentCacheBytes(faceSize, mipLevels))
         throw std::invalid_argument("environment cache payload has the wrong size");
     std::filesystem::create_directories(path.parent_path());
     const auto temporary = path.string() + ".tmp-" + core::toHex(std::random_device{}()) + "-" +
@@ -86,6 +123,7 @@ inline void writeEnvironmentCache(const std::filesystem::path& path, std::uint32
         std::filesystem::remove(temporary);
         throw std::runtime_error("could not publish environment cache: " + error.message());
     }
+    pruneEnvironmentCache(path.parent_path());
 }
 
 } // namespace dayo::graphics

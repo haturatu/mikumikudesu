@@ -25,6 +25,12 @@ namespace dayo::graphics {
 
 class IAccelerationBackend;
 
+struct TextureReadbackRequest {
+    handles::TextureHandle texture;
+    std::uint32_t mipLevel{};
+    std::uint32_t arrayLayer{};
+};
+
 enum class RendererKind { preview, subayai, bdpt };
 
 // Native dynamic resources are private to one of the backend's frame-in-flight
@@ -1042,6 +1048,16 @@ class Device {
     [[nodiscard]] virtual std::vector<std::uint8_t>
     readbackTextureEx(handles::TextureHandle, std::uint32_t /*mipLevel*/, std::uint32_t /*arrayLayer*/) {
         throw std::logic_error("Typed texture readback is not implemented by this backend");
+    }
+    // Packed payloads in request order; backend-specific staging alignment is excluded.
+    [[nodiscard]] virtual std::vector<std::uint8_t>
+    readbackTextureSubresources(std::span<const TextureReadbackRequest> requests) {
+        std::vector<std::uint8_t> bytes;
+        for (const auto& request : requests) {
+            const auto pixels = readbackTextureEx(request.texture, request.mipLevel, request.arrayLayer);
+            bytes.insert(bytes.end(), pixels.begin(), pixels.end());
+        }
+        return bytes;
     }
     virtual void uploadBufferEx(handles::BufferHandle, std::span<const std::byte>, std::size_t /*offset*/) {
         throw std::logic_error("Typed buffer upload is not implemented by this backend");

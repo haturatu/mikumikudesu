@@ -165,6 +165,8 @@ class VulkanDevice final : public Device {
                          std::uint32_t arrayLayer) override;
     [[nodiscard]] std::vector<std::uint8_t> readbackTextureEx(handles::TextureHandle texture, std::uint32_t mipLevel,
                                                               std::uint32_t arrayLayer) override;
+    [[nodiscard]] std::vector<std::uint8_t>
+    readbackTextureSubresources(std::span<const TextureReadbackRequest> requests) override;
     [[nodiscard]] handles::DescriptorSetLayoutHandle
     createDescriptorSetLayoutEx(const DescriptorSetLayoutDesc& desc) override;
     void destroyDescriptorSetLayoutEx(handles::DescriptorSetLayoutHandle handle) override;
