@@ -41,26 +41,14 @@ void PoseBinding::synchronize(const core::Scene& scene, float frame) {
     const auto* evaluated = poses(target);
     if (!model || !evaluated)
         return;
-    std::unordered_map<std::string, const core::VmdBoneKey*> precedingKeys;
-    if (model->motion)
-        for (const auto& key : model->motion->bones)
-            if (static_cast<float>(key.frame) <= frame) {
-                auto& previous = precedingKeys[key.name];
-                if (!previous || key.frame >= previous->frame)
-                    previous = &key;
-            }
     for (std::size_t index = 0; index < evaluated->size(); ++index) {
         const auto& pose = (*evaluated)[index];
         BoneEditScratch edit;
         edit.baseTranslation = pose.inputTranslation;
         edit.baseRotation = pose.inputRotation;
         edit.revert();
-        if (model->motion && index < model->model->bones.size()) {
-            const auto found = precedingKeys.find(model->model->bones[index].name);
-            if (found != precedingKeys.end())
-                edit.physics = found->second->physics;
-            edit.basePhysics = edit.physics;
-        }
+        edit.physics = pose.inputPhysics;
+        edit.basePhysics = pose.inputPhysics;
         edits_.emplace(static_cast<int>(index), edit);
     }
     if (activeBone_ < 0 && !evaluated->empty())

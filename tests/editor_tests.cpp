@@ -106,12 +106,19 @@ int main() {
         require(history.undo(scene), "undo curve");
         require(history.redo(scene), "redo curve");
         editor::PoseBinding binding;
+        auto physicsMotion = *scene.motion(1, false);
+        for (auto& key : physicsMotion.bones)
+            if (key.name == "Root")
+                key.physics = false;
+        scene.replaceMotion(std::move(physicsMotion), 1, false);
         const auto evaluated = scene.model(1)->animator->evaluate(20);
+        require(!evaluated.bones[0].inputPhysics, "animator exposes the current authoring physics flag");
         binding.observe(1, evaluated);
         binding.synchronize(scene, 20);
         binding.selectBone(0);
         auto* edit = binding.activeEdit();
         require(edit != nullptr, "bone scratch exists");
+        require(!edit->physics, "scratch loads sampled inputPhysics without re-sampling motion keys");
         edit->translation[1] = 3;
         edit->modified = true;
         binding.synchronize(scene, 20);
@@ -119,12 +126,21 @@ int main() {
         require(binding.overrides(1, 21, scene.motionRevision()).empty(),
                 "edits cannot leak into another animation frame");
         require(binding.overrides(1, 20, scene.motionRevision()).size() == 1, "modified bone becomes live override");
+        require(!binding.overrides(1, 20, scene.motionRevision())[0].physics,
+                "position-only editing preserves disabled key physics in the live override");
+        binding.setPhysicsSelected(true);
         binding.revertSelected();
         require(binding.overrides(1, 20, scene.motionRevision()).empty(), "revert removes preview override");
+        require(!binding.activeEdit()->physics, "Revert restores the sampled physics flag");
         binding.initializeSelected();
         binding.registerBones(session, 20);
         session.flushOperations();
         require(history.undoNames().front() == "Register bone keys", "register is undoable");
+        const auto registeredPhysics = core::toMotionDocument(*scene.motion(1, false));
+        const auto registeredBone = std::ranges::find_if(
+            registeredPhysics.bones, [](const auto& key) { return key.name == "Root" && key.frame == 20; });
+        require(registeredBone != registeredPhysics.bones.end() && !registeredBone->physics,
+                "Register preserves the sampled disabled physics flag");
         core::VpdPose pose;
         pose.bones.push_back({"Root", {4, 0, 0}});
         pose.bones.push_back({"Child", {0, 2, 0}});

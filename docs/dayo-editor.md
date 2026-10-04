@@ -8,7 +8,9 @@ pose binding, interpolation, model commands, and viewport editing live in
 ## Bone and morph editing
 
 Select a model and use Inspector's Bone / Morph section. Bone values are sampled
-VMD/VPD local inputs, rather than solved skinning translations. Changing model,
+VMD/VPD local inputs, rather than solved skinning translations. The Physics
+checkbox loads the animator's step-sampled `inputPhysics`; position-only edits
+and Revert preserve that flag. Changing model,
 frame, or motion revision reloads scratch values; an ordinary UI frame preserves
 unregistered input. Position/quaternion edits preview immediately through
 transient overrides. Register replaces a matching name/frame key; Revert reloads
