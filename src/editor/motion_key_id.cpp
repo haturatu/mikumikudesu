@@ -71,88 +71,64 @@ std::size_t StableIdTable::trackSize(const core::MotionDocument& document, core:
     return trackCount(document, track);
 }
 
+StableIdTable& StableIdTable::operator=(const StableIdTable& other) {
+    if (this == &other)
+        return *this;
+    fingerprints_ = other.fingerprints_;
+    order_ = other.order_;
+    indices_ = other.indices_;
+    nextId_ = std::max(nextId_, other.nextId_);
+    return *this;
+}
+StableIdTable& StableIdTable::operator=(StableIdTable&& other) noexcept {
+    if (this == &other)
+        return *this;
+    fingerprints_ = std::move(other.fingerprints_);
+    order_ = std::move(other.order_);
+    indices_ = std::move(other.indices_);
+    nextId_ = std::max(nextId_, other.nextId_);
+    return *this;
+}
 void StableIdTable::rebuild(const core::MotionDocument& document) {
-    const auto previous = fingerprints_;
-    std::vector<std::pair<MotionKeyId, Fingerprint>> old;
-    old.reserve(previous.size());
-    for (const auto& entry : previous)
-        old.emplace_back(entry);
-    std::vector<bool> used(old.size(), false);
-
-    std::unordered_map<MotionKeyId, Fingerprint, MotionKeyIdHash> rebuilt;
-    std::unordered_map<MotionKeyId, std::size_t, MotionKeyIdHash> rebuiltOrder;
-    rebuilt.reserve(document.bones.size() + document.morphs.size() + document.cameras.size() + document.lights.size() +
-                    document.shadows.size() + document.ik.size());
-    rebuiltOrder.reserve(rebuilt.size());
-
-    for (int trackValue = 0; trackValue < 6; ++trackValue) {
-        const auto track = static_cast<core::MotionTrack>(trackValue);
-        const auto count = trackSize(document, track);
+    const auto identity = [](const Fingerprint& fp) {
+        return std::to_string(static_cast<int>(fp.track)) + '\0' + fp.name + '\0' + std::to_string(fp.frame) + ':' +
+               std::to_string(fp.duplicateOrdinal);
+    };
+    std::unordered_map<std::string, MotionKeyId> previous;
+    previous.reserve(fingerprints_.size());
+    for (const auto& [id, fp] : fingerprints_)
+        previous.emplace(identity(fp), id);
+    decltype(fingerprints_) rebuilt;
+    decltype(order_) rebuiltOrder;
+    rebuilt.reserve(fingerprints_.size());
+    rebuiltOrder.reserve(fingerprints_.size());
+    for (int value = 0; value < 6; ++value) {
+        const auto track = static_cast<core::MotionTrack>(value);
+        auto& indices = indices_[static_cast<std::size_t>(value)];
+        indices.clear();
+        indices.reserve(trackSize(document, track));
         std::unordered_map<std::string, std::size_t> ordinals;
-        for (std::size_t index = 0; index < count; ++index) {
-            const Fingerprint candidate{track, keyName(document, track, index), keyFrame(document, track, index), 0};
-            const std::string ordinalKey = candidate.name + '\0' + std::to_string(candidate.frame);
-            const std::size_t duplicateOrdinal = ordinals[ordinalKey]++;
-            Fingerprint current = candidate;
-            current.duplicateOrdinal = duplicateOrdinal;
-
-            std::optional<std::size_t> matched;
-            for (std::size_t oldIndex = 0; oldIndex < old.size(); ++oldIndex) {
-                if (used[oldIndex] || old[oldIndex].second.track != current.track ||
-                    old[oldIndex].second.name != current.name || old[oldIndex].second.frame != current.frame ||
-                    old[oldIndex].second.duplicateOrdinal != current.duplicateOrdinal)
-                    continue;
-                matched = oldIndex;
-                break;
-            }
-            // A caller may rebuild after changing a frame without calling
-            // notifyMoved. Preserve a unique named key in that case too;
-            // duplicate names still require the explicit ordinal identity.
-            if (!matched.has_value()) {
-                std::size_t currentNameCount = 0;
-                for (std::size_t other = 0; other < count; ++other)
-                    currentNameCount += keyName(document, track, other) == current.name ? 1U : 0U;
-                std::size_t oldNameCount = 0;
-                std::size_t oldCandidate = 0;
-                for (std::size_t oldIndex = 0; oldIndex < old.size(); ++oldIndex) {
-                    if (used[oldIndex] || old[oldIndex].second.track != current.track ||
-                        old[oldIndex].second.name != current.name)
-                        continue;
-                    ++oldNameCount;
-                    oldCandidate = oldIndex;
-                }
-                if (currentNameCount == 1 && oldNameCount == 1)
-                    matched = oldCandidate;
-            }
-
-            MotionKeyId id;
-            if (matched.has_value()) {
-                used[*matched] = true;
-                id = old[*matched].first;
-            } else {
-                if (nextId_ == 0)
-                    throw std::overflow_error("stable motion key id exhausted");
-                id = MotionKeyId{track, nextId_++};
-            }
-            rebuilt.emplace(id, std::move(current));
+        for (std::size_t index = 0; index < trackSize(document, track); ++index) {
+            Fingerprint fp{track, keyName(document, track, index), keyFrame(document, track, index), 0};
+            fp.duplicateOrdinal = ordinals[fp.name + '\0' + std::to_string(fp.frame)]++;
+            const auto found = previous.find(identity(fp));
+            if (found == previous.end() && nextId_ == 0)
+                throw std::overflow_error("stable motion key id exhausted");
+            const auto id = found == previous.end() ? MotionKeyId{track, nextId_++} : found->second;
+            indices.push_back(id);
+            rebuilt.emplace(id, std::move(fp));
             rebuiltOrder.emplace(id, index);
         }
     }
     fingerprints_.swap(rebuilt);
-    order_.clear();
     order_.swap(rebuiltOrder);
 }
 
 MotionKeyId StableIdTable::keyId(core::MotionTrack track, std::size_t index) const {
-    for (const auto& [id, fingerprint] : fingerprints_) {
-        static_cast<void>(fingerprint);
-        if (id.track != track)
-            continue;
-        const auto order = order_.find(id);
-        if (order != order_.end() && order->second == index)
-            return id;
-    }
-    return MotionKeyId{track, 0};
+    const auto value = static_cast<std::size_t>(track);
+    if (value >= indices_.size() || index >= indices_[value].size())
+        return {track, 0};
+    return indices_[value][index];
 }
 
 std::optional<std::size_t> StableIdTable::resolve(const core::MotionDocument& document, MotionKeyId id) const noexcept {

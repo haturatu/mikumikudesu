@@ -1,6 +1,7 @@
 #include "editor/bone_window.hpp"
 
 #include "editor/editor_session.hpp"
+#include <algorithm>
 
 namespace dayo::editor {
 
@@ -15,6 +16,7 @@ void BoneWindow::commitAsNewKey(EditorSession& session, std::uint32_t frame) {
     key.frame = frame;
     key.translation = translation_;
     key.rotation = rotation_;
+    std::erase_if(next.bones, [&](const auto& item) { return item.name == bone_ && item.frame == frame; });
     next.bones.push_back(std::move(key));
     next.lastFrame = std::max(next.lastFrame, frame);
     ReplaceMotionOperation operation;

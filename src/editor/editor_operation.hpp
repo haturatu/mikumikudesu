@@ -5,6 +5,7 @@
 #include "editor/motion_key_id.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -37,11 +38,21 @@ struct MoveKeysOperation {
     std::int64_t frameDelta{};
 };
 
-using EditorOperation = std::variant<SetFrameOperation, ReplaceMotionOperation, MoveKeysOperation>;
+struct MaterialEditOperation {
+    core::ModelId target{};
+    std::size_t material{};
+    core::MaterialEditorState state;
+    std::string label{"Edit material"};
+};
+using EditorOperation =
+    std::variant<SetFrameOperation, ReplaceMotionOperation, MoveKeysOperation, MaterialEditOperation>;
 
 class EditorOperationQueue {
   public:
     void push(EditorOperation operation);
+    void setTableResolver(std::function<StableIdTable&(core::ModelId, bool)> resolver) {
+        tableResolver_ = std::move(resolver);
+    }
     void setStableIdTable(const StableIdTable& table);
     void setStableIdTable(StableIdTable& table);
     // Applies every queued operation through history. Returns applied count.
@@ -55,6 +66,7 @@ class EditorOperationQueue {
     }
 
   private:
+    std::function<StableIdTable&(core::ModelId, bool)> tableResolver_;
     std::vector<EditorOperation> operations_;
     StableIdTable stableIdTable_;
     bool hasStableIdTable_{false};
@@ -67,7 +79,7 @@ class EditorOperationQueue {
 class UndoTransaction {
   public:
     UndoTransaction(core::Scene& scene, core::CommandHistory& history, core::ModelId target, bool global,
-                    std::string label = "Drag keys");
+                    std::string label = "Drag keys", StableIdTable* stableIds = nullptr);
     ~UndoTransaction();
     UndoTransaction(const UndoTransaction&) = delete;
     UndoTransaction& operator=(const UndoTransaction&) = delete;
@@ -87,6 +99,8 @@ class UndoTransaction {
     std::string label_;
     std::optional<core::VmdMotion> before_;
     std::optional<core::VmdMotion> current_;
+    StableIdTable* stableIds_{};
+    std::optional<StableIdTable> beforeIds_;
     bool active_{true};
 };
 

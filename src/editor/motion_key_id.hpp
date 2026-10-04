@@ -2,6 +2,7 @@
 
 #include "core/editor.hpp"
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -29,6 +30,11 @@ struct MotionKeyIdHash {
 // Identity is (track, name); frame is mutable and updated via notifyMoved.
 class StableIdTable {
   public:
+    StableIdTable() = default;
+    StableIdTable(const StableIdTable&) = default;
+    StableIdTable(StableIdTable&&) noexcept = default;
+    StableIdTable& operator=(const StableIdTable& other);
+    StableIdTable& operator=(StableIdTable&& other) noexcept;
     void rebuild(const core::MotionDocument& document);
     [[nodiscard]] MotionKeyId keyId(core::MotionTrack track, std::size_t index) const;
     [[nodiscard]] std::optional<std::size_t> resolve(const core::MotionDocument& document,
@@ -48,6 +54,7 @@ class StableIdTable {
     };
     std::unordered_map<MotionKeyId, Fingerprint, MotionKeyIdHash> fingerprints_;
     std::unordered_map<MotionKeyId, std::size_t, MotionKeyIdHash> order_;
+    std::array<std::vector<MotionKeyId>, 6> indices_;
     std::uint64_t nextId_{1};
     static std::string keyName(const core::MotionDocument& document, core::MotionTrack track, std::size_t index);
     static std::uint32_t keyFrame(const core::MotionDocument& document, core::MotionTrack track, std::size_t index);

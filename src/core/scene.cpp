@@ -64,20 +64,46 @@ ModelId Scene::addModel(const std::filesystem::path& path) {
 }
 
 bool Scene::removeModel(ModelId id) {
+    return takeModel(id).has_value();
+}
+std::optional<ModelInstance> Scene::takeModel(ModelId id) {
     const auto found = std::find_if(models_.begin(), models_.end(), [id](const auto& item) { return item.id == id; });
     if (found == models_.end())
-        return false;
+        return std::nullopt;
+    std::optional<ModelInstance> removed{std::move(*found)};
     models_.erase(found);
     ++topologyGeneration_;
+    ++motionRevision_;
     if (selectedModel_ == id)
         selectedModel_ = models_.empty() ? 0 : models_.front().id;
-    externalParents_.erase(
-        std::remove_if(externalParents_.begin(), externalParents_.end(),
-                       [id](const auto& link) { return link.parentModel == id || link.childModel == id; }),
-        externalParents_.end());
+    std::erase_if(externalParents_, [id](const auto& link) { return link.parentModel == id || link.childModel == id; });
     timeline_.externalParents = externalParents_;
     recalculateTimelineDuration();
-    markDirty(DirtyFlag::geometry | DirtyFlag::material);
+    markDirty(DirtyFlag::geometry | DirtyFlag::material | DirtyFlag::effect);
+    return removed;
+}
+void Scene::restoreModel(ModelInstance instance, std::size_t index) {
+    if (model(instance.id))
+        throw std::invalid_argument("model already exists");
+    nextId_ = std::max(nextId_, instance.id + 1);
+    models_.insert(models_.begin() + static_cast<std::ptrdiff_t>(std::min(index, models_.size())), std::move(instance));
+    ++topologyGeneration_;
+    ++motionRevision_;
+    recalculateTimelineDuration();
+    markDirty(DirtyFlag::geometry | DirtyFlag::material | DirtyFlag::effect);
+}
+bool Scene::setExternalParents(std::vector<ExternalParentLink> links, std::string* error) {
+    auto previous = std::move(externalParents_);
+    externalParents_.clear();
+    for (auto& link : links) {
+        if (!addExternalParent(std::move(link), error)) {
+            externalParents_ = std::move(previous);
+            timeline_.externalParents = externalParents_;
+            return false;
+        }
+    }
+    timeline_.externalParents = externalParents_;
+    markDirty(DirtyFlag::geometry | DirtyFlag::camera);
     return true;
 }
 
@@ -167,6 +193,28 @@ bool Scene::addExternalParent(ExternalParentLink link, std::string* error) {
     timeline_.externalParents = externalParents_;
     markDirty(DirtyFlag::geometry | DirtyFlag::camera);
     return true;
+}
+
+std::vector<ExternalParentLink> Scene::effectiveExternalParents(float frame) const {
+    auto result = externalParents_;
+    for (const auto& instance : models_) {
+        if (!instance.motion)
+            continue;
+        std::unordered_map<std::string, const VmdayoExternalParentKey*> latest;
+        for (const auto& key : instance.motion->externalParents) {
+            latest.try_emplace(key.childBone, nullptr);
+            auto& previous = latest[key.childBone];
+            if (static_cast<float>(key.frame) <= frame && (!previous || key.frame >= previous->frame))
+                previous = &key;
+        }
+        for (const auto& [child, key] : latest) {
+            std::erase_if(result,
+                          [&](const auto& link) { return link.childModel == instance.id && link.childBone == child; });
+            if (key && key->parentModel >= 0 && model(static_cast<ModelId>(key->parentModel)))
+                result.push_back({static_cast<ModelId>(key->parentModel), key->parentBone, instance.id, child});
+        }
+    }
+    return result;
 }
 
 bool Scene::hasExternalParentCycle() const noexcept {
@@ -430,6 +478,7 @@ void Scene::attachPose(const std::filesystem::path& path, ModelId target) {
         throw std::runtime_error("VPD requires a model target");
     destination->pose = std::make_unique<VpdPose>(loadVpd(path));
     destination->animator->setPose(destination->pose.get());
+    ++motionRevision_;
     markDirty(DirtyFlag::geometry);
 }
 

@@ -599,8 +599,17 @@ if(DAYO_ENABLE_IMGUI)
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
   FetchContent_MakeAvailable(imgui)
+  FetchContent_Declare(
+    imguizmo
+    URL https://github.com/CedricGuillemet/ImGuizmo/archive/18cef5e031d8c6973d80284c67f60549fafd78c1.tar.gz
+    URL_HASH SHA256=6ad626f0687be12c2f3ba6542c0f1bdda9e71e395d0645e4cda37695354406d8
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SOURCE_SUBDIR src
+  )
+  FetchContent_MakeAvailable(imguizmo)
   add_library(
     dayo_imgui
+    ${imguizmo_SOURCE_DIR}/src/ImGuizmo.cpp
     ${imgui_SOURCE_DIR}/imgui.cpp
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
     ${imgui_SOURCE_DIR}/imgui_tables.cpp
@@ -609,6 +618,7 @@ if(DAYO_ENABLE_IMGUI)
     ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
   )
   target_include_directories(dayo_imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+  target_include_directories(dayo_imgui SYSTEM PUBLIC ${imguizmo_SOURCE_DIR}/src)
   target_link_libraries(dayo_imgui PUBLIC SDL3::SDL3 Vulkan::Vulkan)
   target_link_libraries(dayo_graphics PUBLIC dayo_imgui)
   target_link_libraries(dayo_platform PUBLIC dayo_imgui)
@@ -722,6 +732,31 @@ if(PkgConfig_FOUND)
 endif()
 target_compile_definitions(dayo_core PUBLIC DAYO_HAS_OPENEXR=${DAYO_HAS_OPENEXR})
 
+add_library(
+  dayo_editor
+  src/editor/bone_window.cpp
+  src/editor/config.cpp
+  src/editor/editor_operation.cpp
+  src/editor/editor_session.cpp
+  src/editor/external_parent_window.cpp
+  src/editor/fx_debug_window.cpp
+  src/editor/interpolation_window.cpp
+  src/editor/keyframe_window.cpp
+  src/editor/localization.cpp
+  src/editor/ui_labels.cpp
+  src/editor/material_window.cpp
+  src/editor/motion_key_id.cpp
+  src/editor/output_window.cpp
+  src/editor/pose_binding.cpp
+  src/editor/pose_command.cpp
+  src/editor/model_commands.cpp
+  src/editor/selection.cpp
+  src/editor/viewport_math.cpp
+  src/editor/workspace.cpp
+)
+target_include_directories(dayo_editor PUBLIC src)
+target_link_libraries(dayo_editor PUBLIC dayo_core dayo_graphics)
+
 add_executable(
   mikumikudesu
   src/app/application.cpp
@@ -735,7 +770,10 @@ add_library(dayo_cli src/app/cli.cpp)
 target_include_directories(dayo_cli PUBLIC src)
 target_link_libraries(dayo_cli PRIVATE argparse::argparse)
 target_compile_definitions(dayo_cli PRIVATE DAYO_VERSION="${PROJECT_VERSION}")
-target_link_libraries(mikumikudesu PRIVATE dayo_cli dayo_core dayo_platform dayo_graphics)
+target_link_libraries(
+  mikumikudesu
+  PRIVATE dayo_cli dayo_core dayo_editor dayo_platform dayo_graphics
+)
 target_compile_definitions(
   mikumikudesu
   PRIVATE DAYO_HAS_OIDN=${DAYO_HAS_OIDN} DAYO_HAS_MEDIA=${DAYO_HAS_MEDIA} DAYO_VERSION="${PROJECT_VERSION}"
@@ -764,6 +802,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   foreach(
     target
     dayo_core
+    dayo_editor
     dayo_fx
     dayo_platform
     dayo_graphics
@@ -843,6 +882,11 @@ if(BUILD_TESTING)
   dayo_enable_warnings(dayo_test_assets)
   add_executable(dayo_cli_tests tests/cli_tests.cpp)
   target_link_libraries(dayo_cli_tests PRIVATE dayo_cli)
+  add_executable(dayo_editor_tests tests/editor_tests.cpp)
+  target_link_libraries(dayo_editor_tests PRIVATE dayo_editor)
+  dayo_enable_warnings(dayo_editor_tests)
+  add_test(NAME editor COMMAND dayo_editor_tests)
+
   add_executable(dayo_core_tests tests/core_tests.cpp)
   target_link_libraries(dayo_core_tests PRIVATE dayo_core dayo_test_assets)
   add_executable(dayo_output_tests tests/output_tests.cpp)
@@ -947,6 +991,7 @@ if(DAYO_ENABLE_SANITIZERS)
     mikumikudesu
     dayo_cli_tests
     dayo_core_tests
+    dayo_editor_tests
     dayo_output_tests
     dayo_video_export_job_tests
     dayo_fx_executor_tests

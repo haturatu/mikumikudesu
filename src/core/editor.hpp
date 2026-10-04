@@ -20,10 +20,15 @@ class EditCommand {
 
 class CommandHistory {
   public:
+    [[nodiscard]] std::uint64_t revision() const noexcept {
+        return revision_;
+    }
     void execute(Scene& scene, std::unique_ptr<EditCommand> command);
     bool undo(Scene& scene);
     bool redo(Scene& scene);
     void clear() noexcept;
+    [[nodiscard]] std::vector<std::string> undoNames() const;
+    [[nodiscard]] std::vector<std::string> redoNames() const;
     [[nodiscard]] bool canUndo() const noexcept {
         return !undo_.empty();
     }
@@ -38,6 +43,7 @@ class CommandHistory {
     }
 
   private:
+    std::uint64_t revision_{};
     std::vector<std::unique_ptr<EditCommand>> undo_;
     std::vector<std::unique_ptr<EditCommand>> redo_;
 };

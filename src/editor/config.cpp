@@ -1,5 +1,6 @@
 #include "editor/config.hpp"
 
+#include <cstdlib>
 #include <fstream>
 
 namespace dayo::editor {
@@ -46,7 +47,15 @@ void EditorConfig::save(const std::filesystem::path& path) const noexcept {
 }
 
 std::filesystem::path EditorConfig::defaultPath() {
-    return std::filesystem::path("config") / "fxedit.cfg";
+    if (const auto* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg)
+        return std::filesystem::path(xdg) / "mikumikudesu" / "editor.cfg";
+#ifdef _WIN32
+    if (const auto* appdata = std::getenv("APPDATA"); appdata && *appdata)
+        return std::filesystem::path(appdata) / "mikumikudesu" / "editor.cfg";
+#endif
+    if (const auto* home = std::getenv("HOME"); home && *home)
+        return std::filesystem::path(home) / ".config" / "mikumikudesu" / "editor.cfg";
+    return std::filesystem::path("config") / "editor.cfg";
 }
 
 } // namespace dayo::editor

@@ -159,6 +159,9 @@ class Scene {
 
     [[nodiscard]] ModelId addModel(const std::filesystem::path& path);
     bool removeModel(ModelId id);
+    std::optional<ModelInstance> takeModel(ModelId id);
+    void restoreModel(ModelInstance instance, std::size_t index);
+    bool setExternalParents(std::vector<ExternalParentLink> links, std::string* error = nullptr);
     void clearModels();
     [[nodiscard]] ModelInstance* model(ModelId id) noexcept;
     [[nodiscard]] const ModelInstance* model(ModelId id) const noexcept;
@@ -178,6 +181,7 @@ class Scene {
     void attachPose(const std::filesystem::path& path, ModelId target = 0);
     [[nodiscard]] ModelId targetModel(ModelId requested = 0) const noexcept;
     bool addExternalParent(ExternalParentLink link, std::string* error = nullptr);
+    [[nodiscard]] std::vector<ExternalParentLink> effectiveExternalParents(float frame) const;
     [[nodiscard]] bool hasExternalParentCycle() const noexcept;
     [[nodiscard]] PhysicsSettings evaluatePhysicsSettings(float frame) const noexcept;
     void recalculateTimelineDuration() noexcept;

@@ -12,11 +12,14 @@ void CommandHistory::execute(Scene& scene, std::unique_ptr<EditCommand> command)
     if (!command)
         return;
     command->apply(scene);
+    ++revision_;
     undo_.push_back(std::move(command));
     redo_.clear();
 }
 
 bool CommandHistory::undo(Scene& scene) {
+    if (!undo_.empty())
+        ++revision_;
     if (undo_.empty())
         return false;
     auto command = std::move(undo_.back());
@@ -27,6 +30,8 @@ bool CommandHistory::undo(Scene& scene) {
 }
 
 bool CommandHistory::redo(Scene& scene) {
+    if (!redo_.empty())
+        ++revision_;
     if (redo_.empty())
         return false;
     auto command = std::move(redo_.back());
@@ -36,6 +41,18 @@ bool CommandHistory::redo(Scene& scene) {
     return true;
 }
 
+std::vector<std::string> CommandHistory::undoNames() const {
+    std::vector<std::string> names;
+    for (auto it = undo_.rbegin(); it != undo_.rend(); ++it)
+        names.emplace_back((*it)->name());
+    return names;
+}
+std::vector<std::string> CommandHistory::redoNames() const {
+    std::vector<std::string> names;
+    for (auto it = redo_.rbegin(); it != redo_.rend(); ++it)
+        names.emplace_back((*it)->name());
+    return names;
+}
 void CommandHistory::clear() noexcept {
     undo_.clear();
     redo_.clear();
