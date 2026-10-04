@@ -110,7 +110,7 @@ void StableIdTable::rebuild(const core::MotionDocument& document) {
     rebuiltOrder.reserve(fingerprints_.size());
     for (std::size_t value = 0; value < core::motionTrackCount; ++value) {
         const auto track = static_cast<core::MotionTrack>(value);
-        auto& indices = indices_[static_cast<std::size_t>(value)];
+        auto& indices = indices_[value];
         indices.clear();
         indices.reserve(trackSize(document, track));
         std::unordered_map<std::string, std::size_t> ordinals;
