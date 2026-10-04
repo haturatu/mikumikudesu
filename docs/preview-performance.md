@@ -111,8 +111,8 @@ asyncはこの条件でserial autoを上回らず、既定では無効にして�
 SDEF/QDEF・ゼロ法線・輪郭・背景・複数材質・texture format roundtrip・リング満杯/重複ticket・
 未回収frame中のresource拡張とサイズ変更を含みます。Vegaで未対応のD24S8 fixtureはfeature queryでskipします。
 VMAなし・ImGuiなしのsystem-only buildも成功し、通常・high・asyncの描画テストは通過しました。
-この構成のCTestは19件通過、2件（fx_executor / upstream_compat）は無効化されているJsonnetを
-必要とするため失敗しています。DXCがこの環境にないため、DXC compilerによるbuildは未検証です。
+この構成のCTestは19件通過、2件（fx_executor / upstream_compat）はローカルで未検出の
+Jsonnetライブラリを必要とするため失敗しています。DXCがこの環境にないため、DXC compilerによるbuildは未検証です。
 
 参考: [Mesa environment variables](https://docs.mesa3d.org/envvars.html)、
 [Vulkan format requirements](https://docs.vulkan.org/spec/latest/chapters/formats.html)、
