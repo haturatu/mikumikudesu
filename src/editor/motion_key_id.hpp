@@ -54,7 +54,7 @@ class StableIdTable {
     };
     std::unordered_map<MotionKeyId, Fingerprint, MotionKeyIdHash> fingerprints_;
     std::unordered_map<MotionKeyId, std::size_t, MotionKeyIdHash> order_;
-    std::array<std::vector<MotionKeyId>, 6> indices_;
+    std::array<std::vector<MotionKeyId>, core::motionTrackCount> indices_;
     std::uint64_t nextId_{1};
     static std::string keyName(const core::MotionDocument& document, core::MotionTrack track, std::size_t index);
     static std::uint32_t keyFrame(const core::MotionDocument& document, core::MotionTrack track, std::size_t index);

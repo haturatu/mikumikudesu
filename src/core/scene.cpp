@@ -170,10 +170,19 @@ ModelId Scene::targetModel(ModelId requested) const noexcept {
     return selectedModel_;
 }
 
+bool externalParentEligible(const PmxModel& model, std::size_t boneIndex) noexcept {
+    if (boneIndex >= model.bones.size() || (model.bones[boneIndex].flags & 0x0004U) == 0)
+        return false;
+    return std::ranges::none_of(model.rigidBodies, [boneIndex](const auto& body) {
+        return body.bone >= 0 && static_cast<std::size_t>(body.bone) == boneIndex && body.mode != 0;
+    });
+}
+
 bool Scene::addExternalParent(ExternalParentLink link, std::string* error) {
     const auto* parent = model(link.parentModel);
     const auto* child = model(link.childModel);
-    if (parent == nullptr || child == nullptr || link.parentBone.empty() || link.childBone.empty()) {
+    if (parent == nullptr || child == nullptr || !parent->model || !child->model || link.parentBone.empty() ||
+        link.childBone.empty()) {
         if (error != nullptr)
             *error = "external parent references an unknown model or bone";
         return false;
@@ -185,6 +194,13 @@ bool Scene::addExternalParent(ExternalParentLink link, std::string* error) {
     if (!boneExists(*parent, link.parentBone) || !boneExists(*child, link.childBone)) {
         if (error != nullptr)
             *error = "external parent references an unknown bone";
+        return false;
+    }
+    const auto childBone = std::ranges::find(child->model->bones, link.childBone, &PmxBone::name);
+    const auto childIndex = static_cast<std::size_t>(std::distance(child->model->bones.begin(), childBone));
+    if (!externalParentEligible(*child->model, childIndex)) {
+        if (error)
+            *error = "external parent child must be movable and not physics-driven";
         return false;
     }
     externalParents_.push_back(std::move(link));
@@ -202,7 +218,7 @@ bool Scene::addExternalParent(ExternalParentLink link, std::string* error) {
 std::vector<ExternalParentLink> Scene::effectiveExternalParents(float frame) const {
     auto result = externalParents_;
     for (const auto& instance : models_) {
-        if (!instance.motion)
+        if (!instance.motion || !instance.model)
             continue;
         std::unordered_map<std::string, const VmdayoExternalParentKey*> latest;
         for (const auto& key : instance.motion->externalParents) {
@@ -214,7 +230,10 @@ std::vector<ExternalParentLink> Scene::effectiveExternalParents(float frame) con
         for (const auto& [child, key] : latest) {
             std::erase_if(result,
                           [&](const auto& link) { return link.childModel == instance.id && link.childBone == child; });
-            if (key && key->parentModel >= 0 && model(static_cast<ModelId>(key->parentModel)))
+            const auto bone = std::ranges::find(instance.model->bones, child, &PmxBone::name);
+            const auto boneIndex = static_cast<std::size_t>(std::distance(instance.model->bones.begin(), bone));
+            if (key && key->parentModel >= 0 && model(static_cast<ModelId>(key->parentModel)) &&
+                externalParentEligible(*instance.model, boneIndex))
                 result.push_back({static_cast<ModelId>(key->parentModel), key->parentBone, instance.id, child});
         }
     }

@@ -24,6 +24,8 @@ std::size_t trackCount(const core::MotionDocument& document, core::MotionTrack t
         return document.shadows.size();
     case core::MotionTrack::ik:
         return document.ik.size();
+    case core::MotionTrack::externalParent:
+        return document.externalParents.size();
     }
     return 0;
 }
@@ -44,6 +46,8 @@ std::string StableIdTable::keyName(const core::MotionDocument& document, core::M
         return "shadow";
     case core::MotionTrack::ik:
         return "ik";
+    case core::MotionTrack::externalParent:
+        return index < document.externalParents.size() ? document.externalParents[index].childBone : std::string{};
     }
     return {};
 }
@@ -63,6 +67,8 @@ std::uint32_t StableIdTable::keyFrame(const core::MotionDocument& document, core
         return index < document.shadows.size() ? document.shadows[index].frame : 0U;
     case core::MotionTrack::ik:
         return index < document.ik.size() ? document.ik[index].frame : 0U;
+    case core::MotionTrack::externalParent:
+        return index < document.externalParents.size() ? document.externalParents[index].frame : 0U;
     }
     return 0U;
 }
@@ -102,7 +108,7 @@ void StableIdTable::rebuild(const core::MotionDocument& document) {
     decltype(order_) rebuiltOrder;
     rebuilt.reserve(fingerprints_.size());
     rebuiltOrder.reserve(fingerprints_.size());
-    for (int value = 0; value < 6; ++value) {
+    for (std::size_t value = 0; value < core::motionTrackCount; ++value) {
         const auto track = static_cast<core::MotionTrack>(value);
         auto& indices = indices_[static_cast<std::size_t>(value)];
         indices.clear();

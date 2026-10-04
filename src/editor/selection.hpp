@@ -14,6 +14,7 @@ class Selection {
   public:
     void set(std::vector<MotionKeyId> ids);
     void add(MotionKeyId id);
+    void selectGroup(const std::vector<MotionKeyId>& ids, bool additive, bool toggle);
     bool remove(MotionKeyId id) noexcept;
     void clear() noexcept;
     [[nodiscard]] bool contains(MotionKeyId id) const noexcept;

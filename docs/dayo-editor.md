@@ -40,7 +40,9 @@ Ctrl-click toggles a key. Canvas rectangles replace selection, Shift adds, and
 Ctrl inverts. Key movement uses the original motion as its baseline and produces
 one Undo entry on release. Esc cancels a drag. Stable IDs survive frame sorting,
 collisions, Undo/Redo, and target switches; vector indices are resolved only for
-an operation.
+an operation. Visibility, IK, and external-parent keys share one Timeline row.
+A coincident diamond selects all underlying IDs; external-parent keys support
+selection, copy/cut/paste, deletion, dragging, and Undo/Redo.
 
 Animation workspace includes Interpolation. Select Bone or Camera keys and
 choose an axis (Bone: XYZ/rotation; Camera: XYZ/rotation/distance/FoV). Edit the
@@ -55,11 +57,14 @@ View → Models / External parents opens visibility-key registration, reversible
 model deletion, Motion/Deform/Postprocess/Raster drag ordering, and safe model /
 bone pickers for external-parent links. Attachments replace the original PMX
 parent pose, preserving the solved child-relative pose. Animation evaluation
-passes parent world poses in PMX model space; preview normalization is applied
-only when converting evaluated geometry for rendering. Visibility keys retain
-existing IK states. Editor visibility in Inspector remains separate. External-parent
+converts parent PMX positions through the common preview space into the child
+model space before passing them to libmmd, so different model normalizations
+preserve attachment alignment. New visibility keys inherit the effective IK
+states; same-frame edits retain them. External-parent children must be movable
+and cannot be driven by a rigid body. Editor visibility in Inspector remains separate. External-parent
 registration/removal updates runtime links and VMdayo keys in one history
-command. Effective links are sampled by frame and parent models are evaluated
+command. Authored links use motion keys without a static fallback, so cutting
+or deleting the last key removes the attachment. Effective links are sampled by frame and parent models are evaluated
 before their children. Attachment transforms run after each model's local
 IK/physics solve and before skinning; cross-model physics/IK feedback is outside
 this attachment contract.
@@ -96,6 +101,7 @@ audio and output controls; legacy material and numeric order edits use history.
 original-baseline dragging, cancellation, per-key curves, persistent scratch,
 frame-isolated overrides, VPD registration, savepoints/branching, sparse
 Space-triggered camera recording and recorded selection, real material edits, external-parent
-cycle rollback, deletion/order undo, quaternion/projection math, and headless
+cycle rollback, IK-preserving visibility registration, cross-model normalized
+attachments, external-parent clipboard/drag/Undo and child eligibility, deletion/order undo, quaternion/projection math, and headless
 ImGui marker/rectangle input. Existing Preview regression and synchronization
 validation tests remain enabled.

@@ -93,6 +93,10 @@ template <typename Key> void sortKeys(std::vector<Key>& keys) {
         std::stable_sort(keys.begin(), keys.end(), [](const Key& left, const Key& right) {
             return std::tie(left.name, left.frame) < std::tie(right.name, right.frame);
         });
+    } else if constexpr (requires(const Key& key) { key.childBone; }) {
+        std::stable_sort(keys.begin(), keys.end(), [](const Key& left, const Key& right) {
+            return std::tie(left.childBone, left.frame) < std::tie(right.childBone, right.frame);
+        });
     } else {
         std::stable_sort(keys.begin(), keys.end(),
                          [](const Key& left, const Key& right) { return left.frame < right.frame; });
@@ -137,7 +141,7 @@ void pasteTrack(std::vector<Key>& destination, const std::vector<Key>& source, s
 
 bool MotionClipboard::empty() const noexcept {
     return keys.bones.empty() && keys.morphs.empty() && keys.cameras.empty() && keys.lights.empty() &&
-           keys.shadows.empty() && keys.ik.empty();
+           keys.shadows.empty() && keys.ik.empty() && keys.externalParents.empty();
 }
 
 void MotionEditor::normalize(MotionDocument& document) {
@@ -147,10 +151,29 @@ void MotionEditor::normalize(MotionDocument& document) {
     sortKeys(document.lights);
     sortKeys(document.shadows);
     sortKeys(document.ik);
+    sortKeys(document.externalParents);
+}
+
+void MotionEditor::registerVisibility(MotionDocument& document, std::uint32_t frame, bool visible) {
+    VmdIkKey* previous = nullptr;
+    for (auto& candidate : document.ik)
+        if (candidate.frame <= frame && (!previous || candidate.frame >= previous->frame))
+            previous = &candidate;
+    if (previous && previous->frame == frame) {
+        previous->visible = visible;
+    } else {
+        VmdIkKey key;
+        key.frame = frame;
+        key.visible = visible;
+        if (previous)
+            key.states = previous->states;
+        document.ik.push_back(std::move(key));
+    }
+    normalize(document);
 }
 
 void MotionEditor::erase(MotionDocument& document, std::vector<MotionKeyRef> keys) {
-    std::array<std::vector<std::size_t>, 6> indices;
+    std::array<std::vector<std::size_t>, motionTrackCount> indices;
     for (const auto& key : keys)
         indices[static_cast<std::size_t>(key.track)].push_back(key.index);
     for (auto& values : indices) {
@@ -163,6 +186,7 @@ void MotionEditor::erase(MotionDocument& document, std::vector<MotionKeyRef> key
     eraseIndices(document.lights, indices[3]);
     eraseIndices(document.shadows, indices[4]);
     eraseIndices(document.ik, indices[5]);
+    eraseIndices(document.externalParents, indices[6]);
 }
 
 void MotionEditor::move(MotionDocument& document, const std::vector<MotionKeyRef>& keys, std::int64_t frameDelta) {
@@ -192,6 +216,11 @@ void MotionEditor::move(MotionDocument& document, const std::vector<MotionKeyRef
             if (key.index < document.ik.size())
                 document.ik[key.index].frame = shiftedFrame(document.ik[key.index].frame, frameDelta);
             break;
+        case MotionTrack::externalParent:
+            if (key.index < document.externalParents.size())
+                document.externalParents[key.index].frame =
+                    shiftedFrame(document.externalParents[key.index].frame, frameDelta);
+            break;
         }
     }
     normalize(document);
@@ -201,7 +230,7 @@ MotionClipboard MotionEditor::copy(const MotionDocument& document, const std::ve
     MotionClipboard result;
     result.keys.interpolation = document.interpolation;
     result.originFrame = std::numeric_limits<std::uint32_t>::max();
-    std::array<std::vector<std::size_t>, 6> indices;
+    std::array<std::vector<std::size_t>, motionTrackCount> indices;
     for (const auto& key : keys)
         indices[static_cast<std::size_t>(key.track)].push_back(key.index);
     appendSelected(result.keys.bones, document.bones, indices[0], result.originFrame);
@@ -210,6 +239,7 @@ MotionClipboard MotionEditor::copy(const MotionDocument& document, const std::ve
     appendSelected(result.keys.lights, document.lights, indices[3], result.originFrame);
     appendSelected(result.keys.shadows, document.shadows, indices[4], result.originFrame);
     appendSelected(result.keys.ik, document.ik, indices[5], result.originFrame);
+    appendSelected(result.keys.externalParents, document.externalParents, indices[6], result.originFrame);
     if (result.empty())
         result.originFrame = 0;
     return result;
@@ -225,6 +255,7 @@ std::vector<MotionKeyRef> MotionEditor::paste(MotionDocument& document, const Mo
     pasteTrack(document.lights, clipboard.keys.lights, delta, MotionTrack::light, result);
     pasteTrack(document.shadows, clipboard.keys.shadows, delta, MotionTrack::shadow, result);
     pasteTrack(document.ik, clipboard.keys.ik, delta, MotionTrack::ik, result);
+    pasteTrack(document.externalParents, clipboard.keys.externalParents, delta, MotionTrack::externalParent, result);
     normalize(document);
     return result;
 }

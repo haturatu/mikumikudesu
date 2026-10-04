@@ -1,10 +1,14 @@
 #pragma once
 
-#include "core/model_probe.hpp"
+#include "core/animation.hpp"
 
 #include <array>
 
 namespace dayo::editor {
+
+// Convert between model coordinate systems through the common preview/world space.
+[[nodiscard]] core::Float3 convertModelPoint(core::Float3 point, const core::PreviewNormalization& from,
+                                             const core::PreviewNormalization& to) noexcept;
 
 struct ScreenPoint {
     float x{};

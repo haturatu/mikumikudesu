@@ -38,6 +38,9 @@ void KeyframeWindow::refresh(EditorSession& session) {
         pushRow("shadow", motion->shadows[index].frame, core::MotionTrack::shadow, index);
     for (std::size_t index = 0; index < motion->ik.size(); ++index)
         pushRow("ik", motion->ik[index].frame, core::MotionTrack::ik, index);
+    for (std::size_t index = 0; index < motion->externalParents.size(); ++index)
+        pushRow(motion->externalParents[index].childBone, motion->externalParents[index].frame,
+                core::MotionTrack::externalParent, index);
 }
 
 void KeyframeWindow::requestMoveSelected(EditorSession& session, std::int64_t frameDelta) {

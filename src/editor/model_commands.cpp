@@ -126,6 +126,13 @@ void ExternalParentsCommand::apply(core::Scene& scene) {
     std::string error;
     if (!scene.setExternalParents(after_, &error))
         throw std::invalid_argument(error);
+    // Authored relationships live in motion keys, so deleting the last key
+    // cannot resurrect a stale static fallback. Keep unrelated legacy links.
+    auto staticLinks = after_;
+    std::erase_if(staticLinks, [&](const auto& link) {
+        return std::ranges::any_of(motions_, [&](const auto& motion) { return motion.target == link.childModel; });
+    });
+    scene.setExternalParents(std::move(staticLinks));
     for (const auto& motion : motions_)
         scene.replaceMotion(motion.after, motion.target, false);
 }

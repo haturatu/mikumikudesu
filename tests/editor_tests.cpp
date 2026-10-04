@@ -1,6 +1,7 @@
 #include "editor/camera_recording.hpp"
 #include "editor/editor_session.hpp"
 #include "editor/interpolation_window.hpp"
+#include "editor/keyframe_window.hpp"
 #include "editor/material_window.hpp"
 #include "editor/model_commands.hpp"
 #include "editor/pose_binding.hpp"
@@ -10,6 +11,7 @@
 #if DAYO_HAS_IMGUI
 #include <imgui.h>
 #endif
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
@@ -28,6 +30,7 @@ void addModel(dayo::core::Scene& scene, dayo::core::ModelId id) {
     model.model = std::make_shared<dayo::core::PmxModel>();
     dayo::core::PmxBone bone;
     bone.name = "Root";
+    bone.flags = 0x001EU;
     model.model->bones.push_back(bone);
     bone.name = "Child";
     bone.parent = 0;
@@ -39,6 +42,143 @@ void addModel(dayo::core::Scene& scene, dayo::core::ModelId id) {
 int main() {
     try {
         using namespace dayo;
+        {
+            core::MotionDocument visibility;
+            visibility.ik.push_back({0, true, {{"IK-A", false}, {"IK-B", true}}});
+            visibility.ik.push_back({60, true, {{"IK-A", true}}});
+            core::MotionEditor::registerVisibility(visibility, 30, false);
+            const auto registered = std::ranges::find(visibility.ik, 30U, &core::VmdIkKey::frame);
+            require(registered != visibility.ik.end() && !registered->visible && registered->states.size() == 2 &&
+                        !registered->states[0].enabled && registered->states[1].enabled,
+                    "new visibility key inherits effective IK states instead of re-enabling IK");
+            core::MotionEditor::registerVisibility(visibility, 30, true);
+            require(visibility.ik.size() == 3 && !visibility.ik[1].states[0].enabled,
+                    "updating visibility preserves same-frame IK states");
+        }
+        {
+            const core::PreviewNormalization from{{10, 2, -3}, 0.1F};
+            const core::PreviewNormalization to{{0, -4, 5}, 1.0F};
+            core::PmxVertex parentPoint;
+            core::PmxVertex childPoint;
+            parentPoint.position = {20, 6, 7};
+            childPoint.position = editor::convertModelPoint(parentPoint.position, from, to);
+            std::vector<core::PmxVertex> parentVertices{parentPoint};
+            std::vector<core::PmxVertex> childVertices{childPoint};
+            core::normalizeForPreview(parentVertices, from);
+            core::normalizeForPreview(childVertices, to);
+            for (std::size_t axis = 0; axis < 3; ++axis)
+                require(near(parentVertices[0].position[axis], childVertices[0].position[axis]),
+                        "conversion preserves common preview position with distinct centers/scales");
+            core::Scene attachmentScene;
+            addModel(attachmentScene, 1);
+            addModel(attachmentScene, 2);
+            auto* parentModel = attachmentScene.model(1);
+            auto* childModel = attachmentScene.model(2);
+            core::VmdMotion parentMotion;
+            core::VmdMotion childMotion;
+            parentMotion.bones.push_back({"Root", 0, {20, 6, 7}});
+            childMotion.bones.push_back({"Root", 0, {5, 0, 0}});
+            parentModel->animator->setMotion(&parentMotion);
+            childModel->animator->setMotion(&childMotion);
+            const auto parentPose = parentModel->animator->evaluate(0).bones[0];
+            const std::array replacement{mmd::ExternalParentTransform{
+                .childBone = 1,
+                .parentPosition = editor::convertModelPoint(parentPose.worldPosition, from, to),
+                .parentRotation = parentPose.rotation}};
+            const auto attached = childModel->animator->evaluate(0, 0, false, {}, {}, replacement);
+            const auto attachedGpu = childModel->animator->evaluate(0, 0, true, {}, {}, replacement);
+            childPoint.position = attached.bones[1].worldPosition;
+            childVertices = {childPoint};
+            core::normalizeForPreview(childVertices, to);
+            for (std::size_t axis = 0; axis < 3; ++axis) {
+                require(near(parentVertices[0].position[axis], childVertices[0].position[axis]),
+                        "reparented child meets parent in preview despite differing model normalization");
+                require(near(attached.bones[1].worldPosition[axis], attachedGpu.bones[1].worldPosition[axis]),
+                        "normalized attachment has CPU/GPU pose parity");
+            }
+        }
+        {
+            core::Scene trackScene;
+            addModel(trackScene, 1);
+            addModel(trackScene, 2);
+            core::CommandHistory trackHistory;
+            trackHistory.execute(trackScene,
+                                 std::make_unique<editor::ExternalParentsCommand>(
+                                     trackScene, std::vector<core::ExternalParentLink>{{1, "Root", 2, "Child"}}));
+            require(trackScene.externalParents().empty(), "authored links have no stale static fallback");
+            auto trackDocument = core::toMotionDocument(*trackScene.motion(2, false));
+            core::MotionEditor::registerVisibility(trackDocument, 0, false);
+            trackScene.replaceMotion(core::toVmdMotion(trackDocument), 2, false);
+            editor::EditorSession trackSession(&trackScene, &trackHistory);
+            trackSession.setTarget(2, false);
+            editor::KeyframeWindow trackWindow;
+            trackWindow.refresh(trackSession);
+            require(trackWindow.rows().size() == 2, "visibility and external-parent keys both appear in Timeline");
+            const auto visibilityId = trackSession.stableIds().keyId(core::MotionTrack::ik, 0);
+            const auto parentId = trackSession.stableIds().keyId(core::MotionTrack::externalParent, 0);
+            trackSession.selection().selectGroup({visibilityId, parentId}, false, false);
+            require(trackSession.selection().size() == 2, "overlapping diamond selects both IDs");
+            trackSession.selection().selectGroup({visibilityId, parentId}, false, true);
+            require(trackSession.selection().empty(), "Ctrl toggles both overlapping IDs");
+            trackSession.selection().selectGroup({visibilityId, parentId}, true, false);
+            const auto refs = trackSession.selection().resolveTransient(trackDocument, trackSession.stableIds());
+            const auto clip = core::MotionEditor::copy(trackDocument, refs);
+            require(!clip.empty() && clip.keys.externalParents.size() == 1 && clip.keys.ik.size() == 1,
+                    "copy includes external parent and visibility tracks");
+            core::MotionEditor::erase(trackDocument, refs);
+            trackSession.operations().push(
+                editor::ReplaceMotionOperation{2, false, core::toVmdMotion(trackDocument), "Cut keys"});
+            trackSession.flushOperations();
+            require(trackScene.effectiveExternalParents(30).empty(),
+                    "cut removes attachment without static resurrection");
+            trackDocument = core::toMotionDocument(*trackScene.motion(2, false));
+            const auto pastedRefs = core::MotionEditor::paste(trackDocument, clip, 30);
+            require(pastedRefs.size() == 2, "paste returns both track references");
+            trackSession.operations().push(
+                editor::ReplaceMotionOperation{2, false, core::toVmdMotion(trackDocument), "Paste keys"});
+            trackSession.flushOperations();
+            trackWindow.refresh(trackSession);
+            require(trackScene.effectiveExternalParents(29).empty() &&
+                        trackScene.effectiveExternalParents(30).size() == 1 && trackScene.timeline().duration >= 30,
+                    "paste at 30 changes runtime attachment at the new frame");
+            const auto pastedParent = trackSession.stableIds().keyId(core::MotionTrack::externalParent, 0);
+            const auto pastedVisibility = trackSession.stableIds().keyId(core::MotionTrack::ik, 0);
+            trackSession.selection().set({pastedParent, pastedVisibility});
+            trackSession.beginKeyframeDrag();
+            trackSession.moveKeyframeDrag(15);
+            trackSession.commitKeyframeDrag();
+            require(trackScene.effectiveExternalParents(30).empty() &&
+                        trackScene.effectiveExternalParents(45).size() == 1,
+                    "group drag moves external-parent runtime timing");
+            trackHistory.undo(trackScene);
+            trackDocument = core::toMotionDocument(*trackScene.motion(2, false));
+            const auto restored = trackSession.stableIds().resolve(trackDocument, pastedParent);
+            require(restored && trackDocument.externalParents[*restored].frame == 30,
+                    "Undo restores external-parent stable identity");
+            core::MotionEditor::erase(trackDocument, {{core::MotionTrack::externalParent, *restored}});
+            trackSession.operations().push(
+                editor::ReplaceMotionOperation{2, false, core::toVmdMotion(trackDocument), "Delete parent key"});
+            trackSession.flushOperations();
+            require(trackScene.effectiveExternalParents(100).empty(), "Delete removes the final attachment key");
+            trackHistory.undo(trackScene);
+            auto& eligibleModel = *trackScene.model(2)->model;
+            require(core::externalParentEligible(eligibleModel, 1), "movable child is eligible");
+            eligibleModel.bones[1].flags = 0;
+            std::string eligibilityError;
+            require(!trackScene.addExternalParent({1, "Root", 2, "Child"}, &eligibilityError) &&
+                        !eligibilityError.empty() && trackScene.effectiveExternalParents(30).empty(),
+                    "immovable child rejected in Scene and imported keys");
+            eligibleModel.bones[1].flags = 0x001EU;
+            core::PmxRigidBody drivenBody;
+            drivenBody.bone = 1;
+            drivenBody.mode = 1;
+            eligibleModel.rigidBodies.push_back(drivenBody);
+            require(!core::externalParentEligible(eligibleModel, 1) &&
+                        !trackScene.addExternalParent({1, "Root", 2, "Child"}),
+                    "physics-driven child cannot be attached");
+            eligibleModel.rigidBodies[0].mode = 0;
+            require(core::externalParentEligible(eligibleModel, 1), "kinematic rigid body remains eligible");
+        }
         core::Scene scene;
         addModel(scene, 1);
         addModel(scene, 2);

@@ -16,6 +16,13 @@ core::Float4 normalized(core::Float4 q) noexcept {
     return q;
 }
 } // namespace
+core::Float3 convertModelPoint(core::Float3 point, const core::PreviewNormalization& from,
+                               const core::PreviewNormalization& to) noexcept {
+    for (std::size_t axis = 0; axis < 3; ++axis)
+        point[axis] = to.center[axis] + (point[axis] - from.center[axis]) * from.scale / std::max(to.scale, 1.0e-8F);
+    return point;
+}
+
 ScreenPoint projectToViewport(core::Float3 world, const std::array<float, 16>& vp, ScreenRect rect) noexcept {
     const auto component = [&](std::size_t axis) {
         return world[0] * vp[axis] + world[1] * vp[axis + 4] + world[2] * vp[axis + 8] + vp[axis + 12];

@@ -121,7 +121,7 @@ std::size_t EditorOperationQueue::flush(core::Scene& scene, core::CommandHistory
 
             std::vector<MotionKeyId> ids = value.keys;
             if (ids.empty()) {
-                if (value.track < 0 || value.track >= 6) {
+                if (value.track < 0 || static_cast<std::size_t>(value.track) >= core::motionTrackCount) {
                     log::warn("EditorOperationQueue: MoveKeysOperation has invalid track ", value.track);
                     continue;
                 }

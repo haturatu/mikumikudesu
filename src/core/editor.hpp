@@ -84,7 +84,8 @@ class SetRuntimeModeCommand final : public EditCommand {
     RuntimeMode after_;
 };
 
-enum class MotionTrack { bone, morph, camera, light, shadow, ik };
+enum class MotionTrack { bone, morph, camera, light, shadow, ik, externalParent };
+inline constexpr std::size_t motionTrackCount = 7;
 
 struct MotionKeyRef {
     MotionTrack track{};
@@ -101,6 +102,7 @@ struct MotionClipboard {
 class MotionEditor {
   public:
     static void normalize(MotionDocument& document);
+    static void registerVisibility(MotionDocument& document, std::uint32_t frame, bool visible);
     static void erase(MotionDocument& document, std::vector<MotionKeyRef> keys);
     static void move(MotionDocument& document, const std::vector<MotionKeyRef>& keys, std::int64_t frameDelta);
     [[nodiscard]] static MotionClipboard copy(const MotionDocument& document, const std::vector<MotionKeyRef>& keys);

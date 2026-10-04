@@ -2273,7 +2273,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                     mmd::ExternalParentTransform transform;
                     transform.childBone = static_cast<std::size_t>(std::distance(instance.model->bones.begin(), child));
                     transform.parentRotation = sourcePose.rotation;
-                    transform.parentPosition = sourcePose.worldPosition;
+                    transform.parentPosition = editor::convertModelPoint(sourcePose.worldPosition,
+                                                                         parent->normalization, instance.normalization);
                     parentTransforms.push_back(transform);
                 }
             current.frame = instance.animator->evaluate(animationFrame_, deltaSeconds, current.gpuSkinning,
@@ -4522,6 +4523,11 @@ void Application::buildEditorUi() {
             cacheFrames(active->lights, timelineTrackCache_.lights);
             cacheFrames(active->shadows, timelineTrackCache_.shadows);
             cacheFrames(active->ik, timelineTrackCache_.ik);
+            for (const auto& key : active->externalParents)
+                timelineTrackCache_.ik.push_back(key.frame);
+            std::ranges::sort(timelineTrackCache_.ik);
+            timelineTrackCache_.ik.erase(std::unique(timelineTrackCache_.ik.begin(), timelineTrackCache_.ik.end()),
+                                         timelineTrackCache_.ik.end());
         }
     }
     const auto execute = [&](core::VmdMotion before, core::MotionDocument document, bool globalMotion,
@@ -4583,9 +4589,9 @@ void Application::buildEditorUi() {
             ImGui::TextUnformatted("Load a VMD/VMdayo motion to edit keyframes.");
         } else {
             if (timelineKeyListVisible_)
-                ImGui::Text("Bone %zu  Morph %zu  Camera %zu  Light %zu  Shadow %zu  IK %zu", active->bones.size(),
-                            active->morphs.size(), active->cameras.size(), active->lights.size(),
-                            active->shadows.size(), active->ik.size());
+                ImGui::Text("Bone %zu  Morph %zu  Camera %zu  Light %zu  Shadow %zu  IK %zu  External parent %zu",
+                            active->bones.size(), active->morphs.size(), active->cameras.size(), active->lights.size(),
+                            active->shadows.size(), active->ik.size(), active->externalParents.size());
             auto row = [&](core::MotionTrack track, std::size_t index, std::uint32_t frame, const std::string& name) {
                 const auto key = editorSession_.stableIds().keyId(track, index);
                 const auto label = name + "  @ " + std::to_string(frame) + "##" + std::to_string(key.stableId);
@@ -4626,7 +4632,8 @@ void Application::buildEditorUi() {
             if (timelineKeyListVisible_) {
                 if (ImGui::BeginChild("key-list", {0.0F, canvasHeight}, true)) {
                     const auto count = active->bones.size() + active->morphs.size() + active->cameras.size() +
-                                       active->lights.size() + active->shadows.size() + active->ik.size();
+                                       active->lights.size() + active->shadows.size() + active->ik.size() +
+                                       active->externalParents.size();
                     ImGuiListClipper clipper;
                     clipper.Begin(static_cast<int>(count));
                     while (clipper.Step()) {
@@ -4637,6 +4644,8 @@ void Application::buildEditorUi() {
                                     const auto& key = keys[index];
                                     if constexpr (requires { key.name; })
                                         row(track, index, key.frame, key.name);
+                                    else if constexpr (requires { key.childBone; })
+                                        row(track, index, key.frame, std::string(label) + ": " + key.childBone);
                                     else
                                         row(track, index, key.frame, label);
                                     return true;
@@ -4650,7 +4659,10 @@ void Application::buildEditorUi() {
                                 visit(active->lights, core::MotionTrack::light, "Light") ||
                                 visit(active->shadows, core::MotionTrack::shadow, "Self shadow"))
                                 continue;
-                            static_cast<void>(visit(active->ik, core::MotionTrack::ik, "IK / visibility"));
+                            if (visit(active->ik, core::MotionTrack::ik, "IK / visibility"))
+                                continue;
+                            static_cast<void>(
+                                visit(active->externalParents, core::MotionTrack::externalParent, "External parent"));
                         }
                     }
                 }
@@ -4714,7 +4726,7 @@ void Application::buildEditorUi() {
                     drawTrack("Camera", 0);
                     drawTrack("Light", 1);
                     drawTrack("Self shadow", 2);
-                    drawTrack("IK / visibility", 3);
+                    drawTrack("Visibility / IK / external parents", 3);
                     const auto drawFrames = [&](const std::vector<std::uint32_t>& frames, int trackRow, ImU32 color) {
                         const float firstFrame = (timelinePan_ - 8.0F) / pixelsPerFrame;
                         const float lastFrame = (right - left + timelinePan_ + 8.0F) / pixelsPerFrame;
@@ -4757,6 +4769,8 @@ void Application::buildEditorUi() {
                     struct TimelineHit {
                         editor::MotionKeyId id;
                         ImVec2 position;
+                        std::uint32_t frame;
+                        int row;
                     };
                     std::vector<TimelineHit> hits;
                     for (const auto& key : keyframeWindow_.rows()) {
@@ -4783,7 +4797,7 @@ void Application::buildEditorUi() {
                         }
                         if (track == core::MotionTrack::shadow)
                             keyRow = 2;
-                        if (track == core::MotionTrack::ik)
+                        if (track == core::MotionTrack::ik || track == core::MotionTrack::externalParent)
                             keyRow = 3;
                         if (keyRow < 0 || !trackVisible(keyRow))
                             continue;
@@ -4791,7 +4805,7 @@ void Application::buildEditorUi() {
                         if (position.x < left || position.x > right || position.y < top || position.y > bottom)
                             continue;
                         const editor::MotionKeyId id{track, key.stableId};
-                        hits.push_back({id, position});
+                        hits.push_back({id, position, key.frame, keyRow});
                         if (keySelection.contains(id))
                             drawDiamond(static_cast<float>(key.frame), keyRow,
                                         ImGui::GetColorU32(ImGuiCol_PlotHistogram));
@@ -4830,13 +4844,11 @@ void Application::buildEditorUi() {
                                        8.0F;
                             });
                             if (hit != hits.end()) {
-                                if (ImGui::GetIO().KeyCtrl) {
-                                    if (!keySelection.remove(hit->id))
-                                        keySelection.add(hit->id);
-                                } else if (ImGui::GetIO().KeyShift)
-                                    keySelection.add(hit->id);
-                                else if (!keySelection.contains(hit->id))
-                                    keySelection.set({hit->id});
+                                std::vector<editor::MotionKeyId> group;
+                                for (const auto& item : hits)
+                                    if (item.frame == hit->frame && item.row == hit->row)
+                                        group.push_back(item.id);
+                                keySelection.selectGroup(group, ImGui::GetIO().KeyShift, ImGui::GetIO().KeyCtrl);
                                 timelineAnchor_ = hit->id;
                                 const auto hitRow = std::ranges::find_if(keyframeWindow_.rows(), [&](const auto& item) {
                                     return item.stableId == hit->id.stableId;

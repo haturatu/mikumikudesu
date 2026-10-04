@@ -46,16 +46,7 @@ bool Workspace::drawModels(EditorSession& session, float frame) {
             auto motion = model->motion ? *model->motion : core::VmdMotion{};
             auto document = core::toMotionDocument(motion);
             const auto keyFrame = static_cast<std::uint32_t>(std::max(frame, 0.0F));
-            auto found =
-                std::ranges::find_if(document.ik, [keyFrame](const auto& key) { return key.frame == keyFrame; });
-            if (found == document.ik.end()) {
-                core::VmdIkKey key;
-                key.frame = keyFrame;
-                key.visible = visible;
-                document.ik.push_back(key);
-            } else
-                found->visible = visible;
-            core::MotionEditor::normalize(document);
+            core::MotionEditor::registerVisibility(document, keyFrame, visible);
             session.setTarget(model->id, false);
             session.operations().push(ReplaceMotionOperation{
                 model->id, false, core::toVmdMotion(std::move(document), motion.modelName), "Register visibility"});
@@ -137,24 +128,27 @@ bool Workspace::drawModels(EditorSession& session, float frame) {
     }
     ImGui::SeparatorText("External parents");
     if (model && model->model) {
-        const auto bonePicker = [](const char* label, const core::ModelInstance& item, int& index) {
+        const auto bonePicker = [](const char* label, const core::ModelInstance& item, int& index, bool child) {
             const auto& bones = item.model->bones;
             if (bones.empty())
                 return false;
             index = std::clamp(index, 0, static_cast<int>(bones.size() - 1));
             bool selected = false;
             if (ImGui::BeginCombo(label, bones[static_cast<std::size_t>(index)].name.c_str())) {
-                for (std::size_t i = 0; i < bones.size(); ++i)
+                for (std::size_t i = 0; i < bones.size(); ++i) {
+                    if (child && !core::externalParentEligible(*item.model, i))
+                        continue;
                     if (ImGui::Selectable((bones[i].name + "##" + std::to_string(i)).c_str(),
                                           index == static_cast<int>(i))) {
                         index = static_cast<int>(i);
                         selected = true;
                     }
+                }
                 ImGui::EndCombo();
             }
             return selected;
         };
-        bonePicker("Child bone", *model, childBone_);
+        bonePicker("Child bone", *model, childBone_, true);
         if (!scene.model(parentModel_))
             parentModel_ = scene.models().empty() ? 0 : scene.models().front().id;
         const auto* parent = scene.model(parentModel_);
@@ -169,8 +163,12 @@ bool Workspace::drawModels(EditorSession& session, float frame) {
         }
         parent = scene.model(parentModel_);
         if (parent)
-            bonePicker("Parent bone", *parent, parentBone_);
-        ImGui::BeginDisabled(!parent || model->model->bones.empty() || parent->model->bones.empty());
+            bonePicker("Parent bone", *parent, parentBone_, false);
+        const bool childEligible =
+            childBone_ >= 0 && core::externalParentEligible(*model->model, static_cast<std::size_t>(childBone_));
+        if (!childEligible)
+            ImGui::TextDisabled("Select a movable child bone that is not physics-driven.");
+        ImGui::BeginDisabled(!parent || !childEligible || parent->model->bones.empty());
         if (ImGui::Button(uiLabel("Register external parent")) && parent && !parent->model->bones.empty() &&
             !model->model->bones.empty()) {
             auto links = scene.effectiveExternalParents(frame);

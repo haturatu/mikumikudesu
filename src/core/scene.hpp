@@ -54,6 +54,8 @@ struct PhysicsSettings {
     bool floorCollision{};
 };
 
+[[nodiscard]] bool externalParentEligible(const PmxModel& model, std::size_t boneIndex) noexcept;
+
 struct ExternalParentLink {
     ModelId parentModel{};
     std::string parentBone;
