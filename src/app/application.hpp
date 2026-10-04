@@ -310,7 +310,6 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     float timelineScrollY_{};
     bool editGlobalMotion_{};
     bool recordCamera_{};
-    int selectedBone_{};
     int selectedMorph_{};
     core::ModelId editorValuesModel_{};
     float editorValuesFrame_{-1};
@@ -328,9 +327,6 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     core::VmdCameraKey baseCamera_;
     core::VmdLightKey baseLight_;
     core::VmdShadowKey baseShadow_;
-    core::Float3 editedBoneTranslation_{};
-    core::Float4 editedBoneRotation_{0.0F, 0.0F, 0.0F, 1.0F};
-    bool editedBonePhysics_{true};
     bool physicsDebug_{};
     float editedMorphWeight_{};
     core::VmdCameraKey editedCamera_;

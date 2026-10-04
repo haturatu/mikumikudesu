@@ -165,6 +165,14 @@ int main() {
         history.execute(scene, std::make_unique<editor::ExternalParentsCommand>(scene, links));
         require(scene.effectiveExternalParents(0).size() == 1,
                 "external parent registration persists an effective key");
+        scene.setExternalParents({});
+        require(scene.effectiveExternalParents(0).size() == 1, "reloaded motion-only attachment remains effective");
+        history.execute(scene, std::make_unique<editor::ExternalParentsCommand>(
+                                   scene, std::vector<core::ExternalParentLink>{}, 10));
+        require(scene.effectiveExternalParents(0).size() == 1 && scene.effectiveExternalParents(10).empty(),
+                "removing a motion-only attachment registers a frame-specific unlink");
+        history.undo(scene);
+        scene.setExternalParents(links);
         auto invalid = links;
         invalid.push_back({1, "Root", 2, "Child"});
         require(!scene.setExternalParents(invalid) && scene.externalParents().size() == 1,
@@ -190,6 +198,20 @@ int main() {
         const auto rotation = editor::matrixRotation(matrix);
         const auto rotated = editor::rotatePoint(rotation, {1, 0, 0});
         require(near(rotated[0], -1) && near(rotated[1], 0), "matrix quaternion roundtrip preserves rotation");
+        core::VmdMotion references;
+        core::VmdCameraKey tracking;
+        tracking.parentModel = 3;
+        references.cameras.push_back(tracking);
+        references.externalParents.push_back({0, 3, "Root", "Child"});
+        references.externalParents.push_back({10, 1, "Root", "Child"});
+        const auto saved = editor::remapMotionModels(references, {{2, 1}, {3, 2}});
+        require(saved.cameras[0].parentModel == 2 && saved.externalParents[0].parentModel == 2 &&
+                    saved.externalParents[1].parentModel == -1,
+                "project remaps live IDs and unlinks deleted parents");
+        const auto loaded = editor::remapMotionModels(saved, {{1, 8}, {2, 9}});
+        require(loaded.cameras[0].parentModel == 9 && loaded.externalParents[0].parentModel == 9 &&
+                    loaded.externalParents[1].parentModel == -1,
+                "project restores camera and external-parent targets");
         editor::StableIdTable identityIds;
         auto original = core::toMotionDocument(motion);
         identityIds.rebuild(original);

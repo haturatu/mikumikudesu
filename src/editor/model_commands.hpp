@@ -1,6 +1,9 @@
 #pragma once
 #include "core/editor.hpp"
 namespace dayo::editor {
+// Native project motions use one-based model slots; runtime IDs may have gaps.
+core::VmdMotion remapMotionModels(core::VmdMotion motion,
+                                  const std::vector<std::pair<core::ModelId, core::ModelId>>& modelIds);
 class DeleteModelCommand final : public core::EditCommand {
   public:
     DeleteModelCommand(const core::Scene& scene, core::ModelId id);

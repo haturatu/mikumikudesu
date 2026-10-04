@@ -1,5 +1,6 @@
 #include "app/application.hpp"
 #include "app/preview_conversion.hpp"
+#include "editor/model_commands.hpp"
 #include "editor/ui_labels.hpp"
 #include <deque>
 
@@ -1507,15 +1508,23 @@ core::DayoProject Application::currentProject() const {
             asset.materialSourceFiles.push_back(std::move(sources));
         }
     }
+    std::vector<std::pair<core::ModelId, core::ModelId>> savedIds;
+    for (std::size_t index = 0; index < project.models.size(); ++index) {
+        const auto model =
+            std::ranges::find(scene_.models(), project.models[index].source, &core::ModelInstance::sourcePath);
+        if (model != scene_.models().end())
+            savedIds.emplace_back(model->id, index + 1U);
+    }
     core::VmdMotion camera = scene_.cameraMotion() == nullptr ? core::VmdMotion{} : *scene_.cameraMotion();
     if (camera.modelName.empty())
         camera.modelName = "Camera/Light";
-    project.embeddedMotions.push_back(std::move(camera));
-    for (const auto& model : scene_.models()) {
-        auto motion = model.motion == nullptr ? core::VmdMotion{} : *model.motion;
+    project.embeddedMotions.push_back(editor::remapMotionModels(std::move(camera), savedIds));
+    for (const auto& state : project.models) {
+        const auto model = std::ranges::find(scene_.models(), state.source, &core::ModelInstance::sourcePath);
+        auto motion = model == scene_.models().end() || !model->motion ? core::VmdMotion{} : *model->motion;
         if (motion.modelName.empty())
-            motion.modelName = model.displayName;
-        project.embeddedMotions.push_back(std::move(motion));
+            motion.modelName = model == scene_.models().end() ? "Model" : model->displayName;
+        project.embeddedMotions.push_back(editor::remapMotionModels(std::move(motion), savedIds));
     }
     return project;
 }
@@ -1884,15 +1893,16 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 }
             }
             if (project.embeddedMotions.size() > 1U) {
-                scene_.attachMotion(project.embeddedMotions.front());
+                std::vector<std::pair<core::ModelId, core::ModelId>> loadedIds;
+                for (std::size_t index = 0; index < project.models.size(); ++index)
+                    if (const auto* model = findLoadedModel(index))
+                        loadedIds.emplace_back(index + 1U, model->id);
+                scene_.replaceMotion(editor::remapMotionModels(project.embeddedMotions.front(), loadedIds), 0, true);
                 const auto count = std::min(project.models.size(), project.embeddedMotions.size() - 1U);
-                for (std::size_t index = 0; index < count; ++index) {
-                    const auto& motion = project.embeddedMotions[index + 1U];
-                    if (!motion.bones.empty() || !motion.morphs.empty() || !motion.ik.empty()) {
-                        if (auto* instance = findLoadedModel(index); instance != nullptr)
-                            scene_.attachMotion(motion, instance->id);
-                    }
-                }
+                for (std::size_t index = 0; index < count; ++index)
+                    if (const auto* instance = findLoadedModel(index))
+                        scene_.attachMotion(editor::remapMotionModels(project.embeddedMotions[index + 1U], loadedIds),
+                                            instance->id);
                 manualCamera_ = false;
             } else if (project.embeddedMotion) {
                 scene_.attachMotion(*project.embeddedMotion, scene_.selectedModelId());

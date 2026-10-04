@@ -2,6 +2,21 @@
 #include <algorithm>
 #include <stdexcept>
 namespace dayo::editor {
+core::VmdMotion remapMotionModels(core::VmdMotion motion,
+                                  const std::vector<std::pair<core::ModelId, core::ModelId>>& modelIds) {
+    const auto remap = [&](std::int32_t id) {
+        if (id < 0)
+            return id;
+        const auto found = std::ranges::find(modelIds, static_cast<core::ModelId>(id),
+                                             &std::pair<core::ModelId, core::ModelId>::first);
+        return found == modelIds.end() ? -1 : static_cast<std::int32_t>(found->second);
+    };
+    for (auto& key : motion.cameras)
+        key.parentModel = remap(key.parentModel);
+    for (auto& key : motion.externalParents)
+        key.parentModel = remap(key.parentModel);
+    return motion;
+}
 DeleteModelCommand::DeleteModelCommand(const core::Scene& scene, core::ModelId id)
     : effects_(scene.effects()), id_(id), selection_(scene.selectedModelId()), links_(scene.externalParents()) {
     const auto& models = scene.models();
@@ -65,10 +80,14 @@ void SetModelOrdersCommand::undo(core::Scene& scene) {
 ExternalParentsCommand::ExternalParentsCommand(const core::Scene& scene, std::vector<core::ExternalParentLink> links,
                                                std::uint32_t frame)
     : before_(scene.externalParents()), after_(std::move(links)) {
+    const auto effective = scene.effectiveExternalParents(static_cast<float>(frame));
     for (const auto& model : scene.models()) {
         std::vector<std::string> children;
-        for (const auto& link : before_)
+        for (const auto& link : effective)
             if (link.childModel == model.id)
+                children.push_back(link.childBone);
+        for (const auto& link : before_)
+            if (link.childModel == model.id && std::ranges::find(children, link.childBone) == children.end())
                 children.push_back(link.childBone);
         for (const auto& link : after_)
             if (link.childModel == model.id && std::ranges::find(children, link.childBone) == children.end())

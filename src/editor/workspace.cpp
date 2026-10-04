@@ -173,7 +173,7 @@ bool Workspace::drawModels(EditorSession& session, float frame) {
         ImGui::BeginDisabled(!parent || model->model->bones.empty() || parent->model->bones.empty());
         if (ImGui::Button(uiLabel("Register external parent")) && parent && !parent->model->bones.empty() &&
             !model->model->bones.empty()) {
-            auto links = scene.externalParents();
+            auto links = scene.effectiveExternalParents(frame);
             const auto& child = model->model->bones[static_cast<std::size_t>(childBone_)].name;
             std::erase_if(links,
                           [&](const auto& link) { return link.childModel == model->id && link.childBone == child; });
@@ -199,8 +199,9 @@ bool Workspace::drawModels(EditorSession& session, float frame) {
         ImGui::TableSetupColumn("Parent bone");
         ImGui::TableSetupColumn("Action");
         ImGui::TableHeadersRow();
-        for (std::size_t i = 0; i < scene.externalParents().size(); ++i) {
-            const auto link = scene.externalParents()[i];
+        const auto effectiveLinks = scene.effectiveExternalParents(frame);
+        for (std::size_t i = 0; i < effectiveLinks.size(); ++i) {
+            const auto link = effectiveLinks[i];
             ImGui::PushID(static_cast<int>(i));
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
@@ -212,7 +213,7 @@ bool Workspace::drawModels(EditorSession& session, float frame) {
             ImGui::TextUnformatted(link.parentBone.c_str());
             ImGui::TableNextColumn();
             if (ImGui::SmallButton(uiLabel("Delete"))) {
-                auto links = scene.externalParents();
+                auto links = scene.effectiveExternalParents(frame);
                 links.erase(links.begin() + static_cast<std::ptrdiff_t>(i));
                 session.history()->execute(
                     scene, std::make_unique<ExternalParentsCommand>(scene, std::move(links),
