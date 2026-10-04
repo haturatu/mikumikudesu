@@ -407,6 +407,15 @@ class VulkanDevice final : public Device {
                            VkAccessFlags2 previousColorAccess, bool preservePreviousFrame);
     void uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer,
                              VkDeviceMemory& memory, VkDeviceSize allocationSize = 0);
+    [[nodiscard]] VkPipeline createGraphicsPipelineResource(const GraphicsPipelineDescEx& desc, VkPipelineLayout layout,
+                                                            std::span<const VkPipelineShaderStageCreateInfo> stages,
+                                                            std::span<const VkFormat> colorFormats,
+                                                            VkFormat depthFormat);
+    void writePreviewTextureDescriptor(VkDescriptorSet set, VkImageView view);
+    void allocateImageMemory(const VkImageCreateInfo& info, VkMemoryPropertyFlags properties, VkImage& image,
+                             VkDeviceMemory& memory);
+    void allocateBufferMemory(const VkBufferCreateInfo& info, VkMemoryPropertyFlags properties, VkBuffer& buffer,
+                              VkDeviceMemory& memory, VkMemoryAllocateFlags flags = 0);
     [[nodiscard]] std::uint32_t findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags flags) const;
     [[nodiscard]] VkDeviceAddress bufferDeviceAddress(VkBuffer buffer) const;
     void recordTraceRays(VkCommandBuffer commandBuffer, handles::PipelineHandle pipeline,

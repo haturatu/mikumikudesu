@@ -42,6 +42,23 @@
 
 namespace dayo::graphics {
 namespace {
+void transferWriteBarrier(VkCommandBuffer commands, VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size,
+                          VkPipelineStageFlags2 dstStages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                          VkAccessFlags2 dstAccess = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT) {
+    const VkBufferMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                                         .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                         .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                         .dstStageMask = dstStages,
+                                         .dstAccessMask = dstAccess,
+                                         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                         .buffer = buffer,
+                                         .offset = offset,
+                                         .size = size};
+    const VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .bufferMemoryBarrierCount = 1, .pBufferMemoryBarriers = &barrier};
+    vkCmdPipelineBarrier2(commands, &dependency);
+}
 
 void check(VkResult result, std::string_view operation) {
     if (result != VK_SUCCESS) {
@@ -1295,16 +1312,7 @@ void VulkanDevice::createSwapchain() {
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
         };
-        check(vkCreateImage(device_, &depthInfo, nullptr, &depth.image), "create swapchain depth image");
-        VkMemoryRequirements requirements{};
-        vkGetImageMemoryRequirements(device_, depth.image, &requirements);
-        const VkMemoryAllocateInfo allocation{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .allocationSize = requirements.size,
-            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
-        };
-        check(vkAllocateMemory(device_, &allocation, nullptr, &depth.memory), "allocate swapchain depth image");
-        check(vkBindImageMemory(device_, depth.image, depth.memory, 0), "bind swapchain depth image");
+        allocateImageMemory(depthInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, depth.image, depth.memory);
         const VkImageViewCreateInfo depthView{
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             .image = depth.image,
@@ -1391,523 +1399,181 @@ void VulkanDevice::destroyPipelineCache() {
 }
 
 void VulkanDevice::createPipeline() {
-    const auto vertexCode = readBinary(DAYO_PREVIEW_VERTEX_SPV);
-    const auto edgeVertexCode = readBinary(DAYO_PREVIEW_EDGE_VERTEX_SPV);
-    const auto shadowVertexCode = readBinary(DAYO_PREVIEW_SHADOW_VERTEX_SPV);
-    const auto normalFragmentCode = readBinary(DAYO_PREVIEW_NORMAL_FRAGMENT_SPV);
-    const auto fragmentCode = readBinary(DAYO_PREVIEW_FRAGMENT_SPV);
-    const VkShaderModuleCreateInfo vertexInfo{
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = vertexCode.size(),
-        .pCode = reinterpret_cast<const std::uint32_t*>(vertexCode.data()),
-    };
-    const VkShaderModuleCreateInfo fragmentInfo{
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = fragmentCode.size(),
-        .pCode = reinterpret_cast<const std::uint32_t*>(fragmentCode.data()),
-    };
-    const VkShaderModuleCreateInfo edgeVertexInfo{
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = edgeVertexCode.size(),
-        .pCode = reinterpret_cast<const std::uint32_t*>(edgeVertexCode.data()),
-    };
-    VkShaderModule vertex{};
-    VkShaderModule edgeVertex{};
-    VkShaderModule shadowVertex{};
-    VkShaderModule normalFragment{};
-    VkShaderModule fragment{};
-    VkShaderModule shadowFragment{};
-    VkShaderModule backgroundVertex{};
-    VkShaderModule backgroundFragment{};
-    const auto loadModule = [this](const char* path) {
-        const auto code = readBinary(path);
+    std::vector<VkShaderModule> modules;
+    modules.reserve(16);
+    const auto createModule = [this, &modules](const std::vector<std::byte>& code) {
         const VkShaderModuleCreateInfo info{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                                             .codeSize = code.size(),
                                             .pCode = reinterpret_cast<const std::uint32_t*>(code.data())};
         VkShaderModule module{};
         check(vkCreateShaderModule(device_, &info, nullptr, &module), "create Preview shader module");
+        modules.push_back(module);
         return module;
     };
-    check(vkCreateShaderModule(device_, &vertexInfo, nullptr, &vertex), "create vertex shader");
+    const auto stage = [&](const char* path, VkShaderStageFlagBits flag, const char* entry) {
+        return VkPipelineShaderStageCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                               .stage = flag,
+                                               .module = createModule(readBinary(path)),
+                                               .pName = entry};
+    };
+    const auto createLayout = [this](std::span<const VkDescriptorSetLayout> sets,
+                                     std::span<const VkPushConstantRange> pushes = {}) {
+        const VkPipelineLayoutCreateInfo info{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                              .setLayoutCount = static_cast<std::uint32_t>(sets.size()),
+                                              .pSetLayouts = sets.data(),
+                                              .pushConstantRangeCount = static_cast<std::uint32_t>(pushes.size()),
+                                              .pPushConstantRanges = pushes.data()};
+        VkPipelineLayout layout{};
+        check(vkCreatePipelineLayout(device_, &info, nullptr, &layout), "create Preview pipeline layout");
+        return layout;
+    };
     try {
-        check(vkCreateShaderModule(device_, &edgeVertexInfo, nullptr, &edgeVertex), "create edge vertex shader");
-        check(vkCreateShaderModule(device_, &fragmentInfo, nullptr, &fragment), "create fragment shader");
-        const VkShaderModuleCreateInfo shadowInfo{
-            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-            .codeSize = shadowVertexCode.size(),
-            .pCode = reinterpret_cast<const std::uint32_t*>(shadowVertexCode.data()),
-        };
-        check(vkCreateShaderModule(device_, &shadowInfo, nullptr, &shadowVertex), "create shadow vertex shader");
-        const VkShaderModuleCreateInfo normalInfo{
-            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-            .codeSize = normalFragmentCode.size(),
-            .pCode = reinterpret_cast<const std::uint32_t*>(normalFragmentCode.data()),
-        };
-        check(vkCreateShaderModule(device_, &normalInfo, nullptr, &normalFragment),
-              "create preview normal fragment shader");
-        shadowFragment = loadModule(DAYO_PREVIEW_SHADOW_FRAGMENT_SPV);
-        backgroundVertex = loadModule(DAYO_PREVIEW_BACKGROUND_VERTEX_SPV);
-        backgroundFragment = loadModule(DAYO_PREVIEW_BACKGROUND_FRAGMENT_SPV);
-    } catch (...) {
-        if (shadowFragment != VK_NULL_HANDLE)
-            vkDestroyShaderModule(device_, shadowFragment, nullptr);
-        if (backgroundVertex != VK_NULL_HANDLE)
-            vkDestroyShaderModule(device_, backgroundVertex, nullptr);
-        if (backgroundFragment != VK_NULL_HANDLE)
-            vkDestroyShaderModule(device_, backgroundFragment, nullptr);
-        if (normalFragment != VK_NULL_HANDLE)
-            vkDestroyShaderModule(device_, normalFragment, nullptr);
-        if (shadowVertex != VK_NULL_HANDLE)
-            vkDestroyShaderModule(device_, shadowVertex, nullptr);
-        if (fragment != VK_NULL_HANDLE)
-            vkDestroyShaderModule(device_, fragment, nullptr);
-        if (edgeVertex != VK_NULL_HANDLE)
-            vkDestroyShaderModule(device_, edgeVertex, nullptr);
-        vkDestroyShaderModule(device_, vertex, nullptr);
-        throw;
-    }
+        const std::array stages{stage(DAYO_PREVIEW_VERTEX_SPV, VK_SHADER_STAGE_VERTEX_BIT, "VS"),
+                                stage(DAYO_PREVIEW_FRAGMENT_SPV, VK_SHADER_STAGE_FRAGMENT_BIT, "PS")};
+        const std::array edgeStages{stage(DAYO_PREVIEW_EDGE_VERTEX_SPV, VK_SHADER_STAGE_VERTEX_BIT, "EdgeVS"),
+                                    stages[1]};
+        const std::array shadowStages{
+            stage(DAYO_PREVIEW_SHADOW_VERTEX_SPV, VK_SHADER_STAGE_VERTEX_BIT, "ShadowVS"),
+            stage(DAYO_PREVIEW_SHADOW_FRAGMENT_SPV, VK_SHADER_STAGE_FRAGMENT_BIT, "ShadowPS")};
+        const std::array normalStages{
+            stages[0], stage(DAYO_PREVIEW_NORMAL_FRAGMENT_SPV, VK_SHADER_STAGE_FRAGMENT_BIT, "NormalPS")};
+        const std::array backgroundStages{
+            stage(DAYO_PREVIEW_BACKGROUND_VERTEX_SPV, VK_SHADER_STAGE_VERTEX_BIT, "BackgroundVS"),
+            stage(DAYO_PREVIEW_BACKGROUND_FRAGMENT_SPV, VK_SHADER_STAGE_FRAGMENT_BIT, "BackgroundPS")};
+        const std::array descriptorLayouts{previewDescriptorSetLayout_,         previewSkinningDescriptorSetLayout_,
+                                           previewMaterialDescriptorSetLayout_, previewBindlessDescriptorSetLayout_,
+                                           previewMorphDescriptorSetLayout_,    previewEnvironmentDescriptorSetLayout_,
+                                           previewShadowDescriptorSetLayout_,   previewAoSampleDescriptorSetLayout_};
+        const std::array pushes{VkPushConstantRange{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                                    sizeof(PreviewPushConstants)}};
+        pipelineLayout_ = createLayout(descriptorLayouts, pushes);
+        backgroundPipelineLayout_ = createLayout(std::array{previewDescriptorSetLayout_});
 
-    const std::array stages{
-        VkPipelineShaderStageCreateInfo{
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            .stage = VK_SHADER_STAGE_VERTEX_BIT,
-            .module = vertex,
-            .pName = "VS",
-        },
-        VkPipelineShaderStageCreateInfo{
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-            .module = fragment,
-            .pName = "PS",
-        },
-    };
-    auto edgeStages = stages;
-    edgeStages[0].module = edgeVertex;
-    edgeStages[0].pName = "EdgeVS";
-    // Deformed stream: position(12), normal(12), UV(8), edge scale(4).
-    const VkVertexInputBindingDescription vertexBinding{0, sizeof(PreviewDeformedVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-    const std::array vertexAttributes{
-        VkVertexInputAttributeDescription{0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0},
-        VkVertexInputAttributeDescription{1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12},
-        VkVertexInputAttributeDescription{2, 0, VK_FORMAT_R32G32_SFLOAT, 24},
-        VkVertexInputAttributeDescription{9, 0, VK_FORMAT_R32_SFLOAT, 32},
-    };
-    const VkPipelineVertexInputStateCreateInfo vertexInput{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        .vertexBindingDescriptionCount = 1,
-        .pVertexBindingDescriptions = &vertexBinding,
-        .vertexAttributeDescriptionCount = static_cast<std::uint32_t>(vertexAttributes.size()),
-        .pVertexAttributeDescriptions = vertexAttributes.data(),
-    };
-    const VkPipelineInputAssemblyStateCreateInfo assembly{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-    };
-    const VkPipelineViewportStateCreateInfo viewport{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-        .viewportCount = 1,
-        .scissorCount = 1,
-    };
-    const VkPipelineRasterizationStateCreateInfo rasterizer{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-        .polygonMode = VK_POLYGON_MODE_FILL,
-        .cullMode = VK_CULL_MODE_NONE,
-        // preview.hlsl flips clip-space Y, which reverses the projected winding.
-        .frontFace = VK_FRONT_FACE_CLOCKWISE,
-        .lineWidth = 1.0F,
-    };
-    const VkPipelineMultisampleStateCreateInfo multisample{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
-    };
-    const VkPipelineColorBlendAttachmentState opaqueBlendAttachment{
-        .blendEnable = VK_FALSE,
-        .colorWriteMask =
-            VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-    };
-    const VkPipelineColorBlendAttachmentState transparentBlendAttachment{
-        .blendEnable = VK_TRUE,
-        .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
-        .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-        .colorBlendOp = VK_BLEND_OP_ADD,
-        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-        .alphaBlendOp = VK_BLEND_OP_ADD,
-        .colorWriteMask =
-            VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-    };
-    const VkPipelineColorBlendStateCreateInfo opaqueBlend{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-        .attachmentCount = 1,
-        .pAttachments = &opaqueBlendAttachment,
-    };
-    const VkPipelineColorBlendStateCreateInfo transparentBlend{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-        .attachmentCount = 1,
-        .pAttachments = &transparentBlendAttachment,
-    };
-    const VkPipelineDepthStencilStateCreateInfo depthStencil{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-        .depthTestEnable = VK_TRUE,
-        .depthWriteEnable = VK_TRUE,
-        .depthCompareOp = VK_COMPARE_OP_LESS,
-    };
-    const VkPipelineDepthStencilStateCreateInfo backgroundDepthStencil{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-        .depthTestEnable = VK_FALSE,
-        .depthWriteEnable = VK_FALSE,
-        .depthCompareOp = VK_COMPARE_OP_ALWAYS,
-    };
-    const VkPipelineDepthStencilStateCreateInfo edgeDepthStencil{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-        .depthTestEnable = VK_TRUE,
-        .depthWriteEnable = VK_FALSE,
-        .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
-    };
-    const VkPipelineDepthStencilStateCreateInfo transparentDepthStencil{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-        .depthTestEnable = VK_TRUE,
-        .depthWriteEnable = VK_TRUE,
-        .depthCompareOp = VK_COMPARE_OP_LESS,
-    };
-    const VkPipelineRasterizationStateCreateInfo edgeRasterizer{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-        .polygonMode = VK_POLYGON_MODE_FILL,
-        .cullMode = VK_CULL_MODE_FRONT_BIT,
-        // EdgeVS uses the same clip-space Y flip as the main Preview vertex shader.
-        .frontFace = VK_FRONT_FACE_CLOCKWISE,
-        .lineWidth = 1.0F,
-    };
-    const std::array dynamicStates{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-    const VkPipelineDynamicStateCreateInfo dynamic{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-        .dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size()),
-        .pDynamicStates = dynamicStates.data(),
-    };
-    const VkPushConstantRange pushConstant{
-        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-        .offset = 0,
-        .size = sizeof(PreviewPushConstants),
-    };
-    const std::array descriptorLayouts{
-        previewDescriptorSetLayout_,         previewSkinningDescriptorSetLayout_,
-        previewMaterialDescriptorSetLayout_, previewBindlessDescriptorSetLayout_,
-        previewMorphDescriptorSetLayout_,    previewEnvironmentDescriptorSetLayout_,
-        previewShadowDescriptorSetLayout_,   previewAoSampleDescriptorSetLayout_,
-    };
-    const VkPipelineLayoutCreateInfo layoutInfo{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = static_cast<std::uint32_t>(descriptorLayouts.size()),
-        .pSetLayouts = descriptorLayouts.data(),
-        .pushConstantRangeCount = 1,
-        .pPushConstantRanges = &pushConstant,
-    };
-    check(vkCreatePipelineLayout(device_, &layoutInfo, nullptr, &pipelineLayout_), "create pipeline layout");
-    const VkPipelineRenderingCreateInfo renderingInfo{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-        .colorAttachmentCount = 1,
-        .pColorAttachmentFormats = &swapchainFormat_,
-        .depthAttachmentFormat = VK_FORMAT_D32_SFLOAT,
-    };
-    const VkGraphicsPipelineCreateInfo pipelineInfo{
-        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-        .pNext = &renderingInfo,
-        .stageCount = static_cast<std::uint32_t>(stages.size()),
-        .pStages = stages.data(),
-        .pVertexInputState = &vertexInput,
-        .pInputAssemblyState = &assembly,
-        .pViewportState = &viewport,
-        .pRasterizationState = &rasterizer,
-        .pMultisampleState = &multisample,
-        .pDepthStencilState = &depthStencil,
-        .pColorBlendState = &opaqueBlend,
-        .pDynamicState = &dynamic,
-        .layout = pipelineLayout_,
-    };
-    const auto result = vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &pipelineInfo, nullptr, &pipeline_);
-    auto transparentPipelineInfo = pipelineInfo;
-    transparentPipelineInfo.pDepthStencilState = &transparentDepthStencil;
-    transparentPipelineInfo.pColorBlendState = &transparentBlend;
-    const auto transparentResult =
-        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &transparentPipelineInfo, nullptr, &transparentPipeline_);
-    const VkPipelineLayoutCreateInfo backgroundLayoutInfo{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = 1,
-        .pSetLayouts = &previewDescriptorSetLayout_,
-    };
-    check(vkCreatePipelineLayout(device_, &backgroundLayoutInfo, nullptr, &backgroundPipelineLayout_),
-          "create background pipeline layout");
-    const std::array backgroundStages{
-        VkPipelineShaderStageCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                        .stage = VK_SHADER_STAGE_VERTEX_BIT,
-                                        .module = backgroundVertex,
-                                        .pName = "BackgroundVS"},
-        VkPipelineShaderStageCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-                                        .module = backgroundFragment,
-                                        .pName = "BackgroundPS"},
-    };
-    auto backgroundRendering = renderingInfo;
-    backgroundRendering.depthAttachmentFormat = VK_FORMAT_UNDEFINED;
-    const VkVertexInputBindingDescription backgroundBinding{0, sizeof(PreviewVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-    const VkVertexInputAttributeDescription backgroundAttribute{0, 0, VK_FORMAT_R32G32B32_SFLOAT,
-                                                                offsetof(PreviewVertex, position)};
-    const VkPipelineVertexInputStateCreateInfo backgroundInput{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        .vertexBindingDescriptionCount = 1,
-        .pVertexBindingDescriptions = &backgroundBinding,
-        .vertexAttributeDescriptionCount = 1,
-        .pVertexAttributeDescriptions = &backgroundAttribute,
-    };
-    auto backgroundPipelineInfo = pipelineInfo;
-    backgroundPipelineInfo.pVertexInputState = &backgroundInput;
-    backgroundPipelineInfo.layout = backgroundPipelineLayout_;
-    backgroundPipelineInfo.pStages = backgroundStages.data();
-    backgroundPipelineInfo.pNext = &backgroundRendering;
-    backgroundPipelineInfo.pDepthStencilState = &backgroundDepthStencil;
-    const auto backgroundResult =
-        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &backgroundPipelineInfo, nullptr, &backgroundPipeline_);
-    auto edgePipelineInfo = pipelineInfo;
-    edgePipelineInfo.pStages = edgeStages.data();
-    edgePipelineInfo.pDepthStencilState = &edgeDepthStencil;
-    edgePipelineInfo.pRasterizationState = &edgeRasterizer;
-    edgePipelineInfo.pColorBlendState = &transparentBlend;
-    const auto edgeResult =
-        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &edgePipelineInfo, nullptr, &edgePipeline_);
-    const VkPipelineShaderStageCreateInfo shadowStage{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-        .stage = VK_SHADER_STAGE_VERTEX_BIT,
-        .module = shadowVertex,
-        .pName = "ShadowVS",
-    };
-    const std::array shadowStages{
-        shadowStage,
-        VkPipelineShaderStageCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-                                        .module = shadowFragment,
-                                        .pName = "ShadowPS"},
-    };
-    const VkPipelineColorBlendStateCreateInfo shadowBlend{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-    };
-    const VkPipelineRenderingCreateInfo shadowRendering{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-        .depthAttachmentFormat = VK_FORMAT_D32_SFLOAT,
-    };
-    auto shadowPipelineInfo = pipelineInfo;
-    shadowPipelineInfo.pNext = &shadowRendering;
-    shadowPipelineInfo.stageCount = static_cast<std::uint32_t>(shadowStages.size());
-    shadowPipelineInfo.pStages = shadowStages.data();
-    shadowPipelineInfo.pColorBlendState = &shadowBlend;
-    const auto shadowResult =
-        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &shadowPipelineInfo, nullptr, &shadowPipeline_);
-    const std::array depthStages{
-        VkPipelineShaderStageCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                        .stage = VK_SHADER_STAGE_VERTEX_BIT,
-                                        .module = vertex,
-                                        .pName = "VS"},
-        VkPipelineShaderStageCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-                                        .module = normalFragment,
-                                        .pName = "NormalPS"},
-    };
-    const VkFormat normalFormat = previewNormalFormat_;
-    const VkPipelineRenderingCreateInfo depthRendering{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-        .colorAttachmentCount = 1,
-        .pColorAttachmentFormats = &normalFormat,
-        .depthAttachmentFormat = VK_FORMAT_D32_SFLOAT,
-    };
-    auto depthPipelineInfo = shadowPipelineInfo;
-    depthPipelineInfo.pNext = &depthRendering;
-    depthPipelineInfo.stageCount = static_cast<std::uint32_t>(depthStages.size());
-    depthPipelineInfo.pStages = depthStages.data();
-    depthPipelineInfo.pColorBlendState = &opaqueBlend;
-    const auto depthResult =
-        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &depthPipelineInfo, nullptr, &depthPrepassPipeline_);
-    const VkFormat hdrFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
-    const VkPipelineRenderingCreateInfo hdrRendering{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-        .colorAttachmentCount = 1,
-        .pColorAttachmentFormats = &hdrFormat,
-        .depthAttachmentFormat = VK_FORMAT_D32_SFLOAT,
-    };
-    auto hdrPipelineInfo = pipelineInfo;
-    hdrPipelineInfo.pNext = &hdrRendering;
-    const auto hdrResult =
-        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &hdrPipelineInfo, nullptr, &hdrPipeline_);
-    hdrPipelineInfo.pDepthStencilState = &transparentDepthStencil;
-    hdrPipelineInfo.pColorBlendState = &transparentBlend;
-    const auto hdrTransparentResult =
-        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &hdrPipelineInfo, nullptr, &hdrTransparentPipeline_);
-    hdrPipelineInfo.pStages = edgeStages.data();
-    hdrPipelineInfo.pDepthStencilState = &edgeDepthStencil;
-    hdrPipelineInfo.pRasterizationState = &edgeRasterizer;
-    hdrPipelineInfo.pColorBlendState = &transparentBlend;
-    const auto hdrEdgeResult =
-        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &hdrPipelineInfo, nullptr, &hdrEdgePipeline_);
-    vkDestroyShaderModule(device_, shadowFragment, nullptr);
-    vkDestroyShaderModule(device_, backgroundVertex, nullptr);
-    vkDestroyShaderModule(device_, backgroundFragment, nullptr);
-    vkDestroyShaderModule(device_, normalFragment, nullptr);
-    vkDestroyShaderModule(device_, shadowVertex, nullptr);
-    vkDestroyShaderModule(device_, fragment, nullptr);
-    vkDestroyShaderModule(device_, edgeVertex, nullptr);
-    vkDestroyShaderModule(device_, vertex, nullptr);
-    check(result, "create graphics pipeline");
-    check(transparentResult, "create transparent graphics pipeline");
-    check(backgroundResult, "create background graphics pipeline");
-    check(edgeResult, "create edge graphics pipeline");
-    check(shadowResult, "create shadow graphics pipeline");
-    check(depthResult, "create preview depth prepass pipeline");
-    check(hdrResult, "create HDR preview pipeline");
-    check(hdrTransparentResult, "create HDR transparent preview pipeline");
-    check(hdrEdgeResult, "create HDR edge preview pipeline");
-
-    const auto aoCode = readBinary(previewAoFormat_ == VK_FORMAT_R8_UNORM     ? DAYO_PREVIEW_AO_SPV
-                                   : previewAoFormat_ == VK_FORMAT_R16_SFLOAT ? DAYO_PREVIEW_AO16_SPV
-                                                                              : DAYO_PREVIEW_AO32_SPV);
-    const auto blurCode = readBinary(previewAoFormat_ == VK_FORMAT_R8_UNORM     ? DAYO_PREVIEW_AO_BLUR_SPV
-                                     : previewAoFormat_ == VK_FORMAT_R16_SFLOAT ? DAYO_PREVIEW_AO16_BLUR_SPV
-                                                                                : DAYO_PREVIEW_AO32_BLUR_SPV);
-    const auto createModule = [this](const std::vector<std::byte>& code) {
-        const VkShaderModuleCreateInfo info{
-            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-            .codeSize = code.size(),
-            .pCode = reinterpret_cast<const std::uint32_t*>(code.data()),
+        GraphicsPipelineDescEx opaque;
+        // preview.hlsl flips clip-space Y, reversing projected winding.
+        opaque.rasterizer = {CullModeEx::none, FrontFaceEx::clockwise};
+        opaque.depthStencil = {.depthTest = true, .depthWrite = true, .depthCompare = CompareOpEx::less};
+        opaque.vertexBindings = {{0, sizeof(PreviewDeformedVertex)}};
+        opaque.vertexAttributes = {{0, 0, VertexInputFormatEx::r32g32b32Sfloat, 0},
+                                   {1, 0, VertexInputFormatEx::r32g32b32Sfloat, 12},
+                                   {2, 0, VertexInputFormatEx::r32g32Sfloat, 24},
+                                   {9, 0, VertexInputFormatEx::r32Sfloat, 32}};
+        auto transparent = opaque;
+        transparent.blendAttachments = {{.enabled = true,
+                                         .srcColor = BlendFactorEx::srcAlpha,
+                                         .dstColor = BlendFactorEx::oneMinusSrcAlpha,
+                                         .srcAlpha = BlendFactorEx::one,
+                                         .dstAlpha = BlendFactorEx::oneMinusSrcAlpha}};
+        auto edge = transparent;
+        edge.rasterizer.cullMode = CullModeEx::front;
+        edge.depthStencil.depthWrite = false;
+        edge.depthStencil.depthCompare = CompareOpEx::lessOrEqual;
+        auto background = opaque;
+        background.depthStencil = {.depthCompare = CompareOpEx::always};
+        background.vertexBindings = {{0, sizeof(PreviewVertex)}};
+        background.vertexAttributes = {{0, 0, VertexInputFormatEx::r32g32b32Sfloat, offsetof(PreviewVertex, position)}};
+        const std::array swapchainFormats{swapchainFormat_};
+        const std::array hdrFormats{VK_FORMAT_R16G16B16A16_SFLOAT};
+        pipeline_ =
+            createGraphicsPipelineResource(opaque, pipelineLayout_, stages, swapchainFormats, VK_FORMAT_D32_SFLOAT);
+        transparentPipeline_ = createGraphicsPipelineResource(transparent, pipelineLayout_, stages, swapchainFormats,
+                                                              VK_FORMAT_D32_SFLOAT);
+        edgePipeline_ =
+            createGraphicsPipelineResource(edge, pipelineLayout_, edgeStages, swapchainFormats, VK_FORMAT_D32_SFLOAT);
+        backgroundPipeline_ = createGraphicsPipelineResource(background, backgroundPipelineLayout_, backgroundStages,
+                                                             swapchainFormats, VK_FORMAT_UNDEFINED);
+        shadowPipeline_ =
+            createGraphicsPipelineResource(opaque, pipelineLayout_, shadowStages, {}, VK_FORMAT_D32_SFLOAT);
+        depthPrepassPipeline_ = createGraphicsPipelineResource(opaque, pipelineLayout_, normalStages,
+                                                               std::array{previewNormalFormat_}, VK_FORMAT_D32_SFLOAT);
+        hdrPipeline_ =
+            createGraphicsPipelineResource(opaque, pipelineLayout_, stages, hdrFormats, VK_FORMAT_D32_SFLOAT);
+        hdrTransparentPipeline_ =
+            createGraphicsPipelineResource(transparent, pipelineLayout_, stages, hdrFormats, VK_FORMAT_D32_SFLOAT);
+        hdrEdgePipeline_ =
+            createGraphicsPipelineResource(edge, pipelineLayout_, edgeStages, hdrFormats, VK_FORMAT_D32_SFLOAT);
+        const auto aoCode = readBinary(previewAoFormat_ == VK_FORMAT_R8_UNORM     ? DAYO_PREVIEW_AO_SPV
+                                       : previewAoFormat_ == VK_FORMAT_R16_SFLOAT ? DAYO_PREVIEW_AO16_SPV
+                                                                                  : DAYO_PREVIEW_AO32_SPV);
+        const auto blurCode = readBinary(previewAoFormat_ == VK_FORMAT_R8_UNORM     ? DAYO_PREVIEW_AO_BLUR_SPV
+                                         : previewAoFormat_ == VK_FORMAT_R16_SFLOAT ? DAYO_PREVIEW_AO16_BLUR_SPV
+                                                                                    : DAYO_PREVIEW_AO32_BLUR_SPV);
+        const VkPushConstantRange aoPush{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
+        const VkPipelineLayoutCreateInfo aoLayoutInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 1,
+            .pSetLayouts = &previewAoDescriptorSetLayout_,
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &aoPush,
         };
-        VkShaderModule module{};
-        check(vkCreateShaderModule(device_, &info, nullptr, &module), "create preview AO shader");
-        return module;
-    };
-    const VkPushConstantRange aoPush{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
-    const VkPipelineLayoutCreateInfo aoLayoutInfo{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = 1,
-        .pSetLayouts = &previewAoDescriptorSetLayout_,
-        .pushConstantRangeCount = 1,
-        .pPushConstantRanges = &aoPush,
-    };
-    check(vkCreatePipelineLayout(device_, &aoLayoutInfo, nullptr, &aoPipelineLayout_),
-          "create preview AO pipeline layout");
-    const std::array shaderCodes{std::cref(aoCode), std::cref(blurCode)};
-    const std::array<const char*, 2> entryPoints{"ComputeAO", "BlurAO"};
-    for (std::size_t index = 0; index < shaderCodes.size(); ++index) {
-        const auto module = createModule(shaderCodes[index].get());
-        const VkComputePipelineCreateInfo computeInfo{
+        check(vkCreatePipelineLayout(device_, &aoLayoutInfo, nullptr, &aoPipelineLayout_),
+              "create preview AO pipeline layout");
+        const std::array shaderCodes{std::cref(aoCode), std::cref(blurCode)};
+        const std::array<const char*, 2> entryPoints{"ComputeAO", "BlurAO"};
+        for (std::size_t index = 0; index < shaderCodes.size(); ++index) {
+            const auto module = createModule(shaderCodes[index].get());
+            const VkComputePipelineCreateInfo computeInfo{
+                .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                          .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                          .module = module,
+                          .pName = entryPoints[index]},
+                .layout = aoPipelineLayout_,
+            };
+            const auto computeResult =
+                vkCreateComputePipelines(device_, pipelineCache_, 1, &computeInfo, nullptr, &aoPipelines_[index]);
+            check(computeResult, "create preview AO compute pipeline");
+        }
+
+        std::array<VkDescriptorSetLayoutBinding, 5> deformBindings{};
+        for (std::uint32_t i = 0; i < deformBindings.size(); ++i)
+            deformBindings[i] = {i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        const VkDescriptorSetLayoutCreateInfo deformDescriptorInfo{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = static_cast<std::uint32_t>(deformBindings.size()),
+            .pBindings = deformBindings.data(),
+        };
+        check(vkCreateDescriptorSetLayout(device_, &deformDescriptorInfo, nullptr, &previewDeformDescriptorLayout_),
+              "create Preview deform descriptor layout");
+        const VkPushConstantRange deformPush{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
+        const VkPipelineLayoutCreateInfo deformLayoutInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 1,
+            .pSetLayouts = &previewDeformDescriptorLayout_,
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &deformPush,
+        };
+        check(vkCreatePipelineLayout(device_, &deformLayoutInfo, nullptr, &previewDeformPipelineLayout_),
+              "create Preview deform pipeline layout");
+        const auto deformModule = createModule(readBinary(DAYO_PREVIEW_DEFORM_SPV));
+        const VkComputePipelineCreateInfo deformInfo{
             .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
             .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                       .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                      .module = module,
-                      .pName = entryPoints[index]},
-            .layout = aoPipelineLayout_,
+                      .module = deformModule,
+                      .pName = "PreviewDeform"},
+            .layout = previewDeformPipelineLayout_,
         };
-        const auto computeResult =
-            vkCreateComputePipelines(device_, pipelineCache_, 1, &computeInfo, nullptr, &aoPipelines_[index]);
-        vkDestroyShaderModule(device_, module, nullptr);
-        check(computeResult, "create preview AO compute pipeline");
+        const auto deformResult =
+            vkCreateComputePipelines(device_, pipelineCache_, 1, &deformInfo, nullptr, &previewDeformPipeline_);
+        check(deformResult, "create Preview deform pipeline");
+
+        const std::array toneStages{stage(DAYO_PREVIEW_TONEMAP_VERTEX_SPV, VK_SHADER_STAGE_VERTEX_BIT, "VS"),
+                                    stage(DAYO_PREVIEW_TONEMAP_FRAGMENT_SPV, VK_SHADER_STAGE_FRAGMENT_BIT, "PS")};
+        previewTonemapPipelineLayout_ = createLayout(std::array{previewTonemapDescriptorSetLayout_});
+        GraphicsPipelineDescEx tone;
+        tone.rasterizer = opaque.rasterizer;
+        tone.blendAttachments = transparent.blendAttachments;
+        tone.blendAttachments[0].srcColor = BlendFactorEx::one;
+        previewTonemapPipeline_ = createGraphicsPipelineResource(tone, previewTonemapPipelineLayout_, toneStages,
+                                                                 swapchainFormats, VK_FORMAT_UNDEFINED);
+    } catch (...) {
+        for (const auto module : modules)
+            vkDestroyShaderModule(device_, module, nullptr);
+        throw;
     }
-
-    std::array<VkDescriptorSetLayoutBinding, 5> deformBindings{};
-    for (std::uint32_t i = 0; i < deformBindings.size(); ++i)
-        deformBindings[i] = {i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-    const VkDescriptorSetLayoutCreateInfo deformDescriptorInfo{
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = static_cast<std::uint32_t>(deformBindings.size()),
-        .pBindings = deformBindings.data(),
-    };
-    check(vkCreateDescriptorSetLayout(device_, &deformDescriptorInfo, nullptr, &previewDeformDescriptorLayout_),
-          "create Preview deform descriptor layout");
-    const VkPushConstantRange deformPush{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
-    const VkPipelineLayoutCreateInfo deformLayoutInfo{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = 1,
-        .pSetLayouts = &previewDeformDescriptorLayout_,
-        .pushConstantRangeCount = 1,
-        .pPushConstantRanges = &deformPush,
-    };
-    check(vkCreatePipelineLayout(device_, &deformLayoutInfo, nullptr, &previewDeformPipelineLayout_),
-          "create Preview deform pipeline layout");
-    const auto deformModule = createModule(readBinary(DAYO_PREVIEW_DEFORM_SPV));
-    const VkComputePipelineCreateInfo deformInfo{
-        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-        .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                  .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                  .module = deformModule,
-                  .pName = "PreviewDeform"},
-        .layout = previewDeformPipelineLayout_,
-    };
-    const auto deformResult =
-        vkCreateComputePipelines(device_, pipelineCache_, 1, &deformInfo, nullptr, &previewDeformPipeline_);
-    vkDestroyShaderModule(device_, deformModule, nullptr);
-    check(deformResult, "create Preview deform pipeline");
-
-    const auto toneVertexCode = readBinary(DAYO_PREVIEW_TONEMAP_VERTEX_SPV);
-    const auto toneFragmentCode = readBinary(DAYO_PREVIEW_TONEMAP_FRAGMENT_SPV);
-    const auto toneVertex = createModule(toneVertexCode);
-    const auto toneFragment = createModule(toneFragmentCode);
-    const std::array toneStages{
-        VkPipelineShaderStageCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                        .stage = VK_SHADER_STAGE_VERTEX_BIT,
-                                        .module = toneVertex,
-                                        .pName = "VS"},
-        VkPipelineShaderStageCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-                                        .module = toneFragment,
-                                        .pName = "PS"},
-    };
-    const VkPipelineLayoutCreateInfo toneLayoutInfo{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = 1,
-        .pSetLayouts = &previewTonemapDescriptorSetLayout_,
-    };
-    check(vkCreatePipelineLayout(device_, &toneLayoutInfo, nullptr, &previewTonemapPipelineLayout_),
-          "create preview tonemap pipeline layout");
-    const VkPipelineVertexInputStateCreateInfo emptyVertexInput{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-    };
-    const VkPipelineDepthStencilStateCreateInfo noDepth{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-    };
-    const VkPipelineRasterizationStateCreateInfo toneRasterizer{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-        .polygonMode = VK_POLYGON_MODE_FILL,
-        .cullMode = VK_CULL_MODE_NONE,
-        .frontFace = VK_FRONT_FACE_CLOCKWISE,
-        .lineWidth = 1.0F,
-    };
-    const VkPipelineRenderingCreateInfo toneRendering{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-        .colorAttachmentCount = 1,
-        .pColorAttachmentFormats = &swapchainFormat_,
-    };
-    auto compositeAttachment = transparentBlendAttachment;
-    compositeAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-    const VkPipelineColorBlendStateCreateInfo compositeBlend{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-        .attachmentCount = 1,
-        .pAttachments = &compositeAttachment,
-    };
-    const VkGraphicsPipelineCreateInfo toneInfo{
-        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-        .pNext = &toneRendering,
-        .stageCount = static_cast<std::uint32_t>(toneStages.size()),
-        .pStages = toneStages.data(),
-        .pVertexInputState = &emptyVertexInput,
-        .pInputAssemblyState = &assembly,
-        .pViewportState = &viewport,
-        .pRasterizationState = &toneRasterizer,
-        .pMultisampleState = &multisample,
-        .pDepthStencilState = &noDepth,
-        .pColorBlendState = &compositeBlend,
-        .pDynamicState = &dynamic,
-        .layout = previewTonemapPipelineLayout_,
-    };
-    const auto toneResult =
-        vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &toneInfo, nullptr, &previewTonemapPipeline_);
-    vkDestroyShaderModule(device_, toneFragment, nullptr);
-    vkDestroyShaderModule(device_, toneVertex, nullptr);
-    check(toneResult, "create preview tonemap pipeline");
+    for (const auto module : modules)
+        vkDestroyShaderModule(device_, module, nullptr);
 }
 
 void VulkanDevice::destroyPipeline() {
@@ -2673,6 +2339,19 @@ void VulkanDevice::destroyPreviewTextureResource(PreviewTextureResource& texture
     texture = {};
 }
 
+void VulkanDevice::writePreviewTextureDescriptor(VkDescriptorSet set, VkImageView view) {
+    const VkDescriptorImageInfo image{.imageView = view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    std::array<VkWriteDescriptorSet, 3> writes{};
+    for (std::uint32_t binding = 0; binding < writes.size(); ++binding)
+        writes[binding] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                           .dstSet = set,
+                           .dstBinding = binding,
+                           .descriptorCount = 1,
+                           .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                           .pImageInfo = &image};
+    updatePreviewImageDescriptors(writes);
+}
+
 VulkanDevice::PreviewTextureResource VulkanDevice::createPreviewTextureResource(std::uint32_t width,
                                                                                 std::uint32_t height,
                                                                                 std::span<const std::uint8_t> rgba) {
@@ -2683,29 +2362,7 @@ VulkanDevice::PreviewTextureResource VulkanDevice::createPreviewTextureResource(
     PreviewTextureResource texture;
     std::uint64_t uploadValue = 0;
     try {
-        const VkImageCreateInfo imageInfo{
-            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .imageType = VK_IMAGE_TYPE_2D,
-            .format = VK_FORMAT_R8G8B8A8_SRGB,
-            .extent = {width, height, 1},
-            .mipLevels = 1,
-            .arrayLayers = 1,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        };
-        check(vkCreateImage(device_, &imageInfo, nullptr, &texture.image), "create preview texture");
-        VkMemoryRequirements imageRequirements{};
-        vkGetImageMemoryRequirements(device_, texture.image, &imageRequirements);
-        const VkMemoryAllocateInfo imageAllocation{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .allocationSize = imageRequirements.size,
-            .memoryTypeIndex = findMemoryType(imageRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
-        };
-        check(vkAllocateMemory(device_, &imageAllocation, nullptr, &texture.memory), "allocate preview texture");
-        check(vkBindImageMemory(device_, texture.image, texture.memory, 0), "bind preview texture");
+        texture = createEmptyPreviewTextureResource(width, height);
 
         uploadContext_->begin();
         const auto slice = uploadContext_->allocate(byteSize, 4);
@@ -2757,70 +2414,6 @@ VulkanDevice::PreviewTextureResource VulkanDevice::createPreviewTextureResource(
         vkCmdPipelineBarrier2(command, &shaderDependency);
         uploadValue = uploadContext_->submit();
 
-        const VkImageViewCreateInfo viewInfo{
-            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .image = texture.image,
-            .viewType = VK_IMAGE_VIEW_TYPE_2D,
-            .format = VK_FORMAT_R8G8B8A8_SRGB,
-            .subresourceRange = range,
-        };
-        check(vkCreateImageView(device_, &viewInfo, nullptr, &texture.view), "create preview texture view");
-        const VkDescriptorSetAllocateInfo setInfo{
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .descriptorPool = previewDescriptorPool_,
-            .descriptorSetCount = 1,
-            .pSetLayouts = &previewDescriptorSetLayout_,
-        };
-        check(vkAllocateDescriptorSets(device_, &setInfo, &texture.descriptor), "allocate preview texture descriptor");
-        const VkDescriptorImageInfo descriptorImage{
-            .imageView = texture.view,
-            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        };
-        const VkDescriptorImageInfo descriptorSampler{.sampler = previewSampler_};
-        const VkDescriptorImageInfo descriptorClampSampler{.sampler = previewClampSampler_};
-        const std::array writes{
-            VkWriteDescriptorSet{
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = texture.descriptor,
-                .dstBinding = 0,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                .pImageInfo = &descriptorImage,
-            },
-            VkWriteDescriptorSet{
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = texture.descriptor,
-                .dstBinding = 1,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                .pImageInfo = &descriptorImage,
-            },
-            VkWriteDescriptorSet{
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = texture.descriptor,
-                .dstBinding = 2,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                .pImageInfo = &descriptorImage,
-            },
-            VkWriteDescriptorSet{
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = texture.descriptor,
-                .dstBinding = 3,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
-                .pImageInfo = &descriptorSampler,
-            },
-            VkWriteDescriptorSet{
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = texture.descriptor,
-                .dstBinding = 4,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
-                .pImageInfo = &descriptorClampSampler,
-            },
-        };
-        updatePreviewImageDescriptors(writes);
         return texture;
     } catch (...) {
         uploadContext_->abort();
@@ -2834,95 +2427,44 @@ VulkanDevice::PreviewTextureResource VulkanDevice::createPreviewTextureResource(
 VulkanDevice::PreviewTextureResource VulkanDevice::createEmptyPreviewTextureResource(std::uint32_t width,
                                                                                      std::uint32_t height) {
     PreviewTextureResource texture;
-    const VkImageCreateInfo imageInfo{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .imageType = VK_IMAGE_TYPE_2D,
-        .format = VK_FORMAT_R8G8B8A8_SRGB,
-        .extent = {width, height, 1},
-        .mipLevels = 1,
-        .arrayLayers = 1,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
-        .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-    };
-    check(vkCreateImage(device_, &imageInfo, nullptr, &texture.image), "create streaming background image");
-    VkMemoryRequirements requirements{};
-    vkGetImageMemoryRequirements(device_, texture.image, &requirements);
-    const VkMemoryAllocateInfo allocation{
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize = requirements.size,
-        .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
-    };
-    check(vkAllocateMemory(device_, &allocation, nullptr, &texture.memory), "allocate streaming background image");
-    check(vkBindImageMemory(device_, texture.image, texture.memory, 0), "bind streaming background image");
-    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    const VkImageViewCreateInfo viewInfo{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .image = texture.image,
-        .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = VK_FORMAT_R8G8B8A8_SRGB,
-        .subresourceRange = range,
-    };
-    check(vkCreateImageView(device_, &viewInfo, nullptr, &texture.view), "create streaming background view");
-    const VkDescriptorSetAllocateInfo setInfo{
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = previewDescriptorPool_,
-        .descriptorSetCount = 1,
-        .pSetLayouts = &previewDescriptorSetLayout_,
-    };
-    check(vkAllocateDescriptorSets(device_, &setInfo, &texture.descriptor), "allocate streaming background descriptor");
-    const VkDescriptorImageInfo descriptorImage{
-        .imageView = texture.view,
-        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-    };
-    const VkDescriptorImageInfo descriptorSampler{.sampler = previewSampler_};
-    const VkDescriptorImageInfo descriptorClampSampler{.sampler = previewClampSampler_};
-    const std::array writes{
-        VkWriteDescriptorSet{
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = texture.descriptor,
-            .dstBinding = 0,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-            .pImageInfo = &descriptorImage,
-        },
-        VkWriteDescriptorSet{
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = texture.descriptor,
-            .dstBinding = 1,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-            .pImageInfo = &descriptorImage,
-        },
-        VkWriteDescriptorSet{
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = texture.descriptor,
-            .dstBinding = 2,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-            .pImageInfo = &descriptorImage,
-        },
-        VkWriteDescriptorSet{
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = texture.descriptor,
-            .dstBinding = 3,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
-            .pImageInfo = &descriptorSampler,
-        },
-        VkWriteDescriptorSet{
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = texture.descriptor,
-            .dstBinding = 4,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
-            .pImageInfo = &descriptorClampSampler,
-        },
-    };
-    updatePreviewImageDescriptors(writes);
-    return texture;
+    try {
+        const VkImageCreateInfo imageInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = VK_FORMAT_R8G8B8A8_SRGB,
+            .extent = {width, height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        allocateImageMemory(imageInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, texture.image, texture.memory);
+        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        const VkImageViewCreateInfo viewInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = texture.image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = VK_FORMAT_R8G8B8A8_SRGB,
+            .subresourceRange = range,
+        };
+        check(vkCreateImageView(device_, &viewInfo, nullptr, &texture.view), "create streaming background view");
+        const VkDescriptorSetAllocateInfo setInfo{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = previewDescriptorPool_,
+            .descriptorSetCount = 1,
+            .pSetLayouts = &previewDescriptorSetLayout_,
+        };
+        check(vkAllocateDescriptorSets(device_, &setInfo, &texture.descriptor),
+              "allocate streaming background descriptor");
+        writePreviewTextureDescriptor(texture.descriptor, texture.view);
+        return texture;
+    } catch (...) {
+        destroyPreviewTextureResource(texture);
+        throw;
+    }
 }
 
 void VulkanDevice::createPreviewBackgroundStream(std::uint32_t width, std::uint32_t height) {
@@ -3140,18 +2682,8 @@ VulkanDevice::Frame::NativeUploadBuffer& VulkanDevice::allocateNativeUploadBuffe
             .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         };
-        check(vkCreateBuffer(device_, &bufferInfo, nullptr, &upload.buffer), "create native frame upload buffer");
-        VkMemoryRequirements requirements{};
-        vkGetBufferMemoryRequirements(device_, upload.buffer, &requirements);
-        const VkMemoryAllocateInfo allocationInfo{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .allocationSize = requirements.size,
-            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-        };
-        check(vkAllocateMemory(device_, &allocationInfo, nullptr, &upload.memory),
-              "allocate native frame upload memory");
-        check(vkBindBufferMemory(device_, upload.buffer, upload.memory, 0), "bind native frame upload memory");
+        allocateBufferMemory(bufferInfo, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             upload.buffer, upload.memory);
         check(vkMapMemory(device_, upload.memory, 0, capacity, 0, &upload.mapped), "map native frame upload memory");
         upload.capacity = capacity;
         upload.offset = size;
@@ -3654,16 +3186,7 @@ void VulkanDevice::ensurePreviewAoResources(Frame& frame, VkExtent2D extent) {
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
         };
-        check(vkCreateImage(device_, &imageInfo, nullptr, &image), "create preview AO image");
-        VkMemoryRequirements requirements{};
-        vkGetImageMemoryRequirements(device_, image, &requirements);
-        const VkMemoryAllocateInfo allocation{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .allocationSize = requirements.size,
-            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
-        };
-        check(vkAllocateMemory(device_, &allocation, nullptr, &memory), "allocate preview AO image");
-        check(vkBindImageMemory(device_, image, memory, 0), "bind preview AO image");
+        allocateImageMemory(imageInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, memory);
         const VkImageViewCreateInfo viewInfo{
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             .image = image,
@@ -4625,17 +4148,7 @@ void VulkanDevice::createViewportResource(ViewportResource& resource, VkExtent2D
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
         };
-        check(vkCreateImage(device_, &colorInfo, nullptr, &resource.colorImage), "create viewport color image");
-        VkMemoryRequirements colorRequirements{};
-        vkGetImageMemoryRequirements(device_, resource.colorImage, &colorRequirements);
-        const VkMemoryAllocateInfo colorAllocation{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .allocationSize = colorRequirements.size,
-            .memoryTypeIndex = findMemoryType(colorRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
-        };
-        check(vkAllocateMemory(device_, &colorAllocation, nullptr, &resource.colorMemory),
-              "allocate viewport color memory");
-        check(vkBindImageMemory(device_, resource.colorImage, resource.colorMemory, 0), "bind viewport color memory");
+        allocateImageMemory(colorInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, resource.colorImage, resource.colorMemory);
         const VkImageViewCreateInfo colorViewInfo{
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             .image = resource.colorImage,
@@ -4658,17 +4171,8 @@ void VulkanDevice::createViewportResource(ViewportResource& resource, VkExtent2D
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
         };
-        check(vkCreateImage(device_, &depthInfo, nullptr, &resource.depth.image), "create viewport depth image");
-        VkMemoryRequirements depthRequirements{};
-        vkGetImageMemoryRequirements(device_, resource.depth.image, &depthRequirements);
-        const VkMemoryAllocateInfo depthAllocation{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .allocationSize = depthRequirements.size,
-            .memoryTypeIndex = findMemoryType(depthRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
-        };
-        check(vkAllocateMemory(device_, &depthAllocation, nullptr, &resource.depth.memory),
-              "allocate viewport depth memory");
-        check(vkBindImageMemory(device_, resource.depth.image, resource.depth.memory, 0), "bind viewport depth memory");
+        allocateImageMemory(depthInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, resource.depth.image,
+                            resource.depth.memory);
         const VkImageViewCreateInfo depthViewInfo{
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             .image = resource.depth.image,
@@ -4751,17 +4255,7 @@ void VulkanDevice::createOffscreenResource(VkExtent2D extent) {
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
-    check(vkCreateImage(device_, &colorInfo, nullptr, &offscreen_.colorImage), "create offscreen color image");
-    VkMemoryRequirements colorRequirements{};
-    vkGetImageMemoryRequirements(device_, offscreen_.colorImage, &colorRequirements);
-    const VkMemoryAllocateInfo colorAllocation{
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize = colorRequirements.size,
-        .memoryTypeIndex = findMemoryType(colorRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
-    };
-    check(vkAllocateMemory(device_, &colorAllocation, nullptr, &offscreen_.colorMemory),
-          "allocate offscreen color memory");
-    check(vkBindImageMemory(device_, offscreen_.colorImage, offscreen_.colorMemory, 0), "bind offscreen color memory");
+    allocateImageMemory(colorInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, offscreen_.colorImage, offscreen_.colorMemory);
     const VkImageViewCreateInfo colorViewInfo{
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = offscreen_.colorImage,
@@ -4834,17 +4328,8 @@ std::uint64_t VulkanDevice::enqueueRenderToImage(const RenderTargetDesc& target)
                                       .size = required,
                                       .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                       .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-        check(vkCreateBuffer(device_, &info, nullptr, &slot.buffer), "create readback ring buffer");
-        VkMemoryRequirements requirements{};
-        vkGetBufferMemoryRequirements(device_, slot.buffer, &requirements);
-        const VkMemoryAllocateInfo allocation{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .allocationSize = requirements.size,
-            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-        };
-        check(vkAllocateMemory(device_, &allocation, nullptr, &slot.memory), "allocate readback ring memory");
-        check(vkBindBufferMemory(device_, slot.buffer, slot.memory, 0), "bind readback ring memory");
+        allocateBufferMemory(info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             slot.buffer, slot.memory);
         check(vkMapMemory(device_, slot.memory, 0, required, 0, &slot.mapped), "map readback ring memory");
         slot.capacity = required;
     }
@@ -5598,17 +5083,8 @@ void VulkanDevice::uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBu
         .queueFamilyIndexCount = concurrent ? 2U : 0U,
         .pQueueFamilyIndices = concurrent ? sharedFamilies.data() : nullptr,
     };
-    check(vkCreateBuffer(device_, &bufferInfo, nullptr, &buffer), "create preview mesh buffer");
-    VkMemoryRequirements requirements{};
-    vkGetBufferMemoryRequirements(device_, buffer, &requirements);
-    const VkMemoryAllocateInfo allocationInfo{
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize = requirements.size,
-        .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits,
-                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-    };
-    check(vkAllocateMemory(device_, &allocationInfo, nullptr, &memory), "allocate preview mesh memory");
-    check(vkBindBufferMemory(device_, buffer, memory, 0), "bind preview mesh memory");
+    allocateBufferMemory(bufferInfo, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, buffer,
+                         memory);
     void* mapped = nullptr;
     check(vkMapMemory(device_, memory, 0, storageSize, 0, &mapped), "map preview mesh memory");
     std::memcpy(mapped, data, static_cast<std::size_t>(size));
@@ -5631,41 +5107,17 @@ void VulkanDevice::uploadPreviewDeviceLocalBuffer(const void* data, VkDeviceSize
             .queueFamilyIndexCount = concurrent ? 2U : 0U,
             .pQueueFamilyIndices = concurrent ? sharedFamilies.data() : nullptr,
         };
-        check(vkCreateBuffer(device_, &bufferInfo, nullptr, &buffer), "create device-local preview buffer");
-        VkMemoryRequirements requirements{};
-        vkGetBufferMemoryRequirements(device_, buffer, &requirements);
-        const VkMemoryAllocateInfo allocationInfo{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .allocationSize = requirements.size,
-            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
-        };
-        check(vkAllocateMemory(device_, &allocationInfo, nullptr, &memory), "allocate device-local preview buffer");
-        check(vkBindBufferMemory(device_, buffer, memory, 0), "bind device-local preview buffer");
+        allocateBufferMemory(bufferInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, buffer, memory);
 
         uploadContext_->begin();
         const auto slice = uploadContext_->allocate(size);
         std::memcpy(slice.mapped, data, static_cast<std::size_t>(size));
         const VkBufferCopy copy{.srcOffset = slice.offset, .size = size};
         vkCmdCopyBuffer(uploadContext_->commandBuffer(), slice.buffer, buffer, 1, &copy);
-        const VkBufferMemoryBarrier2 visible{
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            .dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT |
-                             VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = buffer,
-            .offset = 0,
-            .size = size,
-        };
-        const VkDependencyInfo visibleDependency{
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .bufferMemoryBarrierCount = 1,
-            .pBufferMemoryBarriers = &visible,
-        };
-        vkCmdPipelineBarrier2(uploadContext_->commandBuffer(), &visibleDependency);
+        transferWriteBarrier(uploadContext_->commandBuffer(), buffer, 0, size,
+                             VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                             VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT |
+                                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
         static_cast<void>(uploadContext_->submit());
     } catch (...) {
         uploadContext_->abort();
@@ -6183,28 +5635,12 @@ handles::BufferHandle VulkanDevice::createBufferEx(const BufferResourceDesc& des
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
 
-    check(vkCreateBuffer(device_, &createInfo, nullptr, &typed.resource.buffer), "create typed buffer");
+    const VkMemoryPropertyFlags memoryFlags =
+        desc.cpuVisible ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+                        : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    allocateBufferMemory(createInfo, memoryFlags, typed.resource.buffer, typed.resource.memory,
+                         capabilities_.bufferDeviceAddress ? VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT : 0);
     try {
-        VkMemoryRequirements requirements{};
-        vkGetBufferMemoryRequirements(device_, typed.resource.buffer, &requirements);
-        const VkMemoryPropertyFlags memoryFlags =
-            desc.cpuVisible ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-                            : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-        VkMemoryAllocateFlagsInfo allocationFlags{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
-            .flags = capabilities_.bufferDeviceAddress
-                         ? static_cast<VkMemoryAllocateFlags>(VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT)
-                         : static_cast<VkMemoryAllocateFlags>(0),
-        };
-        const VkMemoryAllocateInfo allocationInfo{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .pNext = capabilities_.bufferDeviceAddress ? &allocationFlags : nullptr,
-            .allocationSize = requirements.size,
-            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits, memoryFlags),
-        };
-        check(vkAllocateMemory(device_, &allocationInfo, nullptr, &typed.resource.memory),
-              "allocate typed buffer memory");
-        check(vkBindBufferMemory(device_, typed.resource.buffer, typed.resource.memory, 0), "bind typed buffer memory");
         if (desc.cpuVisible)
             check(vkMapMemory(device_, typed.resource.memory, 0, typed.resource.size, 0, &typed.mapped),
                   "map typed buffer");
@@ -6290,19 +5726,8 @@ handles::TextureHandle VulkanDevice::createTextureEx(const TextureResourceDesc& 
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
 
-    check(vkCreateImage(device_, &createInfo, nullptr, &typed.resource.image), "create typed texture");
+    allocateImageMemory(createInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, typed.resource.image, typed.resource.memory);
     try {
-        VkMemoryRequirements requirements{};
-        vkGetImageMemoryRequirements(device_, typed.resource.image, &requirements);
-        const VkMemoryAllocateInfo allocationInfo{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .allocationSize = requirements.size,
-            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
-        };
-        check(vkAllocateMemory(device_, &allocationInfo, nullptr, &typed.resource.memory),
-              "allocate typed texture memory");
-        check(vkBindImageMemory(device_, typed.resource.image, typed.resource.memory, 0), "bind typed texture memory");
-
         const VkImageAspectFlags aspect = imageAspect(desc.format);
         const VkImageViewCreateInfo viewInfo{
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -6575,17 +6000,29 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
         if (vkDepthFormat == VK_FORMAT_UNDEFINED || !isDepthFormat(*desc.depthFormat))
             throw std::invalid_argument("native graphics pipeline depth format is invalid");
     }
+    TypedPipeline typed{.layout = desc.layout, .bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS};
+    typed.pipeline =
+        createGraphicsPipelineResource(desc, layoutIt->second.layout, stages, vkColorFormats, vkDepthFormat);
+    const auto handle = typedPipelineHandles_.create();
+    typedPipelines_.emplace(handle, typed);
+    return handle;
+}
+
+VkPipeline VulkanDevice::createGraphicsPipelineResource(const GraphicsPipelineDescEx& desc, VkPipelineLayout layout,
+                                                        std::span<const VkPipelineShaderStageCreateInfo> stages,
+                                                        std::span<const VkFormat> vkColorFormats,
+                                                        VkFormat vkDepthFormat) {
     if (desc.depthStencil.depthTest && vkDepthFormat == VK_FORMAT_UNDEFINED)
         throw std::invalid_argument("depth testing requires a depth attachment format");
-    if (desc.depthStencil.stencilTest && desc.depthFormat != PixelFormat::depth24Stencil8)
+    if (desc.depthStencil.stencilTest && vkDepthFormat != VK_FORMAT_D24_UNORM_S8_UINT)
         throw std::invalid_argument("stencil testing requires a stencil-capable depth attachment format");
     if (desc.logicOpEnable && !capabilities_.logicOp)
         throw std::runtime_error("FX pipeline requests logic operations unsupported by the Vulkan device");
     if (desc.independentBlend && !capabilities_.independentBlend)
         throw std::runtime_error("FX pipeline requests independent blending unsupported by the Vulkan device");
-    std::vector<BlendAttachmentStateEx> blendStates(colorFormats.size());
+    std::vector<BlendAttachmentStateEx> blendStates(vkColorFormats.size());
     if (!desc.blendAttachments.empty()) {
-        if (desc.blendAttachments.size() != colorFormats.size())
+        if (desc.blendAttachments.size() != vkColorFormats.size())
             throw std::invalid_argument("blend attachment count does not match color attachment count");
         blendStates = desc.blendAttachments;
     }
@@ -6701,8 +6138,7 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
         .colorAttachmentCount = static_cast<std::uint32_t>(vkColorFormats.size()),
         .pColorAttachmentFormats = vkColorFormats.data(),
         .depthAttachmentFormat = vkDepthFormat,
-        .stencilAttachmentFormat =
-            desc.depthFormat == PixelFormat::depth24Stencil8 ? vkDepthFormat : VK_FORMAT_UNDEFINED,
+        .stencilAttachmentFormat = vkDepthFormat == VK_FORMAT_D24_UNORM_S8_UINT ? vkDepthFormat : VK_FORMAT_UNDEFINED,
     };
     const VkGraphicsPipelineCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
@@ -6717,14 +6153,12 @@ handles::PipelineHandle VulkanDevice::createGraphicsPipelineEx(const GraphicsPip
         .pDepthStencilState = &depthStencil,
         .pColorBlendState = &blend,
         .pDynamicState = &dynamic,
-        .layout = layoutIt->second.layout,
+        .layout = layout,
     };
-    TypedPipeline typed{.layout = desc.layout, .bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS};
-    check(vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &createInfo, nullptr, &typed.pipeline),
-          "create typed graphics pipeline");
-    const auto handle = typedPipelineHandles_.create();
-    typedPipelines_.emplace(handle, typed);
-    return handle;
+    VkPipeline pipeline{};
+    check(vkCreateGraphicsPipelines(device_, pipelineCache_, 1, &createInfo, nullptr, &pipeline),
+          "create graphics pipeline");
+    return pipeline;
 }
 
 handles::PipelineHandle VulkanDevice::createRayTracingPipelineEx(const RayTracingPipelineDescEx& desc) {
@@ -7033,24 +6467,7 @@ void VulkanDevice::recordUploadBuffer(VkCommandBuffer commandBuffer, handles::Bu
     vkCmdPipelineBarrier2(commandBuffer, &priorDependency);
     const VkBufferCopy copy{.srcOffset = stagingOffset, .dstOffset = offset, .size = bytes.size()};
     vkCmdCopyBuffer(commandBuffer, staging.buffer, destinationIt->second.resource.buffer, 1, &copy);
-    const VkBufferMemoryBarrier2 visible{
-        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .buffer = destinationIt->second.resource.buffer,
-        .offset = offset,
-        .size = bytes.size(),
-    };
-    const VkDependencyInfo dependency{
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .bufferMemoryBarrierCount = 1,
-        .pBufferMemoryBarriers = &visible,
-    };
-    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+    transferWriteBarrier(commandBuffer, destinationIt->second.resource.buffer, offset, bytes.size());
 }
 
 void VulkanDevice::copyBufferToTextureEx(handles::BufferHandle source, handles::TextureHandle destination) {
@@ -7136,24 +6553,7 @@ void VulkanDevice::recordClearBuffer(VkCommandBuffer commandBuffer, handles::Buf
     if (it->second.resource.size % 4U != 0U)
         throw std::invalid_argument("typed command-list buffer clear requires a four-byte-aligned buffer");
     vkCmdFillBuffer(commandBuffer, it->second.resource.buffer, 0, it->second.resource.size, value);
-    const VkBufferMemoryBarrier2 visible{
-        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .buffer = it->second.resource.buffer,
-        .offset = 0,
-        .size = it->second.resource.size,
-    };
-    const VkDependencyInfo dependency{
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .bufferMemoryBarrierCount = 1,
-        .pBufferMemoryBarriers = &visible,
-    };
-    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+    transferWriteBarrier(commandBuffer, it->second.resource.buffer, 0, it->second.resource.size);
 }
 
 void VulkanDevice::recordClearBuffer(VkCommandBuffer commandBuffer, handles::BufferHandle buffer,
@@ -7180,24 +6580,7 @@ void VulkanDevice::recordClearBuffer(VkCommandBuffer commandBuffer, handles::Buf
         vkCmdUpdateBuffer(commandBuffer, it->second.resource.buffer, offset, updateSize, updateWords.data());
         offset += updateSize;
     }
-    const VkBufferMemoryBarrier2 visible{
-        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .buffer = it->second.resource.buffer,
-        .offset = 0,
-        .size = it->second.resource.size,
-    };
-    const VkDependencyInfo dependency{
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .bufferMemoryBarrierCount = 1,
-        .pBufferMemoryBarriers = &visible,
-    };
-    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+    transferWriteBarrier(commandBuffer, it->second.resource.buffer, 0, it->second.resource.size);
 }
 
 void VulkanDevice::generateMipmapsEx(handles::TextureHandle texture) {
@@ -7310,17 +6693,8 @@ std::vector<std::uint8_t> VulkanDevice::readbackTextureSubresources(std::span<co
             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         };
-        check(vkCreateBuffer(device_, &bufferInfo, nullptr, &buffer), "create texture readback buffer");
-        VkMemoryRequirements requirements{};
-        vkGetBufferMemoryRequirements(device_, buffer, &requirements);
-        const VkMemoryAllocateInfo allocation{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .allocationSize = requirements.size,
-            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-        };
-        check(vkAllocateMemory(device_, &allocation, nullptr, &memory), "allocate texture readback memory");
-        check(vkBindBufferMemory(device_, buffer, memory, 0), "bind texture readback memory");
+        allocateBufferMemory(bufferInfo, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             buffer, memory);
         check(vkMapMemory(device_, memory, 0, stagingSize, 0, &mapped), "map texture readback memory");
         uploadContext_->begin();
         const auto commandBuffer = uploadContext_->commandBuffer();
@@ -8413,24 +7787,7 @@ void VulkanDevice::uploadBufferEx(handles::BufferHandle handle, std::span<const 
         std::memcpy(staging.mapped, bytes.data(), bytes.size());
         const VkBufferCopy copy{.srcOffset = staging.offset, .dstOffset = offset, .size = bytes.size()};
         vkCmdCopyBuffer(uploadContext_->commandBuffer(), staging.buffer, it->second.resource.buffer, 1, &copy);
-        const VkBufferMemoryBarrier2 visible{
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = it->second.resource.buffer,
-            .offset = offset,
-            .size = bytes.size(),
-        };
-        const VkDependencyInfo dependency{
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .bufferMemoryBarrierCount = 1,
-            .pBufferMemoryBarriers = &visible,
-        };
-        vkCmdPipelineBarrier2(uploadContext_->commandBuffer(), &dependency);
+        transferWriteBarrier(uploadContext_->commandBuffer(), it->second.resource.buffer, offset, bytes.size());
         const auto signal = uploadContext_->submit();
         uploadContext_->wait(signal);
     } catch (...) {
@@ -8640,6 +7997,53 @@ void VulkanDevice::destroyTypedResources() noexcept {
     }
     typedBuffers_.clear();
     typedBufferHandles_.clear();
+}
+
+void VulkanDevice::allocateImageMemory(const VkImageCreateInfo& info, VkMemoryPropertyFlags properties,
+                                       VkImage& resource, VkDeviceMemory& memory) {
+    check(vkCreateImage(device_, &info, nullptr, &resource), "create image");
+    try {
+        VkMemoryRequirements requirements{};
+        vkGetImageMemoryRequirements(device_, resource, &requirements);
+        const VkMemoryAllocateInfo allocation{.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                              .allocationSize = requirements.size,
+                                              .memoryTypeIndex =
+                                                  findMemoryType(requirements.memoryTypeBits, properties)};
+        check(vkAllocateMemory(device_, &allocation, nullptr, &memory), "allocate image memory");
+        check(vkBindImageMemory(device_, resource, memory, 0), "bind image memory");
+    } catch (...) {
+        vkDestroyImage(device_, resource, nullptr);
+        if (memory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, memory, nullptr);
+        resource = VK_NULL_HANDLE;
+        memory = VK_NULL_HANDLE;
+        throw;
+    }
+}
+
+void VulkanDevice::allocateBufferMemory(const VkBufferCreateInfo& info, VkMemoryPropertyFlags properties,
+                                        VkBuffer& resource, VkDeviceMemory& memory, VkMemoryAllocateFlags flags) {
+    check(vkCreateBuffer(device_, &info, nullptr, &resource), "create buffer");
+    try {
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(device_, resource, &requirements);
+        const VkMemoryAllocateFlagsInfo allocationFlags{.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+                                                        .flags = flags};
+        const VkMemoryAllocateInfo allocation{.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                              .pNext = flags != 0 ? &allocationFlags : nullptr,
+                                              .allocationSize = requirements.size,
+                                              .memoryTypeIndex =
+                                                  findMemoryType(requirements.memoryTypeBits, properties)};
+        check(vkAllocateMemory(device_, &allocation, nullptr, &memory), "allocate buffer memory");
+        check(vkBindBufferMemory(device_, resource, memory, 0), "bind buffer memory");
+    } catch (...) {
+        vkDestroyBuffer(device_, resource, nullptr);
+        if (memory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, memory, nullptr);
+        resource = VK_NULL_HANDLE;
+        memory = VK_NULL_HANDLE;
+        throw;
+    }
 }
 
 std::uint32_t VulkanDevice::findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags flags) const {
