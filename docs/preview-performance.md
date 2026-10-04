@@ -110,7 +110,11 @@ asyncはこの条件でserial autoを上回らず、既定では無効にして�
 通常・high・asyncの描画比較もローカルのsynchronization validationで通過しています。
 ただし旧head `966d363`のGitHub Actionsではreadback slot/stagingのtransfer hazardにより3構成とも失敗しました。
 レビュー後にslot再利用のCOPY write→write barrier、texture/buffer readbackのupload ringからの分離、
-immutable samplerの破棄順序を修正しています。GitHub Actionsの再実行結果はPRのcheckを参照してください。
+immutable samplerの破棄順序を修正しています。transfer hazard解消後に残ったPRESENT_AFTER_WRITEは、
+Ubuntu 24.04のVVL 1.3.275で再現し、同じbinary/llvmpipeをVVL 1.4.313で実行すると3構成とも通過しました。
+[ALL_COMMANDS signal scopeのlayout transition対応修正](https://github.com/KhronosGroup/Vulkan-ValidationLayers/pull/7480)
+を含むLunarG VVL 1.4.313をchecksum固定でCIへ導入しています。Mesaとloaderは更新しません。
+GitHub Actionsの再実行結果はPRのcheckを参照してください。
 SDEF/QDEF・ゼロ法線・輪郭・背景・複数材質・texture format roundtrip・リング満杯/重複ticket・
 未回収frame中のresource拡張とサイズ変更を含みます。Vegaで未対応のD24S8 fixtureはfeature queryでskipします。
 VMAなし・ImGuiなしのsystem-only buildも成功し、通常・high・asyncの描画テストは通過しました。
