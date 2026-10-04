@@ -230,9 +230,12 @@ bool typedVulkanFormatRoundTrips(dayo::graphics::VulkanDevice& device) {
             std::vector<std::uint8_t> input(dayo::graphics::pixelFormatByteSize(format) * 4U);
             for (std::size_t index = 0; index < input.size(); ++index)
                 input[index] = static_cast<std::uint8_t>((index * 37U + 11U) & 0xffU);
-            device.uploadTextureEx(texture, input, 0, 0);
-            if (device.readbackTextureEx(texture, 0, 0) != input)
-                throw std::runtime_error("upload/readback payload mismatch");
+            for (unsigned cycle = 0; cycle < 4; ++cycle) {
+                input.front() = static_cast<std::uint8_t>(cycle * 19U + 3U);
+                device.uploadTextureEx(texture, input, 0, 0);
+                if (device.readbackTextureEx(texture, 0, 0) != input)
+                    throw std::runtime_error("repeated upload/readback payload mismatch");
+            }
             device.destroyTextureEx(texture);
         } catch (const std::exception& exception) {
             if (texture.valid()) {
@@ -246,14 +249,34 @@ bool typedVulkanFormatRoundTrips(dayo::graphics::VulkanDevice& device) {
             return false;
         }
     }
+    // Buffer readback must not write into staging subsequently used by texture uploads.
+    dayo::graphics::handles::BufferHandle buffer;
+    try {
+        buffer = device.createBufferEx(
+            {.size = 64,
+             .usage = dayo::graphics::ResourceUsage::transferSrc | dayo::graphics::ResourceUsage::transferDst});
+        std::vector<std::byte> input(64, std::byte{0x37});
+        for (unsigned cycle = 0; cycle < 4; ++cycle) {
+            input.front() = static_cast<std::byte>(cycle + 1);
+            device.uploadBufferEx(buffer, input);
+            if (device.readbackBufferEx(buffer, 0, input.size()) != input)
+                throw std::runtime_error("repeated buffer upload/readback payload mismatch");
+        }
+        device.destroyBufferEx(buffer);
+    } catch (const std::exception& exception) {
+        if (buffer.valid())
+            device.destroyBufferEx(buffer);
+        std::cerr << "FAIL: Vulkan buffer upload/readback round trip: " << exception.what() << '\n';
+        return false;
+    }
     return true;
 }
 
 bool dedicatedStagingReadback(dayo::graphics::VulkanDevice& device) {
     dayo::graphics::handles::TextureHandle texture;
     try {
-        // Exceed the 64 MiB staging ring so the returned slice owns a
-        // dedicated mapping that must survive the GPU completion wait.
+        // Exceed the 64 MiB upload ring and verify the separate readback
+        // allocation survives the GPU completion wait.
         const dayo::graphics::TextureResourceDesc desc{
             .dimension = dayo::graphics::TextureDimension::d2,
             .extent = {4097, 4096, 1},
@@ -1470,6 +1493,13 @@ bool pipelinedReadbackPreservesFrames(dayo::graphics::VulkanDevice& device) {
     for (std::size_t i = 0; i < expected.size(); ++i) {
         update(i);
         expected[i] = device.renderToImage({65, 63});
+    }
+    // Synchronous callers repeatedly recycle the first slot. Preserve its GPU write history.
+    for (std::size_t cycle = 0; cycle < 12; ++cycle) {
+        const auto index = cycle % expected.size();
+        update(index);
+        if (!imagesMatch(expected[index], device.renderToImage({65, 63})))
+            return false;
     }
     std::array<std::uint64_t, 3> tickets{};
     for (std::size_t i = 0; i < tickets.size(); ++i) {
