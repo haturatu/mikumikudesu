@@ -51,6 +51,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void loadBackgroundVideo(const std::filesystem::path& path, bool visible = true);
     void setVideoVisible(bool visible);
     void restartAudioAtCurrentFrame();
+    void seekTimeline(float frame);
     void syncMediaAtCurrentFrame();
     [[nodiscard]] double backgroundVideoSeconds() const;
     void buildMediaBackgroundUi();

@@ -1,4 +1,5 @@
 #include "app/application.hpp"
+#include "app/preview_conversion.hpp"
 #include <deque>
 
 #include "graphics/camera_matrices.hpp"
@@ -150,25 +151,6 @@ double sceneTimelineFps(const core::Scene& scene) noexcept {
     return std::isfinite(value) && value > 0.0 ? value : 30.0;
 }
 
-core::Float3 rotateQuaternion(const core::Float4& quaternion, const core::Float3& value) {
-    const core::Float3 axis{quaternion[0], quaternion[1], quaternion[2]};
-    const core::Float3 firstCross{
-        axis[1] * value[2] - axis[2] * value[1],
-        axis[2] * value[0] - axis[0] * value[2],
-        axis[0] * value[1] - axis[1] * value[0],
-    };
-    const core::Float3 nested{
-        axis[1] * firstCross[2] - axis[2] * firstCross[1],
-        axis[2] * firstCross[0] - axis[0] * firstCross[2],
-        axis[0] * firstCross[1] - axis[1] * firstCross[0],
-    };
-    return {
-        value[0] + 2.0F * (nested[0] + quaternion[3] * firstCross[0]),
-        value[1] + 2.0F * (nested[1] + quaternion[3] * firstCross[1]),
-        value[2] + 2.0F * (nested[2] + quaternion[3] * firstCross[2]),
-    };
-}
-
 bool hasTransparentPixels(const core::ImageRgba8& image) {
     if (image.pixels.size() < 4)
         return false;
@@ -191,14 +173,6 @@ bool hasLoadedTexture(const std::vector<core::ImageRgba8>& textures, std::int32_
         return false;
     const auto pixelCount = width * height;
     return pixelCount <= std::numeric_limits<std::size_t>::max() / 4U && texture.pixels.size() == pixelCount * 4U;
-}
-
-core::Float3 normalizePreviewPoint(const core::Float3& point, const core::PreviewNormalization& normalization) {
-    return {
-        (point[0] - normalization.center[0]) * normalization.scale,
-        (point[1] - normalization.center[1]) * normalization.scale,
-        (point[2] - normalization.center[2]) * normalization.scale,
-    };
 }
 
 std::uint64_t videoOutputFrameCount(std::uint64_t firstFrame, std::uint64_t lastFrame, double sourceFps,
@@ -2158,17 +2132,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         const auto boneBase = static_cast<std::int32_t>(bones.size());
         if (gpuSkinning) {
             bones.reserve(bones.size() + frame.bones.size());
-            for (const auto& source : frame.bones) {
-                graphics::PreviewBoneTransform bone;
-                std::copy(source.rotation.begin(), source.rotation.end(), bone.rotation);
-                const auto rotatedCenter = rotateQuaternion(source.rotation, instance.normalization.center);
-                for (std::size_t axis = 0; axis < 3; ++axis) {
-                    bone.translation[axis] =
-                        (rotatedCenter[axis] + source.translation[axis] - instance.normalization.center[axis]) *
-                        instance.normalization.scale;
-                }
-                bones.push_back(bone);
-            }
+            for (const auto& source : frame.bones)
+                bones.push_back(makePreviewBone(source, instance.normalization));
         }
         const auto textureBase = [&] {
             std::size_t value = 0;
@@ -2242,17 +2207,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         }
         if (gpuSkinning) {
             native.bones.reserve(frame.bones.size());
-            for (const auto& source : frame.bones) {
-                graphics::PreviewBoneTransform bone;
-                std::copy(source.rotation.begin(), source.rotation.end(), bone.rotation);
-                const auto rotatedCenter = rotateQuaternion(source.rotation, instance.normalization.center);
-                for (std::size_t axis = 0; axis < 3; ++axis) {
-                    bone.translation[axis] =
-                        (rotatedCenter[axis] + source.translation[axis] - instance.normalization.center[axis]) *
-                        instance.normalization.scale;
-                }
-                native.bones.push_back(bone);
-            }
+            for (const auto& source : frame.bones)
+                native.bones.push_back(makePreviewBone(source, instance.normalization));
         }
         native.baseVertices.reserve(frame.vertices.size());
         native.deformedVertices.reserve(frame.vertices.size());
@@ -2260,34 +2216,10 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             auto conversion = frameProfiler_.measure(core::ProfileSection::vertexConvert);
             for (std::size_t sourceIndex = 0; sourceIndex < frame.vertices.size(); ++sourceIndex) {
                 const auto& source = frame.vertices[sourceIndex];
-                graphics::PreviewVertex vertex;
-                std::memcpy(vertex.position, source.position.data(), sizeof(vertex.position));
-                std::memcpy(vertex.normal, source.normal.data(), sizeof(vertex.normal));
-                std::memcpy(vertex.uv, source.uv.data(), sizeof(vertex.uv));
-                const bool supported = gpuSkinning;
-                if (supported) {
-                    for (std::size_t influence = 0; influence < 4; ++influence) {
-                        vertex.bones[influence] =
-                            source.bones[influence] < 0 ||
-                                    static_cast<std::size_t>(source.bones[influence]) >= frame.bones.size()
-                                ? -1
-                                : boneBase + source.bones[influence];
-                        vertex.weights[influence] = source.weights[influence];
-                    }
-                    const auto normalizedC = normalizePreviewPoint(source.sdefC, instance.normalization);
-                    const auto normalizedR0 = normalizePreviewPoint(source.sdefR0, instance.normalization);
-                    const auto normalizedR1 = normalizePreviewPoint(source.sdefR1, instance.normalization);
-                    std::copy(normalizedC.begin(), normalizedC.end(), vertex.sdefC);
-                    for (std::size_t axis = 0; axis < 3; ++axis)
-                        vertex.sdefHalfDelta[axis] = (normalizedR0[axis] - normalizedR1[axis]) * 0.5F;
-                    vertex.skinningType = static_cast<std::uint32_t>(source.weightType);
-                    vertex.gpuSkinning = 1;
-                }
-                vertex.edgeScale = source.edgeScale;
                 const auto morphRange =
                     rebuildTopology ? sourceMorphRanges[sourceIndex] : animatedMorphRanges_[baseVertex + sourceIndex];
-                vertex.morphStart = morphRange[0];
-                vertex.morphCount = gpuSkinning ? morphRange[1] : 0U;
+                const auto vertex = makePreviewVertex(source, frame.bones.size(), boneBase, instance.normalization,
+                                                      morphRange, gpuSkinning);
                 vertices.push_back(vertex);
                 if (rebuildTopology)
                     animatedMorphRanges_.push_back(morphRange);
@@ -2296,32 +2228,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         }
         for (std::size_t sourceIndex = 0; sourceIndex < frame.vertices.size(); ++sourceIndex) {
             const auto& source = frame.vertices[sourceIndex];
-            graphics::PreviewVertex vertex;
-            std::memcpy(vertex.position, source.position.data(), sizeof(vertex.position));
-            std::memcpy(vertex.normal, source.normal.data(), sizeof(vertex.normal));
-            std::memcpy(vertex.uv, source.uv.data(), sizeof(vertex.uv));
-            if (gpuSkinning) {
-                for (std::size_t influence = 0; influence < 4; ++influence) {
-                    vertex.bones[influence] =
-                        source.bones[influence] < 0 ||
-                                static_cast<std::size_t>(source.bones[influence]) >= frame.bones.size()
-                            ? -1
-                            : source.bones[influence];
-                    vertex.weights[influence] = source.weights[influence];
-                }
-                const auto normalizedC = normalizePreviewPoint(source.sdefC, instance.normalization);
-                const auto normalizedR0 = normalizePreviewPoint(source.sdefR0, instance.normalization);
-                const auto normalizedR1 = normalizePreviewPoint(source.sdefR1, instance.normalization);
-                std::copy(normalizedC.begin(), normalizedC.end(), vertex.sdefC);
-                for (std::size_t axis = 0; axis < 3; ++axis)
-                    vertex.sdefHalfDelta[axis] = (normalizedR0[axis] - normalizedR1[axis]) * 0.5F;
-                vertex.skinningType = static_cast<std::uint32_t>(source.weightType);
-                vertex.gpuSkinning = 1;
-            }
-            vertex.edgeScale = source.edgeScale;
-            const auto morphRange = nativeMorphRanges[sourceIndex];
-            vertex.morphStart = morphRange[0];
-            vertex.morphCount = gpuSkinning ? morphRange[1] : 0U;
+            const auto vertex = makePreviewVertex(source, frame.bones.size(), 0, instance.normalization,
+                                                  nativeMorphRanges[sourceIndex], gpuSkinning);
             native.baseVertices.push_back(vertex);
 
             graphics::NativeDeformedVertex seed;
@@ -2519,6 +2427,14 @@ void Application::restartAudioAtCurrentFrame() {
     audioPlayer_.setVolume(audioVolume_);
     audioPlayer_.setPlaybackSpeed(playbackSpeed_);
     audioPlayer_.setPaused(!playing_);
+}
+
+void Application::seekTimeline(float frame) {
+    animationFrame_ = std::clamp(frame, 0.0F, scene_.timeline().duration);
+    scene_.setFrame(animationFrame_);
+    syncMediaAtCurrentFrame();
+    refreshAnimatedMesh(false);
+    refreshPreviewScene();
 }
 
 void Application::syncMediaAtCurrentFrame() {
@@ -3975,19 +3891,11 @@ void Application::buildEditorUi() {
     if (uiState_.timelineVisible && ImGui::Begin(workspaceWindowName("Timeline", "timeline").c_str())) {
         uiState_.timelineFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
         if (ImGui::Button("|<")) {
-            animationFrame_ = 0.0F;
-            scene_.setFrame(animationFrame_);
-            syncMediaAtCurrentFrame();
-            refreshAnimatedMesh(false);
-            refreshPreviewScene();
+            seekTimeline(0.0F);
         }
         ImGui::SameLine();
         if (ImGui::Button("<")) {
-            animationFrame_ = std::max(0.0F, animationFrame_ - 1.0F);
-            scene_.setFrame(animationFrame_);
-            syncMediaAtCurrentFrame();
-            refreshAnimatedMesh(false);
-            refreshPreviewScene();
+            seekTimeline(std::max(0.0F, animationFrame_ - 1.0F));
         }
         ImGui::SameLine();
         if (ImGui::Button(playing_ ? "Pause" : "Play")) {
@@ -3996,19 +3904,11 @@ void Application::buildEditorUi() {
         }
         ImGui::SameLine();
         if (ImGui::Button(">")) {
-            animationFrame_ = std::min(scene_.timeline().duration, animationFrame_ + 1.0F);
-            scene_.setFrame(animationFrame_);
-            syncMediaAtCurrentFrame();
-            refreshAnimatedMesh(false);
-            refreshPreviewScene();
+            seekTimeline(std::min(scene_.timeline().duration, animationFrame_ + 1.0F));
         }
         ImGui::SameLine();
         if (ImGui::Button(">|")) {
-            animationFrame_ = scene_.timeline().duration;
-            scene_.setFrame(animationFrame_);
-            syncMediaAtCurrentFrame();
-            refreshAnimatedMesh(false);
-            refreshPreviewScene();
+            seekTimeline(scene_.timeline().duration);
         }
         ImGui::SameLine();
         ImGui::Text("Frame %.0f / %.0f", animationFrame_, scene_.timeline().duration);
@@ -4204,11 +4104,7 @@ void Application::buildEditorUi() {
                         }
                         if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
                             const float frame = (ImGui::GetIO().MousePos.x - left + timelinePan_) / pixelsPerFrame;
-                            animationFrame_ = std::clamp(frame, 0.0F, duration);
-                            scene_.setFrame(animationFrame_);
-                            syncMediaAtCurrentFrame();
-                            refreshAnimatedMesh(false);
-                            refreshPreviewScene();
+                            seekTimeline(std::clamp(frame, 0.0F, duration));
                         }
                     }
                 }
