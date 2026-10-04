@@ -106,8 +106,11 @@ Teto PMX（31,954 vertices / 52,710 triangles）、VMDなし、既定の物理�
 全モデルでの改善率は未測定です。autoとhighはShadow/AO精度も異なります。
 asyncはこの条件でserial autoを上回らず、既定では無効にしています。
 
-検証: ReleaseのCTest 21件（既存で無効のupstream regression_testは除外）。
-通常・high・asyncの描画比較はVulkan synchronization validationを有効にして通過しました。
+検証: ローカルReleaseのCTest 21件（既存で無効のupstream regression_testは除外）は通過。
+通常・high・asyncの描画比較もローカルのsynchronization validationで通過しています。
+ただし旧head `966d363`のGitHub Actionsではreadback slot/stagingのtransfer hazardにより3構成とも失敗しました。
+レビュー後にslot再利用のCOPY write→write barrier、texture/buffer readbackのupload ringからの分離、
+immutable samplerの破棄順序を修正しています。GitHub Actionsの再実行結果はPRのcheckを参照してください。
 SDEF/QDEF・ゼロ法線・輪郭・背景・複数材質・texture format roundtrip・リング満杯/重複ticket・
 未回収frame中のresource拡張とサイズ変更を含みます。Vegaで未対応のD24S8 fixtureはfeature queryでskipします。
 VMAなし・ImGuiなしのsystem-only buildも成功し、通常・high・asyncの描画テストは通過しました。
