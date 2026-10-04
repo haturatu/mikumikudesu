@@ -1,16 +1,10 @@
+#include "preview_normal.hlsli"
+
 struct VertexInput {
     [[vk::location(0)]] float3 position : POSITION;
     [[vk::location(1)]] float3 normal : NORMAL;
     [[vk::location(2)]] float2 uv : TEXCOORD0;
-    [[vk::location(3)]] int4 bones : BLENDINDICES;
-    [[vk::location(4)]] float4 weights : BLENDWEIGHT;
-    [[vk::location(5)]] uint skinningType : TEXCOORD2;
-    [[vk::location(6)]] uint gpuSkinning : TEXCOORD3;
-    [[vk::location(7)]] float3 sdefC : TEXCOORD4;
-    [[vk::location(8)]] float3 sdefHalfDelta : TEXCOORD5;
     [[vk::location(9)]] float edgeScale : TEXCOORD6;
-    [[vk::location(10)]] uint morphStart : TEXCOORD7;
-    [[vk::location(11)]] uint morphCount : TEXCOORD8;
 };
 
 struct VertexOutput {
@@ -40,12 +34,6 @@ struct PreviewSceneConstants {
 };
 [[vk::push_constant]] ConstantBuffer<PreviewSceneConstants> scene;
 
-struct BoneTransform {
-    float4 rotation;
-    float4 translation;
-};
-[[vk::binding(0, 1)]] StructuredBuffer<BoneTransform> boneTransforms;
-
 struct PreviewMaterialData {
     float4 diffuse;
     float4 ambientShininess;
@@ -66,21 +54,14 @@ struct PreviewMaterialData {
 };
 [[vk::binding(0, 2)]] StructuredBuffer<PreviewMaterialData> previewMaterials;
 
-struct PreviewMorphDelta
-{
-    float3 delta;
-    uint morphIndex;
-};
 [[vk::binding(2, 3)]] Texture2D<float4> previewTextureTable[];
 [[vk::binding(0, 3)]] SamplerState previewRepeatSampler;
 [[vk::binding(1, 3)]] SamplerState previewClampSampler;
-[[vk::binding(0, 4)]] StructuredBuffer<PreviewMorphDelta> previewMorphDeltas;
-[[vk::binding(1, 4)]] StructuredBuffer<float> previewMorphWeights;
 [[vk::binding(0, 5)]] StructuredBuffer<float4> previewEnvironmentData;
 [[vk::binding(1, 5)]] TextureCube<float4> previewEnvironmentCube;
 [[vk::binding(2, 5)]] SamplerState previewEnvironmentSampler;
 [[vk::binding(0, 6)]] Texture2D<float> previewShadowMap;
-[[vk::binding(1, 6)]] SamplerState previewShadowSampler;
+[[vk::binding(1, 6)]] SamplerComparisonState previewShadowSampler;
 [[vk::binding(0, 7)]] Texture2D<float4> previewAoMap;
 [[vk::binding(1, 7)]] SamplerState previewAoSampler;
 
@@ -89,11 +70,6 @@ struct PreviewMorphDelta
 [[vk::binding(2, 0)]] Texture2D<float4> sphereTexture;
 [[vk::binding(3, 0)]] SamplerState repeatSampler;
 [[vk::binding(4, 0)]] SamplerState clampSampler;
-
-struct SkinResult {
-    float3 position;
-    float3 normal;
-};
 
 float3 safeNormalize(float3 value, float3 fallback) {
     const float len2 = dot(value, value);
@@ -108,174 +84,6 @@ float3 previewShadowCoordinates(float3 worldPosition) {
     return float3(dot(worldPosition, right) / span,
                   -dot(worldPosition, up) / span,
                   (10.0 - dot(worldPosition, light)) / 20.0);
-}
-
-struct DualQuaternion {
-    float4 real;
-    float4 dual;
-};
-
-float3 rotateQuaternion(float4 quaternion, float3 value) {
-    return value + 2.0 * cross(quaternion.xyz, cross(quaternion.xyz, value) + quaternion.w * value);
-}
-
-float4 multiplyQuaternion(float4 left, float4 right) {
-    return float4(left.w * right.xyz + right.w * left.xyz + cross(left.xyz, right.xyz),
-                  left.w * right.w - dot(left.xyz, right.xyz));
-}
-
-float4 conjugateQuaternion(float4 quaternion) {
-    return float4(-quaternion.xyz, quaternion.w);
-}
-
-float4 slerpQuaternion(float4 left, float4 right, float amount) {
-    float cosine = dot(left, right);
-    if (cosine < 0.0) {
-        right = -right;
-        cosine = -cosine;
-    }
-    if (cosine > 0.9995)
-        return normalize(lerp(left, right, amount));
-    const float angle = acos(clamp(cosine, -1.0, 1.0));
-    const float sine = max(sin(angle), 0.000001);
-    return (sin((1.0 - amount) * angle) * left + sin(amount * angle) * right) / sine;
-}
-
-BoneTransform identityBone() {
-    BoneTransform result;
-    result.rotation = float4(0.0, 0.0, 0.0, 1.0);
-    result.translation = float4(0.0, 0.0, 0.0, 0.0);
-    return result;
-}
-
-BoneTransform getBone(int index) {
-    if (index >= 0)
-        return boneTransforms[index];
-    return identityBone();
-}
-
-float3 transformPoint(BoneTransform bone, float3 value) {
-    return rotateQuaternion(bone.rotation, value) + bone.translation.xyz;
-}
-
-SkinResult skinLbs(VertexInput input, uint influenceCount) {
-    SkinResult result;
-    result.position = float3(0.0, 0.0, 0.0);
-    result.normal = float3(0.0, 0.0, 0.0);
-    float totalWeight = 0.0;
-    [unroll] for (uint influence = 0; influence < 4; ++influence) {
-        if (influence >= influenceCount || input.bones[influence] < 0 || input.weights[influence] == 0.0)
-            continue;
-        const BoneTransform bone = getBone(input.bones[influence]);
-        result.position += transformPoint(bone, input.position) * input.weights[influence];
-        result.normal += rotateQuaternion(bone.rotation, input.normal) * input.weights[influence];
-        totalWeight += input.weights[influence];
-    }
-    if (totalWeight > 0.000001) {
-        result.position /= totalWeight;
-        result.normal = safeNormalize(result.normal, float3(0.0, 0.0, 1.0));
-    } else {
-        result.position = input.position;
-        result.normal = input.normal;
-    }
-    return result;
-}
-
-SkinResult skinSdef(VertexInput input) {
-    const float weight = clamp(input.weights.x, 0.0, 1.0);
-    const float3 cr1 = input.sdefC - weight * input.sdefHalfDelta;
-    const float3 cr0 = cr1 + input.sdefHalfDelta;
-    const BoneTransform bone0 = getBone(input.bones[0]);
-    const BoneTransform bone1 = getBone(input.bones[1]);
-    const float4 rotation = slerpQuaternion(bone1.rotation, bone0.rotation, weight);
-
-    SkinResult result;
-    result.position = rotateQuaternion(rotation, input.position - input.sdefC) +
-                      lerp(transformPoint(bone1, cr1), transformPoint(bone0, cr0), weight);
-    result.normal = safeNormalize(rotateQuaternion(rotation, input.normal), float3(0.0, 0.0, 1.0));
-    return result;
-}
-
-DualQuaternion makeDualQuaternion(BoneTransform bone) {
-    DualQuaternion result;
-    result.real = bone.rotation;
-    result.dual = multiplyQuaternion(float4(bone.translation.xyz, 0.0), bone.rotation) * 0.5;
-    return result;
-}
-
-DualQuaternion normalizeDualQuaternion(DualQuaternion value) {
-    const float magnitude = max(length(value.real), 0.000001);
-    value.real /= magnitude;
-    value.dual /= magnitude;
-    value.dual -= value.real * dot(value.real, value.dual);
-    return value;
-}
-
-SkinResult skinQdef(VertexInput input) {
-    DualQuaternion blended;
-    blended.real = float4(0.0, 0.0, 0.0, 0.0);
-    blended.dual = float4(0.0, 0.0, 0.0, 0.0);
-    float4 pivot = float4(0.0, 0.0, 0.0, 1.0);
-    bool pivotInitialized = false;
-    [unroll] for (uint influence = 0; influence < 4; ++influence) {
-        if (input.bones[influence] < 0 || input.weights[influence] == 0.0)
-            continue;
-        DualQuaternion bone = makeDualQuaternion(getBone(input.bones[influence]));
-        float weight = input.weights[influence];
-        if (!pivotInitialized) {
-            pivot = bone.real;
-            pivotInitialized = true;
-        } else if (dot(pivot, bone.real) < 0.0) {
-            weight = -weight;
-        }
-        blended.real += bone.real * weight;
-        blended.dual += bone.dual * weight;
-    }
-
-    SkinResult result;
-    if (!pivotInitialized || length(blended.real) <= 0.000001) {
-        result.position = input.position;
-        result.normal = input.normal;
-        return result;
-    }
-    blended = normalizeDualQuaternion(blended);
-    const float4 translationQuaternion = multiplyQuaternion(blended.dual, conjugateQuaternion(blended.real));
-    result.position = rotateQuaternion(blended.real, input.position) + 2.0 * translationQuaternion.xyz;
-    result.normal = safeNormalize(rotateQuaternion(blended.real, input.normal), float3(0.0, 0.0, 1.0));
-    return result;
-}
-
-SkinResult skinVertex(VertexInput input) {
-    if (input.gpuSkinning == 0) {
-        SkinResult result;
-        result.position = input.position;
-        result.normal = input.normal;
-        return result;
-    }
-    switch (input.skinningType) {
-    case 1:
-        return skinLbs(input, 2); // BDEF2
-    case 2:
-        return skinLbs(input, 4); // BDEF4
-    case 3:
-        return skinSdef(input);
-    case 4:
-        return skinQdef(input);
-    default:
-        return skinLbs(input, 1); // BDEF1
-    }
-}
-
-float3 applyVertexMorphs(VertexInput input)
-{
-    float3 position = input.position;
-    [loop]
-    for (uint offset = 0; offset < input.morphCount; ++offset)
-    {
-        const PreviewMorphDelta delta = previewMorphDeltas[input.morphStart + offset];
-        position += delta.delta * previewMorphWeights[delta.morphIndex];
-    }
-    return position;
 }
 
 VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, uint instanceIndex)
@@ -295,8 +103,7 @@ VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, ui
         return output;
     }
 
-    input.position = applyVertexMorphs(input);
-    SkinResult skin = skinVertex(input);
+    VertexInput skin = input;
     const float cloneCenter = (float(scene.instanceCount) - 1.0) * 0.5;
     skin.position.x += (float(instanceIndex) - cloneCenter) * 2.2;
     output.worldPosition = skin.position - scene.target.xyz;
@@ -368,13 +175,12 @@ struct ShadowOutput {
     [[vk::location(1)]] nointerpolation uint materialIndex : TEXCOORD1;
 };
 
-float4 NormalPS(VertexOutput input) : SV_Target0 {
-    return float4(safeNormalize(input.normal, float3(0.0, 0.0, 1.0)) * 0.5 + 0.5, 1.0);
+float2 NormalPS(VertexOutput input) : SV_Target0 {
+    return encodeOctNormal(safeNormalize(input.normal, float3(0.0, 0.0, 1.0)));
 }
 
 ShadowOutput ShadowVS(VertexInput input, uint instanceIndex : SV_InstanceID) {
-    input.position = applyVertexMorphs(input);
-    const SkinResult skin = skinVertex(input);
+    const VertexInput skin = input;
     const float cloneCenter = (float(scene.instanceCount) - 1.0) * 0.5;
     const float3 world = skin.position + float3((float(instanceIndex) - cloneCenter) * 2.2, 0.0, 0.0)
                          - scene.target.xyz;
@@ -470,16 +276,17 @@ float previewShadow(float3 worldPosition, float3 normal, float3 lightDirection) 
     if (any(uv < 0.0) || any(uv > 1.0) || coordinates.z <= 0.0 || coordinates.z >= 1.0)
         return 1.0;
     const float bias = max(0.0006, 0.002 * (1.0 - saturate(dot(normal, lightDirection))));
-    const int radius = scene.debug.w > 0.5 ? 3 : 1;
-    const float texel = 1.0 / 2048.0;
+    const int radius = scene.debug.w > 0.5 ? 3 : ((scene.materialPadding & 4U) != 0 ? 0 : 1);
+    uint shadowWidth, shadowHeight;
+    previewShadowMap.GetDimensions(shadowWidth, shadowHeight);
+    const float2 texel = 1.0 / float2(shadowWidth, shadowHeight);
     float lit = 0.0;
     [loop]
     for (int y = -radius; y <= radius; ++y) {
         [loop]
         for (int x = -radius; x <= radius; ++x) {
-            const float sampled = previewShadowMap.SampleLevel(previewShadowSampler,
-                                                                uv + float2(x, y) * texel, 0);
-            lit += coordinates.z - bias <= sampled ? 1.0 : 0.0;
+            lit += previewShadowMap.SampleCmpLevelZero(previewShadowSampler,
+                                                       uv + float2(x, y) * texel, coordinates.z - bias);
         }
     }
     const float width = float(2 * radius + 1);

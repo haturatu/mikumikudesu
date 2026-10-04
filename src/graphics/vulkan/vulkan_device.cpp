@@ -620,13 +620,16 @@ VkDeviceSize alignDeviceAddress(VkDeviceSize value, VkDeviceSize alignment) {
 
 } // namespace
 
-VulkanDevice::VulkanDevice(platform::Window& window, bool validation)
-    : window_(window), validation_(validation), accelerationBackend_(*this) {
+VulkanDevice::VulkanDevice(platform::Window& window, bool validation, VulkanOptions options)
+    : options_(options), window_(window), validation_(validation), accelerationBackend_(*this) {
     createInstance(validation);
     createSurface();
     selectPhysicalDevice();
     queryCapabilities();
+    previewQuality_ = previewQualitySettings(options_.quality,
+                                             physicalProperties_.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU);
     createLogicalDevice();
+    updatePreviewQualityBudget();
     createTypedDescriptorPool();
     createPipelineCache();
     uploadContext_ = std::make_unique<VulkanUploadContext>(device_, physicalDevice_, queue_, queueFamily_,
@@ -688,13 +691,19 @@ VulkanDevice::VulkanDevice(platform::Window& window, bool validation)
                              .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
                              .pImageInfo = &aoSampler},
     };
-    vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(aoWrites.size()), aoWrites.data(), 0, nullptr);
+    updatePreviewImageDescriptors(aoWrites);
+    log::info("Preview quality: shadow=", previewQuality_.shadowSize, ", AO=1/", previewQuality_.aoDivisor,
+              ", AO format=", static_cast<int>(previewAoFormat_),
+              ", normal format=", static_cast<int>(previewNormalFormat_),
+              ", environment=", previewQuality_.environmentFaceSize);
     log::info("Vulkan device ready: ", capabilities_.gpuName, " (", capabilities_.driverName, ")");
 }
 
 VulkanDevice::~VulkanDevice() {
+    destroying_ = true;
     if (device_ != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device_);
+        collectPreviewRetirements();
         reclaimAllAccelerationScratch();
     }
     uploadContext_.reset();
@@ -716,6 +725,14 @@ VulkanDevice::~VulkanDevice() {
     destroyViewportResources();
     destroyUi();
     destroyOffscreenResource();
+    for (auto& slot : readbackSlots_) {
+        if (slot.mapped != nullptr)
+            vkUnmapMemory(device_, slot.memory);
+        if (slot.buffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, slot.buffer, nullptr);
+        if (slot.memory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, slot.memory, nullptr);
+    }
     destroyPreviewMesh();
     destroyPreviewBones();
     destroyPreviewMorphs();
@@ -754,6 +771,8 @@ VulkanDevice::~VulkanDevice() {
     destroyPipelineCache();
     destroyPreviewDescriptors();
     destroySwapchain();
+    if (computeTimelineSemaphore_ != VK_NULL_HANDLE)
+        vkDestroySemaphore(device_, computeTimelineSemaphore_, nullptr);
     if (timelineSemaphore_ != VK_NULL_HANDLE)
         vkDestroySemaphore(device_, timelineSemaphore_, nullptr);
 #if DAYO_ENABLE_VMA
@@ -880,6 +899,23 @@ void VulkanDevice::selectPhysicalDevice() {
     }
 }
 
+bool VulkanDevice::supportsTextureFormat(PixelFormat format, ResourceUsage usage) const noexcept {
+    VkFormatProperties properties{};
+    vkGetPhysicalDeviceFormatProperties(physicalDevice_, toVkFormat(format), &properties);
+    VkFormatFeatureFlags required = 0;
+    const auto bits = toBits(usage);
+    if ((bits & (toBits(ResourceUsage::depthWrite) | toBits(ResourceUsage::depthRead))) != 0)
+        required |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    if ((bits & toBits(ResourceUsage::colorAttachment)) != 0)
+        required |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+    if ((bits & toBits(ResourceUsage::sampledRead)) != 0)
+        required |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+    if ((bits & (toBits(ResourceUsage::storageReadWrite) | toBits(ResourceUsage::storageRead) |
+                 toBits(ResourceUsage::storageWrite))) != 0)
+        required |= VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+    return (properties.optimalTilingFeatures & required) == required;
+}
+
 void VulkanDevice::queryCapabilities() {
     std::uint32_t extensionCount = 0;
     check(vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extensionCount, nullptr),
@@ -917,6 +953,31 @@ void VulkanDevice::queryCapabilities() {
     };
     vkGetPhysicalDeviceFeatures2(physicalDevice_, &features);
 
+    storageImageExtendedFormats_ = features.features.shaderStorageImageExtendedFormats == VK_TRUE;
+    const auto supports = [this](VkFormat format, VkFormatFeatureFlags required) {
+        VkFormatProperties properties{};
+        vkGetPhysicalDeviceFormatProperties(physicalDevice_, format, &properties);
+        return (properties.optimalTilingFeatures & required) == required;
+    };
+    const auto aoFeatures = VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                            VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    // r8/r16f storage require the optional extended-formats feature; r32f does not.
+    previewAoFormat_ = VK_FORMAT_R32_SFLOAT;
+    if (storageImageExtendedFormats_) {
+        if (options_.quality != PreviewQuality::high && supports(VK_FORMAT_R8_UNORM, aoFeatures))
+            previewAoFormat_ = VK_FORMAT_R8_UNORM;
+        else if (supports(VK_FORMAT_R16_SFLOAT, aoFeatures))
+            previewAoFormat_ = VK_FORMAT_R16_SFLOAT;
+    }
+    if (!supports(previewAoFormat_, aoFeatures))
+        throw std::runtime_error("GPU lacks a sampled, linearly filtered scalar AO storage format");
+    const auto normalFeatures = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+    if (!supports(previewNormalFormat_, normalFeatures))
+        previewNormalFormat_ = VK_FORMAT_R16G16_SFLOAT;
+    if (!supports(previewNormalFormat_, normalFeatures))
+        previewNormalFormat_ = VK_FORMAT_R16G16B16A16_SFLOAT;
+    if (!supports(previewNormalFormat_, normalFeatures))
+        throw std::runtime_error("GPU lacks a sampled octahedral normal attachment format");
     rayTracingPipelineProperties_ = {};
     rayTracingPipelineProperties_.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
     VkPhysicalDeviceDriverProperties driver{
@@ -936,6 +997,7 @@ void VulkanDevice::queryCapabilities() {
     capabilities_.apiVersion = physicalProperties_.apiVersion;
     capabilities_.discreteGpu = physicalProperties_.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
     capabilities_.swapchain = hasName(extensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    memoryBudgetSupported_ = hasName(extensions, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     capabilities_.timelineSemaphore = vulkan12.timelineSemaphore == VK_TRUE;
     capabilities_.bufferDeviceAddress = vulkan12.bufferDeviceAddress == VK_TRUE;
     capabilities_.descriptorIndexing =
@@ -965,18 +1027,43 @@ void VulkanDevice::queryCapabilities() {
 }
 
 void VulkanDevice::createLogicalDevice() {
-    const float priority = 1.0F;
-    const VkDeviceQueueCreateInfo queueInfo{
+    std::uint32_t familyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice_, &familyCount, nullptr);
+    std::vector<VkQueueFamilyProperties> families(familyCount);
+    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice_, &familyCount, families.data());
+    computeQueueFamily_ = queueFamily_;
+    if (options_.asyncCompute) {
+        for (std::uint32_t family = 0; family < familyCount; ++family) {
+            if ((families[family].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0 &&
+                (families[family].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0) {
+                computeQueueFamily_ = family;
+                break;
+            }
+        }
+    }
+    const bool separateFamily = computeQueueFamily_ != queueFamily_;
+    const bool asyncCompute = options_.asyncCompute && (separateFamily || families[queueFamily_].queueCount >= 2);
+    if (options_.asyncCompute && !asyncCompute)
+        log::warn("Async compute queue unavailable; using serial Preview compute");
+    const std::array priorities{1.0F, 1.0F};
+    std::vector<VkDeviceQueueCreateInfo> queueInfos{{
         .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
         .queueFamilyIndex = queueFamily_,
-        .queueCount = 1,
-        .pQueuePriorities = &priority,
-    };
+        .queueCount = asyncCompute && !separateFamily ? 2U : 1U,
+        .pQueuePriorities = priorities.data(),
+    }};
+    if (asyncCompute && separateFamily)
+        queueInfos.push_back({.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                              .queueFamilyIndex = computeQueueFamily_,
+                              .queueCount = 1,
+                              .pQueuePriorities = priorities.data()});
 
     std::vector<const char*> extensions{
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
         VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME,
     };
+    if (memoryBudgetSupported_)
+        extensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     const bool rtBase = capabilities_.accelerationStructure && capabilities_.bufferDeviceAddress;
     if (rtBase) {
         extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
@@ -1033,6 +1120,7 @@ void VulkanDevice::createLogicalDevice() {
     coreFeatures.logicOp = capabilities_.logicOp;
     coreFeatures.independentBlend = capabilities_.independentBlend;
     coreFeatures.multiDrawIndirect = multiDrawIndirectSupported_;
+    coreFeatures.shaderStorageImageExtendedFormats = storageImageExtendedFormats_;
     const VkPhysicalDeviceFeatures2 features{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
         .pNext = &vulkan12,
@@ -1041,13 +1129,15 @@ void VulkanDevice::createLogicalDevice() {
     const VkDeviceCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pNext = &features,
-        .queueCreateInfoCount = 1,
-        .pQueueCreateInfos = &queueInfo,
+        .queueCreateInfoCount = static_cast<std::uint32_t>(queueInfos.size()),
+        .pQueueCreateInfos = queueInfos.data(),
         .enabledExtensionCount = static_cast<std::uint32_t>(extensions.size()),
         .ppEnabledExtensionNames = extensions.data(),
     };
     check(vkCreateDevice(physicalDevice_, &createInfo, nullptr, &device_), "create logical device");
     vkGetDeviceQueue(device_, queueFamily_, 0, &queue_);
+    if (asyncCompute)
+        vkGetDeviceQueue(device_, computeQueueFamily_, separateFamily ? 0U : 1U, &computeQueue_);
     const VkSemaphoreTypeCreateInfo timelineType{
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
         .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
@@ -1058,6 +1148,11 @@ void VulkanDevice::createLogicalDevice() {
         .pNext = &timelineType,
     };
     check(vkCreateSemaphore(device_, &timelineInfo, nullptr, &timelineSemaphore_), "create Vulkan timeline semaphore");
+    if (asyncCompute) {
+        check(vkCreateSemaphore(device_, &timelineInfo, nullptr, &computeTimelineSemaphore_),
+              "create compute timeline");
+        log::info("Experimental Preview async compute enabled");
+    }
 #if DAYO_ENABLE_VMA
     VmaAllocatorCreateInfo allocatorInfo{};
     allocatorInfo.instance = instance_;
@@ -1066,7 +1161,36 @@ void VulkanDevice::createLogicalDevice() {
     allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_3;
     if (capabilities_.bufferDeviceAddress)
         allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    if (memoryBudgetSupported_)
+        allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
     check(vmaCreateAllocator(&allocatorInfo, &allocator_), "create Vulkan memory allocator");
+#endif
+}
+
+void VulkanDevice::updatePreviewQualityBudget() {
+#if DAYO_ENABLE_VMA
+    if (!memoryBudgetSupported_ || options_.quality != PreviewQuality::automatic)
+        return;
+    // Advance VMA telemetry so external/raw Vulkan allocations and other processes are refreshed too.
+    vmaSetCurrentFrameIndex(allocator_, budgetFrameCounter_);
+    VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
+    vmaGetHeapBudgets(allocator_, budgets);
+    VkPhysicalDeviceMemoryProperties memory{};
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice_, &memory);
+    std::uint64_t available = 0;
+    for (std::uint32_t i = 0; i < memory.memoryHeapCount; ++i) {
+        if ((memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0)
+            available += budgets[i].budget > budgets[i].usage ? budgets[i].budget - budgets[i].usage : 0;
+    }
+    // Use 1 for a genuinely exhausted budget; zero denotes unsupported telemetry.
+    const auto candidate = previewQualitySettings(
+        options_.quality, physicalProperties_.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
+        std::max<std::uint64_t>(available, 1));
+    // Only downgrade within a session: avoids resource churn around budget thresholds.
+    previewQuality_.shadowSize = std::min(previewQuality_.shadowSize, candidate.shadowSize);
+    previewQuality_.aoDivisor = std::max(previewQuality_.aoDivisor, candidate.aoDivisor);
+    previewQuality_.environmentFaceSize = std::min(previewQuality_.environmentFaceSize, candidate.environmentFaceSize);
+    previewQuality_.cheapShadow = previewQuality_.cheapShadow || candidate.cheapShadow;
 #endif
 }
 
@@ -1100,7 +1224,22 @@ void VulkanDevice::createSwapchain() {
                                              surfaceCapabilities.maxImageExtent.height);
     }
 
-    std::uint32_t imageCount = std::max(surfaceCapabilities.minImageCount, 2U);
+    std::uint32_t presentCount = 0;
+    check(vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice_, surface_, &presentCount, nullptr),
+          "query present modes");
+    std::vector<VkPresentModeKHR> presentModes(presentCount);
+    check(vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice_, surface_, &presentCount, presentModes.data()),
+          "query present modes");
+    const std::array requestedModes{VK_PRESENT_MODE_FIFO_KHR, VK_PRESENT_MODE_FIFO_RELAXED_KHR,
+                                    VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR};
+    auto presentMode = requestedModes[static_cast<std::size_t>(options_.present)];
+    if (std::find(presentModes.begin(), presentModes.end(), presentMode) == presentModes.end()) {
+        log::warn("Requested present mode is unsupported; falling back to FIFO");
+        presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    }
+    log::info("Vulkan present mode: ", static_cast<int>(presentMode));
+    std::uint32_t imageCount =
+        std::max(surfaceCapabilities.minImageCount, presentMode == VK_PRESENT_MODE_MAILBOX_KHR ? 3U : 2U);
     if (surfaceCapabilities.maxImageCount != 0) {
         imageCount = std::min(imageCount, surfaceCapabilities.maxImageCount);
     }
@@ -1116,7 +1255,7 @@ void VulkanDevice::createSwapchain() {
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = surfaceCapabilities.currentTransform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        .presentMode = VK_PRESENT_MODE_FIFO_KHR,
+        .presentMode = presentMode,
         .clipped = VK_TRUE,
     };
     check(vkCreateSwapchainKHR(device_, &createInfo, nullptr, &swapchain_), "create swapchain");
@@ -1345,24 +1484,13 @@ void VulkanDevice::createPipeline() {
     auto edgeStages = stages;
     edgeStages[0].module = edgeVertex;
     edgeStages[0].pName = "EdgeVS";
-    const VkVertexInputBindingDescription vertexBinding{
-        .binding = 0,
-        .stride = sizeof(PreviewVertex),
-        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
-    };
+    // Deformed stream: position(12), normal(12), UV(8), edge scale(4).
+    const VkVertexInputBindingDescription vertexBinding{0, sizeof(PreviewDeformedVertex), VK_VERTEX_INPUT_RATE_VERTEX};
     const std::array vertexAttributes{
-        VkVertexInputAttributeDescription{0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(PreviewVertex, position)},
-        VkVertexInputAttributeDescription{1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(PreviewVertex, normal)},
-        VkVertexInputAttributeDescription{2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(PreviewVertex, uv)},
-        VkVertexInputAttributeDescription{3, 0, VK_FORMAT_R32G32B32A32_SINT, offsetof(PreviewVertex, bones)},
-        VkVertexInputAttributeDescription{4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(PreviewVertex, weights)},
-        VkVertexInputAttributeDescription{5, 0, VK_FORMAT_R32_UINT, offsetof(PreviewVertex, skinningType)},
-        VkVertexInputAttributeDescription{6, 0, VK_FORMAT_R32_UINT, offsetof(PreviewVertex, gpuSkinning)},
-        VkVertexInputAttributeDescription{7, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(PreviewVertex, sdefC)},
-        VkVertexInputAttributeDescription{8, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(PreviewVertex, sdefHalfDelta)},
-        VkVertexInputAttributeDescription{9, 0, VK_FORMAT_R32_SFLOAT, offsetof(PreviewVertex, edgeScale)},
-        VkVertexInputAttributeDescription{10, 0, VK_FORMAT_R32_UINT, offsetof(PreviewVertex, morphStart)},
-        VkVertexInputAttributeDescription{11, 0, VK_FORMAT_R32_UINT, offsetof(PreviewVertex, morphCount)},
+        VkVertexInputAttributeDescription{0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0},
+        VkVertexInputAttributeDescription{1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12},
+        VkVertexInputAttributeDescription{2, 0, VK_FORMAT_R32G32_SFLOAT, 24},
+        VkVertexInputAttributeDescription{9, 0, VK_FORMAT_R32_SFLOAT, 32},
     };
     const VkPipelineVertexInputStateCreateInfo vertexInput{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
@@ -1521,7 +1649,18 @@ void VulkanDevice::createPipeline() {
     };
     auto backgroundRendering = renderingInfo;
     backgroundRendering.depthAttachmentFormat = VK_FORMAT_UNDEFINED;
+    const VkVertexInputBindingDescription backgroundBinding{0, sizeof(PreviewVertex), VK_VERTEX_INPUT_RATE_VERTEX};
+    const VkVertexInputAttributeDescription backgroundAttribute{0, 0, VK_FORMAT_R32G32B32_SFLOAT,
+                                                                offsetof(PreviewVertex, position)};
+    const VkPipelineVertexInputStateCreateInfo backgroundInput{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = 1,
+        .pVertexBindingDescriptions = &backgroundBinding,
+        .vertexAttributeDescriptionCount = 1,
+        .pVertexAttributeDescriptions = &backgroundAttribute,
+    };
     auto backgroundPipelineInfo = pipelineInfo;
+    backgroundPipelineInfo.pVertexInputState = &backgroundInput;
     backgroundPipelineInfo.layout = backgroundPipelineLayout_;
     backgroundPipelineInfo.pStages = backgroundStages.data();
     backgroundPipelineInfo.pNext = &backgroundRendering;
@@ -1572,7 +1711,7 @@ void VulkanDevice::createPipeline() {
                                         .module = normalFragment,
                                         .pName = "NormalPS"},
     };
-    const VkFormat normalFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+    const VkFormat normalFormat = previewNormalFormat_;
     const VkPipelineRenderingCreateInfo depthRendering{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
         .colorAttachmentCount = 1,
@@ -1625,8 +1764,12 @@ void VulkanDevice::createPipeline() {
     check(hdrTransparentResult, "create HDR transparent preview pipeline");
     check(hdrEdgeResult, "create HDR edge preview pipeline");
 
-    const auto aoCode = readBinary(DAYO_PREVIEW_AO_SPV);
-    const auto blurCode = readBinary(DAYO_PREVIEW_AO_BLUR_SPV);
+    const auto aoCode = readBinary(previewAoFormat_ == VK_FORMAT_R8_UNORM     ? DAYO_PREVIEW_AO_SPV
+                                   : previewAoFormat_ == VK_FORMAT_R16_SFLOAT ? DAYO_PREVIEW_AO16_SPV
+                                                                              : DAYO_PREVIEW_AO32_SPV);
+    const auto blurCode = readBinary(previewAoFormat_ == VK_FORMAT_R8_UNORM     ? DAYO_PREVIEW_AO_BLUR_SPV
+                                     : previewAoFormat_ == VK_FORMAT_R16_SFLOAT ? DAYO_PREVIEW_AO16_BLUR_SPV
+                                                                                : DAYO_PREVIEW_AO32_BLUR_SPV);
     const auto createModule = [this](const std::vector<std::byte>& code) {
         const VkShaderModuleCreateInfo info{
             .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -1664,6 +1807,40 @@ void VulkanDevice::createPipeline() {
         vkDestroyShaderModule(device_, module, nullptr);
         check(computeResult, "create preview AO compute pipeline");
     }
+
+    std::array<VkDescriptorSetLayoutBinding, 5> deformBindings{};
+    for (std::uint32_t i = 0; i < deformBindings.size(); ++i)
+        deformBindings[i] = {i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    const VkDescriptorSetLayoutCreateInfo deformDescriptorInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = static_cast<std::uint32_t>(deformBindings.size()),
+        .pBindings = deformBindings.data(),
+    };
+    check(vkCreateDescriptorSetLayout(device_, &deformDescriptorInfo, nullptr, &previewDeformDescriptorLayout_),
+          "create Preview deform descriptor layout");
+    const VkPushConstantRange deformPush{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
+    const VkPipelineLayoutCreateInfo deformLayoutInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = &previewDeformDescriptorLayout_,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &deformPush,
+    };
+    check(vkCreatePipelineLayout(device_, &deformLayoutInfo, nullptr, &previewDeformPipelineLayout_),
+          "create Preview deform pipeline layout");
+    const auto deformModule = createModule(readBinary(DAYO_PREVIEW_DEFORM_SPV));
+    const VkComputePipelineCreateInfo deformInfo{
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                  .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                  .module = deformModule,
+                  .pName = "PreviewDeform"},
+        .layout = previewDeformPipelineLayout_,
+    };
+    const auto deformResult =
+        vkCreateComputePipelines(device_, pipelineCache_, 1, &deformInfo, nullptr, &previewDeformPipeline_);
+    vkDestroyShaderModule(device_, deformModule, nullptr);
+    check(deformResult, "create Preview deform pipeline");
 
     const auto toneVertexCode = readBinary(DAYO_PREVIEW_TONEMAP_VERTEX_SPV);
     const auto toneFragmentCode = readBinary(DAYO_PREVIEW_TONEMAP_FRAGMENT_SPV);
@@ -1734,6 +1911,17 @@ void VulkanDevice::createPipeline() {
 }
 
 void VulkanDevice::destroyPipeline() {
+    for (auto& frame : frames_)
+        destroyPreviewDeformBuffers(frame);
+    if (previewDeformPipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device_, previewDeformPipeline_, nullptr);
+    if (previewDeformPipelineLayout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device_, previewDeformPipelineLayout_, nullptr);
+    if (previewDeformDescriptorLayout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device_, previewDeformDescriptorLayout_, nullptr);
+    previewDeformPipeline_ = VK_NULL_HANDLE;
+    previewDeformPipelineLayout_ = VK_NULL_HANDLE;
+    previewDeformDescriptorLayout_ = VK_NULL_HANDLE;
     if (previewTonemapPipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, previewTonemapPipeline_, nullptr);
     if (previewTonemapPipelineLayout_ != VK_NULL_HANDLE)
@@ -2089,6 +2277,15 @@ void VulkanDevice::destroyNativeEnvironmentPipelines() noexcept {
     nativeEnvironmentEquirectLayout_ = {};
 }
 
+void VulkanDevice::updatePreviewImageDescriptors(std::span<const VkWriteDescriptorSet> writes) {
+    // Fixed Preview samplers are installed by the layout, and Vulkan forbids updating them.
+    std::vector<VkWriteDescriptorSet> images;
+    for (const auto& write : writes)
+        if (write.descriptorType != VK_DESCRIPTOR_TYPE_SAMPLER)
+            images.push_back(write);
+    vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(images.size()), images.data(), 0, nullptr);
+}
+
 void VulkanDevice::createPreviewDescriptors() {
     if (!previewBindlessSupported_)
         throw std::runtime_error("preview bindless texture table requires sampled image array indexing");
@@ -2108,12 +2305,44 @@ void VulkanDevice::createPreviewDescriptors() {
                   maxPerStageDescriptorSampledImages - fixedSampledImageCount,
                   physicalProperties_.limits.maxPerStageResources - fixedFragmentResources, 16384U});
 
+    const VkSamplerCreateInfo samplerInfo{
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = VK_FILTER_LINEAR,
+        .minFilter = VK_FILTER_LINEAR,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .maxAnisotropy = 1.0F,
+        .maxLod = 0.0F,
+    };
+    check(vkCreateSampler(device_, &samplerInfo, nullptr, &previewSampler_), "create preview sampler");
+    auto clampSamplerInfo = samplerInfo;
+    clampSamplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    clampSamplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    check(vkCreateSampler(device_, &clampSamplerInfo, nullptr, &previewClampSampler_), "create preview clamp sampler");
+
+    auto shadowSamplerInfo = clampSamplerInfo;
+    shadowSamplerInfo.maxLod = 0.0F;
+    check(vkCreateSampler(device_, &shadowSamplerInfo, nullptr, &previewAoSampler_), "create preview AO sampler");
+    shadowSamplerInfo.compareEnable = VK_TRUE;
+    shadowSamplerInfo.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    VkFormatProperties shadowProperties{};
+    vkGetPhysicalDeviceFormatProperties(physicalDevice_, VK_FORMAT_D32_SFLOAT, &shadowProperties);
+    if ((shadowProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) == 0) {
+        shadowSamplerInfo.magFilter = VK_FILTER_NEAREST;
+        shadowSamplerInfo.minFilter = VK_FILTER_NEAREST;
+    }
+    check(vkCreateSampler(device_, &shadowSamplerInfo, nullptr, &previewShadowSampler_),
+          "create preview comparison sampler");
+
     const std::array textureBindings{
         VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         VkDescriptorSetLayoutBinding{2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-        VkDescriptorSetLayoutBinding{3, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-        VkDescriptorSetLayoutBinding{4, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        VkDescriptorSetLayoutBinding{3, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, &previewSampler_},
+        VkDescriptorSetLayoutBinding{4, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                     &previewClampSampler_},
     };
     const VkDescriptorSetLayoutCreateInfo layoutInfo{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -2154,8 +2383,8 @@ void VulkanDevice::createPreviewDescriptors() {
     check(vkCreateDescriptorSetLayout(device_, &morphLayoutInfo, nullptr, &previewMorphDescriptorSetLayout_),
           "create preview morph descriptor layout");
     const std::array<VkDescriptorSetLayoutBinding, 3> bindlessBindings{{
-        {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-        {1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, &previewSampler_},
+        {1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, &previewClampSampler_},
         {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, previewBindlessTextureCapacity_, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
     }};
     const std::array<VkDescriptorBindingFlags, 3> bindlessBindingFlags{
@@ -2191,7 +2420,8 @@ void VulkanDevice::createPreviewDescriptors() {
         "create preview environment descriptor layout");
     const std::array shadowBindings{
         VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-        VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                     &previewShadowSampler_},
     };
     const VkDescriptorSetLayoutCreateInfo shadowLayoutInfo{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -2202,7 +2432,7 @@ void VulkanDevice::createPreviewDescriptors() {
           "create preview shadow descriptor layout");
     const std::array aoBindings{
         VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-        VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, &previewAoSampler_},
         VkDescriptorSetLayoutBinding{2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
         VkDescriptorSetLayoutBinding{3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
         VkDescriptorSetLayoutBinding{4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
@@ -2216,7 +2446,8 @@ void VulkanDevice::createPreviewDescriptors() {
           "create preview AO compute descriptor layout");
     const std::array aoSampleBindings{
         VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-        VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                     &previewClampSampler_},
     };
     const VkDescriptorSetLayoutCreateInfo aoSampleLayoutInfo{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -2244,24 +2475,28 @@ void VulkanDevice::createPreviewDescriptors() {
     };
     check(vkCreateDescriptorPool(device_, &poolInfo, nullptr, &previewDescriptorPool_),
           "create preview descriptor pool");
-    const VkSamplerCreateInfo samplerInfo{
-        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-        .magFilter = VK_FILTER_LINEAR,
-        .minFilter = VK_FILTER_LINEAR,
-        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
-        .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        .maxAnisotropy = 1.0F,
-        .maxLod = 0.0F,
-    };
-    check(vkCreateSampler(device_, &samplerInfo, nullptr, &previewSampler_), "create preview sampler");
-    auto clampSamplerInfo = samplerInfo;
-    clampSamplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    clampSamplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    check(vkCreateSampler(device_, &clampSamplerInfo, nullptr, &previewClampSampler_), "create preview clamp sampler");
+    ensurePreviewShadowResource();
+}
 
-    constexpr std::uint32_t shadowSize = 2048U;
+void VulkanDevice::ensurePreviewShadowResource() {
+    const auto shadowSize = previewStillQuality_ ? 2048U : previewQuality_.shadowSize;
+    if (previewShadowSize_ == shadowSize && previewShadowDepth_.image != VK_NULL_HANDLE)
+        return;
+    const auto old = previewShadowDepth_;
+    const auto oldSet = previewShadowDescriptor_;
+    retirePreviewResource([this, old, oldSet] {
+        if (oldSet != VK_NULL_HANDLE)
+            check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &oldSet), "retire shadow set");
+        if (old.view != VK_NULL_HANDLE)
+            vkDestroyImageView(device_, old.view, nullptr);
+        if (old.image != VK_NULL_HANDLE)
+            vkDestroyImage(device_, old.image, nullptr);
+        if (old.memory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, old.memory, nullptr);
+    });
+    previewShadowDepth_ = {};
+    previewShadowDescriptor_ = VK_NULL_HANDLE;
+    previewShadowSize_ = shadowSize;
     const VkImageCreateInfo shadowImageInfo{
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
@@ -2296,13 +2531,6 @@ void VulkanDevice::createPreviewDescriptors() {
     };
     check(vkCreateImageView(device_, &shadowViewInfo, nullptr, &previewShadowDepth_.view),
           "create preview shadow view");
-    auto shadowSamplerInfo = clampSamplerInfo;
-    shadowSamplerInfo.maxLod = 0.0F;
-    check(vkCreateSampler(device_, &shadowSamplerInfo, nullptr, &previewShadowSampler_),
-          "create preview shadow sampler");
-    check(vkCreateSampler(device_, &shadowSamplerInfo, nullptr, &previewAoSampler_), "create preview AO sampler");
-    check(vkCreateSampler(device_, &shadowSamplerInfo, nullptr, &previewTonemapSampler_),
-          "create preview tonemap sampler");
     const VkDescriptorSetAllocateInfo shadowAllocate{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool = previewDescriptorPool_,
@@ -2328,7 +2556,7 @@ void VulkanDevice::createPreviewDescriptors() {
                              .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
                              .pImageInfo = &shadowSampler},
     };
-    vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(shadowWrites.size()), shadowWrites.data(), 0, nullptr);
+    updatePreviewImageDescriptors(shadowWrites);
 }
 
 void VulkanDevice::destroyPreviewDescriptors() {
@@ -2339,21 +2567,12 @@ void VulkanDevice::destroyPreviewDescriptors() {
     if (previewFallbackEnvironmentTexture_.valid())
         destroyTextureEx(previewFallbackEnvironmentTexture_);
     previewFallbackEnvironmentTexture_ = {};
-    if (previewTonemapSampler_ != VK_NULL_HANDLE)
-        vkDestroySampler(device_, previewTonemapSampler_, nullptr);
-    previewTonemapSampler_ = VK_NULL_HANDLE;
-    if (previewAoSampler_ != VK_NULL_HANDLE)
-        vkDestroySampler(device_, previewAoSampler_, nullptr);
-    previewAoSampler_ = VK_NULL_HANDLE;
-    if (previewShadowSampler_ != VK_NULL_HANDLE)
-        vkDestroySampler(device_, previewShadowSampler_, nullptr);
     if (previewShadowDepth_.view != VK_NULL_HANDLE)
         vkDestroyImageView(device_, previewShadowDepth_.view, nullptr);
     if (previewShadowDepth_.image != VK_NULL_HANDLE)
         vkDestroyImage(device_, previewShadowDepth_.image, nullptr);
     if (previewShadowDepth_.memory != VK_NULL_HANDLE)
         vkFreeMemory(device_, previewShadowDepth_.memory, nullptr);
-    previewShadowSampler_ = VK_NULL_HANDLE;
     previewShadowDescriptor_ = VK_NULL_HANDLE;
     previewShadowDepth_ = {};
     if (mappedPreviewEnvironment_ != nullptr)
@@ -2373,10 +2592,6 @@ void VulkanDevice::destroyPreviewDescriptors() {
     previewEnvironmentTexture_ = {};
     destroyPreviewMaterialDescriptors();
     destroyPreviewBindlessDescriptor();
-    if (previewClampSampler_ != VK_NULL_HANDLE)
-        vkDestroySampler(device_, previewClampSampler_, nullptr);
-    if (previewSampler_ != VK_NULL_HANDLE)
-        vkDestroySampler(device_, previewSampler_, nullptr);
     if (previewDescriptorPool_ != VK_NULL_HANDLE)
         vkDestroyDescriptorPool(device_, previewDescriptorPool_, nullptr);
     if (previewDescriptorSetLayout_ != VK_NULL_HANDLE) {
@@ -2404,6 +2619,17 @@ void VulkanDevice::destroyPreviewDescriptors() {
         vkDestroyDescriptorSetLayout(device_, previewAoDescriptorSetLayout_, nullptr);
     if (previewTonemapDescriptorSetLayout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, previewTonemapDescriptorSetLayout_, nullptr);
+    // Immutable samplers must outlive every pool/set and layout that copied them.
+    if (previewAoSampler_ != VK_NULL_HANDLE)
+        vkDestroySampler(device_, previewAoSampler_, nullptr);
+    if (previewShadowSampler_ != VK_NULL_HANDLE)
+        vkDestroySampler(device_, previewShadowSampler_, nullptr);
+    if (previewClampSampler_ != VK_NULL_HANDLE)
+        vkDestroySampler(device_, previewClampSampler_, nullptr);
+    if (previewSampler_ != VK_NULL_HANDLE)
+        vkDestroySampler(device_, previewSampler_, nullptr);
+    previewAoSampler_ = VK_NULL_HANDLE;
+    previewShadowSampler_ = VK_NULL_HANDLE;
     previewClampSampler_ = VK_NULL_HANDLE;
     previewSampler_ = VK_NULL_HANDLE;
     previewDescriptorPool_ = VK_NULL_HANDLE;
@@ -2434,15 +2660,16 @@ void VulkanDevice::createPreviewTexture(std::uint32_t width, std::uint32_t heigh
 
 void VulkanDevice::destroyPreviewTextureResource(PreviewTextureResource& texture) {
     if (texture.descriptor != VK_NULL_HANDLE && previewDescriptorPool_ != VK_NULL_HANDLE) {
-        check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &texture.descriptor),
-              "free preview texture descriptor");
+        retirePreviewResource([this, set = texture.descriptor] {
+            check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &set), "retire Preview descriptor");
+        });
     }
     if (texture.view != VK_NULL_HANDLE)
-        vkDestroyImageView(device_, texture.view, nullptr);
+        retirePreviewResource([this, handle = texture.view] { vkDestroyImageView(device_, handle, nullptr); });
     if (texture.image != VK_NULL_HANDLE)
-        vkDestroyImage(device_, texture.image, nullptr);
+        retirePreviewResource([this, handle = texture.image] { vkDestroyImage(device_, handle, nullptr); });
     if (texture.memory != VK_NULL_HANDLE)
-        vkFreeMemory(device_, texture.memory, nullptr);
+        retirePreviewResource([this, handle = texture.memory] { vkFreeMemory(device_, handle, nullptr); });
     texture = {};
 }
 
@@ -2593,7 +2820,7 @@ VulkanDevice::PreviewTextureResource VulkanDevice::createPreviewTextureResource(
                 .pImageInfo = &descriptorClampSampler,
             },
         };
-        vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        updatePreviewImageDescriptors(writes);
         return texture;
     } catch (...) {
         uploadContext_->abort();
@@ -2694,7 +2921,7 @@ VulkanDevice::PreviewTextureResource VulkanDevice::createEmptyPreviewTextureReso
             .pImageInfo = &descriptorClampSampler,
         },
     };
-    vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    updatePreviewImageDescriptors(writes);
     return texture;
 }
 
@@ -2743,6 +2970,13 @@ void VulkanDevice::createPreviewBackgroundStream(std::uint32_t width, std::uint3
 }
 
 void VulkanDevice::recordPreviewBackgroundUpload(VkCommandBuffer command, Frame& frame) {
+    if (frame.previewBackgroundGeneration != previewBackgroundGeneration_ && frame.mappedBackgroundStaging != nullptr &&
+        !previewDisplayBackground_.pixels.empty()) {
+        std::memcpy(frame.mappedBackgroundStaging, previewDisplayBackground_.pixels.data(),
+                    previewDisplayBackground_.pixels.size());
+        frame.backgroundUploadPending = true;
+        frame.previewBackgroundGeneration = previewBackgroundGeneration_;
+    }
     if (!frame.backgroundUploadPending)
         return;
     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
@@ -2811,6 +3045,16 @@ void VulkanDevice::createFrames() {
             .commandBufferCount = 1,
         };
         check(vkAllocateCommandBuffers(device_, &commandInfo, &frame.commandBuffer), "allocate command buffer");
+        if (computeQueue_ != VK_NULL_HANDLE) {
+            auto computePoolInfo = poolInfo;
+            computePoolInfo.queueFamilyIndex = computeQueueFamily_;
+            check(vkCreateCommandPool(device_, &computePoolInfo, nullptr, &frame.deformCommandPool),
+                  "create async deform pool");
+            auto computeCommandInfo = commandInfo;
+            computeCommandInfo.commandPool = frame.deformCommandPool;
+            check(vkAllocateCommandBuffers(device_, &computeCommandInfo, &frame.deformCommandBuffer),
+                  "allocate async deform command buffer");
+        }
         const VkSemaphoreCreateInfo semaphoreInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         check(vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &frame.imageAvailable), "create image semaphore");
         const VkFenceCreateInfo fenceInfo{
@@ -2837,6 +3081,7 @@ void VulkanDevice::destroyFrames() {
     destroyPreviewMorphs();
     destroyPreviewIndirectBuffers();
     for (auto& frame : frames_) {
+        destroyPreviewDeformBuffers(frame);
         destroyNativeUploadBuffers(frame);
         if (frame.timestampQueryPool != VK_NULL_HANDLE)
             vkDestroyQueryPool(device_, frame.timestampQueryPool, nullptr);
@@ -2844,6 +3089,8 @@ void VulkanDevice::destroyFrames() {
             vkDestroyFence(device_, frame.inFlight, nullptr);
         if (frame.imageAvailable != VK_NULL_HANDLE)
             vkDestroySemaphore(device_, frame.imageAvailable, nullptr);
+        if (frame.deformCommandPool != VK_NULL_HANDLE)
+            vkDestroyCommandPool(device_, frame.deformCommandPool, nullptr);
         if (frame.commandPool != VK_NULL_HANDLE)
             vkDestroyCommandPool(device_, frame.commandPool, nullptr);
         frame = {};
@@ -3191,7 +3438,8 @@ void VulkanDevice::recordPreviewShadowPass(VkCommandBuffer command, Frame& frame
     if (shadowPipeline_ == VK_NULL_HANDLE || previewShadowDepth_.image == VK_NULL_HANDLE ||
         previewIndexBuffer_ == VK_NULL_HANDLE || frame.previewBoneDescriptor == VK_NULL_HANDLE)
         return;
-    constexpr std::uint32_t size = 2048U;
+    ensurePreviewShadowResource();
+    const auto size = previewShadowSize_;
     const VkImageMemoryBarrier2 toAttachment{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .srcStageMask =
@@ -3244,8 +3492,7 @@ void VulkanDevice::recordPreviewShadowPass(VkCommandBuffer command, Frame& frame
                             &frame.previewMaterialDescriptor, 0, nullptr);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 3, 1,
                             &previewBindlessDescriptor_, 0, nullptr);
-    const auto vertexBuffer =
-        previewStaticVertexBuffer_ != VK_NULL_HANDLE ? previewStaticVertexBuffer_ : frame.previewVertexBuffer;
+    const auto vertexBuffer = frame.previewDeformedBuffer;
     const VkDeviceSize vertexOffset = 0;
     vkCmdBindVertexBuffers(command, 0, 1, &vertexBuffer, &vertexOffset);
     vkCmdBindIndexBuffer(command, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
@@ -3367,7 +3614,6 @@ void VulkanDevice::ensurePreviewHdrResource(Frame& frame, VkExtent2D extent) {
         };
         check(vkAllocateDescriptorSets(device_, &setInfo, &resource.descriptor), "allocate preview tonemap descriptor");
         const VkDescriptorImageInfo image{VK_NULL_HANDLE, resource.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        const VkDescriptorImageInfo sampler{previewTonemapSampler_, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
         const std::array writes{
             VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                  .dstSet = resource.descriptor,
@@ -3375,14 +3621,8 @@ void VulkanDevice::ensurePreviewHdrResource(Frame& frame, VkExtent2D extent) {
                                  .descriptorCount = 1,
                                  .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                                  .pImageInfo = &image},
-            VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                 .dstSet = resource.descriptor,
-                                 .dstBinding = 1,
-                                 .descriptorCount = 1,
-                                 .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
-                                 .pImageInfo = &sampler},
         };
-        vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        updatePreviewImageDescriptors(writes);
         resource.extent = extent;
     } catch (...) {
         destroyPreviewHdrResource(frame);
@@ -3393,10 +3633,11 @@ void VulkanDevice::ensurePreviewHdrResource(Frame& frame, VkExtent2D extent) {
 void VulkanDevice::ensurePreviewAoResources(Frame& frame, VkExtent2D extent) {
     auto& resource = frame.previewAo;
     if (resource.extent.width == extent.width && resource.extent.height == extent.height &&
-        resource.depthImage != VK_NULL_HANDLE)
+        resource.depthImage != VK_NULL_HANDLE && resource.divisor == previewQuality_.aoDivisor)
         return;
     destroyPreviewAoResources(frame);
-    const VkExtent2D half{std::max(1U, (extent.width + 1U) / 2U), std::max(1U, (extent.height + 1U) / 2U)};
+    const VkExtent2D half{std::max(1U, (extent.width + previewQuality_.aoDivisor - 1U) / previewQuality_.aoDivisor),
+                          std::max(1U, (extent.height + previewQuality_.aoDivisor - 1U) / previewQuality_.aoDivisor)};
     const auto createImage = [this](VkExtent2D size, VkFormat format, VkImageUsageFlags usage,
                                     VkImageAspectFlags aspect, VkImage& image, VkDeviceMemory& memory,
                                     VkImageView& view) {
@@ -3433,14 +3674,14 @@ void VulkanDevice::ensurePreviewAoResources(Frame& frame, VkExtent2D extent) {
         check(vkCreateImageView(device_, &viewInfo, nullptr, &view), "create preview AO image view");
     };
     try {
+        resource.divisor = previewQuality_.aoDivisor;
         createImage(extent, VK_FORMAT_D32_SFLOAT,
                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_DEPTH_BIT,
                     resource.depthImage, resource.depthMemory, resource.depthView);
-        createImage(extent, VK_FORMAT_R16G16B16A16_SFLOAT,
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
-                    resource.normalImage, resource.normalMemory, resource.normalView);
+        createImage(extent, previewNormalFormat_, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, resource.normalImage, resource.normalMemory, resource.normalView);
         for (std::size_t index = 0; index < 2; ++index)
-            createImage(half, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            createImage(half, previewAoFormat_, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                         VK_IMAGE_ASPECT_COLOR_BIT, resource.images[index], resource.memories[index],
                         resource.views[index]);
         const std::array layouts{previewAoDescriptorSetLayout_, previewAoDescriptorSetLayout_,
@@ -3502,7 +3743,7 @@ void VulkanDevice::ensurePreviewAoResources(Frame& frame, VkExtent2D extent) {
                                      .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                                      .pImageInfo = &normal},
             };
-            vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+            updatePreviewImageDescriptors(writes);
         }
         const VkDescriptorImageInfo aoImage{VK_NULL_HANDLE, resource.views[0], VK_IMAGE_LAYOUT_GENERAL};
         const std::array sampleWrites{
@@ -3519,8 +3760,7 @@ void VulkanDevice::ensurePreviewAoResources(Frame& frame, VkExtent2D extent) {
                                  .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
                                  .pImageInfo = &sampler},
         };
-        vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(sampleWrites.size()), sampleWrites.data(), 0,
-                               nullptr);
+        updatePreviewImageDescriptors(sampleWrites);
         resource.extent = extent;
     } catch (...) {
         destroyPreviewAoResources(frame);
@@ -3610,8 +3850,7 @@ void VulkanDevice::recordPreviewAoPass(VkCommandBuffer command, Frame& frame, Vk
     if (frame.previewMorphDescriptor != VK_NULL_HANDLE)
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 4, 1,
                                 &frame.previewMorphDescriptor, 0, nullptr);
-    const auto vertexBuffer =
-        previewStaticVertexBuffer_ != VK_NULL_HANDLE ? previewStaticVertexBuffer_ : frame.previewVertexBuffer;
+    const auto vertexBuffer = frame.previewDeformedBuffer;
     const VkDeviceSize vertexOffset = 0;
     vkCmdBindVertexBuffers(command, 0, 1, &vertexBuffer, &vertexOffset);
     vkCmdBindIndexBuffer(command, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
@@ -3691,8 +3930,9 @@ void VulkanDevice::recordPreviewAoPass(VkCommandBuffer command, Frame& frame, Vk
         .pImageMemoryBarriers = barriers.data(),
     };
     vkCmdPipelineBarrier2(command, &computeBegin);
-    const std::array<std::uint32_t, 4> dispatchConstants{std::max(1U, (extent.width + 1U) / 2U),
-                                                         std::max(1U, (extent.height + 1U) / 2U), 0U, 0U};
+    const std::array<std::uint32_t, 4> dispatchConstants{
+        std::max(1U, (extent.width + previewQuality_.aoDivisor - 1U) / previewQuality_.aoDivisor),
+        std::max(1U, (extent.height + previewQuality_.aoDivisor - 1U) / previewQuality_.aoDivisor), 0U, 0U};
     const VkMemoryBarrier2 computeBarrier{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
         .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -3731,10 +3971,141 @@ void VulkanDevice::recordPreviewBackground(VkCommandBuffer command) {
     vkCmdDrawIndexed(command, previewBackgroundIndexCount_, 1, 0, 0, 0);
 }
 
+void VulkanDevice::destroyPreviewDeformBuffers(Frame& frame) {
+    if (frame.previewDeformDescriptor != VK_NULL_HANDLE)
+        check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &frame.previewDeformDescriptor),
+              "free Preview deform descriptor");
+    if (frame.previewDeformedBuffer != VK_NULL_HANDLE)
+        vkDestroyBuffer(device_, frame.previewDeformedBuffer, nullptr);
+    if (frame.previewDeformedMemory != VK_NULL_HANDLE)
+        vkFreeMemory(device_, frame.previewDeformedMemory, nullptr);
+    frame.previewDeformDescriptor = VK_NULL_HANDLE;
+    frame.previewDeformedBuffer = VK_NULL_HANDLE;
+    frame.previewDeformedMemory = VK_NULL_HANDLE;
+    frame.previewDeformedCapacity = 0;
+}
+
+void VulkanDevice::recordPreviewDeform(VkCommandBuffer command, Frame& frame) {
+    if (frame.deformRecorded || previewVertexSize_ == 0)
+        return;
+    frame.deformRecorded = true;
+    if (computeQueue_ != VK_NULL_HANDLE) {
+        command = frame.deformCommandBuffer;
+        const VkCommandBufferBeginInfo begin{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+        check(vkBeginCommandBuffer(command, &begin), "begin async deform");
+    }
+    const auto vertexCount = static_cast<std::uint32_t>(previewVertexSize_ / sizeof(PreviewVertex));
+    const VkDeviceSize required = static_cast<VkDeviceSize>(vertexCount) * sizeof(PreviewDeformedVertex);
+    // This slot's fence has completed before recording, so its output and set can be replaced in place.
+    if (frame.previewDeformedCapacity < required) {
+        destroyPreviewDeformBuffers(frame);
+        frame.previewDeformedCapacity = growPreviewCapacity(required);
+        const std::array sharedFamilies{queueFamily_, computeQueueFamily_};
+        const bool concurrent = computeQueue_ != VK_NULL_HANDLE && queueFamily_ != computeQueueFamily_;
+        const VkBufferCreateInfo info{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = frame.previewDeformedCapacity,
+            .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            .sharingMode = concurrent ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = concurrent ? 2U : 0U,
+            .pQueueFamilyIndices = concurrent ? sharedFamilies.data() : nullptr,
+        };
+        check(vkCreateBuffer(device_, &info, nullptr, &frame.previewDeformedBuffer), "create Preview deform output");
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(device_, frame.previewDeformedBuffer, &requirements);
+        const VkMemoryAllocateInfo allocation{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = requirements.size,
+            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+        };
+        check(vkAllocateMemory(device_, &allocation, nullptr, &frame.previewDeformedMemory),
+              "allocate Preview deform output");
+        check(vkBindBufferMemory(device_, frame.previewDeformedBuffer, frame.previewDeformedMemory, 0),
+              "bind Preview deform output");
+        const VkDescriptorSetAllocateInfo setInfo{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = previewDescriptorPool_,
+            .descriptorSetCount = 1,
+            .pSetLayouts = &previewDeformDescriptorLayout_,
+        };
+        check(vkAllocateDescriptorSets(device_, &setInfo, &frame.previewDeformDescriptor),
+              "allocate Preview deform set");
+    }
+    const std::array<VkDescriptorBufferInfo, 5> buffers{{
+        {previewStaticVertexBuffer_ != VK_NULL_HANDLE ? previewStaticVertexBuffer_ : frame.previewVertexBuffer, 0,
+         previewVertexSize_},
+        {frame.previewBoneBuffer, 0, previewBoneSize_},
+        {frame.previewMorphDeltaBuffer, 0, previewMorphDeltaSize_},
+        {frame.previewMorphWeightBuffer, 0, previewMorphWeightSize_},
+        {frame.previewDeformedBuffer, 0, frame.previewDeformedCapacity},
+    }};
+    std::array<VkWriteDescriptorSet, 5> writes{};
+    for (std::uint32_t i = 0; i < writes.size(); ++i)
+        writes[i] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                     .dstSet = frame.previewDeformDescriptor,
+                     .dstBinding = i,
+                     .descriptorCount = 1,
+                     .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                     .pBufferInfo = &buffers[i]};
+    vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, previewDeformPipeline_);
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, previewDeformPipelineLayout_, 0, 1,
+                            &frame.previewDeformDescriptor, 0, nullptr);
+    const std::array<std::uint32_t, 4> constants{
+        vertexCount, static_cast<std::uint32_t>(previewBoneSize_ / sizeof(PreviewBoneTransform)),
+        static_cast<std::uint32_t>(previewMorphDeltaSize_ / sizeof(PreviewMorphDelta)),
+        static_cast<std::uint32_t>(previewMorphWeightSize_ / sizeof(float))};
+    vkCmdPushConstants(command, previewDeformPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants),
+                       constants.data());
+    vkCmdDispatch(command, (vertexCount + 63U) / 64U, 1, 1);
+    const VkMemoryBarrier2 visible{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
+        .dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT,
+    };
+    const VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &visible};
+    if (computeQueue_ == VK_NULL_HANDLE)
+        vkCmdPipelineBarrier2(command, &dependency);
+    if (computeQueue_ != VK_NULL_HANDLE) {
+        check(vkEndCommandBuffer(command), "end async deform");
+        frame.deformReadyValue = ++nextComputeTimelineValue_;
+        const auto uploadValue = uploadContext_->lastSubmittedValue();
+        const VkSemaphoreSubmitInfo wait{
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .semaphore = timelineSemaphore_,
+            .value = uploadValue,
+            .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        };
+        const VkSemaphoreSubmitInfo signal{
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .semaphore = computeTimelineSemaphore_,
+            .value = frame.deformReadyValue,
+            .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        };
+        const VkCommandBufferSubmitInfo buffer{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+                                               .commandBuffer = command};
+        const VkSubmitInfo2 submit{
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+            .waitSemaphoreInfoCount = uploadValue == 0 ? 0U : 1U,
+            .pWaitSemaphoreInfos = &wait,
+            .commandBufferInfoCount = 1,
+            .pCommandBufferInfos = &buffer,
+            .signalSemaphoreInfoCount = 1,
+            .pSignalSemaphoreInfos = &signal,
+        };
+        check(vkQueueSubmit2(computeQueue_, 1, &submit, VK_NULL_HANDLE), "submit async deform");
+    }
+}
+
 void VulkanDevice::recordPreviewPass(VkCommandBuffer command, Frame& frame, VkImage colorImage, VkImageView colorView,
                                      DepthResource& depth, VkExtent2D extent, bool colorInitialized,
                                      VkImageLayout previousColorLayout, VkPipelineStageFlags2 previousColorStage,
                                      VkAccessFlags2 previousColorAccess, bool preservePreviousFrame) {
+    recordPreviewDeform(command, frame);
     if (preservePreviousFrame && previewGpuScene_.view.backgroundEnabled &&
         previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::previousFrame) {
         previewHdrActive_ = false;
@@ -3916,8 +4287,7 @@ void VulkanDevice::recordPreviewScenePass(VkCommandBuffer command, Frame& frame,
     if (frame.previewMorphDescriptor != VK_NULL_HANDLE)
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 4, 1,
                                 &frame.previewMorphDescriptor, 0, nullptr);
-    const auto previewVertexBuffer =
-        previewStaticVertexBuffer_ != VK_NULL_HANDLE ? previewStaticVertexBuffer_ : frame.previewVertexBuffer;
+    const auto previewVertexBuffer = frame.previewDeformedBuffer;
     const VkDeviceSize vertexOffset = 0;
     vkCmdBindVertexBuffers(command, 0, 1, &previewVertexBuffer, &vertexOffset);
     vkCmdBindIndexBuffer(command, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
@@ -3935,7 +4305,8 @@ void VulkanDevice::recordPreviewScenePass(VkCommandBuffer command, Frame& frame,
     constants.debug = {static_cast<float>(previewGpuScene_.view.debugMaterial),
                        static_cast<float>(previewGpuScene_.view.debugFlags), previewEnvironmentEnabled_ ? 1.0F : 0.0F,
                        previewShadowDepth_.initialized ? (previewStillQuality_ ? 1.0F : 0.0F) : -1.0F};
-    constants.materialPadding = (frame.previewAo.initialized ? 1U : 0U) | (previewHdrActive_ ? 2U : 0U);
+    constants.materialPadding = (frame.previewAo.initialized ? 1U : 0U) | (previewHdrActive_ ? 2U : 0U) |
+                                (previewQuality_.cheapShadow && !previewStillQuality_ ? 4U : 0U);
     constants.viewport = {static_cast<float>(extent.width), static_cast<float>(extent.height), previewJitter_[0],
                           previewJitter_[1]};
     const auto plan = buildPreviewRenderPlan(false);
@@ -3951,9 +4322,16 @@ void VulkanDevice::renderFrame() {
 #endif
     auto& frame = frames_[frameIndex_];
     check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for frame");
+    collectPreviewRetirements();
+    if (++budgetFrameCounter_ % 120U == 0)
+        updatePreviewQualityBudget();
     reclaimAccelerationScratch(frameIndex_);
     resetNativeUploadBuffers(frame);
     resolveTimestampQuery(frame);
+    if (frame.deformCommandPool != VK_NULL_HANDLE)
+        check(vkResetCommandPool(device_, frame.deformCommandPool, 0), "reset async deform pool");
+    frame.deformRecorded = false;
+    frame.deformReadyValue = 0;
     synchronizePreviewVertices(frame);
     synchronizePreviewBones(frame);
     synchronizePreviewMorphs(frame);
@@ -4040,8 +4418,7 @@ void VulkanDevice::renderFrame() {
 
     const VkImageMemoryBarrier2 toColor{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask = swapchainInitialized_[imageIndex] ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
-                                                          : VK_PIPELINE_STAGE_2_NONE,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
         .srcAccessMask = 0,
         .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
         .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -4118,15 +4495,24 @@ void VulkanDevice::renderFrame() {
 
     const auto uploadWaitValue = uploadContext_->lastSubmittedValue();
     const std::uint64_t signalValue = ++nextTimelineValue_;
-    const std::array<std::uint64_t, 2> waitValues{0, uploadWaitValue};
+    std::vector<std::uint64_t> waitValues{0};
+    std::vector<VkSemaphore> waitSemaphores{frame.imageAvailable};
+    std::vector<VkPipelineStageFlags> waitStages{VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    if (uploadWaitValue != 0) {
+        waitValues.push_back(uploadWaitValue);
+        waitSemaphores.push_back(timelineSemaphore_);
+        waitStages.push_back(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+    }
+    if (frame.deformReadyValue != 0) {
+        waitValues.push_back(frame.deformReadyValue);
+        waitSemaphores.push_back(computeTimelineSemaphore_);
+        waitStages.push_back(VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
+    }
     const std::array<std::uint64_t, 2> signalValues{0, signalValue};
-    const std::array<VkSemaphore, 2> waitSemaphores{frame.imageAvailable, timelineSemaphore_};
-    const std::array<VkPipelineStageFlags, 2> waitStages{VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                                         VK_PIPELINE_STAGE_VERTEX_INPUT_BIT};
     const std::array<VkSemaphore, 2> signalSemaphores{swapchainRenderFinished_[imageIndex], timelineSemaphore_};
     const VkTimelineSemaphoreSubmitInfo timelineSubmit{
         .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
-        .waitSemaphoreValueCount = uploadWaitValue == 0 ? 1U : static_cast<std::uint32_t>(waitValues.size()),
+        .waitSemaphoreValueCount = static_cast<std::uint32_t>(waitValues.size()),
         .pWaitSemaphoreValues = waitValues.data(),
         .signalSemaphoreValueCount = static_cast<std::uint32_t>(signalValues.size()),
         .pSignalSemaphoreValues = signalValues.data(),
@@ -4134,7 +4520,7 @@ void VulkanDevice::renderFrame() {
     const VkSubmitInfo submitInfo{
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .pNext = &timelineSubmit,
-        .waitSemaphoreCount = uploadWaitValue == 0 ? 1U : static_cast<std::uint32_t>(waitSemaphores.size()),
+        .waitSemaphoreCount = static_cast<std::uint32_t>(waitSemaphores.size()),
         .pWaitSemaphores = waitSemaphores.data(),
         .pWaitDstStageMask = waitStages.data(),
         .commandBufferCount = 1,
@@ -4166,23 +4552,28 @@ void VulkanDevice::destroyOffscreenResource() {
     if (device_ == VK_NULL_HANDLE)
         return;
     if (offscreen_.stagingBuffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(device_, offscreen_.stagingBuffer, nullptr);
+        retirePreviewResource(
+            [this, resource = offscreen_.stagingBuffer] { vkDestroyBuffer(device_, resource, nullptr); });
     }
     if (offscreen_.stagingMemory != VK_NULL_HANDLE) {
-        vkFreeMemory(device_, offscreen_.stagingMemory, nullptr);
+        retirePreviewResource(
+            [this, resource = offscreen_.stagingMemory] { vkFreeMemory(device_, resource, nullptr); });
     }
     if (offscreen_.colorView != VK_NULL_HANDLE)
-        vkDestroyImageView(device_, offscreen_.colorView, nullptr);
+        retirePreviewResource(
+            [this, resource = offscreen_.colorView] { vkDestroyImageView(device_, resource, nullptr); });
     if (offscreen_.colorImage != VK_NULL_HANDLE)
-        vkDestroyImage(device_, offscreen_.colorImage, nullptr);
+        retirePreviewResource([this, resource = offscreen_.colorImage] { vkDestroyImage(device_, resource, nullptr); });
     if (offscreen_.colorMemory != VK_NULL_HANDLE)
-        vkFreeMemory(device_, offscreen_.colorMemory, nullptr);
+        retirePreviewResource([this, resource = offscreen_.colorMemory] { vkFreeMemory(device_, resource, nullptr); });
     if (offscreen_.depth.view != VK_NULL_HANDLE)
-        vkDestroyImageView(device_, offscreen_.depth.view, nullptr);
+        retirePreviewResource(
+            [this, resource = offscreen_.depth.view] { vkDestroyImageView(device_, resource, nullptr); });
     if (offscreen_.depth.image != VK_NULL_HANDLE)
-        vkDestroyImage(device_, offscreen_.depth.image, nullptr);
+        retirePreviewResource(
+            [this, resource = offscreen_.depth.image] { vkDestroyImage(device_, resource, nullptr); });
     if (offscreen_.depth.memory != VK_NULL_HANDLE)
-        vkFreeMemory(device_, offscreen_.depth.memory, nullptr);
+        retirePreviewResource([this, resource = offscreen_.depth.memory] { vkFreeMemory(device_, resource, nullptr); });
     offscreen_ = {};
 }
 
@@ -4194,17 +4585,19 @@ void VulkanDevice::destroyViewportResource(ViewportResource& resource) {
         ImGui_ImplVulkan_RemoveTexture(resource.imguiDescriptor);
 #endif
     if (resource.depth.view != VK_NULL_HANDLE)
-        vkDestroyImageView(device_, resource.depth.view, nullptr);
+        retirePreviewResource(
+            [this, resource = resource.depth.view] { vkDestroyImageView(device_, resource, nullptr); });
     if (resource.depth.image != VK_NULL_HANDLE)
-        vkDestroyImage(device_, resource.depth.image, nullptr);
+        retirePreviewResource([this, resource = resource.depth.image] { vkDestroyImage(device_, resource, nullptr); });
     if (resource.depth.memory != VK_NULL_HANDLE)
-        vkFreeMemory(device_, resource.depth.memory, nullptr);
+        retirePreviewResource([this, resource = resource.depth.memory] { vkFreeMemory(device_, resource, nullptr); });
     if (resource.colorView != VK_NULL_HANDLE)
-        vkDestroyImageView(device_, resource.colorView, nullptr);
+        retirePreviewResource(
+            [this, resource = resource.colorView] { vkDestroyImageView(device_, resource, nullptr); });
     if (resource.colorImage != VK_NULL_HANDLE)
-        vkDestroyImage(device_, resource.colorImage, nullptr);
+        retirePreviewResource([this, resource = resource.colorImage] { vkDestroyImage(device_, resource, nullptr); });
     if (resource.colorMemory != VK_NULL_HANDLE)
-        vkFreeMemory(device_, resource.colorMemory, nullptr);
+        retirePreviewResource([this, resource = resource.colorMemory] { vkFreeMemory(device_, resource, nullptr); });
     resource = {};
 }
 
@@ -4412,49 +4805,65 @@ void VulkanDevice::createOffscreenResource(VkExtent2D extent) {
     };
     check(vkCreateImageView(device_, &depthViewInfo, nullptr, &offscreen_.depth.view), "create offscreen depth view");
 
-    offscreen_.stagingSize = static_cast<VkDeviceSize>(extent.width) * extent.height * 4U;
-    const VkBufferCreateInfo stagingInfo{
-        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = offscreen_.stagingSize,
-        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-    };
-    check(vkCreateBuffer(device_, &stagingInfo, nullptr, &offscreen_.stagingBuffer), "create offscreen staging buffer");
-    VkMemoryRequirements stagingRequirements{};
-    vkGetBufferMemoryRequirements(device_, offscreen_.stagingBuffer, &stagingRequirements);
-    const VkMemoryAllocateInfo stagingAllocation{
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize = stagingRequirements.size,
-        .memoryTypeIndex = findMemoryType(stagingRequirements.memoryTypeBits,
-                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-    };
-    check(vkAllocateMemory(device_, &stagingAllocation, nullptr, &offscreen_.stagingMemory),
-          "allocate offscreen staging memory");
-    check(vkBindBufferMemory(device_, offscreen_.stagingBuffer, offscreen_.stagingMemory, 0),
-          "bind offscreen staging memory");
     offscreen_.extent = extent;
 }
 
 core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
+    return std::move(collectRenderedImage(enqueueRenderToImage(target), true).value());
+}
+
+std::uint64_t VulkanDevice::enqueueRenderToImage(const RenderTargetDesc& target) {
     if (target.width == 0 || target.height == 0)
         throw std::invalid_argument("video dimensions must be non-zero");
     const VkExtent2D extent{target.width, target.height};
+    const auto freeSlot = std::find_if(readbackSlots_.begin(), readbackSlots_.end(),
+                                       [](const ReadbackSlot& slot) { return slot.readyValue == 0; });
+    if (freeSlot == readbackSlots_.end())
+        throw std::logic_error("readback ring is full; collect an outstanding ticket first");
+    auto& slot = *freeSlot;
+    const auto required = static_cast<VkDeviceSize>(extent.width) * extent.height * 4U;
+    if (slot.capacity < required) {
+        if (slot.mapped != nullptr)
+            vkUnmapMemory(device_, slot.memory);
+        if (slot.buffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, slot.buffer, nullptr);
+        if (slot.memory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, slot.memory, nullptr);
+        slot = {};
+        const VkBufferCreateInfo info{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                      .size = required,
+                                      .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                      .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+        check(vkCreateBuffer(device_, &info, nullptr, &slot.buffer), "create readback ring buffer");
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(device_, slot.buffer, &requirements);
+        const VkMemoryAllocateInfo allocation{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = requirements.size,
+            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+        };
+        check(vkAllocateMemory(device_, &allocation, nullptr, &slot.memory), "allocate readback ring memory");
+        check(vkBindBufferMemory(device_, slot.buffer, slot.memory, 0), "bind readback ring memory");
+        check(vkMapMemory(device_, slot.memory, 0, required, 0, &slot.mapped), "map readback ring memory");
+        slot.capacity = required;
+    }
+    slot.extent = extent;
+    slot.format = swapchainFormat_;
     auto& frame = frames_[frameIndex_];
     check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for offscreen frame slot");
+    collectPreviewRetirements();
+    if (++budgetFrameCounter_ % 120U == 0)
+        updatePreviewQualityBudget();
     reclaimAccelerationScratch(frameIndex_);
     resetNativeUploadBuffers(frame);
     const auto uploadWaitValue = uploadContext_->lastSubmittedValue();
-    if (uploadWaitValue != 0)
-        uploadContext_->wait(uploadWaitValue);
-    if (offscreen_.colorImage != VK_NULL_HANDLE &&
-        (offscreen_.extent.width != extent.width || offscreen_.extent.height != extent.height)) {
-        // The offscreen image is shared by the bounded readback path. A size
-        // change destroys it, so wait for every prior submission before
-        // replacing the resource.
-        waitIdle();
-    }
     createOffscreenResource(extent);
     resolveTimestampQuery(frame);
+    if (frame.deformCommandPool != VK_NULL_HANDLE)
+        check(vkResetCommandPool(device_, frame.deformCommandPool, 0), "reset async deform pool");
+    frame.deformRecorded = false;
+    frame.deformReadyValue = 0;
     synchronizePreviewVertices(frame);
     synchronizePreviewBones(frame);
     synchronizePreviewMorphs(frame);
@@ -4518,25 +4927,73 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
         .imageExtent = {extent.width, extent.height, 1},
     };
+    if (slot.everWritten) {
+        // A host timeline wait releases the ticket, but does not order the next GPU write.
+        const VkBufferMemoryBarrier2 reuseBarrier{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = slot.buffer,
+            .offset = 0,
+            .size = slot.capacity,
+        };
+        const VkDependencyInfo reuseDependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .bufferMemoryBarrierCount = 1,
+            .pBufferMemoryBarriers = &reuseBarrier,
+        };
+        vkCmdPipelineBarrier2(frame.commandBuffer, &reuseDependency);
+    }
     vkCmdCopyImageToBuffer(frame.commandBuffer, offscreen_.colorImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           offscreen_.stagingBuffer, 1, &copy);
+                           slot.buffer, 1, &copy);
+    const VkBufferMemoryBarrier2 toHost{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+        .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = slot.buffer,
+        .offset = 0,
+        .size = required,
+    };
+    const VkDependencyInfo hostDependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .bufferMemoryBarrierCount = 1, .pBufferMemoryBarriers = &toHost};
+    vkCmdPipelineBarrier2(frame.commandBuffer, &hostDependency);
     offscreen_.colorInitialized = true;
     check(vkEndCommandBuffer(frame.commandBuffer), "end offscreen command buffer");
     const std::uint64_t signalValue = ++nextTimelineValue_;
-    const VkPipelineStageFlags uploadWaitStage = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
+    std::vector<std::uint64_t> waitValues;
+    std::vector<VkSemaphore> waitSemaphores;
+    std::vector<VkPipelineStageFlags> waitStages;
+    if (uploadWaitValue != 0) {
+        waitValues.push_back(uploadWaitValue);
+        waitSemaphores.push_back(timelineSemaphore_);
+        waitStages.push_back(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+    }
+    if (frame.deformReadyValue != 0) {
+        waitValues.push_back(frame.deformReadyValue);
+        waitSemaphores.push_back(computeTimelineSemaphore_);
+        waitStages.push_back(VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
+    }
     const VkTimelineSemaphoreSubmitInfo timelineSubmit{
         .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
-        .waitSemaphoreValueCount = uploadWaitValue == 0 ? 0U : 1U,
-        .pWaitSemaphoreValues = &uploadWaitValue,
+        .waitSemaphoreValueCount = static_cast<std::uint32_t>(waitValues.size()),
+        .pWaitSemaphoreValues = waitValues.data(),
         .signalSemaphoreValueCount = 1,
         .pSignalSemaphoreValues = &signalValue,
     };
     const VkSubmitInfo submitInfo{
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .pNext = &timelineSubmit,
-        .waitSemaphoreCount = uploadWaitValue == 0 ? 0U : 1U,
-        .pWaitSemaphores = &timelineSemaphore_,
-        .pWaitDstStageMask = &uploadWaitStage,
+        .waitSemaphoreCount = static_cast<std::uint32_t>(waitSemaphores.size()),
+        .pWaitSemaphores = waitSemaphores.data(),
+        .pWaitDstStageMask = waitStages.data(),
         .commandBufferCount = 1,
         .pCommandBuffers = &frame.commandBuffer,
         .signalSemaphoreCount = 1,
@@ -4544,28 +5001,67 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     };
     check(vkQueueSubmit(queue_, 1, &submitInfo, frame.inFlight), "submit offscreen frame");
     frame.timestampsSubmitted = frame.timestampQueryPool != VK_NULL_HANDLE;
-    check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for offscreen frame");
-
-    core::ImageRgba8 image;
-    image.width = target.width;
-    image.height = target.height;
-    image.pixels.resize(static_cast<std::size_t>(offscreen_.stagingSize));
-    void* mapped = nullptr;
-    check(vkMapMemory(device_, offscreen_.stagingMemory, 0, offscreen_.stagingSize, 0, &mapped), "map offscreen frame");
-    std::memcpy(image.pixels.data(), mapped, image.pixels.size());
-    vkUnmapMemory(device_, offscreen_.stagingMemory);
-    if (swapchainFormat_ == VK_FORMAT_B8G8R8A8_UNORM || swapchainFormat_ == VK_FORMAT_B8G8R8A8_SRGB) {
-        for (std::size_t index = 0; index < image.pixels.size(); index += 4) {
-            std::swap(image.pixels[index], image.pixels[index + 2]);
-        }
-    }
+    slot.readyValue = signalValue;
+    slot.everWritten = true;
     frameIndex_ = (frameIndex_ + 1) % frames_.size();
+    return signalValue;
+}
+
+std::optional<core::ImageRgba8> VulkanDevice::collectRenderedImage(std::uint64_t ticket, bool wait) {
+    const auto found = std::find_if(readbackSlots_.begin(), readbackSlots_.end(), [ticket](const ReadbackSlot& slot) {
+        return slot.readyValue == ticket && ticket != 0;
+    });
+    if (found == readbackSlots_.end())
+        throw std::invalid_argument("unknown or already collected readback ticket");
+    auto& slot = *found;
+    const VkSemaphoreWaitInfo info{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                                   .semaphoreCount = 1,
+                                   .pSemaphores = &timelineSemaphore_,
+                                   .pValues = &ticket};
+    const auto result = vkWaitSemaphores(device_, &info, wait ? UINT64_MAX : 0);
+    if (!wait && result == VK_TIMEOUT)
+        return std::nullopt;
+    check(result, "wait for readback ticket");
+    core::ImageRgba8 image;
+    image.width = slot.extent.width;
+    image.height = slot.extent.height;
+    image.pixels.resize(static_cast<std::size_t>(image.width) * image.height * 4U);
+    std::memcpy(image.pixels.data(), slot.mapped, image.pixels.size());
+    if (slot.format == VK_FORMAT_B8G8R8A8_UNORM || slot.format == VK_FORMAT_B8G8R8A8_SRGB) {
+        for (std::size_t index = 0; index < image.pixels.size(); index += 4)
+            std::swap(image.pixels[index], image.pixels[index + 2]);
+    }
+    slot.readyValue = 0;
     return image;
+}
+
+void VulkanDevice::retirePreviewResource(std::function<void()> destroy) {
+    if (destroying_) {
+        destroy();
+        return;
+    }
+    pendingPreviewDeletions_.push_back({nextTimelineValue_, nextComputeTimelineValue_, std::move(destroy)});
+}
+
+void VulkanDevice::collectPreviewRetirements() {
+    std::uint64_t completed = 0;
+    check(vkGetSemaphoreCounterValue(device_, timelineSemaphore_, &completed), "query Preview retirement timeline");
+    std::uint64_t computeCompleted = 0;
+    if (computeTimelineSemaphore_ != VK_NULL_HANDLE)
+        check(vkGetSemaphoreCounterValue(device_, computeTimelineSemaphore_, &computeCompleted),
+              "query compute retirement timeline");
+    std::erase_if(pendingPreviewDeletions_, [completed, computeCompleted](const PendingPreviewDeletion& pending) {
+        if (pending.timeline > completed || pending.computeTimeline > computeCompleted)
+            return false;
+        pending.destroy();
+        return true;
+    });
 }
 
 void VulkanDevice::waitIdle() {
     if (device_ != VK_NULL_HANDLE) {
         check(vkDeviceWaitIdle(device_), "wait for Vulkan device");
+        collectPreviewRetirements();
         reclaimAllAccelerationScratch();
         if (!frames_.empty()) {
             const auto previousFrame = (frameIndex_ + frames_.size() - 1U) % frames_.size();
@@ -4576,24 +5072,27 @@ void VulkanDevice::waitIdle() {
 
 void VulkanDevice::destroyPreviewMesh() {
     if (previewStaticVertexBuffer_ != VK_NULL_HANDLE)
-        vkDestroyBuffer(device_, previewStaticVertexBuffer_, nullptr);
+        retirePreviewResource(
+            [this, handle = previewStaticVertexBuffer_] { vkDestroyBuffer(device_, handle, nullptr); });
     if (previewStaticVertexMemory_ != VK_NULL_HANDLE)
-        vkFreeMemory(device_, previewStaticVertexMemory_, nullptr);
+        retirePreviewResource([this, handle = previewStaticVertexMemory_] { vkFreeMemory(device_, handle, nullptr); });
     previewStaticVertexBuffer_ = VK_NULL_HANDLE;
     previewStaticVertexMemory_ = VK_NULL_HANDLE;
     if (previewIndexBuffer_ != VK_NULL_HANDLE)
-        vkDestroyBuffer(device_, previewIndexBuffer_, nullptr);
+        retirePreviewResource([this, handle = previewIndexBuffer_] { vkDestroyBuffer(device_, handle, nullptr); });
     if (previewIndexMemory_ != VK_NULL_HANDLE)
-        vkFreeMemory(device_, previewIndexMemory_, nullptr);
+        retirePreviewResource([this, handle = previewIndexMemory_] { vkFreeMemory(device_, handle, nullptr); });
     for (auto& frame : frames_) {
         if (frame.mappedPreviewVertices != nullptr) {
             vkUnmapMemory(device_, frame.previewVertexMemory);
         }
         if (frame.previewVertexBuffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(device_, frame.previewVertexBuffer, nullptr);
+            retirePreviewResource(
+                [this, handle = frame.previewVertexBuffer] { vkDestroyBuffer(device_, handle, nullptr); });
         }
         if (frame.previewVertexMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(device_, frame.previewVertexMemory, nullptr);
+            retirePreviewResource(
+                [this, handle = frame.previewVertexMemory] { vkFreeMemory(device_, handle, nullptr); });
         }
         frame.previewVertexBuffer = VK_NULL_HANDLE;
         frame.previewVertexMemory = VK_NULL_HANDLE;
@@ -4613,13 +5112,7 @@ void VulkanDevice::synchronizePreviewVertices(Frame& frame) {
     if (previewStaticVertexBuffer_ != VK_NULL_HANDLE || frame.previewVertexGeneration == previewVertexGeneration_ ||
         previewVertexSize_ == 0)
         return;
-    const auto latest = std::find_if(frames_.begin(), frames_.end(), [this](const Frame& candidate) {
-        return candidate.previewVertexGeneration == previewVertexGeneration_;
-    });
-    if (latest == frames_.end() || latest->mappedPreviewVertices == nullptr)
-        return;
-    check(vkWaitForFences(device_, 1, &latest->inFlight, VK_TRUE, UINT64_MAX), "wait for latest animated vertices");
-    std::memcpy(frame.mappedPreviewVertices, latest->mappedPreviewVertices,
+    std::memcpy(frame.mappedPreviewVertices, previewGpuScene_.vertices.data(),
                 static_cast<std::size_t>(previewVertexSize_));
     frame.previewVertexGeneration = previewVertexGeneration_;
 }
@@ -4627,16 +5120,18 @@ void VulkanDevice::synchronizePreviewVertices(Frame& frame) {
 void VulkanDevice::destroyPreviewBones() {
     for (auto& frame : frames_) {
         if (frame.previewBoneDescriptor != VK_NULL_HANDLE && previewDescriptorPool_ != VK_NULL_HANDLE) {
-            check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &frame.previewBoneDescriptor),
-                  "free preview bone descriptor");
+            retirePreviewResource([this, set = frame.previewBoneDescriptor] {
+                check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &set), "retire Preview descriptor");
+            });
         }
         if (frame.mappedPreviewBones != nullptr)
             vkUnmapMemory(device_, frame.previewBoneMemory);
         if (frame.previewBoneBuffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(device_, frame.previewBoneBuffer, nullptr);
+            retirePreviewResource(
+                [this, handle = frame.previewBoneBuffer] { vkDestroyBuffer(device_, handle, nullptr); });
         }
         if (frame.previewBoneMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(device_, frame.previewBoneMemory, nullptr);
+            retirePreviewResource([this, handle = frame.previewBoneMemory] { vkFreeMemory(device_, handle, nullptr); });
         }
         frame.previewBoneBuffer = VK_NULL_HANDLE;
         frame.previewBoneMemory = VK_NULL_HANDLE;
@@ -4652,34 +5147,33 @@ void VulkanDevice::destroyPreviewBones() {
 void VulkanDevice::synchronizePreviewBones(Frame& frame) {
     if (frame.previewBoneGeneration == previewBoneGeneration_ || previewBoneSize_ == 0)
         return;
-    const auto latest = std::find_if(frames_.begin(), frames_.end(), [this](const Frame& candidate) {
-        return candidate.previewBoneGeneration == previewBoneGeneration_;
-    });
-    if (latest == frames_.end() || latest->mappedPreviewBones == nullptr)
-        return;
-    check(vkWaitForFences(device_, 1, &latest->inFlight, VK_TRUE, UINT64_MAX), "wait for latest preview bones");
-    std::memcpy(frame.mappedPreviewBones, latest->mappedPreviewBones, static_cast<std::size_t>(previewBoneSize_));
+    std::memcpy(frame.mappedPreviewBones, previewGpuScene_.bones.data(), static_cast<std::size_t>(previewBoneSize_));
     frame.previewBoneGeneration = previewBoneGeneration_;
 }
 
 void VulkanDevice::destroyPreviewMorphs() {
     for (auto& frame : frames_) {
         if (frame.previewMorphDescriptor != VK_NULL_HANDLE && previewDescriptorPool_ != VK_NULL_HANDLE) {
-            check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &frame.previewMorphDescriptor),
-                  "free preview morph descriptor");
+            retirePreviewResource([this, set = frame.previewMorphDescriptor] {
+                check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &set), "retire Preview descriptor");
+            });
         }
         if (frame.mappedPreviewMorphDeltas != nullptr)
             vkUnmapMemory(device_, frame.previewMorphDeltaMemory);
         if (frame.mappedPreviewMorphWeights != nullptr)
             vkUnmapMemory(device_, frame.previewMorphWeightMemory);
         if (frame.previewMorphDeltaBuffer != VK_NULL_HANDLE)
-            vkDestroyBuffer(device_, frame.previewMorphDeltaBuffer, nullptr);
+            retirePreviewResource(
+                [this, handle = frame.previewMorphDeltaBuffer] { vkDestroyBuffer(device_, handle, nullptr); });
         if (frame.previewMorphDeltaMemory != VK_NULL_HANDLE)
-            vkFreeMemory(device_, frame.previewMorphDeltaMemory, nullptr);
+            retirePreviewResource(
+                [this, handle = frame.previewMorphDeltaMemory] { vkFreeMemory(device_, handle, nullptr); });
         if (frame.previewMorphWeightBuffer != VK_NULL_HANDLE)
-            vkDestroyBuffer(device_, frame.previewMorphWeightBuffer, nullptr);
+            retirePreviewResource(
+                [this, handle = frame.previewMorphWeightBuffer] { vkDestroyBuffer(device_, handle, nullptr); });
         if (frame.previewMorphWeightMemory != VK_NULL_HANDLE)
-            vkFreeMemory(device_, frame.previewMorphWeightMemory, nullptr);
+            retirePreviewResource(
+                [this, handle = frame.previewMorphWeightMemory] { vkFreeMemory(device_, handle, nullptr); });
         frame.previewMorphDeltaBuffer = VK_NULL_HANDLE;
         frame.previewMorphDeltaMemory = VK_NULL_HANDLE;
         frame.mappedPreviewMorphDeltas = nullptr;
@@ -4699,7 +5193,7 @@ void VulkanDevice::destroyPreviewMorphs() {
 }
 
 void VulkanDevice::rebuildPreviewMorphBuffers() {
-    waitIdle();
+    collectPreviewRetirements();
     destroyPreviewMorphs();
     previewMorphDeltaSize_ = static_cast<VkDeviceSize>(previewGpuScene_.morphDeltas.size() * sizeof(PreviewMorphDelta));
     previewMorphWeightSize_ = static_cast<VkDeviceSize>(previewGpuScene_.morphWeights.size() * sizeof(float));
@@ -4714,10 +5208,10 @@ void VulkanDevice::rebuildPreviewMorphBuffers() {
         uploadPreviewBuffer(previewGpuScene_.morphWeights.data(), previewMorphWeightSize_,
                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, frame.previewMorphWeightBuffer,
                             frame.previewMorphWeightMemory, previewMorphWeightCapacity_);
-        check(vkMapMemory(device_, frame.previewMorphDeltaMemory, 0, previewMorphDeltaSize_, 0,
+        check(vkMapMemory(device_, frame.previewMorphDeltaMemory, 0, previewMorphDeltaCapacity_, 0,
                           &frame.mappedPreviewMorphDeltas),
               "persistently map preview morph deltas");
-        check(vkMapMemory(device_, frame.previewMorphWeightMemory, 0, previewMorphWeightSize_, 0,
+        check(vkMapMemory(device_, frame.previewMorphWeightMemory, 0, previewMorphWeightCapacity_, 0,
                           &frame.mappedPreviewMorphWeights),
               "persistently map preview morph weights");
         const VkDescriptorSetAllocateInfo setInfo{
@@ -4768,13 +5262,8 @@ void VulkanDevice::uploadPreviewMorphDeltas(std::span<const PreviewMorphDelta> d
         rebuildPreviewMorphBuffers();
         return;
     }
-    waitIdle();
     previewMorphDeltaSize_ = deltaSize;
     ++previewMorphDeltaGeneration_;
-    for (auto& frame : frames_) {
-        std::memcpy(frame.mappedPreviewMorphDeltas, deltas.data(), deltas.size_bytes());
-        frame.previewMorphDeltaGeneration = previewMorphDeltaGeneration_;
-    }
 }
 
 void VulkanDevice::updatePreviewMorphWeights(std::span<const float> weights) {
@@ -4790,40 +5279,39 @@ void VulkanDevice::updatePreviewMorphWeights(std::span<const float> weights) {
         return;
     }
     previewMorphWeightSize_ = weightSize;
-    auto& frame = frames_[frameIndex_];
-    check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for preview morph frame");
-    std::memcpy(frame.mappedPreviewMorphWeights, weights.data(), weights.size_bytes());
-    frame.previewMorphGeneration = ++previewMorphGeneration_;
+    ++previewMorphGeneration_;
 }
 
 void VulkanDevice::synchronizePreviewMorphs(Frame& frame) {
-    if (frame.previewMorphGeneration == previewMorphGeneration_ || previewMorphWeightSize_ == 0)
-        return;
-    const auto latest = std::find_if(frames_.begin(), frames_.end(), [this](const Frame& candidate) {
-        return candidate.previewMorphGeneration == previewMorphGeneration_;
-    });
-    if (latest == frames_.end() || latest->mappedPreviewMorphWeights == nullptr)
-        return;
-    check(vkWaitForFences(device_, 1, &latest->inFlight, VK_TRUE, UINT64_MAX), "wait for latest preview morphs");
-    std::memcpy(frame.mappedPreviewMorphWeights, latest->mappedPreviewMorphWeights,
-                static_cast<std::size_t>(previewMorphWeightSize_));
-    frame.previewMorphGeneration = previewMorphGeneration_;
+    if (frame.previewMorphDeltaGeneration != previewMorphDeltaGeneration_ && previewMorphDeltaSize_ != 0) {
+        std::memcpy(frame.mappedPreviewMorphDeltas, previewGpuScene_.morphDeltas.data(),
+                    static_cast<std::size_t>(previewMorphDeltaSize_));
+        frame.previewMorphDeltaGeneration = previewMorphDeltaGeneration_;
+    }
+    if (frame.previewMorphGeneration != previewMorphGeneration_ && previewMorphWeightSize_ != 0) {
+        std::memcpy(frame.mappedPreviewMorphWeights, previewGpuScene_.morphWeights.data(),
+                    static_cast<std::size_t>(previewMorphWeightSize_));
+        frame.previewMorphGeneration = previewMorphGeneration_;
+    }
 }
 
 void VulkanDevice::destroyPreviewMaterialBuffers() {
     for (auto& frame : frames_) {
         if (frame.previewMaterialDescriptor != VK_NULL_HANDLE && previewDescriptorPool_ != VK_NULL_HANDLE) {
-            check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &frame.previewMaterialDescriptor),
-                  "free preview material descriptor");
+            retirePreviewResource([this, set = frame.previewMaterialDescriptor] {
+                check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &set), "retire Preview descriptor");
+            });
         }
         if (frame.mappedPreviewMaterials != nullptr) {
             vkUnmapMemory(device_, frame.previewMaterialMemory);
         }
         if (frame.previewMaterialBuffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(device_, frame.previewMaterialBuffer, nullptr);
+            retirePreviewResource(
+                [this, handle = frame.previewMaterialBuffer] { vkDestroyBuffer(device_, handle, nullptr); });
         }
         if (frame.previewMaterialMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(device_, frame.previewMaterialMemory, nullptr);
+            retirePreviewResource(
+                [this, handle = frame.previewMaterialMemory] { vkFreeMemory(device_, handle, nullptr); });
         }
         frame.previewMaterialBuffer = VK_NULL_HANDLE;
         frame.previewMaterialMemory = VK_NULL_HANDLE;
@@ -4839,14 +5327,15 @@ void VulkanDevice::destroyPreviewMaterialBuffers() {
 void VulkanDevice::synchronizePreviewMaterials(Frame& frame) {
     if (frame.previewMaterialGeneration == previewMaterialGeneration_ || previewMaterialSize_ == 0)
         return;
-    const auto latest = std::find_if(frames_.begin(), frames_.end(), [this](const Frame& candidate) {
-        return candidate.previewMaterialGeneration == previewMaterialGeneration_;
-    });
-    if (latest == frames_.end() || latest->mappedPreviewMaterials == nullptr)
-        return;
-    check(vkWaitForFences(device_, 1, &latest->inFlight, VK_TRUE, UINT64_MAX), "wait for latest preview materials");
-    std::memcpy(frame.mappedPreviewMaterials, latest->mappedPreviewMaterials,
-                static_cast<std::size_t>(previewMaterialSize_));
+    const auto first = frame.previewMaterialDirty.empty()
+                           ? 0
+                           : std::min(frame.previewMaterialDirty.begin, static_cast<std::size_t>(previewMaterialSize_));
+    const auto last = frame.previewMaterialDirty.empty()
+                          ? static_cast<std::size_t>(previewMaterialSize_)
+                          : std::min(frame.previewMaterialDirty.end, static_cast<std::size_t>(previewMaterialSize_));
+    std::memcpy(static_cast<std::byte*>(frame.mappedPreviewMaterials) + first,
+                reinterpret_cast<const std::byte*>(previewGpuScene_.materialData.data()) + first, last - first);
+    frame.previewMaterialDirty = {};
     frame.previewMaterialGeneration = previewMaterialGeneration_;
 }
 
@@ -4855,9 +5344,11 @@ void VulkanDevice::destroyPreviewIndirectBuffers() {
         if (frame.mappedPreviewIndirect != nullptr)
             vkUnmapMemory(device_, frame.previewIndirectMemory);
         if (frame.previewIndirectBuffer != VK_NULL_HANDLE)
-            vkDestroyBuffer(device_, frame.previewIndirectBuffer, nullptr);
+            retirePreviewResource(
+                [this, handle = frame.previewIndirectBuffer] { vkDestroyBuffer(device_, handle, nullptr); });
         if (frame.previewIndirectMemory != VK_NULL_HANDLE)
-            vkFreeMemory(device_, frame.previewIndirectMemory, nullptr);
+            retirePreviewResource(
+                [this, handle = frame.previewIndirectMemory] { vkFreeMemory(device_, handle, nullptr); });
         frame.previewIndirectBuffer = VK_NULL_HANDLE;
         frame.previewIndirectMemory = VK_NULL_HANDLE;
         frame.mappedPreviewIndirect = nullptr;
@@ -4871,24 +5362,18 @@ void VulkanDevice::destroyPreviewIndirectBuffers() {
 void VulkanDevice::synchronizePreviewIndirect(Frame& frame) {
     if (frame.previewIndirectGeneration == previewIndirectGeneration_ || previewIndirectSize_ == 0)
         return;
-    const auto latest = std::find_if(frames_.begin(), frames_.end(), [this](const Frame& candidate) {
-        return candidate.previewIndirectGeneration == previewIndirectGeneration_;
-    });
-    if (latest == frames_.end() || latest->mappedPreviewIndirect == nullptr)
-        return;
-    check(vkWaitForFences(device_, 1, &latest->inFlight, VK_TRUE, UINT64_MAX),
-          "wait for latest preview indirect commands");
-    std::memcpy(frame.mappedPreviewIndirect, latest->mappedPreviewIndirect,
+    std::memcpy(frame.mappedPreviewIndirect, previewIndirectCommands_.data(),
                 static_cast<std::size_t>(previewIndirectSize_));
     frame.previewIndirectGeneration = previewIndirectGeneration_;
 }
 
 void VulkanDevice::destroyPreviewMaterialDescriptors() {
     if (previewDescriptorPool_ != VK_NULL_HANDLE && !previewMaterialDescriptors_.empty()) {
-        check(vkFreeDescriptorSets(device_, previewDescriptorPool_,
-                                   static_cast<std::uint32_t>(previewMaterialDescriptors_.size()),
-                                   previewMaterialDescriptors_.data()),
-              "free preview material descriptors");
+        retirePreviewResource([this, sets = previewMaterialDescriptors_] {
+            check(vkFreeDescriptorSets(device_, previewDescriptorPool_, static_cast<std::uint32_t>(sets.size()),
+                                       sets.data()),
+                  "retire Preview material descriptors");
+        });
     }
     previewMaterialDescriptors_.clear();
     previewMaterialDescriptorKeys_.clear();
@@ -4904,7 +5389,7 @@ void VulkanDevice::refreshPreviewMaterialDescriptors(bool waitForGpu) {
         previewMaterialDescriptors_.size() == previewGpuScene_.materials.size())
         return;
     if (waitForGpu)
-        waitIdle();
+        collectPreviewRetirements();
     destroyPreviewMaterialDescriptors();
     if (previewGpuScene_.materials.empty() || previewTextures_.empty())
         return;
@@ -4976,15 +5461,16 @@ void VulkanDevice::refreshPreviewMaterialDescriptors(bool waitForGpu) {
                 .pImageInfo = &clampSampler,
             },
         };
-        vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        updatePreviewImageDescriptors(writes);
     }
     previewMaterialDescriptorKeys_ = std::move(keys);
 }
 
 void VulkanDevice::destroyPreviewBindlessDescriptor() {
     if (previewBindlessDescriptor_ != VK_NULL_HANDLE && previewDescriptorPool_ != VK_NULL_HANDLE) {
-        check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &previewBindlessDescriptor_),
-              "free preview bindless descriptor");
+        retirePreviewResource([this, set = previewBindlessDescriptor_] {
+            check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &set), "retire Preview descriptor");
+        });
     }
     previewBindlessDescriptor_ = VK_NULL_HANDLE;
 }
@@ -5044,7 +5530,7 @@ void VulkanDevice::refreshPreviewBindlessDescriptor() {
             .pImageInfo = &clampSampler,
         },
     };
-    vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    updatePreviewImageDescriptors(writes);
 }
 
 void VulkanDevice::destroyPreviewBackground() {
@@ -5054,28 +5540,36 @@ void VulkanDevice::destroyPreviewBackground() {
             vkUnmapMemory(device_, frame.backgroundStagingMemory);
         }
         if (frame.backgroundStagingBuffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(device_, frame.backgroundStagingBuffer, nullptr);
+            retirePreviewResource(
+                [this, handle = frame.backgroundStagingBuffer] { vkDestroyBuffer(device_, handle, nullptr); });
         }
         if (frame.backgroundStagingMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(device_, frame.backgroundStagingMemory, nullptr);
+            retirePreviewResource(
+                [this, handle = frame.backgroundStagingMemory] { vkFreeMemory(device_, handle, nullptr); });
         }
         frame.backgroundStagingBuffer = VK_NULL_HANDLE;
         frame.backgroundStagingMemory = VK_NULL_HANDLE;
         frame.mappedBackgroundStaging = nullptr;
         frame.backgroundUploadPending = false;
+        frame.previewBackgroundGeneration = 0;
     }
+    previewBackgroundGeneration_ = 0;
     destroyPreviewTextureResource(previewBackgroundTexture_);
     if (previewBackgroundIndexBuffer_ != VK_NULL_HANDLE) {
-        vkDestroyBuffer(device_, previewBackgroundIndexBuffer_, nullptr);
+        retirePreviewResource(
+            [this, handle = previewBackgroundIndexBuffer_] { vkDestroyBuffer(device_, handle, nullptr); });
     }
     if (previewBackgroundIndexMemory_ != VK_NULL_HANDLE) {
-        vkFreeMemory(device_, previewBackgroundIndexMemory_, nullptr);
+        retirePreviewResource(
+            [this, handle = previewBackgroundIndexMemory_] { vkFreeMemory(device_, handle, nullptr); });
     }
     if (previewBackgroundVertexBuffer_ != VK_NULL_HANDLE) {
-        vkDestroyBuffer(device_, previewBackgroundVertexBuffer_, nullptr);
+        retirePreviewResource(
+            [this, handle = previewBackgroundVertexBuffer_] { vkDestroyBuffer(device_, handle, nullptr); });
     }
     if (previewBackgroundVertexMemory_ != VK_NULL_HANDLE) {
-        vkFreeMemory(device_, previewBackgroundVertexMemory_, nullptr);
+        retirePreviewResource(
+            [this, handle = previewBackgroundVertexMemory_] { vkFreeMemory(device_, handle, nullptr); });
     }
     previewBackgroundVertexBuffer_ = VK_NULL_HANDLE;
     previewBackgroundVertexMemory_ = VK_NULL_HANDLE;
@@ -5094,11 +5588,15 @@ void VulkanDevice::uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBu
     const auto storageSize = allocationSize == 0 ? size : allocationSize;
     if (storageSize < size)
         throw std::invalid_argument("preview buffer allocation is smaller than its data");
+    const std::array sharedFamilies{queueFamily_, computeQueueFamily_};
+    const bool concurrent = computeQueue_ != VK_NULL_HANDLE && queueFamily_ != computeQueueFamily_;
     const VkBufferCreateInfo bufferInfo{
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = storageSize,
         .usage = usage,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .sharingMode = concurrent ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = concurrent ? 2U : 0U,
+        .pQueueFamilyIndices = concurrent ? sharedFamilies.data() : nullptr,
     };
     check(vkCreateBuffer(device_, &bufferInfo, nullptr, &buffer), "create preview mesh buffer");
     VkMemoryRequirements requirements{};
@@ -5123,11 +5621,15 @@ void VulkanDevice::uploadPreviewDeviceLocalBuffer(const void* data, VkDeviceSize
         throw std::invalid_argument("preview device-local buffer is empty");
 
     try {
+        const std::array sharedFamilies{queueFamily_, computeQueueFamily_};
+        const bool concurrent = computeQueue_ != VK_NULL_HANDLE && queueFamily_ != computeQueueFamily_;
         const VkBufferCreateInfo bufferInfo{
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             .size = size,
             .usage = usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .sharingMode = concurrent ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = concurrent ? 2U : 0U,
+            .pQueueFamilyIndices = concurrent ? sharedFamilies.data() : nullptr,
         };
         check(vkCreateBuffer(device_, &bufferInfo, nullptr, &buffer), "create device-local preview buffer");
         VkMemoryRequirements requirements{};
@@ -5149,8 +5651,9 @@ void VulkanDevice::uploadPreviewDeviceLocalBuffer(const void* data, VkDeviceSize
             .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
             .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
             .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT,
-            .dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT |
+                             VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .buffer = buffer,
@@ -5179,11 +5682,11 @@ void VulkanDevice::uploadPreviewDeviceLocalBuffer(const void* data, VkDeviceSize
 void VulkanDevice::uploadPreviewMesh(std::span<const PreviewVertex> vertices, std::span<const std::uint32_t> indices) {
     if (vertices.empty() || indices.empty())
         throw std::invalid_argument("preview mesh is empty");
-    waitIdle();
+    collectPreviewRetirements();
     destroyPreviewMesh();
 
     try {
-        uploadPreviewDeviceLocalBuffer(vertices.data(), vertices.size_bytes(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        uploadPreviewDeviceLocalBuffer(vertices.data(), vertices.size_bytes(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                        previewStaticVertexBuffer_, previewStaticVertexMemory_);
         ++previewVertexGeneration_;
         for (auto& frame : frames_)
@@ -5207,7 +5710,7 @@ void VulkanDevice::uploadPreviewMesh(std::span<const PreviewVertex> vertices, st
 void VulkanDevice::uploadPreviewBackground(std::span<const PreviewTexture> textures) {
     if (textures.empty()) {
         if (previewBackgroundTexture_.image != VK_NULL_HANDLE) {
-            waitIdle();
+            collectPreviewRetirements();
             destroyPreviewBackground();
         }
         return;
@@ -5218,7 +5721,7 @@ void VulkanDevice::uploadPreviewBackground(std::span<const PreviewTexture> textu
         throw std::invalid_argument("preview background texture is empty");
     }
     if (previewBackgroundExtent_.width != texture.width || previewBackgroundExtent_.height != texture.height) {
-        waitIdle();
+        collectPreviewRetirements();
         destroyPreviewBackground();
         try {
             createPreviewBackgroundStream(texture.width, texture.height);
@@ -5227,10 +5730,7 @@ void VulkanDevice::uploadPreviewBackground(std::span<const PreviewTexture> textu
             throw;
         }
     }
-    auto& frame = frames_[frameIndex_];
-    check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for streaming background frame");
-    std::memcpy(frame.mappedBackgroundStaging, texture.rgba.data(), texture.rgba.size_bytes());
-    frame.backgroundUploadPending = true;
+    ++previewBackgroundGeneration_;
     previewDisplayBackground_ = {.width = texture.width,
                                  .height = texture.height,
                                  .pixels = std::vector<std::uint8_t>(texture.rgba.begin(), texture.rgba.end())};
@@ -5254,31 +5754,28 @@ core::ImageRgba8 VulkanDevice::previewDisplayBackground() const {
 void VulkanDevice::updatePreviewVertices(std::span<const PreviewVertex> vertices) {
     if (vertices.empty() || vertices.size_bytes() > previewVertexCapacity_)
         throw std::invalid_argument("preview vertex update exceeds its capacity");
+    previewGpuScene_.vertices.assign(vertices.begin(), vertices.end());
     previewVertexSize_ = vertices.size_bytes();
 
     if (previewStaticVertexBuffer_ != VK_NULL_HANDLE) {
-        waitIdle();
+        collectPreviewRetirements();
         previewVertexCapacity_ = growPreviewCapacity(vertices.size_bytes());
         for (auto& frame : frames_) {
-            uploadPreviewBuffer(vertices.data(), vertices.size_bytes(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            uploadPreviewBuffer(vertices.data(), vertices.size_bytes(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                 frame.previewVertexBuffer, frame.previewVertexMemory, previewVertexCapacity_);
-            check(vkMapMemory(device_, frame.previewVertexMemory, 0, vertices.size_bytes(), 0,
+            check(vkMapMemory(device_, frame.previewVertexMemory, 0, previewVertexCapacity_, 0,
                               &frame.mappedPreviewVertices),
                   "persistently map animated preview vertices");
             frame.previewVertexGeneration = previewVertexGeneration_;
         }
-        vkDestroyBuffer(device_, previewStaticVertexBuffer_, nullptr);
-        vkFreeMemory(device_, previewStaticVertexMemory_, nullptr);
+        retirePreviewResource(
+            [this, handle = previewStaticVertexBuffer_] { vkDestroyBuffer(device_, handle, nullptr); });
+        retirePreviewResource([this, handle = previewStaticVertexMemory_] { vkFreeMemory(device_, handle, nullptr); });
         previewStaticVertexBuffer_ = VK_NULL_HANDLE;
         previewStaticVertexMemory_ = VK_NULL_HANDLE;
     }
 
-    auto& frame = frames_[frameIndex_];
-    if (frame.mappedPreviewVertices == nullptr)
-        throw std::logic_error("preview vertex storage is unavailable");
-    check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for animated vertex frame");
-    std::memcpy(frame.mappedPreviewVertices, vertices.data(), vertices.size_bytes());
-    frame.previewVertexGeneration = ++previewVertexGeneration_;
+    ++previewVertexGeneration_;
     ++previewVertexUpdateCount_;
     if (previewVertexUpdateCount_ % 30 == 1) {
         const auto& vertex = vertices.front().position;
@@ -5291,9 +5788,10 @@ void VulkanDevice::updatePreviewBones(std::span<const PreviewBoneTransform> bone
     const std::array<PreviewBoneTransform, 1> identity{};
     if (bones.empty())
         bones = identity;
+    previewGpuScene_.bones.assign(bones.begin(), bones.end());
     const auto byteSize = static_cast<VkDeviceSize>(bones.size_bytes());
     if (byteSize > previewBoneCapacity_ || frames_.front().previewBoneBuffer == VK_NULL_HANDLE) {
-        waitIdle();
+        collectPreviewRetirements();
         destroyPreviewBones();
         previewBoneSize_ = byteSize;
         previewBoneCapacity_ = growPreviewCapacity(byteSize);
@@ -5301,7 +5799,7 @@ void VulkanDevice::updatePreviewBones(std::span<const PreviewBoneTransform> bone
         for (auto& frame : frames_) {
             uploadPreviewBuffer(bones.data(), byteSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, frame.previewBoneBuffer,
                                 frame.previewBoneMemory, previewBoneCapacity_);
-            check(vkMapMemory(device_, frame.previewBoneMemory, 0, byteSize, 0, &frame.mappedPreviewBones),
+            check(vkMapMemory(device_, frame.previewBoneMemory, 0, previewBoneCapacity_, 0, &frame.mappedPreviewBones),
                   "persistently map preview bones");
             const VkDescriptorSetAllocateInfo setInfo{
                 .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -5326,16 +5824,14 @@ void VulkanDevice::updatePreviewBones(std::span<const PreviewBoneTransform> bone
         return;
     }
     previewBoneSize_ = byteSize;
-    auto& frame = frames_[frameIndex_];
-    check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for preview bone frame");
-    std::memcpy(frame.mappedPreviewBones, bones.data(), bones.size_bytes());
-    frame.previewBoneGeneration = ++previewBoneGeneration_;
+    ++previewBoneGeneration_;
 }
 
 void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> materials) {
     const auto unchanged = std::numeric_limits<std::size_t>::max();
     std::size_t firstDirty = unchanged;
     std::size_t lastDirty = 0;
+
     if (previewGpuScene_.materials.size() != materials.size()) {
         firstDirty = 0;
         lastDirty = std::max(previewGpuScene_.materials.size(), materials.size()) - 1U;
@@ -5388,7 +5884,7 @@ void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> mater
     }
     const auto byteSize = static_cast<VkDeviceSize>(previewGpuScene_.materialData.size() * sizeof(PreviewMaterialGpu));
     if (byteSize > previewMaterialCapacity_ || frames_.front().previewMaterialBuffer == VK_NULL_HANDLE) {
-        waitIdle();
+        collectPreviewRetirements();
         destroyPreviewMaterialBuffers();
         previewMaterialSize_ = byteSize;
         previewMaterialCapacity_ = growPreviewCapacity(byteSize);
@@ -5396,7 +5892,8 @@ void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> mater
         for (auto& frame : frames_) {
             uploadPreviewBuffer(previewGpuScene_.materialData.data(), byteSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                 frame.previewMaterialBuffer, frame.previewMaterialMemory, previewMaterialCapacity_);
-            check(vkMapMemory(device_, frame.previewMaterialMemory, 0, byteSize, 0, &frame.mappedPreviewMaterials),
+            check(vkMapMemory(device_, frame.previewMaterialMemory, 0, previewMaterialCapacity_, 0,
+                              &frame.mappedPreviewMaterials),
                   "persistently map preview materials");
             const VkDescriptorSetAllocateInfo setInfo{
                 .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -5421,20 +5918,18 @@ void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> mater
             };
             vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
             frame.previewMaterialGeneration = previewMaterialGeneration_;
+            frame.previewMaterialDirty = {};
         }
     } else {
         previewMaterialSize_ = byteSize;
         if (firstDirty == unchanged)
             return;
-        const auto first = std::min(firstDirty, previewGpuScene_.materialData.size() - 1U);
-        const auto last = std::min(lastDirty, previewGpuScene_.materialData.size() - 1U);
-        const auto offset = first * sizeof(PreviewMaterialGpu);
-        const auto size = (last - first + 1U) * sizeof(PreviewMaterialGpu);
-        auto& frame = frames_[frameIndex_];
-        check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for preview material frame");
-        std::memcpy(static_cast<std::byte*>(frame.mappedPreviewMaterials) + offset,
-                    previewGpuScene_.materialData.data() + first, size);
-        frame.previewMaterialGeneration = ++previewMaterialGeneration_;
+        const auto first = std::min(firstDirty, previewGpuScene_.materialData.size() - 1U) * sizeof(PreviewMaterialGpu);
+        const auto last =
+            (std::min(lastDirty, previewGpuScene_.materialData.size() - 1U) + 1U) * sizeof(PreviewMaterialGpu);
+        for (auto& frame : frames_)
+            frame.previewMaterialDirty.mark(first, last);
+        ++previewMaterialGeneration_;
     }
 }
 
@@ -5474,12 +5969,29 @@ void VulkanDevice::updatePreviewEnvironment(const PreviewEnvironment& environmen
         previewEnvironmentEnabled_ = enabled;
         return;
     }
-    waitIdle();
-    if (previewEnvironmentBuffer_ == VK_NULL_HANDLE) {
-        uploadPreviewBuffer(data.data(), sizeof(data), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, previewEnvironmentBuffer_,
-                            previewEnvironmentMemory_);
-        check(vkMapMemory(device_, previewEnvironmentMemory_, 0, sizeof(data), 0, &mappedPreviewEnvironment_),
-              "map preview environment coefficients");
+    collectPreviewRetirements();
+    const auto oldBuffer = previewEnvironmentBuffer_;
+    const auto oldMemory = previewEnvironmentMemory_;
+    const auto oldSet = previewEnvironmentDescriptor_;
+    if (mappedPreviewEnvironment_ != nullptr)
+        vkUnmapMemory(device_, oldMemory);
+    retirePreviewResource([this, oldBuffer, oldMemory, oldSet] {
+        if (oldSet != VK_NULL_HANDLE)
+            check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &oldSet), "retire environment descriptor");
+        if (oldBuffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, oldBuffer, nullptr);
+        if (oldMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, oldMemory, nullptr);
+    });
+    previewEnvironmentBuffer_ = VK_NULL_HANDLE;
+    previewEnvironmentMemory_ = VK_NULL_HANDLE;
+    previewEnvironmentDescriptor_ = VK_NULL_HANDLE;
+    mappedPreviewEnvironment_ = nullptr;
+    uploadPreviewBuffer(data.data(), sizeof(data), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, previewEnvironmentBuffer_,
+                        previewEnvironmentMemory_);
+    check(vkMapMemory(device_, previewEnvironmentMemory_, 0, sizeof(data), 0, &mappedPreviewEnvironment_),
+          "map preview environment coefficients");
+    if (previewEnvironmentSampler_ == VK_NULL_HANDLE) {
         const VkSamplerCreateInfo samplerInfo{
             .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
             .magFilter = VK_FILTER_LINEAR,
@@ -5555,7 +6067,7 @@ void VulkanDevice::updatePreviewDraws(std::span<const PreviewDraw> draws) {
     const auto byteSize =
         static_cast<VkDeviceSize>(previewIndirectCommands_.size() * sizeof(VkDrawIndexedIndirectCommand));
     if (byteSize > previewIndirectCapacity_ || frames_.front().previewIndirectBuffer == VK_NULL_HANDLE) {
-        waitIdle();
+        collectPreviewRetirements();
         destroyPreviewIndirectBuffers();
         previewIndirectSize_ = byteSize;
         previewIndirectCapacity_ = growPreviewCapacity(byteSize);
@@ -5571,17 +6083,13 @@ void VulkanDevice::updatePreviewDraws(std::span<const PreviewDraw> draws) {
         return;
     }
     previewIndirectSize_ = byteSize;
-    auto& frame = frames_[frameIndex_];
-    check(vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX), "wait for preview indirect frame");
-    std::memcpy(frame.mappedPreviewIndirect, previewIndirectCommands_.data(),
-                static_cast<std::size_t>(previewIndirectSize_));
-    frame.previewIndirectGeneration = ++previewIndirectGeneration_;
+    ++previewIndirectGeneration_;
 }
 
 void VulkanDevice::uploadPreviewTextures(std::span<const PreviewTexture> textures) {
     if (textures.size() >= static_cast<std::size_t>(previewBindlessTextureCapacity_))
         throw std::runtime_error("preview texture table exceeds Vulkan descriptor capacity");
-    waitIdle();
+    collectPreviewRetirements();
     destroyPreviewTextures();
     const std::array<std::uint8_t, 4> white{255, 255, 255, 255};
     try {
@@ -5608,7 +6116,7 @@ void VulkanDevice::uploadPreviewTextures(std::span<const PreviewTexture> texture
 }
 
 void VulkanDevice::clearPreviewResources() {
-    waitIdle();
+    collectPreviewRetirements();
     const std::array<PreviewVertex, 3> fallbackVertices{{
         {{0.0F, -0.65F, 0.0F}, {}, {}},
         {{0.65F, 0.55F, 0.0F}, {}, {}},
@@ -5916,7 +6424,7 @@ void VulkanDevice::destroySamplerEx(handles::SamplerHandle handle) {
     if (it == typedSamplers_.end() || !typedSamplerHandles_.isAlive(handle))
         throw std::invalid_argument("stale typed sampler handle");
     if (it->second.sampler != VK_NULL_HANDLE)
-        vkDestroySampler(device_, it->second.sampler, nullptr);
+        retirePreviewResource([this, resource = it->second.sampler] { vkDestroySampler(device_, resource, nullptr); });
     typedSamplers_.erase(it);
     typedSamplerHandles_.destroy(handle);
 }
@@ -6713,7 +7221,7 @@ void VulkanDevice::uploadTextureEx(handles::TextureHandle texture, std::span<con
         throw std::logic_error("Vulkan upload context is unavailable");
     try {
         uploadContext_->begin();
-        const auto staging = uploadContext_->allocate(bytes.size(), 4);
+        const auto staging = uploadContext_->allocate(bytes.size(), 16);
         std::memcpy(staging.mapped, bytes.data(), bytes.size());
         const auto commandBuffer = uploadContext_->commandBuffer();
         recordTextureTransition(commandBuffer, texture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -6728,8 +7236,7 @@ void VulkanDevice::uploadTextureEx(handles::TextureHandle texture, std::span<con
         vkCmdCopyBufferToImage(commandBuffer, staging.buffer, typed.resource.image,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
         recordTextureTransition(commandBuffer, texture, typedTextureFinalLayout(typed));
-        const auto signal = uploadContext_->submit();
-        uploadContext_->wait(signal);
+        static_cast<void>(uploadContext_->submit());
     } catch (...) {
         uploadContext_->abort();
         throw;
@@ -6738,42 +7245,133 @@ void VulkanDevice::uploadTextureEx(handles::TextureHandle texture, std::span<con
 
 std::vector<std::uint8_t> VulkanDevice::readbackTextureEx(handles::TextureHandle texture, std::uint32_t mipLevel,
                                                           std::uint32_t arrayLayer) {
-    const auto it = typedTextures_.find(texture);
-    if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(texture))
-        throw std::invalid_argument("typed texture readback references a stale texture handle");
-    const auto& typed = it->second;
-    if (mipLevel >= typed.desc.mipLevels || arrayLayer >= imageLayerCount(typed.desc))
-        throw std::out_of_range("typed texture readback subresource is out of range");
-    if ((toBits(typed.desc.usage) & toBits(ResourceUsage::transferSrc)) == 0U)
-        throw std::invalid_argument("typed texture readback requires transfer-source usage");
-    const auto expected = mipBytes(typed.desc, mipLevel);
+    return readbackTextureSubresources(std::array{TextureReadbackRequest{texture, mipLevel, arrayLayer}});
+}
+
+std::vector<std::uint8_t> VulkanDevice::readbackTextureSubresources(std::span<const TextureReadbackRequest> requests) {
+    if (requests.empty())
+        return {};
+    struct Copy {
+        TextureReadbackRequest request;
+        VkBufferImageCopy region;
+        std::size_t size;
+    };
+    std::vector<Copy> copies;
+    copies.reserve(requests.size());
+    std::size_t stagingSize = 0, packedSize = 0;
+    for (const auto& request : requests) {
+        const auto it = typedTextures_.find(request.texture);
+        if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(request.texture))
+            throw std::invalid_argument("typed texture readback references a stale texture handle");
+        const auto& typed = it->second;
+        if (request.mipLevel >= typed.desc.mipLevels || request.arrayLayer >= imageLayerCount(typed.desc))
+            throw std::out_of_range("typed texture readback subresource is out of range");
+        if ((toBits(typed.desc.usage) & toBits(ResourceUsage::transferSrc)) == 0U)
+            throw std::invalid_argument("typed texture readback requires transfer-source usage");
+        const auto size = mipBytes(typed.desc, request.mipLevel);
+        const auto alignment = std::max<std::size_t>(4, pixelFormatByteSize(typed.desc.format));
+        const auto padding = (alignment - stagingSize % alignment) % alignment;
+        const auto limit = std::numeric_limits<std::size_t>::max();
+        if (stagingSize > limit - padding || size > limit - (stagingSize + padding) || size > limit - packedSize)
+            throw std::overflow_error("texture readback batch size overflow");
+        stagingSize += padding;
+        copies.push_back(
+            {request,
+             {.bufferOffset = stagingSize,
+              .bufferRowLength = 0,
+              .bufferImageHeight = 0,
+              .imageSubresource = {isDepthFormat(typed.desc.format) ? VkImageAspectFlags{VK_IMAGE_ASPECT_DEPTH_BIT}
+                                                                    : imageAspect(typed.desc.format),
+                                   request.mipLevel, request.arrayLayer, 1},
+              .imageOffset = {0, 0, 0},
+              .imageExtent = mipExtent(typed.desc, request.mipLevel)},
+             size});
+        stagingSize += size;
+        packedSize += size;
+    }
     if (uploadContext_ == nullptr)
         throw std::logic_error("Vulkan upload context is unavailable");
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    const auto release = [&] {
+        if (mapped != nullptr)
+            vkUnmapMemory(device_, memory);
+        if (buffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, buffer, nullptr);
+        if (memory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, memory, nullptr);
+    };
     try {
-        uploadContext_->begin();
-        const auto staging = uploadContext_->allocate(expected, 4);
-        const auto commandBuffer = uploadContext_->commandBuffer();
-        recordTextureTransition(commandBuffer, texture, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-        const VkBufferImageCopy region{
-            .bufferOffset = staging.offset,
-            .bufferRowLength = 0,
-            .bufferImageHeight = 0,
-            .imageSubresource = {isDepthFormat(typed.desc.format) ? VkImageAspectFlags{VK_IMAGE_ASPECT_DEPTH_BIT}
-                                                                  : imageAspect(typed.desc.format),
-                                 mipLevel, arrayLayer, 1},
-            .imageOffset = {0, 0, 0},
-            .imageExtent = mipExtent(typed.desc, mipLevel),
+        // Texture/cache readback is infrequent. Keep GPU writes out of the upload-only ring.
+        const VkBufferCreateInfo bufferInfo{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = stagingSize,
+            .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         };
-        vkCmdCopyImageToBuffer(commandBuffer, typed.resource.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                               staging.buffer, 1, &region);
-        recordTextureTransition(commandBuffer, texture, typedTextureFinalLayout(typed));
+        check(vkCreateBuffer(device_, &bufferInfo, nullptr, &buffer), "create texture readback buffer");
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(device_, buffer, &requirements);
+        const VkMemoryAllocateInfo allocation{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = requirements.size,
+            .memoryTypeIndex = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+        };
+        check(vkAllocateMemory(device_, &allocation, nullptr, &memory), "allocate texture readback memory");
+        check(vkBindBufferMemory(device_, buffer, memory, 0), "bind texture readback memory");
+        check(vkMapMemory(device_, memory, 0, stagingSize, 0, &mapped), "map texture readback memory");
+        uploadContext_->begin();
+        const auto commandBuffer = uploadContext_->commandBuffer();
+        // Each mip transitions once even when several faces of it are requested.
+        for (const auto& copy : copies)
+            recordTextureTransition(commandBuffer, copy.request.texture, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                    copy.request.mipLevel, 1);
+        for (const auto& copy : copies) {
+            const auto& typed = typedTextures_.at(copy.request.texture);
+            vkCmdCopyImageToBuffer(commandBuffer, typed.resource.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1,
+                                   &copy.region);
+        }
+        const VkBufferMemoryBarrier2 toHost{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+            .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = buffer,
+            .offset = 0,
+            .size = stagingSize,
+        };
+        const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                          .bufferMemoryBarrierCount = 1,
+                                          .pBufferMemoryBarriers = &toHost};
+        vkCmdPipelineBarrier2(commandBuffer, &dependency);
+        for (const auto& copy : copies)
+            recordTextureTransition(commandBuffer, copy.request.texture,
+                                    typedTextureFinalLayout(typedTextures_.at(copy.request.texture)),
+                                    copy.request.mipLevel, 1);
         const auto signal = uploadContext_->submit();
         uploadContext_->wait(signal);
-        std::vector<std::uint8_t> result(expected);
-        std::memcpy(result.data(), staging.mapped, expected);
+        std::vector<std::uint8_t> result(packedSize);
+        if (stagingSize == packedSize) {
+            // RGBA16F cube faces/mips are naturally aligned and need just one CPU copy.
+            std::memcpy(result.data(), mapped, packedSize);
+        } else {
+            std::size_t offset = 0;
+            for (const auto& copy : copies) {
+                std::memcpy(result.data() + offset, static_cast<const std::uint8_t*>(mapped) + copy.region.bufferOffset,
+                            copy.size);
+                offset += copy.size;
+            }
+        }
+        release();
         return result;
     } catch (...) {
         uploadContext_->abort();
+        release();
         throw;
     }
 }
@@ -7761,7 +8359,9 @@ void VulkanDevice::destroyDescriptorSetEx(handles::DescriptorSetHandle handle) {
     const auto it = typedDescriptorSets_.find(handle);
     if (it == typedDescriptorSets_.end() || !typedDescriptorSetHandles_.isAlive(handle))
         throw std::invalid_argument("stale typed descriptor set handle");
-    check(vkFreeDescriptorSets(device_, typedDescriptorPool_, 1, &it->second.set), "free typed descriptor set");
+    retirePreviewResource([this, set = it->second.set] {
+        check(vkFreeDescriptorSets(device_, typedDescriptorPool_, 1, &set), "retire typed descriptor set");
+    });
     typedDescriptorSets_.erase(it);
     typedDescriptorSetHandles_.destroy(handle);
 }
@@ -7782,9 +8382,11 @@ void VulkanDevice::destroyBufferEx(handles::BufferHandle handle) {
     if (it->second.mapped != nullptr)
         vkUnmapMemory(device_, it->second.resource.memory);
     if (it->second.resource.buffer != VK_NULL_HANDLE)
-        vkDestroyBuffer(device_, it->second.resource.buffer, nullptr);
+        retirePreviewResource(
+            [this, resource = it->second.resource.buffer] { vkDestroyBuffer(device_, resource, nullptr); });
     if (it->second.resource.memory != VK_NULL_HANDLE)
-        vkFreeMemory(device_, it->second.resource.memory, nullptr);
+        retirePreviewResource(
+            [this, resource = it->second.resource.memory] { vkFreeMemory(device_, resource, nullptr); });
     typedBuffers_.erase(it);
     typedBufferHandles_.destroy(handle);
 }
@@ -7851,9 +8453,12 @@ std::vector<std::byte> VulkanDevice::readbackBufferEx(handles::BufferHandle hand
             return {};
         if (uploadContext_ == nullptr)
             throw std::logic_error("Vulkan upload context is unavailable");
+        const auto sourceBuffer = it->second.resource.buffer;
+        const auto readback = createBufferEx({.size = size, .usage = ResourceUsage::transferDst, .cpuVisible = true});
+        const auto destinationBuffer = typedBuffers_.at(readback).resource.buffer;
+        const auto* mapped = typedBuffers_.at(readback).mapped;
         try {
             uploadContext_->begin();
-            const auto staging = uploadContext_->allocate(size, 4);
             const auto command = uploadContext_->commandBuffer();
             const VkMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                                            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -7863,15 +8468,33 @@ std::vector<std::byte> VulkanDevice::readbackBufferEx(handles::BufferHandle hand
             const VkDependencyInfo dependency{
                 .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
             vkCmdPipelineBarrier2(command, &dependency);
-            const VkBufferCopy copy{.srcOffset = offset, .dstOffset = staging.offset, .size = size};
-            vkCmdCopyBuffer(command, it->second.resource.buffer, staging.buffer, 1, &copy);
+            const VkBufferCopy copy{.srcOffset = offset, .dstOffset = 0, .size = size};
+            vkCmdCopyBuffer(command, sourceBuffer, destinationBuffer, 1, &copy);
+            const VkBufferMemoryBarrier2 toHost{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .buffer = destinationBuffer,
+                .offset = 0,
+                .size = size,
+            };
+            const VkDependencyInfo hostDependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                                  .bufferMemoryBarrierCount = 1,
+                                                  .pBufferMemoryBarriers = &toHost};
+            vkCmdPipelineBarrier2(command, &hostDependency);
             const auto signal = uploadContext_->submit();
             uploadContext_->wait(signal);
             std::vector<std::byte> bytes(size);
-            std::memcpy(bytes.data(), staging.mapped, size);
+            std::memcpy(bytes.data(), mapped, size);
+            destroyBufferEx(readback);
             return bytes;
         } catch (...) {
             uploadContext_->abort();
+            destroyBufferEx(readback);
             throw;
         }
     }
@@ -7886,30 +8509,33 @@ void VulkanDevice::destroyTextureEx(handles::TextureHandle handle) {
     if (it == typedTextures_.end() || !typedTextureHandles_.isAlive(handle))
         throw std::invalid_argument("stale typed texture handle");
     if (it->second.view != VK_NULL_HANDLE)
-        vkDestroyImageView(device_, it->second.view, nullptr);
+        retirePreviewResource([this, resource = it->second.view] { vkDestroyImageView(device_, resource, nullptr); });
     for (const auto mipView : it->second.mipViews)
         if (mipView != VK_NULL_HANDLE)
-            vkDestroyImageView(device_, mipView, nullptr);
+            retirePreviewResource([this, resource = mipView] { vkDestroyImageView(device_, resource, nullptr); });
     for (const auto mipView : it->second.storageMipViews)
         if (mipView != VK_NULL_HANDLE)
-            vkDestroyImageView(device_, mipView, nullptr);
+            retirePreviewResource([this, resource = mipView] { vkDestroyImageView(device_, resource, nullptr); });
     if (it->second.storageView != VK_NULL_HANDLE)
-        vkDestroyImageView(device_, it->second.storageView, nullptr);
+        retirePreviewResource(
+            [this, resource = it->second.storageView] { vkDestroyImageView(device_, resource, nullptr); });
     if (it->second.resource.image != VK_NULL_HANDLE)
-        vkDestroyImage(device_, it->second.resource.image, nullptr);
+        retirePreviewResource(
+            [this, resource = it->second.resource.image] { vkDestroyImage(device_, resource, nullptr); });
     if (it->second.resource.memory != VK_NULL_HANDLE)
-        vkFreeMemory(device_, it->second.resource.memory, nullptr);
+        retirePreviewResource(
+            [this, resource = it->second.resource.memory] { vkFreeMemory(device_, resource, nullptr); });
     typedTextures_.erase(it);
     typedTextureHandles_.destroy(handle);
 }
 
-void VulkanDevice::retireBufferEx(handles::BufferHandle handle, std::uint64_t) {
-    waitIdle();
+void VulkanDevice::retireBufferEx(handles::BufferHandle handle, std::uint64_t /*frameIndex*/) {
+    // The public API carries a CPU frame index, not a Vulkan semaphore value.
+    // Use the backend's last submission values to protect actual GPU references.
     destroyBufferEx(handle);
 }
 
-void VulkanDevice::retireTextureEx(handles::TextureHandle handle, std::uint64_t) {
-    waitIdle();
+void VulkanDevice::retireTextureEx(handles::TextureHandle handle, std::uint64_t /*frameIndex*/) {
     destroyTextureEx(handle);
 }
 
@@ -8134,8 +8760,8 @@ TextureHandle VulkanDevice::createTexture(const TextureDesc& desc) {
     return handle;
 }
 
-std::unique_ptr<Device> createVulkanDevice(platform::Window& window, bool validation) {
-    return std::make_unique<VulkanDevice>(window, validation);
+std::unique_ptr<Device> createVulkanDevice(platform::Window& window, bool validation, VulkanOptions options) {
+    return std::make_unique<VulkanDevice>(window, validation, options);
 }
 
 } // namespace dayo::graphics

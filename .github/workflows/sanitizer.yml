@@ -70,8 +70,10 @@ jobs:
             libvulkan-dev \
             mesa-vulkan-drivers \
             ninja-build \
-            vulkan-validationlayers \
             xvfb
+
+      - name: Set up Vulkan validation
+        uses: ./.github/actions/setup-vulkan-validation
 
       - name: Restore or build SDL3
         uses: ./.github/actions/setup-sdl3

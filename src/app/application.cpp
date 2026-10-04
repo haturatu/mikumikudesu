@@ -1,4 +1,5 @@
 #include "app/application.hpp"
+#include <deque>
 
 #include "graphics/camera_matrices.hpp"
 #include "graphics/fx_raster_semantics.hpp"
@@ -948,6 +949,7 @@ void Application::resetProjectRuntimeState() {
     timelineTrackCache_ = {};
 #endif
     videoExportJob_.cancel();
+    drainVideoReadbacks();
     videoExportUiActive_ = false;
     videoExportFramesFinished_ = false;
     videoExportRestorePending_ = false;
@@ -1034,7 +1036,7 @@ int Application::run() {
     windowOptions.title = "mikumikudesu — SDL3 + Vulkan";
     windowOptions.hidden = options_.hidden || options_.probeOnly || options_.videoExport.has_value();
     auto window = platform::createWindow(windowOptions);
-    auto device = graphics::createVulkanDevice(*window, options_.validation);
+    auto device = graphics::createVulkanDevice(*window, options_.validation, options_.vulkan);
     device_ = device.get();
     nativeRenderer_.setEvaluationSnapshot(&evaluatedModels_);
     nativeOidnProvider_.setDevice(device_);
@@ -1152,7 +1154,14 @@ int Application::run() {
                 }
             } else if (videoExportJob_.running()) {
                 const auto& exportOptions = activeVideoExport_.value();
-                if (videoNextFrame_ < videoOutputFrameCount_ && videoExportJob_.canAcceptFrame()) {
+                if (!videoReadbacks_.empty() && videoExportJob_.canAcceptFrame()) {
+                    if (auto image = device_->collectRenderedImage(videoReadbacks_.front(), false)) {
+                        videoExportJob_.submitFrame(std::move(*image));
+                        videoReadbacks_.erase(videoReadbacks_.begin());
+                    }
+                }
+                if (videoNextFrame_ < videoOutputFrameCount_ && videoExportJob_.canAcceptFrame() &&
+                    videoReadbacks_.size() < 3) {
                     if (!videoPreRollDone_) {
                         videoPreRollDone_ = advanceDeterministicFrameEvaluation(static_cast<float>(videoFromFrame_),
                                                                                 videoEvaluationNextFrame_);
@@ -1174,9 +1183,14 @@ int Application::run() {
                         }
                         refreshPreviewScene();
                         try {
-                            if (videoExportJob_.trySubmitFrame(
-                                    device_->renderToImage({exportOptions.width, exportOptions.height})))
+                            if (device_->supportsPipelinedReadback()) {
+                                videoReadbacks_.push_back(
+                                    device_->enqueueRenderToImage({exportOptions.width, exportOptions.height}));
                                 ++videoNextFrame_;
+                            } else if (videoExportJob_.trySubmitFrame(
+                                           device_->renderToImage({exportOptions.width, exportOptions.height}))) {
+                                ++videoNextFrame_;
+                            }
                         } catch (const std::exception& exception) {
                             videoExportStatus_ = exception.what();
                             videoExportJob_.requestCancel();
@@ -1184,7 +1198,7 @@ int Application::run() {
                         }
                         videoPreviousSourceFrame_ = sourceFrame;
                     }
-                } else if (videoNextFrame_ >= videoOutputFrameCount_) {
+                } else if (videoNextFrame_ >= videoOutputFrameCount_ && videoReadbacks_.empty()) {
                     videoExportJob_.finishFrames();
                     videoExportFramesFinished_ = true;
                 }
@@ -1512,6 +1526,7 @@ int Application::runVideoExport() {
             evaluateFrame(static_cast<float>(frame), sourceFrameDuration, false);
         }
     }
+    std::deque<std::uint64_t> readbacks;
     auto previousSourceFrame = static_cast<float>(firstFrame);
     for (std::uint64_t outputFrame = 0; outputFrame < frameCount; ++outputFrame) {
         const auto sourceFrame = videoSourceFrame(outputFrame, firstFrame, lastFrame, sourceFps, options.fps);
@@ -1520,12 +1535,23 @@ int Application::runVideoExport() {
             evaluateFrame(sourceFrame, deltaSeconds, false);
         }
         previousSourceFrame = sourceFrame;
-        const auto image = device_->renderToImage({request.width, request.height});
-        exporter.writeVideoFrame(image);
+        if (device_->supportsPipelinedReadback()) {
+            readbacks.push_back(device_->enqueueRenderToImage({request.width, request.height}));
+            if (readbacks.size() == 3) {
+                exporter.writeVideoFrame(device_->collectRenderedImage(readbacks.front()).value());
+                readbacks.pop_front();
+            }
+        } else {
+            exporter.writeVideoFrame(device_->renderToImage({request.width, request.height}));
+        }
         if (outputFrame + 1U == frameCount || outputFrame == 0U ||
             (outputFrame + 1U) % std::max<std::uint64_t>(1U, frameCount / 20U) == 0U) {
             log::info("Video export: ", outputFrame + 1U, "/", frameCount, " frames");
         }
+    }
+    while (!readbacks.empty()) {
+        exporter.writeVideoFrame(device_->collectRenderedImage(readbacks.front()).value());
+        readbacks.pop_front();
     }
     device_->waitIdle();
     const auto result = exporter.finish();
@@ -3411,7 +3437,16 @@ void Application::buildSaveAsDialog() {
 #endif
 }
 
+void Application::drainVideoReadbacks() {
+    if (device_ != nullptr) {
+        for (auto ticket : videoReadbacks_)
+            static_cast<void>(device_->collectRenderedImage(ticket));
+    }
+    videoReadbacks_.clear();
+}
+
 void Application::restoreVideoExportState() {
+    drainVideoReadbacks();
 #if DAYO_HAS_IMGUI
     if (!videoExportRestorePending_)
         return;

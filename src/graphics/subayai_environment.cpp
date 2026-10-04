@@ -1,10 +1,12 @@
 #include "graphics/subayai_environment.hpp"
+#include "graphics/environment_cache.hpp"
 
 #include "core/image_hdr.hpp"
 #include "core/log.hpp"
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -248,8 +250,19 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const Environmen
     Device* device = device_;
     reset();
     device_ = device;
-    faceSize_ = std::min(std::max(image.height / 2U, 1U), maxFaceSize);
+    faceSize_ = std::min(std::max(image.height / 2U, 1U), std::min(maxFaceSize, device_->environmentFaceSizeLimit()));
     mipLevels_ = mipCount(faceSize_);
+    const auto sourceHash = core::fnv1a64({reinterpret_cast<const char*>(source.bytes.data()), source.bytes.size()});
+    std::string keyInput = core::toHex(sourceHash);
+    keyInput += "|" + std::to_string(source.width) + "|" + std::to_string(source.height) + "|" +
+                std::to_string(faceSize_) + "|" + DAYO_ENVIRONMENT_CACHE_VERSION;
+    keyInput += "|" + std::to_string(image.width) + "|" + std::to_string(image.height) + "|" +
+                core::toHex(core::fnv1a64({reinterpret_cast<const char*>(image.bytes.data()), image.bytes.size()})) +
+                "|" + std::to_string(std::bit_cast<std::uint32_t>(desc.exposure));
+    cachePath_ = environmentCachePath(core::toHex(core::fnv1a64(keyInput)));
+    const auto cached =
+        cachePath_ ? readEnvironmentCache(*cachePath_, faceSize_, mipLevels_) : std::vector<std::uint8_t>{};
+    cacheHit_ = !cached.empty();
     try {
         resources_.source = device_->createTextureEx({
             .dimension = TextureDimension::d2,
@@ -266,7 +279,8 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const Environmen
             .format = PixelFormat::rgba16Float,
             .mipLevels = 1,
             .arrayLayers = 1,
-            .usage = ResourceUsage::storageReadWrite | ResourceUsage::sampledRead | ResourceUsage::transferSrc,
+            .usage = ResourceUsage::storageReadWrite | ResourceUsage::sampledRead | ResourceUsage::transferSrc |
+                     ResourceUsage::transferDst,
             .lifetime = ResourceLifetime::persistent,
         });
         resources_.prefiltered = device_->createTextureEx({
@@ -280,6 +294,21 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const Environmen
             .lifetime = ResourceLifetime::persistent,
         });
         device_->uploadTextureEx(resources_.source, source.bytes, 0, 0);
+        if (cacheHit_) {
+            std::size_t offset = 0;
+            const auto uploadFaces = [&](handles::TextureHandle texture, std::uint32_t mip) {
+                const auto size = std::max(faceSize_ >> mip, 1U);
+                const auto bytes = static_cast<std::size_t>(size) * size * 8U;
+                for (std::uint32_t face = 0; face < 6; ++face) {
+                    device_->uploadTextureEx(texture, std::span(cached).subspan(offset, bytes), mip, face);
+                    offset += bytes;
+                }
+            };
+            uploadFaces(resources_.cubemap, 0);
+            for (std::uint32_t mip = 0; mip < mipLevels_; ++mip)
+                uploadFaces(resources_.prefiltered, mip);
+            log::info("Reused cached environment cubemap: ", faceSize_, "px");
+        }
         resources_.conversionSampler = device_->createSamplerEx({.filter = SamplerFilter::linear,
                                                                  .addressU = SamplerAddressMode::repeat,
                                                                  .addressV = SamplerAddressMode::clampToEdge,
@@ -325,6 +354,9 @@ EnvironmentGpuResult NativeEnvironmentBackend::regenerateLinear(const Environmen
 void NativeEnvironmentBackend::record(CommandList& commands) const {
     if (!ready() || !bindings_.valid())
         throw std::logic_error("native environment backend is not initialized");
+    if (cacheHit_)
+        return;
+    recorded_ = true;
     const NativeEnvironmentPushConstants constants{.faceSize = faceSize_, .mipLevels = mipLevels_};
     const auto groups = (faceSize_ + 7U) / 8U;
     commands.transitionEx(resources_.source);
@@ -339,7 +371,8 @@ void NativeEnvironmentBackend::record(CommandList& commands) const {
     for (std::uint32_t mip = 0; mip < mipLevels_; ++mip) {
         auto mipConstants = constants;
         mipConstants.mipLevel = mip;
-        mipConstants.sampleCount = mip == 0 ? 1U : 64U;
+        constexpr std::array<std::uint32_t, 5> samples{1, 64, 48, 32, 16};
+        mipConstants.sampleCount = samples[std::min<std::size_t>(mip, samples.size() - 1)];
         const auto mipSize = std::max(faceSize_ >> mip, 1U);
         commands.bindDescriptorSetEx(resources_.prefilterSets[mip]);
         commands.pushConstantsEx(std::as_bytes(std::span<const NativeEnvironmentPushConstants>(&mipConstants, 1)));
@@ -354,9 +387,22 @@ void NativeEnvironmentBackend::reset() noexcept {
                               resources_.prefilterSampler.valid() || resources_.equirectToCubeSet.valid() ||
                               resources_.prefiltered.valid() || resources_.cubemap.valid() || resources_.source.valid();
     if (device != nullptr && hasResources) {
-        try {
-            device->waitIdle();
-        } catch (...) {
+        if (recorded_ && !cacheHit_ && cachePath_) {
+            try {
+                std::vector<TextureReadbackRequest> requests;
+                requests.reserve(6U * (mipLevels_ + 1U));
+                const auto appendFaces = [&](handles::TextureHandle texture, std::uint32_t mip) {
+                    for (std::uint32_t face = 0; face < 6; ++face)
+                        requests.push_back({texture, mip, face});
+                };
+                appendFaces(resources_.cubemap, 0);
+                for (std::uint32_t mip = 0; mip < mipLevels_; ++mip)
+                    appendFaces(resources_.prefiltered, mip);
+                const auto bytes = device->readbackTextureSubresources(requests);
+                writeEnvironmentCache(*cachePath_, faceSize_, mipLevels_, bytes);
+            } catch (const std::exception& exception) {
+                log::warn("Environment cache persistence failed: ", exception.what());
+            }
         }
         for (auto set : resources_.prefilterSets) {
             if (set.valid()) {
@@ -391,6 +437,9 @@ void NativeEnvironmentBackend::reset() noexcept {
     }
     resources_ = {};
     result_ = {};
+    cachePath_.reset();
+    cacheHit_ = false;
+    recorded_ = false;
     faceSize_ = 0;
     mipLevels_ = 0;
     device_ = nullptr;

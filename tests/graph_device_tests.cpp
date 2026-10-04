@@ -1,5 +1,6 @@
 #include "core/image.hpp"
 #include "graphics/device.hpp"
+#include "graphics/environment_cache.hpp"
 #include "graphics/handles.hpp"
 #include "graphics/render_graph.hpp"
 #include "graphics/resource.hpp"
@@ -717,6 +718,70 @@ int main() {
             retireThrew = true;
         }
         ok &= check(retireThrew, "mock texture retirement reports unimplemented");
+    }
+
+    {
+        using namespace dayo::graphics;
+        const auto directory = std::filesystem::temp_directory_path() /
+                               ("dayo-environment-cache-test-" + dayo::core::toHex(std::random_device{}()));
+        const auto path = directory / "test.bin";
+        std::vector<std::uint8_t> bytes(environmentCacheBytes(2, 2), 42);
+        writeEnvironmentCache(path, 2, 2, bytes);
+        ok &=
+            check(readEnvironmentCache(path, 2, 2) == bytes, "environment cache preserves every cubemap face and mip");
+        ok &= check(readEnvironmentCache(path, 4, 3).empty(), "environment cache rejects incompatible dimensions");
+        {
+            std::ofstream corrupt(path, std::ios::binary | std::ios::app);
+            corrupt.put('x');
+        }
+        ok &= check(readEnvironmentCache(path, 2, 2).empty(), "environment cache rejects trailing bytes");
+        writeEnvironmentCache(path, 2, 2, bytes);
+        {
+            std::fstream corrupt(path, std::ios::binary | std::ios::in | std::ios::out);
+            corrupt.seekp(24);
+            corrupt.put('x');
+        }
+        ok &= check(readEnvironmentCache(path, 2, 2).empty(), "environment cache rejects checksum mismatch");
+        std::filesystem::resize_file(path, 10);
+        ok &= check(readEnvironmentCache(path, 2, 2).empty(), "environment cache rejects truncated headers");
+        std::filesystem::remove_all(directory);
+    }
+
+    {
+        using namespace dayo::graphics;
+        const auto directory = std::filesystem::temp_directory_path() /
+                               ("dayo-cache-prune-test-" + dayo::core::toHex(std::random_device{}()));
+        std::vector<std::uint8_t> bytes(environmentCacheBytes(2, 2), 7);
+        const auto now = std::filesystem::file_time_type::clock::now();
+        const auto path = [&](std::uint64_t key) { return directory / (dayo::core::toHex(key) + ".bin"); };
+        for (std::uint64_t i = 0; i < 5; ++i) {
+            writeEnvironmentCache(path(i), 2, 2, bytes);
+            std::filesystem::last_write_time(path(i), now - std::chrono::seconds(5 - i));
+        }
+        const auto foreign = directory / "notes.bin";
+        const auto temporary = directory / (dayo::core::toHex(77) + ".bin.tmp-active");
+        std::ofstream(foreign).put('x');
+        std::ofstream(temporary).put('x');
+        const auto link = path(99);
+        std::filesystem::create_symlink(path(4), link);
+        pruneEnvironmentCache(directory, 512ULL * 1024 * 1024, 2);
+        ok &= check(!std::filesystem::exists(path(0)) && !std::filesystem::exists(path(1)) &&
+                        !std::filesystem::exists(path(2)) && std::filesystem::exists(path(3)) &&
+                        std::filesystem::exists(path(4)),
+                    "cache entry limit evicts oldest writes first");
+        pruneEnvironmentCache(directory, std::filesystem::file_size(path(4)), 32);
+        ok &= check(!std::filesystem::exists(path(3)) && std::filesystem::exists(path(4)),
+                    "cache byte limit works independently of entry count");
+        ok &= check(std::filesystem::exists(foreign) && std::filesystem::exists(temporary) &&
+                        std::filesystem::is_symlink(link),
+                    "cache pruning preserves foreign files, active writes and symlinks");
+        std::filesystem::remove_all(directory);
+        for (std::uint64_t i = 0; i < 33; ++i)
+            writeEnvironmentCache(path(i), 2, 2, bytes);
+        ok &= check(
+            std::distance(std::filesystem::directory_iterator(directory), std::filesystem::directory_iterator{}) == 32,
+            "publishing a cache automatically enforces the default entry limit");
+        std::filesystem::remove_all(directory);
     }
 
     if (!ok)

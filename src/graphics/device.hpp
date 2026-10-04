@@ -2,6 +2,7 @@
 
 #include "core/image.hpp"
 #include "graphics/handles.hpp"
+#include "graphics/preview_quality.hpp"
 #include "graphics/resource.hpp"
 
 #include <array>
@@ -23,6 +24,12 @@ class Window;
 namespace dayo::graphics {
 
 class IAccelerationBackend;
+
+struct TextureReadbackRequest {
+    handles::TextureHandle texture;
+    std::uint32_t mipLevel{};
+    std::uint32_t arrayLayer{};
+};
 
 enum class RendererKind { preview, subayai, bdpt };
 
@@ -814,6 +821,16 @@ class Device {
     [[nodiscard]] virtual core::ImageRgba8 renderToImage(const RenderTargetDesc&) {
         throw std::logic_error("offscreen rendering is not implemented by this backend");
     }
+    [[nodiscard]] virtual bool supportsPipelinedReadback() const noexcept {
+        return false;
+    }
+    // At most three outstanding tickets. Collect each ticket exactly once before reusing its slot.
+    [[nodiscard]] virtual std::uint64_t enqueueRenderToImage(const RenderTargetDesc&) {
+        throw std::logic_error("pipelined readback is not implemented by this backend");
+    }
+    [[nodiscard]] virtual std::optional<core::ImageRgba8> collectRenderedImage(std::uint64_t, bool = true) {
+        throw std::logic_error("pipelined readback is not implemented by this backend");
+    }
     [[nodiscard]] virtual handles::TextureHandle previewHdrTexture() const noexcept {
         return {};
     }
@@ -835,6 +852,12 @@ class Device {
     virtual void clearPreviewResources() = 0;
     virtual void updatePreviewScene(const PreviewScene& scene) = 0;
     virtual void updatePreviewEnvironment(const PreviewEnvironment&) {}
+    [[nodiscard]] virtual bool supportsTextureFormat(PixelFormat, ResourceUsage) const noexcept {
+        return false;
+    }
+    [[nodiscard]] virtual std::uint32_t environmentFaceSizeLimit() const noexcept {
+        return 512;
+    }
     virtual void setPreviewJitter(float, float) {}
     virtual void setPreviewStillQuality(bool) {}
 
@@ -1026,6 +1049,16 @@ class Device {
     readbackTextureEx(handles::TextureHandle, std::uint32_t /*mipLevel*/, std::uint32_t /*arrayLayer*/) {
         throw std::logic_error("Typed texture readback is not implemented by this backend");
     }
+    // Packed payloads in request order; backend-specific staging alignment is excluded.
+    [[nodiscard]] virtual std::vector<std::uint8_t>
+    readbackTextureSubresources(std::span<const TextureReadbackRequest> requests) {
+        std::vector<std::uint8_t> bytes;
+        for (const auto& request : requests) {
+            const auto pixels = readbackTextureEx(request.texture, request.mipLevel, request.arrayLayer);
+            bytes.insert(bytes.end(), pixels.begin(), pixels.end());
+        }
+        return bytes;
+    }
     virtual void uploadBufferEx(handles::BufferHandle, std::span<const std::byte>, std::size_t /*offset*/) {
         throw std::logic_error("Typed buffer upload is not implemented by this backend");
     }
@@ -1038,7 +1071,8 @@ class Device {
     Device() = default;
 };
 
-[[nodiscard]] std::unique_ptr<Device> createVulkanDevice(platform::Window& window, bool validation);
+[[nodiscard]] std::unique_ptr<Device> createVulkanDevice(platform::Window& window, bool validation,
+                                                         VulkanOptions options = {});
 [[nodiscard]] std::string_view toString(RendererKind renderer) noexcept;
 
 } // namespace dayo::graphics
