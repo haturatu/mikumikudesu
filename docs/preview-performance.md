@@ -9,6 +9,7 @@ VMA、upload ring、bindless、pipeline cache、ThinLTO/PGO/BOLTをそのまま�
   未対応ならR16_SFLOAT、extended formats自体が未対応ならR32_SFLOATへfallbackします。
   `high`では対応時にR16Fを選びます。shaderも選んだstorage image formatに一致するvariantを使います。
 - Normal: octahedral encodingのRG16_SNORM。未対応ならRG16F、最後にRGBA16Fへfallbackします。
+  ColorAttachmentとSampledのみを要求し、Load()しか使わない法線にはlinear filteringを要求しません。
   AOではencoded normalをpoint fetchしてから復号し、octahedronの継ぎ目の誤補間を避けます。
 - Morph + BDEF/SDEF/QDEF: 64 threadsのPreviewDeformを1フレームに1回dispatch。
   36 byte/vertexのposition、normal、UV、edge scaleをShadow、Normal、Main、Edgeが共有します。
@@ -27,6 +28,10 @@ VMA、upload ring、bindless、pipeline cache、ThinLTO/PGO/BOLTをそのまま�
   linear pixels、exposure適用後のpixels、source/cube寸法、shader source digestとsample scheduleをkeyにし、
   `$XDG_CACHE_HOME/mikumikudesu/environment/`（未設定なら`$HOME/.cache/`以下）へcubeと全prefilter mipを保存します。
   初回bakeを置換・解放するときにreadbackして保存するため、その初回保存にはGPU待機があります。
+  cubeと全prefilter mip/faceを専用bufferへまとめ、1 allocation・1 submit・1 timeline waitで回収します。
+  RGBA16Fではpaddingなしの1 memcpyとなり、transitionは読み出すmipに限定します。
+  保存後はhash名のcacheファイルをmtimeの古い順に削除し、512 MiB以下かつ32件以下へ抑えます。
+  tempファイル、symlink、他の名前のファイルは削除しません。並列writerでは一時的な超過があり得ます。
   次回はcomputeを省略してcached facesをuploadします。checksum/寸法/長さが不一致なら再計算します。
 
 1080p・半解像度AOの理論上のattachment payloadは、従来の約23.73 MiBからR8 AO + RG16 normalで
@@ -115,6 +120,9 @@ Ubuntu 24.04のVVL 1.3.275で再現し、同じbinary/llvmpipeをVVL 1.4.313で�
 [ALL_COMMANDS signal scopeのlayout transition対応修正](https://github.com/KhronosGroup/Vulkan-ValidationLayers/pull/7480)
 を含むLunarG VVL 1.4.313をchecksum固定でCIへ導入しています。Mesaとloaderは更新しません。
 GitHub Actionsの再実行結果はPRのcheckを参照してください。
+[LunarGの案内](https://vulkan.lunarg.com/content/view/packages-home.dhtml)ではUbuntu packageの新SDK向け更新は
+2025年5月以降停止しています。現在の固定版は維持し、次回VVL更新時はLinux SDK tarball、
+またはVVL source buildとActions cacheへ移行します。
 SDEF/QDEF・ゼロ法線・輪郭・背景・複数材質・texture format roundtrip・リング満杯/重複ticket・
 未回収frame中のresource拡張とサイズ変更を含みます。Vegaで未対応のD24S8 fixtureはfeature queryでskipします。
 VMAなし・ImGuiなしのsystem-only buildも成功し、通常・high・asyncの描画テストは通過しました。
