@@ -45,6 +45,20 @@ bool equalVideoExport(const dayo::app::VideoExportOptions& left, const dayo::app
 int main() {
     bool ok = true;
 
+    const auto tuning = parse({"mikumikudesu", "--preview-quality", "apu", "--present", "immediate"});
+    ok &= tuning.vulkan.quality == dayo::graphics::PreviewQuality::apu &&
+          tuning.vulkan.present == dayo::graphics::PresentMode::immediate;
+    ok &=
+        rejects([] { static_cast<void>(parse({"mikumikudesu", "--preview-quality", "invalid"})); }, "invalid quality");
+    ok &= rejects([] { static_cast<void>(parse({"mikumikudesu", "--present", "invalid"})); }, "invalid present mode");
+    using namespace dayo::graphics;
+    constexpr auto mib = std::uint64_t{1024} * 1024;
+    ok &= previewQualitySettings(PreviewQuality::automatic, true).shadowSize == 1024;
+    ok &= previewQualitySettings(PreviewQuality::automatic, false).shadowSize == 2048;
+    ok &= previewQualitySettings(PreviewQuality::automatic, false, 511 * mib).aoDivisor == 4;
+    ok &= previewQualitySettings(PreviewQuality::automatic, false, 512 * mib).environmentFaceSize == 256;
+    ok &= previewQualitySettings(PreviewQuality::high, true, 100 * mib).shadowSize == 2048;
+
     const auto positional = parse({"mikumikudesu", "miku.pmx", "--renderer", "subayai", "motion.vmd", "--hidden"});
     ok &= positional.assets == std::vector<std::filesystem::path>{"miku.pmx", "motion.vmd"};
     ok &= positional.hidden && positional.renderer == dayo::graphics::RendererKind::subayai;
