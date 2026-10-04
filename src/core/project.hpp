@@ -41,6 +41,7 @@ struct ProjectModelState {
 };
 
 struct ProjectEditorState {
+    bool operator==(const ProjectEditorState&) const = default;
     std::filesystem::path skyboxFile;
     bool floorCollision{true};
     std::int32_t animationStart{};

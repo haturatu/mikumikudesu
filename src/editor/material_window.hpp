@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -21,12 +22,16 @@ class MaterialWindow {
     [[nodiscard]] const std::vector<Entry>& entries() const noexcept {
         return entries_;
     }
+    void setMaterial(std::size_t material) noexcept {
+        material_ = material;
+    }
     void queueMaterialEdit(EditorSession& session);
     [[nodiscard]] const char* titleKey() const noexcept {
         return "window.material";
     }
 
   private:
+    std::size_t material_{};
     std::vector<Entry> entries_;
 };
 

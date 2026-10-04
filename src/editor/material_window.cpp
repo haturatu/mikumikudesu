@@ -1,25 +1,16 @@
 #include "editor/material_window.hpp"
-
 #include "editor/editor_session.hpp"
-
+#include <cmath>
 namespace dayo::editor {
-
 void MaterialWindow::queueMaterialEdit(EditorSession& session) {
-    if (entries_.empty())
+    auto* model = session.scene() ? session.scene()->model(session.target()) : nullptr;
+    if (!model || material_ >= model->materialSettings.size() || entries_.empty())
         return;
-    // Skeleton: material writes are not yet modeled as EditCommands, so we
-    // enqueue a no-op motion operation to keep the UI -> operation -> history
-    // invariant visible while the material command lands.
-    auto* scene = session.scene();
-    if (scene == nullptr)
-        return;
-    const auto* current = scene->motion(session.target(), session.global());
-    ReplaceMotionOperation operation;
-    operation.target = session.target();
-    operation.global = session.global();
-    operation.motion = current != nullptr ? *current : core::VmdMotion{};
-    operation.label = "Edit material (skeleton)";
-    session.operations().push(std::move(operation));
+    auto state = model->materialSettings[material_];
+    for (const auto& entry : entries_)
+        if (!entry.name.empty() && std::isfinite(entry.value))
+            state.parameters.set(entry.name, entry.value);
+    session.operations().push(
+        MaterialEditOperation{model->id, material_, std::move(state), "Edit material parameters"});
 }
-
 } // namespace dayo::editor

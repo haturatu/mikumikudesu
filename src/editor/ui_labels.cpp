@@ -1,0 +1,108 @@
+#include "editor/ui_labels.hpp"
+#include <string>
+#include <unordered_map>
+namespace dayo::editor {
+namespace {
+bool& japanese() {
+    static bool value{};
+    return value;
+}
+} // namespace
+void setUiLanguage(std::string_view language) {
+    japanese() = language == "ja" || language == "jp";
+}
+const char* uiLabel(const char* english) {
+    if (!japanese())
+        return english;
+    static const std::unordered_map<std::string, std::string> translations{
+        {"File", "ファイル"},
+        {"Edit", "編集"},
+        {"View", "表示"},
+        {"Media", "メディア"},
+        {"Animation", "アニメーション"},
+        {"Renderer", "レンダラー"},
+        {"Help", "ヘルプ"},
+        {"Save", "保存"},
+        {"Save As...", "名前を付けて保存..."},
+        {"Quit", "終了"},
+        {"Undo", "元に戻す"},
+        {"Redo", "やり直す"},
+        {"Cancel", "キャンセル"},
+        {"Delete", "削除"},
+        {"Preferences", "環境設定"},
+        {"Language", "言語"},
+        {"Theme", "テーマ"},
+        {"Reset defaults", "初期設定に戻す"},
+        {"Bone", "ボーン"},
+        {"XYZ position", "XYZ位置"},
+        {"Quaternion", "回転クォータニオン"},
+        {"Bone physics", "ボーン物理演算"},
+        {"World coordinates", "ワールド座標"},
+        {"Rotation gizmo", "回転ギズモ"},
+        {"Register bone keys", "ボーンキー登録"},
+        {"Revert", "変更を戻す"},
+        {"Init", "初期化"},
+        {"Interpolation", "補間"},
+        {"Axis", "軸"},
+        {"Method", "方式"},
+        {"All axes", "全軸"},
+        {"Copy curve", "補間をコピー"},
+        {"Paste curve", "補間を貼り付け"},
+        {"Init curve", "補間を初期化"},
+        {"Register interpolation", "補間登録"},
+        {"Manipulation history", "操作履歴"},
+        {"Models / External parents", "モデル・外部親"},
+        {"Animation visible", "アニメーション表示"},
+        {"Editor visible", "編集時の表示"},
+        {"Delete selected model", "選択モデルを削除"},
+        {"Motion", "モーション"},
+        {"Deform", "変形"},
+        {"Postprocess", "後処理"},
+        {"Raster", "描画"},
+        {"Child bone", "子ボーン"},
+        {"Parent model", "親モデル"},
+        {"Parent bone", "親ボーン"},
+        {"Register external parent", "外部親登録"},
+        {"Scene", "シーン"},
+        {"Inspector", "インスペクター"},
+        {"Timeline", "タイムライン"},
+        {"Status bar", "ステータスバー"},
+        {"Reset Layout", "レイアウト初期化"},
+        {"Physics settings", "物理演算設定"},
+        {"Material settings", "マテリアル設定"},
+        {"Show info", "情報表示"},
+        {"Show rigid bodies", "剛体表示"},
+        {"Follow selected model", "選択モデルに追従"},
+        {"Use denoiser", "デノイザー使用"},
+        {"Free camera", "自由カメラ"},
+        {"Preview resolution", "プレビュー解像度"},
+        {"Runtime mode", "動作モード"},
+        {"Realtime", "リアルタイム"},
+        {"Accumulate", "サンプル蓄積"},
+        {"Idle", "省電力"},
+        {"Camera target", "カメラ注視点"},
+        {"Camera rotation", "カメラ回転"},
+        {"Camera distance", "カメラ距離"},
+        {"Perspective", "透視投影"},
+        {"Track model", "追従モデル"},
+        {"Track bone", "追従ボーン"},
+        {"Register camera", "カメラ登録"},
+        {"Revert camera", "カメラ変更を戻す"},
+        {"Init camera", "カメラ初期化"},
+        {"Light color", "光源色"},
+        {"Light direction", "光源方向"},
+        {"Register light", "光源登録"},
+        {"Revert light", "光源変更を戻す"},
+        {"Init light", "光源初期化"},
+        {"Self shadow", "セルフシャドウ"},
+        {"Shadow distance", "シャドウ距離"},
+        {"Register self shadow", "セルフシャドウ登録"},
+        {"Range start", "範囲開始"},
+        {"Range end (-1: motion end)", "範囲終了（-1: モーション終了）"},
+        {"Unload audio", "音声を解除"},
+        {"Borrowed assets", "借り物リスト"},
+        {"Shortcuts", "ショートカット"}};
+    const auto found = translations.find(english);
+    return found == translations.end() ? english : found->second.c_str();
+}
+} // namespace dayo::editor

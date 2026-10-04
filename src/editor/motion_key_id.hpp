@@ -2,6 +2,7 @@
 
 #include "core/editor.hpp"
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -26,9 +27,14 @@ struct MotionKeyIdHash {
 };
 
 // Fingerprint used to re-resolve a stable id after sorts/inserts.
-// Identity is (track, name); frame is mutable and updated via notifyMoved.
+// Identity includes track/name/frame/duplicate ordinal; moves update it explicitly.
 class StableIdTable {
   public:
+    StableIdTable() = default;
+    StableIdTable(const StableIdTable&) = default;
+    StableIdTable(StableIdTable&&) noexcept = default;
+    StableIdTable& operator=(const StableIdTable& other);
+    StableIdTable& operator=(StableIdTable&& other) noexcept;
     void rebuild(const core::MotionDocument& document);
     [[nodiscard]] MotionKeyId keyId(core::MotionTrack track, std::size_t index) const;
     [[nodiscard]] std::optional<std::size_t> resolve(const core::MotionDocument& document,
@@ -48,6 +54,7 @@ class StableIdTable {
     };
     std::unordered_map<MotionKeyId, Fingerprint, MotionKeyIdHash> fingerprints_;
     std::unordered_map<MotionKeyId, std::size_t, MotionKeyIdHash> order_;
+    std::array<std::vector<MotionKeyId>, core::motionTrackCount> indices_;
     std::uint64_t nextId_{1};
     static std::string keyName(const core::MotionDocument& document, core::MotionTrack track, std::size_t index);
     static std::uint32_t keyFrame(const core::MotionDocument& document, core::MotionTrack track, std::size_t index);

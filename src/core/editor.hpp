@@ -20,10 +20,19 @@ class EditCommand {
 
 class CommandHistory {
   public:
+    [[nodiscard]] std::uint64_t revision() const noexcept {
+        return revision_;
+    }
+    // State identity is restored by Undo/Redo; discarded branches never reuse IDs.
+    [[nodiscard]] std::uint64_t position() const noexcept {
+        return undoPositions_.empty() ? rootPosition_ : undoPositions_.back();
+    }
     void execute(Scene& scene, std::unique_ptr<EditCommand> command);
     bool undo(Scene& scene);
     bool redo(Scene& scene);
     void clear() noexcept;
+    [[nodiscard]] std::vector<std::string> undoNames() const;
+    [[nodiscard]] std::vector<std::string> redoNames() const;
     [[nodiscard]] bool canUndo() const noexcept {
         return !undo_.empty();
     }
@@ -38,6 +47,10 @@ class CommandHistory {
     }
 
   private:
+    std::uint64_t revision_{};
+    std::uint64_t nextPosition_{};
+    std::uint64_t rootPosition_{};
+    std::vector<std::uint64_t> undoPositions_, redoPositions_;
     std::vector<std::unique_ptr<EditCommand>> undo_;
     std::vector<std::unique_ptr<EditCommand>> redo_;
 };
@@ -71,7 +84,8 @@ class SetRuntimeModeCommand final : public EditCommand {
     RuntimeMode after_;
 };
 
-enum class MotionTrack { bone, morph, camera, light, shadow, ik };
+enum class MotionTrack { bone, morph, camera, light, shadow, ik, externalParent };
+inline constexpr std::size_t motionTrackCount = 7;
 
 struct MotionKeyRef {
     MotionTrack track{};
@@ -88,6 +102,7 @@ struct MotionClipboard {
 class MotionEditor {
   public:
     static void normalize(MotionDocument& document);
+    static void registerVisibility(MotionDocument& document, std::uint32_t frame, bool visible);
     static void erase(MotionDocument& document, std::vector<MotionKeyRef> keys);
     static void move(MotionDocument& document, const std::vector<MotionKeyRef>& keys, std::int64_t frameDelta);
     [[nodiscard]] static MotionClipboard copy(const MotionDocument& document, const std::vector<MotionKeyRef>& keys);

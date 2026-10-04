@@ -178,8 +178,8 @@ bool NativeOidnProvider::execute(const fx::FxOidnDispatch& dispatch, const fx::F
         const auto normal = findOptionalTexture(dispatch.normal);
         const auto output = outputBinding.texture;
         const bool hasBufferInput = inputIsBuffer;
-        const bool denoiserReady = denoiser_.ensure(context.renderWidth, context.renderHeight);
-        if (!denoiserReady && !denoiser_.available() && !hasBufferInput) {
+        const bool denoiserReady = enabled_ && denoiser_.ensure(context.renderWidth, context.renderHeight);
+        if ((!enabled_ || (!denoiserReady && !denoiser_.available())) && !hasBufferInput) {
             commands.transferBarrierEx();
             if (input.texture != output)
                 commands.copyTextureEx(input.texture, output);
@@ -212,6 +212,11 @@ bool NativeOidnProvider::execute(const fx::FxOidnDispatch& dispatch, const fx::F
         } else {
             const auto beautyBytes = device_->readbackTextureEx(input.texture, 0, 0);
             beauty = decodeRgb(beautyBytes, context.renderWidth, context.renderHeight);
+        }
+        if (!enabled_) {
+            device_->uploadTextureEx(output, encodeRgba16(beauty, context.renderWidth, context.renderHeight), 0, 0);
+            commands.transferBarrierEx();
+            return true;
         }
         if (albedo.valid())
             albedoValues =

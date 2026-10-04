@@ -19,6 +19,15 @@ void Selection::add(MotionKeyId id) {
         ids_.push_back(id);
 }
 
+void Selection::selectGroup(const std::vector<MotionKeyId>& ids, bool additive, bool toggle) {
+    if (!toggle && !additive && !std::ranges::all_of(ids, [&](const auto id) { return contains(id); }))
+        set(ids);
+    else
+        for (const auto id : ids)
+            if (!toggle || !remove(id))
+                add(id);
+}
+
 bool Selection::remove(MotionKeyId id) noexcept {
     const auto found = std::ranges::find(ids_, id);
     if (found == ids_.end())

@@ -17,7 +17,8 @@ class EditorSession {
   public:
     EditorSession(core::Scene* scene, core::CommandHistory* history) : scene_(scene), history_(history) {}
 
-    void setTarget(core::ModelId target, bool global) noexcept;
+    void setTarget(core::ModelId target, bool global);
+    void moveKeyframeDrag(std::int64_t delta);
     void beginKeyframeDrag(const std::string& label = "Drag keys");
     void updateKeyframeDrag(core::VmdMotion intermediate);
     void commitKeyframeDrag();
@@ -39,9 +40,8 @@ class EditorSession {
     [[nodiscard]] EditorOperationQueue& operations() noexcept {
         return operations_;
     }
-    [[nodiscard]] StableIdTable& stableIds() noexcept {
-        return stableIds_;
-    }
+    [[nodiscard]] StableIdTable& stableIds();
+    [[nodiscard]] StableIdTable& stableIds(core::ModelId target, bool global);
     [[nodiscard]] core::ModelId target() const noexcept {
         return target_;
     }
@@ -57,7 +57,13 @@ class EditorSession {
     core::CommandHistory* history_{};
     Selection selection_;
     EditorOperationQueue operations_;
-    StableIdTable stableIds_;
+    StableIdTable globalStableIds_;
+    std::unordered_map<core::ModelId, std::unique_ptr<StableIdTable>> modelStableIds_;
+    std::optional<core::VmdMotion> dragOriginal_;
+    StableIdTable dragOriginalIds_;
+    std::vector<MotionKeyId> dragKeys_;
+    std::int64_t dragDelta_{};
+    bool dragChanged_{};
     core::ModelId target_{};
     bool global_{};
     std::unique_ptr<UndoTransaction> transaction_;
