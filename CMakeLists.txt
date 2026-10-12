@@ -979,6 +979,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_fx_linker_tests
     dayo_fx_semantic_tests
     dayo_subayai_bdpt_tests
+    dayo_skirt_collision_tests
     dayo_native_renderer_tests
   )
   foreach(
