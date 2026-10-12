@@ -394,6 +394,7 @@ struct MockNativeSceneCommands final : dayo::graphics::CommandList {
 struct MockDeformCommands final : dayo::graphics::CommandList {
     std::vector<std::string> events;
     std::vector<std::byte> constants;
+    std::vector<std::vector<std::byte>> uploads;
     std::vector<std::pair<dayo::graphics::handles::DescriptorSetHandle, std::uint32_t>> descriptorSets;
     std::vector<dayo::graphics::RenderingInfoEx> renderingInfos;
     std::size_t drawCalls{};
@@ -408,8 +409,9 @@ struct MockDeformCommands final : dayo::graphics::CommandList {
         events.push_back("dispatch:" + std::to_string(x) + "x" + std::to_string(y) + "x" + std::to_string(z));
     }
     void traceRays(std::uint32_t, std::uint32_t) override {}
-    void uploadBufferEx(dayo::graphics::handles::BufferHandle, std::span<const std::byte>, std::size_t) override {
+    void uploadBufferEx(dayo::graphics::handles::BufferHandle, std::span<const std::byte> bytes, std::size_t) override {
         events.emplace_back("upload");
+        uploads.emplace_back(bytes.begin(), bytes.end());
     }
     void traceRaysEx(dayo::graphics::handles::PipelineHandle, dayo::graphics::handles::ShaderBindingTableHandle,
                      std::uint32_t, std::uint32_t, std::uint32_t) override {
@@ -947,7 +949,12 @@ int main() {
     // local output buffer, then records the exact ordering required before
     // handing the output to BLAS build/refit.
     {
-        const std::array<dayo::graphics::PreviewVertex, 2> vertices{};
+        const auto vertices = [] {
+            std::array<dayo::graphics::PreviewVertex, 2> result{};
+            for (auto& vertex : result)
+                vertex.gpuSkinning = 1;
+            return result;
+        }();
         const std::array<dayo::graphics::PreviewBoneTransform, 1> bones{};
         const std::array<dayo::graphics::PreviewMorphDelta, 1> morphDeltas{};
         const std::array<float, 1> morphWeights{0.5F};
@@ -1038,7 +1045,18 @@ int main() {
         runtime.record(topologyFrame2, updatedUpload, 1);
         ok &= check(topologyFrame2.events ==
                         std::vector<std::string>{"upload", "upload", "bind", "descriptor", "push", "dispatch:1x1x1"},
-                    "native deform skips static scans and uploads only dynamic inputs on a current generation");
+                    "native deform keeps GPU base vertices static on a current generation");
+        updatedVertices[0].gpuSkinning = 0;
+        updatedVertices[0].position[0] = 5;
+        MockDeformCommands cpuFrame;
+        runtime.record(cpuFrame, updatedUpload, 1);
+        ok &= check(cpuFrame.events == std::vector<std::string>{"upload", "upload", "upload", "bind", "descriptor",
+                                                                "push", "dispatch:1x1x1"},
+                    "native deform refreshes host-skinned vertices without a topology change");
+        dayo::graphics::PreviewVertex cpuVertex{};
+        std::memcpy(&cpuVertex, cpuFrame.uploads[0].data(), sizeof(cpuVertex));
+        ok &= check(cpuVertex.position[0] == 5 && cpuVertex.gpuSkinning == 0,
+                    "native deform records the current CPU vertex before collision and BLAS");
         const auto blas = runtime.blasGeometry();
         ok &= check(blas.triangles.front().vertexBuffer == runtime.resources().deformedVertices &&
                         blas.triangles.front().indexBuffer == runtime.resources().indices,

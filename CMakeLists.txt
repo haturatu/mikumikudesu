@@ -363,8 +363,14 @@ endif()
 target_compile_definitions(dayo_core PUBLIC DAYO_HAS_BULLET=${DAYO_HAS_BULLET})
 
 include(cmake/CompileHlsl.cmake)
-dayo_compile_hlsl(DAYO_SKIRT_COLLISION_SPV SOURCE shaders/skirt_collision.hlsl ENTRY SkirtCollision
-    PROFILE cs_6_6 STAGE comp DEPENDS shaders/skirt_collision.hlsli)
+dayo_compile_hlsl(
+  DAYO_SKIRT_COLLISION_SPV
+  SOURCE shaders/skirt_collision.hlsl
+  ENTRY SkirtCollision
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS shaders/skirt_collision.hlsli
+)
 dayo_compile_hlsl(
   DAYO_PREVIEW_DEFORM_SPV
   SOURCE shaders/preview_deform.hlsl
@@ -922,7 +928,12 @@ if(BUILD_TESTING)
   target_link_libraries(dayo_skirt_collision_tests PRIVATE dayo_core dayo_graphics dayo_platform)
   dayo_enable_warnings(dayo_skirt_collision_tests)
   add_test(NAME skirt_collision COMMAND dayo_skirt_collision_tests)
-  set_tests_properties(skirt_collision PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE ENVIRONMENT "VK_LAYER_VALIDATE_SYNC=1")
+  add_test(NAME skirt_collision_async COMMAND dayo_skirt_collision_tests --async-compute)
+  set_tests_properties(
+    skirt_collision
+    skirt_collision_async
+    PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE ENVIRONMENT "VK_LAYER_VALIDATE_SYNC=1"
+  )
   add_test(NAME preview_render COMMAND dayo_preview_tests)
   set_tests_properties(vulkan_probe PROPERTIES TIMEOUT 60)
   add_test(NAME preview_render_high COMMAND dayo_preview_tests --high)
