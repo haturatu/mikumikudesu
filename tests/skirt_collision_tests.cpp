@@ -329,6 +329,14 @@ void outwardSideFixtures(graphics::VulkanDevice& device) {
                 "end-cap recovery moved cloth toward the back");
     }
     require(endCap.stats.maxMeshPenetration < .031F, "end-cap contact retained body penetration");
+    capsules[0] = {{0, 0, 0, 0}, {0, 0, 0, .03F}, {}, {}};
+    ++upload.historyGeneration;
+    const auto zeroRadius = preview.run(points, upload);
+    for (std::size_t i = 0; i < points.size(); ++i)
+        for (std::size_t axis = 0; axis < 3; ++axis)
+            require(std::isfinite(zeroRadius.positions[i][axis]) &&
+                        std::abs(zeroRadius.positions[i][axis] - points[i].position[axis]) < 1e-6F,
+                    "zero-radius capsule changed an outside vertex or generated NaN");
     std::cout << "Outward-side fixtures passed (deep contact, wrong-side surface, rotated leg, seek, layout parity)\n";
 }
 void previewIntegration(graphics::VulkanDevice& device) {

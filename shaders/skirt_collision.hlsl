@@ -172,7 +172,7 @@ void SkirtCollision(uint3 dispatch : SV_DispatchThreadID,uint3 group : SV_GroupI
                     coherent+=reference*weight;
                     deep=max(deep,contact.w);
                 }
-                float strength=saturate((deep/capsule.aRadius.w-.2)/.2);
+                float strength=saturate((deep/max(capsule.aRadius.w,1e-6)-.2)/.2);
                 float3 normal=skirtUnit(coherent,skirtRadialReference(outwardNormal(i,capsule),capsule));
                 float4 plane=skirtSupportPlane(p,p,p,capsule,normal);
                 p+=plane.xyz*plane.w*strength;
