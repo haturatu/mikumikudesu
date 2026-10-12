@@ -1864,11 +1864,15 @@ void VulkanDevice::updatePreviewSkirtCollision(std::span<const core::SkirtVertex
                                                std::span<const std::array<std::uint32_t, 4>> triangles,
                                                std::span<const std::uint32_t> adjacency,
                                                std::span<const core::SkirtCapsule> capsules,
-                                               std::uint64_t historyGeneration) {
+                                               std::uint64_t historyGeneration,
+                                               std::span<const std::array<std::uint32_t, 2>> legRanges,
+                                               std::span<const std::uint32_t> legVertices) {
     previewGpuScene_.skirtVertices.assign(vertices.begin(), vertices.end());
     previewGpuScene_.skirtTriangles.assign(triangles.begin(), triangles.end());
     previewGpuScene_.skirtAdjacency.assign(adjacency.begin(), adjacency.end());
     previewGpuScene_.skirtCapsules.assign(capsules.begin(), capsules.end());
+    previewGpuScene_.skirtLegRanges.assign(legRanges.begin(), legRanges.end());
+    previewGpuScene_.skirtLegVertices.assign(legVertices.begin(), legVertices.end());
     previewGpuScene_.skirtHistoryGeneration = historyGeneration;
 }
 
@@ -3680,7 +3684,9 @@ void VulkanDevice::recordPreviewDeform(VkCommandBuffer command, Frame& frame) {
                                        .adjacency = previewGpuScene_.skirtAdjacency,
                                        .capsules = previewGpuScene_.skirtCapsules,
                                        .historyGeneration = previewGpuScene_.skirtHistoryGeneration,
-                                       .iterations = options_.skirtCollisionIterations},
+                                       .iterations = options_.skirtCollisionIterations,
+                                       .legRanges = previewGpuScene_.skirtLegRanges,
+                                       .legVertices = previewGpuScene_.skirtLegVertices},
                                       sizeof(PreviewDeformedVertex), offsetof(PreviewDeformedVertex, normal));
     }
     const VkMemoryBarrier2 visible{

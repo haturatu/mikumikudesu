@@ -31,6 +31,12 @@ float3 skirtProject(float3 p, SkirtCapsule capsule, float3 fallback, float3 prev
     float3 delta=p-nearest;
     float radius=capsule.aRadius.w+capsule.bMargin.w;
     float3 normal=skirtUnit(delta,skirtUnit(fallback,float3(0,0,1)));
+    if (length(delta)<radius*.05) {
+        float3 axis=skirtUnit(capsule.bMargin.xyz-capsule.aRadius.xyz,float3(0,1,0));
+        float3 authored=skirtUnit(fallback-axis*dot(fallback,axis),skirtEscapeNormal(capsule));
+        if (dot(normal,authored)<0) normal=-normal;
+        normal=skirtUnit(lerp(authored,normal,saturate(length(delta)/max(radius*.05,1e-6))),authored);
+    }
     bool crossed=false;
     if (history) {
         float3 oldDelta=previous-skirtNearest(previous,capsule.previousA.xyz,capsule.previousB.xyz);
@@ -65,7 +71,7 @@ void skirtSegmentPair(float3 a,float3 b,float3 c,float3 d,out float3 p,out float
     float3 u=b-a,v=d-c,w=a-c;
     float uu=dot(u,u),vv=dot(v,v),uv=dot(u,v),uw=dot(u,w),vw=dot(v,w);
     float denominator=uu*vv-uv*uv;
-    float s=denominator>1e-12 ? saturate((uv*vw-vv*uw)/denominator):0;
+    float s=denominator>max(1e-12,uu*vv*1e-6) ? saturate((uv*vw-vv*uw)/denominator):0;
     float t=vv>1e-12 ? (uv*s+vw)/vv:0;
     if (t<0) { t=0;s=uu>1e-12 ? saturate(-uw/uu):0; }
     else if (t>1) { t=1;s=uu>1e-12 ? saturate((uv-uw)/uu):0; }
@@ -99,7 +105,16 @@ float4 skirtTriangleContact(float3 a,float3 b,float3 c,SkirtCapsule capsule,floa
         }
     }
     float depth=max(0,capsule.aRadius.w+capsule.bMargin.w-sqrt(distanceSquared));
-    return float4(skirtUnit(delta,skirtUnit(fallback,float3(0,0,1))),depth);
+    // A centerline crossing has no unique radial normal. Do not normalize
+    // floating-point roundoff into an arbitrary escape direction.
+    float3 authored=skirtUnit(fallback,float3(0,0,1));
+    float3 normal=skirtUnit(delta,authored);
+    float distance=sqrt(distanceSquared);
+    if (distance<radius*.02) {
+        if (dot(normal,authored)<0) normal=-normal;
+        normal=skirtUnit(lerp(authored,normal,saturate(distance/max(radius*.02,1e-6))),authored);
+    }
+    return float4(normal,depth);
 }
 float4 skirtSupportPlane(float3 a,float3 b,float3 c,SkirtCapsule capsule,float3 normal) {
     float support=max(dot(capsule.aRadius.xyz,normal),dot(capsule.bMargin.xyz,normal))+
@@ -116,13 +131,15 @@ float4 skirtTriangleConstraint(float3 a,float3 b,float3 c,SkirtCapsule capsule,f
     // axis crossing. A distance-only correction can leave a chord through
     // the capsule even after every vertex reaches its surface.
     float3 normal=temporal ? skirtUnit(fallback,contact.xyz):contact.xyz;
-    if (!temporal && length(radial)>1e-5 && dot(normal,radial)<0) normal=-normal;
+    if (!temporal && dot(normal,radial)<-max(1e-6,capsule.aRadius.w*.001)) normal=-normal;
     float3 axis=capsule.bMargin.xyz-capsule.aRadius.xyz;
-    if (contact.w>capsule.aRadius.w*.25 && dot(axis,axis)>1e-10) {
+    if (dot(axis,axis)>1e-10) {
         axis=normalize(axis);
         float3 perpendicular=normal-axis*dot(normal,axis);
         float3 basis=abs(axis.y)<.9 ? float3(0,1,0):float3(1,0,0);
-        normal=skirtUnit(perpendicular,normalize(cross(axis,basis)));
+        float3 outward=skirtUnit(perpendicular,normalize(cross(axis,basis)));
+        float deep=saturate((contact.w/max(capsule.aRadius.w,1e-6)-.15)/.2);
+        normal=skirtUnit(lerp(normal,outward,deep),outward);
     }
     return skirtSupportPlane(a,b,c,capsule,normal);
 }

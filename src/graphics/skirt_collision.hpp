@@ -12,6 +12,8 @@ struct SkirtCollisionUpload {
     std::span<const core::SkirtCapsule> capsules;
     std::uint64_t historyGeneration{1};
     std::uint32_t iterations{32};
+    std::span<const std::array<std::uint32_t, 2>> legRanges{};
+    std::span<const std::uint32_t> legVertices{};
 };
 
 struct SkirtCollisionPushConstants {
@@ -51,17 +53,19 @@ class SkirtCollisionRuntime {
                 std::uint32_t vertexStride, std::uint32_t normalOffset);
     void reset() noexcept;
     [[nodiscard]] core::SkirtCollisionStats readStats() const;
+    [[nodiscard]] std::vector<core::SkirtCapsule> readCapsules() const;
 
   private:
     struct Slot {
-        std::array<handles::BufferHandle, 6> buffers{};
+        std::array<handles::BufferHandle, 8> buffers{};
         handles::DescriptorSetHandle set{};
         handles::BufferHandle output{};
     };
     Device* device_{};
     std::array<Slot, kNativeFramesInFlight> slots_{};
     handles::BufferHandle history_{};
-    std::array<std::size_t, 4> shape_{};
+    handles::BufferHandle capsuleHistory_{};
+    std::array<std::size_t, 6> shape_{};
     std::uint64_t historyGeneration_{};
     bool historyInitialized_{};
     std::size_t lastSlot_{};

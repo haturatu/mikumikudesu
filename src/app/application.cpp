@@ -679,7 +679,9 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                                               .adjacency = mesh.skirtCollision.adjacency,
                                               .capsules = mesh.skirtCapsules,
                                               .historyGeneration = mesh.skirtHistoryGeneration,
-                                              .iterations = options_.vulkan.skirtCollisionIterations}},
+                                              .iterations = options_.vulkan.skirtCollisionIterations,
+                                              .legRanges = mesh.skirtCollision.legRanges,
+                                              .legVertices = mesh.skirtCollision.legVertices}},
                 .deformPipeline = device_->nativeDeformPipeline(),
                 .deformDescriptorLayout = device_->nativeDeformDescriptorLayout(),
                 .topologyGeneration = scene_.topologyGeneration(),
@@ -2103,6 +2105,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     std::vector<std::array<std::uint32_t, 4>> skirtTriangles;
     std::vector<std::uint32_t> skirtAdjacency;
     std::vector<core::SkirtCapsule> skirtCapsules;
+    std::vector<std::array<std::uint32_t, 2>> skirtLegRanges;
+    std::vector<std::uint32_t> skirtLegVertices;
     std::uint64_t skirtHistoryGeneration = scene_.topologyGeneration();
     std::pmr::vector<graphics::PreviewBoneTransform> bones(scratch);
     std::vector<NativeModelGeometry> nativeGeometry;
@@ -2222,6 +2226,13 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             for (auto triangle : instance.skirtCollision.adjacency)
                 skirtAdjacency.push_back(triangle + triangleBase);
             skirtCapsules.insert(skirtCapsules.end(), native.skirtCapsules.begin(), native.skirtCapsules.end());
+            const auto legVertexBase = static_cast<std::uint32_t>(skirtLegVertices.size());
+            for (auto range : instance.skirtCollision.legRanges) {
+                range[0] += legVertexBase;
+                skirtLegRanges.push_back(range);
+            }
+            for (const auto vertex : instance.skirtCollision.legVertices)
+                skirtLegVertices.push_back(vertex + baseVertex);
             skirtHistoryGeneration ^= native.skirtHistoryGeneration + 0x9e3779b97f4a7c15ULL +
                                       (skirtHistoryGeneration << 6U) + (skirtHistoryGeneration >> 2U);
         }
@@ -2428,7 +2439,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     {
         auto upload = frameProfiler_.measure(core::ProfileSection::upload);
         device_->updatePreviewSkirtCollision(skirtVertices, skirtTriangles, skirtAdjacency, skirtCapsules,
-                                             skirtHistoryGeneration);
+                                             skirtHistoryGeneration, skirtLegRanges, skirtLegVertices);
         device_->updatePreviewBones(bones);
         if (initialUpload || rebuildTopology)
             device_->uploadPreviewMorphDeltas(morphDeltas);

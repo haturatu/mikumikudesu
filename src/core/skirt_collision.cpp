@@ -135,6 +135,40 @@ SkirtCollisionTopology identifySkirtCollision(const PmxModel& model) {
         v.triangleCount = static_cast<std::uint32_t>(adjacency[i].size());
         result.adjacency.insert(result.adjacency.end(), adjacency[i].begin(), adjacency[i].end());
     }
+    // Include the complete surface triangles around leg-weighted vertices.
+    // The renderer fits its contact proxy to these *deformed* vertices; PMX
+    // rigid bodies can be shorter and narrower than the visible thigh.
+    for (const auto body : result.legBodies) {
+        std::vector<bool> selected(model.vertices.size());
+        const auto bone = model.rigidBodies[body].bone;
+        if (bone >= 0 && static_cast<std::size_t>(bone) < model.bones.size()) {
+            for (std::size_t i = 0; i < model.vertices.size(); ++i) {
+                if (lookup[i] != std::numeric_limits<std::uint32_t>::max())
+                    continue;
+                float weight = 0;
+                for (std::size_t w = 0; w < 4; ++w)
+                    if (model.vertices[i].bones[w] == bone && std::isfinite(model.vertices[i].weights[w]))
+                        weight += std::max(model.vertices[i].weights[w], 0.0F);
+                selected[i] = weight >= .2F;
+            }
+        }
+        auto surface = selected;
+        for (std::size_t i = 0; i + 2 < model.indices.size(); i += 3) {
+            const std::array<std::uint32_t, 3> tri{model.indices[i], model.indices[i + 1], model.indices[i + 2]};
+            if (!std::ranges::all_of(tri, [&](auto v) {
+                    return v < selected.size() && lookup[v] == std::numeric_limits<std::uint32_t>::max();
+                }))
+                continue;
+            if (std::ranges::any_of(tri, [&](auto v) { return selected[v]; }))
+                for (const auto v : tri)
+                    surface[v] = true;
+        }
+        const auto firstVertex = static_cast<std::uint32_t>(result.legVertices.size());
+        for (std::size_t i = 0; i < surface.size(); ++i)
+            if (surface[i])
+                result.legVertices.push_back(static_cast<std::uint32_t>(i));
+        result.legRanges.push_back({firstVertex, static_cast<std::uint32_t>(result.legVertices.size()) - firstVertex});
+    }
     return result;
 }
 

@@ -53,8 +53,12 @@ class VulkanDevice final : public Device {
     void updatePreviewSkirtCollision(std::span<const core::SkirtVertex> vertices,
                                      std::span<const std::array<std::uint32_t, 4>> triangles,
                                      std::span<const std::uint32_t> adjacency,
-                                     std::span<const core::SkirtCapsule> capsules,
-                                     std::uint64_t historyGeneration) override;
+                                     std::span<const core::SkirtCapsule> capsules, std::uint64_t historyGeneration,
+                                     std::span<const std::array<std::uint32_t, 2>> legRanges = {},
+                                     std::span<const std::uint32_t> legVertices = {}) override;
+    [[nodiscard]] std::vector<core::SkirtCapsule> readbackPreviewSkirtCapsules() const {
+        return previewSkirtCollision_.readCapsules();
+    }
     [[nodiscard]] handles::PipelineHandle nativeDeformPipeline() const noexcept override {
         return nativeDeformPipeline_;
     }

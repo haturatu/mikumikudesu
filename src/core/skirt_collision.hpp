@@ -16,6 +16,8 @@ struct SkirtCollisionTopology {
     std::vector<std::uint32_t> adjacency;
     std::vector<std::size_t> legBodies;
     std::vector<std::size_t> skirtBodies;
+    std::vector<std::array<std::uint32_t, 2>> legRanges;
+    std::vector<std::uint32_t> legVertices;
     [[nodiscard]] bool empty() const noexcept {
         return vertices.empty() || legBodies.empty();
     }

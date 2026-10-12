@@ -31,10 +31,69 @@ struct CollisionStats {
 [[vk::binding(1,0)]] StructuredBuffer<SkirtVertex> vertices;
 [[vk::binding(2,0)]] StructuredBuffer<uint4> triangles;
 [[vk::binding(3,0)]] StructuredBuffer<uint> adjacency;
-[[vk::binding(4,0)]] StructuredBuffer<SkirtCapsule> capsules;
+[[vk::binding(4,0)]] RWStructuredBuffer<SkirtCapsule> capsules;
 [[vk::binding(5,0)]] RWStructuredBuffer<float4> scratch;
 [[vk::binding(6,0)]] RWStructuredBuffer<float4> history;
 [[vk::binding(7,0)]] RWStructuredBuffer<CollisionStats> statistics;
+[[vk::binding(8,0)]] StructuredBuffer<uint2> legRanges;
+[[vk::binding(9,0)]] StructuredBuffer<uint> legVertices;
+[[vk::binding(10,0)]] RWStructuredBuffer<float4> capsuleHistory;
+groupshared float fitRadiusSquared[64];
+groupshared float2 fitEndpoints[64];
+
+void fitCapsule(uint body,uint lane) {
+    SkirtCapsule capsule=capsules[body];
+    uint2 range=legRanges[body];
+    float3 origin=capsule.aRadius.xyz;
+    float3 axis=skirtUnit(capsule.bMargin.xyz-origin,float3(0,1,0));
+    float radiusSquared=capsule.aRadius.w*capsule.aRadius.w;
+    [loop] for (uint vertex=lane;vertex<range.y;vertex+=64) {
+        float3 p=asfloat(outputVertices.Load3(legVertices[range.x+vertex]*collision.vertexStride))-origin;
+        if (all(isfinite(p))) {
+            float3 radial=p-axis*dot(p,axis);
+            radiusSquared=max(radiusSquared,dot(radial,radial));
+        }
+    }
+    fitRadiusSquared[lane]=radiusSquared;
+    GroupMemoryBarrierWithGroupSync();
+    [unroll] for (uint stride=32;stride>0;stride/=2) {
+        if (lane<stride) fitRadiusSquared[lane]=max(fitRadiusSquared[lane],fitRadiusSquared[lane+stride]);
+        GroupMemoryBarrierWithGroupSync();
+    }
+    float radius=sqrt(fitRadiusSquared[0])+(range.y>0 ? capsule.bMargin.w*.25:0);
+    float2 ends=float2(0,length(capsule.bMargin.xyz-origin));
+    [loop] for (uint vertex=lane;vertex<range.y;vertex+=64) {
+        float3 p=asfloat(outputVertices.Load3(legVertices[range.x+vertex]*collision.vertexStride))-origin;
+        if (all(isfinite(p))) {
+            float z=dot(p,axis);
+            float3 radial=p-axis*z;
+            // Fit the centerline against the unpadded envelope so the extra
+            // radius remains a true clearance at the end caps too.
+            float reach=sqrt(max(0,fitRadiusSquared[0]-dot(radial,radial)));
+            ends.x=min(ends.x,z+reach);
+            ends.y=max(ends.y,z-reach);
+        }
+    }
+    fitEndpoints[lane]=ends;
+    GroupMemoryBarrierWithGroupSync();
+    [unroll] for (uint stride=32;stride>0;stride/=2) {
+        if (lane<stride) {
+            fitEndpoints[lane].x=min(fitEndpoints[lane].x,fitEndpoints[lane+stride].x);
+            fitEndpoints[lane].y=max(fitEndpoints[lane].y,fitEndpoints[lane+stride].y);
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if (lane==0) {
+        float2 bounds=fitEndpoints[0];
+        capsule.aRadius=float4(origin+axis*bounds.x,radius);
+        capsule.bMargin.xyz=origin+axis*bounds.y;
+        capsule.previousA.xyz=collision.resetHistory==0 ? capsuleHistory[2*body].xyz:capsule.aRadius.xyz;
+        capsule.previousB.xyz=collision.resetHistory==0 ? capsuleHistory[2*body+1].xyz:capsule.bMargin.xyz;
+        capsules[body]=capsule;
+        capsuleHistory[2*body]=capsule.aRadius;
+        capsuleHistory[2*body+1]=capsule.bMargin;
+    }
+}
 
 float3 position(uint i) { return scratch[collision.sourceSlice*collision.vertexCount+i].xyz; }
 float3 project(uint i,float3 p,bool temporal) {
@@ -55,7 +114,11 @@ float penetration(SkirtVertex v,float3 p) {
     return depth;
 }
 [numthreads(64,1,1)]
-void SkirtCollision(uint3 dispatch : SV_DispatchThreadID) {
+void SkirtCollision(uint3 dispatch : SV_DispatchThreadID,uint3 group : SV_GroupID,uint3 lane : SV_GroupThreadID) {
+    if (collision.phase==4) {
+        fitCapsule(group.x,lane.x);
+        return;
+    }
     uint i=dispatch.x;
     if (i>=collision.vertexCount)
         return;
@@ -71,8 +134,24 @@ void SkirtCollision(uint3 dispatch : SV_DispatchThreadID) {
     if (collision.phase==1 || collision.phase==3) {
         float3 correction=0;
         float3 smooth=0;
-        float contributions=0;
-        [loop] for (uint t=0;t<v.triangleCount;++t) {
+        // A fixed average keeps local constraints continuous when contacts disappear.
+        // Recovery uses the deepest incident contact per capsule so an isolated
+        // triangle does not lose its correction in that average.
+        if (collision.phase==3) {
+            [loop] for (uint cap=0;cap<v.capsuleCount;++cap) {
+                SkirtCapsule capsule=capsules[v.capsuleStart+cap];
+                float depth=0;
+                [loop] for (uint t=0;t<v.triangleCount;++t) {
+                    uint3 tri=triangles[adjacency[v.firstTriangle+t]].xyz;
+                    depth=max(depth,skirtTriangleContact(position(tri.x),position(tri.y),position(tri.z),
+                        capsule,skirtEscapeNormal(capsule)).w);
+                }
+                float strength=saturate((depth-capsule.bMargin.w)/max(capsule.bMargin.w,1e-6));
+                float4 contact=skirtSupportPlane(p,p,p,capsule,skirtEscapeNormal(capsule));
+                correction+=contact.xyz*contact.w*strength;
+            }
+        }
+        [loop] for (uint t=0;collision.phase==1 && t<v.triangleCount;++t) {
             uint3 tri=triangles[adjacency[v.firstTriangle+t]].xyz;
             float3 a=position(tri.x),b=position(tri.y),c=position(tri.z);
             float totalMobility=vertices[tri.x].mobility+vertices[tri.y].mobility+vertices[tri.z].mobility;
@@ -91,26 +170,17 @@ void SkirtCollision(uint3 dispatch : SV_DispatchThreadID) {
                     oldNormal=skirtUnit(oldNormal,skirtRotate(capsule.rotationDelta,oldRadial));
                     fallback=skirtUnit(oldNormal,fallback);
                 }
-                float4 contact;
-                if (collision.phase==3) {
-                    contact=skirtTriangleContact(a,b,c,capsule,fallback);
-                    if (contact.w>capsule.bMargin.w)
-                        contact=skirtSupportPlane(a,b,c,capsule,skirtEscapeNormal(capsule));
-                    else contact=0;
-                } else {
-                    contact=skirtTriangleConstraint(a,b,c,capsule,fallback,collision.resetHistory==0);
-                }
+                float4 contact=skirtTriangleConstraint(a,b,c,capsule,fallback,collision.resetHistory==0);
                 if (contact.w>1e-6) {
+                    contact.w=skirtSupportPlane(p,p,p,capsule,contact.xyz).w;
                     correction+=contact.xyz*contact.w*(3*v.mobility/max(totalMobility,1e-6));
-                    contributions+=1;
                 }
             }
             smooth+=(a-scratch[2*collision.vertexCount+tri.x].xyz)+
                     (b-scratch[2*collision.vertexCount+tri.y].xyz)+
                     (c-scratch[2*collision.vertexCount+tri.z].xyz);
         }
-        if (contributions>0)
-            p+=correction/contributions;
+        p+=correction/(collision.phase==1 ? max(1,v.triangleCount):1);
         if (collision.phase==1 && v.triangleCount>0) {
             float3 own=p-scratch[2*collision.vertexCount+i].xyz;
             p+=.1*v.mobility*(smooth/(3*v.triangleCount)-own);
@@ -121,10 +191,12 @@ void SkirtCollision(uint3 dispatch : SV_DispatchThreadID) {
             [loop] for (uint cap=0;cap<v.capsuleCount;++cap) {
                 SkirtCapsule capsule=capsules[v.capsuleStart+cap];
                 if (skirtPenetration(p,capsule)>capsule.bMargin.w) {
+                    float strength=saturate((skirtPenetration(p,capsule)-capsule.bMargin.w)/
+                        max(capsule.bMargin.w,1e-6));
                     float3 n=skirtEscapeNormal(capsule);
                     float support=max(dot(capsule.aRadius.xyz,n),dot(capsule.bMargin.xyz,n))+
                         capsule.aRadius.w+capsule.bMargin.w;
-                    p+=n*max(0,support-dot(p,n));
+                    p+=n*max(0,support-dot(p,n))*strength;
                 } else p=skirtProject(p,capsule,authored,0,false,1);
             }
         }

@@ -862,7 +862,8 @@ class Device {
     virtual void updatePreviewSkirtCollision(std::span<const core::SkirtVertex>,
                                              std::span<const std::array<std::uint32_t, 4>>,
                                              std::span<const std::uint32_t>, std::span<const core::SkirtCapsule>,
-                                             std::uint64_t) {}
+                                             std::uint64_t, std::span<const std::array<std::uint32_t, 2>> = {},
+                                             std::span<const std::uint32_t> = {}) {}
     virtual void updatePreviewEnvironment(const PreviewEnvironment&) {}
     [[nodiscard]] virtual bool supportsTextureFormat(PixelFormat, ResourceUsage) const noexcept {
         return false;
