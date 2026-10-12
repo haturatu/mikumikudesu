@@ -41,7 +41,7 @@ struct PreviewGpuScene {
     std::vector<PreviewMorphDelta> morphDeltas;
     std::vector<float> morphWeights;
     std::vector<core::SkirtVertex> skirtVertices;
-    std::vector<std::array<std::uint32_t,4>> skirtTriangles;
+    std::vector<std::array<std::uint32_t, 4>> skirtTriangles;
     std::vector<std::uint32_t> skirtAdjacency;
     std::vector<core::SkirtCapsule> skirtCapsules;
     std::uint64_t skirtHistoryGeneration{};
@@ -55,8 +55,11 @@ struct PreviewGpuScene {
         draws.clear();
         morphDeltas.clear();
         morphWeights.clear();
-        skirtVertices.clear(); skirtTriangles.clear(); skirtAdjacency.clear(); skirtCapsules.clear();
-        skirtHistoryGeneration=0;
+        skirtVertices.clear();
+        skirtTriangles.clear();
+        skirtAdjacency.clear();
+        skirtCapsules.clear();
+        skirtHistoryGeneration = 0;
         materialData.clear();
     }
 };

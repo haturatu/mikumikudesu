@@ -22,6 +22,7 @@ struct RawCliOptions {
     bool hidden{};
     bool validation{true};
     bool asyncCompute{};
+    int skirtCollisionIterations{32};
     std::string renderer{"preview"};
     std::string previewQuality{"auto"};
     std::string present{"fifo"};
@@ -125,6 +126,9 @@ Options normalizeOptions(const RawCliOptions& raw) {
     options.hidden = raw.hidden;
     options.validation = raw.validation;
     options.vulkan.asyncCompute = raw.asyncCompute;
+    if (raw.skirtCollisionIterations < 0 || raw.skirtCollisionIterations > 64)
+        throw std::invalid_argument("--skirt-collision-iterations expects an integer from 0 to 64");
+    options.vulkan.skirtCollisionIterations = static_cast<std::uint32_t>(raw.skirtCollisionIterations);
     options.renderer = rendererKind(raw.renderer);
     options.vulkan.quality = raw.previewQuality == "apu"    ? graphics::PreviewQuality::apu
                              : raw.previewQuality == "high" ? graphics::PreviewQuality::high
@@ -212,6 +216,7 @@ RawCliOptions extractOptions(const argparse::ArgumentParser& program) {
     raw.hidden = program.get<bool>("--hidden");
     raw.validation = !program.get<bool>("--no-validation");
     raw.asyncCompute = program.get<bool>("--async-compute");
+    raw.skirtCollisionIterations = program.get<int>("--skirt-collision-iterations");
     raw.renderer = program.get<std::string>("--renderer");
     raw.previewQuality = program.get<std::string>("--preview-quality");
     raw.present = program.get<std::string>("--present");
@@ -249,6 +254,10 @@ void configureParser(ConfiguredParser& parser) {
     program.add_argument("--async-compute")
         .flag()
         .help("Experimental Preview deform on a second queue; benchmark before enabling");
+    parser.addValueArgument("--skirt-collision-iterations")
+        .help("Skirt collision quality: 0 disables, 1-64 iterations")
+        .default_value(32)
+        .scan<'i', int>();
     parser.addValueArgument("--preview-quality")
         .default_value(std::string{"auto"})
         .choices("auto", "apu", "high")

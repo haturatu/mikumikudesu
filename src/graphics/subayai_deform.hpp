@@ -132,7 +132,9 @@ class NativeDeformRuntime {
     }
     [[nodiscard]] BlasGeometryDesc blasGeometry() const;
     // Caller waits for the recorded frame before requesting diagnostic readback.
-    [[nodiscard]] core::SkirtCollisionStats skirtCollisionStats() const { return skirtCollision_.readStats(); }
+    [[nodiscard]] core::SkirtCollisionStats skirtCollisionStats() const {
+        return skirtCollision_.readStats();
+    }
 
     // Records: typed pipeline bind -> descriptor bind -> deform constants ->
     // compute dispatch. The caller must submit/wait this command list before

@@ -758,8 +758,12 @@ class Device {
     // The built-in deform pass is optional for non-Vulkan/Preview backends.
     // Native geometry uses these handles only when the backend exposes the
     // typed compute pipeline required to populate its BLAS input buffer.
-    [[nodiscard]] virtual handles::PipelineHandle skirtCollisionPipeline() const noexcept { return {}; }
-    [[nodiscard]] virtual handles::DescriptorSetLayoutHandle skirtCollisionDescriptorLayout() const noexcept { return {}; }
+    [[nodiscard]] virtual handles::PipelineHandle skirtCollisionPipeline() const noexcept {
+        return {};
+    }
+    [[nodiscard]] virtual handles::DescriptorSetLayoutHandle skirtCollisionDescriptorLayout() const noexcept {
+        return {};
+    }
     [[nodiscard]] virtual handles::PipelineHandle nativeDeformPipeline() const noexcept {
         return {};
     }
@@ -856,8 +860,9 @@ class Device {
     virtual void clearPreviewResources() = 0;
     virtual void updatePreviewScene(const PreviewScene& scene) = 0;
     virtual void updatePreviewSkirtCollision(std::span<const core::SkirtVertex>,
-        std::span<const std::array<std::uint32_t,4>>, std::span<const std::uint32_t>,
-        std::span<const core::SkirtCapsule>, std::uint64_t) {}
+                                             std::span<const std::array<std::uint32_t, 4>>,
+                                             std::span<const std::uint32_t>, std::span<const core::SkirtCapsule>,
+                                             std::uint64_t) {}
     virtual void updatePreviewEnvironment(const PreviewEnvironment&) {}
     [[nodiscard]] virtual bool supportsTextureFormat(PixelFormat, ResourceUsage) const noexcept {
         return false;

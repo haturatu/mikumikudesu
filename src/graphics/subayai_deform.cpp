@@ -336,16 +336,17 @@ void NativeDeformRuntime::record(CommandList& commands, const NativeDeformUpload
 
     const auto slot = currentSlot();
     auto& resources = resources_[slot];
-    if (uploadedTopologyGenerations_[slot] != topologyGeneration) {
+    const bool topologyChanged = uploadedTopologyGenerations_[slot] != topologyGeneration;
+    if (topologyChanged) {
         commands.uploadBufferEx(resources.baseVertices, std::as_bytes(upload.baseVertices), 0);
         commands.uploadBufferEx(resources.morphDeltas, std::as_bytes(upload.morphDeltas), 0);
         commands.uploadBufferEx(resources.indices, std::as_bytes(upload.indices), 0);
         uploadedTopologyGenerations_[slot] = topologyGeneration;
     }
     // Host-skinned/soft-body vertices are dynamic even when topology is stable.
-    if (uploadedTopologyGenerations_[slot] == topologyGeneration &&
-        std::ranges::any_of(upload.baseVertices,[](const auto& vertex) { return vertex.gpuSkinning == 0; }))
-        commands.uploadBufferEx(resources.baseVertices,std::as_bytes(upload.baseVertices),0);
+    if (!topologyChanged &&
+        std::ranges::any_of(upload.baseVertices, [](const auto& vertex) { return vertex.gpuSkinning == 0; }))
+        commands.uploadBufferEx(resources.baseVertices, std::as_bytes(upload.baseVertices), 0);
     if (!upload.bones.empty())
         commands.uploadBufferEx(resources.bones, std::as_bytes(upload.bones), 0);
     if (!upload.morphWeights.empty())
@@ -356,7 +357,7 @@ void NativeDeformRuntime::record(CommandList& commands, const NativeDeformUpload
     commands.pushConstantsEx(std::as_bytes(std::span<const NativeDeformPushConstants>(&constants_, 1)));
     commands.dispatch(workgroupCount_, 1, 1);
     skirtCollision_.record(*device_, commands, resources.deformedVertices, upload.skirtCollision,
-                           sizeof(NativeDeformedVertex), offsetof(NativeDeformedVertex,normal));
+                           sizeof(NativeDeformedVertex), offsetof(NativeDeformedVertex, normal));
 }
 
 } // namespace dayo::graphics

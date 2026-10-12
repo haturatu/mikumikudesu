@@ -44,11 +44,17 @@ class VulkanDevice final : public Device {
     [[nodiscard]] RendererKind activeRenderer() const noexcept override {
         return activeRenderer_;
     }
-    [[nodiscard]] handles::PipelineHandle skirtCollisionPipeline() const noexcept override { return skirtCollisionPipeline_; }
-    [[nodiscard]] handles::DescriptorSetLayoutHandle skirtCollisionDescriptorLayout() const noexcept override { return skirtCollisionDescriptorLayout_; }
+    [[nodiscard]] handles::PipelineHandle skirtCollisionPipeline() const noexcept override {
+        return skirtCollisionPipeline_;
+    }
+    [[nodiscard]] handles::DescriptorSetLayoutHandle skirtCollisionDescriptorLayout() const noexcept override {
+        return skirtCollisionDescriptorLayout_;
+    }
     void updatePreviewSkirtCollision(std::span<const core::SkirtVertex> vertices,
-        std::span<const std::array<std::uint32_t,4>> triangles, std::span<const std::uint32_t> adjacency,
-        std::span<const core::SkirtCapsule> capsules, std::uint64_t historyGeneration) override;
+                                     std::span<const std::array<std::uint32_t, 4>> triangles,
+                                     std::span<const std::uint32_t> adjacency,
+                                     std::span<const core::SkirtCapsule> capsules,
+                                     std::uint64_t historyGeneration) override;
     [[nodiscard]] handles::PipelineHandle nativeDeformPipeline() const noexcept override {
         return nativeDeformPipeline_;
     }
@@ -93,7 +99,9 @@ class VulkanDevice final : public Device {
     void setPreviewViewportExtent(const RenderTargetDesc& target) override;
     [[nodiscard]] PreviewViewport previewViewport() const noexcept override;
     // Caller waits for the frame fence before requesting diagnostics.
-    [[nodiscard]] core::SkirtCollisionStats previewSkirtCollisionStats() const { return previewSkirtCollision_.readStats(); }
+    [[nodiscard]] core::SkirtCollisionStats previewSkirtCollisionStats() const {
+        return previewSkirtCollision_.readStats();
+    }
     [[nodiscard]] std::vector<PreviewDeformedVertex> readbackPreviewDeformedVertices();
     [[nodiscard]] std::uint64_t previewGpuNanoseconds() const noexcept override {
         return previewGpuNanoseconds_;

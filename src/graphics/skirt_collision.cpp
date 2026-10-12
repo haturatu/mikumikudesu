@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 
 namespace dayo::graphics {
 DescriptorSetLayoutDesc skirtCollisionDescriptorLayout() {
@@ -56,7 +57,7 @@ void SkirtCollisionRuntime::record(Device& device, CommandList& commands, handle
     if (upload.vertices.empty() || upload.capsules.empty())
         return;
     if (!output.valid() || (vertexStride != 36 && vertexStride != 48) || normalOffset + 12 > vertexStride ||
-        upload.vertices.size() > std::numeric_limits<std::uint32_t>::max() || upload.iterations > 16)
+        upload.vertices.size() > std::numeric_limits<std::uint32_t>::max() || upload.iterations > 64)
         throw std::invalid_argument("invalid skirt collision upload");
     const std::array<std::size_t, 4> shape{upload.vertices.size(), upload.triangles.size(), upload.adjacency.size(),
                                            upload.capsules.size()};
@@ -94,14 +95,14 @@ void SkirtCollisionRuntime::record(Device& device, CommandList& commands, handle
     if (slot.output != output) {
         if (slot.set.valid())
             device.destroyDescriptorSetEx(slot.set);
-        const std::array<DescriptorBindingEx, 8> bindings{{{0, 0, output},
-                                                           {1, 0, slot.buffers[0]},
-                                                           {2, 0, slot.buffers[1]},
-                                                           {3, 0, slot.buffers[2]},
-                                                           {4, 0, slot.buffers[3]},
-                                                           {5, 0, slot.buffers[4]},
-                                                           {6, 0, history_},
-                                                           {7, 0, slot.buffers[5]}}};
+        const std::array<DescriptorBindingEx, 8> bindings{{{.slot = 0, .buffer = output, .mipLevel = {}},
+                                                           {.slot = 1, .buffer = slot.buffers[0], .mipLevel = {}},
+                                                           {.slot = 2, .buffer = slot.buffers[1], .mipLevel = {}},
+                                                           {.slot = 3, .buffer = slot.buffers[2], .mipLevel = {}},
+                                                           {.slot = 4, .buffer = slot.buffers[3], .mipLevel = {}},
+                                                           {.slot = 5, .buffer = slot.buffers[4], .mipLevel = {}},
+                                                           {.slot = 6, .buffer = history_, .mipLevel = {}},
+                                                           {.slot = 7, .buffer = slot.buffers[5], .mipLevel = {}}}};
         slot.set = device.allocateDescriptorSetEx(device.skirtCollisionDescriptorLayout(), bindings);
         slot.output = output;
     }
@@ -121,8 +122,8 @@ void SkirtCollisionRuntime::record(Device& device, CommandList& commands, handle
         commands.memoryBarrierEx();
     };
     dispatch();
-    constants.phase = 1;
     for (std::uint32_t i = 0; i < upload.iterations; ++i) {
+        constants.phase = i < std::min(6U, upload.iterations / 2) ? 1U : 3U;
         dispatch();
         std::swap(constants.sourceSlice, constants.destinationSlice);
     }

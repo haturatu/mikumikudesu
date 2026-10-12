@@ -98,7 +98,8 @@ SkirtCollisionTopology identifySkirtCollision(const PmxModel& model) {
             if (model.indices[i] < influence.size() && influence[model.indices[i]] > .2F)
                 ++weighted;
         const bool selected = skirtName(material.name) || skirtName(material.englishName) ||
-                              (!hasNamedMaterial && end > first && static_cast<double>(weighted) / static_cast<double>(end - first) > .15);
+                              (!hasNamedMaterial && end > first &&
+                               static_cast<double>(weighted) / static_cast<double>(end - first) > .15);
         if (selected) {
             for (auto i = first; i + 2 < end; i += 3) {
                 std::array<std::uint32_t, 4> triangle{};
@@ -113,7 +114,7 @@ SkirtCollisionTopology identifySkirtCollision(const PmxModel& model) {
                         lookup[vertex] = static_cast<std::uint32_t>(result.vertices.size());
                         SkirtVertex entry;
                         entry.vertex = vertex;
-                        entry.mobility = std::clamp(.1F + influence[vertex], .1F, 1.0F);
+                        entry.mobility = std::clamp(.25F + .75F * influence[vertex], .25F, 1.0F);
                         entry.capsuleCount = static_cast<std::uint32_t>(result.legBodies.size());
                         result.vertices.push_back(entry);
                         adjacency.emplace_back();
@@ -143,6 +144,16 @@ std::vector<SkirtCapsule> makeSkirtCapsules(const PmxModel& model, const SkirtCo
                                             PreviewNormalization normalization,
                                             std::span<const mmd::PhysicsTransform> previous) {
     std::vector<SkirtCapsule> result;
+    Float4 torsoRotation{0, 0, 0, 1};
+    float torsoX = 0;
+    for (std::size_t b = 0; b < model.bones.size(); ++b) {
+        if (model.bones[b].name == "下半身" || lower(model.bones[b].englishName) == "lower body") {
+            torsoX = model.bones[b].position[0];
+            if (b < bones.size())
+                torsoRotation = bones[b].rotation;
+            break;
+        }
+    }
     for (std::size_t i = 0; i < topology.legBodies.size(); ++i) {
         const auto index = topology.legBodies[i];
         const auto& source = model.rigidBodies[index];
@@ -169,7 +180,31 @@ std::vector<SkirtCapsule> makeSkirtCapsules(const PmxModel& model, const SkirtCo
         };
         const auto old = i < previous.size() ? previous[i] : pose;
         const auto currentEnds = endpoints(pose);
-        const auto previousEnds = endpoints(old);
+        auto previousEnds = endpoints(old);
+        const float side = source.position[0] < torsoX ? -1.0F : 1.0F;
+        auto escape = rotate(torsoRotation, {side * .25F, 0, 1});
+        const auto axis = rotate(pose.rotation, {0, 1, 0});
+        float axial = 0;
+        for (std::size_t c = 0; c < 3; ++c)
+            axial += escape[c] * axis[c];
+        for (std::size_t c = 0; c < 3; ++c)
+            escape[c] -= axis[c] * axial;
+        float l1 = std::abs(escape[0]) + std::abs(escape[1]) + std::abs(escape[2]);
+        if (l1 < 1e-5F) {
+            escape = std::abs(axis[1]) < .9F ? Float3{-axis[2], 0, axis[0]} : Float3{0, axis[2], -axis[1]};
+            l1 = std::abs(escape[0]) + std::abs(escape[1]) + std::abs(escape[2]);
+        }
+        for (auto& c : escape)
+            c /= l1;
+        float ex = escape[0], ey = escape[1];
+        if (escape[2] < 0) {
+            ex = (1 - std::abs(escape[1])) * (escape[0] < 0 ? -1 : 1);
+            ey = (1 - std::abs(escape[0])) * (escape[1] < 0 ? -1 : 1);
+        }
+        // The endpoint history needs only xyz. Its spare w components hold
+        // an octahedral normal for coherent recovery of a trapped panel.
+        previousEnds[0][3] = ex;
+        previousEnds[1][3] = ey;
         auto inverse = old.rotation;
         for (std::size_t c = 0; c < 3; ++c)
             inverse[c] = -inverse[c];

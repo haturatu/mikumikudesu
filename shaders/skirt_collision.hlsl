@@ -68,7 +68,7 @@ void SkirtCollision(uint3 dispatch : SV_DispatchThreadID) {
         return;
     }
     float3 p=position(i);
-    if (collision.phase==1) {
+    if (collision.phase==1 || collision.phase==3) {
         float3 correction=0;
         float3 smooth=0;
         float contributions=0;
@@ -76,12 +76,30 @@ void SkirtCollision(uint3 dispatch : SV_DispatchThreadID) {
             uint3 tri=triangles[adjacency[v.firstTriangle+t]].xyz;
             float3 a=position(tri.x),b=position(tri.y),c=position(tri.z);
             float totalMobility=vertices[tri.x].mobility+vertices[tri.y].mobility+vertices[tri.z].mobility;
-            float3 fallback=cross(b-a,c-a);
-            float3 authored=asfloat(outputVertices.Load3(address+collision.normalOffset));
-            if (dot(fallback,authored)<0) fallback=-fallback;
+            float3 fallback=float3(0,0,1);
+            if (collision.phase==1) {
+                fallback=cross(b-a,c-a);
+                float3 authored=asfloat(outputVertices.Load3(address+collision.normalOffset));
+                if (dot(fallback,authored)<0) fallback=-fallback;
+            }
             [loop] for (uint cap=0;cap<v.capsuleCount;++cap) {
                 SkirtCapsule capsule=capsules[v.capsuleStart+cap];
-                float4 contact=skirtTriangleContact(a,b,c,capsule,fallback);
+                if (collision.phase==1 && collision.resetHistory==0) {
+                    float3 oldCenter=(history[tri.x].xyz+history[tri.y].xyz+history[tri.z].xyz)/3;
+                    float3 oldRadial=oldCenter-skirtNearest(oldCenter,capsule.previousA.xyz,capsule.previousB.xyz);
+                    float3 oldNormal=oldCenter-skirtNearest(oldCenter,capsule.aRadius.xyz,capsule.bMargin.xyz);
+                    oldNormal=skirtUnit(oldNormal,skirtRotate(capsule.rotationDelta,oldRadial));
+                    fallback=skirtUnit(oldNormal,fallback);
+                }
+                float4 contact;
+                if (collision.phase==3) {
+                    contact=skirtTriangleContact(a,b,c,capsule,fallback);
+                    if (contact.w>capsule.bMargin.w)
+                        contact=skirtSupportPlane(a,b,c,capsule,skirtEscapeNormal(capsule));
+                    else contact=0;
+                } else {
+                    contact=skirtTriangleConstraint(a,b,c,capsule,fallback,collision.resetHistory==0);
+                }
                 if (contact.w>1e-6) {
                     correction+=contact.xyz*contact.w*(3*v.mobility/max(totalMobility,1e-6));
                     contributions+=1;
@@ -93,15 +111,27 @@ void SkirtCollision(uint3 dispatch : SV_DispatchThreadID) {
         }
         if (contributions>0)
             p+=correction/contributions;
-        if (v.triangleCount>0) {
+        if (collision.phase==1 && v.triangleCount>0) {
             float3 own=p-scratch[2*collision.vertexCount+i].xyz;
             p+=.1*v.mobility*(smooth/(3*v.triangleCount)-own);
         }
-        p=project(i,p,true);
+        if (collision.phase==1) p=project(i,p,true);
+        else {
+            float3 authored=asfloat(outputVertices.Load3(address+collision.normalOffset));
+            [loop] for (uint cap=0;cap<v.capsuleCount;++cap) {
+                SkirtCapsule capsule=capsules[v.capsuleStart+cap];
+                if (skirtPenetration(p,capsule)>capsule.bMargin.w) {
+                    float3 n=skirtEscapeNormal(capsule);
+                    float support=max(dot(capsule.aRadius.xyz,n),dot(capsule.bMargin.xyz,n))+
+                        capsule.aRadius.w+capsule.bMargin.w;
+                    p+=n*max(0,support-dot(p,n));
+                } else p=skirtProject(p,capsule,authored,0,false,1);
+            }
+        }
         // Limit the total displacement too, and expose residual penetration.
         float limit=0;
         [loop] for (uint cap=0;cap<v.capsuleCount;++cap)
-            limit=max(limit,capsules[v.capsuleStart+cap].aRadius.w*2);
+            limit=max(limit,capsules[v.capsuleStart+cap].aRadius.w*6);
         float3 initial=scratch[2*collision.vertexCount+i].xyz;
         float3 delta=p-initial;
         p=initial+delta*min(1,limit/max(length(delta),1e-8));

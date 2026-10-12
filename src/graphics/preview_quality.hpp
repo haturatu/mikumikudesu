@@ -8,6 +8,7 @@ struct VulkanOptions {
     PreviewQuality quality{PreviewQuality::automatic};
     PresentMode present{PresentMode::fifo};
     bool asyncCompute{};
+    std::uint32_t skirtCollisionIterations{32};
 };
 struct PreviewQualitySettings {
     std::uint32_t shadowSize{2048};

@@ -17,6 +17,12 @@ float3 skirtUnit(float3 v, float3 fallback) {
 float3 skirtRotate(float4 q, float3 p) {
     return p+2*cross(q.xyz,cross(q.xyz,p)+q.w*p);
 }
+float3 skirtEscapeNormal(SkirtCapsule capsule) {
+    float2 oct=float2(capsule.previousA.w,capsule.previousB.w);
+    float3 n=float3(oct,1-abs(oct.x)-abs(oct.y));
+    if (n.z<0) n.xy=(1-abs(n.yx))*float2(n.x<0 ? -1:1,n.y<0 ? -1:1);
+    return skirtUnit(n,float3(0,0,1));
+}
 float skirtPenetration(float3 p, SkirtCapsule capsule) {
     return max(0,capsule.aRadius.w+capsule.bMargin.w-length(p-skirtNearest(p,capsule.aRadius.xyz,capsule.bMargin.xyz)));
 }
@@ -28,7 +34,8 @@ float3 skirtProject(float3 p, SkirtCapsule capsule, float3 fallback, float3 prev
     bool crossed=false;
     if (history) {
         float3 oldDelta=previous-skirtNearest(previous,capsule.previousA.xyz,capsule.previousB.xyz);
-        float3 oldNormal=skirtUnit(skirtRotate(capsule.rotationDelta,oldDelta),normal);
+        float3 transported=previous-skirtNearest(previous,capsule.aRadius.xyz,capsule.bMargin.xyz);
+        float3 oldNormal=skirtUnit(transported,skirtUnit(skirtRotate(capsule.rotationDelta,oldDelta),normal));
         crossed=dot(oldNormal,delta)<0 && length(oldDelta)<radius*1.5 && length(delta)<radius*1.5;
         if (crossed || length(delta)<1e-6)
             normal=oldNormal;
@@ -70,6 +77,9 @@ void skirtCloser(float3 p,float3 q,inout float3 delta,inout float distanceSquare
 }
 float4 skirtTriangleContact(float3 a,float3 b,float3 c,SkirtCapsule capsule,float3 fallback) {
     float3 start=capsule.aRadius.xyz,end=capsule.bMargin.xyz;
+    float radius=capsule.aRadius.w+capsule.bMargin.w;
+    if (any(min(a,min(b,c))>max(start,end)+radius) || any(max(a,max(b,c))<min(start,end)-radius))
+        return 0;
     float3 delta=skirtTrianglePoint(start,a,b,c)-start;
     float distanceSquared=dot(delta,delta);
     skirtCloser(skirtTrianglePoint(end,a,b,c),end,delta,distanceSquared);
@@ -90,5 +100,30 @@ float4 skirtTriangleContact(float3 a,float3 b,float3 c,SkirtCapsule capsule,floa
     }
     float depth=max(0,capsule.aRadius.w+capsule.bMargin.w-sqrt(distanceSquared));
     return float4(skirtUnit(delta,skirtUnit(fallback,float3(0,0,1))),depth);
+}
+float4 skirtSupportPlane(float3 a,float3 b,float3 c,SkirtCapsule capsule,float3 normal) {
+    float support=max(dot(capsule.aRadius.xyz,normal),dot(capsule.bMargin.xyz,normal))+
+        capsule.aRadius.w+capsule.bMargin.w;
+    float minimum=min(dot(a,normal),min(dot(b,normal),dot(c,normal)));
+    return float4(normal,max(0,support-minimum));
+}
+float4 skirtTriangleConstraint(float3 a,float3 b,float3 c,SkirtCapsule capsule,float3 fallback,bool temporal) {
+    float4 contact=skirtTriangleContact(a,b,c,capsule,fallback);
+    if (contact.w<=1e-6) return contact;
+    float3 center=(a+b+c)/3;
+    float3 radial=center-skirtNearest(center,capsule.aRadius.xyz,capsule.bMargin.xyz);
+    // A supporting plane clears the complete triangle, including a capsule
+    // axis crossing. A distance-only correction can leave a chord through
+    // the capsule even after every vertex reaches its surface.
+    float3 normal=temporal ? skirtUnit(fallback,contact.xyz):contact.xyz;
+    if (!temporal && length(radial)>1e-5 && dot(normal,radial)<0) normal=-normal;
+    float3 axis=capsule.bMargin.xyz-capsule.aRadius.xyz;
+    if (contact.w>capsule.aRadius.w*.25 && dot(axis,axis)>1e-10) {
+        axis=normalize(axis);
+        float3 perpendicular=normal-axis*dot(normal,axis);
+        float3 basis=abs(axis.y)<.9 ? float3(0,1,0):float3(1,0,0);
+        normal=skirtUnit(perpendicular,normalize(cross(axis,basis)));
+    }
+    return skirtSupportPlane(a,b,c,capsule,normal);
 }
 #endif

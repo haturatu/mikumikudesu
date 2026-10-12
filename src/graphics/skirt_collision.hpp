@@ -11,7 +11,7 @@ struct SkirtCollisionUpload {
     std::span<const std::uint32_t> adjacency;
     std::span<const core::SkirtCapsule> capsules;
     std::uint64_t historyGeneration{1};
-    std::uint32_t iterations{6};
+    std::uint32_t iterations{32};
 };
 
 struct SkirtCollisionPushConstants {
