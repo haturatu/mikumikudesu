@@ -14,7 +14,7 @@ BLAS を更新します。既存の剛体・ジョイント・ボーンへの物
 - `MmdPhysics::stepStats()` は実際のステップ数、動作予算の超過、PMX剛体IDと接触深度を返します。
   接触数は全サブステップの接触点数で、同じ剛体ペアが繰り返し含まれます。
 
-libmmd の変更: <https://github.com/haturatu/libmmd/pull/15>
+libmmd はマージ済みの物理修正を含む [v0.2.7](https://github.com/haturatu/libmmd/tree/v0.2.7) を参照します。
 
 ## P1: 表面とカプセルの補正
 
