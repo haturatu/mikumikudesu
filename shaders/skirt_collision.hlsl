@@ -60,16 +60,18 @@ void fitCapsule(uint body,uint lane) {
         if (lane<stride) fitRadiusSquared[lane]=max(fitRadiusSquared[lane],fitRadiusSquared[lane+stride]);
         GroupMemoryBarrierWithGroupSync();
     }
-    float radius=sqrt(fitRadiusSquared[0])+(range.y>0 ? capsule.bMargin.w*.25:0);
+    float clearance=range.y>0 ? capsule.bMargin.w*.25:0;
+    float envelopeRadius=sqrt(fitRadiusSquared[0])+clearance;
+    float radius=envelopeRadius+clearance;
     float2 ends=float2(0,length(capsule.bMargin.xyz-origin));
     [loop] for (uint vertex=lane;vertex<range.y;vertex+=64) {
         float3 p=asfloat(outputVertices.Load3(legVertices[range.x+vertex]*collision.vertexStride))-origin;
         if (all(isfinite(p))) {
             float z=dot(p,axis);
             float3 radial=p-axis*z;
-            // Fit the centerline against the unpadded envelope so the extra
-            // radius remains a true clearance at the end caps too.
-            float reach=sqrt(max(0,fitRadiusSquared[0]-dot(radial,radial)));
+            // A padded envelope avoids the square-root singularity at the
+            // widest leg vertex. The second padding remains end-cap clearance.
+            float reach=sqrt(max(0,envelopeRadius*envelopeRadius-dot(radial,radial)));
             ends.x=min(ends.x,z+reach);
             ends.y=max(ends.y,z-reach);
         }

@@ -494,13 +494,16 @@ void modelGpuParity(graphics::VulkanDevice& device, const core::PmxModel& model,
         device.waitIdle();
         device.setNativeFrameRecorder({});
         const auto bytes = device.readbackBufferEx(buffers[4], 0, sizes[4]);
+        float nativeDifference = 0;
         for (const auto v : topology.vertices) {
             graphics::NativeDeformedVertex native;
             std::memcpy(&native, bytes.data() + v.vertex * sizeof(native), sizeof(native));
             for (std::size_t axis = 0; axis < 3; ++axis)
-                require(std::abs(native.position[axis] - preview[v.vertex].position[axis]) < 2e-3F,
-                        "YYB Native/Preview GPU skinning plus collision diverged");
+                nativeDifference =
+                    std::max(nativeDifference, std::abs(native.position[axis] - preview[v.vertex].position[axis]));
         }
+        std::cout << "YYB Native/Preview maximum position difference=" << nativeDifference << '\n';
+        require(nativeDifference < 2e-3F, "YYB Native/Preview GPU skinning plus collision diverged");
         correction.reset();
         device.destroyDescriptorSetEx(set);
         for (const auto buffer : buffers)
