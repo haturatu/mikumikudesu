@@ -269,6 +269,7 @@ bool NativeDeformRuntime::prepare(Device& device, const NativeDeformUpload& uplo
 }
 
 void NativeDeformRuntime::reset() noexcept {
+    skirtCollision_.reset();
     Device* device = device_;
     if (device != nullptr) {
         try {
@@ -341,6 +342,10 @@ void NativeDeformRuntime::record(CommandList& commands, const NativeDeformUpload
         commands.uploadBufferEx(resources.indices, std::as_bytes(upload.indices), 0);
         uploadedTopologyGenerations_[slot] = topologyGeneration;
     }
+    // Host-skinned/soft-body vertices are dynamic even when topology is stable.
+    if (uploadedTopologyGenerations_[slot] == topologyGeneration &&
+        std::ranges::any_of(upload.baseVertices,[](const auto& vertex) { return vertex.gpuSkinning == 0; }))
+        commands.uploadBufferEx(resources.baseVertices,std::as_bytes(upload.baseVertices),0);
     if (!upload.bones.empty())
         commands.uploadBufferEx(resources.bones, std::as_bytes(upload.bones), 0);
     if (!upload.morphWeights.empty())
@@ -350,6 +355,8 @@ void NativeDeformRuntime::record(CommandList& commands, const NativeDeformUpload
     commands.bindDescriptorSetEx(resources.descriptorSet);
     commands.pushConstantsEx(std::as_bytes(std::span<const NativeDeformPushConstants>(&constants_, 1)));
     commands.dispatch(workgroupCount_, 1, 1);
+    skirtCollision_.record(*device_, commands, resources.deformedVertices, upload.skirtCollision,
+                           sizeof(NativeDeformedVertex), offsetof(NativeDeformedVertex,normal));
 }
 
 } // namespace dayo::graphics
