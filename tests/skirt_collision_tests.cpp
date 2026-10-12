@@ -161,6 +161,39 @@ void topologyFixtures() {
     require(std::abs(capsules[0].aRadius[0] - (-2)) < 1e-4F && std::abs(capsules[0].bMargin[0] - (-6)) < 1e-4F,
             "rotated capsule did not use local Y axis or model normalization");
     require(std::abs(capsules[0].aRadius[3] - 2) < 1e-4F, "capsule radius was not normalized");
+    auto family = model;
+    family.bones.resize(3);
+    family.bones[1].parent = 0;
+    family.rigidBodies[0].bone = 2;
+    family.rigidBodies[1] = leg;
+    auto knee = leg;
+    knee.name = "右ひざ";
+    knee.bone = 1;
+    family.rigidBodies.push_back(knee);
+    const auto linked = core::identifySkirtCollision(family);
+    core::MmdPhysics linkedPhysics(family);
+    if (linkedPhysics.available()) {
+        const float half = std::sqrt(.5F);
+        linkedPhysics.teleportBody(1, {{}, {half, 0, 0, half}});
+        linkedPhysics.teleportBody(2, {{}, {0, 0, 0, 1}});
+        const auto paired = core::makeSkirtCapsules(family, linked, linkedPhysics, {}, {});
+        require(paired.size() == 2, "leg family extraction lost knee capsule");
+        for (std::size_t axis = 0; axis < 4; ++axis)
+            require(std::abs(paired[0].surfaceRotation[axis] - paired[1].surfaceRotation[axis]) < 1e-5F,
+                    "leg bend changed the waist-attached cloth reference");
+        require(std::abs(paired[0].surfaceRotation[0]) < 1e-5F,
+                "leg rotation dragged the cloth reference off the waist");
+        family.bones[2].name = "下半身";
+        std::vector<core::AnimatedModelFrame::BoneTransform> bonePose(3);
+        bonePose[2].rotation = {0, half, 0, half};
+        const auto turned = core::makeSkirtCapsules(family, linked, linkedPhysics, bonePose, {});
+        for (const auto& capsule : turned)
+            for (std::size_t axis = 0; axis < 4; ++axis)
+                require(std::abs(capsule.surfaceRotation[axis] - bonePose[2].rotation[axis]) < 1e-5F,
+                        "cloth reference did not follow waist rotation");
+        require(std::abs(turned[0].bMargin[2] - turned[0].aRadius[2]) > 1,
+                "waist reference overwrote the rotated leg axis");
+    }
 }
 void gpuFixtures(graphics::VulkanDevice& device) {
     std::vector<core::PmxVertex> points(4);
@@ -223,6 +256,80 @@ void gpuFixtures(graphics::VulkanDevice& device) {
     static_cast<void>(preview.run(points, upload));
     std::cout
         << "GPU collision fixtures passed (vertex, triangle, history, seek, degenerate geometry, layout parity)\n";
+}
+void outwardSideFixtures(graphics::VulkanDevice& device) {
+    std::vector<core::PmxVertex> points(3);
+    const std::vector<core::SkirtVertex> vertices{{0, 0, 1, 0, 1, 1, {0x7fff7fffU, 1}},
+                                                  {1, 1, 1, 0, 1, 1, {0x7fff7fffU, 1}},
+                                                  {2, 2, 1, 0, 1, 1, {0x7fff7fffU, 1}}};
+    const std::vector<std::array<std::uint32_t, 4>> triangles{{0, 1, 2, 0}};
+    const std::vector<std::uint32_t> adjacency{0, 0, 0};
+    std::vector<core::SkirtCapsule> capsules{{{0, 0, 0, 1}, {0, 0, 0, .03F}, {0, 0, 0, 0}, {0, 0, 0, 0}}};
+    graphics::SkirtCollisionUpload upload{vertices, triangles, adjacency, capsules, 1, 32};
+    GpuFixture preview(device, points.size(), false), native(device, points.size(), true);
+    for (int rotated = 0; rotated < 2; ++rotated) {
+        const float half = std::sqrt(.5F);
+        capsules[0].surfaceRotation = rotated != 0 ? core::Float4{half, 0, 0, half} : core::Float4{0, 0, 0, 1};
+        for (float z : {-.1F, 1.1F, 1.45F}) {
+            points[0].position = {2, 0, z};
+            points[1].position = {-1, std::numbers::sqrt3_v<float>, z};
+            points[2].position = {-1, -std::numbers::sqrt3_v<float>, z};
+            for (auto& p : points) {
+                if (z > 0) {
+                    p.position[0] *= .05F;
+                    p.position[1] *= .05F;
+                }
+                p.normal = {0, 0, -1};
+                if (rotated != 0) {
+                    p.position = {p.position[0], -p.position[2], p.position[1]};
+                    p.normal = {0, 1, 0};
+                }
+            }
+            ++upload.historyGeneration;
+            const auto a = preview.run(points, upload), b = native.run(points, upload);
+            for (std::size_t i = 0; i < points.size(); ++i) {
+                const float outward = rotated != 0 ? a.positions[i][1] : -a.positions[i][2];
+                if (outward <= 1.0F)
+                    std::cerr << "Side fixture rotated=" << rotated << " z=" << z << " vertex=" << i
+                              << " outward=" << outward << '\n';
+                require(outward > 1.0F, "cloth escaped to the wrong side despite zero SDF penetration");
+                for (std::size_t axis = 0; axis < 3; ++axis)
+                    require(std::abs(a.positions[i][axis] - b.positions[i][axis]) < 1e-6F,
+                            "oriented collision layouts diverged");
+            }
+            require(a.stats.maxMeshPenetration < .031F, "outward triangle recovery retained body penetration");
+        }
+    }
+    // Triangle/capsule predicates must preserve their result when model
+    // normalization makes an otherwise valid triangle very small.
+    for (float scale : {1.0F, 1e-4F}) {
+        capsules[0] = {{0, 0, 0, scale}, {0, 0, 0, .03F * scale}, {}, {}};
+        points[0].position = {2 * scale, 0, 0};
+        points[1].position = {-scale, std::numbers::sqrt3_v<float> * scale, 0};
+        points[2].position = {-scale, -std::numbers::sqrt3_v<float> * scale, 0};
+        ++upload.historyGeneration;
+        upload.iterations = 0;
+        const auto raw = preview.run(points, upload);
+        require(raw.stats.maxMeshPenetration / scale > 1.0F, "normalization hid triangle-interior penetration");
+        ++upload.historyGeneration;
+        upload.iterations = 32;
+        const auto corrected = preview.run(points, upload);
+        require(corrected.stats.maxMeshPenetration / scale < .031F,
+                "scaled triangle-interior recovery retained penetration");
+    }
+    capsules[0] = {{0, -1, 0, 1}, {0, 1, 0, .03F}, {0, -1, 0, 0}, {0, 1, 0, 0}};
+    points[0].position = {.02F, -1.5F, .10F};
+    points[1].position = {-.02F, -1.52F, .08F};
+    points[2].position = {0, -1.49F, .12F};
+    ++upload.historyGeneration;
+    const auto endCap = preview.run(points, upload);
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        require(endCap.positions[i][1] < -1.5F, "end-cap recovery lifted cloth over the far end of the leg");
+        require(endCap.positions[i][2] <= points[i].position[2] + 1e-5F,
+                "end-cap recovery moved cloth toward the back");
+    }
+    require(endCap.stats.maxMeshPenetration < .031F, "end-cap contact retained body penetration");
+    std::cout << "Outward-side fixtures passed (deep contact, wrong-side surface, rotated leg, seek, layout parity)\n";
 }
 void previewIntegration(graphics::VulkanDevice& device) {
     std::vector<graphics::PreviewVertex> vertices(4);
@@ -464,12 +571,22 @@ void modelGpuParity(graphics::VulkanDevice& device, const core::PmxModel& model,
     static_cast<void>(device.renderToImage({16, 16}));
     const auto preview = device.readbackPreviewDeformedVertices();
     float maximumDifference = 0;
+    std::uint32_t worstVertex = 0;
     for (const auto v : topology.vertices)
-        for (std::size_t axis = 0; axis < 3; ++axis)
-            maximumDifference = std::max(
-                maximumDifference, std::abs(preview[v.vertex].position[axis] - expected.positions[v.vertex][axis]));
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            const float difference = std::abs(preview[v.vertex].position[axis] - expected.positions[v.vertex][axis]);
+            if (difference > maximumDifference) {
+                maximumDifference = difference;
+                worstVertex = v.vertex;
+            }
+        }
     if (maximumDifference >= 2e-3F) {
-        std::cerr << "Corrected CPU/Preview GPU maximum difference: " << maximumDifference << '\n';
+        std::cerr << "Corrected CPU/Preview GPU maximum difference: " << maximumDifference << " vertex=" << worstVertex
+                  << '\n';
+        for (std::size_t axis = 0; axis < 3; ++axis)
+            std::cerr << " axis=" << axis << " CPU/GPU raw=" << cpu.vertices[worstVertex].position[axis] << '/'
+                      << raw[worstVertex].position[axis] << " corrected=" << expected.positions[worstVertex][axis]
+                      << '/' << preview[worstVertex].position[axis] << '\n';
         const auto actualCapsules = device.readbackPreviewSkirtCapsules();
         for (std::size_t c = 0; c < actualCapsules.size(); ++c) {
             std::cerr << "Capsule " << c << " CPU/GPU radius " << expected.capsules[c].aRadius[3] << '/'
@@ -577,7 +694,7 @@ void modelRegression(graphics::VulkanDevice& device, const char* modelPath, cons
     const auto normalization = core::previewNormalization(model);
     std::ofstream csv(csvPath);
     csv << "frame,rigid_contacts,rigid_depth,raw_vertices,raw_triangles,raw_depth,vertices,triangles,depth,correction,"
-           "substeps\n";
+           "substeps,normalized_depth,normalized_position_difference\n";
     std::ofstream meshCsv(std::string(csvPath) + ".mesh.csv");
     meshCsv << "frame,vertex,mobility,raw_x,raw_y,raw_z,x,y,z\n";
     std::ofstream capsuleCsv(std::string(csvPath) + ".capsules.csv");
@@ -626,11 +743,22 @@ void modelRegression(graphics::VulkanDevice& device, const char* modelPath, cons
         normalizedUpload.capsules = normalizedCapsules;
         const auto normalized = normalizedPreview.run(normalizedVertices, normalizedUpload);
         const float normalizedDepth = normalized.stats.maxMeshPenetration / normalization.scale;
-        if (frame >= 115)
+        float normalizedDifference = 0;
+        for (const auto vertex : topology.vertices)
+            for (std::size_t axis = 0; axis < 3; ++axis) {
+                const float position =
+                    normalized.positions[vertex.vertex][axis] / normalization.scale + normalization.center[axis];
+                normalizedDifference =
+                    std::max(normalizedDifference, std::abs(position - a.positions[vertex.vertex][axis]));
+            }
+        if (normalizedDifference >= 2e-3F)
+            std::cerr << "Normalized/world maximum position difference=" << normalizedDifference << " frame=" << frame
+                      << '\n';
+        require(normalizedDifference < 2e-3F, "normalization changed corrected cloth geometry");
+        if (frame % 30 == 0 || frame == 123 || frame == 127 || frame == 140 || frame == 165)
             std::cout << "Normalized frame=" << frame << " scale=" << normalization.scale
                       << " depth in PMX units=" << normalizedDepth << " world depth=" << a.stats.maxMeshPenetration
                       << '\n';
-        require(normalizedDepth < .031F, "normalized render coordinates left skirt penetration");
         for (std::size_t leg = 0; leg < topology.legRanges.size(); ++leg) {
             const auto range = topology.legRanges[leg];
             for (std::size_t i = 0; i < range[1]; ++i)
@@ -642,7 +770,7 @@ void modelRegression(graphics::VulkanDevice& device, const char* modelPath, cons
             for (std::size_t axis = 0; axis < 3; ++axis)
                 require(std::abs(a.positions[vertex.vertex][axis] - b.positions[vertex.vertex][axis]) < 1e-5F,
                         "YYB Preview/Native corrected positions diverged");
-        if (frame == 123 || a.stats.maxMeshPenetration > .05F) {
+        if (frame == 123 || a.stats.maxMeshPenetration > .031F || normalizedDepth >= .031F) {
             for (const auto v : topology.vertices) {
                 meshCsv << frame << ',' << v.vertex << ',' << v.mobility;
                 for (float x : animated.vertices[v.vertex].position)
@@ -662,6 +790,10 @@ void modelRegression(graphics::VulkanDevice& device, const char* modelPath, cons
         }
         meshCsv.flush();
         capsuleCsv.flush();
+        if (normalizedDepth >= .031F)
+            std::cerr << "Remaining collision frame=" << frame << " depth=" << a.stats.maxMeshPenetration
+                      << " normalized depth=" << normalizedDepth << '\n';
+        require(normalizedDepth < .031F, "normalized render coordinates left skirt penetration");
         if (iterations == 32 && (frame == 0 || frame == 115 || frame == 120 || frame == 127 || frame == 130 ||
                                  frame == 140 || frame == 150 || frame == 165 || frame == 348))
             modelGpuParity(device, model, animated, gpu, topology, capsules,
@@ -671,7 +803,8 @@ void modelRegression(graphics::VulkanDevice& device, const char* modelPath, cons
             << raw.stats.penetratingVertexCount << ',' << raw.stats.penetratingTriangleCount << ','
             << raw.stats.maxMeshPenetration << ',' << a.stats.penetratingVertexCount << ','
             << a.stats.penetratingTriangleCount << ',' << a.stats.maxMeshPenetration << ','
-            << a.stats.totalCorrectionDistance << ',' << physics.stepStats().substeps << '\n';
+            << a.stats.totalCorrectionDistance << ',' << physics.stepStats().substeps << ',' << normalizedDepth << ','
+            << normalizedDifference << '\n';
         worstBefore = std::max(worstBefore, raw.stats.maxMeshPenetration);
         worstAfter = std::max(worstAfter, a.stats.maxMeshPenetration);
         correction += a.stats.totalCorrectionDistance;
@@ -726,6 +859,7 @@ int main(int argc, char** argv) {
         options.asyncCompute = argc == 2 && std::string_view(argv[1]) == "--async-compute";
         dayo::graphics::VulkanDevice device(*window, true, options);
         gpuFixtures(device);
+        outwardSideFixtures(device);
         fittedCapsuleFixture(device);
         previewIntegration(device);
         nativeSkinningIntegration(device);
