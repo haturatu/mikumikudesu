@@ -12,6 +12,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <numbers>
 #include <numeric>
 #include <stdexcept>
 
@@ -165,8 +166,8 @@ void gpuFixtures(graphics::VulkanDevice& device) {
     require(a.positions[0][0] < -.5F, "seek retained stale collision history");
     // All vertices are outside, while the centroid is inside the sphere.
     points[0].position = {2, 0, 0};
-    points[1].position = {-1, 1.7320508F, 0};
-    points[2].position = {-1, -1.7320508F, 0};
+    points[1].position = {-1, std::numbers::sqrt3_v<float>, 0};
+    points[2].position = {-1, -std::numbers::sqrt3_v<float>, 0};
     for (auto& p : points)
         p.normal = {0, 0, 1};
     std::vector<core::SkirtCapsule> sphere{
@@ -445,11 +446,12 @@ void modelGpuParity(graphics::VulkanDevice& device, const core::PmxModel& model,
 
 void modelRegression(graphics::VulkanDevice& device, const char* modelPath, const char* motionPath,
                      const char* csvPath) {
-    const auto iterations = std::getenv("DAYO_SKIRT_ITERATIONS")
-                                ? static_cast<std::uint32_t>(std::stoi(std::getenv("DAYO_SKIRT_ITERATIONS")))
-                                : 32U;
-    const int firstFrame = std::getenv("DAYO_SKIRT_FIRST_FRAME") ? std::stoi(std::getenv("DAYO_SKIRT_FIRST_FRAME")) : 0;
-    const int lastFrame = std::getenv("DAYO_SKIRT_LAST_FRAME") ? std::stoi(std::getenv("DAYO_SKIRT_LAST_FRAME")) : 348;
+    const auto* iterationSetting = std::getenv("DAYO_SKIRT_ITERATIONS");
+    const auto* firstFrameSetting = std::getenv("DAYO_SKIRT_FIRST_FRAME");
+    const auto* lastFrameSetting = std::getenv("DAYO_SKIRT_LAST_FRAME");
+    const auto iterations = iterationSetting ? static_cast<std::uint32_t>(std::stoi(iterationSetting)) : 32U;
+    const int firstFrame = firstFrameSetting ? std::stoi(firstFrameSetting) : 0;
+    const int lastFrame = lastFrameSetting ? std::stoi(lastFrameSetting) : 348;
     const auto model = core::loadPmxModel(modelPath);
     const auto motion = core::loadVmd(motionPath);
     const auto topology = core::identifySkirtCollision(model);
@@ -530,9 +532,9 @@ void modelRegression(graphics::VulkanDevice& device, const char* modelPath, cons
             }
             for (std::size_t c = 0; c < capsules.size(); ++c) {
                 capsuleCsv << frame << ',' << c;
-                for (int axis = 0; axis < 3; ++axis)
+                for (std::size_t axis = 0; axis < 3; ++axis)
                     capsuleCsv << ',' << capsules[c].aRadius[axis];
-                for (int axis = 0; axis < 3; ++axis)
+                for (std::size_t axis = 0; axis < 3; ++axis)
                     capsuleCsv << ',' << capsules[c].bMargin[axis];
                 capsuleCsv << ',' << capsules[c].aRadius[3] << ',' << capsules[c].bMargin[3] << '\n';
             }
@@ -573,7 +575,7 @@ void modelRegression(graphics::VulkanDevice& device, const char* modelPath, cons
     std::ofstream timingCsv(std::string(csvPath) + ".timing.csv");
     timingCsv << "enabled,sample,gpu_ns\n";
     std::array<double, 2> medians{};
-    for (int enabled = 0; enabled < 2; ++enabled) {
+    for (std::size_t enabled = 0; enabled < 2; ++enabled) {
         std::vector<std::uint64_t> samples;
         for (int sample = 0; sample < 30; ++sample) {
             graphics::SkirtCollisionUpload timed;
