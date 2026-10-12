@@ -6,7 +6,7 @@ struct SkirtVertex {
     uint capsuleStart;
     float mobility;
     uint capsuleCount;
-    uint2 padding;
+    uint2 outwardNormal;
 };
 struct CollisionConstants {
     uint vertexCount;
@@ -97,6 +97,19 @@ void fitCapsule(uint body,uint lane) {
     }
 }
 
+float3 outwardNormal(uint i,SkirtCapsule capsule) {
+    uint2 encoded=vertices[i].outwardNormal;
+    if (encoded.y==0) return skirtEscapeNormal(capsule);
+    float2 oct=float2(int(encoded.x << 16) >> 16,int(encoded.x) >> 16)/32767.0;
+    float3 n=float3(oct,1-abs(oct.x)-abs(oct.y));
+    if (n.z<0) n.xy=(1-abs(n.yx))*float2(n.x<0 ? -1:1,n.y<0 ? -1:1);
+    n=skirtRotate(capsule.surfaceRotation,n);
+    return skirtUnit(n,skirtEscapeNormal(capsule));
+}
+float3 triangleOutward(uint3 tri,SkirtCapsule capsule) {
+    return skirtUnit(outwardNormal(tri.x,capsule)+outwardNormal(tri.y,capsule)+outwardNormal(tri.z,capsule),
+        skirtEscapeNormal(capsule));
+}
 float3 position(uint i) { return scratch[collision.sourceSlice*collision.vertexCount+i].xyz; }
 float3 project(uint i,float3 p,bool temporal) {
     SkirtVertex v=vertices[i];
@@ -104,9 +117,13 @@ float3 project(uint i,float3 p,bool temporal) {
     float3 previous=0;
     if (temporal && collision.resetHistory==0)
         previous=history[i].xyz;
-    [loop] for (uint c=0;c<v.capsuleCount;++c)
-        p=skirtProject(p,capsules[v.capsuleStart+c],normal,previous,
-            temporal && collision.resetHistory==0,v.mobility);
+    [loop] for (uint c=0;c<v.capsuleCount;++c) {
+        SkirtCapsule capsule=capsules[v.capsuleStart+c];
+        float3 outward=v.outwardNormal.y!=0 ? outwardNormal(i,capsule):normal;
+        p=skirtProject(p,capsule,outward,previous,
+            temporal && collision.resetHistory==0 && collision.phase!=3,
+            collision.phase==3 ? 1:v.mobility,v.outwardNormal.y!=0 && collision.phase!=3);
+    }
     return p;
 }
 float penetration(SkirtVertex v,float3 p) {
@@ -136,21 +153,29 @@ void SkirtCollision(uint3 dispatch : SV_DispatchThreadID,uint3 group : SV_GroupI
     if (collision.phase==1 || collision.phase==3) {
         float3 correction=0;
         float3 smooth=0;
-        // A fixed average keeps local constraints continuous when contacts disappear.
-        // Recovery uses the deepest incident contact per capsule so an isolated
-        // triangle does not lose its correction in that average.
+        // Local constraints use a fixed neighbor average. Recovery applies
+        // each incident supporting plane without diluting isolated contacts.
         if (collision.phase==3) {
             [loop] for (uint cap=0;cap<v.capsuleCount;++cap) {
                 SkirtCapsule capsule=capsules[v.capsuleStart+cap];
-                float depth=0;
+                float deep=0;
+                float3 coherent=0;
                 [loop] for (uint t=0;t<v.triangleCount;++t) {
                     uint3 tri=triangles[adjacency[v.firstTriangle+t]].xyz;
-                    depth=max(depth,skirtTriangleContact(position(tri.x),position(tri.y),position(tri.z),
-                        capsule,skirtEscapeNormal(capsule)).w);
+                    float3 reference=skirtRadialReference(triangleOutward(tri,capsule),capsule);
+                    float4 contact=skirtTriangleContact(position(tri.x),position(tri.y),position(tri.z),capsule,reference);
+                    float strength=saturate((contact.w-capsule.bMargin.w)/max(capsule.aRadius.w*.1,capsule.bMargin.w));
+                    float3 normal=v.outwardNormal.y!=0 ? skirtCapsuleNormal(contact.xyz,reference,capsule):reference;
+                    float4 plane=skirtSupportPlane(p,p,p,capsule,normal);
+                    p+=plane.xyz*plane.w*strength;
+                    float weight=max(0,contact.w-capsule.aRadius.w*.2);
+                    coherent+=reference*weight;
+                    deep=max(deep,contact.w);
                 }
-                float strength=saturate((depth-capsule.bMargin.w)/max(capsule.bMargin.w,1e-6));
-                float4 contact=skirtSupportPlane(p,p,p,capsule,skirtEscapeNormal(capsule));
-                correction+=contact.xyz*contact.w*strength;
+                float strength=saturate((deep/capsule.aRadius.w-.2)/.2);
+                float3 normal=skirtUnit(coherent,skirtRadialReference(outwardNormal(i,capsule),capsule));
+                float4 plane=skirtSupportPlane(p,p,p,capsule,normal);
+                p+=plane.xyz*plane.w*strength;
             }
         }
         [loop] for (uint t=0;collision.phase==1 && t<v.triangleCount;++t) {
@@ -165,18 +190,19 @@ void SkirtCollision(uint3 dispatch : SV_DispatchThreadID,uint3 group : SV_GroupI
             }
             [loop] for (uint cap=0;cap<v.capsuleCount;++cap) {
                 SkirtCapsule capsule=capsules[v.capsuleStart+cap];
-                if (collision.phase==1 && collision.resetHistory==0) {
+                if (v.outwardNormal.y!=0) fallback=skirtRadialReference(triangleOutward(tri,capsule),capsule);
+                if (collision.resetHistory==0 && v.outwardNormal.y==0) {
                     float3 oldCenter=(history[tri.x].xyz+history[tri.y].xyz+history[tri.z].xyz)/3;
                     float3 oldRadial=oldCenter-skirtNearest(oldCenter,capsule.previousA.xyz,capsule.previousB.xyz);
-                    float3 oldNormal=oldCenter-skirtNearest(oldCenter,capsule.aRadius.xyz,capsule.bMargin.xyz);
-                    oldNormal=skirtUnit(oldNormal,skirtRotate(capsule.rotationDelta,oldRadial));
+                    float3 oldNormal=skirtRotate(capsule.rotationDelta,oldRadial);
                     fallback=skirtUnit(oldNormal,fallback);
                 }
-                float4 contact=skirtTriangleConstraint(a,b,c,capsule,fallback,collision.resetHistory==0);
-                if (contact.w>1e-6) {
-                    contact.w=skirtSupportPlane(p,p,p,capsule,contact.xyz).w;
-                    correction+=contact.xyz*contact.w*(3*v.mobility/max(totalMobility,1e-6));
-                }
+                float4 contact=skirtTriangleContact(a,b,c,capsule,fallback);
+                float strength=saturate(contact.w/max(capsule.aRadius.w*.1,capsule.bMargin.w));
+                float3 direction=v.outwardNormal.y!=0 ? skirtCapsuleNormal(contact.xyz,fallback,capsule):
+                    skirtTriangleConstraint(a,b,c,capsule,fallback,collision.resetHistory==0).xyz;
+                float4 plane=skirtSupportPlane(p,p,p,capsule,direction);
+                correction+=plane.xyz*plane.w*strength*(3*v.mobility/max(totalMobility,1e-6));
             }
             smooth+=(a-scratch[2*collision.vertexCount+tri.x].xyz)+
                     (b-scratch[2*collision.vertexCount+tri.y].xyz)+
@@ -187,21 +213,7 @@ void SkirtCollision(uint3 dispatch : SV_DispatchThreadID,uint3 group : SV_GroupI
             float3 own=p-scratch[2*collision.vertexCount+i].xyz;
             p+=.1*v.mobility*(smooth/(3*v.triangleCount)-own);
         }
-        if (collision.phase==1) p=project(i,p,true);
-        else {
-            float3 authored=asfloat(outputVertices.Load3(address+collision.normalOffset));
-            [loop] for (uint cap=0;cap<v.capsuleCount;++cap) {
-                SkirtCapsule capsule=capsules[v.capsuleStart+cap];
-                if (skirtPenetration(p,capsule)>capsule.bMargin.w) {
-                    float strength=saturate((skirtPenetration(p,capsule)-capsule.bMargin.w)/
-                        max(capsule.bMargin.w,1e-6));
-                    float3 n=skirtEscapeNormal(capsule);
-                    float support=max(dot(capsule.aRadius.xyz,n),dot(capsule.bMargin.xyz,n))+
-                        capsule.aRadius.w+capsule.bMargin.w;
-                    p+=n*max(0,support-dot(p,n))*strength;
-                } else p=skirtProject(p,capsule,authored,0,false,1);
-            }
-        }
+        p=project(i,p,true);
         // Limit the total displacement too, and expose residual penetration.
         float limit=0;
         [loop] for (uint cap=0;cap<v.capsuleCount;++cap)

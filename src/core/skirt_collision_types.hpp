@@ -12,7 +12,8 @@ struct SkirtVertex {
     std::uint32_t capsuleStart{};
     float mobility{1};
     std::uint32_t capsuleCount{};
-    std::uint32_t padding[2]{};
+    // Packed SNORM16 octahedral waist-relative direction and validity flag.
+    std::uint32_t outwardNormal[2]{};
 };
 static_assert(sizeof(SkirtVertex) == 32);
 
@@ -23,8 +24,10 @@ struct SkirtCapsule {
     std::array<float, 4> previousA{};
     std::array<float, 4> previousB{};
     std::array<float, 4> rotationDelta{0, 0, 0, 1};
+    // Waist rotation transports the cloth reference; the capsule axis follows the leg.
+    std::array<float, 4> surfaceRotation{0, 0, 0, 1};
 };
-static_assert(sizeof(SkirtCapsule) == 80);
+static_assert(sizeof(SkirtCapsule) == 96);
 
 struct SkirtCollisionStats {
     std::uint32_t rigidContactCount{};

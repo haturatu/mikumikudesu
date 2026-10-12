@@ -77,6 +77,38 @@ SkirtCollisionTopology identifySkirtCollision(const PmxModel& model) {
                                 [&](auto skirt) { return collides(body, model.rigidBodies[skirt]); }))
             result.legBodies.push_back(i);
     }
+    Float3 waist{};
+    for (const auto& bone : model.bones)
+        if (bone.name == "下半身" || lower(bone.englishName) == "lower body") {
+            waist = bone.position;
+            break;
+        }
+    const auto outwardNormal = [&](const PmxVertex& vertex) {
+        float x = vertex.position[0] - waist[0], z = vertex.position[2] - waist[2];
+        float length = std::abs(x) + std::abs(z);
+        if (!std::isfinite(length) || length < 1e-6F) {
+            x = vertex.normal[0];
+            z = vertex.normal[2];
+            length = std::abs(x) + std::abs(z);
+        }
+        if (!std::isfinite(length) || length < 1e-6F) {
+            x = 0;
+            z = 1;
+            length = 1;
+        }
+        x /= length;
+        z /= length;
+        float y = 0;
+        if (z < 0) {
+            y = 1 - std::abs(x);
+            x = x < 0 ? -1.0F : 1.0F;
+        }
+        const auto pack = [](float value) {
+            return static_cast<std::uint32_t>(static_cast<std::uint16_t>(
+                static_cast<std::int16_t>(std::round(std::clamp(value, -1.0F, 1.0F) * 32767.0F))));
+        };
+        return pack(x) | (pack(y) << 16U);
+    };
     std::vector<float> influence(model.vertices.size());
     for (std::size_t i = 0; i < model.vertices.size(); ++i) {
         const auto& v = model.vertices[i];
@@ -117,6 +149,8 @@ SkirtCollisionTopology identifySkirtCollision(const PmxModel& model) {
                     lookup[vertex] = static_cast<std::uint32_t>(result.vertices.size());
                     SkirtVertex entry;
                     entry.vertex = vertex;
+                    entry.outwardNormal[0] = outwardNormal(model.vertices[vertex]);
+                    entry.outwardNormal[1] = 1;
                     entry.mobility = std::clamp(.25F + .75F * influence[vertex], .25F, 1.0F);
                     entry.capsuleCount = static_cast<std::uint32_t>(result.legBodies.size());
                     result.vertices.push_back(entry);
@@ -244,8 +278,8 @@ std::vector<SkirtCapsule> makeSkirtCapsules(const PmxModel& model, const SkirtCo
         auto inverse = old.rotation;
         for (std::size_t c = 0; c < 3; ++c)
             inverse[c] = -inverse[c];
-        result.push_back(
-            {currentEnds[0], currentEnds[1], previousEnds[0], previousEnds[1], multiply(pose.rotation, inverse)});
+        result.push_back({currentEnds[0], currentEnds[1], previousEnds[0], previousEnds[1],
+                          multiply(pose.rotation, inverse), torsoRotation});
     }
     return result;
 }
