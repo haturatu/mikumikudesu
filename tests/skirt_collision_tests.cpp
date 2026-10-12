@@ -125,6 +125,33 @@ void topologyFixtures() {
             "skirt extraction includes unrelated material or loses leg");
     require(std::ranges::none_of(topology.vertices, [](auto v) { return v.vertex == 3; }), "unrelated vertex selected");
     require(topology.legVertices == std::vector<std::uint32_t>{3}, "leg surface extraction included skirt vertices");
+    // Named skirt cloth must not suppress separately named emissive trim.
+    // Sparse weighted coat patches must not select the remaining torso.
+    auto layered = model;
+    layered.bones.resize(2);
+    layered.rigidBodies[0].bone = 1;
+    layered.vertices.resize(40);
+    for (std::size_t i = 4; i <= 7; ++i)
+        layered.vertices[i].bones[0] = 1;
+    layered.indices.insert(layered.indices.end(), {4, 5, 6});
+    core::PmxMaterial trim;
+    trim.name = "luminous02";
+    trim.indexCount = 3;
+    layered.materials.push_back(trim);
+    core::PmxMaterial coat;
+    coat.name = "Clothes01";
+    coat.indexCount = 30;
+    layered.materials.push_back(coat);
+    for (std::uint32_t i = 7; i < 37; i += 3)
+        layered.indices.insert(layered.indices.end(), {i, i + 1, i + 2});
+    const auto complete = core::identifySkirtCollision(layered);
+    require(complete.vertices.size() == 9 && complete.triangles.size() == 3,
+            "layered skirt extraction missed trim or selected the entire coat");
+    for (std::uint32_t i = 4; i <= 9; ++i)
+        require(std::ranges::any_of(complete.vertices, [i](auto v) { return v.vertex == i; }),
+                "skirt trim or sparse coat patch was excluded");
+    require(std::ranges::none_of(complete.vertices, [](auto v) { return v.vertex >= 10; }),
+            "skirt correction included unrelated torso triangles");
     model.rigidBodies[1].collisionMask = 0;
     require(core::identifySkirtCollision(model).empty(), "reverse collision mask was ignored");
     model.rigidBodies[1] = leg;
@@ -525,8 +552,10 @@ void modelRegression(graphics::VulkanDevice& device, const char* modelPath, cons
     const auto model = core::loadPmxModel(modelPath);
     const auto motion = core::loadVmd(motionPath);
     const auto topology = core::identifySkirtCollision(model);
-    require(topology.vertices.size() == 895 && topology.triangles.size() == 1192 && topology.skirtBodies.size() == 16 &&
-                topology.legBodies.size() == 4,
+    std::cout << "YYB full skirt topology: " << topology.vertices.size() << " vertices, " << topology.triangles.size()
+              << " triangles\n";
+    require(topology.vertices.size() >= 1015 && topology.triangles.size() >= 1288 &&
+                topology.skirtBodies.size() == 16 && topology.legBodies.size() == 4,
             "YYB model classification differs from audited topology");
     mmd::PhysicsSettings settings;
     settings.adaptiveKinematicBodies = topology.legBodies;
@@ -544,7 +573,8 @@ void modelRegression(graphics::VulkanDevice& device, const char* modelPath, cons
     gpuAnimator.setPhysics(&gpuPhysics);
     gpuAnimator.setMotion(&motion);
     GpuFixture preview(device, model.vertices.size(), false), native(device, model.vertices.size(), true),
-        diagnostic(device, model.vertices.size(), false);
+        diagnostic(device, model.vertices.size(), false), normalizedPreview(device, model.vertices.size(), false);
+    const auto normalization = core::previewNormalization(model);
     std::ofstream csv(csvPath);
     csv << "frame,rigid_contacts,rigid_depth,raw_vertices,raw_triangles,raw_depth,vertices,triangles,depth,correction,"
            "substeps\n";
@@ -575,6 +605,8 @@ void modelRegression(graphics::VulkanDevice& device, const char* modelPath, cons
         auto capsules = core::makeSkirtCapsules(model, topology, physics, animated.bones, {}, previous);
         finalVertices = animated.vertices;
         finalCapsules = capsules;
+        auto normalizedCapsules =
+            core::makeSkirtCapsules(model, topology, physics, animated.bones, normalization, previous);
         previous.clear();
         for (auto body : topology.legBodies)
             previous.push_back(physics.bodyTransform(body));
@@ -588,6 +620,17 @@ void modelRegression(graphics::VulkanDevice& device, const char* modelPath, cons
         rawUpload.iterations = 0;
         const auto raw = diagnostic.run(animated.vertices, rawUpload);
         const auto a = preview.run(animated.vertices, upload), b = native.run(animated.vertices, upload);
+        auto normalizedVertices = animated.vertices;
+        core::normalizeForPreview(normalizedVertices, normalization);
+        auto normalizedUpload = upload;
+        normalizedUpload.capsules = normalizedCapsules;
+        const auto normalized = normalizedPreview.run(normalizedVertices, normalizedUpload);
+        const float normalizedDepth = normalized.stats.maxMeshPenetration / normalization.scale;
+        if (frame >= 115)
+            std::cout << "Normalized frame=" << frame << " scale=" << normalization.scale
+                      << " depth in PMX units=" << normalizedDepth << " world depth=" << a.stats.maxMeshPenetration
+                      << '\n';
+        require(normalizedDepth < .031F, "normalized render coordinates left skirt penetration");
         for (std::size_t leg = 0; leg < topology.legRanges.size(); ++leg) {
             const auto range = topology.legRanges[leg];
             for (std::size_t i = 0; i < range[1]; ++i)

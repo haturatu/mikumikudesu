@@ -87,9 +87,6 @@ SkirtCollisionTopology identifySkirtCollision(const PmxModel& model) {
     }
     std::vector<std::uint32_t> lookup(model.vertices.size(), std::numeric_limits<std::uint32_t>::max());
     std::vector<std::vector<std::uint32_t>> adjacency;
-    const bool hasNamedMaterial = std::ranges::any_of(model.materials, [](const auto& material) {
-        return skirtName(material.name) || skirtName(material.englishName);
-    });
     std::size_t first = 0;
     for (const auto& material : model.materials) {
         const auto end = first + std::min<std::size_t>(material.indexCount, model.indices.size() - first);
@@ -98,34 +95,39 @@ SkirtCollisionTopology identifySkirtCollision(const PmxModel& model) {
             if (model.indices[i] < influence.size() && influence[model.indices[i]] > .2F)
                 ++weighted;
         const bool selected = skirtName(material.name) || skirtName(material.englishName) ||
-                              (!hasNamedMaterial && end > first &&
-                               static_cast<double>(weighted) / static_cast<double>(end - first) > .15);
-        if (selected) {
-            for (auto i = first; i + 2 < end; i += 3) {
-                std::array<std::uint32_t, 4> triangle{};
-                bool valid = true;
-                for (std::size_t j = 0; j < 3; ++j)
-                    valid = valid && model.indices[i + j] < lookup.size();
-                if (!valid)
-                    continue;
-                for (std::size_t j = 0; j < 3; ++j) {
-                    const auto vertex = model.indices[i + j];
-                    if (lookup[vertex] == std::numeric_limits<std::uint32_t>::max()) {
-                        lookup[vertex] = static_cast<std::uint32_t>(result.vertices.size());
-                        SkirtVertex entry;
-                        entry.vertex = vertex;
-                        entry.mobility = std::clamp(.25F + .75F * influence[vertex], .25F, 1.0F);
-                        entry.capsuleCount = static_cast<std::uint32_t>(result.legBodies.size());
-                        result.vertices.push_back(entry);
-                        adjacency.emplace_back();
-                    }
-                    triangle[j] = lookup[vertex];
+                              (end > first && static_cast<double>(weighted) / static_cast<double>(end - first) > .15);
+        // Rendered skirt pieces can use unnamed trim/emissive materials.
+        // A sparse skirt-weighted patch on a coat selects only its incident
+        // triangles; selecting the complete coat would deform the torso.
+        for (auto i = first; i + 2 < end; i += 3) {
+            const bool weightedPatch = std::ranges::any_of(std::span(model.indices).subspan(i, 3), [&](auto vertex) {
+                return vertex < influence.size() && influence[vertex] > .2F;
+            });
+            if (!selected && !weightedPatch)
+                continue;
+            std::array<std::uint32_t, 4> triangle{};
+            bool valid = true;
+            for (std::size_t j = 0; j < 3; ++j)
+                valid = valid && model.indices[i + j] < lookup.size();
+            if (!valid)
+                continue;
+            for (std::size_t j = 0; j < 3; ++j) {
+                const auto vertex = model.indices[i + j];
+                if (lookup[vertex] == std::numeric_limits<std::uint32_t>::max()) {
+                    lookup[vertex] = static_cast<std::uint32_t>(result.vertices.size());
+                    SkirtVertex entry;
+                    entry.vertex = vertex;
+                    entry.mobility = std::clamp(.25F + .75F * influence[vertex], .25F, 1.0F);
+                    entry.capsuleCount = static_cast<std::uint32_t>(result.legBodies.size());
+                    result.vertices.push_back(entry);
+                    adjacency.emplace_back();
                 }
-                const auto index = static_cast<std::uint32_t>(result.triangles.size());
-                result.triangles.push_back(triangle);
-                for (std::size_t j = 0; j < 3; ++j)
-                    adjacency[triangle[j]].push_back(index);
+                triangle[j] = lookup[vertex];
             }
+            const auto index = static_cast<std::uint32_t>(result.triangles.size());
+            result.triangles.push_back(triangle);
+            for (std::size_t j = 0; j < 3; ++j)
+                adjacency[triangle[j]].push_back(index);
         }
         first = end;
     }
