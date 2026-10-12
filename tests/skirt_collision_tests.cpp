@@ -37,6 +37,7 @@ float distance(core::Float3 p, const core::SkirtCapsule& c) {
 }
 struct Result {
     std::vector<core::Float3> positions;
+    std::vector<core::SkirtCapsule> capsules;
     core::SkirtCollisionStats stats;
     std::uint64_t gpuNanoseconds{};
 };
@@ -79,6 +80,7 @@ class GpuFixture {
         const auto actual = device.readbackBufferEx(output, 0, bytes.size());
         Result result;
         result.stats = runtime.readStats();
+        result.capsules = runtime.readCapsules();
         result.gpuNanoseconds = device.previewGpuNanoseconds();
         result.positions.resize(count);
         for (std::size_t i = 0; i < count; ++i) {
@@ -114,11 +116,15 @@ void topologyFixtures() {
     leg.shape = 2;
     leg.size = {1, 2, 0};
     leg.collisionMask = 0xffff;
+    leg.bone = 0;
+    model.bones.resize(1);
+    model.vertices[3].bones[0] = 0;
     model.rigidBodies = {cloth, leg};
     auto topology = core::identifySkirtCollision(model);
     require(topology.vertices.size() == 3 && topology.triangles.size() == 1 && topology.legBodies.size() == 1,
             "skirt extraction includes unrelated material or loses leg");
     require(std::ranges::none_of(topology.vertices, [](auto v) { return v.vertex == 3; }), "unrelated vertex selected");
+    require(topology.legVertices == std::vector<std::uint32_t>{3}, "leg surface extraction included skirt vertices");
     model.rigidBodies[1].collisionMask = 0;
     require(core::identifySkirtCollision(model).empty(), "reverse collision mask was ignored");
     model.rigidBodies[1] = leg;
@@ -338,6 +344,42 @@ void nativeSkinningIntegration(graphics::VulkanDevice& device) {
     std::cout << "Native post-skinning collision integration passed\n";
 }
 
+void fittedCapsuleFixture(graphics::VulkanDevice& device) {
+    std::vector<core::PmxVertex> points(4);
+    points[0].position = {2.8F, 1.2F, 0};
+    points[1].position = {2.9F, 1.2F, .1F};
+    points[2].position = {2.8F, 1.2F, -.1F};
+    points[3].position = {3, 1.6F, 0};
+    for (auto& point : points)
+        point.normal = {0, 1, 0};
+    const std::vector<core::SkirtVertex> vertices{
+        {0, 0, 1, 0, 1, 1, {}}, {1, 1, 1, 0, 1, 1, {}}, {2, 2, 1, 0, 1, 1, {}}};
+    const std::vector<std::array<std::uint32_t, 4>> triangles{{0, 1, 2, 0}};
+    const std::vector<std::uint32_t> adjacency{0, 0, 0}, legVertices{3};
+    const std::vector<std::array<std::uint32_t, 2>> legRanges{{0, 1}};
+    const std::vector<core::SkirtCapsule> capsules{
+        {{-1, 0, 0, 1}, {1, 0, 0, .03F}, {-1, 0, 0, 1}, {1, 0, 0, .03F}, {0, 0, 0, 1}}};
+    const graphics::SkirtCollisionUpload upload{vertices, triangles, adjacency, capsules,
+                                                1,        32,        legRanges, legVertices};
+    GpuFixture preview(device, 4, false), native(device, 4, true);
+    const auto a = preview.run(points, upload), b = native.run(points, upload);
+    require(a.capsules[0].aRadius[3] > 1.6F && a.capsules[0].bMargin[0] > 2.8F,
+            "fitted capsule did not cover the wider and longer rendered leg");
+    require(distance(points[3].position, a.capsules[0]) <= -a.capsules[0].bMargin[3] + 1e-4F,
+            "rendered leg escaped its contact proxy");
+    require(a.positions[3] == points[3].position, "fitting changed the rendered leg");
+    require(a.stats.penetratingVertexCount == 0 && a.stats.totalCorrectionDistance > .5F,
+            "cloth outside the PMX body was not corrected against the visible leg");
+    for (std::size_t i = 0; i < 4; ++i)
+        for (std::size_t axis = 0; axis < 3; ++axis)
+            require(std::abs(a.positions[i][axis] - b.positions[i][axis]) < 1e-5F,
+                    "fitted capsule collision layouts diverged");
+    points[3].position[0] = 4;
+    const auto next = preview.run(points, upload);
+    require(std::abs(next.capsules[0].previousB[0] - a.capsules[0].bMargin[0]) < 1e-5F,
+            "fitted capsule history retained the shorter PMX endpoint");
+}
+
 void modelGpuParity(graphics::VulkanDevice& device, const core::PmxModel& model, const core::AnimatedModelFrame& cpu,
                     const core::AnimatedModelFrame& gpu, const core::SkirtCollisionTopology& topology,
                     std::span<const core::SkirtCapsule> capsules, std::uint64_t epoch) {
@@ -374,21 +416,44 @@ void modelGpuParity(graphics::VulkanDevice& device, const core::PmxModel& model,
     device.updatePreviewSkirtCollision({}, {}, {}, {}, 0);
     static_cast<void>(device.renderToImage({16, 16}));
     const auto raw = device.readbackPreviewDeformedVertices();
+    float legDifference = 0;
+    for (const auto vertex : topology.legVertices)
+        for (std::size_t axis = 0; axis < 3; ++axis)
+            legDifference =
+                std::max(legDifference, std::abs(raw[vertex].position[axis] - cpu.vertices[vertex].position[axis]));
+    if (legDifference >= 5e-4F)
+        std::cerr << "Raw CPU/Preview leg maximum difference: " << legDifference << '\n';
     for (const auto v : topology.vertices)
         for (std::size_t axis = 0; axis < 3; ++axis)
             require(std::abs(raw[v.vertex].position[axis] - cpu.vertices[v.vertex].position[axis]) < 5e-4F,
                     "YYB CPU/Preview GPU skinning diverged");
     const graphics::SkirtCollisionUpload collision{
-        topology.vertices, topology.triangles, topology.adjacency, capsules, epoch, 32};
+        topology.vertices,  topology.triangles,  topology.adjacency, capsules, epoch, 32,
+        topology.legRanges, topology.legVertices};
     GpuFixture cpuReference(device, model.vertices.size(), false);
     const auto expected = cpuReference.run(cpu.vertices, collision);
-    device.updatePreviewSkirtCollision(topology.vertices, topology.triangles, topology.adjacency, capsules, epoch);
+    device.updatePreviewSkirtCollision(topology.vertices, topology.triangles, topology.adjacency, capsules, epoch,
+                                       topology.legRanges, topology.legVertices);
     static_cast<void>(device.renderToImage({16, 16}));
     const auto preview = device.readbackPreviewDeformedVertices();
+    float maximumDifference = 0;
     for (const auto v : topology.vertices)
         for (std::size_t axis = 0; axis < 3; ++axis)
-            require(std::abs(preview[v.vertex].position[axis] - expected.positions[v.vertex][axis]) < 2e-3F,
-                    "YYB corrected CPU/Preview GPU skinning diverged");
+            maximumDifference = std::max(
+                maximumDifference, std::abs(preview[v.vertex].position[axis] - expected.positions[v.vertex][axis]));
+    if (maximumDifference >= 2e-3F) {
+        std::cerr << "Corrected CPU/Preview GPU maximum difference: " << maximumDifference << '\n';
+        const auto actualCapsules = device.readbackPreviewSkirtCapsules();
+        for (std::size_t c = 0; c < actualCapsules.size(); ++c) {
+            std::cerr << "Capsule " << c << " CPU/GPU radius " << expected.capsules[c].aRadius[3] << '/'
+                      << actualCapsules[c].aRadius[3] << " endpoints ";
+            for (std::size_t axis = 0; axis < 3; ++axis)
+                std::cerr << expected.capsules[c].aRadius[axis] - actualCapsules[c].aRadius[axis] << ','
+                          << expected.capsules[c].bMargin[axis] - actualCapsules[c].bMargin[axis] << ' ';
+            std::cerr << '\n';
+        }
+    }
+    require(maximumDifference < 2e-3F, "YYB corrected CPU/Preview GPU skinning diverged");
     device.updatePreviewSkirtCollision({}, {}, {}, {}, 0);
     if (device.nativeDeformPipeline().valid()) {
         graphics::SkirtCollisionRuntime correction;
@@ -441,7 +506,9 @@ void modelGpuParity(graphics::VulkanDevice& device, const core::PmxModel& model,
         for (const auto buffer : buffers)
             device.destroyBufferEx(buffer);
     }
-    std::cout << "YYB CPU/GPU and Preview/Native skinning plus collision parity passed\n";
+    std::cout
+        << "YYB CPU/GPU and Preview/Native skinning plus collision parity passed, maximum CPU/GPU position difference="
+        << maximumDifference << '\n';
 }
 
 void modelRegression(graphics::VulkanDevice& device, const char* modelPath, const char* motionPath,
@@ -511,17 +578,25 @@ void modelRegression(graphics::VulkanDevice& device, const char* modelPath, cons
         if (frame < firstFrame && dt > 0)
             return;
         graphics::SkirtCollisionUpload upload{
-            topology.vertices, topology.triangles, topology.adjacency, capsules, epoch, iterations};
+            topology.vertices, topology.triangles, topology.adjacency,  capsules, epoch,
+            iterations,        topology.legRanges, topology.legVertices};
         // Measure before correction with an independent history reset.
         auto rawUpload = upload;
         rawUpload.iterations = 0;
         const auto raw = diagnostic.run(animated.vertices, rawUpload);
         const auto a = preview.run(animated.vertices, upload), b = native.run(animated.vertices, upload);
+        for (std::size_t leg = 0; leg < topology.legRanges.size(); ++leg) {
+            const auto range = topology.legRanges[leg];
+            for (std::size_t i = 0; i < range[1]; ++i)
+                require(distance(animated.vertices[topology.legVertices[range[0] + i]].position, a.capsules[leg]) <=
+                            -a.capsules[leg].bMargin[3] * 1.25F + 1e-4F,
+                        "YYB rendered leg surface escaped its fitted collision capsule");
+        }
         for (const auto vertex : topology.vertices)
             for (std::size_t axis = 0; axis < 3; ++axis)
                 require(std::abs(a.positions[vertex.vertex][axis] - b.positions[vertex.vertex][axis]) < 1e-5F,
                         "YYB Preview/Native corrected positions diverged");
-        if (a.stats.maxMeshPenetration > .05F) {
+        if (frame == 123 || a.stats.maxMeshPenetration > .05F) {
             for (const auto v : topology.vertices) {
                 meshCsv << frame << ',' << v.vertex << ',' << v.mobility;
                 for (float x : animated.vertices[v.vertex].position)
@@ -533,10 +608,10 @@ void modelRegression(graphics::VulkanDevice& device, const char* modelPath, cons
             for (std::size_t c = 0; c < capsules.size(); ++c) {
                 capsuleCsv << frame << ',' << c;
                 for (std::size_t axis = 0; axis < 3; ++axis)
-                    capsuleCsv << ',' << capsules[c].aRadius[axis];
+                    capsuleCsv << ',' << a.capsules[c].aRadius[axis];
                 for (std::size_t axis = 0; axis < 3; ++axis)
-                    capsuleCsv << ',' << capsules[c].bMargin[axis];
-                capsuleCsv << ',' << capsules[c].aRadius[3] << ',' << capsules[c].bMargin[3] << '\n';
+                    capsuleCsv << ',' << a.capsules[c].bMargin[axis];
+                capsuleCsv << ',' << a.capsules[c].aRadius[3] << ',' << a.capsules[c].bMargin[3] << '\n';
             }
         }
         meshCsv.flush();
@@ -568,7 +643,7 @@ void modelRegression(graphics::VulkanDevice& device, const char* modelPath, cons
     evaluate(127, 0);
     std::cout << "YYB UNDEAD: worst raw depth=" << worstBefore << " corrected=" << worstAfter
               << " total correction=" << correction << '\n';
-    require(worstAfter < .05F && worstAfter < worstBefore * .1F, "YYB correction left deep mesh penetration");
+    require(worstAfter < .031F && worstAfter < worstBefore * .1F, "YYB correction left deep mesh penetration");
     // The existing frame timestamps include the same tiny render target in
     // both cases. Warm each frame slot, then report the median difference.
     GpuFixture timing(device, model.vertices.size(), false);
@@ -580,7 +655,8 @@ void modelRegression(graphics::VulkanDevice& device, const char* modelPath, cons
         for (int sample = 0; sample < 30; ++sample) {
             graphics::SkirtCollisionUpload timed;
             if (enabled)
-                timed = {topology.vertices, topology.triangles, topology.adjacency, finalCapsules, epoch, 32};
+                timed = {topology.vertices,  topology.triangles,  topology.adjacency, finalCapsules, epoch, 32,
+                         topology.legRanges, topology.legVertices};
             const auto result = timing.run(finalVertices, timed);
             if (sample >= 6 && result.gpuNanoseconds != 0) {
                 samples.push_back(result.gpuNanoseconds);
@@ -604,6 +680,7 @@ int main(int argc, char** argv) {
         options.asyncCompute = argc == 2 && std::string_view(argv[1]) == "--async-compute";
         dayo::graphics::VulkanDevice device(*window, true, options);
         gpuFixtures(device);
+        fittedCapsuleFixture(device);
         previewIntegration(device);
         nativeSkinningIntegration(device);
         if (argc == 4)
