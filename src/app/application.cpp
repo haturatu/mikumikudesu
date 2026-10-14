@@ -3168,7 +3168,7 @@ void Application::buildMainMenuBar() {
     if (ImGui::BeginMenu("Help")) {
         ImGui::TextUnformatted("Space  Play / Pause");
         ImGui::TextUnformatted("Ctrl+Z / Ctrl+Y  Undo / Redo");
-        ImGui::TextUnformatted("Right-drag / Wheel  Viewport camera");
+        ImGui::TextUnformatted("Left-drag: Orbit / Right-drag: Pan / Wheel: Zoom / Right-click: Reset view");
         ImGui::EndMenu();
     }
     ImGui::Separator();
