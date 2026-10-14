@@ -212,6 +212,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     float cameraYaw_{};
     float cameraPitch_{};
     float cameraDistance_{3.0F};
+    core::Float3 cameraTarget_{};
     bool manualCamera_{};
     std::int32_t previewDebugMaterial_{-1};
     std::uint32_t previewDebugFlags_{};
@@ -272,6 +273,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     float timelineScrollY_{};
     bool editGlobalMotion_{};
     bool recordCamera_{};
+    bool followVmdCamera_{true};
+    bool viewportRightDragged_{};
     bool cameraEditPreview_{};
     bool lightEditPreview_{};
     std::array<char, 1024> cameraLightVmdPath_{};
