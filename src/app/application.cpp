@@ -441,6 +441,8 @@ fx::FxCameraState Application::makeSceneCameraState() const {
     camera.rotation = {cameraPitch_, cameraYaw_, 0.0F};
     camera.distance = cameraDistance_;
     camera.position = cameraTarget_;
+    camera.verticalFovRadians = cameraFovRadians_;
+    camera.perspective = cameraPerspective_;
 #if DAYO_HAS_IMGUI
     if (cameraEditPreview_ && !manualCamera_) {
         const auto normalization = model != nullptr ? model->normalization : normalization_;
