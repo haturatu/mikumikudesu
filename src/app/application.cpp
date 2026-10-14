@@ -1112,19 +1112,22 @@ int Application::run() {
                 break;
             case platform::WindowEvent::Type::cameraDragged:
 #if DAYO_HAS_IMGUI
-                // Camera input is consumed from ImGui while drawing the viewport so
-                // it cannot leak from another docked panel or use stale hover state.
+                // In GUI builds, mouse input is read only from the hovered ImGui viewport.
+            case platform::WindowEvent::Type::cameraPanned:
             case platform::WindowEvent::Type::cameraZoomed:
-                // See cameraDragged: read the current ImGui mouse state in the viewport.
                 break;
 #else
-                cameraYaw_ += event.x * 0.008F;
-                cameraPitch_ = std::clamp(cameraPitch_ + event.y * 0.008F, -1.5F, 1.5F);
+                ViewportNavigation::orbit(cameraYaw_, cameraPitch_, event.x, event.y);
+                manualCamera_ = true;
+                refreshPreviewScene();
+                break;
+            case platform::WindowEvent::Type::cameraPanned:
+                ViewportNavigation::pan(cameraTarget_, event.x, event.y, normalization_.scale);
                 manualCamera_ = true;
                 refreshPreviewScene();
                 break;
             case platform::WindowEvent::Type::cameraZoomed:
-                cameraDistance_ = std::clamp(cameraDistance_ * std::exp(-event.x * 0.12F), 0.4F, 30.0F);
+                ViewportNavigation::zoom(cameraDistance_, event.x, normalization_.scale);
                 manualCamera_ = true;
                 refreshPreviewScene();
                 break;
@@ -1776,6 +1779,10 @@ void Application::handleAsset(const std::filesystem::path& path) {
                     }
                 }
                 manualCamera_ = false;
+#if DAYO_HAS_IMGUI
+                followVmdCamera_ = true;
+                cameraEditPreview_ = false;
+#endif
             } else if (project.embeddedMotion) {
                 scene_.attachMotion(*project.embeddedMotion, scene_.selectedModelId());
                 manualCamera_ = false;
@@ -1915,6 +1922,10 @@ void Application::handleAsset(const std::filesystem::path& path) {
             const auto lightKeyCount = motion.lights.size();
             scene_.attachMotion(std::move(motion));
             manualCamera_ = false;
+#if DAYO_HAS_IMGUI
+            followVmdCamera_ = true;
+            cameraEditPreview_ = false;
+#endif
             animationFrame_ = 0.0F;
             scene_.setFrame(animationFrame_);
             syncMediaAtCurrentFrame();
@@ -3022,8 +3033,16 @@ void Application::handleEditorShortcuts() {
             auto document = core::toMotionDocument(before);
             core::VmdCameraKey key = editedCamera_;
             key.frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
-            key.distance = -cameraDistance_ / std::max(normalization_.scale, 0.0001F);
-            key.rotation = {cameraPitch_, cameraYaw_, 0.0F};
+            const auto camera = makeSceneCameraState();
+            const auto* model = selectedModel();
+            const auto normalization = model != nullptr ? model->normalization : normalization_;
+            const auto scale = ViewportNavigation::safeScale(normalization.scale);
+            for (std::size_t i = 0; i < 3; ++i)
+                key.position[i] = camera.position[i] / scale + normalization.center[i];
+            key.distance = -camera.distance / scale;
+            key.rotation = camera.rotation;
+            key.viewAngle = camera.verticalFovRadians * 57.2957795131F;
+            key.perspective = camera.perspective;
             std::erase_if(document.cameras, [&](const auto& item) { return item.frame == key.frame; });
             document.cameras.push_back(key);
             core::MotionEditor::normalize(document);
@@ -4346,9 +4365,13 @@ void Application::buildEditorUi() {
                 } else {
                     // In the absence of VMD, capture the viewport orbit without
                     // converting it into a second, unrelated camera representation.
-                    editedCamera_.position = {};
+                    const auto normalization =
+                        selectedModel() != nullptr ? selectedModel()->normalization : normalization_;
+                    const auto scale = ViewportNavigation::safeScale(normalization.scale);
+                    for (std::size_t i = 0; i < 3; ++i)
+                        editedCamera_.position[i] = cameraTarget_[i] / scale + normalization.center[i];
                     editedCamera_.rotation = {cameraPitch_, cameraYaw_, 0.0F};
-                    editedCamera_.distance = -cameraDistance_ / std::max(normalization_.scale, 0.0001F);
+                    editedCamera_.distance = -cameraDistance_ / scale;
                     editedCamera_.viewAngle = 30.0F;
                     editedCamera_.perspective = true;
                 }
