@@ -4269,12 +4269,12 @@ void Application::buildEditorUi() {
         ImGui::Begin(workspaceWindowName("Camera / Light / Self Shadow", "legacy-camera").c_str())) {
         const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
         const auto* fallbackMotion = selectedModel() != nullptr ? selectedModel()->motion.get() : nullptr;
-        const auto* evaluatedMotion = globalMotion != nullptr ? globalMotion : fallbackMotion;
         ImGui::Text("Frame %u  |  Camera / Lighting", frame);
         ImGui::TextDisabled("Edits preview immediately; Register commits a key. Ctrl+Z undoes registration.");
 
         if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (ImGui::Button("Load evaluated camera##editor")) {
+                const auto* evaluatedMotion = scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : fallbackMotion;
                 if (evaluatedMotion != nullptr && !evaluatedMotion->cameras.empty()) {
                     const auto value = core::evaluateCamera(*evaluatedMotion, animationFrame_);
                     editedCamera_.position = value.position;
@@ -4332,6 +4332,7 @@ void Application::buildEditorUi() {
         }
         if (ImGui::CollapsingHeader("Directional light", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (ImGui::Button("Load evaluated light##editor")) {
+                const auto* evaluatedMotion = scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : fallbackMotion;
                 if (evaluatedMotion != nullptr && !evaluatedMotion->lights.empty())
                     editedLight_ = core::evaluateLight(*evaluatedMotion, animationFrame_);
                 lightEditPreview_ = true;
