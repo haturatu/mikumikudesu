@@ -212,6 +212,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     float cameraYaw_{};
     float cameraPitch_{};
     float cameraDistance_{3.0F};
+    float cameraFovRadians_{0.785398163F};
+    bool cameraPerspective_{true};
     core::Float3 cameraTarget_{};
     bool manualCamera_{};
     std::int32_t previewDebugMaterial_{-1};
