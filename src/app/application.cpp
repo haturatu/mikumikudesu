@@ -439,6 +439,18 @@ fx::FxCameraState Application::makeSceneCameraState() const {
     fx::FxCameraState camera;
     camera.rotation = {cameraPitch_, cameraYaw_, 0.0F};
     camera.distance = cameraDistance_;
+#if DAYO_HAS_IMGUI
+    if (cameraEditPreview_ && !manualCamera_) {
+        const auto normalization = model != nullptr ? model->normalization : normalization_;
+        for (std::size_t axis = 0; axis < 3; ++axis)
+            camera.position[axis] = (editedCamera_.position[axis] - normalization.center[axis]) * normalization.scale;
+        camera.rotation = editedCamera_.rotation;
+        camera.distance = std::max(std::abs(editedCamera_.distance) * normalization.scale, 0.4F);
+        camera.verticalFovRadians = std::clamp(editedCamera_.viewAngle, 1.0F, 179.0F) * 0.01745329252F;
+        camera.perspective = editedCamera_.perspective;
+        return camera;
+    }
+#endif
     if (!manualCamera_ && motion != nullptr && !motion->cameras.empty()) {
         const auto evaluated = core::evaluateCamera(*motion, animationFrame_);
         const auto normalization = model != nullptr ? model->normalization : normalization_;
@@ -471,6 +483,12 @@ fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTar
         lighting.direction = evaluated.position;
         lighting.color = evaluated.color;
     }
+#if DAYO_HAS_IMGUI
+    if (lightEditPreview_) {
+        lighting.direction = editedLight_.position;
+        lighting.color = editedLight_.color;
+    }
+#endif
     std::uint32_t modelIndex = 0;
     std::size_t totalMaterials = 0;
     for (std::size_t index = 0; index < scene_.models().size(); ++index) {
@@ -978,6 +996,10 @@ void Application::resetProjectRuntimeState() {
     nativePlaybackWasActive_ = false;
     nativeOnStartPending_ = true;
     manualCamera_ = false;
+#if DAYO_HAS_IMGUI
+    cameraEditPreview_ = false;
+    lightEditPreview_ = false;
+#endif
     cameraYaw_ = 0.0F;
     cameraPitch_ = 0.0F;
     cameraDistance_ = 3.0F;
@@ -2680,6 +2702,12 @@ void Application::refreshPreviewScene() {
         std::copy(light.position.begin(), light.position.end(), scene.lightDirection);
         std::copy(light.color.begin(), light.color.end(), scene.lightColor);
     }
+#if DAYO_HAS_IMGUI
+    if (lightEditPreview_) {
+        std::copy(editedLight_.position.begin(), editedLight_.position.end(), scene.lightDirection);
+        std::copy(editedLight_.color.begin(), editedLight_.color.end(), scene.lightColor);
+    }
+#endif
     device_->updatePreviewScene(scene);
 }
 
@@ -4239,51 +4267,191 @@ void Application::buildEditorUi() {
     const bool cameraPanelVisible = debugWorkspace || uiState_.workspace == ui::Workspace::camera;
     if (cameraPanelVisible &&
         ImGui::Begin(workspaceWindowName("Camera / Light / Self Shadow", "legacy-camera").c_str())) {
-        ImGui::Checkbox("Realtime camera recording (Space registers)", &recordCamera_);
-        ImGui::DragFloat3("Camera target", editedCamera_.position.data(), 0.01F);
-        ImGui::DragFloat3("Camera rotation", editedCamera_.rotation.data(), 0.01F);
-        ImGui::DragFloat("Camera distance", &editedCamera_.distance, 0.1F);
-        int viewAngle = static_cast<int>(editedCamera_.viewAngle == 0 ? 30 : editedCamera_.viewAngle);
-        if (ImGui::SliderInt("FoV", &viewAngle, 1, 179))
-            editedCamera_.viewAngle = static_cast<float>(viewAngle);
-        ImGui::Checkbox("Perspective", &editedCamera_.perspective);
-        ImGui::InputInt("Camera parent model", &editedCamera_.parentModel);
-        ImGui::InputInt("Camera parent bone", &editedCamera_.parentBone);
-        ImGui::InputText("Camera parent bone name", cameraParentBoneName_.data(), cameraParentBoneName_.size());
-        if (ImGui::Button("Register camera")) {
-            core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
-            auto document = core::toMotionDocument(before);
-            editedCamera_.frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
-            editedCamera_.parentBoneName = cameraParentBoneName_.data();
-            std::erase_if(document.cameras, [&](const auto& key) { return key.frame == editedCamera_.frame; });
-            document.cameras.push_back(editedCamera_);
-            core::MotionEditor::normalize(document);
-            execute(std::move(before), std::move(document), true, "Register camera key");
+        const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
+        const auto* globalMotion = scene_.cameraMotion();
+        const auto* fallbackMotion = selectedModel() != nullptr ? selectedModel()->motion.get() : nullptr;
+        const auto* evaluatedMotion = globalMotion != nullptr ? globalMotion : fallbackMotion;
+        ImGui::Text("Frame %u  |  Camera / Lighting", frame);
+        ImGui::TextDisabled("Edits preview immediately; Register commits a key. Ctrl+Z undoes registration.");
+
+        if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::Button("Load evaluated camera##editor")) {
+                if (evaluatedMotion != nullptr && !evaluatedMotion->cameras.empty()) {
+                    const auto value = core::evaluateCamera(*evaluatedMotion, animationFrame_);
+                    editedCamera_.position = value.position;
+                    editedCamera_.rotation = value.rotation;
+                    editedCamera_.distance = value.distance;
+                    editedCamera_.viewAngle = value.viewAngle;
+                    editedCamera_.perspective = value.perspective;
+                } else {
+                    // In the absence of VMD, capture the viewport orbit without
+                    // converting it into a second, unrelated camera representation.
+                    editedCamera_.position = {};
+                    editedCamera_.rotation = {cameraPitch_, cameraYaw_, 0.0F};
+                    editedCamera_.distance = -cameraDistance_ / std::max(normalization_.scale, 0.0001F);
+                    editedCamera_.viewAngle = 30.0F;
+                    editedCamera_.perspective = true;
+                }
+                manualCamera_ = false;
+                cameraEditPreview_ = true;
+                refreshPreviewScene();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Revert preview##camera")) {
+                cameraEditPreview_ = false;
+                manualCamera_ = false;
+                refreshPreviewScene();
+            }
+            ImGui::Checkbox("Realtime camera recording (Space registers)", &recordCamera_);
+            bool changed = false;
+            changed |= ImGui::DragFloat3("Target", editedCamera_.position.data(), 0.01F);
+            changed |= ImGui::DragFloat3("Rotation (radians)", editedCamera_.rotation.data(), 0.01F);
+            changed |= ImGui::DragFloat("Distance", &editedCamera_.distance, 0.1F);
+            if (editedCamera_.viewAngle <= 0.0F)
+                editedCamera_.viewAngle = 30.0F;
+            changed |= ImGui::SliderFloat("Field of view", &editedCamera_.viewAngle, 1.0F, 179.0F, "%.1f deg");
+            changed |= ImGui::Checkbox("Perspective", &editedCamera_.perspective);
+            ImGui::InputInt("Parent model", &editedCamera_.parentModel);
+            ImGui::InputInt("Parent bone", &editedCamera_.parentBone);
+            ImGui::InputText("Parent bone name", cameraParentBoneName_.data(), cameraParentBoneName_.size());
+            if (changed) {
+                manualCamera_ = false;
+                cameraEditPreview_ = true;
+                refreshPreviewScene();
+            }
+            if (ImGui::Button("Register camera key")) {
+                core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
+                auto document = core::toMotionDocument(before);
+                editedCamera_.frame = frame;
+                editedCamera_.parentBoneName = cameraParentBoneName_.data();
+                std::erase_if(document.cameras, [&](const auto& key) { return key.frame == frame; });
+                document.cameras.push_back(editedCamera_);
+                core::MotionEditor::normalize(document);
+                execute(std::move(before), std::move(document), true, "Register camera key");
+                cameraEditPreview_ = false;
+            }
         }
-        ImGui::ColorEdit3("Light color", editedLight_.color.data());
-        ImGui::DragFloat3("Light direction", editedLight_.position.data(), 0.01F);
-        if (ImGui::Button("Register light")) {
-            core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
-            auto document = core::toMotionDocument(before);
-            editedLight_.frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
-            std::erase_if(document.lights, [&](const auto& key) { return key.frame == editedLight_.frame; });
-            document.lights.push_back(editedLight_);
-            core::MotionEditor::normalize(document);
-            execute(std::move(before), std::move(document), true, "Register light key");
+        if (ImGui::CollapsingHeader("Directional light", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::Button("Load evaluated light##editor")) {
+                if (evaluatedMotion != nullptr && !evaluatedMotion->lights.empty())
+                    editedLight_ = core::evaluateLight(*evaluatedMotion, animationFrame_);
+                lightEditPreview_ = true;
+                refreshPreviewScene();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Revert preview##light")) {
+                lightEditPreview_ = false;
+                refreshPreviewScene();
+            }
+            bool changed = false;
+            changed |= ImGui::ColorEdit3("Color", editedLight_.color.data());
+            changed |= ImGui::DragFloat3("Direction", editedLight_.position.data(), 0.01F, -1.0F, 1.0F);
+            if (changed) {
+                lightEditPreview_ = true;
+                scene_.markDirty(core::DirtyFlag::lighting);
+                refreshPreviewScene();
+            }
+            if (ImGui::Button("Register light key")) {
+                core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
+                auto document = core::toMotionDocument(before);
+                editedLight_.frame = frame;
+                std::erase_if(document.lights, [&](const auto& key) { return key.frame == frame; });
+                document.lights.push_back(editedLight_);
+                core::MotionEditor::normalize(document);
+                execute(std::move(before), std::move(document), true, "Register light key");
+                lightEditPreview_ = false;
+            }
         }
-        int shadowMode = editedShadow_.mode;
-        if (ImGui::Combo("Self shadow", &shadowMode, "None\0Mode 1\0Mode 2\0"))
-            editedShadow_.mode = static_cast<std::uint8_t>(shadowMode);
-        ImGui::DragFloat("Shadow distance", &editedShadow_.distance, 0.1F, 0.0F, 10'000.0F);
-        if (ImGui::Button("Register self shadow")) {
-            core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
-            auto document = core::toMotionDocument(before);
-            editedShadow_.frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
-            std::erase_if(document.shadows, [&](const auto& key) { return key.frame == editedShadow_.frame; });
-            document.shadows.push_back(editedShadow_);
-            core::MotionEditor::normalize(document);
-            execute(std::move(before), std::move(document), true, "Register self shadow key");
+        if (ImGui::CollapsingHeader("Self shadow")) {
+            int shadowMode = editedShadow_.mode;
+            if (ImGui::Combo("Self shadow", &shadowMode, "None\0Mode 1\0Mode 2\0"))
+                editedShadow_.mode = static_cast<std::uint8_t>(shadowMode);
+            ImGui::DragFloat("Shadow distance", &editedShadow_.distance, 0.1F, 0.0F, 10'000.0F);
+            if (ImGui::Button("Register self shadow")) {
+                core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
+                auto document = core::toMotionDocument(before);
+                editedShadow_.frame = frame;
+                std::erase_if(document.shadows, [&](const auto& key) { return key.frame == frame; });
+                document.shadows.push_back(editedShadow_);
+                core::MotionEditor::normalize(document);
+                execute(std::move(before), std::move(document), true, "Register self shadow key");
+            }
         }
+        ImGui::SeparatorText("Reusable camera / light motion");
+        ImGui::InputText("VMD file##camera-light", cameraLightVmdPath_.data(), cameraLightVmdPath_.size());
+        if (ImGui::Button("Export camera VMD")) {
+            try {
+                if (cameraLightVmdPath_[0] == '\0')
+                    throw std::invalid_argument("Choose a VMD destination");
+                if (globalMotion == nullptr || globalMotion->cameras.empty())
+                    throw std::invalid_argument("No global camera keys to export");
+                core::VmdMotion extracted;
+                extracted.modelName = "Camera/Light";
+                extracted.cameras = globalMotion->cameras;
+                extracted.lastFrame = globalMotion->lastFrame;
+                core::saveVmd(cameraLightVmdPath_.data(), extracted);
+                cameraLightVmdStatus_ = "Camera exported";
+            } catch (const std::exception& error) {
+                cameraLightVmdStatus_ = error.what();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Export light VMD")) {
+            try {
+                if (cameraLightVmdPath_[0] == '\0')
+                    throw std::invalid_argument("Choose a VMD destination");
+                if (globalMotion == nullptr || globalMotion->lights.empty())
+                    throw std::invalid_argument("No global light keys to export");
+                core::VmdMotion extracted;
+                extracted.modelName = "Camera/Light";
+                extracted.lights = globalMotion->lights;
+                extracted.lastFrame = globalMotion->lastFrame;
+                core::saveVmd(cameraLightVmdPath_.data(), extracted);
+                cameraLightVmdStatus_ = "Light exported";
+            } catch (const std::exception& error) {
+                cameraLightVmdStatus_ = error.what();
+            }
+        }
+        if (ImGui::Button("Import camera keys")) {
+            try {
+                if (cameraLightVmdPath_[0] == '\0')
+                    throw std::invalid_argument("Choose a VMD source");
+                const auto imported = core::loadVmd(cameraLightVmdPath_.data());
+                if (imported.cameras.empty())
+                    throw std::invalid_argument("VMD has no camera keys");
+                core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
+                auto document = core::toMotionDocument(before);
+                document.cameras = imported.cameras;
+                core::MotionEditor::normalize(document);
+                execute(std::move(before), std::move(document), true, "Import camera keys");
+                manualCamera_ = false;
+                cameraEditPreview_ = false;
+                cameraLightVmdStatus_ = "Camera imported (other tracks preserved)";
+            } catch (const std::exception& error) {
+                cameraLightVmdStatus_ = error.what();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Import light keys")) {
+            try {
+                if (cameraLightVmdPath_[0] == '\0')
+                    throw std::invalid_argument("Choose a VMD source");
+                const auto imported = core::loadVmd(cameraLightVmdPath_.data());
+                if (imported.lights.empty())
+                    throw std::invalid_argument("VMD has no light keys");
+                core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
+                auto document = core::toMotionDocument(before);
+                document.lights = imported.lights;
+                core::MotionEditor::normalize(document);
+                execute(std::move(before), std::move(document), true, "Import light keys");
+                lightEditPreview_ = false;
+                cameraLightVmdStatus_ = "Light imported (other tracks preserved)";
+            } catch (const std::exception& error) {
+                cameraLightVmdStatus_ = error.what();
+            }
+        }
+        if (!cameraLightVmdStatus_.empty())
+            ImGui::TextWrapped("%s", cameraLightVmdStatus_.c_str());
     }
     if (cameraPanelVisible)
         ImGui::End();
