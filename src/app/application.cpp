@@ -4268,7 +4268,6 @@ void Application::buildEditorUi() {
     if (cameraPanelVisible &&
         ImGui::Begin(workspaceWindowName("Camera / Light / Self Shadow", "legacy-camera").c_str())) {
         const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
-        const auto* globalMotion = scene_.cameraMotion();
         const auto* fallbackMotion = selectedModel() != nullptr ? selectedModel()->motion.get() : nullptr;
         const auto* evaluatedMotion = globalMotion != nullptr ? globalMotion : fallbackMotion;
         ImGui::Text("Frame %u  |  Camera / Lighting", frame);
@@ -4383,12 +4382,12 @@ void Application::buildEditorUi() {
             try {
                 if (cameraLightVmdPath_[0] == '\0')
                     throw std::invalid_argument("Choose a VMD destination");
-                if (globalMotion == nullptr || globalMotion->cameras.empty())
+                if (scene_.cameraMotion() == nullptr || scene_.cameraMotion()->cameras.empty())
                     throw std::invalid_argument("No global camera keys to export");
                 core::VmdMotion extracted;
                 extracted.modelName = "Camera/Light";
-                extracted.cameras = globalMotion->cameras;
-                extracted.lastFrame = globalMotion->lastFrame;
+                extracted.cameras = scene_.cameraMotion()->cameras;
+                extracted.lastFrame = extracted.cameras.back().frame;
                 core::saveVmd(cameraLightVmdPath_.data(), extracted);
                 cameraLightVmdStatus_ = "Camera exported";
             } catch (const std::exception& error) {
@@ -4400,12 +4399,12 @@ void Application::buildEditorUi() {
             try {
                 if (cameraLightVmdPath_[0] == '\0')
                     throw std::invalid_argument("Choose a VMD destination");
-                if (globalMotion == nullptr || globalMotion->lights.empty())
+                if (scene_.cameraMotion() == nullptr || scene_.cameraMotion()->lights.empty())
                     throw std::invalid_argument("No global light keys to export");
                 core::VmdMotion extracted;
                 extracted.modelName = "Camera/Light";
-                extracted.lights = globalMotion->lights;
-                extracted.lastFrame = globalMotion->lastFrame;
+                extracted.lights = scene_.cameraMotion()->lights;
+                extracted.lastFrame = extracted.lights.back().frame;
                 core::saveVmd(cameraLightVmdPath_.data(), extracted);
                 cameraLightVmdStatus_ = "Light exported";
             } catch (const std::exception& error) {
