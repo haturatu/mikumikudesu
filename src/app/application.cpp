@@ -2819,13 +2819,8 @@ void Application::buildUi() {
                 if (ImGui::BeginPopup("Viewport view controls")) {
                     if (ImGui::MenuItem("Reset view")) {
                         const auto normalization = model != nullptr ? model->normalization : normalization_;
-                        const float scale = ViewportNavigation::safeScale(normalization.scale);
-                        const std::array<float, 3> defaultTarget{0.0F, 10.0F, 0.0F};
-                        for (std::size_t i = 0; i < defaultTarget.size(); ++i)
-                            cameraTarget_[i] = (defaultTarget[i] - normalization.center[i]) * scale;
-                        cameraYaw_ = 0.0F;
-                        cameraPitch_ = 0.0F;
-                        cameraDistance_ = 30.0F * scale;
+                        ViewportNavigation::reset(cameraTarget_, cameraYaw_, cameraPitch_, cameraDistance_,
+                                                  normalization.center, normalization.scale);
                         cameraEditPreview_ = false;
                         if (!hasCameraVmd || !followVmdCamera_)
                             manualCamera_ = true;
