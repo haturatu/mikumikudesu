@@ -1008,7 +1008,7 @@ void Application::resetProjectRuntimeState() {
     cameraEditPreview_ = false;
     lightEditPreview_ = false;
     followVmdCamera_ = true;
-    viewportRightDragged_ = false;
+    viewportInteraction_ = {};
 #endif
     cameraYaw_ = 0.0F;
     cameraPitch_ = 0.0F;
@@ -2789,6 +2789,63 @@ void Application::buildUi() {
     auto* model = selectedModel();
     if (ImGui::Begin(workspaceWindowName("Viewport", "viewport").c_str(), nullptr,
                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+        const auto* globalCameraMotion = scene_.cameraMotion();
+        const auto* sourceMotion = globalCameraMotion != nullptr && !globalCameraMotion->cameras.empty()
+                                       ? globalCameraMotion
+                                       : (model ? model->motion.get() : nullptr);
+        const bool hasCameraVmd = sourceMotion != nullptr && !sourceMotion->cameras.empty();
+        const auto normalization = model != nullptr ? model->normalization : normalization_;
+        const auto openInspector = [&](InspectorPage page) {
+            inspectorPage_ = page;
+            if (!uiState_.inspectorVisible) {
+                uiState_.inspectorVisible = true;
+                uiState_.resetLayoutRequested = true;
+            }
+            inspectorFocusRequested_ = true;
+        };
+        const auto resetView = [&] {
+            ViewportNavigation::reset(cameraTarget_, cameraYaw_, cameraPitch_, cameraDistance_, normalization.center,
+                                      normalization.scale);
+            cameraFovRadians_ = 0.785398163F;
+            cameraPerspective_ = true;
+            cameraEditPreview_ = false;
+            manualCamera_ = true;
+            followVmdCamera_ = false;
+            refreshPreviewScene();
+        };
+        if (ImGui::Button("Camera"))
+            openInspector(InspectorPage::camera);
+        ImGui::SameLine();
+        if (ImGui::Button("Light"))
+            openInspector(InspectorPage::light);
+        ImGui::SameLine();
+        if (ImGui::Button("Reset view"))
+            resetView();
+        if (hasCameraVmd) {
+            bool follow = followVmdCamera_;
+            if (ImGui::Checkbox("Follow VMD camera", &follow)) {
+                if (follow) {
+                    manualCamera_ = false;
+                    cameraEditPreview_ = false;
+                } else {
+                    const auto current = makeSceneCameraState();
+                    cameraTarget_ = current.position;
+                    cameraYaw_ = current.rotation[1];
+                    cameraPitch_ = current.rotation[0];
+                    cameraDistance_ = current.distance;
+                    cameraFovRadians_ = current.verticalFovRadians;
+                    cameraPerspective_ = current.perspective;
+                    manualCamera_ = true;
+                    cameraEditPreview_ = false;
+                }
+                followVmdCamera_ = follow;
+                refreshPreviewScene();
+            }
+        }
+        if (hasCameraVmd && followVmdCamera_)
+            ImGui::TextWrapped("VMD camera locked. Turn off Follow VMD camera to navigate.");
+        else
+            ImGui::TextWrapped("Left-drag: orbit | Right-drag: pan | Wheel: zoom");
         const ImVec2 available = ImGui::GetContentRegionAvail();
         if (available.x > 0.0F && available.y > 0.0F) {
             const auto* imguiViewport = ImGui::GetWindowViewport();
@@ -2799,8 +2856,9 @@ void Application::buildUi() {
             const auto preview = device_->previewViewport();
             if (preview) {
                 const auto imagePosition = ImGui::GetCursorScreenPos();
-                ImGui::Image(ImTextureRef{static_cast<ImTextureID>(preview.textureId)}, available);
-                const bool imageHovered = ImGui::IsItemHovered();
+                const auto input = viewportInteraction_.image(ImTextureRef{static_cast<ImTextureID>(preview.textureId)},
+                                                              available, !hasCameraVmd || !followVmdCamera_);
+                uiState_.viewportHovered = input.hovered;
                 if (scene_.models().empty() && !videoVisible_) {
                     constexpr auto message = "No model loaded\nDrop a PMX file into the window";
                     const auto messageSize = ImGui::CalcTextSize(message);
@@ -2815,97 +2873,41 @@ void Application::buildUi() {
                         ImGui::GetColorU32(ImGuiCol_WindowBg, 0.88F), ImGui::GetStyle().FrameRounding);
                     drawList->AddText(messagePosition, ImGui::GetColorU32(ImGuiCol_TextDisabled), message);
                 }
-                const auto* globalCameraMotion = scene_.cameraMotion();
-                const auto* sourceMotion = globalCameraMotion != nullptr && !globalCameraMotion->cameras.empty()
-                                               ? globalCameraMotion
-                                               : (model ? model->motion.get() : nullptr);
-                const bool hasCameraVmd = sourceMotion != nullptr && !sourceMotion->cameras.empty();
-                const bool imageRightClicked = ImGui::IsItemClicked(ImGuiMouseButton_Right);
-                if (imageRightClicked)
-                    viewportRightDragged_ = false;
-                if (ImGui::IsMouseDragging(ImGuiMouseButton_Right))
-                    viewportRightDragged_ = true;
-                // A short right click opens the menu; a right drag only pans.
-                if (imageHovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !viewportRightDragged_)
+                if (input.orbit || input.pan || input.wheel != 0.0F) {
+                    if (!manualCamera_) {
+                        const auto current = makeSceneCameraState();
+                        cameraTarget_ = current.position;
+                        cameraYaw_ = current.rotation[1];
+                        cameraPitch_ = current.rotation[0];
+                        cameraDistance_ = current.distance;
+                        cameraFovRadians_ = current.verticalFovRadians;
+                        cameraPerspective_ = current.perspective;
+                    }
+                    cameraEditPreview_ = false;
+                    const auto& io = ImGui::GetIO();
+                    if (input.orbit)
+                        ViewportNavigation::orbit(cameraYaw_, cameraPitch_, io.MouseDelta.x, io.MouseDelta.y);
+                    if (input.pan)
+                        ViewportNavigation::pan(cameraTarget_, io.MouseDelta.x, io.MouseDelta.y, normalization.scale);
+                    if (input.wheel != 0.0F)
+                        ViewportNavigation::zoom(cameraDistance_, input.wheel, normalization.scale);
+                    manualCamera_ = true;
+                    refreshPreviewScene();
+                }
+                if (input.contextMenu)
                     ImGui::OpenPopup("Viewport view controls");
                 if (ImGui::BeginPopup("Viewport view controls")) {
-                    if (ImGui::MenuItem("Reset view")) {
-                        const auto normalization = model != nullptr ? model->normalization : normalization_;
-                        ViewportNavigation::reset(cameraTarget_, cameraYaw_, cameraPitch_, cameraDistance_,
-                                                  normalization.center, normalization.scale);
-                        cameraFovRadians_ = 0.785398163F;
-                        cameraPerspective_ = true;
-                        cameraEditPreview_ = false;
-                        if (!hasCameraVmd || !followVmdCamera_)
-                            manualCamera_ = true;
-                        refreshPreviewScene();
-                    }
+                    if (ImGui::MenuItem("Reset view"))
+                        resetView();
+                    if (ImGui::MenuItem("Edit camera"))
+                        openInspector(InspectorPage::camera);
+                    if (ImGui::MenuItem("Edit light"))
+                        openInspector(InspectorPage::light);
                     ImGui::EndPopup();
                 }
-                if (ImGui::IsMouseReleased(ImGuiMouseButton_Right))
-                    viewportRightDragged_ = false;
-                bool overlayHovered = false;
-                if (hasCameraVmd) {
-                    ImGui::SetCursorScreenPos({imagePosition.x + ImGui::GetStyle().ItemSpacing.x,
-                                               imagePosition.y + ImGui::GetStyle().ItemSpacing.y});
-                    bool follow = followVmdCamera_;
-                    if (ImGui::Checkbox("Follow VMD camera##viewport", &follow)) {
-                        if (follow) {
-                            manualCamera_ = false;
-                            cameraEditPreview_ = false;
-                        } else {
-                            // Preserve the currently visible view when leaving VMD follow.
-                            const auto current = makeSceneCameraState();
-                            cameraTarget_ = current.position;
-                            cameraYaw_ = current.rotation[1];
-                            cameraPitch_ = current.rotation[0];
-                            cameraDistance_ = current.distance;
-                            cameraFovRadians_ = current.verticalFovRadians;
-                            cameraPerspective_ = current.perspective;
-                            manualCamera_ = true;
-                            cameraEditPreview_ = false;
-                        }
-                        followVmdCamera_ = follow;
-                        refreshPreviewScene();
-                    }
-                    overlayHovered = ImGui::IsItemHovered();
-                }
-                uiState_.viewportHovered = imageHovered && !overlayHovered;
             }
         } else {
             device_->setPreviewViewportExtent({});
-        }
-        const auto& io = ImGui::GetIO();
-        const auto* globalCameraMotion = scene_.cameraMotion();
-        const auto* sourceMotion = globalCameraMotion != nullptr && !globalCameraMotion->cameras.empty()
-                                       ? globalCameraMotion
-                                       : (model ? model->motion.get() : nullptr);
-        const bool hasCameraVmd = sourceMotion != nullptr && !sourceMotion->cameras.empty();
-        const bool viewportInput = uiState_.viewportHovered && !ImGui::IsAnyItemActive() &&
-                                   (!hasCameraVmd || !followVmdCamera_);
-        const bool orbit = viewportInput && ImGui::IsMouseDragging(ImGuiMouseButton_Left);
-        const bool pan = viewportInput && ImGui::IsMouseDragging(ImGuiMouseButton_Right);
-        const bool zoom = viewportInput && io.MouseWheel != 0.0F;
-        if (orbit || pan || zoom) {
-            if (!manualCamera_ && cameraEditPreview_) {
-                const auto current = makeSceneCameraState();
-                cameraTarget_ = current.position;
-                cameraYaw_ = current.rotation[1];
-                cameraPitch_ = current.rotation[0];
-                cameraDistance_ = current.distance;
-                cameraFovRadians_ = current.verticalFovRadians;
-                cameraPerspective_ = current.perspective;
-                cameraEditPreview_ = false;
-            }
-            const auto normalization = model != nullptr ? model->normalization : normalization_;
-            if (orbit)
-                ViewportNavigation::orbit(cameraYaw_, cameraPitch_, io.MouseDelta.x, io.MouseDelta.y);
-            if (pan)
-                ViewportNavigation::pan(cameraTarget_, io.MouseDelta.x, io.MouseDelta.y, normalization.scale);
-            if (zoom)
-                ViewportNavigation::zoom(cameraDistance_, io.MouseWheel, normalization.scale);
-            manualCamera_ = true;
-            refreshPreviewScene();
         }
     } else {
         device_->setPreviewViewportExtent({});
@@ -2928,8 +2930,10 @@ void Application::buildUi() {
         ImGui::End();
 
     if (uiState_.sceneVisible && ImGui::Begin(workspaceWindowName("Scene", "scene").c_str())) {
-        if (ImGui::Selectable("Scene / Background", uiState_.inspectScene))
+        if (ImGui::Selectable("Scene / Background", uiState_.inspectScene)) {
             uiState_.inspectScene = true;
+            inspectorPage_ = InspectorPage::selection;
+        }
         ImGui::InputTextWithHint("##scene-filter", "Search scene...", uiState_.sceneFilter.data(),
                                  uiState_.sceneFilter.size());
         ImGui::SeparatorText("Models");
@@ -2942,6 +2946,7 @@ void Application::buildUi() {
             const auto label = std::string(instance.visible ? "[visible]  " : "[hidden]  ") + instance.displayName;
             if (ImGui::Selectable(label.c_str(), selected)) {
                 uiState_.inspectScene = false;
+                inspectorPage_ = InspectorPage::selection;
                 scene_.selectModel(instance.id);
                 normalization_ = instance.normalization;
                 refreshAnimatedMesh(true);
@@ -3079,6 +3084,8 @@ void Application::setWorkspace(ui::Workspace workspace) {
     previousPanels.inspectorVisible = uiState_.inspectorVisible;
     previousPanels.timelineVisible = uiState_.timelineVisible;
     uiState_.workspace = workspace;
+    if (workspace == ui::Workspace::camera)
+        inspectorPage_ = InspectorPage::camera;
     const auto& panels = uiState_.workspacePanels[static_cast<std::size_t>(workspace)];
     uiState_.sceneVisible = panels.sceneVisible;
     uiState_.inspectorVisible = panels.inspectorVisible;
@@ -3243,11 +3250,230 @@ void Application::buildDockLayout() {
         ImGui::DockBuilderDockWindow(workspaceWindowName("Bone / Expression", "legacy-bone").c_str(), auxiliaryNode);
         ImGui::DockBuilderDockWindow(workspaceWindowName("Project tools", "legacy-project").c_str(), auxiliaryNode);
     }
-    if (uiState_.workspace == ui::Workspace::camera || uiState_.workspace == ui::Workspace::debug)
-        ImGui::DockBuilderDockWindow(workspaceWindowName("Camera / Light / Self Shadow", "legacy-camera").c_str(),
-                                     auxiliaryNode);
     ImGui::DockBuilderFinish(dockspaceId);
     uiState_.resetLayoutRequested = false;
+#endif
+}
+
+void Application::captureCameraForEditing() {
+#if DAYO_HAS_IMGUI
+    const auto camera = makeSceneCameraState();
+    const auto* model = selectedModel();
+    const auto normalization = model != nullptr ? model->normalization : normalization_;
+    const auto scale = ViewportNavigation::safeScale(normalization.scale);
+    for (std::size_t axis = 0; axis < 3; ++axis)
+        editedCamera_.position[axis] = camera.position[axis] / scale + normalization.center[axis];
+    editedCamera_.rotation = camera.rotation;
+    editedCamera_.distance = -camera.distance / scale;
+    editedCamera_.viewAngle = camera.verticalFovRadians * 57.2957795131F;
+    editedCamera_.perspective = camera.perspective;
+#endif
+}
+
+void Application::captureLightForEditing() {
+#if DAYO_HAS_IMGUI
+    const auto* globalMotion = scene_.cameraMotion();
+    const auto* model = selectedModel();
+    const auto* motion = globalMotion != nullptr && !globalMotion->lights.empty()
+                             ? globalMotion
+                             : (model != nullptr ? model->motion.get() : nullptr);
+    editedLight_ = motion != nullptr && !motion->lights.empty()
+                       ? core::evaluateLight(*motion, animationFrame_)
+                       : core::VmdLightKey{0, {0.6F, 0.6F, 0.6F}, {-0.5F, -1.0F, 0.5F}};
+#endif
+}
+
+void Application::buildCameraLightControls() {
+#if DAYO_HAS_IMGUI
+    const auto execute = [&](core::VmdMotion before, core::MotionDocument document, std::string label) {
+        const auto modelName = before.modelName;
+        history_.execute(scene_, std::make_unique<core::EditMotionCommand>(
+                                     0, true, std::move(before), core::toVmdMotion(std::move(document), modelName),
+                                     std::move(label)));
+        selectedKeys_.clear();
+        refreshAnimatedMesh(false);
+        refreshPreviewScene();
+    };
+    const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
+    ImGui::Text("Frame %u  |  Camera / Lighting", frame);
+    ImGui::TextWrapped(
+        "Changes preview immediately. Register a key to save them at this frame; Ctrl+Z undoes registration.");
+    ImGui::TextWrapped("Register a key before exporting a VMD for reuse.");
+    ImGui::PushItemWidth(-ImGui::GetFontSize() * 9.0F);
+
+    if (inspectorPage_ == InspectorPage::camera) {
+        if (!cameraEditPreview_)
+            captureCameraForEditing();
+        ImGui::SeparatorText("Camera");
+        if (ImGui::Button("Use current view")) {
+            captureCameraForEditing();
+            manualCamera_ = false;
+            followVmdCamera_ = false;
+            cameraEditPreview_ = true;
+            refreshPreviewScene();
+        }
+        if (ImGui::Button("Revert to animation##camera")) {
+            cameraEditPreview_ = false;
+            manualCamera_ = false;
+            followVmdCamera_ = true;
+            captureCameraForEditing();
+            refreshPreviewScene();
+        }
+        ImGui::Checkbox("Realtime camera recording (Space registers)", &recordCamera_);
+        bool changed = false;
+        changed |= ImGui::DragFloat3("Target", editedCamera_.position.data(), 0.01F);
+        changed |= ImGui::DragFloat3("Rotation (radians)", editedCamera_.rotation.data(), 0.01F);
+        changed |= ImGui::DragFloat("Distance", &editedCamera_.distance, 0.1F);
+        if (editedCamera_.viewAngle <= 0.0F)
+            editedCamera_.viewAngle = 30.0F;
+        changed |= ImGui::SliderFloat("Field of view", &editedCamera_.viewAngle, 1.0F, 179.0F, "%.1f deg");
+        changed |= ImGui::Checkbox("Perspective", &editedCamera_.perspective);
+        if (ImGui::CollapsingHeader("Camera parent (advanced)")) {
+            ImGui::InputInt("Parent model", &editedCamera_.parentModel);
+            ImGui::InputInt("Parent bone", &editedCamera_.parentBone);
+            ImGui::InputText("Parent bone name", cameraParentBoneName_.data(), cameraParentBoneName_.size());
+        }
+        if (changed) {
+            manualCamera_ = false;
+            followVmdCamera_ = false;
+            cameraEditPreview_ = true;
+            refreshPreviewScene();
+        }
+        if (ImGui::Button("Register camera key")) {
+            core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
+            auto document = core::toMotionDocument(before);
+            editedCamera_.frame = frame;
+            editedCamera_.parentBoneName = cameraParentBoneName_.data();
+            std::erase_if(document.cameras, [&](const auto& key) { return key.frame == frame; });
+            document.cameras.push_back(editedCamera_);
+            core::MotionEditor::normalize(document);
+            cameraEditPreview_ = false;
+            manualCamera_ = false;
+            followVmdCamera_ = true;
+            execute(std::move(before), std::move(document), "Register camera key");
+        }
+    }
+    if (inspectorPage_ == InspectorPage::light) {
+        if (!lightEditPreview_)
+            captureLightForEditing();
+        ImGui::SeparatorText("Directional light");
+        if (ImGui::Button("Revert to animation##light")) {
+            lightEditPreview_ = false;
+            captureLightForEditing();
+            scene_.markDirty(core::DirtyFlag::lighting);
+            refreshPreviewScene();
+        }
+        bool changed = false;
+        changed |= ImGui::ColorEdit3("Color", editedLight_.color.data());
+        changed |= ImGui::DragFloat3("Direction", editedLight_.position.data(), 0.01F, -1.0F, 1.0F);
+        if (changed) {
+            lightEditPreview_ = true;
+            scene_.markDirty(core::DirtyFlag::lighting);
+            refreshPreviewScene();
+        }
+        if (ImGui::Button("Register light key")) {
+            core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
+            auto document = core::toMotionDocument(before);
+            editedLight_.frame = frame;
+            std::erase_if(document.lights, [&](const auto& key) { return key.frame == frame; });
+            document.lights.push_back(editedLight_);
+            core::MotionEditor::normalize(document);
+            lightEditPreview_ = false;
+            scene_.markDirty(core::DirtyFlag::lighting);
+            execute(std::move(before), std::move(document), "Register light key");
+        }
+    }
+    if (inspectorPage_ == InspectorPage::light && ImGui::CollapsingHeader("Self shadow")) {
+        int shadowMode = editedShadow_.mode;
+        if (ImGui::Combo("Self shadow", &shadowMode, "None\0Mode 1\0Mode 2\0"))
+            editedShadow_.mode = static_cast<std::uint8_t>(shadowMode);
+        ImGui::DragFloat("Shadow distance", &editedShadow_.distance, 0.1F, 0.0F, 10'000.0F);
+        if (ImGui::Button("Register self shadow")) {
+            core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
+            auto document = core::toMotionDocument(before);
+            editedShadow_.frame = frame;
+            std::erase_if(document.shadows, [&](const auto& key) { return key.frame == frame; });
+            document.shadows.push_back(editedShadow_);
+            core::MotionEditor::normalize(document);
+            execute(std::move(before), std::move(document), "Register self shadow key");
+        }
+    }
+    ImGui::SeparatorText("Reusable camera / light motion");
+    ImGui::InputText("VMD file##camera-light", cameraLightVmdPath_.data(), cameraLightVmdPath_.size());
+    if (inspectorPage_ == InspectorPage::camera && ImGui::Button("Export camera VMD")) {
+        try {
+            if (cameraLightVmdPath_[0] == '\0')
+                throw std::invalid_argument("Choose a VMD destination");
+            if (scene_.cameraMotion() == nullptr || scene_.cameraMotion()->cameras.empty())
+                throw std::invalid_argument("No global camera keys to export");
+            core::VmdMotion extracted;
+            extracted.modelName = "Camera/Light";
+            extracted.cameras = scene_.cameraMotion()->cameras;
+            extracted.lastFrame = extracted.cameras.back().frame;
+            core::saveVmd(cameraLightVmdPath_.data(), extracted);
+            cameraLightVmdStatus_ = "Camera exported";
+        } catch (const std::exception& error) {
+            cameraLightVmdStatus_ = error.what();
+        }
+    }
+    if (inspectorPage_ == InspectorPage::light && ImGui::Button("Export light VMD")) {
+        try {
+            if (cameraLightVmdPath_[0] == '\0')
+                throw std::invalid_argument("Choose a VMD destination");
+            if (scene_.cameraMotion() == nullptr || scene_.cameraMotion()->lights.empty())
+                throw std::invalid_argument("No global light keys to export");
+            core::VmdMotion extracted;
+            extracted.modelName = "Camera/Light";
+            extracted.lights = scene_.cameraMotion()->lights;
+            extracted.lastFrame = extracted.lights.back().frame;
+            core::saveVmd(cameraLightVmdPath_.data(), extracted);
+            cameraLightVmdStatus_ = "Light exported";
+        } catch (const std::exception& error) {
+            cameraLightVmdStatus_ = error.what();
+        }
+    }
+    if (inspectorPage_ == InspectorPage::camera && ImGui::Button("Import camera keys")) {
+        try {
+            if (cameraLightVmdPath_[0] == '\0')
+                throw std::invalid_argument("Choose a VMD source");
+            const auto imported = core::loadVmd(cameraLightVmdPath_.data());
+            if (imported.cameras.empty())
+                throw std::invalid_argument("VMD has no camera keys");
+            core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
+            auto document = core::toMotionDocument(before);
+            document.cameras = imported.cameras;
+            core::MotionEditor::normalize(document);
+            manualCamera_ = false;
+            cameraEditPreview_ = false;
+            followVmdCamera_ = true;
+            execute(std::move(before), std::move(document), "Import camera keys");
+            cameraLightVmdStatus_ = "Camera imported (other tracks preserved)";
+        } catch (const std::exception& error) {
+            cameraLightVmdStatus_ = error.what();
+        }
+    }
+    if (inspectorPage_ == InspectorPage::light && ImGui::Button("Import light keys")) {
+        try {
+            if (cameraLightVmdPath_[0] == '\0')
+                throw std::invalid_argument("Choose a VMD source");
+            const auto imported = core::loadVmd(cameraLightVmdPath_.data());
+            if (imported.lights.empty())
+                throw std::invalid_argument("VMD has no light keys");
+            core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
+            auto document = core::toMotionDocument(before);
+            document.lights = imported.lights;
+            core::MotionEditor::normalize(document);
+            lightEditPreview_ = false;
+            scene_.markDirty(core::DirtyFlag::lighting);
+            execute(std::move(before), std::move(document), "Import light keys");
+            cameraLightVmdStatus_ = "Light imported (other tracks preserved)";
+        } catch (const std::exception& error) {
+            cameraLightVmdStatus_ = error.what();
+        }
+    }
+    if (!cameraLightVmdStatus_.empty())
+        ImGui::TextWrapped("%s", cameraLightVmdStatus_.c_str());
+    ImGui::PopItemWidth();
 #endif
 }
 
@@ -3256,7 +3482,25 @@ void Application::buildInspectorPanel() {
     if (!uiState_.inspectorVisible)
         return;
     auto* model = selectedModel();
+    if (inspectorFocusRequested_) {
+        ImGui::SetNextWindowFocus();
+        inspectorFocusRequested_ = false;
+    }
     if (!ImGui::Begin(workspaceWindowName("Inspector", "inspector").c_str())) {
+        ImGui::End();
+        return;
+    }
+    if (ImGui::RadioButton("Selection", inspectorPage_ == InspectorPage::selection))
+        inspectorPage_ = InspectorPage::selection;
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Camera", inspectorPage_ == InspectorPage::camera))
+        inspectorPage_ = InspectorPage::camera;
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Light", inspectorPage_ == InspectorPage::light))
+        inspectorPage_ = InspectorPage::light;
+    ImGui::Separator();
+    if (inspectorPage_ != InspectorPage::selection) {
+        buildCameraLightControls();
         ImGui::End();
         return;
     }
@@ -4357,202 +4601,6 @@ void Application::buildEditorUi() {
         }
     }
     if (debugWorkspace)
-        ImGui::End();
-
-    const bool cameraPanelVisible = debugWorkspace || uiState_.workspace == ui::Workspace::camera;
-    if (cameraPanelVisible &&
-        ImGui::Begin(workspaceWindowName("Camera / Light / Self Shadow", "legacy-camera").c_str())) {
-        const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
-        const auto* fallbackMotion = selectedModel() != nullptr ? selectedModel()->motion.get() : nullptr;
-        ImGui::Text("Frame %u  |  Camera / Lighting", frame);
-        ImGui::TextDisabled("Edits preview immediately; Register commits a key. Ctrl+Z undoes registration.");
-
-        if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
-            if (ImGui::Button("Load evaluated camera##editor")) {
-                const auto* evaluatedMotion = scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : fallbackMotion;
-                if (evaluatedMotion != nullptr && !evaluatedMotion->cameras.empty()) {
-                    const auto value = core::evaluateCamera(*evaluatedMotion, animationFrame_);
-                    editedCamera_.position = value.position;
-                    editedCamera_.rotation = value.rotation;
-                    editedCamera_.distance = value.distance;
-                    editedCamera_.viewAngle = value.viewAngle;
-                    editedCamera_.perspective = value.perspective;
-                } else {
-                    // In the absence of VMD, capture the viewport orbit without
-                    // converting it into a second, unrelated camera representation.
-                    const auto normalization =
-                        selectedModel() != nullptr ? selectedModel()->normalization : normalization_;
-                    const auto scale = ViewportNavigation::safeScale(normalization.scale);
-                    for (std::size_t i = 0; i < 3; ++i)
-                        editedCamera_.position[i] = cameraTarget_[i] / scale + normalization.center[i];
-                    editedCamera_.rotation = {cameraPitch_, cameraYaw_, 0.0F};
-                    editedCamera_.distance = -cameraDistance_ / scale;
-                    editedCamera_.viewAngle = 30.0F;
-                    editedCamera_.perspective = true;
-                }
-                manualCamera_ = false;
-                cameraEditPreview_ = true;
-                refreshPreviewScene();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Revert preview##camera")) {
-                cameraEditPreview_ = false;
-                manualCamera_ = false;
-                refreshPreviewScene();
-            }
-            ImGui::Checkbox("Realtime camera recording (Space registers)", &recordCamera_);
-            bool changed = false;
-            changed |= ImGui::DragFloat3("Target", editedCamera_.position.data(), 0.01F);
-            changed |= ImGui::DragFloat3("Rotation (radians)", editedCamera_.rotation.data(), 0.01F);
-            changed |= ImGui::DragFloat("Distance", &editedCamera_.distance, 0.1F);
-            if (editedCamera_.viewAngle <= 0.0F)
-                editedCamera_.viewAngle = 30.0F;
-            changed |= ImGui::SliderFloat("Field of view", &editedCamera_.viewAngle, 1.0F, 179.0F, "%.1f deg");
-            changed |= ImGui::Checkbox("Perspective", &editedCamera_.perspective);
-            ImGui::InputInt("Parent model", &editedCamera_.parentModel);
-            ImGui::InputInt("Parent bone", &editedCamera_.parentBone);
-            ImGui::InputText("Parent bone name", cameraParentBoneName_.data(), cameraParentBoneName_.size());
-            if (changed) {
-                manualCamera_ = false;
-                cameraEditPreview_ = true;
-                refreshPreviewScene();
-            }
-            if (ImGui::Button("Register camera key")) {
-                core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
-                auto document = core::toMotionDocument(before);
-                editedCamera_.frame = frame;
-                editedCamera_.parentBoneName = cameraParentBoneName_.data();
-                std::erase_if(document.cameras, [&](const auto& key) { return key.frame == frame; });
-                document.cameras.push_back(editedCamera_);
-                core::MotionEditor::normalize(document);
-                execute(std::move(before), std::move(document), true, "Register camera key");
-                cameraEditPreview_ = false;
-            }
-        }
-        if (ImGui::CollapsingHeader("Directional light", ImGuiTreeNodeFlags_DefaultOpen)) {
-            if (ImGui::Button("Load evaluated light##editor")) {
-                const auto* evaluatedMotion = scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : fallbackMotion;
-                if (evaluatedMotion != nullptr && !evaluatedMotion->lights.empty())
-                    editedLight_ = core::evaluateLight(*evaluatedMotion, animationFrame_);
-                lightEditPreview_ = true;
-                refreshPreviewScene();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Revert preview##light")) {
-                lightEditPreview_ = false;
-                refreshPreviewScene();
-            }
-            bool changed = false;
-            changed |= ImGui::ColorEdit3("Color", editedLight_.color.data());
-            changed |= ImGui::DragFloat3("Direction", editedLight_.position.data(), 0.01F, -1.0F, 1.0F);
-            if (changed) {
-                lightEditPreview_ = true;
-                scene_.markDirty(core::DirtyFlag::lighting);
-                refreshPreviewScene();
-            }
-            if (ImGui::Button("Register light key")) {
-                core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
-                auto document = core::toMotionDocument(before);
-                editedLight_.frame = frame;
-                std::erase_if(document.lights, [&](const auto& key) { return key.frame == frame; });
-                document.lights.push_back(editedLight_);
-                core::MotionEditor::normalize(document);
-                execute(std::move(before), std::move(document), true, "Register light key");
-                lightEditPreview_ = false;
-            }
-        }
-        if (ImGui::CollapsingHeader("Self shadow")) {
-            int shadowMode = editedShadow_.mode;
-            if (ImGui::Combo("Self shadow", &shadowMode, "None\0Mode 1\0Mode 2\0"))
-                editedShadow_.mode = static_cast<std::uint8_t>(shadowMode);
-            ImGui::DragFloat("Shadow distance", &editedShadow_.distance, 0.1F, 0.0F, 10'000.0F);
-            if (ImGui::Button("Register self shadow")) {
-                core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
-                auto document = core::toMotionDocument(before);
-                editedShadow_.frame = frame;
-                std::erase_if(document.shadows, [&](const auto& key) { return key.frame == frame; });
-                document.shadows.push_back(editedShadow_);
-                core::MotionEditor::normalize(document);
-                execute(std::move(before), std::move(document), true, "Register self shadow key");
-            }
-        }
-        ImGui::SeparatorText("Reusable camera / light motion");
-        ImGui::InputText("VMD file##camera-light", cameraLightVmdPath_.data(), cameraLightVmdPath_.size());
-        if (ImGui::Button("Export camera VMD")) {
-            try {
-                if (cameraLightVmdPath_[0] == '\0')
-                    throw std::invalid_argument("Choose a VMD destination");
-                if (scene_.cameraMotion() == nullptr || scene_.cameraMotion()->cameras.empty())
-                    throw std::invalid_argument("No global camera keys to export");
-                core::VmdMotion extracted;
-                extracted.modelName = "Camera/Light";
-                extracted.cameras = scene_.cameraMotion()->cameras;
-                extracted.lastFrame = extracted.cameras.back().frame;
-                core::saveVmd(cameraLightVmdPath_.data(), extracted);
-                cameraLightVmdStatus_ = "Camera exported";
-            } catch (const std::exception& error) {
-                cameraLightVmdStatus_ = error.what();
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Export light VMD")) {
-            try {
-                if (cameraLightVmdPath_[0] == '\0')
-                    throw std::invalid_argument("Choose a VMD destination");
-                if (scene_.cameraMotion() == nullptr || scene_.cameraMotion()->lights.empty())
-                    throw std::invalid_argument("No global light keys to export");
-                core::VmdMotion extracted;
-                extracted.modelName = "Camera/Light";
-                extracted.lights = scene_.cameraMotion()->lights;
-                extracted.lastFrame = extracted.lights.back().frame;
-                core::saveVmd(cameraLightVmdPath_.data(), extracted);
-                cameraLightVmdStatus_ = "Light exported";
-            } catch (const std::exception& error) {
-                cameraLightVmdStatus_ = error.what();
-            }
-        }
-        if (ImGui::Button("Import camera keys")) {
-            try {
-                if (cameraLightVmdPath_[0] == '\0')
-                    throw std::invalid_argument("Choose a VMD source");
-                const auto imported = core::loadVmd(cameraLightVmdPath_.data());
-                if (imported.cameras.empty())
-                    throw std::invalid_argument("VMD has no camera keys");
-                core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
-                auto document = core::toMotionDocument(before);
-                document.cameras = imported.cameras;
-                core::MotionEditor::normalize(document);
-                execute(std::move(before), std::move(document), true, "Import camera keys");
-                manualCamera_ = false;
-                cameraEditPreview_ = false;
-                cameraLightVmdStatus_ = "Camera imported (other tracks preserved)";
-            } catch (const std::exception& error) {
-                cameraLightVmdStatus_ = error.what();
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Import light keys")) {
-            try {
-                if (cameraLightVmdPath_[0] == '\0')
-                    throw std::invalid_argument("Choose a VMD source");
-                const auto imported = core::loadVmd(cameraLightVmdPath_.data());
-                if (imported.lights.empty())
-                    throw std::invalid_argument("VMD has no light keys");
-                core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
-                auto document = core::toMotionDocument(before);
-                document.lights = imported.lights;
-                core::MotionEditor::normalize(document);
-                execute(std::move(before), std::move(document), true, "Import light keys");
-                lightEditPreview_ = false;
-                cameraLightVmdStatus_ = "Light imported (other tracks preserved)";
-            } catch (const std::exception& error) {
-                cameraLightVmdStatus_ = error.what();
-            }
-        }
-        if (!cameraLightVmdStatus_.empty())
-            ImGui::TextWrapped("%s", cameraLightVmdStatus_.c_str());
-    }
-    if (cameraPanelVisible)
         ImGui::End();
 
     if (debugWorkspace && ImGui::Begin(workspaceWindowName("Project tools", "legacy-project").c_str())) {

@@ -26,6 +26,10 @@
 #include "graphics/subayai_light_sampling.hpp"
 #include "ui/ui_state.hpp"
 
+#if DAYO_HAS_IMGUI
+#include "ui/viewport_interaction.hpp"
+#endif
+
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -69,6 +73,9 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void buildMainMenuBar();
     void buildDockLayout();
     void buildInspectorPanel();
+    void buildCameraLightControls();
+    void captureCameraForEditing();
+    void captureLightForEditing();
     void buildImageSequenceExportUi();
     void buildSaveAsDialog();
     void buildStatusBar();
@@ -276,7 +283,10 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     bool editGlobalMotion_{};
     bool recordCamera_{};
     bool followVmdCamera_{true};
-    bool viewportRightDragged_{};
+    ui::ViewportInteraction viewportInteraction_;
+    enum class InspectorPage { selection, camera, light };
+    InspectorPage inspectorPage_{InspectorPage::selection};
+    bool inspectorFocusRequested_{};
     bool cameraEditPreview_{};
     bool lightEditPreview_{};
     std::array<char, 1024> cameraLightVmdPath_{};
