@@ -435,8 +435,10 @@ void Application::requestRenderer(graphics::RendererKind renderer) {
 
 fx::FxCameraState Application::makeSceneCameraState() const {
     const auto* model = selectedModel();
-    const auto* motion =
-        scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
+    const auto* globalCameraMotion = scene_.cameraMotion();
+    const auto* motion = globalCameraMotion != nullptr && !globalCameraMotion->cameras.empty()
+                             ? globalCameraMotion
+                             : (model != nullptr ? model->motion.get() : nullptr);
     fx::FxCameraState camera;
     camera.rotation = {cameraPitch_, cameraYaw_, 0.0F};
     camera.distance = cameraDistance_;
@@ -471,8 +473,10 @@ fx::FxCameraState Application::makeSceneCameraState() const {
 fx::FxFrameContext Application::makeNativeFrameContext(const graphics::RenderTargetDesc& target,
                                                        const fx::FxHostFrameState& invocationEvents) {
     const auto* model = selectedModel();
-    const auto* motion =
-        scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
+    const auto* globalLightMotion = scene_.cameraMotion();
+    const auto* motion = globalLightMotion != nullptr && !globalLightMotion->lights.empty()
+                             ? globalLightMotion
+                             : (model != nullptr ? model->motion.get() : nullptr);
     const auto camera = makeSceneCameraState();
     const auto matrices =
         graphics::makeSceneCameraMatrices(camera, target.width, target.height,
@@ -2687,8 +2691,10 @@ void Application::refreshPreviewScene() {
     if (device_ == nullptr)
         return;
     const auto* model = selectedModel();
-    const auto* motion =
-        scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
+    const auto* globalLightMotion = scene_.cameraMotion();
+    const auto* motion = globalLightMotion != nullptr && !globalLightMotion->lights.empty()
+                             ? globalLightMotion
+                             : (model != nullptr ? model->motion.get() : nullptr);
     graphics::PreviewScene scene;
     switch (scene_.background().screenSource) {
     case core::ScreenTextureSource::previousFrame:
@@ -2809,8 +2815,10 @@ void Application::buildUi() {
                         ImGui::GetColorU32(ImGuiCol_WindowBg, 0.88F), ImGui::GetStyle().FrameRounding);
                     drawList->AddText(messagePosition, ImGui::GetColorU32(ImGuiCol_TextDisabled), message);
                 }
-                const auto* sourceMotion =
-                    scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : (model ? model->motion.get() : nullptr);
+                const auto* globalCameraMotion = scene_.cameraMotion();
+                const auto* sourceMotion = globalCameraMotion != nullptr && !globalCameraMotion->cameras.empty()
+                                               ? globalCameraMotion
+                                               : (model ? model->motion.get() : nullptr);
                 const bool hasCameraVmd = sourceMotion != nullptr && !sourceMotion->cameras.empty();
                 const bool imageRightClicked = ImGui::IsItemClicked(ImGuiMouseButton_Right);
                 if (imageRightClicked)
@@ -2868,8 +2876,10 @@ void Application::buildUi() {
             device_->setPreviewViewportExtent({});
         }
         const auto& io = ImGui::GetIO();
-        const auto* sourceMotion =
-            scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : (model ? model->motion.get() : nullptr);
+        const auto* globalCameraMotion = scene_.cameraMotion();
+        const auto* sourceMotion = globalCameraMotion != nullptr && !globalCameraMotion->cameras.empty()
+                                       ? globalCameraMotion
+                                       : (model ? model->motion.get() : nullptr);
         const bool hasCameraVmd = sourceMotion != nullptr && !sourceMotion->cameras.empty();
         const bool viewportInput = uiState_.viewportHovered && !ImGui::IsAnyItemActive() &&
                                    (!hasCameraVmd || !followVmdCamera_);
