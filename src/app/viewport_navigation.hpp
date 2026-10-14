@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 
 namespace dayo::app {
 
@@ -30,6 +31,17 @@ struct ViewportNavigation {
         const auto scale = safeScale(sceneScale);
         target[0] -= deltaX * panUnitsPerPixel * scale;
         target[1] += deltaY * panUnitsPerPixel * scale;
+    }
+
+    static void reset(std::array<float, 3>& target, float& yaw, float& pitch, float& positiveDistance,
+                      const std::array<float, 3>& sceneCenter, float sceneScale) noexcept {
+        const auto scale = safeScale(sceneScale);
+        constexpr std::array<float, 3> defaultTarget{0.0F, 10.0F, 0.0F};
+        for (std::size_t i = 0; i < target.size(); ++i)
+            target[i] = (defaultTarget[i] - sceneCenter[i]) * scale;
+        yaw = 0.0F;
+        pitch = 0.0F;
+        positiveDistance = 30.0F * scale;
     }
 
     static void zoom(float& positiveDistance, float mouseWheel, float sceneScale) noexcept {
