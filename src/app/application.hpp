@@ -272,6 +272,10 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     float timelineScrollY_{};
     bool editGlobalMotion_{};
     bool recordCamera_{};
+    bool cameraEditPreview_{};
+    bool lightEditPreview_{};
+    std::array<char, 1024> cameraLightVmdPath_{};
+    std::string cameraLightVmdStatus_;
     int selectedBone_{};
     int selectedMorph_{};
     core::Float3 editedBoneTranslation_{};
