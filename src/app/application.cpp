@@ -3385,7 +3385,7 @@ void Application::buildCameraLightControls() {
     }
     if (inspectorPage_ == InspectorPage::light && ImGui::CollapsingHeader("Self shadow")) {
         int shadowMode = editedShadow_.mode;
-        if (ImGui::Combo("Self shadow", &shadowMode, "None\0Mode 1\0Mode 2\0"))
+        if (ImGui::Combo("Mode##self-shadow-mode", &shadowMode, "None\0Mode 1\0Mode 2\0"))
             editedShadow_.mode = static_cast<std::uint8_t>(shadowMode);
         ImGui::DragFloat("Shadow distance", &editedShadow_.distance, 0.1F, 0.0F, 10'000.0F);
         if (ImGui::Button("Register self shadow")) {
