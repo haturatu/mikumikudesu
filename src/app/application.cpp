@@ -1,5 +1,6 @@
 #include "app/application.hpp"
 #include "app/preview_conversion.hpp"
+#include "app/viewport_navigation.hpp"
 #include <deque>
 
 #include "graphics/camera_matrices.hpp"
@@ -439,6 +440,7 @@ fx::FxCameraState Application::makeSceneCameraState() const {
     fx::FxCameraState camera;
     camera.rotation = {cameraPitch_, cameraYaw_, 0.0F};
     camera.distance = cameraDistance_;
+    camera.position = cameraTarget_;
 #if DAYO_HAS_IMGUI
     if (cameraEditPreview_ && !manualCamera_) {
         const auto normalization = model != nullptr ? model->normalization : normalization_;
@@ -999,10 +1001,13 @@ void Application::resetProjectRuntimeState() {
 #if DAYO_HAS_IMGUI
     cameraEditPreview_ = false;
     lightEditPreview_ = false;
+    followVmdCamera_ = true;
+    viewportRightDragged_ = false;
 #endif
     cameraYaw_ = 0.0F;
     cameraPitch_ = 0.0F;
     cameraDistance_ = 3.0F;
+    cameraTarget_ = {};
     normalization_ = {};
     projectAssets_.clear();
     projectModelMetadata_.clear();
@@ -2789,12 +2794,56 @@ void Application::buildUi() {
                         ImGui::GetColorU32(ImGuiCol_WindowBg, 0.88F), ImGui::GetStyle().FrameRounding);
                     drawList->AddText(messagePosition, ImGui::GetColorU32(ImGuiCol_TextDisabled), message);
                 }
+                const auto* sourceMotion =
+                    scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : (model ? model->motion.get() : nullptr);
+                const bool hasCameraVmd = sourceMotion != nullptr && !sourceMotion->cameras.empty();
+                const bool imageRightClicked = ImGui::IsItemClicked(ImGuiMouseButton_Right);
+                if (imageRightClicked)
+                    viewportRightDragged_ = false;
+                if (ImGui::IsMouseDragging(ImGuiMouseButton_Right))
+                    viewportRightDragged_ = true;
+                // A short right click opens the menu; a right drag only pans.
+                if (imageHovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !viewportRightDragged_)
+                    ImGui::OpenPopup("Viewport view controls");
+                if (ImGui::BeginPopup("Viewport view controls")) {
+                    if (ImGui::MenuItem("Reset view")) {
+                        const auto normalization = model != nullptr ? model->normalization : normalization_;
+                        const float scale = ViewportNavigation::safeScale(normalization.scale);
+                        const std::array<float, 3> defaultTarget{0.0F, 10.0F, 0.0F};
+                        for (std::size_t i = 0; i < defaultTarget.size(); ++i)
+                            cameraTarget_[i] = (defaultTarget[i] - normalization.center[i]) * scale;
+                        cameraYaw_ = 0.0F;
+                        cameraPitch_ = 0.0F;
+                        cameraDistance_ = 30.0F * scale;
+                        cameraEditPreview_ = false;
+                        if (!hasCameraVmd || !followVmdCamera_)
+                            manualCamera_ = true;
+                        refreshPreviewScene();
+                    }
+                    ImGui::EndPopup();
+                }
+                if (ImGui::IsMouseReleased(ImGuiMouseButton_Right))
+                    viewportRightDragged_ = false;
                 bool overlayHovered = false;
-                if (manualCamera_) {
+                if (hasCameraVmd) {
                     ImGui::SetCursorScreenPos({imagePosition.x + ImGui::GetStyle().ItemSpacing.x,
                                                imagePosition.y + ImGui::GetStyle().ItemSpacing.y});
-                    if (ImGui::Button("Use VMD camera")) {
-                        manualCamera_ = false;
+                    bool follow = followVmdCamera_;
+                    if (ImGui::Checkbox("Follow VMD camera##viewport", &follow)) {
+                        if (follow) {
+                            manualCamera_ = false;
+                            cameraEditPreview_ = false;
+                        } else {
+                            // Preserve the currently visible view when leaving VMD follow.
+                            const auto current = makeSceneCameraState();
+                            cameraTarget_ = current.position;
+                            cameraYaw_ = current.rotation[1];
+                            cameraPitch_ = current.rotation[0];
+                            cameraDistance_ = current.distance;
+                            manualCamera_ = true;
+                            cameraEditPreview_ = false;
+                        }
+                        followVmdCamera_ = follow;
                         refreshPreviewScene();
                     }
                     overlayHovered = ImGui::IsItemHovered();
@@ -2805,18 +2854,30 @@ void Application::buildUi() {
             device_->setPreviewViewportExtent({});
         }
         const auto& io = ImGui::GetIO();
-        const bool viewportInput = uiState_.viewportHovered && !ImGui::IsAnyItemActive();
-        bool cameraChanged = false;
-        if (viewportInput && ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
-            cameraYaw_ += io.MouseDelta.x * 0.008F;
-            cameraPitch_ = std::clamp(cameraPitch_ + io.MouseDelta.y * 0.008F, -1.5F, 1.5F);
-            cameraChanged = true;
-        }
-        if (viewportInput && io.MouseWheel != 0.0F) {
-            cameraDistance_ = std::clamp(cameraDistance_ * std::exp(-io.MouseWheel * 0.12F), 0.4F, 30.0F);
-            cameraChanged = true;
-        }
-        if (cameraChanged) {
+        const auto* sourceMotion =
+            scene_.cameraMotion() != nullptr ? scene_.cameraMotion() : (model ? model->motion.get() : nullptr);
+        const bool hasCameraVmd = sourceMotion != nullptr && !sourceMotion->cameras.empty();
+        const bool viewportInput = uiState_.viewportHovered && !ImGui::IsAnyItemActive() &&
+                                   (!hasCameraVmd || !followVmdCamera_);
+        const bool orbit = viewportInput && ImGui::IsMouseDragging(ImGuiMouseButton_Left);
+        const bool pan = viewportInput && ImGui::IsMouseDragging(ImGuiMouseButton_Right);
+        const bool zoom = viewportInput && io.MouseWheel != 0.0F;
+        if (orbit || pan || zoom) {
+            if (!manualCamera_ && cameraEditPreview_) {
+                const auto current = makeSceneCameraState();
+                cameraTarget_ = current.position;
+                cameraYaw_ = current.rotation[1];
+                cameraPitch_ = current.rotation[0];
+                cameraDistance_ = current.distance;
+                cameraEditPreview_ = false;
+            }
+            const auto normalization = model != nullptr ? model->normalization : normalization_;
+            if (orbit)
+                ViewportNavigation::orbit(cameraYaw_, cameraPitch_, io.MouseDelta.x, io.MouseDelta.y);
+            if (pan)
+                ViewportNavigation::pan(cameraTarget_, io.MouseDelta.x, io.MouseDelta.y, normalization.scale);
+            if (zoom)
+                ViewportNavigation::zoom(cameraDistance_, io.MouseWheel, normalization.scale);
             manualCamera_ = true;
             refreshPreviewScene();
         }
