@@ -48,8 +48,8 @@ struct ViewportNavigation {
         const auto scale = safeScale(sceneScale);
         // vmd-trace stores camera distance as a negative number.
         const float traceDistance = -positiveDistance / scale;
-        positiveDistance = -std::clamp(traceDistance + mouseWheel * zoomUnitsPerWheelTick,
-                                       -maximumDistance, -minimumDistance) * scale;
+        positiveDistance =
+            -std::clamp(traceDistance + mouseWheel * zoomUnitsPerWheelTick, -maximumDistance, -minimumDistance) * scale;
     }
 };
 

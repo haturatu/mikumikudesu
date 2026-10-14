@@ -9,6 +9,24 @@ Linux側を`SDL3 + Vulkan 1.3 + HLSL/SPIR-V`で構成しています。
 1.30のassetを基準にしていますが、全FX・solverの完全互換を意味しません。
 対応段階と残件は[1.30互換性](docs/upstream-1.30.md)を参照してください。
 
+## Viewportとカメラ・ライトの編集
+
+Viewportの画像上で左ドラッグすると回転、右ドラッグすると平行移動、ホイールでズームします。
+右クリックのメニュー、または画像上部の`Reset view`で視点をリセットできます。
+カメラVMDがある場合、`Follow VMD camera`がONの間は手動操作をロックします。
+OFFにすると現在の視点と画角を維持して操作でき、リセットでもロックを解除します。
+Pan・Zoomの操作量はMMD座標に換算するため、モデルの正規化スケールに依存しません。
+
+画像上部の`Camera` / `Light`を押すと、現在のワークスペースのInspectorで編集できます。
+Inspector上部の`Selection` / `Camera` / `Light`でも切り替えられます。
+編集欄は表示中のカメラ・ライトの値を取得し、変更は即座にプレビューへ反映します。
+`Register camera key` / `Register light key`で現在フレームに保存し、`Ctrl+Z`で登録を取り消せます。
+
+設定を再利用するには、キーを登録してからInspectorの`VMD file`に保存先を指定し、
+`Export camera VMD` / `Export light VMD`を押します。読み込むときは同じ欄にファイルを指定して
+`Import camera keys` / `Import light keys`を押します。読み込みは対象トラックを置き換え、
+ほかのトラックを保持します。登録前のプレビュー変更はエクスポートに含まれません。
+
 ## 制約
 
 PreviewはLinux/AMDで実動します。SubayaiとBDPTについては、`.fxdayo`のraygen/miss/hit-groupを
@@ -42,18 +60,6 @@ OFF時は読み込んだ背景画像があれば画像、なければ白い背�
 背景動画と音声は独立しているため、別の音源に差し替えても指定済みの背景を維持します。
 音声と背景の指定はプロジェクトに保存され、音声はseek・ループ・再読み込み時に
 タイムラインの位置とAudio offsetから再生位置を求めます。再生速度の変更は音声にも反映します（ピッチも変化します）。
-
-### Viewportの操作（vmd-trace互換）
-
-- 左ドラッグ: カメラを回転（Orbit）
-- 右ドラッグ: カメラの注視点を上下左右に移動（Pan）
-- マウスホイール: 拡大・縮小（Zoom）
-- 右クリック: `Reset view` で視点を初期化
-
-カメラVMDがある場合はViewport左上の `Follow VMD camera` が既定で有効です。
-この状態ではVMDカメラを優先するため、手動のOrbit/Pan/Zoomは無効になります。
-チェックを外すと現在表示中のカメラ位置から手動操作を開始し、再び有効にするとVMDカメラに戻ります。
-Pan・Zoomの操作量はMMD座標に換算するため、モデルの正規化スケールに依存しません。
 
 ### Previewの画質設定
 

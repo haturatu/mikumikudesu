@@ -48,8 +48,8 @@ int main() {
     pitch = 1.0F;
     const std::array<float, 3> center{0.0F, 10.0F, 0.0F};
     ViewportNavigation::reset(target, yaw, pitch, distance, center, 0.1F);
-    if (!nearlyEqual(target[0], 0.0F) || !nearlyEqual(target[1], 0.0F) ||
-        !nearlyEqual(yaw, 0.0F) || !nearlyEqual(pitch, 0.0F) || !nearlyEqual(distance, 3.0F))
+    if (!nearlyEqual(target[0], 0.0F) || !nearlyEqual(target[1], 0.0F) || !nearlyEqual(yaw, 0.0F) ||
+        !nearlyEqual(pitch, 0.0F) || !nearlyEqual(distance, 3.0F))
         return 8;
 
     std::cout << "Viewport navigation matches vmd-trace gestures\n";
