@@ -1009,6 +1009,8 @@ void Application::resetProjectRuntimeState() {
     cameraYaw_ = 0.0F;
     cameraPitch_ = 0.0F;
     cameraDistance_ = 3.0F;
+    cameraFovRadians_ = 0.785398163F;
+    cameraPerspective_ = true;
     cameraTarget_ = {};
     normalization_ = {};
     projectAssets_.clear();
@@ -2823,6 +2825,8 @@ void Application::buildUi() {
                         const auto normalization = model != nullptr ? model->normalization : normalization_;
                         ViewportNavigation::reset(cameraTarget_, cameraYaw_, cameraPitch_, cameraDistance_,
                                                   normalization.center, normalization.scale);
+                        cameraFovRadians_ = 0.785398163F;
+                        cameraPerspective_ = true;
                         cameraEditPreview_ = false;
                         if (!hasCameraVmd || !followVmdCamera_)
                             manualCamera_ = true;
@@ -2848,6 +2852,8 @@ void Application::buildUi() {
                             cameraYaw_ = current.rotation[1];
                             cameraPitch_ = current.rotation[0];
                             cameraDistance_ = current.distance;
+                            cameraFovRadians_ = current.verticalFovRadians;
+                            cameraPerspective_ = current.perspective;
                             manualCamera_ = true;
                             cameraEditPreview_ = false;
                         }
@@ -2877,6 +2883,8 @@ void Application::buildUi() {
                 cameraYaw_ = current.rotation[1];
                 cameraPitch_ = current.rotation[0];
                 cameraDistance_ = current.distance;
+                cameraFovRadians_ = current.verticalFovRadians;
+                cameraPerspective_ = current.perspective;
                 cameraEditPreview_ = false;
             }
             const auto normalization = model != nullptr ? model->normalization : normalization_;
