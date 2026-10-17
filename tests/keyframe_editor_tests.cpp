@@ -41,6 +41,7 @@ struct Harness {
         motion.bones.push_back({.name = "arm", .frame = 10});
         motion.bones.push_back({.name = "arm", .frame = 30});
         motion.morphs.push_back({"smile", 100, .75F});
+        dayo::ui::updateMotionDuration(motion);
         scene.replaceMotion(motion, 0, true);
         editor.synchronize(scene, 0, true);
     }
