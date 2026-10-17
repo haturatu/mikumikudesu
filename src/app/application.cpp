@@ -696,7 +696,18 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
                            .morphDeltas = mesh.morphDeltas,
                            .morphWeights = mesh.morphWeights,
                            .indices = mesh.indices,
-                           .deformedVertices = mesh.deformedVertices},
+                           .deformedVertices = mesh.deformedVertices,
+                           .skirtCollision = {.vertices = options_.vulkan.skirtCollisionIterations == 0
+                                                              ? std::span<const core::SkirtVertex>{}
+                                                              : std::span<const core::SkirtVertex>(
+                                                                    mesh.skirtCollision.vertices),
+                                              .triangles = mesh.skirtCollision.triangles,
+                                              .adjacency = mesh.skirtCollision.adjacency,
+                                              .capsules = mesh.skirtCapsules,
+                                              .historyGeneration = mesh.skirtHistoryGeneration,
+                                              .iterations = options_.vulkan.skirtCollisionIterations,
+                                              .legRanges = mesh.skirtCollision.legRanges,
+                                              .legVertices = mesh.skirtCollision.legVertices}},
                 .deformPipeline = device_->nativeDeformPipeline(),
                 .deformDescriptorLayout = device_->nativeDeformDescriptorLayout(),
                 .topologyGeneration = scene_.topologyGeneration(),
@@ -2039,6 +2050,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         bool gpuSkinning{};
         core::ModelExecutionPolicy policy;
         core::AnimatedModelFrame frame;
+        std::vector<core::SkirtCapsule> skirtCapsules{};
+        std::uint64_t skirtHistoryGeneration{};
     };
     std::pmr::vector<EvaluatedModel> evaluated(scratch);
     evaluated.reserve(scene_.models().size());
@@ -2078,6 +2091,26 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                                                        gravity.gravityDirection[2] * gravity.gravity});
                 instance.softBody->apply(current.frame.vertices);
             }
+            auto* mutableInstance = scene_.model(instance.id);
+            if (mutableInstance != nullptr && instance.physics != nullptr && !instance.skirtCollision.empty()) {
+                const float frameDelta = animationFrame_ - instance.skirtPreviousFrame;
+                const bool discontinuity = instance.skirtPreviousFrame < 0 || frameDelta <= 0 || deltaSeconds <= 0 ||
+                                           std::abs(frameDelta - deltaSeconds * 30) > 2;
+                if (discontinuity) {
+                    mutableInstance->previousLegTransforms.clear();
+                    ++mutableInstance->skirtHistoryGeneration;
+                }
+                current.skirtCapsules = core::makeSkirtCapsules(*instance.model, instance.skirtCollision,
+                                                                *instance.physics, current.frame.bones,
+                                                                instance.normalization, instance.previousLegTransforms);
+                current.skirtHistoryGeneration = instance.skirtHistoryGeneration;
+                mutableInstance->previousLegTransforms.clear();
+                if (instance.physics->available())
+                    for (const auto body : instance.skirtCollision.legBodies)
+                        mutableInstance->previousLegTransforms.push_back(instance.physics->bodyTransform(body));
+                mutableInstance->skirtPreviousFrame = animationFrame_;
+                mutableInstance->skirtStats = core::skirtRigidStats(instance.skirtCollision, *instance.physics);
+            }
             core::normalizeForPreview(current.frame.vertices, instance.normalization);
         }
         animation.finish();
@@ -2113,6 +2146,14 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     }
     std::size_t materialCursor = 0;
     std::uint32_t indexCursor = 0;
+    std::uint32_t vertexCursor = 0;
+    std::vector<core::SkirtVertex> skirtVertices;
+    std::vector<std::array<std::uint32_t, 4>> skirtTriangles;
+    std::vector<std::uint32_t> skirtAdjacency;
+    std::vector<core::SkirtCapsule> skirtCapsules;
+    std::vector<std::array<std::uint32_t, 2>> skirtLegRanges;
+    std::vector<std::uint32_t> skirtLegVertices;
+    std::uint64_t skirtHistoryGeneration = scene_.topologyGeneration();
     std::pmr::vector<graphics::PreviewBoneTransform> bones(scratch);
     std::vector<NativeModelGeometry> nativeGeometry;
     nativeGeometry.reserve(evaluated.size());
@@ -2193,7 +2234,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         const auto sceneCloneCount = std::max(instance.cloneCount, 1U);
         const auto cloneCount =
             graphics::resolveNativeModelCloneCount(instance.cloneCount, instance.id, scene_.effects().deform);
-        const auto baseVertex = static_cast<std::uint32_t>(vertices.size());
+        const auto baseVertex = vertexCursor;
+        vertexCursor += static_cast<std::uint32_t>(frame.vertices.size());
         const auto firstModelIndex = indexCursor;
         NativeModelGeometry native;
         native.meshId = static_cast<std::uint32_t>(nativeGeometry.size() + 1U);
@@ -2208,6 +2250,38 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         native.acceleration = policy.includeInTlas;
         native.hasBlas = policy.buildBlas;
         native.indices.assign(instance.model->indices.begin(), instance.model->indices.end());
+        native.skirtCollision = instance.skirtCollision;
+        native.skirtCapsules = evaluatedModel.skirtCapsules;
+        native.skirtHistoryGeneration = evaluatedModel.skirtHistoryGeneration;
+        if (!native.skirtCapsules.empty()) {
+            const auto vertexBase = static_cast<std::uint32_t>(skirtVertices.size());
+            const auto triangleBase = static_cast<std::uint32_t>(skirtTriangles.size());
+            const auto adjacencyBase = static_cast<std::uint32_t>(skirtAdjacency.size());
+            const auto capsuleBase = static_cast<std::uint32_t>(skirtCapsules.size());
+            for (auto vertex : instance.skirtCollision.vertices) {
+                vertex.vertex += baseVertex;
+                vertex.firstTriangle += adjacencyBase;
+                vertex.capsuleStart += capsuleBase;
+                skirtVertices.push_back(vertex);
+            }
+            for (auto triangle : instance.skirtCollision.triangles) {
+                for (std::size_t i = 0; i < 3; ++i)
+                    triangle[i] += vertexBase;
+                skirtTriangles.push_back(triangle);
+            }
+            for (auto triangle : instance.skirtCollision.adjacency)
+                skirtAdjacency.push_back(triangle + triangleBase);
+            skirtCapsules.insert(skirtCapsules.end(), native.skirtCapsules.begin(), native.skirtCapsules.end());
+            const auto legVertexBase = static_cast<std::uint32_t>(skirtLegVertices.size());
+            for (auto range : instance.skirtCollision.legRanges) {
+                range[0] += legVertexBase;
+                skirtLegRanges.push_back(range);
+            }
+            for (const auto vertex : instance.skirtCollision.legVertices)
+                skirtLegVertices.push_back(vertex + baseVertex);
+            skirtHistoryGeneration ^= native.skirtHistoryGeneration + 0x9e3779b97f4a7c15ULL +
+                                      (skirtHistoryGeneration << 6U) + (skirtHistoryGeneration >> 2U);
+        }
         native.morphWeights.resize(instance.model->morphs.size(), 0.0F);
         for (std::size_t morphIndex = 0; morphIndex < native.morphWeights.size(); ++morphIndex) {
             if (morphIndex < frame.morphWeights.size())
@@ -2410,6 +2484,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     }
     {
         auto upload = frameProfiler_.measure(core::ProfileSection::upload);
+        device_->updatePreviewSkirtCollision(skirtVertices, skirtTriangles, skirtAdjacency, skirtCapsules,
+                                             skirtHistoryGeneration, skirtLegRanges, skirtLegVertices);
         device_->updatePreviewBones(bones);
         if (initialUpload || rebuildTopology)
             device_->uploadPreviewMorphDeltas(morphDeltas);

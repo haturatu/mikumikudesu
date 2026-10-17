@@ -74,7 +74,13 @@ ModelId Scene::addModel(const std::filesystem::path& path) {
     instance.model = std::make_shared<PmxModel>(loadPmxModel(path));
     instance.upstreamDrawable = isUpstreamDrawableModel(*instance.model);
     instance.animator = std::make_unique<MmdAnimator>(*instance.model);
-    instance.physics = std::make_unique<MmdPhysics>(*instance.model);
+    instance.skirtCollision = identifySkirtCollision(*instance.model);
+    mmd::PhysicsSettings physicsSettings;
+    if (!instance.skirtCollision.empty()) {
+        physicsSettings.adaptiveKinematicBodies = instance.skirtCollision.legBodies;
+        physicsSettings.solverIterations = 25;
+    }
+    instance.physics = std::make_unique<MmdPhysics>(*instance.model, physicsSettings);
     instance.animator->setPhysics(instance.physics.get());
     instance.softBody = std::make_unique<SoftBodySimulation>(*instance.model);
     instance.normalization = previewNormalization(*instance.model);

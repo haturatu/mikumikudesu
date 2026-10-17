@@ -163,6 +163,9 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
         std::vector<float> morphWeights;
         std::vector<std::uint32_t> indices;
         std::vector<graphics::NativeDeformedVertex> deformedVertices;
+        core::SkirtCollisionTopology skirtCollision;
+        std::vector<core::SkirtCapsule> skirtCapsules;
+        std::uint64_t skirtHistoryGeneration{};
     };
     std::vector<NativeModelGeometry> nativeGeometry_;
     std::vector<graphics::NativeSceneDraw> nativeSceneDraws_;

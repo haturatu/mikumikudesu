@@ -6,6 +6,7 @@
 #include "core/media.hpp"
 #include "core/motion.hpp"
 #include "core/physics.hpp"
+#include "core/skirt_collision.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -112,6 +113,11 @@ struct ModelInstance {
     std::unique_ptr<MmdAnimator> animator;
     std::unique_ptr<MmdPhysics> physics;
     std::unique_ptr<SoftBodySimulation> softBody;
+    SkirtCollisionTopology skirtCollision;
+    std::vector<mmd::PhysicsTransform> previousLegTransforms;
+    float skirtPreviousFrame{-1};
+    std::uint64_t skirtHistoryGeneration{1};
+    SkirtCollisionStats skirtStats;
     std::unique_ptr<VmdMotion> motion;
     std::unique_ptr<VpdPose> pose;
     std::vector<ImageRgba8> textures;

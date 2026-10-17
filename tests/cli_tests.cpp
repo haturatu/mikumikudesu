@@ -45,6 +45,13 @@ bool equalVideoExport(const dayo::app::VideoExportOptions& left, const dayo::app
 int main() {
     bool ok = true;
 
+    ok &= parse({"mikumikudesu"}).vulkan.skirtCollisionIterations == 32;
+    ok &= parse({"mikumikudesu", "--skirt-collision-iterations", "16"}).vulkan.skirtCollisionIterations == 16;
+    ok &= parse({"mikumikudesu", "--skirt-collision-iterations", "0"}).vulkan.skirtCollisionIterations == 0;
+    ok &= rejects([] { static_cast<void>(parse({"mikumikudesu", "--skirt-collision-iterations", "-1"})); },
+                  "negative collision quality");
+    ok &= rejects([] { static_cast<void>(parse({"mikumikudesu", "--skirt-collision-iterations", "65"})); },
+                  "excessive collision quality");
     const auto tuning = parse({"mikumikudesu", "--preview-quality", "apu", "--present", "immediate"});
     ok &= tuning.vulkan.quality == dayo::graphics::PreviewQuality::apu &&
           tuning.vulkan.present == dayo::graphics::PresentMode::immediate;
