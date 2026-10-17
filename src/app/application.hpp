@@ -26,6 +26,10 @@
 #include "graphics/subayai_light_sampling.hpp"
 #include "ui/ui_state.hpp"
 
+#if DAYO_HAS_IMGUI
+#include "ui/viewport_interaction.hpp"
+#endif
+
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -69,6 +73,9 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void buildMainMenuBar();
     void buildDockLayout();
     void buildInspectorPanel();
+    void buildCameraLightControls();
+    void captureCameraForEditing();
+    void captureLightForEditing();
     void buildImageSequenceExportUi();
     void buildSaveAsDialog();
     void buildStatusBar();
@@ -212,6 +219,9 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     float cameraYaw_{};
     float cameraPitch_{};
     float cameraDistance_{3.0F};
+    float cameraFovRadians_{0.785398163F};
+    bool cameraPerspective_{true};
+    core::Float3 cameraTarget_{};
     bool manualCamera_{};
     std::int32_t previewDebugMaterial_{-1};
     std::uint32_t previewDebugFlags_{};
@@ -272,6 +282,15 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     float timelineScrollY_{};
     bool editGlobalMotion_{};
     bool recordCamera_{};
+    bool followVmdCamera_{true};
+    ui::ViewportInteraction viewportInteraction_;
+    enum class InspectorPage { selection, camera, light };
+    InspectorPage inspectorPage_{InspectorPage::selection};
+    bool inspectorFocusRequested_{};
+    bool cameraEditPreview_{};
+    bool lightEditPreview_{};
+    std::array<char, 1024> cameraLightVmdPath_{};
+    std::string cameraLightVmdStatus_;
     int selectedBone_{};
     int selectedMorph_{};
     core::Float3 editedBoneTranslation_{};

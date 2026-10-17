@@ -60,6 +60,95 @@ bool check(bool value, std::string_view message) {
     return value;
 }
 
+bool checkVmdMotionImports(const std::filesystem::path& modelPath) {
+    bool ok = true;
+    const auto dancePath = std::filesystem::temp_directory_path() / "mikumikudesu-import-dance.vmd";
+    const auto facialPath = std::filesystem::temp_directory_path() / "mikumikudesu-import-facial.vmd";
+    dayo::core::VmdMotion dance;
+    dance.modelName = "dance model";
+    dance.bones.push_back({.name = "center", .frame = 0});
+    dance.bones.push_back({.name = "center", .frame = 100, .translation = {10.0F, 0.0F, 0.0F}});
+    dance.ik.push_back({0, true, {{"leg IK", false}}});
+    dayo::core::VmdMotion facial;
+    facial.modelName = "facial model";
+    // Facial VMDs can also contain eye bones, as telephone_facial.vmd does.
+    facial.bones.push_back({.name = "eyes", .frame = 0, .translation = {0.0F, 2.0F, 0.0F}});
+    facial.morphs.push_back({"smile", 0, 0.75F});
+    facial.morphs.push_back({"smile", 40, 1.0F});
+    dayo::core::saveVmd(dancePath, dance);
+    dayo::core::saveVmd(facialPath, facial);
+
+    for (const bool facialFirst : {false, true}) {
+        dayo::core::Scene scene;
+        const auto target = scene.addModel(modelPath);
+        const auto other = scene.addModel(modelPath);
+        auto* instance = scene.model(target);
+        instance->model->bones.resize(2);
+        instance->model->bones[0].name = "center";
+        instance->model->bones[1].name = "eyes";
+        instance->model->morphs.resize(1);
+        instance->model->morphs[0].name = "smile";
+        instance->model->morphs[0].type = 1;
+        instance->animator = std::make_unique<dayo::core::MmdAnimator>(*instance->model);
+        scene.attachMotion(facialFirst ? facialPath : dancePath, target);
+        const auto revision = scene.motionRevision();
+        scene.attachMotion(facialFirst ? dancePath : facialPath, target);
+        const auto* combined = scene.motion(target);
+        ok &= check(combined != nullptr && combined->bones.size() == 3 && combined->morphs.size() == 2 &&
+                        combined->ik.size() == 1,
+                    "VMD file imports retain dance, eye bones, morphs and IK in either order");
+        ok &= check(scene.timeline().duration == 100.0F && scene.motionRevision() > revision,
+                    "partial VMD imports preserve dance duration and invalidate motion caches");
+        ok &= check(scene.motion(other) == nullptr && scene.selectedModelId() == other,
+                    "VMD import merges only into the explicitly targeted model");
+        const auto animated = instance->animator->evaluate(100.0F, 0.0F, true);
+        ok &= check(animated.bones.size() == 2 && std::abs(animated.bones[0].translation[0] - 10.0F) < 1e-3F &&
+                        animated.bones[1].translation[1] == 2.0F && animated.morphWeights.size() == 1 &&
+                        animated.morphWeights[0] == 1.0F,
+                    "animator evaluates retained dance and imported facial keys together");
+
+        scene.attachMotion(facialPath, target);
+        combined = scene.motion(target);
+        ok &= check(combined->bones.size() == 3 && combined->morphs.size() == 2,
+                    "reimporting a VMD does not duplicate keys");
+        auto corrected = facial;
+        corrected.bones[0].translation[1] = 3.0F;
+        corrected.morphs[0].weight = 0.5F;
+        corrected.morphs.resize(1);
+        dayo::core::saveVmd(facialPath, corrected);
+        scene.attachMotion(facialPath, target);
+        const auto correctedFrame = instance->animator->evaluate(0.0F, 0.0F, true);
+        ok &= check(correctedFrame.bones.size() == 2 && correctedFrame.morphWeights.size() == 1 &&
+                        correctedFrame.bones[1].translation[1] == 3.0F && correctedFrame.morphWeights[0] == 0.5F &&
+                        scene.motion(target)->bones.size() == 3 && scene.motion(target)->morphs.size() == 2 &&
+                        scene.motion(target)->lastFrame == 100,
+                    "incoming keys win matching bone/morph frames while unrelated keys survive");
+        dayo::core::saveVmd(facialPath, facial);
+
+        dayo::core::VmdMotion camera;
+        dayo::core::VmdCameraKey cameraKey;
+        cameraKey.frame = 200;
+        cameraKey.distance = -45.0F;
+        camera.cameras.push_back(cameraKey);
+        scene.importMotion(camera, target);
+        ok &= check(scene.cameraMotion() != nullptr && scene.motion(target)->bones.size() == 3 &&
+                        scene.timeline().duration == 200.0F,
+                    "global camera import remains independent of combined model motion");
+
+        const dayo::core::VmdMotion empty;
+        ok &= check(scene.replaceMotion(empty, target) && scene.motion(target)->bones.empty() &&
+                        scene.motion(target)->morphs.empty(),
+                    "editor replacement can still clear all model motion keys");
+        scene.attachMotion(dance, target);
+        scene.attachMotion(facial, target);
+        ok &= check(scene.motion(target)->bones.size() == 1 && scene.motion(target)->morphs.size() == 2,
+                    "project snapshot attachment remains an exact replacement");
+    }
+    std::filesystem::remove(dancePath);
+    std::filesystem::remove(facialPath);
+    return ok;
+}
+
 } // namespace
 
 int main() {
@@ -1181,6 +1270,7 @@ int main() {
         ok &= check(mesh.vertices.size() == 3, "PMX vertex loading");
         ok &= check(mesh.indices.size() == 3 && mesh.indices[2] == 2, "PMX index loading");
         const auto model = dayo::core::loadPmxModel(path);
+        ok &= checkVmdMotionImports(path);
         ok &= check(model.materials.size() == 1 && model.bones.empty(), "complete PMX sections");
         ok &= check(model.rigidBodies.size() == 1 && model.rigidBodies[0].physicsEnabled &&
                         model.rigidBodies[0].rotation == dayo::core::Float3{},
