@@ -10,9 +10,37 @@
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_map>
 
 namespace dayo::core {
+
+namespace {
+
+bool isGlobalMotion(const VmdMotion& motion) {
+    return motion.bones.empty() && motion.morphs.empty() &&
+           (!motion.cameras.empty() || !motion.lights.empty() || !motion.shadows.empty() || !motion.gravity.empty());
+}
+
+template <typename Key> void mergeImportedKeys(std::vector<Key>& imported, const std::vector<Key>& existing) {
+    // Put incoming keys first so stable sorting and deduplication prefer them.
+    imported.insert(imported.end(), existing.begin(), existing.end());
+    const auto identity = [](const Key& key) {
+        if constexpr (requires { key.name; })
+            return std::tie(key.name, key.frame);
+        else if constexpr (requires { key.childBone; })
+            return std::tie(key.childBone, key.frame);
+        else
+            return std::tie(key.frame);
+    };
+    std::stable_sort(imported.begin(), imported.end(),
+                     [&](const auto& left, const auto& right) { return identity(left) < identity(right); });
+    imported.erase(std::unique(imported.begin(), imported.end(),
+                               [&](const auto& left, const auto& right) { return identity(left) == identity(right); }),
+                   imported.end());
+}
+
+} // namespace
 
 Scene::Scene() = default;
 Scene::~Scene() = default;
@@ -351,7 +379,27 @@ void Scene::setBackgroundMode(BackgroundMode mode) noexcept {
 }
 
 void Scene::attachMotion(const std::filesystem::path& path, ModelId target) {
-    attachMotion(loadVmd(path), target);
+    importMotion(loadVmd(path), target);
+}
+
+void Scene::importMotion(VmdMotion motion, ModelId target) {
+    const auto* destination = isGlobalMotion(motion) ? nullptr : model(targetModel(target));
+    if (destination != nullptr && destination->motion != nullptr) {
+        const auto& existing = *destination->motion;
+        mergeImportedKeys(motion.bones, existing.bones);
+        mergeImportedKeys(motion.morphs, existing.morphs);
+        mergeImportedKeys(motion.cameras, existing.cameras);
+        mergeImportedKeys(motion.lights, existing.lights);
+        mergeImportedKeys(motion.shadows, existing.shadows);
+        mergeImportedKeys(motion.ik, existing.ik);
+        mergeImportedKeys(motion.externalParents, existing.externalParents);
+        mergeImportedKeys(motion.gravity, existing.gravity);
+        // A facial supplement must not change how the retained dance is sampled.
+        motion.interpolation = existing.interpolation;
+    }
+    // Conversion recomputes lastFrame from all retained and imported keys;
+    // attachment also rebuilds the animator's cached tracks and marks the scene dirty.
+    attachMotion(std::move(motion), target);
 }
 
 void Scene::attachMotion(VmdMotion motion, ModelId target) {
@@ -383,10 +431,7 @@ void Scene::attachMotion(MotionDocument document, ModelId target, std::string mo
     auto motion = std::make_unique<VmdMotion>(toVmdMotion(std::move(document), std::move(modelName)));
     // A camera/light-only VMD is global even when a model is selected. Model
     // motion remains the default for files containing bone or morph tracks.
-    const bool cameraOnly =
-        motion->bones.empty() && motion->morphs.empty() &&
-        (!motion->cameras.empty() || !motion->lights.empty() || !motion->shadows.empty() || !motion->gravity.empty());
-    auto* destination = cameraOnly ? nullptr : model(targetModel(target));
+    auto* destination = isGlobalMotion(*motion) ? nullptr : model(targetModel(target));
     if (destination != nullptr) {
         destination->motion = std::move(motion);
         destination->animator->setMotion(destination->motion.get());

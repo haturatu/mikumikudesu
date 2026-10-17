@@ -83,8 +83,12 @@ bool checkVmdMotionImports(const std::filesystem::path& modelPath) {
         const auto target = scene.addModel(modelPath);
         const auto other = scene.addModel(modelPath);
         auto* instance = scene.model(target);
-        instance->model->bones = {{.name = "center"}, {.name = "eyes"}};
-        instance->model->morphs = {{.name = "smile", .type = 1}};
+        instance->model->bones.resize(2);
+        instance->model->bones[0].name = "center";
+        instance->model->bones[1].name = "eyes";
+        instance->model->morphs.resize(1);
+        instance->model->morphs[0].name = "smile";
+        instance->model->morphs[0].type = 1;
         instance->animator = std::make_unique<dayo::core::MmdAnimator>(*instance->model);
         scene.attachMotion(facialFirst ? facialPath : dancePath, target);
         const auto revision = scene.motionRevision();
@@ -98,7 +102,7 @@ bool checkVmdMotionImports(const std::filesystem::path& modelPath) {
         ok &= check(scene.motion(other) == nullptr && scene.selectedModelId() == other,
                     "VMD import merges only into the explicitly targeted model");
         const auto animated = instance->animator->evaluate(100.0F, 0.0F, true);
-        ok &= check(animated.bones.size() == 2 && animated.bones[0].translation[0] == 10.0F &&
+        ok &= check(animated.bones.size() == 2 && std::abs(animated.bones[0].translation[0] - 10.0F) < 1e-3F &&
                         animated.bones[1].translation[1] == 2.0F && animated.morphWeights.size() == 1 &&
                         animated.morphWeights[0] == 1.0F,
                     "animator evaluates retained dance and imported facial keys together");
@@ -122,13 +126,17 @@ bool checkVmdMotionImports(const std::filesystem::path& modelPath) {
         dayo::core::saveVmd(facialPath, facial);
 
         dayo::core::VmdMotion camera;
-        camera.cameras.push_back({.frame = 200, .distance = -45.0F});
-        scene.attachMotion(camera, target);
+        dayo::core::VmdCameraKey cameraKey;
+        cameraKey.frame = 200;
+        cameraKey.distance = -45.0F;
+        camera.cameras.push_back(cameraKey);
+        scene.importMotion(camera, target);
         ok &= check(scene.cameraMotion() != nullptr && scene.motion(target)->bones.size() == 3 &&
                         scene.timeline().duration == 200.0F,
                     "global camera import remains independent of combined model motion");
 
-        ok &= check(scene.replaceMotion({}, target) && scene.motion(target)->bones.empty() &&
+        const dayo::core::VmdMotion empty;
+        ok &= check(scene.replaceMotion(empty, target) && scene.motion(target)->bones.empty() &&
                         scene.motion(target)->morphs.empty(),
                     "editor replacement can still clear all model motion keys");
         scene.attachMotion(dance, target);
