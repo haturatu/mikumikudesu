@@ -76,6 +76,7 @@ class KeyframeEditor {
     std::array<char, 128> filter_{};
     int trackFilter_{};
     bool listVisible_{};
+    int groupOffset_{};
     float zoom_{1.0F};
     float startFrame_{};
     float pixelsPerFrame_{1.0F};

@@ -1,6 +1,7 @@
 #include "ui/keyframe_edit.hpp"
 #include "ui/keyframe_editor.hpp"
 
+#include <cmath>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -78,10 +79,11 @@ void checkCanvasGestures() {
     expect(h.editor.selection().size() == 1 && click.seek && *click.seek == 10,
            "clicking a real canvas diamond must select its key and request a seek");
     const auto destination = h.key(20);
-    h.frame(destination, true);
+    const ImVec2 outside{destination.x, 600};
+    h.frame(outside, true);
     expect(h.history.undoCount() == 0 && h.scene.motion(0, true)->bones[0].frame == 10,
            "drag preview must not mutate animation or create undo entries");
-    h.frame(destination);
+    h.frame(outside);
     expect(h.scene.motion(0, true)->bones[0].frame == 20 && h.history.undoCount() == 1,
            "releasing a captured drag must move the key in one undo step");
     expect(h.editor.selection().size() == 1, "selection must survive its own edit");
@@ -103,11 +105,21 @@ void checkCanvasGestures() {
     h.frame(h.key(30), true, true);
     h.frame(h.key(30), false, true);
     expect(h.editor.selection().size() == 2, "Ctrl-click must add a second canvas key");
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_A, true);
+    h.frame(h.key(30), false, true);
+    expect(h.editor.selection().size() == 3, "Ctrl+A must select all keys in the current track filter");
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_A, false);
     dayo::core::VmdMotion unrelated;
     unrelated.morphs.push_back({"other", 5, .5F});
     h.scene.replaceMotion(unrelated, 0, true);
     h.frame(key);
     expect(h.editor.selection().empty(), "external replacement must discard stale key references");
+    unrelated.morphs[0].frame = std::numeric_limits<std::uint32_t>::max();
+    dayo::ui::updateMotionDuration(unrelated);
+    h.scene.replaceMotion(unrelated, 0, true);
+    h.frame({-10, -10});
+    expect(std::isfinite(h.editor.pixelsPerFrame()) && h.editor.pixelsPerFrame() > 0,
+           "the ruler must render the full VMD frame range without overflow or a floating counter loop");
 }
 
 } // namespace

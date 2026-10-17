@@ -71,6 +71,7 @@ void KeyframeEditor::clearSelection() {
     anchor_.reset();
     draft_.reset();
     draftKey_.reset();
+    groupOffset_ = 0;
     keyGesture_ = boxGesture_ = false;
     dragBefore_.reset();
     dragDelta_ = 0;
@@ -334,7 +335,7 @@ KeyframeEditor::Result KeyframeEditor::draw(core::Scene& scene, core::CommandHis
     }
     ImGui::EndChild();
     finishGesture(scene, history, result);
-    if (result.changed && !selection_.empty())
+    if (result.changed && selection_.size() == 1)
         if (const auto selectedFrame = keyFrame(*motion_, selection_.front()))
             result.seek = static_cast<float>(*selectedFrame);
     ImGui::TextDisabled("Click: select  |  Ctrl: add  |  Shift: range  |  Drag: move / box  |  Esc: cancel");
@@ -383,10 +384,15 @@ void KeyframeEditor::drawCanvas(core::Scene& scene, core::CommandHistory& histor
         step /= 5.0F;
     else if (step * pixelsPerFrame_ > 130.0F)
         step /= 2.0F;
-    for (float tick = std::ceil(startFrame_ / step) * step; tick <= startFrame_ + width / pixelsPerFrame_;
-         tick += step) {
-        const std::string label = std::to_string(static_cast<std::uint64_t>(tick));
-        draw->AddText({frameX(tick) + 2, ruler.y}, ImGui::GetColorU32(ImGuiCol_TextDisabled), label.c_str());
+    const auto tickStep = static_cast<std::uint64_t>(std::max(step, 1.0F));
+    const auto firstTick =
+        static_cast<std::uint64_t>(std::ceil(static_cast<double>(startFrame_) / static_cast<double>(tickStep))) *
+        tickStep;
+    const auto lastTick = static_cast<std::uint64_t>(startFrame_ + width / pixelsPerFrame_);
+    for (auto tick = firstTick; tick <= lastTick; tick += tickStep) {
+        const std::string label = std::to_string(tick);
+        draw->AddText({frameX(static_cast<float>(tick)) + 2, ruler.y}, ImGui::GetColorU32(ImGuiCol_TextDisabled),
+                      label.c_str());
     }
     canvasOrigin_ = {ruler.x, ruler.y + rowHeight_};
     ImGuiListClipper clipper;
@@ -596,6 +602,17 @@ bool KeyframeEditor::drawInspector(core::Scene& scene, core::CommandHistory& his
     if (selection_.size() != 1) {
         ImGui::Text("%zu keys selected", selection_.size());
         ImGui::TextWrapped("Drag to move together, use -1f / +1f for precision, or Shift+arrow for 10 frames.");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::TextUnformatted("Offset (frames)");
+        ImGui::InputInt("##group-offset", &groupOffset_);
+        ImGui::BeginDisabled(groupOffset_ == 0);
+        const bool apply = ImGui::Button("Move selected keys");
+        ImGui::EndDisabled();
+        if (apply) {
+            const bool changed = moveSelection(scene, history, groupOffset_);
+            groupOffset_ = 0;
+            return changed;
+        }
         return false;
     }
     const auto ref = selection_.front();

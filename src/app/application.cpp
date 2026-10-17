@@ -3508,10 +3508,21 @@ void Application::buildInspectorPanel() {
             followVmdCamera_ = true;
         }
         const auto& selection = timelineEditor_.selection();
-        if (!selection.empty())
+        if (selection.size() == 1) {
             if (const auto selectedFrame = ui::keyFrame(
                     *scene_.motion(model != nullptr ? model->id : 0, editGlobalMotion_), selection.front()))
                 seekTimeline(static_cast<float>(*selectedFrame));
+        } else {
+            seekTimeline(scene_.timeline().frame);
+        }
+    }
+    if (inspectorPage_ == InspectorPage::selection && !timelineEditor_.selection().empty()) {
+        if (ImGui::Button("Clear key selection")) {
+            timelineEditor_.clearSelection();
+        } else {
+            ImGui::End();
+            return;
+        }
     }
     if (inspectorPage_ != InspectorPage::selection) {
         buildCameraLightControls();
@@ -4294,8 +4305,7 @@ void Application::buildEditorUi() {
         if (result.seek)
             seekTimeline(*result.seek);
         else if (result.changed) {
-            refreshAnimatedMesh(false);
-            refreshPreviewScene();
+            seekTimeline(scene_.timeline().frame);
         }
         if (result.seek && !timelineEditor_.selection().empty()) {
             inspectorPage_ = InspectorPage::selection;
