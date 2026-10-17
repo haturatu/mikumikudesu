@@ -2590,7 +2590,7 @@ void Application::buildMediaPlaybackControls(bool compact) {
     if (!audioSource_.empty())
         ImGui::TextWrapped(ui::tr("Audio: %s"), audioSource_.filename().string().c_str());
     else
-        ImGui::TextDisabled(ui::tr("Drop an MP4 or audio file to load audio."));
+        ImGui::TextDisabled("%s", ui::tr("Drop an MP4 or audio file to load audio."));
     const auto videoPath = videoMode_ && scene_.background().videoPath.has_value()
                                ? *scene_.background().videoPath
                                : std::filesystem::path(backgroundVideoPath_.data());
@@ -2610,7 +2610,7 @@ void Application::buildMediaPlaybackControls(bool compact) {
     }
     ImGui::EndDisabled();
     if (!canShowVideo)
-        ImGui::TextDisabled(ui::tr("Drop an MP4 to enable video display."));
+        ImGui::TextDisabled("%s", ui::tr("Drop an MP4 to enable video display."));
     if (!mediaVideoError_.empty())
         ImGui::TextWrapped(ui::tr("Video: %s"), mediaVideoError_.c_str());
     ImGui::BeginDisabled(loadedAudio_.samples.empty());
@@ -2849,9 +2849,9 @@ void Application::buildUi() {
             }
         }
         if (hasCameraVmd && followVmdCamera_)
-            ImGui::TextWrapped(ui::tr("VMD camera locked. Turn off Follow VMD camera to navigate."));
+            ImGui::TextWrapped("%s", ui::tr("VMD camera locked. Turn off Follow VMD camera to navigate."));
         else
-            ImGui::TextWrapped(ui::tr("Left-drag: orbit | Right-drag: pan | Wheel: zoom"));
+            ImGui::TextWrapped("%s", ui::tr("Left-drag: orbit | Right-drag: pan | Wheel: zoom"));
         const ImVec2 available = ImGui::GetContentRegionAvail();
         if (available.x > 0.0F && available.y > 0.0F) {
             const auto* imguiViewport = ImGui::GetWindowViewport();
@@ -3328,7 +3328,7 @@ void Application::buildCameraLightControls() {
     ImGui::Text(ui::tr("Frame %u  |  Camera / Lighting"), frame);
     ImGui::TextWrapped(
         ui::tr("Changes preview immediately. Register a key to save them at this frame; Ctrl+Z undoes registration."));
-    ImGui::TextWrapped(ui::tr("Register a key before exporting a VMD for reuse."));
+    ImGui::TextWrapped("%s", ui::tr("Register a key before exporting a VMD for reuse."));
     ImGui::PushItemWidth(-ImGui::GetFontSize() * 9.0F);
 
     if (inspectorPage_ == InspectorPage::camera) {
@@ -3696,7 +3696,7 @@ void Application::buildInspectorPanel() {
                                                            ? ImGuiTreeNodeFlags_None
                                                            : ImGuiTreeNodeFlags_DefaultOpen)) {
         if (model->model->materials.empty()) {
-            ImGui::TextDisabled(ui::tr("No materials"));
+            ImGui::TextDisabled("%s", ui::tr("No materials"));
         } else {
             int material = uiState_.selectedMaterial >= 0 &&
                                    uiState_.selectedMaterial < static_cast<std::int32_t>(model->model->materials.size())
@@ -4244,7 +4244,7 @@ void Application::buildStatusBar() {
             if (const auto* model = selectedModel())
                 ImGui::TextUnformatted(model->displayName.c_str());
             else
-                ImGui::TextDisabled(ui::tr("Scene"));
+                ImGui::TextDisabled("%s", ui::tr("Scene"));
             ImGui::TableSetColumnIndex(2);
             ImGui::Text(ui::tr("Frame %.0f / %.0f"), animationFrame_, scene_.timeline().duration);
             ImGui::TableSetColumnIndex(3);
@@ -4734,7 +4734,7 @@ void Application::buildEditorUi() {
             ImGui::InputText(ui::label("Dump path (.bin / .png / .exr)"), fxDebugDumpPath_.data(),
                              fxDebugDumpPath_.size());
             if (liveResources.empty()) {
-                ImGui::TextDisabled(ui::tr("No native FX resource allocations are active."));
+                ImGui::TextDisabled("%s", ui::tr("No native FX resource allocations are active."));
             } else {
                 for (std::size_t index = 0; index < liveResources.size(); ++index) {
                     const auto& resource = liveResources[index];

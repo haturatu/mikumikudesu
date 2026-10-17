@@ -4,25 +4,25 @@
 
 #include <SDL3/SDL.h>
 
+#include <memory>
+
 namespace dayo::ui {
 namespace {
 std::filesystem::path preferencePath() {
-    char* directory = SDL_GetPrefPath("haturatu", "mikumikudesu");
+    const std::unique_ptr<char, decltype(&SDL_free)> directory(SDL_GetPrefPath("haturatu", "mikumikudesu"), SDL_free);
     if (directory == nullptr)
         return {};
-    const auto path = std::filesystem::path(directory) / "language.txt";
-    SDL_free(directory);
+    const auto path = std::filesystem::path(directory.get()) / "language.txt";
     return path;
 }
 } // namespace
 
 void initializeEditorLanguage() {
     auto fallback = Language::english;
-    SDL_Locale** locales = SDL_GetPreferredLocales(nullptr);
+    const std::unique_ptr<SDL_Locale*, decltype(&SDL_free)> locales(SDL_GetPreferredLocales(nullptr), SDL_free);
     if (locales != nullptr) {
-        if (locales[0] != nullptr && locales[0]->language != nullptr)
-            fallback = languageFromLocale(locales[0]->language);
-        SDL_free(locales);
+        if (locales.get()[0] != nullptr && locales.get()[0]->language != nullptr)
+            fallback = languageFromLocale(locales.get()[0]->language);
     }
     loadLanguagePreference(preferencePath(), fallback);
 }

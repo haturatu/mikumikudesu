@@ -13,7 +13,10 @@ struct Entry {
 constexpr Entry catalog[]{
 #include "ui/i18n_catalog.inc"
 };
-Language currentLanguage = Language::english;
+Language& currentLanguage() noexcept {
+    static Language value = Language::english;
+    return value;
+}
 std::size_t index(Language value) noexcept {
     return static_cast<std::size_t>(value);
 }
@@ -29,11 +32,11 @@ const auto& translations() {
 } // namespace
 
 Language language() noexcept {
-    return currentLanguage;
+    return currentLanguage();
 }
 void setLanguage(Language value) noexcept {
     if (index(value) < languages.size())
-        currentLanguage = value;
+        currentLanguage() = value;
 }
 Language languageFromLocale(std::string_view locale) noexcept {
     const auto prefix = locale.substr(0, 2);
@@ -57,13 +60,13 @@ const char* tr(const char* source) {
     const auto found = translations().find(source);
     if (found == translations().end())
         return source;
-    return found->second->translations[index(currentLanguage)];
+    return found->second->translations[index(currentLanguage())];
 }
 const char* label(const char* source) {
     if (std::string_view(source).starts_with("##"))
         return source;
     static std::array<std::unordered_map<std::string, std::string>, 4> cache;
-    auto& labels = cache[index(currentLanguage)];
+    auto& labels = cache[index(currentLanguage())];
     const auto found = labels.find(source);
     if (found != labels.end())
         return found->second.c_str();
@@ -75,7 +78,7 @@ const char* label(const char* source) {
 }
 const char* items(const char* source) {
     static std::array<std::unordered_map<std::string, std::string>, 4> cache;
-    auto& lists = cache[index(currentLanguage)];
+    auto& lists = cache[index(currentLanguage())];
     const auto found = lists.find(source);
     if (found != lists.end())
         return found->second.c_str();
@@ -138,7 +141,7 @@ void loadLanguagePreference(const std::filesystem::path& path, Language fallback
 }
 bool saveLanguagePreference(const std::filesystem::path& path) {
     std::ofstream output(path, std::ios::trunc);
-    output << languageCode(currentLanguage) << '\n';
+    output << languageCode(currentLanguage()) << '\n';
     output.close();
     return !output.fail();
 }

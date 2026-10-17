@@ -233,7 +233,7 @@ KeyframeEditor::Result KeyframeEditor::draw(core::Scene& scene, core::CommandHis
     if (ImGui::DragFloat(ui::label("Zoom"), &zoom_, 0.1F, 1.0F, 500.0F, "%.1fx", ImGuiSliderFlags_AlwaysClamp))
         startFrame_ = std::max(0.0F, frame - scene.timeline().duration / (2.0F * zoom_));
     if (motion_ == nullptr) {
-        ImGui::TextWrapped(ui::tr("Load a model and a VMD, or choose Camera / light to edit global keys."));
+        ImGui::TextWrapped("%s", ui::tr("Load a model and a VMD, or choose Camera / light to edit global keys."));
         return result;
     }
     const bool shortcuts = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
@@ -351,7 +351,8 @@ KeyframeEditor::Result KeyframeEditor::draw(core::Scene& scene, core::CommandHis
     if (result.changed && selection_.size() == 1)
         if (const auto selectedFrame = keyFrame(*motion_, selection_.front()))
             result.seek = static_cast<float>(*selectedFrame);
-    ImGui::TextDisabled(ui::tr("Click: select  |  Ctrl: add  |  Shift: range  |  Drag: move / box  |  Esc: cancel"));
+    ImGui::TextDisabled("%s",
+                        ui::tr("Click: select  |  Ctrl: add  |  Shift: range  |  Drag: move / box  |  Esc: cancel"));
     result.pause |= result.changed || result.seek.has_value();
     return result;
 }
@@ -364,7 +365,7 @@ void KeyframeEditor::drawCanvas(core::Scene& scene, core::CommandHistory& histor
         if (matches(rows_[i]))
             filtered.push_back(i);
     if (filtered.empty()) {
-        ImGui::TextDisabled(ui::tr("No matching tracks. Clear the search or change the track type."));
+        ImGui::TextDisabled("%s", ui::tr("No matching tracks. Clear the search or change the track type."));
         return;
     }
     const auto flags =
@@ -617,7 +618,8 @@ bool KeyframeEditor::drawInspector(core::Scene& scene, core::CommandHistory& his
     ImGui::SeparatorText(ui::tr("Selected keyframe"));
     if (selection_.size() != 1) {
         ImGui::Text(ui::tr("%zu keys selected"), selection_.size());
-        ImGui::TextWrapped(ui::tr("Drag to move together, use -1f / +1f for precision, or Shift+arrow for 10 frames."));
+        ImGui::TextWrapped("%s",
+                           ui::tr("Drag to move together, use -1f / +1f for precision, or Shift+arrow for 10 frames."));
         ImGui::SetNextItemWidth(-1);
         ImGui::TextUnformatted(ui::tr("Offset (frames)"));
         ImGui::InputInt("##group-offset", &groupOffset_);
@@ -750,8 +752,8 @@ bool KeyframeEditor::drawInspector(core::Scene& scene, core::CommandHistory& his
             valid &= std::isfinite(key.viewAngle);
     });
     if (!valid)
-        ImGui::TextWrapped(ui::tr("Enter finite numeric values before applying this key."));
-    ImGui::TextWrapped(ui::tr("Apply saves this key as one undo step. Ctrl+Z restores the previous values."));
+        ImGui::TextWrapped("%s", ui::tr("Enter finite numeric values before applying this key."));
+    ImGui::TextWrapped("%s", ui::tr("Apply saves this key as one undo step. Ctrl+Z restores the previous values."));
     ImGui::BeginDisabled(!valid);
     if (ImGui::Button(ui::label("Apply key"))) {
         auto after = std::move(*draft_);
