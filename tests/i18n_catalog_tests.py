@@ -30,6 +30,8 @@ class CatalogTests(unittest.TestCase):
                 self.assertEqual(sorted(re.findall(r'\{\d\}', key)), sorted(re.findall(r'\{\d\}', value)), key)
         for source in ('src/app/application.cpp', 'src/ui/keyframe_editor.cpp'):
             text = (ROOT / source).read_text(encoding='utf-8')
+            unsafe = r'ImGui::(?:Text|TextWrapped|TextDisabled|SetTooltip)\(\s*ui::tr\(\s*' + STRING + r'(?:\s*' + STRING + r')*\s*\)\s*\)'
+            self.assertIsNone(re.search(unsafe, text), source)
             for match in re.finditer(r'(?:ui::(tr|label|items|Message)|(?:workspaceButton|workspaceWindowName|hint))\(\s*(' + STRING + r'(?:\s*' + STRING + r')*)\s*\)', text):
                 value = literal(match[2])
                 keys = value.split('|') if match[1] == 'items' else [value.split('##')[0]]

@@ -3327,6 +3327,7 @@ void Application::buildCameraLightControls() {
     const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
     ImGui::Text(ui::tr("Frame %u  |  Camera / Lighting"), frame);
     ImGui::TextWrapped(
+        "%s",
         ui::tr("Changes preview immediately. Register a key to save them at this frame; Ctrl+Z undoes registration."));
     ImGui::TextWrapped("%s", ui::tr("Register a key before exporting a VMD for reuse."));
     ImGui::PushItemWidth(-ImGui::GetFontSize() * 9.0F);
@@ -3745,8 +3746,8 @@ void Application::buildInspectorPanel() {
     if (uiState_.workspace == ui::Workspace::debug &&
         ImGui::CollapsingHeader(ui::label("Evaluation Order (experimental)"))) {
         ImGui::TextDisabled(
-            ui::tr("Motion order drives animation evaluation. Other order fields are persisted; runtime "
-                   "scheduling support is partial."));
+            "%s", ui::tr("Motion order drives animation evaluation. Other order fields are persisted; runtime "
+                         "scheduling support is partial."));
         if (ImGui::DragInt(ui::label("Motion"), &model->order.motion, 1.0F, 0, 1024))
             scene_.markDirty(core::DirtyFlag::geometry);
         ImGui::BeginDisabled();
@@ -4202,8 +4203,8 @@ void Application::buildImageSequenceExportUi() {
             ImGui::TextWrapped(ui::tr("First output: %s"),
                                core::firstSequenceOutputPath(previewSettings).string().c_str());
             ImGui::TextDisabled(
-                ui::tr("Output numbers are independent of scene frames. Existing numbers are skipped unless "
-                       "overwrite is enabled."));
+                "%s", ui::tr("Output numbers are independent of scene frames. Existing numbers are skipped unless "
+                             "overwrite is enabled."));
         } catch (const std::exception& error) {
             ImGui::TextWrapped("%s", ui::tr(error.what()));
         }
