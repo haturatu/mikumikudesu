@@ -32,7 +32,11 @@ class CatalogTests(unittest.TestCase):
             text = (ROOT / source).read_text(encoding='utf-8')
             unsafe = r'ImGui::(?:Text|TextWrapped|TextDisabled|SetTooltip)\(\s*ui::tr\(\s*' + STRING + r'(?:\s*' + STRING + r')*\s*\)\s*\)'
             self.assertIsNone(re.search(unsafe, text), source)
-            for match in re.finditer(r'(?:ui::(tr|label|items|Message)|(?:workspaceButton|workspaceWindowName|hint))\(\s*(' + STRING + r'(?:\s*' + STRING + r')*)\s*\)', text):
+            widgets = 'Button|SmallButton|BeginMenu|MenuItem|Checkbox|CheckboxFlags|RadioButton|CollapsingHeader|TreeNode|Selectable|InputText|InputTextWithHint|InputInt|InputScalar|SliderFloat|SliderInt|DragFloat|DragInt|ColorEdit3|BeginCombo|Combo|SeparatorText|TextUnformatted|TableSetupColumn'
+            for direct in re.finditer(r'ImGui::(?:' + widgets + r')\(\s*(' + STRING + r')', text):
+                value = json.loads(direct[1])
+                self.assertFalse(not value.startswith('##') and re.search('[A-Za-z]', value), (source, value))
+            for match in re.finditer(r'(?:ui::(tr|label|items|Message)|(?:workspaceButton|workspaceWindowName|hint))\(\s*(' + STRING + r'(?:\s*' + STRING + r')*)\s*(?:\)|,)', text):
                 value = literal(match[2])
                 keys = value.split('|') if match[1] == 'items' else [value.split('##')[0]]
                 for key in keys:
