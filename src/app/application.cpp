@@ -1928,7 +1928,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             const auto lastFrame = motion.lastFrame;
             const auto cameraKeyCount = motion.cameras.size();
             const auto lightKeyCount = motion.lights.size();
-            scene_.attachMotion(std::move(motion));
+            scene_.importMotion(std::move(motion));
             manualCamera_ = false;
 #if DAYO_HAS_IMGUI
             followVmdCamera_ = true;

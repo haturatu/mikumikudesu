@@ -171,6 +171,10 @@ class Scene {
     // be used while keeping a global camera/light motion in the scene.
     void clearProjectState();
     void attachMotion(const std::filesystem::path& path, ModelId target = 0);
+    // Import model VMD keys without dropping other tracks. At a matching
+    // bone/morph and frame, the imported key wins. Camera-only VMDs stay global.
+    void importMotion(VmdMotion motion, ModelId target = 0);
+    // In-memory snapshots (project restore, VMdayo) replace the whole motion.
     void attachMotion(VmdMotion motion, ModelId target = 0);
     void attachMotion(MotionDocument document, ModelId target = 0, std::string modelName = {});
     [[nodiscard]] const VmdMotion* motion(ModelId target = 0, bool global = false) const noexcept;

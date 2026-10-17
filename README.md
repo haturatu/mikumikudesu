@@ -238,6 +238,10 @@ because profile data is workload-specific and must not be committed.
   --asset motion.vmd --asset background.png
 ```
 
+同じモデルへ複数のVMDを読み込むと、既存のキーを保持しながら追加します。ダンス用VMDの後に
+表情用VMD（目線のボーンキーを含む場合も可）を読み込んでも、ダンスは消えません。同じボーン名・
+モーフ名の同じフレームにキーがある場合は、後から読み込んだ値を使います。
+
 重音テトを使った作品の公開や改変時は、[重音テト公式ガイドライン](https://kasaneteto.jp/guidelines/)と各モデル付属READMEを確認してください。
 
 主なオプション:
