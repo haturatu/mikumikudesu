@@ -21,8 +21,10 @@ void initializeEditorLanguage() {
     auto fallback = Language::english;
     const std::unique_ptr<SDL_Locale*, decltype(&SDL_free)> locales(SDL_GetPreferredLocales(nullptr), SDL_free);
     if (locales != nullptr) {
-        if (locales.get()[0] != nullptr && locales.get()[0]->language != nullptr)
-            fallback = languageFromLocale(locales.get()[0]->language);
+        if (locales.get()[0] != nullptr && locales.get()[0]->language != nullptr) {
+            const auto& preferred = *locales.get()[0];
+            fallback = languageFromLocale(preferred.language, preferred.country != nullptr ? preferred.country : "");
+        }
     }
     loadLanguagePreference(preferencePath(), fallback);
 }

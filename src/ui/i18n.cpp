@@ -29,6 +29,41 @@ const auto& translations() {
     }();
     return table;
 }
+bool localeCodeEquals(std::string_view value, std::string_view expected) noexcept {
+    if (value.size() != expected.size())
+        return false;
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c + ('a' - 'A')) : c; };
+        if (lower(value[i]) != lower(expected[i]))
+            return false;
+    }
+    return true;
+}
+std::string_view nextLocaleCode(std::string_view& remaining) noexcept {
+    const auto separator = remaining.find_first_of("-_");
+    const auto code = remaining.substr(0, separator);
+    if (separator == std::string_view::npos)
+        remaining = {};
+    else
+        remaining.remove_prefix(separator + 1);
+    return code;
+}
+enum class ChineseScript { unspecified, simplified, traditional };
+ChineseScript chineseScript(std::string_view script, std::string_view region) noexcept {
+    // An explicit script takes precedence over the geographic region.
+    if (!script.empty()) {
+        if (localeCodeEquals(script, "Hans"))
+            return ChineseScript::simplified;
+        if (localeCodeEquals(script, "Hant"))
+            return ChineseScript::traditional;
+        return ChineseScript::unspecified;
+    }
+    if (localeCodeEquals(region, "CN") || localeCodeEquals(region, "SG"))
+        return ChineseScript::simplified;
+    if (localeCodeEquals(region, "TW") || localeCodeEquals(region, "HK") || localeCodeEquals(region, "MO"))
+        return ChineseScript::traditional;
+    return ChineseScript::unspecified;
+}
 } // namespace
 
 Language language() noexcept {
@@ -38,14 +73,29 @@ void setLanguage(Language value) noexcept {
     if (index(value) < languages.size())
         currentLanguage() = value;
 }
-Language languageFromLocale(std::string_view locale) noexcept {
-    const auto prefix = locale.substr(0, 2);
-    if (prefix == "ja" || prefix == "JA")
+Language languageFromLocale(std::string_view locale, std::string_view country) noexcept {
+    auto remaining = locale.substr(0, locale.find_first_of(".@"));
+    const auto primary = nextLocaleCode(remaining);
+    if (localeCodeEquals(primary, "ja"))
         return Language::japanese;
-    if (prefix == "zh" || prefix == "ZH")
-        return Language::chineseSimplified;
-    if (prefix == "ru" || prefix == "RU")
+    if (localeCodeEquals(primary, "ru"))
         return Language::russian;
+    if (localeCodeEquals(primary, "zh")) {
+        auto code = nextLocaleCode(remaining);
+        std::string_view script;
+        if (code.size() == 4) {
+            script = code;
+            code = nextLocaleCode(remaining);
+        }
+        const auto region = code.empty() ? country : code;
+        switch (chineseScript(script, region)) {
+        case ChineseScript::simplified:
+            return Language::chineseSimplified;
+        case ChineseScript::traditional:
+        case ChineseScript::unspecified:
+            return Language::english;
+        }
+    }
     return Language::english;
 }
 const char* languageCode(Language value) noexcept {

@@ -15,7 +15,8 @@ inline constexpr std::array languages{Language::english, Language::japanese, Lan
                                       Language::russian};
 Language language() noexcept;
 void setLanguage(Language value) noexcept;
-Language languageFromLocale(std::string_view locale) noexcept;
+// Accept BCP 47 / POSIX tags, plus SDL's separately reported optional country.
+Language languageFromLocale(std::string_view locale, std::string_view country = {}) noexcept;
 const char* languageCode(Language value) noexcept;
 const char* languageName(Language value) noexcept;
 // Unknown strings are returned unchanged. The caller retains ownership of those strings.

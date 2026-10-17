@@ -43,6 +43,26 @@ void checkLanguages() {
     setLanguage(Language::japanese);
     expect(std::string(tr("Save")) == "保存", "Japanese translation");
 }
+void checkChineseLocales() {
+    using namespace dayo::ui;
+    for (const auto* locale : {"zh-TW", "zh-HK", "zh-MO", "zh-Hant", "zh-Hant-CN", "zh-Hant-SG", "zh_Hant_TW.UTF-8",
+                               "ZH_hK.utf8", "zh-Latn-CN", "zh-x-Hans", "zho-CN", "zheng", "zh", "", "C.UTF-8"})
+        expect(languageFromLocale(locale) == Language::english, locale);
+    for (const auto* locale : {"zh-CN", "zh-SG", "zh-Hans", "zh-Hans-CN", "zh-Hans-SG", "zh-Hans-TW", "zh_CN.UTF-8",
+                               "zH_sG.utf8", "ZH-hAnS", "zh-Hans-CN-u-nu-hanidec", "zh-CN-x-Hant"})
+        expect(languageFromLocale(locale) == Language::chineseSimplified, locale);
+    expect(languageFromLocale("zh", "CN") == Language::chineseSimplified, "SDL reports China separately");
+    expect(languageFromLocale("zh", "SG") == Language::chineseSimplified, "SDL reports Singapore separately");
+    for (const auto* country : {"TW", "HK", "MO", ""})
+        expect(languageFromLocale("zh", country) == Language::english, "SDL traditional/unspecified Chinese locale");
+    expect(languageFromLocale("zh-Hant", "CN") == Language::english, "Hant must override SDL country CN");
+    expect(languageFromLocale("zh-Hans", "TW") == Language::chineseSimplified, "Hans must override SDL country TW");
+    expect(languageFromLocale("zh-TW", "CN") == Language::english, "tag region must override separate country");
+    expect(languageFromLocale("zh-Hans", "") == Language::chineseSimplified, "script works without SDL country");
+    expect(languageFromLocale("Ja_jp.UTF-8") == Language::japanese, "mixed case Japanese locale");
+    expect(languageFromLocale("rU-RU") == Language::russian, "mixed case Russian locale");
+    expect(languageFromLocale("jargon") == Language::english, "primary language requires an exact match");
+}
 void checkNotifications() {
     using namespace dayo::ui;
     const Message status("Project {0} — assets: {1}", {"モデル{1}%.dayo", "3"});
@@ -83,6 +103,7 @@ int main() {
     int result = 0;
     try {
         checkLanguages();
+        checkChineseLocales();
         checkNotifications();
         checkPreferences(path);
         std::cout << "Language switching, stable IDs, combo options and preferences passed\n";
