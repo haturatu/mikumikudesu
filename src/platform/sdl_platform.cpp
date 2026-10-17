@@ -93,8 +93,10 @@ class SdlWindow final : public Window {
                 }
                 break;
             case SDL_EVENT_MOUSE_MOTION:
-                if ((event.motion.state & SDL_BUTTON_RMASK) != 0U) {
+                if ((event.motion.state & SDL_BUTTON_LMASK) != 0U) {
                     result.push_back({WindowEvent::Type::cameraDragged, {}, event.motion.xrel, event.motion.yrel});
+                } else if ((event.motion.state & SDL_BUTTON_RMASK) != 0U) {
+                    result.push_back({WindowEvent::Type::cameraPanned, {}, event.motion.xrel, event.motion.yrel});
                 }
                 break;
             case SDL_EVENT_MOUSE_WHEEL:
