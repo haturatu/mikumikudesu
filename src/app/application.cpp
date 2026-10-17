@@ -26,6 +26,7 @@
 #include <SDL3/SDL.h>
 
 #if DAYO_HAS_IMGUI
+#include "ui/i18n_imgui.hpp"
 #include <imgui.h>
 #include <imgui_internal.h>
 #endif
@@ -3111,6 +3112,7 @@ void Application::setWorkspace(ui::Workspace workspace) {
 
 void Application::buildMainMenuBar() {
 #if DAYO_HAS_IMGUI
+    ui::localizeImGui();
     if (!ImGui::BeginMainMenuBar())
         return;
     if (ImGui::BeginMenu(ui::label("File"))) {

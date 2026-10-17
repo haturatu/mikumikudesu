@@ -1,4 +1,5 @@
 #include "ui/i18n.hpp"
+#include "ui/i18n_imgui.hpp"
 #include "ui/keyframe_edit.hpp"
 #include "ui/keyframe_editor.hpp"
 
@@ -134,6 +135,10 @@ void checkLiveLanguageSwitch() {
     ImGuiID stableId{};
     for (const auto candidate : dayo::ui::languages) {
         dayo::ui::setLanguage(candidate);
+        dayo::ui::localizeImGui();
+        expect(std::string_view(ImGui::LocalizeGetMsg(ImGuiLocKey_DockingHideTabBar)) ==
+                   dayo::ui::label("Hide tab bar###HideTabBar"),
+               "built-in docking menus must follow the selected language");
         h.frame({-10, -10});
         expect(h.editor.selection().size() == 1 && h.history.undoCount() == 0,
                "language changes must retain selection without modifying motion");
