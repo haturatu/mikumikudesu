@@ -413,14 +413,16 @@ void KeyframeEditor::drawCanvas(core::Scene& scene, core::CommandHistory& histor
     clipper.Begin(static_cast<int>(filtered.size()), rowHeight_);
     while (clipper.Step()) {
         for (int index = clipper.DisplayStart; index < clipper.DisplayEnd; ++index) {
-            const auto& row = rows_[filtered[static_cast<std::size_t>(index)]];
-            ImGui::PushID(index);
+            const auto rowIndex = filtered[static_cast<std::size_t>(index)];
+            const auto& row = rows_[rowIndex];
+            ImGui::PushID(static_cast<int>(rowIndex));
             ImGui::TableNextRow(ImGuiTableRowFlags_None, rowHeight_);
             ImGui::TableSetColumnIndex(0);
             const bool rowSelected =
                 !selection_.empty() && std::any_of(row.keys.begin(), row.keys.end(),
                                                    [&](Entry key) { return selectedSet_.contains(key.ref); });
-            if (ImGui::Selectable(displayName(row), rowSelected, ImGuiSelectableFlags_None,
+            const std::string rowLabel = std::string(displayName(row)) + "###track";
+            if (ImGui::Selectable(rowLabel.c_str(), rowSelected, ImGuiSelectableFlags_None,
                                   {0, ImGui::GetTextLineHeight() + 4.0F})) {
                 const auto nearest = std::min_element(row.keys.begin(), row.keys.end(), [&](Entry a, Entry b) {
                     return std::abs(static_cast<float>(a.frame) - frame) <
