@@ -946,7 +946,6 @@ void Application::resetProjectRuntimeState() {
         imageSequenceExportRunning_ = false;
         imageSequenceRestoring_ = false;
     }
-    timelineTrackCache_ = {};
 #endif
     videoExportJob_.cancel();
     drainVideoReadbacks();
@@ -1009,6 +1008,7 @@ void Application::resetProjectRuntimeState() {
     lightEditPreview_ = false;
     followVmdCamera_ = true;
     viewportInteraction_ = {};
+    timelineEditor_ = {};
 #endif
     cameraYaw_ = 0.0F;
     cameraPitch_ = 0.0F;
@@ -3183,7 +3183,8 @@ void Application::buildMainMenuBar() {
     ImGui::PushID("WorkspaceSelector");
     const auto workspaceButton = [&](const char* label, ui::Workspace workspace) {
         ImGui::SameLine();
-        if (ImGui::Selectable(label, uiState_.workspace == workspace, ImGuiSelectableFlags_DontClosePopups))
+        if (ImGui::Selectable(label, uiState_.workspace == workspace, ImGuiSelectableFlags_DontClosePopups,
+                              {ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0F, 0}))
             setWorkspace(workspace);
     };
     workspaceButton("Layout", ui::Workspace::layout);
@@ -3212,8 +3213,8 @@ void Application::buildDockLayout() {
     ImGui::DockBuilderSetNodeSize(dockspaceId, viewport->WorkSize);
     ImGuiID right{};
     ImGuiID main = dockspaceId;
-    const float inspectorRatio = uiState_.workspace == ui::Workspace::camera ? 0.30F : 0.25F;
-    const float timelineRatio = uiState_.workspace == ui::Workspace::animation ? 0.40F : 0.30F;
+    const float inspectorRatio = uiState_.workspace == ui::Workspace::camera ? 0.30F : 0.28F;
+    const float timelineRatio = uiState_.workspace == ui::Workspace::animation ? 0.43F : 0.36F;
     ImGuiID timeline{};
     if (uiState_.inspectorVisible)
         ImGui::DockBuilderSplitNode(main, ImGuiDir_Right, inspectorRatio, &right, &main);
@@ -3290,7 +3291,7 @@ void Application::buildCameraLightControls() {
         history_.execute(scene_, std::make_unique<core::EditMotionCommand>(
                                      0, true, std::move(before), core::toVmdMotion(std::move(document), modelName),
                                      std::move(label)));
-        selectedKeys_.clear();
+        timelineEditor_.clearSelection();
         refreshAnimatedMesh(false);
         refreshPreviewScene();
     };
@@ -3482,6 +3483,7 @@ void Application::buildInspectorPanel() {
     if (!uiState_.inspectorVisible)
         return;
     auto* model = selectedModel();
+    timelineEditor_.synchronize(scene_, model != nullptr ? model->id : core::ModelId{}, editGlobalMotion_);
     if (inspectorFocusRequested_) {
         ImGui::SetNextWindowFocus();
         inspectorFocusRequested_ = false;
@@ -3499,6 +3501,12 @@ void Application::buildInspectorPanel() {
     if (ImGui::RadioButton("Light", inspectorPage_ == InspectorPage::light))
         inspectorPage_ = InspectorPage::light;
     ImGui::Separator();
+    if (inspectorPage_ == InspectorPage::selection && timelineEditor_.drawInspector(scene_, history_)) {
+        playing_ = false;
+        restartAudioAtCurrentFrame();
+        refreshAnimatedMesh(false);
+        refreshPreviewScene();
+    }
     if (inspectorPage_ != InspectorPage::selection) {
         buildCameraLightControls();
         ImGui::End();
@@ -3551,7 +3559,9 @@ void Application::buildInspectorPanel() {
     ImGui::Text("Model: %s", model->displayName.c_str());
     ImGui::TextDisabled("PMX  ·  %zu bones  ·  %zu morphs", model->model->bones.size(), model->model->morphs.size());
     ImGui::Separator();
-    if (ImGui::CollapsingHeader("Model", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader("Model", uiState_.workspace == ui::Workspace::animation
+                                             ? ImGuiTreeNodeFlags_None
+                                             : ImGuiTreeNodeFlags_DefaultOpen)) {
         bool visible = model->visible;
         if (ImGui::Checkbox("Visible", &visible)) {
             scene_.setModelVisible(model->id, visible);
@@ -3634,7 +3644,9 @@ void Application::buildInspectorPanel() {
             }
         }
     }
-    if (ImGui::CollapsingHeader("Material", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader("Material", uiState_.workspace == ui::Workspace::animation
+                                                ? ImGuiTreeNodeFlags_None
+                                                : ImGuiTreeNodeFlags_DefaultOpen)) {
         if (model->model->materials.empty()) {
             ImGui::TextDisabled("No materials");
         } else {
@@ -4203,334 +4215,84 @@ void Application::buildStatusBar() {
 void Application::buildEditorUi() {
 #if DAYO_HAS_IMGUI
     auto* model = selectedModel();
-    const bool global = editGlobalMotion_;
-    const auto* active = global ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
     const auto target = model != nullptr ? model->id : core::ModelId{};
-    const auto cacheModelId = global ? core::ModelId{} : target;
-    if (timelineTrackCache_.modelId != cacheModelId || timelineTrackCache_.motion != active ||
-        timelineTrackCache_.globalMotion != global || timelineTrackCache_.motionRevision != scene_.motionRevision()) {
-        selectedKeys_.clear();
-        timelineTrackCache_ = {};
-        timelineTrackCache_.motionRevision = scene_.motionRevision();
-        timelineTrackCache_.modelId = cacheModelId;
-        timelineTrackCache_.motion = active;
-        timelineTrackCache_.globalMotion = global;
-        timelineScrollY_ = 0.0F;
-        if (active != nullptr) {
-            const auto groupTracks = [](const auto& keys, std::vector<TimelineTrack>& tracks) {
-                std::unordered_map<std::string, std::size_t> indices;
-                indices.reserve(keys.size());
-                for (const auto& key : keys) {
-                    const auto [iterator, inserted] = indices.emplace(key.name, tracks.size());
-                    if (inserted)
-                        tracks.push_back({key.name, {}});
-                    tracks[iterator->second].frames.push_back(key.frame);
-                }
-                for (auto& track : tracks)
-                    std::sort(track.frames.begin(), track.frames.end());
-            };
-            groupTracks(active->bones, timelineTrackCache_.bones);
-            groupTracks(active->morphs, timelineTrackCache_.morphs);
-            const auto cacheFrames = [](const auto& keys, std::vector<std::uint32_t>& frames) {
-                frames.reserve(keys.size());
-                for (const auto& key : keys)
-                    frames.push_back(key.frame);
-                std::sort(frames.begin(), frames.end());
-            };
-            cacheFrames(active->cameras, timelineTrackCache_.cameras);
-            cacheFrames(active->lights, timelineTrackCache_.lights);
-        }
-    }
     const auto execute = [&](core::VmdMotion before, core::MotionDocument document, bool globalMotion,
                              std::string label) {
-        const auto outputModelName =
-            before.modelName.empty() && !globalMotion && model != nullptr ? model->displayName : before.modelName;
-        auto after = core::toVmdMotion(std::move(document), outputModelName);
+        const auto name = before.modelName.empty() && model != nullptr ? model->displayName : before.modelName;
         history_.execute(scene_, std::make_unique<core::EditMotionCommand>(target, globalMotion, std::move(before),
-                                                                           std::move(after), std::move(label)));
-        selectedKeys_.clear();
-        active = global ? scene_.cameraMotion() : (model != nullptr ? model->motion.get() : nullptr);
+                                                                           core::toVmdMotion(std::move(document), name),
+                                                                           std::move(label)));
+        timelineEditor_.clearSelection();
         refreshAnimatedMesh(false);
         refreshPreviewScene();
     };
     const bool debugWorkspace = uiState_.workspace == ui::Workspace::debug;
-
-    if (uiState_.timelineVisible && ImGui::Begin(workspaceWindowName("Timeline", "timeline").c_str())) {
+    if (uiState_.timelineVisible && ImGui::Begin(workspaceWindowName("Timeline", "timeline").c_str(), nullptr,
+                                                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
         uiState_.timelineFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
-        if (ImGui::Button("|<")) {
-            seekTimeline(0.0F);
-        }
+        if (ImGui::Button("|<"))
+            seekTimeline(0);
         ImGui::SameLine();
-        if (ImGui::Button("<")) {
-            seekTimeline(std::max(0.0F, animationFrame_ - 1.0F));
-        }
+        if (ImGui::Button("<"))
+            seekTimeline(std::max(0.0F, animationFrame_ - 1));
         ImGui::SameLine();
         if (ImGui::Button(playing_ ? "Pause" : "Play")) {
             playing_ = !playing_;
             restartAudioAtCurrentFrame();
         }
         ImGui::SameLine();
-        if (ImGui::Button(">")) {
-            seekTimeline(std::min(scene_.timeline().duration, animationFrame_ + 1.0F));
-        }
+        if (ImGui::Button(">"))
+            seekTimeline(std::min(scene_.timeline().duration, animationFrame_ + 1));
         ImGui::SameLine();
-        if (ImGui::Button(">|")) {
+        if (ImGui::Button(">|"))
             seekTimeline(scene_.timeline().duration);
+        ImGui::SameLine();
+        int frame =
+            static_cast<int>(std::min(animationFrame_, static_cast<float>(std::numeric_limits<int>::max() - 1)));
+        ImGui::SetNextItemWidth(85);
+        if (ImGui::InputInt("Frame", &frame, 0)) {
+            playing_ = false;
+            seekTimeline(std::clamp(static_cast<float>(frame), 0.0F, scene_.timeline().duration));
         }
         ImGui::SameLine();
-        ImGui::Text("Frame %.0f / %.0f", animationFrame_, scene_.timeline().duration);
+        if (ImGui::RadioButton("Model", !editGlobalMotion_))
+            editGlobalMotion_ = false;
         ImGui::SameLine();
-        ImGui::Checkbox("Loop", &repeat_);
+        if (ImGui::RadioButton("Camera / light", editGlobalMotion_))
+            editGlobalMotion_ = true;
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(90.0F);
-        if (ImGui::DragFloat("Speed", &playbackSpeed_, 0.01F, 0.1F, 4.0F, "%.2fx"))
+        if (ImGui::Button("Playback / media"))
+            ImGui::OpenPopup("timeline-playback");
+        if (ImGui::BeginPopup("timeline-playback")) {
+            ImGui::Checkbox("Loop", &repeat_);
+            ImGui::SetNextItemWidth(100);
+            if (ImGui::DragFloat("Speed", &playbackSpeed_, .01F, .1F, 4, "%.2fx"))
+                restartAudioAtCurrentFrame();
+            ImGui::SeparatorText("Media");
+            buildMediaPlaybackControls(true);
+            if (!waveformPeaks_.empty())
+                ImGui::PlotLines("Audio", waveformPeaks_.data(), static_cast<int>(waveformPeaks_.size()), 0, nullptr, 0,
+                                 1, {300, 44});
+            ImGui::EndPopup();
+        }
+        timelineEditor_.synchronize(scene_, target, editGlobalMotion_);
+        const auto result = timelineEditor_.draw(scene_, history_, animationFrame_);
+        if (result.pause && playing_) {
+            playing_ = false;
             restartAudioAtCurrentFrame();
-        ImGui::SeparatorText("Media");
-        buildMediaPlaybackControls(true);
-        if (!waveformPeaks_.empty())
-            ImGui::PlotLines("Audio", waveformPeaks_.data(), static_cast<int>(waveformPeaks_.size()), 0, nullptr, 0.0F,
-                             1.0F, {-1.0F, 44.0F});
-        ImGui::Checkbox("Key List", &timelineKeyListVisible_);
-        ImGui::SameLine();
-        if (ImGui::Checkbox("Edit global camera/light motion", &editGlobalMotion_))
-            selectedKeys_.clear();
-        if (active == nullptr) {
-            ImGui::TextUnformatted("Load a VMD/VMdayo motion to edit keyframes.");
-        } else {
-            if (timelineKeyListVisible_)
-                ImGui::Text("Bone %zu  Morph %zu  Camera %zu  Light %zu  Shadow %zu  IK %zu", active->bones.size(),
-                            active->morphs.size(), active->cameras.size(), active->lights.size(),
-                            active->shadows.size(), active->ik.size());
-            auto row = [&](core::MotionTrack track, std::size_t index, std::uint32_t frame, const std::string& name) {
-                const core::MotionKeyRef key{track, index};
-                const bool selected = std::find(selectedKeys_.begin(), selectedKeys_.end(), key) != selectedKeys_.end();
-                const auto label = name + "  @ " + std::to_string(frame) + "##" +
-                                   std::to_string(static_cast<int>(track)) + ":" + std::to_string(index);
-                if (!ImGui::Selectable(label.c_str(), selected))
-                    return;
-                if (!ImGui::GetIO().KeyCtrl)
-                    selectedKeys_.clear();
-                const auto found = std::find(selectedKeys_.begin(), selectedKeys_.end(), key);
-                if (found == selectedKeys_.end())
-                    selectedKeys_.push_back(key);
-                else
-                    selectedKeys_.erase(found);
-            };
-            const float canvasHeight = std::max(ImGui::GetFrameHeight() * 3.0F, ImGui::GetContentRegionAvail().y);
-            if (timelineKeyListVisible_) {
-                if (ImGui::BeginChild("key-list", {0.0F, canvasHeight}, true)) {
-                    const auto count = active->bones.size() + active->morphs.size() + active->cameras.size() +
-                                       active->lights.size() + active->shadows.size() + active->ik.size();
-                    ImGuiListClipper clipper;
-                    clipper.Begin(static_cast<int>(count));
-                    while (clipper.Step()) {
-                        for (int visible = clipper.DisplayStart; visible < clipper.DisplayEnd; ++visible) {
-                            auto index = static_cast<std::size_t>(visible);
-                            const auto visit = [&](const auto& keys, core::MotionTrack track, const char* label) {
-                                if (index < keys.size()) {
-                                    const auto& key = keys[index];
-                                    if constexpr (requires { key.name; })
-                                        row(track, index, key.frame, key.name);
-                                    else
-                                        row(track, index, key.frame, label);
-                                    return true;
-                                }
-                                index -= keys.size();
-                                return false;
-                            };
-                            if (visit(active->bones, core::MotionTrack::bone, "Bone") ||
-                                visit(active->morphs, core::MotionTrack::morph, "Morph") ||
-                                visit(active->cameras, core::MotionTrack::camera, "Camera") ||
-                                visit(active->lights, core::MotionTrack::light, "Light") ||
-                                visit(active->shadows, core::MotionTrack::shadow, "Self shadow"))
-                                continue;
-                            static_cast<void>(visit(active->ik, core::MotionTrack::ik, "IK / visibility"));
-                        }
-                    }
-                }
-                ImGui::EndChild();
-            } else {
-                if (ImGui::BeginChild("timeline-canvas", {0.0F, canvasHeight}, true,
-                                      ImGuiWindowFlags_NoScrollWithMouse)) {
-                    const auto canvasMin = ImGui::GetWindowPos();
-                    const auto canvasSize = ImGui::GetWindowSize();
-                    auto* drawList = ImGui::GetWindowDrawList();
-                    const float left = canvasMin.x + ImGui::GetFontSize() * 8.0F;
-                    const float top = canvasMin.y + ImGui::GetFrameHeight();
-                    const float right = canvasMin.x + canvasSize.x - 8.0F;
-                    const float bottom = canvasMin.y + canvasSize.y - 8.0F;
-                    const float duration = std::max(scene_.timeline().duration, 1.0F);
-                    float pixelsPerFrame = (right - left) / duration * timelineZoom_;
-                    float maxPan = std::max(0.0F, duration * pixelsPerFrame - (right - left));
-                    timelinePan_ = std::clamp(timelinePan_, 0.0F, maxPan);
-                    const float rowHeight = 22.0F;
-                    const int trackCount = global ? 2
-                                                  : 2 + static_cast<int>(timelineTrackCache_.bones.size() +
-                                                                         timelineTrackCache_.morphs.size());
-                    const float contentHeight = 16.0F + static_cast<float>(trackCount) * rowHeight;
-                    const float visibleHeight = std::max(0.0F, bottom - top);
-                    const float maxScrollY = std::max(0.0F, contentHeight - visibleHeight);
-                    timelineScrollY_ = std::clamp(timelineScrollY_, 0.0F, maxScrollY);
-                    const auto frameX = [&](float frame) { return left + frame * pixelsPerFrame - timelinePan_; };
-                    drawList->AddText({canvasMin.x + 8.0F, canvasMin.y + 5.0F}, ImGui::GetColorU32(ImGuiCol_Text),
-                                      "Tracks");
-                    for (int tick = 0; tick <= 10; ++tick) {
-                        const float frame = duration * static_cast<float>(tick) / 10.0F;
-                        const float x = frameX(frame);
-                        if (x < left - 1.0F || x > right + 1.0F)
-                            continue;
-                        drawList->AddLine({x, top}, {x, bottom}, ImGui::GetColorU32(ImGuiCol_Border));
-                        const auto label = std::to_string(static_cast<int>(frame));
-                        drawList->AddText({x + 2.0F, canvasMin.y + 5.0F}, ImGui::GetColorU32(ImGuiCol_TextDisabled),
-                                          label.c_str());
-                    }
-                    const auto trackY = [&](int trackRow) {
-                        return top + 16.0F + static_cast<float>(trackRow) * rowHeight - timelineScrollY_;
-                    };
-                    const auto trackVisible = [&](int trackRow) {
-                        const float y = trackY(trackRow);
-                        return y >= top - ImGui::GetFontSize() && y <= bottom + ImGui::GetFontSize();
-                    };
-                    const auto drawDiamond = [&](float frame, int trackRow, ImU32 color) {
-                        const float x = frameX(frame);
-                        const float y = trackY(trackRow);
-                        if (x < left - 8.0F || x > right + 8.0F || y < top - 8.0F || y > bottom + 8.0F)
-                            return;
-                        drawList->AddQuadFilled({x, y - 5.0F}, {x + 5.0F, y}, {x, y + 5.0F}, {x - 5.0F, y}, color);
-                    };
-                    const auto drawTrack = [&](const char* name, int trackRow) {
-                        if (!trackVisible(trackRow))
-                            return;
-                        const float y = trackY(trackRow);
-                        drawList->AddText({canvasMin.x + 8.0F, y - ImGui::GetFontSize() * 0.5F},
-                                          ImGui::GetColorU32(ImGuiCol_Text), name);
-                    };
-                    drawTrack("Camera", 0);
-                    drawTrack("Light", 1);
-                    const auto drawFrames = [&](const std::vector<std::uint32_t>& frames, int trackRow, ImU32 color) {
-                        const float firstFrame = (timelinePan_ - 8.0F) / pixelsPerFrame;
-                        const float lastFrame = (right - left + timelinePan_ + 8.0F) / pixelsPerFrame;
-                        const auto first = std::lower_bound(
-                            frames.begin(), frames.end(), firstFrame,
-                            [](std::uint32_t frame, float value) { return static_cast<float>(frame) < value; });
-                        const auto last =
-                            std::upper_bound(first, frames.end(), lastFrame, [](float value, std::uint32_t frame) {
-                                return value < static_cast<float>(frame);
-                            });
-                        for (auto it = first; it != last; ++it)
-                            drawDiamond(static_cast<float>(*it), trackRow, color);
-                    };
-                    if (global) {
-                        if (trackVisible(0))
-                            drawFrames(timelineTrackCache_.cameras, 0, ImGui::GetColorU32(ImGuiCol_CheckMark));
-                        if (trackVisible(1))
-                            drawFrames(timelineTrackCache_.lights, 1, ImGui::GetColorU32(ImGuiCol_CheckMark));
-                    } else if (model != nullptr) {
-                        int trackRow = 2;
-                        for (const auto& track : timelineTrackCache_.bones) {
-                            if (trackVisible(trackRow)) {
-                                drawTrack(track.name.c_str(), trackRow);
-                                drawFrames(track.frames, trackRow, ImGui::GetColorU32(ImGuiCol_SliderGrab));
-                            }
-                            ++trackRow;
-                        }
-                        for (const auto& track : timelineTrackCache_.morphs) {
-                            if (trackVisible(trackRow)) {
-                                drawTrack(track.name.c_str(), trackRow);
-                                drawFrames(track.frames, trackRow, ImGui::GetColorU32(ImGuiCol_PlotLines));
-                            }
-                            ++trackRow;
-                        }
-                    }
-                    const float currentX = frameX(animationFrame_);
-                    if (currentX >= left && currentX <= right)
-                        drawList->AddLine({currentX, top}, {currentX, bottom},
-                                          ImGui::GetColorU32(ImGuiCol_PlotHistogram), 2.0F);
-                    ImGui::SetCursorScreenPos({left, top});
-                    ImGui::InvisibleButton("timeline-canvas-input", {right - left, bottom - top},
-                                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
-                    if (ImGui::IsItemHovered()) {
-                        if (ImGui::GetIO().MouseWheel != 0.0F) {
-                            if (ImGui::GetIO().KeyCtrl) {
-                                const float frameUnderCursor =
-                                    (ImGui::GetIO().MousePos.x - left + timelinePan_) / pixelsPerFrame;
-                                timelineZoom_ =
-                                    std::clamp(timelineZoom_ + ImGui::GetIO().MouseWheel * 0.1F, 0.5F, 8.0F);
-                                pixelsPerFrame = (right - left) / duration * timelineZoom_;
-                                maxPan = std::max(0.0F, duration * pixelsPerFrame - (right - left));
-                                timelinePan_ =
-                                    std::clamp(frameUnderCursor * pixelsPerFrame - (ImGui::GetIO().MousePos.x - left),
-                                               0.0F, maxPan);
-                            } else {
-                                timelineScrollY_ = std::clamp(timelineScrollY_ - ImGui::GetIO().MouseWheel * rowHeight,
-                                                              0.0F, maxScrollY);
-                            }
-                        }
-                        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
-                            timelinePan_ = std::clamp(timelinePan_ - ImGui::GetIO().MouseDelta.x, 0.0F, maxPan);
-                        }
-                        if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-                            const float frame = (ImGui::GetIO().MousePos.x - left + timelinePan_) / pixelsPerFrame;
-                            seekTimeline(std::clamp(frame, 0.0F, duration));
-                        }
-                    }
-                }
-                ImGui::EndChild();
-            }
-            const bool keyWindowFocused =
-                ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput;
-            const bool copyShortcut =
-                keyWindowFocused && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C, false);
-            const bool cutShortcut =
-                keyWindowFocused && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_X, false);
-            const bool pasteShortcut =
-                keyWindowFocused && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V, false);
-            const bool deleteShortcut = keyWindowFocused && ImGui::IsKeyPressed(ImGuiKey_Delete, false);
-            if ((ImGui::Button("Copy") || copyShortcut) && !selectedKeys_.empty()) {
-                motionClipboard_ = core::MotionEditor::copy(core::toMotionDocument(*active), selectedKeys_);
-            }
-            ImGui::SameLine();
-            if ((ImGui::Button("Cut") || cutShortcut) && !selectedKeys_.empty()) {
-                auto before = *active;
-                auto document = core::toMotionDocument(before);
-                motionClipboard_ = core::MotionEditor::copy(document, selectedKeys_);
-                core::MotionEditor::erase(document, selectedKeys_);
-                selectedKeys_.clear();
-                execute(std::move(before), std::move(document), global, "Cut keys");
-            }
-            ImGui::SameLine();
-            if ((ImGui::Button("Paste") || pasteShortcut) && !motionClipboard_.empty()) {
-                auto before = *active;
-                auto document = core::toMotionDocument(before);
-                static_cast<void>(core::MotionEditor::paste(
-                    document, motionClipboard_, static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F))));
-                selectedKeys_.clear();
-                execute(std::move(before), std::move(document), global, "Paste keys");
-            }
-            ImGui::SameLine();
-            if ((ImGui::Button("Delete") || deleteShortcut) && !selectedKeys_.empty()) {
-                auto before = *active;
-                auto document = core::toMotionDocument(before);
-                core::MotionEditor::erase(document, selectedKeys_);
-                selectedKeys_.clear();
-                execute(std::move(before), std::move(document), global, "Delete keys");
-            }
-            int interpolation = static_cast<int>(active->interpolation);
-            if (ImGui::Combo("Interpolation", &interpolation, "Linear\0VMD Bezier\0Catmull-Rom\0")) {
-                auto before = *active;
-                auto document = core::toMotionDocument(before);
-                document.interpolation = static_cast<core::InterpolationMode>(interpolation);
-                execute(std::move(before), std::move(document), global, "Set interpolation");
-            }
-            static std::array<char, 1024> exportPath{};
-            ImGui::InputText("VMD destination", exportPath.data(), exportPath.size());
-            if (ImGui::Button("Export VMD") && exportPath[0] != '\0') {
-                try {
-                    core::saveVmd(exportPath.data(), *active);
-                    lastAsset_ = "Exported VMD";
-                } catch (const std::exception& error) {
-                    lastAsset_ = error.what();
-                }
+        }
+        if (result.seek)
+            seekTimeline(*result.seek);
+        if (result.changed) {
+            refreshAnimatedMesh(false);
+            refreshPreviewScene();
+        }
+        if (result.seek && !timelineEditor_.selection().empty()) {
+            inspectorPage_ = InspectorPage::selection;
+            uiState_.inspectScene = false;
+            if (!uiState_.inspectorVisible) {
+                uiState_.inspectorVisible = true;
+                uiState_.resetLayoutRequested = true;
             }
         }
     }
