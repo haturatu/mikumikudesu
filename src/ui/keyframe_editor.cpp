@@ -37,6 +37,11 @@ bool contains(std::string text, std::string query) {
     return text.find(query) != std::string::npos;
 }
 
+std::uint32_t frameNumber(float frame) {
+    return static_cast<std::uint32_t>(
+        std::clamp(static_cast<double>(frame), 0.0, static_cast<double>(std::numeric_limits<std::uint32_t>::max())));
+}
+
 core::Float3 rotationDegrees(const core::Float4& q) {
     constexpr float degrees = 180.0F / std::numbers::pi_v<float>;
     return {degrees * std::atan2(2.0F * (q[3] * q[0] + q[1] * q[2]), 1.0F - 2.0F * (q[0] * q[0] + q[1] * q[1])),
@@ -213,7 +218,8 @@ KeyframeEditor::Result KeyframeEditor::draw(core::Scene& scene, core::CommandHis
     hint("Fit the full motion. Ctrl+wheel zooms around the pointer; middle-drag pans.");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(65.0F);
-    ImGui::DragFloat("Zoom", &zoom_, 0.1F, 1.0F, 500.0F, "%.1fx", ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::DragFloat("Zoom", &zoom_, 0.1F, 1.0F, 500.0F, "%.1fx", ImGuiSliderFlags_AlwaysClamp))
+        startFrame_ = std::max(0.0F, frame - scene.timeline().duration / (2.0F * zoom_));
     if (motion_ == nullptr) {
         ImGui::TextWrapped("Load a model and a VMD, or choose Camera / light to edit global keys.");
         return result;
@@ -221,6 +227,16 @@ KeyframeEditor::Result KeyframeEditor::draw(core::Scene& scene, core::CommandHis
     const bool shortcuts = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
                            !ImGui::GetIO().WantTextInput && !keyGesture_ && !boxGesture_;
     const auto shortcut = [&](ImGuiKey key) { return shortcuts && ImGui::IsKeyPressed(key, false); };
+    if (ImGui::GetIO().KeyCtrl && shortcut(ImGuiKey_A)) {
+        clearSelection();
+        for (const auto& row : rows_)
+            if (matches(row))
+                for (const auto key : row.keys)
+                    selection_.push_back(key.ref);
+        selectedSet_.insert(selection_.begin(), selection_.end());
+    }
+    if (shortcut(ImGuiKey_Escape))
+        clearSelection();
     ImGui::BeginDisabled(selection_.empty());
     if (ImGui::SmallButton("Copy") || (ImGui::GetIO().KeyCtrl && shortcut(ImGuiKey_C)))
         clipboard_ = core::MotionEditor::copy(core::toMotionDocument(*motion_), selection_);
@@ -254,8 +270,7 @@ KeyframeEditor::Result KeyframeEditor::draw(core::Scene& scene, core::CommandHis
     ImGui::EndDisabled();
     if (paste && !clipboard_.empty()) {
         auto document = core::toMotionDocument(*motion_);
-        static_cast<void>(
-            core::MotionEditor::paste(document, clipboard_, static_cast<std::uint32_t>(std::max(frame, 0.0F))));
+        static_cast<void>(core::MotionEditor::paste(document, clipboard_, frameNumber(frame)));
         auto after = core::toVmdMotion(std::move(document), motion_->modelName);
         clearSelection();
         execute(scene, history, std::move(after), "Paste keys");
@@ -319,6 +334,9 @@ KeyframeEditor::Result KeyframeEditor::draw(core::Scene& scene, core::CommandHis
     }
     ImGui::EndChild();
     finishGesture(scene, history, result);
+    if (result.changed && !selection_.empty())
+        if (const auto selectedFrame = keyFrame(*motion_, selection_.front()))
+            result.seek = static_cast<float>(*selectedFrame);
     ImGui::TextDisabled("Click: select  |  Ctrl: add  |  Shift: range  |  Drag: move / box  |  Esc: cancel");
     result.pause |= result.changed || result.seek.has_value();
     return result;
@@ -367,7 +385,7 @@ void KeyframeEditor::drawCanvas(core::Scene& scene, core::CommandHistory& histor
         step /= 2.0F;
     for (float tick = std::ceil(startFrame_ / step) * step; tick <= startFrame_ + width / pixelsPerFrame_;
          tick += step) {
-        const std::string label = std::to_string(static_cast<std::uint32_t>(tick));
+        const std::string label = std::to_string(static_cast<std::uint64_t>(tick));
         draw->AddText({frameX(tick) + 2, ruler.y}, ImGui::GetColorU32(ImGuiCol_TextDisabled), label.c_str());
     }
     canvasOrigin_ = {ruler.x, ruler.y + rowHeight_};
@@ -677,12 +695,37 @@ bool KeyframeEditor::drawInspector(core::Scene& scene, core::CommandHistory& his
     }
     }
     ImGui::PopItemWidth();
+    bool valid = true;
+    visitKey(*draft_, ref, [&](const auto& key) {
+        const auto finite = [](const auto& values) {
+            return std::all_of(values.begin(), values.end(), [](float value) { return std::isfinite(value); });
+        };
+        if constexpr (requires { key.translation; })
+            valid &= finite(key.translation);
+        if constexpr (requires { key.rotation; })
+            valid &= finite(key.rotation);
+        if constexpr (requires { key.position; })
+            valid &= finite(key.position);
+        if constexpr (requires { key.color; })
+            valid &= finite(key.color);
+        if constexpr (requires { key.weight; })
+            valid &= std::isfinite(key.weight);
+        if constexpr (requires { key.distance; })
+            valid &= std::isfinite(key.distance);
+        if constexpr (requires { key.viewAngle; })
+            valid &= std::isfinite(key.viewAngle);
+    });
+    if (!valid)
+        ImGui::TextWrapped("Enter finite numeric values before applying this key.");
     ImGui::TextWrapped("Apply saves this key as one undo step. Ctrl+Z restores the previous values.");
+    ImGui::BeginDisabled(!valid);
     if (ImGui::Button("Apply key")) {
         auto after = std::move(*draft_);
         execute(scene, history, std::move(after), "Edit selected key");
+        ImGui::EndDisabled();
         return true;
     }
+    ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Revert"))
         draft_.reset();

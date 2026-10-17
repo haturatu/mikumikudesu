@@ -3503,9 +3503,15 @@ void Application::buildInspectorPanel() {
     ImGui::Separator();
     if (inspectorPage_ == InspectorPage::selection && timelineEditor_.drawInspector(scene_, history_)) {
         playing_ = false;
-        restartAudioAtCurrentFrame();
-        refreshAnimatedMesh(false);
-        refreshPreviewScene();
+        if (editGlobalMotion_) {
+            manualCamera_ = cameraEditPreview_ = lightEditPreview_ = false;
+            followVmdCamera_ = true;
+        }
+        const auto& selection = timelineEditor_.selection();
+        if (!selection.empty())
+            if (const auto selectedFrame = ui::keyFrame(
+                    *scene_.motion(model != nullptr ? model->id : 0, editGlobalMotion_), selection.front()))
+                seekTimeline(static_cast<float>(*selectedFrame));
     }
     if (inspectorPage_ != InspectorPage::selection) {
         buildCameraLightControls();
@@ -4247,8 +4253,8 @@ void Application::buildEditorUi() {
         if (ImGui::Button(">|"))
             seekTimeline(scene_.timeline().duration);
         ImGui::SameLine();
-        int frame =
-            static_cast<int>(std::min(animationFrame_, static_cast<float>(std::numeric_limits<int>::max() - 1)));
+        int frame = static_cast<int>(std::clamp(static_cast<double>(animationFrame_), 0.0,
+                                                static_cast<double>(std::numeric_limits<int>::max())));
         ImGui::SetNextItemWidth(85);
         if (ImGui::InputInt("Frame", &frame, 0)) {
             playing_ = false;
@@ -4277,13 +4283,17 @@ void Application::buildEditorUi() {
         }
         timelineEditor_.synchronize(scene_, target, editGlobalMotion_);
         const auto result = timelineEditor_.draw(scene_, history_, animationFrame_);
+        if (result.changed && editGlobalMotion_) {
+            manualCamera_ = cameraEditPreview_ = lightEditPreview_ = false;
+            followVmdCamera_ = true;
+        }
         if (result.pause && playing_) {
             playing_ = false;
             restartAudioAtCurrentFrame();
         }
         if (result.seek)
             seekTimeline(*result.seek);
-        if (result.changed) {
+        else if (result.changed) {
             refreshAnimatedMesh(false);
             refreshPreviewScene();
         }
