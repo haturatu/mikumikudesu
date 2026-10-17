@@ -6,8 +6,15 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <unordered_set>
 
 namespace dayo::ui {
+
+struct MotionKeyRefHash {
+    std::size_t operator()(core::MotionKeyRef ref) const noexcept {
+        return ref.index * 7U + static_cast<std::size_t>(ref.track);
+    }
+};
 
 template <typename Motion, typename Visitor> bool visitKey(Motion& motion, core::MotionKeyRef ref, Visitor visitor) {
     const auto visit = [&](auto& keys) {
@@ -76,14 +83,13 @@ inline std::int64_t moveKeyframes(core::VmdMotion& motion, std::span<const core:
     if (delta == 0)
         return 0;
     // Ignore repeated references rather than applying the offset twice.
-    std::vector<core::MotionKeyRef> moved;
+    std::unordered_set<core::MotionKeyRef, MotionKeyRefHash> moved;
     for (const auto ref : selection) {
-        if (std::find(moved.begin(), moved.end(), ref) != moved.end())
+        if (!moved.insert(ref).second)
             continue;
         visitKey(motion, ref, [&](auto& key) {
             key.frame = static_cast<std::uint32_t>(static_cast<std::int64_t>(key.frame) + delta);
         });
-        moved.push_back(ref);
     }
     updateMotionDuration(motion);
     return delta;

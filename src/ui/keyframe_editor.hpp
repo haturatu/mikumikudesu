@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/editor.hpp"
+#include "ui/keyframe_edit.hpp"
 
 #include <imgui.h>
 
@@ -69,6 +70,7 @@ class KeyframeEditor {
     const core::VmdMotion* motion_{};
     std::vector<Row> rows_;
     std::vector<core::MotionKeyRef> selection_;
+    std::unordered_set<core::MotionKeyRef, MotionKeyRefHash> selectedSet_;
     std::optional<Entry> anchor_;
     core::MotionClipboard clipboard_;
     std::array<char, 128> filter_{};

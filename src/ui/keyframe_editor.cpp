@@ -62,6 +62,7 @@ void hint(const char* text) {
 
 void KeyframeEditor::clearSelection() {
     selection_.clear();
+    selectedSet_.clear();
     anchor_.reset();
     draft_.reset();
     draftKey_.reset();
@@ -164,6 +165,8 @@ void KeyframeEditor::select(Entry key, const Row& row, bool toggle, bool range) 
         }
         anchor_ = key;
     }
+    selectedSet_.clear();
+    selectedSet_.insert(selection_.begin(), selection_.end());
 }
 
 void KeyframeEditor::execute(core::Scene& scene, core::CommandHistory& history, core::VmdMotion after,
@@ -177,6 +180,9 @@ void KeyframeEditor::execute(core::Scene& scene, core::CommandHistory& history, 
     ownRevision_ = scene.motionRevision();
     draft_.reset();
     synchronize(scene, target_, global_);
+    if (anchor_)
+        if (const auto frame = keyFrame(*motion_, anchor_->ref))
+            anchor_->frame = *frame;
 }
 
 bool KeyframeEditor::moveSelection(core::Scene& scene, core::CommandHistory& history, std::int64_t delta) {
@@ -224,11 +230,11 @@ KeyframeEditor::Result KeyframeEditor::draw(core::Scene& scene, core::CommandHis
     ImGui::SameLine();
     const bool remove = ImGui::SmallButton("Delete") || shortcut(ImGuiKey_Delete);
     ImGui::SameLine();
-    if (ImGui::SmallButton("-1f") || (!ImGui::GetIO().KeyCtrl && shortcut(ImGuiKey_Left)))
+    if (ImGui::SmallButton("-1f") || (!ImGui::GetIO().KeyCtrl && shortcut(ImGuiKey_LeftArrow)))
         result.changed |= moveSelection(scene, history, ImGui::GetIO().KeyShift ? -10 : -1);
     hint("Move selection left (Left arrow; Shift = 10 frames)");
     ImGui::SameLine();
-    if (ImGui::SmallButton("+1f") || (!ImGui::GetIO().KeyCtrl && shortcut(ImGuiKey_Right)))
+    if (ImGui::SmallButton("+1f") || (!ImGui::GetIO().KeyCtrl && shortcut(ImGuiKey_RightArrow)))
         result.changed |= moveSelection(scene, history, ImGui::GetIO().KeyShift ? 10 : 1);
     hint("Move selection right (Right arrow; Shift = 10 frames)");
     ImGui::EndDisabled();
@@ -373,9 +379,9 @@ void KeyframeEditor::drawCanvas(core::Scene& scene, core::CommandHistory& histor
             ImGui::PushID(index);
             ImGui::TableNextRow(ImGuiTableRowFlags_None, rowHeight_);
             ImGui::TableSetColumnIndex(0);
-            const bool rowSelected = std::any_of(row.keys.begin(), row.keys.end(), [&](Entry key) {
-                return std::find(selection_.begin(), selection_.end(), key.ref) != selection_.end();
-            });
+            const bool rowSelected =
+                !selection_.empty() && std::any_of(row.keys.begin(), row.keys.end(),
+                                                   [&](Entry key) { return selectedSet_.contains(key.ref); });
             if (ImGui::Selectable(row.name.c_str(), rowSelected, ImGuiSelectableFlags_None,
                                   {0, ImGui::GetTextLineHeight() + 4.0F})) {
                 const auto nearest = std::min_element(row.keys.begin(), row.keys.end(), [&](Entry a, Entry b) {
@@ -404,7 +410,7 @@ void KeyframeEditor::drawCanvas(core::Scene& scene, core::CommandHistory& histor
                                  [](Entry key, float value) { return static_cast<float>(key.frame) < value; });
             float lastPixel = -1e10F;
             for (auto it = first; it != row.keys.end() && static_cast<float>(it->frame) <= visibleLast; ++it) {
-                const bool selected = std::find(selection_.begin(), selection_.end(), it->ref) != selection_.end();
+                const bool selected = selectedSet_.contains(it->ref);
                 const float ghost = selected && keyGesture_ ? static_cast<float>(dragDelta_) : 0;
                 const float px = frameX(static_cast<float>(it->frame) + ghost);
                 visibleKeys_.push_back({*it, {frameX(static_cast<float>(it->frame)), centerY}});
@@ -459,7 +465,7 @@ void KeyframeEditor::drawCanvas(core::Scene& scene, core::CommandHistory& histor
                     if (hit) {
                         select(*hit, row, io.KeyCtrl, io.KeyShift);
                         result.seek = static_cast<float>(hit->frame);
-                        if (!selection_.empty()) {
+                        if (selectedSet_.contains(hit->ref)) {
                             keyGesture_ = true;
                             dragBefore_ = *motion_;
                             dragDelta_ = 0;
@@ -483,7 +489,9 @@ void KeyframeEditor::drawCanvas(core::Scene& scene, core::CommandHistory& histor
         draw->AddRectFilled({std::min(mouse.x, gestureStart_.x), std::min(mouse.y, gestureStart_.y)},
                             {std::max(mouse.x, gestureStart_.x), std::max(mouse.y, gestureStart_.y)},
                             IM_COL32(85, 160, 240, 40));
-        draw->AddRect(gestureStart_, mouse, IM_COL32(110, 185, 255, 255));
+        draw->AddRect({std::min(mouse.x, gestureStart_.x), std::min(mouse.y, gestureStart_.y)},
+                      {std::max(mouse.x, gestureStart_.x), std::max(mouse.y, gestureStart_.y)},
+                      IM_COL32(110, 185, 255, 255));
     }
     ImGui::EndTable();
 }
@@ -503,8 +511,7 @@ void KeyframeEditor::drawList(float frame, Result& result) {
                 const auto entry = row.keys[static_cast<std::size_t>(i)];
                 ImGui::PushID(i);
                 const std::string label = std::string(trackName(row.track)) + " · frame " + std::to_string(entry.frame);
-                if (ImGui::Selectable(label.c_str(),
-                                      std::find(selection_.begin(), selection_.end(), entry.ref) != selection_.end())) {
+                if (ImGui::Selectable(label.c_str(), selectedSet_.contains(entry.ref))) {
                     select(entry, row, ImGui::GetIO().KeyCtrl, ImGui::GetIO().KeyShift);
                     result.seek = static_cast<float>(entry.frame);
                 }
@@ -556,8 +563,7 @@ void KeyframeEditor::finishGesture(core::Scene& scene, core::CommandHistory& his
         const float top = std::min(gestureStart_.y, io.MousePos.y), bottom = std::max(gestureStart_.y, io.MousePos.y);
         for (const auto& key : visibleKeys_)
             if (key.position.x >= left && key.position.x <= right && key.position.y >= top &&
-                key.position.y <= bottom &&
-                std::find(selection_.begin(), selection_.end(), key.key.ref) == selection_.end())
+                key.position.y <= bottom && selectedSet_.insert(key.key.ref).second)
                 selection_.push_back(key.key.ref);
         boxGesture_ = false;
         draft_.reset();
