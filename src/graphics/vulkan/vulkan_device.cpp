@@ -8,6 +8,7 @@
 #include "graphics/timestamp.hpp"
 #include "platform/window.hpp"
 #include "ui/fonts.hpp"
+#include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
 #if DAYO_ENABLE_VMA
@@ -2738,6 +2739,7 @@ void VulkanDevice::createUi() {
     io.ConfigDpiScaleFonts = true;
     const float displayScale = std::max(SDL_GetWindowDisplayScale(window_.sdlHandle()), 1.0F);
     ui::applyEditorTheme(displayScale);
+    ui::initializeEditorLanguage();
     ui::loadEditorFonts();
     ImGui::GetStyle().FontScaleDpi = displayScale;
     if (!ImGui_ImplSDL3_InitForVulkan(window_.sdlHandle())) {

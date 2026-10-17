@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ui/i18n.hpp"
+
 #include "app/application_options.hpp"
 #include "app/audio_export_job.hpp"
 #include "app/video_export_job.hpp"
@@ -193,7 +195,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::array<char, 1024> backgroundVideoPath_{};
     double mediaSeconds_{};
     std::int64_t uploadedVideoFrame_{-1};
-    std::string lastAsset_{"Drop PMX/VMD/VPD/media files into the window"};
+    ui::Message lastAsset_{"Drop PMX/VMD/VPD/media files into the window"};
     std::vector<core::ProjectAsset> projectAssets_;
     std::vector<core::ProjectModelState> projectModelMetadata_;
     core::ProjectEditorState projectEditorState_;
@@ -276,6 +278,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::string videoExportStatus_;
 #if DAYO_HAS_IMGUI
     ui::UiState uiState_;
+    bool languageSaveFailed_{};
     ui::KeyframeEditor timelineEditor_;
     bool editGlobalMotion_{};
     bool recordCamera_{};

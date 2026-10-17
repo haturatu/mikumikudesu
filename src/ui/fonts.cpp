@@ -41,16 +41,24 @@ void loadEditorFonts() {
     ImFontConfig config;
     config.OversampleH = 2;
     config.OversampleV = 1;
-    config.GlyphRanges = io.Fonts->GetGlyphRangesChineseFull();
+    // The bundled CJK font contains Cyrillic, but ChineseFull alone excludes it.
+    static ImVector<ImWchar> ranges;
+    if (ranges.empty()) {
+        ImFontGlyphRangesBuilder builder;
+        builder.AddRanges(io.Fonts->GetGlyphRangesChineseFull());
+        builder.AddRanges(io.Fonts->GetGlyphRangesCyrillic());
+        builder.BuildRanges(&ranges);
+    }
+    config.GlyphRanges = ranges.Data;
     for (const auto& candidate : fontCandidates()) {
         if (!std::filesystem::exists(candidate))
             continue;
         if (io.Fonts->AddFontFromFileTTF(candidate.string().c_str(), 16.0F, &config) != nullptr) {
-            log::info("ImGui Japanese font loaded: ", candidate.string());
+            log::info("ImGui multilingual font loaded: ", candidate.string());
             return;
         }
     }
-    log::warn("Japanese ImGui font not found; set DAYO_FONT_PATH or install Noto Sans CJK JP");
+    log::warn("Multilingual ImGui font not found; set DAYO_FONT_PATH or install Noto Sans CJK JP");
 }
 
 } // namespace dayo::ui

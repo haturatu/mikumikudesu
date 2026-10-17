@@ -1,3 +1,4 @@
+#include "ui/i18n.hpp"
 #include "ui/keyframe_edit.hpp"
 #include "ui/keyframe_editor.hpp"
 
@@ -122,6 +123,32 @@ void checkCanvasGestures() {
            "the ruler must render the full VMD frame range without overflow or a floating counter loop");
 }
 
+void checkLiveLanguageSwitch() {
+    Harness h;
+    h.frame({-10, -10});
+    h.frame({-10, -10});
+    h.frame(h.key(10));
+    h.frame(h.key(10), true);
+    h.frame(h.key(10));
+    expect(h.editor.selection().size() == 1, "select a key before changing language");
+    ImGuiID stableId{};
+    for (const auto candidate : dayo::ui::languages) {
+        dayo::ui::setLanguage(candidate);
+        h.frame({-10, -10});
+        expect(h.editor.selection().size() == 1 && h.history.undoCount() == 0,
+               "language changes must retain selection without modifying motion");
+        ImGui::NewFrame();
+        ImGui::Begin("Stable ID test");
+        const auto id = ImGui::GetID(dayo::ui::label("Bone##InspectorBoneSelector"));
+        if (stableId == 0)
+            stableId = id;
+        expect(id == stableId, "ImGui widget hash must be stable across all four languages");
+        ImGui::End();
+        ImGui::Render();
+    }
+    dayo::ui::setLanguage(dayo::ui::Language::english);
+}
+
 } // namespace
 
 int main() {
@@ -139,6 +166,7 @@ int main() {
     try {
         checkGroupMoves();
         checkCanvasGestures();
+        checkLiveLanguageSwitch();
         std::cout << "Keyframe selection, captured drag, cancel, undo/redo, bounds and target invalidation passed\n";
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';

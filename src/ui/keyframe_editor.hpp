@@ -56,6 +56,7 @@ class KeyframeEditor {
     };
     void rebuild(const core::Scene& scene);
     bool matches(const Row& row) const;
+    const char* displayName(const Row& row) const;
     void select(Entry key, const Row& row, bool toggle, bool range);
     void execute(core::Scene& scene, core::CommandHistory& history, core::VmdMotion after, const char* label);
     bool moveSelection(core::Scene& scene, core::CommandHistory& history, std::int64_t delta);
