@@ -27,6 +27,7 @@
 #include "ui/ui_state.hpp"
 
 #if DAYO_HAS_IMGUI
+#include "ui/keyframe_editor.hpp"
 #include "ui/viewport_interaction.hpp"
 #endif
 
@@ -275,11 +276,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::string videoExportStatus_;
 #if DAYO_HAS_IMGUI
     ui::UiState uiState_;
-    core::MotionClipboard motionClipboard_;
-    std::vector<core::MotionKeyRef> selectedKeys_;
-    float timelineZoom_{1.0F};
-    float timelinePan_{};
-    float timelineScrollY_{};
+    ui::KeyframeEditor timelineEditor_;
     bool editGlobalMotion_{};
     bool recordCamera_{};
     bool followVmdCamera_{true};
@@ -309,22 +306,6 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::array<char, 1024> sequenceOutputDirectory_{'o', 'u', 't', 'p', 'u', 't', '\0'};
     std::array<char, 1024> sequenceOutputFilename_{'f', 'r', 'a', 'm', 'e', '_', '0', '0',
                                                    '0', '0', '0', '.', 'p', 'p', 'm', '\0'};
-    struct TimelineTrack {
-        std::string name;
-        std::vector<std::uint32_t> frames;
-    };
-    struct TimelineTrackCache {
-        std::uint64_t motionRevision{};
-        core::ModelId modelId{};
-        const core::VmdMotion* motion{};
-        bool globalMotion{};
-        std::vector<TimelineTrack> bones;
-        std::vector<TimelineTrack> morphs;
-        std::vector<std::uint32_t> cameras;
-        std::vector<std::uint32_t> lights;
-    };
-    TimelineTrackCache timelineTrackCache_;
-    bool timelineKeyListVisible_{};
     bool imageSequenceExportRunning_{};
     bool imageSequenceCancelRequested_{};
     bool imageSequenceFramesFinished_{};

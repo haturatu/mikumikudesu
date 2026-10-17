@@ -613,6 +613,7 @@ if(DAYO_ENABLE_IMGUI)
   target_link_libraries(dayo_graphics PUBLIC dayo_imgui)
   target_link_libraries(dayo_platform PUBLIC dayo_imgui)
   target_compile_definitions(dayo_graphics PUBLIC DAYO_HAS_IMGUI=1)
+  target_sources(dayo_graphics PRIVATE src/ui/keyframe_editor.cpp)
   target_compile_definitions(dayo_platform PUBLIC DAYO_HAS_IMGUI=1)
 else()
   target_compile_definitions(dayo_graphics PUBLIC DAYO_HAS_IMGUI=0)
@@ -854,6 +855,10 @@ if(BUILD_TESTING)
     target_link_libraries(dayo_viewport_interaction_tests PRIVATE dayo_imgui)
     dayo_enable_warnings(dayo_viewport_interaction_tests)
     add_test(NAME viewport_interaction COMMAND dayo_viewport_interaction_tests)
+    add_executable(dayo_keyframe_editor_tests tests/keyframe_editor_tests.cpp src/ui/keyframe_editor.cpp)
+    target_link_libraries(dayo_keyframe_editor_tests PRIVATE dayo_core dayo_imgui)
+    dayo_enable_warnings(dayo_keyframe_editor_tests)
+    add_test(NAME keyframe_editor COMMAND dayo_keyframe_editor_tests)
   endif()
   add_executable(dayo_output_tests tests/output_tests.cpp)
   target_link_libraries(dayo_output_tests PRIVATE dayo_core)
@@ -958,6 +963,7 @@ if(DAYO_ENABLE_SANITIZERS)
     mikumikudesu
     dayo_cli_tests
     dayo_core_tests
+    dayo_keyframe_editor_tests
     dayo_output_tests
     dayo_video_export_job_tests
     dayo_fx_executor_tests
