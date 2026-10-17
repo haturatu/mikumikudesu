@@ -932,7 +932,8 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
 
 std::string Application::workspaceWindowName(const char* title, const char* id) const {
 #if DAYO_HAS_IMGUI
-    return std::string(ui::tr(title)) + "###" + id + "." + workspaceSuffix(uiState_.workspace);
+    // Hash the original complete English name so existing imgui.ini docking layouts also survive the upgrade.
+    return ui::label((std::string(title) + "##" + id + "." + workspaceSuffix(uiState_.workspace)).c_str());
 #else
     return std::string(title) + "##" + id;
 #endif

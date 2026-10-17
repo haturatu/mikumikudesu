@@ -140,6 +140,8 @@ void checkLiveLanguageSwitch() {
         ImGui::NewFrame();
         ImGui::Begin("Stable ID test");
         const auto id = ImGui::GetID(dayo::ui::label("Bone##InspectorBoneSelector"));
+        expect(ImGui::GetID(dayo::ui::label("Viewport##viewport.Layout")) == ImGui::GetID("Viewport##viewport.Layout"),
+               "translated window IDs must match previously saved English layouts");
         if (stableId == 0)
             stableId = id;
         expect(id == stableId, "ImGui widget hash must be stable across all four languages");
