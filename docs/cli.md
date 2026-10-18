@@ -20,12 +20,12 @@
 | `--hidden` | ウィンドウを非表示で作成 |
 | `--frames N` | N フレーム描画後に終了。N は正の整数 |
 | `--no-validation` | Vulkan validation を無効化 |
-| `--renderer preview|subayai|bdpt` | 描画モード。既定値 `preview` |
-| `--preview-quality auto|apu|high` | Preview の画質。既定値 `auto` |
-| `--present fifo|fifo-relaxed|mailbox|immediate` | Present mode。既定値 `fifo` |
+| `--renderer RENDERER` | `preview` / `subayai` / `bdpt`。既定値 `preview` |
+| `--preview-quality PROFILE` | `auto` / `apu` / `high`。既定値 `auto` |
+| `--present MODE` | `fifo` / `fifo-relaxed` / `mailbox` / `immediate`。既定値 `fifo` |
 | `--async-compute` | 実験的な Preview 変形処理の別キュー実行 |
 
-`|` は指定可能な値の区切りです。Subayai / BDPT を要求しても、GPU と FX graph が条件を満たさなければ Preview にフォールバックします。利用可能な renderer を確認するには `--probe` を使ってください。[レンダラ](renderers.md)も参照してください。
+Subayai / BDPT を要求しても、GPU と FX graph が条件を満たさなければ Preview にフォールバックします。利用可能な renderer を確認するには `--probe` を使ってください。[レンダラ](renderers.md)も参照してください。
 
 ## 音声書き出し
 
@@ -52,7 +52,7 @@
 | `--export-video PATH` | MP4 を書き出す |
 | `--video-width PX` / `--video-height PX` | 出力解像度。既定値 1920 × 1080 |
 | `--video-fps FPS` | 出力 FPS。既定値 30 |
-| `--video-codec h264|h265|hevc|av1` | codec。既定値 `h264`。`hevc` は `h265` の別名 |
+| `--video-codec CODEC` | `h264` / `h265` / `hevc` / `av1`。既定値 `h264` |
 | `--video-bitrate KBPS` | 映像 bitrate。既定値 8000 |
 | `--video-hardware` | 利用可能なら hardware encoder を優先 |
 | `--video-from-frame N` / `--video-to-frame N` | 出力フレーム範囲。0 始まり |
