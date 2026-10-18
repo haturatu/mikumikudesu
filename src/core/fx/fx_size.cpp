@@ -6,6 +6,8 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <string>
+#include <unordered_map>
 
 namespace dayo::core::fx {
 namespace {
@@ -49,9 +51,19 @@ namespace {
     double raw = 0.0;
     bool hasValue = false;
     if (!exprText.empty()) {
-        const FxExpr parsed = parseFxExpr(exprText);
+        // Parse trees depend only on the expression text, not on frame/time,
+        // render size or the symbol table. Cache the AST, never its evaluated value.
+        // Each render thread has a bounded cache, avoiding hot-path mutexes.
+        static thread_local std::unordered_map<std::string, FxExpr> parsedExpressions;
+        auto found = parsedExpressions.find(std::string(exprText));
+        if (found == parsedExpressions.end()) {
+            constexpr std::size_t kMaxCachedExpressions = 512;
+            if (parsedExpressions.size() >= kMaxCachedExpressions)
+                parsedExpressions.clear();
+            found = parsedExpressions.emplace(std::string(exprText), parseFxExpr(exprText)).first;
+        }
         const FxSymbolResolver resolver(context, &table);
-        const FxScalar value = evaluateFxExprWithSymbols(parsed, resolver, profile, allowPowQuirk);
+        const FxScalar value = evaluateFxExprWithSymbols(found->second, resolver, profile, allowPowQuirk);
         // conv: scalar -> double. fxToInt-equivalent range check happens via
         // finiteness + reject window below; keep double for ratio first so
         // "conv -> ratio -> rounding" order matches the spec narrative
