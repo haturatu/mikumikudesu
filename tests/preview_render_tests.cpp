@@ -1593,6 +1593,248 @@ bool pipelinedReadbackPreservesFrames(dayo::graphics::VulkanDevice& device) {
     return ok;
 }
 
+bool spatialEffectsPreserveMaterialBoundaries(dayo::graphics::VulkanDevice& device) {
+    using namespace dayo::graphics;
+    const auto saved = device.previewRenderSettings();
+    auto settings = legacyPreviewRenderSettings();
+    settings.ambientOcclusion.override = EffectOverride::disabled;
+    settings.softShadows.override = EffectOverride::disabled;
+    settings.hairShading.override = EffectOverride::disabled;
+    device.setPreviewRenderSettings(settings);
+    PreviewScene scene;
+    scene.backgroundEnabled = false;
+    scene.lightDirection[0] = 0.0F;
+    scene.lightDirection[1] = 0.0F;
+    scene.lightDirection[2] = 1.0F;
+    device.updatePreviewScene(scene);
+    std::array<PreviewVertex, 8> vertices{};
+    const std::array positions{Float3{-0.8F, -0.8F, 0.0F}, Float3{0.0F, -0.8F, 0.0F}, Float3{0.0F, 0.8F, 0.0F},
+                               Float3{-0.8F, 0.8F, 0.0F},  Float3{0.0F, -0.8F, 0.0F}, Float3{0.8F, -0.8F, 0.0F},
+                               Float3{0.8F, 0.8F, 0.0F},   Float3{0.0F, 0.8F, 0.0F}};
+    for (std::size_t index = 0; index < vertices.size(); ++index) {
+        std::copy(positions[index].begin(), positions[index].end(), vertices[index].position);
+        vertices[index].normal[2] = -1.0F;
+    }
+    const std::array<std::uint32_t, 12> indices{0, 2, 1, 0, 3, 2, 4, 6, 5, 4, 7, 6};
+    std::array<PreviewMaterial, 2> materials{};
+    materials[0].diffuse[0] = 0.6F;
+    materials[0].diffuse[1] = materials[0].diffuse[2] = 0.03F;
+    materials[1].diffuse[0] = materials[1].diffuse[1] = 0.03F;
+    materials[1].diffuse[2] = 0.6F;
+    materials[0].skin = materials[1].skin = 1.0F;
+    device.uploadPreviewMesh(vertices, indices);
+    device.uploadPreviewTextures({});
+    device.updatePreviewMaterials(materials);
+    device.updatePreviewDraws(std::array<PreviewDraw, 2>{{{0, 6, 0}, {6, 6, 1}}});
+    const auto off = device.renderToImage({192, 192});
+    settings.skinSubsurface = {EffectOverride::enabled, 3.0F};
+    device.setPreviewRenderSettings(settings);
+    const auto on = device.renderToImage({192, 192});
+    bool ok = true;
+    if (off.pixels == on.pixels) {
+        std::cerr << "FAIL: screen-space SSS did not diffuse adjacent skin colors\n";
+        ok = false;
+    }
+    materials[0].skin = materials[1].skin = 0.0F;
+    device.updatePreviewMaterials(materials);
+    const auto nonSkinOn = device.renderToImage({192, 192});
+    settings.skinSubsurface.override = EffectOverride::disabled;
+    device.setPreviewRenderSettings(settings);
+    const auto nonSkinOff = device.renderToImage({192, 192});
+    if (!imagesMatch(nonSkinOn, nonSkinOff)) {
+        std::cerr << "FAIL: SSS blurred non-skin materials\n";
+        ok = false;
+    }
+    // A thin raised card creates a view-space contact edge on the plane.
+    for (std::size_t index = 4; index < 8; ++index)
+        vertices[index].position[2] = -0.08F;
+    device.updatePreviewVertices(vertices);
+    const auto noAo = device.renderToImage({192, 192});
+    settings.ambientOcclusionMode = PreviewAmbientOcclusion::gtao;
+    settings.ambientOcclusion = {EffectOverride::enabled, 3.0F};
+    device.setPreviewRenderSettings(settings);
+    const auto gtao = device.renderToImage({192, 192});
+    if (noAo.pixels == gtao.pixels) {
+        std::cerr << "FAIL: GTAO had no contact occlusion at a view-space depth edge\n";
+        ok = false;
+    }
+    settings.ambientOcclusionMode = PreviewAmbientOcclusion::ssao;
+    device.setPreviewRenderSettings(settings);
+    static_cast<void>(device.renderToImage({192, 192}));
+    settings.ambientOcclusion.intensity = 0.0F;
+    device.setPreviewRenderSettings(settings);
+    if (!imagesMatch(noAo, device.renderToImage({192, 192}))) {
+        std::cerr << "FAIL: legacy SSAO ignored zero intensity\n";
+        ok = false;
+    }
+    settings.ambientOcclusion.override = EffectOverride::disabled;
+    device.setPreviewRenderSettings(settings);
+    if (!imagesMatch(noAo, device.renderToImage({192, 192}))) {
+        std::cerr << "FAIL: disabling AO sampled stale occlusion\n";
+        ok = false;
+    }
+    device.setPreviewRenderSettings(saved);
+    resetPreviewScene(device);
+    return ok;
+}
+
+bool renderEffectsReachGpu(dayo::graphics::VulkanDevice& device) {
+    using namespace dayo::graphics;
+    const auto saved = device.previewRenderSettings();
+    PreviewRenderSettings settings;
+    settings.preset = PreviewQualityPreset::performance;
+    settings.antiAliasing = PreviewAntiAliasing::off;
+    settings.ambientOcclusion.override = EffectOverride::disabled;
+    settings.softShadows.override = EffectOverride::disabled;
+    settings.bloom.override = EffectOverride::disabled;
+    settings.depthOfField.override = EffectOverride::disabled;
+    settings.skinSubsurface.override = EffectOverride::disabled;
+    settings.hairShading.override = EffectOverride::disabled;
+    settings.clothSheen.override = EffectOverride::disabled;
+    settings.clearcoat.override = EffectOverride::disabled;
+    device.setPreviewRenderSettings(settings);
+    PreviewScene scene;
+    scene.backgroundEnabled = false;
+    scene.lightDirection[0] = -0.3F;
+    scene.lightDirection[1] = -0.5F;
+    scene.lightDirection[2] = 1.0F;
+    device.updatePreviewScene(scene);
+    auto vertices = makeFlatTriangle();
+    for (auto& vertex : vertices)
+        vertex.normal[2] = -1.0F;
+    vertices[1].uv[0] = 1.0F;
+    vertices[2].uv[1] = 1.0F;
+    device.uploadPreviewMesh(vertices, std::array<std::uint32_t, 3>{0, 2, 1});
+    device.uploadPreviewTextures({});
+    PreviewMaterial material;
+    material.diffuse[0] = 0.45F;
+    material.diffuse[1] = 0.2F;
+    material.diffuse[2] = 0.1F;
+    material.roughness = 0.3F;
+    material.sheen = material.clearcoat = material.anisotropy = 1.0F;
+    device.updatePreviewMaterials(std::array{material});
+    device.updatePreviewDraws(std::array<PreviewDraw, 1>{{{0, 3, 0}}});
+    const auto render = [&] { return device.renderToImage({97, 95}); };
+    const auto baseline = render();
+    const auto changed = [&](const dayo::core::ImageRgba8& image, const char* name) {
+        if (image.pixels == baseline.pixels) {
+            std::cerr << "FAIL: render effect had no GPU output change: " << name << '\n';
+            return false;
+        }
+        return true;
+    };
+    bool ok = true;
+    settings.exposure = 2.0F;
+    device.setPreviewRenderSettings(settings);
+    ok &= changed(render(), "exposure");
+    settings.exposure = 0.0F;
+    for (const auto transform : {PreviewViewTransform::agx, PreviewViewTransform::neutral}) {
+        settings.viewTransform = transform;
+        device.setPreviewRenderSettings(settings);
+        ok &= changed(render(), "view transform");
+    }
+    settings.viewTransform = PreviewViewTransform::aces;
+    settings.whiteBalance = 3000.0F;
+    device.setPreviewRenderSettings(settings);
+    ok &= changed(render(), "white balance");
+    settings.whiteBalance = 6500.0F;
+    settings.antiAliasing = PreviewAntiAliasing::fxaa;
+    device.setPreviewRenderSettings(settings);
+    ok &= changed(render(), "FXAA");
+    settings.antiAliasing = PreviewAntiAliasing::off;
+    for (auto* effect :
+         {&settings.bloom, &settings.depthOfField, &settings.hairShading, &settings.clothSheen, &settings.clearcoat}) {
+        effect->override = EffectOverride::enabled;
+        settings.bloomThreshold = 0.0F;
+        device.setPreviewRenderSettings(settings);
+        if (effect == &settings.depthOfField) {
+            // Place geometry away from the focus plane to produce a measurable CoC.
+            for (auto& vertex : vertices)
+                vertex.position[2] = -1.2F;
+            device.updatePreviewVertices(vertices);
+        }
+        ok &= changed(render(), "material or postprocess toggle");
+        effect->override = EffectOverride::disabled;
+        if (effect == &settings.depthOfField) {
+            for (auto& vertex : vertices)
+                vertex.position[2] = 0.0F;
+            device.updatePreviewVertices(vertices);
+        }
+        device.setPreviewRenderSettings(settings);
+        if (!imagesMatch(baseline, render())) {
+            std::cerr << "FAIL: disabling an effect failed to restore the baseline\n";
+            ok = false;
+        }
+    }
+    scene.backgroundEnabled = true;
+    scene.screenSource = PreviewScene::ScreenSource::backgroundImage;
+    device.updatePreviewScene(scene);
+    const auto darkBaseline = render();
+    settings.bloom.override = EffectOverride::enabled;
+    device.setPreviewRenderSettings(settings);
+    const auto bloomHalo = render();
+    std::size_t haloPixels = 0;
+    // The first pixel is outside the centered triangle and gives the clear color.
+    for (std::size_t pixel = 0; pixel < darkBaseline.pixels.size(); pixel += 4) {
+        bool clear = true;
+        for (std::size_t channel = 0; channel < 3; ++channel)
+            clear &= darkBaseline.pixels[pixel + channel] == darkBaseline.pixels[channel];
+        if (clear && bloomHalo.pixels[pixel] > darkBaseline.pixels[pixel] + 2)
+            ++haloPixels;
+    }
+    if (haloPixels == 0) {
+        std::cerr << "FAIL: Bloom halo was clipped to the model silhouette\n";
+        ok = false;
+    }
+    settings.bloom.override = EffectOverride::disabled;
+    scene.backgroundEnabled = false;
+    device.updatePreviewScene(scene);
+    device.setPreviewRenderSettings(settings);
+    // A new frame may use the new settings while queued readbacks retain the old buffer.
+    device.setPreviewRenderSettings(settings);
+    const auto first = device.enqueueRenderToImage({97, 95});
+    settings.exposure = 2.0F;
+    device.setPreviewRenderSettings(settings);
+    const auto second = device.enqueueRenderToImage({97, 95});
+    const auto oldImage = device.collectRenderedImage(first).value();
+    const auto newImage = device.collectRenderedImage(second).value();
+    ok &= imagesMatch(baseline, oldImage) && !imagesMatch(oldImage, newImage);
+    const auto timings = device.previewPassTimings();
+    const auto totalTime = device.previewGpuNanoseconds();
+    if (totalTime != 0 &&
+        (timings.model == 0 || timings.toneMap == 0 ||
+         timings.shadow + timings.ambientOcclusion + timings.model + timings.postProcess + timings.toneMap >
+             totalTime)) {
+        std::cerr << "FAIL: GPU pass timings were unavailable or outside their frame interval\n";
+        ok = false;
+    }
+    // Exercise bloom reallocation, odd extents and repeated on/off transitions.
+    for (const auto extent : {RenderTargetDesc{65, 63}, RenderTargetDesc{66, 64}, RenderTargetDesc{1, 1}}) {
+        settings.bloom.override = EffectOverride::enabled;
+        device.setPreviewRenderSettings(settings);
+        static_cast<void>(device.renderToImage(extent));
+        settings.bloom.override = EffectOverride::disabled;
+        device.setPreviewRenderSettings(settings);
+        static_cast<void>(device.renderToImage(extent));
+    }
+    material.skin = 1.0F;
+    device.updatePreviewMaterials(std::array{material});
+    scene.lightDirection[2] = -1.0F;
+    device.updatePreviewScene(scene);
+    settings.exposure = 0.0F;
+    device.setPreviewRenderSettings(settings);
+    const auto skinOff = render();
+    settings.skinSubsurface.override = EffectOverride::enabled;
+    device.setPreviewRenderSettings(settings);
+    if (skinOff.pixels == render().pixels) {
+        std::cerr << "FAIL: skin scattering toggle had no effect under back lighting\n";
+        ok = false;
+    }
+    device.setPreviewRenderSettings(saved);
+    resetPreviewScene(device);
+    return ok;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1727,6 +1969,10 @@ int main(int argc, char** argv) {
             std::cerr << "FAIL: VMD light color did not affect diffuse shading\n";
             return 1;
         }
+        if (!spatialEffectsPreserveMaterialBoundaries(device))
+            return 1;
+        if (!renderEffectsReachGpu(device))
+            return 1;
         device.waitIdle();
         if (device.validationErrorCount() != 0) {
             std::cerr << "FAIL: Preview emitted " << device.validationErrorCount() << " Vulkan validation errors\n";

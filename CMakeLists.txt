@@ -381,7 +381,7 @@ dayo_compile_hlsl(
   ENTRY VS
   PROFILE vs_6_6
   STAGE vert
-  DEPENDS shaders/preview_normal.hlsli
+  DEPENDS shaders/preview_normal.hlsli shaders/preview_color.hlsli
 )
 dayo_compile_hlsl(
   DAYO_PREVIEW_EDGE_VERTEX_SPV
@@ -389,7 +389,7 @@ dayo_compile_hlsl(
   ENTRY EdgeVS
   PROFILE vs_6_6
   STAGE vert
-  DEPENDS shaders/preview_normal.hlsli
+  DEPENDS shaders/preview_normal.hlsli shaders/preview_color.hlsli
 )
 dayo_compile_hlsl(
   DAYO_PREVIEW_SHADOW_VERTEX_SPV
@@ -397,7 +397,7 @@ dayo_compile_hlsl(
   ENTRY ShadowVS
   PROFILE vs_6_6
   STAGE vert
-  DEPENDS shaders/preview_normal.hlsli
+  DEPENDS shaders/preview_normal.hlsli shaders/preview_color.hlsli
 )
 dayo_compile_hlsl(
   DAYO_PREVIEW_SHADOW_FRAGMENT_SPV
@@ -405,7 +405,7 @@ dayo_compile_hlsl(
   ENTRY ShadowPS
   PROFILE ps_6_6
   STAGE frag
-  DEPENDS shaders/preview_normal.hlsli
+  DEPENDS shaders/preview_normal.hlsli shaders/preview_color.hlsli
 )
 dayo_compile_hlsl(
   DAYO_PREVIEW_BACKGROUND_VERTEX_SPV
@@ -427,12 +427,20 @@ dayo_compile_hlsl(
   ENTRY NormalPS
   PROFILE ps_6_6
   STAGE frag
+  DEPENDS shaders/preview_normal.hlsli shaders/preview_color.hlsli
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_AO_GTAO_SPV
+  SOURCE shaders/preview_ao.hlsl
+  ENTRY ComputeGtao
+  PROFILE cs_6_6
+  STAGE comp
   DEPENDS shaders/preview_normal.hlsli
 )
 dayo_compile_hlsl(
-  DAYO_PREVIEW_AO_SPV
+  DAYO_PREVIEW_AO_LEGACY_SPV
   SOURCE shaders/preview_ao.hlsl
-  ENTRY ComputeAO
+  ENTRY ComputeLegacy
   PROFILE cs_6_6
   STAGE comp
   DEPENDS shaders/preview_normal.hlsli
@@ -440,15 +448,23 @@ dayo_compile_hlsl(
 dayo_compile_hlsl(
   DAYO_PREVIEW_AO_BLUR_SPV
   SOURCE shaders/preview_ao.hlsl
-  ENTRY BlurAO
+  ENTRY BlurAo
   PROFILE cs_6_6
   STAGE comp
   DEPENDS shaders/preview_normal.hlsli
 )
 dayo_compile_hlsl(
-  DAYO_PREVIEW_AO16_SPV
+  DAYO_PREVIEW_AO16_GTAO_SPV
   SOURCE shaders/preview_ao16.hlsl
-  ENTRY ComputeAO
+  ENTRY ComputeGtao
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS shaders/preview_ao.hlsl shaders/preview_normal.hlsli
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_AO16_LEGACY_SPV
+  SOURCE shaders/preview_ao16.hlsl
+  ENTRY ComputeLegacy
   PROFILE cs_6_6
   STAGE comp
   DEPENDS shaders/preview_ao.hlsl shaders/preview_normal.hlsli
@@ -456,15 +472,23 @@ dayo_compile_hlsl(
 dayo_compile_hlsl(
   DAYO_PREVIEW_AO16_BLUR_SPV
   SOURCE shaders/preview_ao16.hlsl
-  ENTRY BlurAO
+  ENTRY BlurAo
   PROFILE cs_6_6
   STAGE comp
   DEPENDS shaders/preview_ao.hlsl shaders/preview_normal.hlsli
 )
 dayo_compile_hlsl(
-  DAYO_PREVIEW_AO32_SPV
+  DAYO_PREVIEW_AO32_GTAO_SPV
   SOURCE shaders/preview_ao32.hlsl
-  ENTRY ComputeAO
+  ENTRY ComputeGtao
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS shaders/preview_ao.hlsl shaders/preview_normal.hlsli
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_AO32_LEGACY_SPV
+  SOURCE shaders/preview_ao32.hlsl
+  ENTRY ComputeLegacy
   PROFILE cs_6_6
   STAGE comp
   DEPENDS shaders/preview_ao.hlsl shaders/preview_normal.hlsli
@@ -472,7 +496,7 @@ dayo_compile_hlsl(
 dayo_compile_hlsl(
   DAYO_PREVIEW_AO32_BLUR_SPV
   SOURCE shaders/preview_ao32.hlsl
-  ENTRY BlurAO
+  ENTRY BlurAo
   PROFILE cs_6_6
   STAGE comp
   DEPENDS shaders/preview_ao.hlsl shaders/preview_normal.hlsli
@@ -483,6 +507,7 @@ dayo_compile_hlsl(
   ENTRY VS
   PROFILE vs_6_6
   STAGE vert
+  DEPENDS shaders/preview_color.hlsli
 )
 dayo_compile_hlsl(
   DAYO_PREVIEW_TONEMAP_FRAGMENT_SPV
@@ -490,14 +515,16 @@ dayo_compile_hlsl(
   ENTRY PS
   PROFILE ps_6_6
   STAGE frag
+  DEPENDS shaders/preview_color.hlsli
 )
+dayo_compile_hlsl(DAYO_PREVIEW_BLOOM_SPV SOURCE shaders/preview_bloom.hlsl ENTRY BloomFilter PROFILE cs_6_6 STAGE comp)
 dayo_compile_hlsl(
   DAYO_PREVIEW_FRAGMENT_SPV
   SOURCE shaders/preview.hlsl
   ENTRY PS
   PROFILE ps_6_6
   STAGE frag
-  DEPENDS shaders/preview_normal.hlsli
+  DEPENDS shaders/preview_normal.hlsli shaders/preview_color.hlsli
 )
 dayo_compile_hlsl(DAYO_NATIVE_OUTPUT_VERTEX_SPV SOURCE shaders/native_output.hlsl ENTRY VS PROFILE vs_6_6 STAGE vert)
 dayo_compile_hlsl(DAYO_NATIVE_OUTPUT_FRAGMENT_SPV SOURCE shaders/native_output.hlsl ENTRY PS PROFILE ps_6_6 STAGE frag)
@@ -545,14 +572,18 @@ add_custom_target(
     ${DAYO_PREVIEW_BACKGROUND_VERTEX_SPV}
     ${DAYO_PREVIEW_BACKGROUND_FRAGMENT_SPV}
     ${DAYO_PREVIEW_NORMAL_FRAGMENT_SPV}
-    ${DAYO_PREVIEW_AO_SPV}
+    ${DAYO_PREVIEW_AO_GTAO_SPV}
+    ${DAYO_PREVIEW_AO_LEGACY_SPV}
     ${DAYO_PREVIEW_AO_BLUR_SPV}
-    ${DAYO_PREVIEW_AO16_SPV}
+    ${DAYO_PREVIEW_AO16_GTAO_SPV}
+    ${DAYO_PREVIEW_AO16_LEGACY_SPV}
     ${DAYO_PREVIEW_AO16_BLUR_SPV}
-    ${DAYO_PREVIEW_AO32_SPV}
+    ${DAYO_PREVIEW_AO32_GTAO_SPV}
+    ${DAYO_PREVIEW_AO32_LEGACY_SPV}
     ${DAYO_PREVIEW_AO32_BLUR_SPV}
     ${DAYO_PREVIEW_TONEMAP_VERTEX_SPV}
     ${DAYO_PREVIEW_TONEMAP_FRAGMENT_SPV}
+    ${DAYO_PREVIEW_BLOOM_SPV}
     ${DAYO_PREVIEW_FRAGMENT_SPV}
     ${DAYO_NATIVE_OUTPUT_VERTEX_SPV}
     ${DAYO_NATIVE_OUTPUT_FRAGMENT_SPV}
@@ -580,14 +611,18 @@ target_compile_definitions(
     DAYO_PREVIEW_BACKGROUND_VERTEX_SPV="${DAYO_PREVIEW_BACKGROUND_VERTEX_SPV}"
     DAYO_PREVIEW_BACKGROUND_FRAGMENT_SPV="${DAYO_PREVIEW_BACKGROUND_FRAGMENT_SPV}"
     DAYO_PREVIEW_NORMAL_FRAGMENT_SPV="${DAYO_PREVIEW_NORMAL_FRAGMENT_SPV}"
-    DAYO_PREVIEW_AO_SPV="${DAYO_PREVIEW_AO_SPV}"
+    DAYO_PREVIEW_AO_GTAO_SPV="${DAYO_PREVIEW_AO_GTAO_SPV}"
+    DAYO_PREVIEW_AO_LEGACY_SPV="${DAYO_PREVIEW_AO_LEGACY_SPV}"
     DAYO_PREVIEW_AO_BLUR_SPV="${DAYO_PREVIEW_AO_BLUR_SPV}"
-    DAYO_PREVIEW_AO16_SPV="${DAYO_PREVIEW_AO16_SPV}"
+    DAYO_PREVIEW_AO16_GTAO_SPV="${DAYO_PREVIEW_AO16_GTAO_SPV}"
+    DAYO_PREVIEW_AO16_LEGACY_SPV="${DAYO_PREVIEW_AO16_LEGACY_SPV}"
     DAYO_PREVIEW_AO16_BLUR_SPV="${DAYO_PREVIEW_AO16_BLUR_SPV}"
-    DAYO_PREVIEW_AO32_SPV="${DAYO_PREVIEW_AO32_SPV}"
+    DAYO_PREVIEW_AO32_GTAO_SPV="${DAYO_PREVIEW_AO32_GTAO_SPV}"
+    DAYO_PREVIEW_AO32_LEGACY_SPV="${DAYO_PREVIEW_AO32_LEGACY_SPV}"
     DAYO_PREVIEW_AO32_BLUR_SPV="${DAYO_PREVIEW_AO32_BLUR_SPV}"
     DAYO_PREVIEW_TONEMAP_VERTEX_SPV="${DAYO_PREVIEW_TONEMAP_VERTEX_SPV}"
     DAYO_PREVIEW_TONEMAP_FRAGMENT_SPV="${DAYO_PREVIEW_TONEMAP_FRAGMENT_SPV}"
+    DAYO_PREVIEW_BLOOM_SPV="${DAYO_PREVIEW_BLOOM_SPV}"
     DAYO_PREVIEW_FRAGMENT_SPV="${DAYO_PREVIEW_FRAGMENT_SPV}"
     DAYO_NATIVE_OUTPUT_VERTEX_SPV="${DAYO_NATIVE_OUTPUT_VERTEX_SPV}"
     DAYO_NATIVE_OUTPUT_FRAGMENT_SPV="${DAYO_NATIVE_OUTPUT_FRAGMENT_SPV}"

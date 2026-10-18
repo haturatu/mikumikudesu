@@ -88,6 +88,34 @@ class VulkanDevice final : public Device {
     [[nodiscard]] std::uint64_t previewGpuNanoseconds() const noexcept override {
         return previewGpuNanoseconds_;
     }
+    [[nodiscard]] PreviewPassTimings previewPassTimings() const noexcept override {
+        return previewPassTimings_;
+    }
+    void setPreviewRenderSettings(const PreviewRenderSettings& settings) override;
+    [[nodiscard]] PreviewRenderSettings previewRenderSettings() const noexcept override {
+        return previewRenderSettings_;
+    }
+    [[nodiscard]] ResolvedPreviewEffects previewResolvedEffects() const noexcept override {
+        return resolvePreviewEffects(previewRenderSettings_, options_.quality, previewIntegrated(),
+                                     previewStillQuality_, previewEffectSupport());
+    }
+    [[nodiscard]] std::uint32_t previewEffectSupport() const noexcept override {
+        std::uint32_t support =
+            previewEffectSupportHairShading | previewEffectSupportClothSheen | previewEffectSupportClearcoat;
+        if (shadowPipeline_ != VK_NULL_HANDLE)
+            support |= previewEffectSupportSoftShadows;
+        if (depthPrepassPipeline_ != VK_NULL_HANDLE && aoPipelines_[0] != VK_NULL_HANDLE)
+            support |= previewEffectSupportAmbientOcclusion;
+        if (previewTonemapPipeline_ != VK_NULL_HANDLE) {
+            if (capabilities_.independentBlend)
+                support |= previewEffectSupportSkinSubsurface;
+            if (bloomPipeline_ != VK_NULL_HANDLE)
+                support |= previewEffectSupportBloom;
+            if (depthPrepassPipeline_ != VK_NULL_HANDLE)
+                support |= previewEffectSupportDepthOfField;
+        }
+        return support;
+    }
     [[nodiscard]] core::ImageRgba8 renderToImage(const RenderTargetDesc& target) override;
     [[nodiscard]] bool supportsPipelinedReadback() const noexcept override {
         return true;
@@ -117,7 +145,10 @@ class VulkanDevice final : public Device {
         previewJitter_ = {x, y};
     }
     void setPreviewStillQuality(bool enabled) override {
+        if (previewStillQuality_ == enabled)
+            return;
         previewStillQuality_ = enabled;
+        refreshPreviewEffectUniforms();
     }
     [[nodiscard]] BufferHandle createBuffer(const BufferDesc& desc) override;
     [[nodiscard]] TextureHandle createTexture(const TextureDesc& desc) override;
@@ -203,9 +234,23 @@ class VulkanDevice final : public Device {
     };
     struct PreviewHdrResource {
         handles::TextureHandle texture{};
+        handles::TextureHandle skinTexture{};
+        VkImage skinImage{};
+        VkImageView skinView{};
         VkImage image{};
         VkImageView view{};
         VkDescriptorSet descriptor{};
+        VkExtent2D extent{};
+        bool initialized{};
+    };
+    // Ping-pong pair of half resolution images used by the bloom chain. sets[0]
+    // prefilters the HDR buffer, sets[1]/sets[2] are the horizontal and vertical
+    // blur passes.
+    struct PreviewBloomResource {
+        VkImage images[2]{};
+        VkDeviceMemory memories[2]{};
+        VkImageView views[2]{};
+        VkDescriptorSet sets[3]{};
         VkExtent2D extent{};
         bool initialized{};
     };
@@ -256,6 +301,7 @@ class VulkanDevice final : public Device {
         PreviewDirtyRange previewMaterialDirty;
         PreviewAoResource previewAo;
         PreviewHdrResource previewHdr;
+        PreviewBloomResource previewBloom;
         VkBuffer previewIndirectBuffer{};
         VkDeviceMemory previewIndirectMemory{};
         void* mappedPreviewIndirect{};
@@ -308,6 +354,9 @@ class VulkanDevice final : public Device {
         bool colorInitialized{};
     };
 
+    [[nodiscard]] bool previewIntegrated() const noexcept {
+        return physicalProperties_.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+    }
     void retirePreviewResource(std::function<void()> destroy);
     void collectPreviewRetirements();
     struct PendingPreviewDeletion {
@@ -397,6 +446,11 @@ class VulkanDevice final : public Device {
     void recordPreviewBackground(VkCommandBuffer command);
     void ensurePreviewHdrResource(Frame& frame, VkExtent2D extent);
     void destroyPreviewHdrResource(Frame& frame) noexcept;
+    void ensurePreviewBloomResource(Frame& frame, VkExtent2D extent);
+    void destroyPreviewBloomResource(Frame& frame) noexcept;
+    void recordPreviewBloomPass(VkCommandBuffer command, Frame& frame, VkExtent2D extent);
+    void writePreviewTonemapDescriptor(Frame& frame, VkImageView depthView, VkImageView bloomView);
+    void refreshPreviewEffectUniforms();
     void recordPreviewScenePass(VkCommandBuffer command, Frame& frame, VkImage colorImage, VkImageView colorView,
                                 DepthResource& depth, VkExtent2D extent, bool colorInitialized,
                                 VkImageLayout previousColorLayout, VkPipelineStageFlags2 previousColorStage,
@@ -562,7 +616,9 @@ class VulkanDevice final : public Device {
     VkPipeline hdrEdgePipeline_{};
     VkPipeline previewTonemapPipeline_{};
     VkPipelineLayout previewTonemapPipelineLayout_{};
-    VkPipeline aoPipelines_[2]{};
+    VkPipeline bloomPipeline_{};
+    VkPipelineLayout bloomPipelineLayout_{};
+    VkPipeline aoPipelines_[3]{};
     VkPipelineLayout aoPipelineLayout_{};
     VkPipeline transparentPipeline_{};
     VkPipeline edgePipeline_{};
@@ -596,6 +652,7 @@ class VulkanDevice final : public Device {
     VkDescriptorSetLayout previewAoDescriptorSetLayout_{};
     VkDescriptorSetLayout previewAoSampleDescriptorSetLayout_{};
     VkDescriptorSetLayout previewTonemapDescriptorSetLayout_{};
+    VkDescriptorSetLayout bloomDescriptorSetLayout_{};
     VkDescriptorPool previewDescriptorPool_{};
     VkSampler previewSampler_{};
     VkSampler previewClampSampler_{};
@@ -614,10 +671,12 @@ class VulkanDevice final : public Device {
     VkSampler previewEnvironmentSampler_{};
     handles::TextureHandle previewEnvironmentTexture_{};
     handles::TextureHandle previewFallbackEnvironmentTexture_{};
-    std::array<float, 40> previewEnvironmentData_{};
+    std::array<float, 64> previewEnvironmentData_{};
     std::array<float, 2> previewJitter_{};
     bool previewStillQuality_{};
     bool previewHdrActive_{};
+    PreviewRenderSettings previewRenderSettings_{};
+    PreviewPassTimings previewPassTimings_{};
     core::ImageRgba8 previewDisplayBackground_;
     handles::TextureHandle lastPreviewHdrTexture_{};
     std::uint32_t previewBindlessTextureCapacity_{};

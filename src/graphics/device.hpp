@@ -2,6 +2,7 @@
 
 #include "core/image.hpp"
 #include "graphics/handles.hpp"
+#include "graphics/preview_effects.hpp"
 #include "graphics/preview_quality.hpp"
 #include "graphics/resource.hpp"
 
@@ -171,6 +172,8 @@ struct PreviewMaterial {
     float specularStrength{0.5F};
     float skin{};
     float anisotropy{};
+    float sheen{};
+    float clearcoat{};
 };
 
 struct PreviewDraw {
@@ -198,7 +201,7 @@ struct PreviewMaterialGpu {
     std::uint32_t reserved[2]{};
     std::uint32_t textureSlots[4]{};
     float pbr[4]{};  // roughness, metallic, specular strength, skin
-    float hair[4]{}; // anisotropy, reserved
+    float hair[4]{}; // anisotropy, sheen, clearcoat, reserved
 };
 static_assert(sizeof(PreviewMaterialGpu) == 224);
 
@@ -264,6 +267,18 @@ struct PreviewViewport {
     [[nodiscard]] explicit operator bool() const noexcept {
         return textureId != 0 && width != 0 && height != 0;
     }
+};
+
+// Per-pass GPU time of the most recently completed preview frame, in
+// nanoseconds. Zero means the pass did not run or the backend cannot measure it.
+// The values come from the same timestamp submission as previewGpuNanoseconds().
+struct PreviewPassTimings {
+    std::uint64_t shadow{};
+    std::uint64_t ambientOcclusion{};
+    std::uint64_t subsurface{};
+    std::uint64_t model{};
+    std::uint64_t postProcess{};
+    std::uint64_t toneMap{};
 };
 
 using BufferHandle = std::uint64_t;
@@ -816,6 +831,10 @@ class Device {
     [[nodiscard]] virtual std::uint64_t previewGpuNanoseconds() const noexcept {
         return 0;
     }
+    // Per-pass breakdown of the same interval.
+    [[nodiscard]] virtual PreviewPassTimings previewPassTimings() const noexcept {
+        return {};
+    }
     // Renders the current preview scene without ImGui and returns a CPU image.
     // Backends that do not provide an offscreen target report this explicitly.
     [[nodiscard]] virtual core::ImageRgba8 renderToImage(const RenderTargetDesc&) {
@@ -852,6 +871,22 @@ class Device {
     virtual void clearPreviewResources() = 0;
     virtual void updatePreviewScene(const PreviewScene& scene) = 0;
     virtual void updatePreviewEnvironment(const PreviewEnvironment&) {}
+    // Quality effects requested by the project. The device resolves the settings
+    // against its quality profile and device capabilities; callers read the
+    // result back through previewResolvedEffects() so the UI can show the state
+    // that is actually being rendered.
+    virtual void setPreviewRenderSettings(const PreviewRenderSettings&) {}
+    [[nodiscard]] virtual PreviewRenderSettings previewRenderSettings() const noexcept {
+        return {};
+    }
+    [[nodiscard]] virtual ResolvedPreviewEffects previewResolvedEffects() const noexcept {
+        return {};
+    }
+    // Bitmask of PreviewEffectSupport values the current device and quality
+    // profile can run. Effects not listed here must be reported as unavailable.
+    [[nodiscard]] virtual std::uint32_t previewEffectSupport() const noexcept {
+        return 0;
+    }
     [[nodiscard]] virtual bool supportsTextureFormat(PixelFormat, ResourceUsage) const noexcept {
         return false;
     }
