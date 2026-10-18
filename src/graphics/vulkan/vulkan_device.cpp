@@ -3993,9 +3993,11 @@ void VulkanDevice::renderFrame() {
                           swapchainDepth_[imageIndex], swapchainExtent_, swapchainInitialized_[imageIndex],
                           VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0U, true);
     }
+#endif
+    // Both the ImGui and non-ImGui paths must complete the timestamp pair.
+    // Otherwise the query pool remains unavailable and GPU timing reads as zero.
     if (frame.timestampQueryPool != VK_NULL_HANDLE)
         vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timestampQueryPool, 1);
-#endif
 
     const VkImageMemoryBarrier2 toPresent{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
