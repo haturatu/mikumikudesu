@@ -1,4 +1,4 @@
-# 調査: FXリソースサイズの依存解決と最小サイズ
+# FXリソースサイズの依存解決と最小サイズ
 
 状態: **実装済み**。比較基準は `main@7ed41e0` と固定 MikuMikuDayo130。
 
@@ -7,13 +7,13 @@
 `FXSize::convert` は相対サイズの丸め結果を `max(1ull, ...)` にする。
 
 [FxResourceRuntime::initialize](../../src/graphics/fx_resource_runtime.cpp) と
-[FxCompiler::plan](../../src/fx/fx_compiler.cpp) はtextures→textures3D→buffersを1回ずつ走査し、
+[FxCompiler::plan](../../src/fx/fx_compiler.cpp) は調査時点で textures → textures3D → buffers を一度ずつ走査し、
 その時点のtableだけでsizeを解決する。後に宣言された同種リソースや後続の別種リソースをbaseに
 する入力は解決できない。plannerとallocatorでサイズ変換コードが重複している。
 [FxSizeResolver](../../src/core/fx/fx_size.cpp) は正のratioでも丸めて0になれば例外にする。
 例: base幅1、ratio.x=0.5、truncは本家では1、現行ではエラー。
 
-## 対応案と受け入れ条件
+## 対応方針と受け入れ条件
 
 - 共通の依存グラフresolverへ変換処理を集約し、宣言順に依存せず解決する。
 - 未定義baseと循環を区別し、依存chainをエラーに表示する。
@@ -22,7 +22,7 @@
 - 前方参照、2D→3D→bufferの混在、循環、自分自身、ratioで0になる小さいrender targetを検証する。
 - allocatorの実寸・shader定数・compute group・raster viewportを同じ解決結果から作る。
 
-## 実装
+## 実装内容
 
 `FxResourceSizeTable` に宣言を登録して遅延評価する。texture / texture3D / buffer 間の
 前方参照を解決し、循環・未定義参照は依存元を含む診断にする。再帰深度は128まで。
@@ -34,6 +34,6 @@ Dayo の相対サイズでは丸め結果を1以上にする。一般の `FxSize
 
 前方参照・異種リソースの依存・循環・未定義・shared ref のテストケースを追加済み。
 ビルド: `dayo_fx_executor_tests` / `dayo_fx_semantic_tests` / `dayo_fx_linker_tests` 成功。
-今回の継続作業ではテスト実行は行っていない。
+この記録に記載した継続作業では、追加のテスト実行を行っていません。
 
 前提PR: #246（外部画像の実寸）。
