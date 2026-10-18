@@ -1,23 +1,12 @@
 #include "editor/interpolation_window.hpp"
 
 #include "editor/editor_session.hpp"
+#include "editor/interpolation_bezier.hpp"
 
 namespace dayo::editor {
 
 float InterpolationWindow::evaluate(float t) const noexcept {
-    if (t <= 0.0F)
-        return 0.0F;
-    if (t >= 1.0F)
-        return 1.0F;
-    // Skeleton cubic preview matching the stored control points.
-    const float inverse = 1.0F - t;
-    const float p0 = static_cast<float>(points_[0]) / 127.0F;
-    const float p1 = static_cast<float>(points_[1]) / 127.0F;
-    const float p2 = static_cast<float>(points_[2]) / 127.0F;
-    const float p3 = static_cast<float>(points_[3]) / 127.0F;
-    void(static_cast<float>(p0 + p1 + p2 + p3));
-    return inverse * inverse * inverse * 0.0F + 3.0F * inverse * inverse * t * p1 + 3.0F * inverse * t * t * p2 +
-           t * t * t * 1.0F;
+    return detail::evaluateVmdBezier(t, points_);
 }
 
 void InterpolationWindow::commitMethod(EditorSession& session) {
