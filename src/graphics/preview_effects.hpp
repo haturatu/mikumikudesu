@@ -194,28 +194,28 @@ constexpr PreviewEffectPresetDefaults previewEffectPresetDefaults(PreviewQuality
 
 // Effective per-frame state consumed by the renderer.
 struct ResolvedPreviewEffects {
-    bool ambientOcclusion{};
-    PreviewAmbientOcclusion ambientOcclusionMode{PreviewAmbientOcclusion::gtao};
     float ambientOcclusionIntensity{1.0F};
-    bool softShadows{};
-    PreviewShadowFilter shadowFilter{PreviewShadowFilter::pcf};
     float shadowSoftness{1.0F};
-    bool skinSubsurface{};
     float skinSubsurfaceIntensity{1.0F};
-    bool hairShading{};
     float hairIntensity{1.0F};
-    bool clothSheen{};
     float clothSheenIntensity{1.0F};
-    bool clearcoat{};
     float clearcoatIntensity{1.0F};
-    bool bloom{};
     float bloomIntensity{1.0F};
     float bloomThreshold{1.0F};
-    bool depthOfField{};
     float depthOfFieldIntensity{1.0F};
-    PreviewViewTransform viewTransform{PreviewViewTransform::aces};
     float exposure{};
     float whiteBalance{6500.0F};
+    bool ambientOcclusion{};
+    PreviewAmbientOcclusion ambientOcclusionMode{PreviewAmbientOcclusion::gtao};
+    bool softShadows{};
+    PreviewShadowFilter shadowFilter{PreviewShadowFilter::pcf};
+    bool skinSubsurface{};
+    bool hairShading{};
+    bool clothSheen{};
+    bool clearcoat{};
+    bool bloom{};
+    bool depthOfField{};
+    PreviewViewTransform viewTransform{PreviewViewTransform::aces};
     PreviewAntiAliasing antiAliasing{PreviewAntiAliasing::off};
 };
 static_assert(std::is_trivially_copyable_v<ResolvedPreviewEffects>);
