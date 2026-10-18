@@ -97,7 +97,7 @@ UndoTransaction::UndoTransaction(core::Scene& scene, core::CommandHistory& histo
           const auto* current = scene.motion(target, global);
           return current != nullptr ? *current : core::VmdMotion{};
       }()),
-      current_(*before_) {}
+      current_(before_) {}
 
 UndoTransaction::~UndoTransaction() {
     if (active_)
