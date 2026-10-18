@@ -45,6 +45,7 @@ BlasAction AccelerationStructureService::notifyMesh(std::uint32_t meshId, const 
             state.blas = backend_->createBlas(geometry);
         }
         state.built = true;
+        state.pendingGpuUpdate = true;
         meshes_.emplace(meshId, state);
         blasChangedSinceTlas_ = true;
         ++blasRebuilds_;
@@ -53,6 +54,7 @@ BlasAction AccelerationStructureService::notifyMesh(std::uint32_t meshId, const 
     }
     MeshState& state = found->second;
     if (state.topologyGeneration != topologyGeneration) {
+        state.pendingGpuUpdate = true;
         state.topologyGeneration = topologyGeneration;
         state.deformVersion = deformVersion;
         state.geometry = geometry;
@@ -71,6 +73,7 @@ BlasAction AccelerationStructureService::notifyMesh(std::uint32_t meshId, const 
         return BlasAction::rebuild;
     }
     if (state.deformVersion != deformVersion) {
+        state.pendingGpuUpdate = true;
         state.deformVersion = deformVersion;
         state.geometry = geometry;
         // Deform output is written by the current frame command buffer. The
@@ -150,6 +153,7 @@ TlasAction AccelerationStructureService::notifyWorld(std::uint64_t worldGenerati
         hasCachedWorld_ = true;
         blasChangedSinceTlas_ = false;
         ++tlasRebuilds_;
+        pendingTlasUpdate_ = true;
         log::info("TLAS rebuild: instances ", instanceCount);
         return TlasAction::rebuild;
     }
@@ -171,6 +175,7 @@ TlasAction AccelerationStructureService::notifyWorld(std::uint64_t worldGenerati
         hasCachedWorld_ = true;
         blasChangedSinceTlas_ = false;
         ++tlasRebuilds_;
+        pendingTlasUpdate_ = true;
         log::info("TLAS rebuild: instances ", instanceCount);
         return TlasAction::rebuild;
     }
@@ -180,6 +185,7 @@ TlasAction AccelerationStructureService::notifyWorld(std::uint64_t worldGenerati
         // update in the active frame command buffer below the geometry work.
         cachedWorldGeneration_ = worldGeneration;
         ++tlasUpdates_;
+        pendingTlasUpdate_ = true;
         log::debug("TLAS update: world ", worldGeneration);
         return TlasAction::update;
     }
@@ -192,8 +198,10 @@ void AccelerationStructureService::recordBlasUpdates(CommandList& commands) cons
         throw std::logic_error("recorded BLAS updates require an acceleration backend");
     for (const auto& [meshId, state] : meshes_) {
         static_cast<void>(meshId);
-        if (state.built && state.blas.valid())
+        if (state.pendingGpuUpdate && state.built && state.blas.valid()) {
             backend_->recordBlasUpdate(commands, state.blas, state.geometry);
+            state.pendingGpuUpdate = false;
+        }
     }
 }
 
@@ -202,7 +210,10 @@ void AccelerationStructureService::recordTlasUpdate(CommandList& commands) const
         throw std::logic_error("recorded TLAS updates require an acceleration backend");
     if (!tlasBuilt_ || !tlas_.valid())
         throw std::logic_error("recorded TLAS update requires a built TLAS");
-    backend_->recordTlasUpdate(commands, tlas_, tlasScratch_);
+    if (pendingTlasUpdate_) {
+        backend_->recordTlasUpdate(commands, tlas_, tlasScratch_);
+        pendingTlasUpdate_ = false;
+    }
 }
 
 bool AccelerationStructureService::removeMesh(std::uint32_t meshId) {
@@ -219,6 +230,7 @@ bool AccelerationStructureService::removeMesh(std::uint32_t meshId) {
         tlasScratch_.clear();
         hasCachedWorld_ = false;
         cachedWorldGeneration_ = 0;
+        pendingTlasUpdate_ = false;
     }
     if (backend_ != nullptr && found->second.built && found->second.blas.valid())
         backend_->destroyBlas(found->second.blas);
@@ -254,6 +266,7 @@ void AccelerationStructureService::reset() noexcept {
     blasChangedSinceTlas_ = false;
     cachedWorldGeneration_ = 0;
     hasCachedWorld_ = false;
+    pendingTlasUpdate_ = false;
     tlasInstanceCount_ = 0;
     tlasScratch_.clear();
 }
