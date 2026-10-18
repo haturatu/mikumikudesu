@@ -876,6 +876,20 @@ if(BUILD_TESTING)
     dayo_enable_warnings(dayo_keyframe_editor_tests)
     add_test(NAME keyframe_editor COMMAND dayo_keyframe_editor_tests)
   endif()
+  add_executable(
+    dayo_interpolation_commit_tests
+    tests/interpolation_commit_tests.cpp
+    src/editor/editor_session.cpp
+    src/editor/editor_operation.cpp
+    src/editor/motion_key_id.cpp
+    src/editor/selection.cpp
+    src/editor/interpolation_window.cpp
+    src/editor/material_window.cpp
+  )
+  target_link_libraries(dayo_interpolation_commit_tests PRIVATE dayo_core)
+  dayo_enable_warnings(dayo_interpolation_commit_tests)
+  add_test(NAME interpolation_commit COMMAND dayo_interpolation_commit_tests)
+
   add_executable(dayo_output_tests tests/output_tests.cpp)
   target_link_libraries(dayo_output_tests PRIVATE dayo_core)
   add_executable(dayo_video_export_job_tests tests/video_export_job_tests.cpp src/app/video_export_job.cpp)
@@ -980,6 +994,7 @@ if(DAYO_ENABLE_SANITIZERS)
     mikumikudesu
     dayo_cli_tests
     dayo_core_tests
+    dayo_interpolation_commit_tests
     dayo_keyframe_editor_tests
     dayo_i18n_tests
     dayo_output_tests
