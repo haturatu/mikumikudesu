@@ -1026,6 +1026,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_video_export_job_tests
     dayo_fx_executor_tests
     dayo_upload_ring_tests
+    dayo_preview_effects_tests
     dayo_preview_tests
     dayo_graph_device_tests
     dayo_upstream_compat_tests
