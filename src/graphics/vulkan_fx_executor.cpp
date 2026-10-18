@@ -18,7 +18,7 @@ VulkanFxExecutor::Stats VulkanFxExecutor::execute(const dayo::fx::FxFramePlan& p
     Stats stats;
     if (device_ == nullptr)
         throw std::logic_error("VulkanFxExecutor: device is not available");
-    dayo::log::info("VulkanFxExecutor executing ", plan.ordered.size(), " passes (", context.renderWidth, "x",
+    dayo::log::debug("VulkanFxExecutor executing ", plan.ordered.size(), " passes (", context.renderWidth, "x",
                     context.renderHeight, ")");
     const auto resolve = [&](const dayo::fx::FxDispatch::ResourceUse& resource) -> TextureHandle {
         if (resource.name.empty() || !resources.resolveTexture)
