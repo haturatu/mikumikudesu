@@ -10,6 +10,7 @@
 #include <limits>
 #include <stdexcept>
 #include <system_error>
+#include <utility>
 
 namespace dayo::core {
 namespace {
@@ -246,6 +247,15 @@ void writeHeader(BinaryWriter& writer, const VmdayoDocument& document) {
     }
 }
 
+// VMdayo stores camera Beziers as [x1, y1, x2, y2]; VMD keeps
+// [x1, x2, y1, y2]. Swapping indices 1 and 2 is its own inverse.
+[[nodiscard]] std::array<std::uint8_t, 24>
+convertCameraInterpolationLayout(std::array<std::uint8_t, 24> values) noexcept {
+    for (std::size_t channel = 0; channel < 6; ++channel)
+        std::swap(values[channel * 4 + 1], values[channel * 4 + 2]);
+    return values;
+}
+
 MotionDocument readSubset(BinaryReader& reader) {
     MotionDocument motion;
     for (std::int32_t i = 0, count = reader.count("bone count"); i < count; ++i) {
@@ -274,7 +284,7 @@ MotionDocument readSubset(BinaryReader& reader) {
         key.distance = reader.value<float>("camera distance");
         key.position = reader.value<Float3>("camera target");
         key.rotation = reader.value<Float3>("camera rotation");
-        key.interpolation = reader.byteArray<24>("camera interpolation");
+        key.interpolation = convertCameraInterpolationLayout(reader.byteArray<24>("camera interpolation"));
         key.viewAngle = reader.value<float>("camera view angle");
         key.perspective = reader.value<std::uint8_t>("camera perspective") != 0;
         key.parentModel = reader.value<std::int32_t>("camera parent model");
@@ -354,7 +364,7 @@ void writeSubset(BinaryWriter& writer, const MotionDocument& motion) {
         writer.value(key.distance);
         writer.value(key.position);
         writer.value(key.rotation);
-        writer.value(key.interpolation);
+        writer.value(convertCameraInterpolationLayout(key.interpolation));
         writer.value(key.viewAngle);
         writer.value(static_cast<std::uint8_t>(key.perspective));
         writer.value(key.parentModel);
