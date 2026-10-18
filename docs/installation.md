@@ -78,8 +78,6 @@ ctest --preset linux-debug --output-on-failure
 ./build/linux-debug/mikumikudesu --asset model.pmx --asset motion.vmd
 ```
 
-`make` / `make build` 自体は MikuMikuDayo の取得を行いません。`make test`、`make install`、`make package` は `setup` を実行します。CMake を直接使う場合は、上記のように取得スクリプトを明示的に実行してください。
-
 ## インストールと system-only ビルド
 
 ```sh
