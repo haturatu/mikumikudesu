@@ -1,4 +1,5 @@
 #include "core/solver.hpp"
+#include "core/timeline_time.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -98,7 +99,7 @@ SolverResult MotionSolver::solveModel(const VmdMotion& motion, float frame) cons
     runExternalParent(bones);
     runIk(bones, frame);
     runKinematic(bones);
-    runPhysicsFixed(bones, 1.0F / 30.0F);
+    runPhysicsFixed(bones, static_cast<float>(1.0 / kMmdTimelineFramesPerSecond));
     runFeedback(bones);
     runPost(bones);
     SolverResult result;
