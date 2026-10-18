@@ -888,7 +888,14 @@ int main() {
         cameraKey.parentBone = 7;
         cameraKey.parentBoneName = "head";
         cameraKey.methods = {1, 0, 1, 0, 1, 0};
-        cameraKey.interpolation[0] = 17;
+        // Internal VMD order is [x1, x2, y1, y2] per channel.
+        for (std::size_t channel = 0; channel < 6; ++channel) {
+            const auto start = channel * 4;
+            cameraKey.interpolation[start] = static_cast<std::uint8_t>(17 + start);
+            cameraKey.interpolation[start + 1] = static_cast<std::uint8_t>(18 + start);
+            cameraKey.interpolation[start + 2] = static_cast<std::uint8_t>(19 + start);
+            cameraKey.interpolation[start + 3] = static_cast<std::uint8_t>(20 + start);
+        }
         document.motion.cameras.push_back(cameraKey);
         document.motion.lights.push_back({13, {0.5F, 0.6F, 0.7F}, {-1.0F, -2.0F, 1.0F}});
         document.motion.shadows.push_back({14, 2, 75.0F});
@@ -896,6 +903,20 @@ int main() {
         document.motion.externalParents.push_back({16, 1, "parent", "child"});
         document.motion.gravity.push_back({17, 9.8F, {0.0F, -1.0F, 0.0F}, 0.1F, 2.0F});
         dayo::core::saveVmdayo(vmdayoPath, document);
+        // Check the on-disk layout independently of the reader: a symmetric
+        // reader/writer bug would pass a conventional round-trip test.
+        auto wireCameraInterpolation = cameraKey.interpolation;
+        for (std::size_t channel = 0; channel < 6; ++channel)
+            std::swap(wireCameraInterpolation[channel * 4 + 1], wireCameraInterpolation[channel * 4 + 2]);
+        const auto encodedVmdayo = dayo::core::serializeVmdayo(document);
+        ok &= check(std::search(encodedVmdayo.begin(), encodedVmdayo.end(), wireCameraInterpolation.begin(),
+                                wireCameraInterpolation.end()) != encodedVmdayo.end(),
+                    "VMdayo binary camera interpolation uses [x1, y1, x2, y2] on every channel");
+        const auto embeddedVmdayo = dayo::core::serializeVmdayoSubset(document);
+        const auto embeddedDecoded = dayo::core::parseVmdayoSubsets(embeddedVmdayo, 1);
+        ok &= check(embeddedDecoded.size() == 1 && embeddedDecoded[0].motion.cameras.size() == 1 &&
+                        embeddedDecoded[0].motion.cameras[0].interpolation == cameraKey.interpolation,
+                    "embedded VMdayo camera interpolation preserves VMD internal ordering");
         {
             std::ifstream vmdayoBytes(vmdayoPath, std::ios::binary);
             std::array<char, 8> signature{};
@@ -911,7 +932,8 @@ int main() {
                     "VMdayo v3 bone track round trip");
         ok &= check(loaded.motion.cameras.size() == 1 && loaded.motion.cameras[0].parentModel == 2 &&
                         loaded.motion.cameras[0].parentBone == 7 && loaded.motion.cameras[0].parentBoneName == "head" &&
-                        loaded.motion.cameras[0].methods[0] == 1 && loaded.motion.cameras[0].interpolation[0] == 17,
+                        loaded.motion.cameras[0].methods[0] == 1 &&
+                        loaded.motion.cameras[0].interpolation == cameraKey.interpolation,
                     "VMdayo v3 camera tracking round trip");
         ok &= check(loaded.motion.lights.size() == 1 && loaded.motion.shadows.size() == 1,
                     "VMdayo v3 light and shadow tracks round trip");
