@@ -232,9 +232,11 @@ void writeFrame(const std::filesystem::path& path, const ImageData& image) {
     Imf::Array2D<Imf::Rgba> outputPixels;
     outputPixels.resizeErase(static_cast<int>(linear->height), static_cast<int>(linear->width));
     const auto rowBytes = static_cast<std::size_t>(linear->width) * sizeof(Imf::Rgba);
-    for (std::uint32_t y = 0; y < linear->height; ++y)
-        std::memcpy(&outputPixels[static_cast<int>(y)][0], linear->bytes.data() + static_cast<std::size_t>(y) * rowBytes,
-                    rowBytes);
+    for (std::uint32_t y = 0; y < linear->height; ++y) {
+        auto* destination = &outputPixels[static_cast<int>(y)][0];
+        const auto* source = linear->bytes.data() + static_cast<std::size_t>(y) * rowBytes;
+        std::memcpy(destination, source, rowBytes);
+    }
     if (!path.parent_path().empty())
         std::filesystem::create_directories(path.parent_path());
     Imf::RgbaOutputFile output(path.string().c_str(), static_cast<int>(linear->width), static_cast<int>(linear->height),
