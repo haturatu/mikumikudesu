@@ -8,12 +8,12 @@ Windows 版 MikuMikuDayo 1.30 が生成したファイルを基準データ（or
 
 | Fixture | 確認する内容 | 判定条件 | 状態 |
 | --- | --- | --- | --- |
-| \`camera-parent.vmdayo\` | カメラの親モデル・親ボーンと、親が見つからない場合の処理 | 値の一致。未解決の場合は単位変換 | 未実施 |
-| \`catmull-axis.vmdayo\` | ボーンの 4 軸とカメラの 6 軸の補間方式 | \`SolverCompatibilityProfile::cameraTolerance\` の範囲内 | 未実施 |
-| \`multi-model.dayo\` | 複数モデルの辞書・メタデータ・全トラックとカメラ・ライト | トラック名とキー数の一致 | 未実施 |
-| \`external-parent.dayo\` | 親モデルの削除、未解決親、循環参照 | \`Scene::addExternalParent\` のエラー内容の一致 | 未実施 |
-| \`gravity.dayo\` | 重力キーと保存設定 | 強度の誤差 1e-3、方向の正規化 | 未実施 |
-| \`limited-ik.pmx\` + \`limited-ik.vmdayo\` | 1～3 軸の IK 制限、膝・非対称制限 | 位置誤差 1e-3、回転誤差 1e-4 | 未実施 |
+| `camera-parent.vmdayo` | カメラの親モデル・親ボーンと、親が見つからない場合の処理 | 値の一致。未解決の場合は単位行列 | 未実施 |
+| `catmull-axis.vmdayo` | ボーンの 4 軸とカメラの 6 軸の補間方式 | `SolverCompatibilityProfile::cameraTolerance` の範囲内 | 未実施 |
+| `multi-model.dayo` | 複数モデルの辞書・メタデータ・全トラックとカメラ・ライト | トラック名とキー数の一致 | 未実施 |
+| `external-parent.dayo` | 親モデルの削除、未解決親、循環参照 | `Scene::addExternalParent` のエラー内容の一致 | 未実施 |
+| `gravity.dayo` | 重力キーと保存設定 | 強度の誤差 1e-3、方向の正規化 | 未実施 |
+| `limited-ik.pmx` + `limited-ik.vmdayo` | 1～3 軸の IK 制限、膝・非対称制限 | 位置誤差 1e-3、回転誤差 1e-4 | 未実施 |
 
 ## 検証手順
 
@@ -26,9 +26,9 @@ Windows 版 MikuMikuDayo 1.30 が生成したファイルを基準データ（or
 
 ## テストの実装箇所
 
-- \`tools/capability_suite --list\`: テストスイートの一覧
-- \`MotionSolver::compareBones\` / \`MotionSolver::compareCamera\`: 数値比較
-- \`PhysicsStepper\` / \`PhysicsCompatibilityProfile\`: 物理演算の固定ステップ処理
-- \`tests/editor_physics_io_tests.cpp\`: 画像連番や HDR などのテスト
+- `tools/capability_suite --list`: テストスイートの一覧
+- `MotionSolver::compareBones` / `MotionSolver::compareCamera`: 数値比較
+- `PhysicsStepper` / `PhysicsCompatibilityProfile`: 物理演算の固定ステップ処理
+- `tests/editor_physics_io_tests.cpp`: 画像連番や HDR などのテスト
 
 関連する互換性の状況は [MikuMikuDayo 1.30 互換性](upstream-1.30.md)を参照してください。
