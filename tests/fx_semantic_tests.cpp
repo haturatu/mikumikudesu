@@ -180,12 +180,10 @@ int main() {
     ok &= check(dayo::core::kMmdTimelineFramesPerSecond == 30.0, "MMD timeline runs at 30 fps");
     ok &= check(dayo::core::mmdFrameIndex(2.75F) == 2, "positive frame index floors");
     ok &= check(dayo::core::mmdFrameIndex(-0.25F) == -1, "negative frame index floors");
-    ok &= check(dayo::core::mmdFrameIndex(std::numeric_limits<float>::max()) ==
-                    std::numeric_limits<std::int64_t>::max(),
-                "huge frame index saturates");
-    ok &= check(dayo::core::mmdFrameIndex(-std::numeric_limits<float>::max()) ==
-                    std::numeric_limits<std::int64_t>::min(),
-                "negative huge frame index saturates");
+    const auto maximumFrame = dayo::core::mmdFrameIndex(std::numeric_limits<float>::max());
+    const auto minimumFrame = dayo::core::mmdFrameIndex(-std::numeric_limits<float>::max());
+    ok &= check(maximumFrame == std::numeric_limits<std::int64_t>::max(), "huge frame index saturates");
+    ok &= check(minimumFrame == std::numeric_limits<std::int64_t>::min(), "negative huge frame index saturates");
     ok &= check(dayo::core::mmdFrameIndex(std::numeric_limits<float>::infinity()) == 0,
                 "non-finite frame index falls back to zero");
 
