@@ -1,6 +1,10 @@
-# MikuMikuDayo 1.30互換性
+# MikuMikuDayo 1.30 との互換性
 
-## この更新の範囲
+この文書は、MikuMikuDayo 1.30 のデータ形式、エフェクト、レンダラについて、移植対象と検証範囲を整理したものです。互換性は「ファイルを読み込めること」「GPU リソースへ接続できること」「Windows 版と同等の結果になること」に分けて判断します。
+
+**注意:** 機能を実装したことは、すべての入力や GPU で正しく動作することの保証ではありません。後続の修正・実装の記録は [Dayo 互換性調査](dayo-audit/README.md)も確認してください。Windows 版での相互運用と RT 対応 GPU 上での画像比較は、別途検証が必要です。
+
+## 基準と配布物
 
 公式[1.30 Release](https://github.com/pennennennennennenem/MikuMikuDayo/releases/tag/MikuMikuDayo130)を
 テスト・配布の基準にする第1段階です。Release APIで確認したasset digestをlockに固定し、取得したZIPのSHA256をlockと照合します。
@@ -13,13 +17,15 @@ installも同じ一覧を使い、拡張子による除外を行わず、第三�
 
 ## 対応段階
 
-| 段階 | 完了条件 | 状態 |
+以下は移植・検証の段階を示す表です。GPU 経路の接続や単体テストと、Windows 版での結果一致を区別しています。実装履歴と未検証項目の詳細は[互換性調査](dayo-audit/README.md)も参照してください。
+
+| 段階 | 完了条件 | 記録された状態 |
 | --- | --- | --- |
 | 1. baseline・配布 | 1.30 ZIPの固定、SHA256検証、共通manifestによる配布、公式assetの既存互換テスト | 実装済み |
 | 2. データ・solver互換 | Windows 1.30保存fixtureの往復、camera/external parent/制限IKの数値比較 | データ形式は実装済み、実機検証は未実施 |
-| 3. FX 1.30契約 | buffer/size expression、pow、CloneCount/CLONEDVERTEXCOUNT、MatDesc、resource allocation、RT hit groupの接続 | IR/parser/planner、MatDesc scene table/per-pass descriptor path、host screen.bmp・deformer texture参照、live FXのshared=source registry、renderer-local texture参照、typed executorは実装済み。shared=ref allocationと上流全FXのruntime検証は未完了 |
+| 3. FX 1.30契約 | buffer/size expression、pow、CloneCount/CLONEDVERTEXCOUNT、MatDesc、resource allocation、RT hit groupの接続 | IR / parser / planner、MatDesc GPU table、typed executor などの経路は実装済み。shared=ref の対応は後続の調査・修正を参照。上流の全 FX を対象とする実機検証は未完了 |
 | 4. Subayai/BDPT実行 | Vulkan BLAS/TLAS/SBT、各pass実行器、native frame/output bridge、RT対応GPUでの画像比較 | runtime接続・feature fallback・CPU/Mock検証は実装済み、RT対応GPUでの画像比較は未実施 |
-| 5. FX Debug | resource/pass/controllerの実行時inspect、texture preview/dump | graph metadataとnative GPU allocationの実体サイズ・形式のinspectは実装済み。readback preview/dumpは未完了 |
+| 5. FX Debug | resource/pass/controllerの実行時inspect、texture preview/dump | graph metadata と GPU allocation の検査は実装済み。preview / dump の追加実装は後続の調査記録を参照 |
 
 `nativeSubayai`/`nativeBdpt`は起動時のGPU capability、選択したFX graphの要求feature、native runtimeの
 初期化結果をすべて満たした場合だけ有効になります。Previewのclone複製は、上流FXが参照する
@@ -66,14 +72,13 @@ registerはpass binding planから生成し、Texture3D descriptorは独立し�
 Subayai/BDPT generic FXへこのtableを渡し、annotation textureのうち予約された`screen.bmp`、active renderer-local texture、owner modelに割り当てられたdeformer texture、
 およびlive FX runtimeが`shared=source`として公開したtextureは、resource ownerを維持したままgeneration付きexternal descriptorとして参照します。
 共有source名が複数runtimeに存在する場合は誤選択せず未解決として扱います。deformer resource名のうち未解決かつfile-likeでないtokenはdimension別fallbackへ解決します。
-画像は現在RGBA8へdecodeし、DDS 2D/3Dと通常画像のmipmapを扱います。この実装はlive runtimeのtexture source解決に限定され、
-FX宣言の`shared=ref` resource allocation/aliasing、実行前のpostprocess source解決、完全な上流互換、Windows 1.30とのGPU画像比較は未完了です。
+画像は現在RGBA8へdecodeし、DDS 2D/3Dと通常画像のmipmapを扱います。この段階で説明しているのは live runtime の texture source 解決です。FX 宣言の `shared=ref` resource allocation / aliasing と postprocess source 解決については後続の[共有リソースの調査](dayo-audit/shared-resources.md)を参照してください。完全な上流互換や Windows 1.30 との GPU 画像比較は、この記録では確認していません。
 2D/3D texture objectを含むMatDesc getterの生成HLSLは、
 aggregate zero-initializationを避けるfield-wise loweringを行い、compile fixtureでSPIR-V生成まで確認します。
 
-## Windows fixtureの受け入れ条件
+## Windows 版 fixture の受け入れ条件
 
-Windows 1.30実行環境での保存・再読込は今回のLinux検証に含みません。
+Windows 版 1.30 での保存・再読み込みは、この検証に含まれていません。
 独自serializerで生成したファイルを「本家が生成したfixture」として扱わないでください。
 追加するfixtureには、生成に使ったRelease、操作手順、モデルの出典・再配布条件を記録します。
 
