@@ -5297,6 +5297,11 @@ void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> mater
             lastDirty = index;
         }
     }
+    // The GPU table and material texture descriptors are unchanged. Returning
+    // here avoids the full material copy and GPU table reconstruction.
+    // uploadPreviewTextures() refreshes descriptors independently on texture reload.
+    if (firstDirty == unchanged && frames_.front().previewMaterialBuffer != VK_NULL_HANDLE)
+        return;
     previewGpuScene_.materials.assign(materials.begin(), materials.end());
     refreshPreviewMaterialDescriptors();
 
