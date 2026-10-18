@@ -1,6 +1,7 @@
 #include "fx/fx_condition_runtime.hpp"
 
 #include "core/fx/fx_symbol.hpp"
+#include "core/timeline_time.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -12,17 +13,6 @@ namespace {
 std::int64_t clampSigned(std::uint64_t value) noexcept {
     constexpr auto limit = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
     return value > limit ? std::numeric_limits<std::int64_t>::max() : static_cast<std::int64_t>(value);
-}
-
-std::int64_t frameIndex(float frame) noexcept {
-    if (!std::isfinite(frame))
-        return 0;
-    const auto value = std::floor(static_cast<double>(frame));
-    if (value >= static_cast<double>(std::numeric_limits<std::int64_t>::max()))
-        return std::numeric_limits<std::int64_t>::max();
-    if (value <= static_cast<double>(std::numeric_limits<std::int64_t>::min()))
-        return std::numeric_limits<std::int64_t>::min();
-    return static_cast<std::int64_t>(value);
 }
 
 core::fx::FxEventMask activeEvents(const FxHostFrameState& host) noexcept {
@@ -48,7 +38,7 @@ core::fx::FxEvalContext expressionContext(const FxFrameContext& context) {
             .modelIndex = context.modelIndex,
             .cloneCount = context.cloneCount,
             .clonedVertexCount = clampSigned(context.clonedVertexCount),
-            .frameIndex = frameIndex(context.frame),
+            .frameIndex = core::mmdFrameIndex(context.frame),
             .sampleIndex = clampSigned(context.sample),
             .time = context.time,
             .namedSymbols = context.expressionSymbols};

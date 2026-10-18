@@ -3,12 +3,14 @@
 #include "core/fx/fx_size.hpp"
 #include "core/fx/fx_symbol.hpp"
 #include "core/fx_debug.hpp"
+#include "core/timeline_time.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <numbers>
 #include <ranges>
 #include <string>
@@ -173,6 +175,18 @@ int main() {
     using namespace dayo::core::fx;
     bool ok = true;
 
+    // Fixed VMD frame timebase; FX FRAME must match for fractional/negative
+    // values and remain defined for non-finite/out-of-range float inputs.
+    ok &= check(dayo::core::kMmdTimelineFramesPerSecond == 30.0, "MMD timeline runs at 30 fps");
+    ok &= check(dayo::core::mmdFrameIndex(2.75F) == 2, "positive frame index floors");
+    ok &= check(dayo::core::mmdFrameIndex(-0.25F) == -1, "negative frame index floors");
+    const auto maximumFrame = dayo::core::mmdFrameIndex(std::numeric_limits<float>::max());
+    const auto minimumFrame = dayo::core::mmdFrameIndex(-std::numeric_limits<float>::max());
+    ok &= check(maximumFrame == std::numeric_limits<std::int64_t>::max(), "huge frame index saturates");
+    ok &= check(minimumFrame == std::numeric_limits<std::int64_t>::min(), "negative huge frame index saturates");
+    ok &= check(dayo::core::mmdFrameIndex(std::numeric_limits<float>::infinity()) == 0,
+                "non-finite frame index falls back to zero");
+
     FxEvalContext ctx;
     ctx.rtWidth = 1280;
     ctx.rtHeight = 720;
@@ -212,6 +226,20 @@ int main() {
     ok &= check(isSupportedFxFunction("frac") && isSupportedFxFunction("noise") &&
                     !isSupportedFxFunction("notAnExprFunction"),
                 "Expr.ixx function inventory");
+    // hash()/noise() must not cast NaN, infinity, or huge finite seeds
+    // to uint32_t. Exercise the function path so sanitizers can detect UB.
+    {
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const double inf = std::numeric_limits<double>::infinity();
+        const double zeroHash = fxToDouble(evaluateFxFunction("hash", std::array<FxScalar, 1>{0.0}));
+        for (const double input : std::array<double, 5>{nan, inf, -inf, 1.0e300, -1.0e300}) {
+            const double hashed = fxToDouble(evaluateFxFunction("hash", std::array<FxScalar, 1>{input}));
+            ok &= expectDouble(hashed, zeroHash, "hash seed outside float domain falls back to zero");
+            const double noisy = fxToDouble(evaluateFxFunction("noise", std::array<FxScalar, 1>{input}));
+            ok &= check(std::isfinite(noisy) && noisy >= 0.0 && noisy < 1.0,
+                        "noise on non-finite/oversized input produces finite normalized result");
+        }
+    }
     ok &= testUpstreamExpressionFunctionTable();
     ok &= testFxRuntimeDebugInventory();
 
