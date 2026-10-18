@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/fx/fx_expr.hpp"
+#include "core/timeline_time.hpp"
 
 #include <array>
 #include <cstddef>
@@ -99,7 +100,7 @@ struct FxFrameContext {
                                                        FxLightingState lighting = {}) {
     FxFrameContext context;
     context.frame = frame;
-    context.time = static_cast<double>(frame) / 30.0;
+    context.time = static_cast<double>(frame) / core::kMmdTimelineFramesPerSecond;
     context.sample = sample;
     context.renderWidth = renderWidth;
     context.renderHeight = renderHeight;

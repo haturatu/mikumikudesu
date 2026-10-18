@@ -1,5 +1,6 @@
 #include "fx/fx_resource_sizes.hpp"
 #include "core/image.hpp"
+#include "core/timeline_time.hpp"
 #include <algorithm>
 #include <cctype>
 #include <limits>
@@ -22,7 +23,7 @@ namespace {
     result.modelIndex = context.modelIndex;
     result.cloneCount = context.cloneCount;
     result.clonedVertexCount = fxSizeContextValue(context.clonedVertexCount);
-    result.frameIndex = static_cast<std::int64_t>(context.frame);
+    result.frameIndex = core::mmdFrameIndex(context.frame);
     result.sampleIndex = fxSizeContextValue(static_cast<std::size_t>(context.sample));
     result.time = context.time;
     result.namedSymbols = context.expressionSymbols;

@@ -1,4 +1,5 @@
 #include "core/physics_profile.hpp"
+#include "core/timeline_time.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -42,7 +43,8 @@ std::size_t PhysicsStepper::stepFixed(float deltaSeconds) {
     // Drop elapsed time beyond the per-call budget instead of carrying an
     // unbounded backlog into every subsequent frame.
     remainder_ = static_cast<float>(processable - static_cast<double>(steps) * static_cast<double>(fixedStep_));
-    frame_ += static_cast<float>(static_cast<double>(steps) * static_cast<double>(fixedStep_) * 30.0);
+    const double elapsedSeconds = static_cast<double>(steps) * static_cast<double>(fixedStep_);
+    frame_ += static_cast<float>(elapsedSeconds * kMmdTimelineFramesPerSecond);
     accumulatedSteps_ += steps;
     return steps;
 }

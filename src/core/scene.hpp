@@ -6,6 +6,7 @@
 #include "core/media.hpp"
 #include "core/motion.hpp"
 #include "core/physics.hpp"
+#include "core/timeline_time.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -134,7 +135,7 @@ struct ModelInstance {
 
 struct Timeline {
     float frame{};
-    float fps{30.0F};
+    float fps{static_cast<float>(kMmdTimelineFramesPerSecond)};
     float duration{};
     std::vector<VmdCameraKey> camera;
     std::vector<VmdLightKey> light;
