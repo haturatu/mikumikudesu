@@ -73,6 +73,9 @@ class NativeScreenRuntime {
     handles::TextureHandle screenBmp_{};
     handles::TextureHandle screenTexture_{};
     handles::TextureHandle previousFrame_{};
+    // publishFrame writes both textures, so they agree until a history-only
+    // rotation makes the ScreenTexture copy necessary on the next prepare.
+    bool screenTextureNeedsSync_{};
 };
 
 } // namespace dayo::graphics
