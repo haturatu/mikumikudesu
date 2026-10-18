@@ -135,6 +135,8 @@ class AccelerationStructureService {
         BlasGeometryDesc geometry;
         handles::AccelerationStructureHandle blas{};
         bool built{false};
+        // A build/refit must be recorded after deform work, once per slot.
+        mutable bool pendingGpuUpdate{false};
     };
 
     IAccelerationBackend* backend_{nullptr};
@@ -144,6 +146,7 @@ class AccelerationStructureService {
     bool blasChangedSinceTlas_{false};
     std::uint64_t cachedWorldGeneration_{0};
     bool hasCachedWorld_{false};
+    mutable bool pendingTlasUpdate_{false};
     std::size_t tlasInstanceCount_{0};
     std::vector<TlasInstanceDesc> tlasScratch_;
     std::uint64_t blasRebuilds_{0};
