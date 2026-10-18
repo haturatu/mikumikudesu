@@ -171,7 +171,12 @@ void NativeScreenRuntime::prepareFrame(CommandList& commands, NativeScreenSource
     if (!ready())
         throw std::logic_error("native screen runtime is not ready");
     commands.transferBarrierEx();
-    commands.copyTextureEx(previousFrame_, screenTexture_);
+    // publishFrame wrote both persistent images. A full-image copy each frame
+    // is redundant unless rotatePreviousFrame changed history independently.
+    if (screenTextureNeedsSync_) {
+        commands.copyTextureEx(previousFrame_, screenTexture_);
+        screenTextureNeedsSync_ = false;
+    }
     if (!enabled || source == NativeScreenSource::white) {
         commands.clearTextureEx(screenBmp_, {1.0F, 1.0F, 1.0F, 1.0F});
     } else if (source == NativeScreenSource::previousFrame) {
@@ -223,14 +228,17 @@ void NativeScreenRuntime::publishFrame(CommandList& commands, handles::TextureHa
         commands.copyTextureEx(currentFinal, screenTexture_);
     if (currentFinal != previousFrame_)
         commands.copyTextureEx(currentFinal, previousFrame_);
+    screenTextureNeedsSync_ = false;
 }
 
 void NativeScreenRuntime::rotatePreviousFrame(CommandList& commands, handles::TextureHandle currentFinal) {
     if (!ready() || !currentFinal.valid())
         throw std::logic_error("native screen history is not ready");
     commands.transferBarrierEx();
-    if (currentFinal != previousFrame_)
+    if (currentFinal != previousFrame_) {
         commands.copyTextureEx(currentFinal, previousFrame_);
+        screenTextureNeedsSync_ = true;
+    }
 }
 
 void NativeScreenRuntime::bindScreenSemantics(NativeSceneResourceBindings& bindings) const noexcept {
@@ -267,6 +275,7 @@ void NativeScreenRuntime::reset() noexcept {
     screenBmp_ = {};
     screenTexture_ = {};
     previousFrame_ = {};
+    screenTextureNeedsSync_ = false;
 }
 
 } // namespace dayo::graphics

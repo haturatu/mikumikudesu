@@ -18,7 +18,12 @@ class InterpolationWindow {
         axis_ = axis > 3 ? 3 : axis;
     }
     void setMethod(std::uint8_t method) noexcept {
-        method_ = method;
+        method_ = method > 2U ? 2U : method;
+    }
+    void setPoints(std::array<std::uint8_t, 4> points) noexcept {
+        for (auto& point : points)
+            point = point > 127U ? 127U : point;
+        points_ = points;
     }
     [[nodiscard]] float evaluate(float t) const noexcept;
     void commitMethod(EditorSession& session);
