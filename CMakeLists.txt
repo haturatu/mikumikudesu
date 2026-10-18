@@ -994,6 +994,7 @@ if(DAYO_ENABLE_SANITIZERS)
     mikumikudesu
     dayo_cli_tests
     dayo_core_tests
+    dayo_interpolation_commit_tests
     dayo_keyframe_editor_tests
     dayo_i18n_tests
     dayo_output_tests
