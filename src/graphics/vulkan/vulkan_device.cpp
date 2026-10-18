@@ -3505,6 +3505,7 @@ void VulkanDevice::destroyPreviewDeformBuffers(Frame& frame) {
     if (frame.previewDeformedMemory != VK_NULL_HANDLE)
         vkFreeMemory(device_, frame.previewDeformedMemory, nullptr);
     frame.previewDeformDescriptor = VK_NULL_HANDLE;
+    frame.previewDeformBindingsValid = false;
     frame.previewDeformedBuffer = VK_NULL_HANDLE;
     frame.previewDeformedMemory = VK_NULL_HANDLE;
     frame.previewDeformedCapacity = 0;
@@ -3565,15 +3566,25 @@ void VulkanDevice::recordPreviewDeform(VkCommandBuffer command, Frame& frame) {
         {frame.previewMorphWeightBuffer, 0, previewMorphWeightSize_},
         {frame.previewDeformedBuffer, 0, frame.previewDeformedCapacity},
     }};
-    std::array<VkWriteDescriptorSet, 5> writes{};
-    for (std::uint32_t i = 0; i < writes.size(); ++i)
-        writes[i] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                     .dstSet = frame.previewDeformDescriptor,
-                     .dstBinding = i,
-                     .descriptorCount = 1,
-                     .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                     .pBufferInfo = &buffers[i]};
-    vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    const bool bindingsChanged =
+        !frame.previewDeformBindingsValid ||
+        !std::equal(buffers.begin(), buffers.end(), frame.previewDeformBindings.begin(),
+                    [](const VkDescriptorBufferInfo& left, const VkDescriptorBufferInfo& right) {
+                        return left.buffer != right.buffer || left.offset != right.offset || left.range != right.range;
+                    });
+    if (bindingsChanged) {
+        std::array<VkWriteDescriptorSet, 5> writes{};
+        for (std::uint32_t i = 0; i < writes.size(); ++i)
+            writes[i] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                         .dstSet = frame.previewDeformDescriptor,
+                         .dstBinding = i,
+                         .descriptorCount = 1,
+                         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                         .pBufferInfo = &buffers[i]};
+        vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        frame.previewDeformBindings = buffers;
+        frame.previewDeformBindingsValid = true;
+    }
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, previewDeformPipeline_);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, previewDeformPipelineLayout_, 0, 1,
                             &frame.previewDeformDescriptor, 0, nullptr);
