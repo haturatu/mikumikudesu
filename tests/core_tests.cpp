@@ -149,11 +149,48 @@ bool checkVmdMotionImports(const std::filesystem::path& modelPath) {
     return ok;
 }
 
+bool checkImpulseMorphTimeStep() {
+#if LIBMMD_HAS_BULLET
+    dayo::core::PmxModel model;
+    model.bones.resize(1);
+    model.bones[0].name = "impulse bone";
+    dayo::core::PmxRigidBody body;
+    body.bone = 0;
+    body.size = {0.5F, 0.5F, 0.5F};
+    body.mass = 2.0F;
+    body.mode = 1;
+    model.rigidBodies.push_back(body);
+    dayo::core::PmxMorph morph;
+    morph.name = "impulse";
+    morph.type = 10;
+    dayo::core::PmxMorphOffset offset;
+    offset.index = 0;
+    offset.vector3 = {6.0F, 0.0F, 0.0F};
+    morph.offsets.push_back(offset);
+    model.morphs.push_back(morph);
+    const std::array<mmd::MorphOverride, 1> overrides{{{.index = 0, .weight = 1.0F}}};
+    for (const float delta : {0.0F, 1.0F / 30.0F, 1.0F / 60.0F, 1.0F / 120.0F}) {
+        dayo::core::MmdPhysics physics(model);
+        physics.setGravity({});
+        physics.setFloorCollision(false);
+        dayo::core::MmdAnimator animator(model);
+        animator.setPhysics(&physics);
+        static_cast<void>(animator.evaluate(0.0F, delta, false, overrides));
+        // A single 6-unit impulse on a 2-unit mass gives velocity 3, including
+        // a pose evaluation with no elapsed simulation time.
+        if (!check(std::abs(physics.linearVelocity(0)[0] - 3.0F) < 1e-4F,
+                   "PMX impulse morph applies the same momentum at every playback time step"))
+            return false;
+    }
+#endif
+    return true;
+}
+
 } // namespace
 
 int main() {
     using dayo::core::AssetKind;
-    bool ok = true;
+    bool ok = checkImpulseMorphTimeStep();
     {
         const dayo::core::PreviewNormalization normalization{{1.0F, 2.0F, 3.0F}, 2.0F};
         dayo::core::PmxVertex source;
@@ -1185,6 +1222,7 @@ int main() {
     }
 
     const auto path = std::filesystem::temp_directory_path() / "mikumikudesu-core-test.pmx";
+    std::streampos firstVertexPosition;
     {
         std::ofstream output(path, std::ios::binary);
         output.write("PMX ", 4);
@@ -1197,6 +1235,7 @@ int main() {
         appendText(output, "comment");
         appendText(output, "comment en");
         append(output, static_cast<std::int32_t>(3));
+        firstVertexPosition = output.tellp();
         for (std::int32_t vertex = 0; vertex < 3; ++vertex) {
             const std::array<float, 3> position{static_cast<float>(vertex), static_cast<float>(vertex & 1), 0.0F};
             const std::array<float, 3> normal{0.0F, 0.0F, 1.0F};
@@ -1270,6 +1309,30 @@ int main() {
         ok &= check(mesh.vertices.size() == 3, "PMX vertex loading");
         ok &= check(mesh.indices.size() == 3 && mesh.indices[2] == 2, "PMX index loading");
         const auto model = dayo::core::loadPmxModel(path);
+        const auto writeFirstPosition = [&](float value) {
+            std::fstream output(path, std::ios::binary | std::ios::in | std::ios::out);
+            output.seekp(firstVertexPosition);
+            output.write(reinterpret_cast<const char*>(&value), sizeof(value));
+            if (!output)
+                throw std::runtime_error("cannot update PMX vertex regression fixture");
+        };
+        for (const float value : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(),
+                                  -std::numeric_limits<float>::infinity()}) {
+            writeFirstPosition(value);
+            for (const bool meshOnly : {false, true}) {
+                bool rejected = false;
+                try {
+                    if (meshOnly)
+                        static_cast<void>(dayo::core::loadPmxMesh(path));
+                    else
+                        static_cast<void>(dayo::core::loadPmxModel(path));
+                } catch (const std::runtime_error& error) {
+                    rejected = std::string_view(error.what()) == "non-finite PMX position";
+                }
+                ok &= check(rejected, "PMX model and preview mesh reject non-finite vertex positions");
+            }
+        }
+        writeFirstPosition(0.0F);
         ok &= checkVmdMotionImports(path);
         ok &= check(model.materials.size() == 1 && model.bones.empty(), "complete PMX sections");
         ok &= check(model.rigidBodies.size() == 1 && model.rigidBodies[0].physicsEnabled &&
