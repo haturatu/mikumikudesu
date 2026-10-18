@@ -13,7 +13,7 @@ git clone --recurse-submodules https://github.com/haturatu/mikumikudesu.git
 cd mikumikudesu
 make setup
 make
-make run ARGS="--asset /path/to/model.pmx"
+./build/linux-debug/mikumikudesu --asset /path/to/model.pmx
 ```
 
 `make setup` は固定した MikuMikuDayo 1.30 の配布物をダウンロードして検証します。`make` だけでは取得しません。モデルとモーションは利用条件を確認したうえで別途用意してください。
