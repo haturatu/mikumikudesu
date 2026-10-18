@@ -1,6 +1,7 @@
 #include "core/image_hdr.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -180,10 +181,24 @@ ImageData rgba8ToHalf(const ImageRgba8& image, ColorSpace space) {
     if (image.pixels.size() > kImageAllocationBudget || outputBytes > kImageAllocationBudget - image.pixels.size())
         throw std::runtime_error("image allocation budget exceeded for RGBA8 to half conversion");
     result.bytes.resize(outputBytes);
+    // RGBA8 is sRGB; only the RGB channels are transfer-function encoded.
+    // Precompute the 256 possible values once instead of doing pow per sample.
+    static const auto linearLut = [] {
+        std::array<std::uint16_t, 256> entries{};
+        for (std::size_t i = 0; i < entries.size(); ++i)
+            entries[i] = floatToHalf(srgbToLinear(static_cast<float>(i) / 255.0F));
+        return entries;
+    }();
+    static const auto alphaLut = [] {
+        std::array<std::uint16_t, 256> entries{};
+        for (std::size_t i = 0; i < entries.size(); ++i)
+            entries[i] = floatToHalf(static_cast<float>(i) / 255.0F);
+        return entries;
+    }();
     for (std::size_t index = 0; index < pixels; ++index) {
         for (std::size_t channel = 0; channel < 4; ++channel) {
-            const float value = static_cast<float>(image.pixels[index * 4U + channel]) / 255.0F;
-            const auto bits = floatToHalf(value);
+            const auto input = image.pixels[index * 4U + channel];
+            const auto bits = channel < 3U && space == ColorSpace::linear ? linearLut[input] : alphaLut[input];
             std::memcpy(result.bytes.data() + (index * 4U + channel) * sizeof(bits), &bits, sizeof(bits));
         }
     }

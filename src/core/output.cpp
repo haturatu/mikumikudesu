@@ -18,6 +18,7 @@
 #include <fstream>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <random>
 #include <stdexcept>
@@ -183,26 +184,31 @@ void writeFrame(const std::filesystem::path& path, const ImageRgba8& image, Outp
     if (format == OutputFormat::exr) {
         if (image.width == 0 || image.height == 0 || image.pixels.empty())
             throw std::invalid_argument("cannot encode an empty EXR frame");
-        ImageData source{
-            .width = image.width,
-            .height = image.height,
-            .channels = 4,
-            .type = PixelType::unorm8,
-            .space = ColorSpace::srgb,
-            .bytes = image.pixels,
-        };
-        writeFrame(path, convertImage(source, PixelType::half16, ColorSpace::linear));
+        // Convert directly from RGBA8; avoid copying the full source frame first.
+        writeFrame(path, rgba8ToHalf(image, ColorSpace::linear));
         return;
     }
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     if (!output)
         throw std::runtime_error("cannot write output frame: " + path.string());
     output << "P6\n" << image.width << ' ' << image.height << "\n255\n";
-    for (std::size_t index = 0; index + 3 < image.pixels.size(); index += 4) {
-        output.put(static_cast<char>(image.pixels[index]));
-        output.put(static_cast<char>(image.pixels[index + 1]));
-        output.put(static_cast<char>(image.pixels[index + 2]));
+    const auto pixelCount = static_cast<std::size_t>(image.width) * image.height;
+    if (image.width == 0 || image.height == 0 || pixelCount > std::numeric_limits<std::size_t>::max() / 4U ||
+        image.pixels.size() < pixelCount * 4U)
+        throw std::invalid_argument("truncated RGBA8 image for PPM");
+    std::vector<char> row(static_cast<std::size_t>(image.width) * 3U);
+    for (std::uint32_t y = 0; y < image.height; ++y) {
+        for (std::uint32_t x = 0; x < image.width; ++x) {
+            const auto source = (static_cast<std::size_t>(y) * image.width + x) * 4U;
+            const auto destination = static_cast<std::size_t>(x) * 3U;
+            row[destination] = static_cast<char>(image.pixels[source]);
+            row[destination + 1U] = static_cast<char>(image.pixels[source + 1U]);
+            row[destination + 2U] = static_cast<char>(image.pixels[source + 2U]);
+        }
+        output.write(row.data(), static_cast<std::streamsize>(row.size()));
     }
+    if (!output)
+        throw std::runtime_error("cannot finish writing PPM frame: " + path.string());
 }
 
 void writeFrame(const std::filesystem::path& path, const ImageData& image) {
@@ -212,30 +218,31 @@ void writeFrame(const std::filesystem::path& path, const ImageData& image) {
         image.height > static_cast<std::uint32_t>(std::numeric_limits<int>::max()))
         throw std::invalid_argument("EXR dimensions exceed the encoder limit");
 #if DAYO_HAS_OPENEXR
-    const ImageData linear = image.type == PixelType::half16 && image.space == ColorSpace::linear
-                                 ? image
-                                 : convertImage(image, PixelType::half16, ColorSpace::linear);
-    const auto pixels = static_cast<std::size_t>(linear.width) * linear.height;
-    if (linear.bytes.size() < pixels * 4U * sizeof(std::uint16_t))
+    std::optional<ImageData> converted;
+    const ImageData* linear = &image;
+    if (image.type != PixelType::half16 || image.space != ColorSpace::linear) {
+        converted.emplace(convertImage(image, PixelType::half16, ColorSpace::linear));
+        linear = &*converted;
+    }
+    const auto pixels = static_cast<std::size_t>(linear->width) * linear->height;
+    if (pixels > std::numeric_limits<std::size_t>::max() / (4U * sizeof(std::uint16_t)) ||
+        linear->bytes.size() < pixels * 4U * sizeof(std::uint16_t))
         throw std::invalid_argument("truncated RGBA half image for EXR");
+    static_assert(sizeof(Imf::Rgba) == 4U * sizeof(std::uint16_t));
     Imf::Array2D<Imf::Rgba> outputPixels;
-    outputPixels.resizeErase(static_cast<int>(linear.height), static_cast<int>(linear.width));
-    for (std::uint32_t y = 0; y < linear.height; ++y) {
-        for (std::uint32_t x = 0; x < linear.width; ++x) {
-            Imf::Rgba pixel;
-            std::memcpy(&pixel,
-                        linear.bytes.data() +
-                            (static_cast<std::size_t>(y) * linear.width + x) * 4U * sizeof(std::uint16_t),
-                        sizeof(pixel));
-            outputPixels[static_cast<int>(y)][static_cast<int>(x)] = pixel;
-        }
+    outputPixels.resizeErase(static_cast<int>(linear->height), static_cast<int>(linear->width));
+    const auto rowBytes = static_cast<std::size_t>(linear->width) * sizeof(Imf::Rgba);
+    for (std::uint32_t y = 0; y < linear->height; ++y) {
+        auto* destination = &outputPixels[static_cast<int>(y)][0];
+        const auto* source = linear->bytes.data() + static_cast<std::size_t>(y) * rowBytes;
+        std::memcpy(destination, source, rowBytes);
     }
     if (!path.parent_path().empty())
         std::filesystem::create_directories(path.parent_path());
-    Imf::RgbaOutputFile output(path.string().c_str(), static_cast<int>(linear.width), static_cast<int>(linear.height),
+    Imf::RgbaOutputFile output(path.string().c_str(), static_cast<int>(linear->width), static_cast<int>(linear->height),
                                Imf::WRITE_RGBA);
-    output.setFrameBuffer(&outputPixels[0][0], 1, static_cast<std::size_t>(linear.width));
-    output.writePixels(static_cast<int>(linear.height));
+    output.setFrameBuffer(&outputPixels[0][0], 1, static_cast<std::size_t>(linear->width));
+    output.writePixels(static_cast<int>(linear->height));
 #else
     static_cast<void>(path);
     static_cast<void>(image);

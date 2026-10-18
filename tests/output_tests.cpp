@@ -1,10 +1,13 @@
 #include "core/output.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <string>
 #include <string_view>
 
 namespace {
@@ -44,6 +47,22 @@ int main() {
 #endif
     }
     std::filesystem::remove(path, cleanupError);
+
+    // Binary PPM must omit alpha and preserve embedded zero bytes.
+    const auto ppmPath = std::filesystem::temp_directory_path() / "mikumikudesu-output-test.ppm";
+    dayo::core::writeFrame(ppmPath, image, dayo::core::OutputFormat::ppm);
+    {
+        std::ifstream ppm(ppmPath, std::ios::binary);
+        const std::string data{std::istreambuf_iterator<char>{ppm}, std::istreambuf_iterator<char>{}};
+        const std::string header = "P6\n2 1\n255\n";
+        constexpr char full = static_cast<char>(255);
+        constexpr char medium = static_cast<char>(128);
+        const std::array<char, 6> expected{full, 0, 0, 0, medium, full};
+        std::string expectedData = header;
+        expectedData.append(expected.data(), expected.size());
+        ok &= check(data == expectedData, "PPM preserves binary RGB content without alpha");
+    }
+    std::filesystem::remove(ppmPath, cleanupError);
 
     const auto queueDirectory = std::filesystem::temp_directory_path() / "mikumikudesu-output-queue-test";
     std::filesystem::remove_all(queueDirectory, cleanupError);
