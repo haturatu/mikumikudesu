@@ -46,7 +46,7 @@ std::array<float, 3> blackbodyRgb(float kelvin) noexcept {
     float blue = 255.0F;
     if (temperature > 66.0F) {
         red = 329.6987F * std::pow(temperature - 60.0F, -0.13320476F);
-        green = 288.12216F * std::pow(temperature - 60.0F, 0.07551485F);
+        green = 288.12216F * std::pow(temperature - 60.0F, -0.07551485F);
         blue = 255.0F;
     } else {
         green = 99.4708F * std::log(temperature) - 161.11957F;
