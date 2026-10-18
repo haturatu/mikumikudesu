@@ -92,11 +92,12 @@ void EditorOperationQueue::discard() noexcept {
 
 UndoTransaction::UndoTransaction(core::Scene& scene, core::CommandHistory& history, core::ModelId target, bool global,
                                  std::string label)
-    : scene_(&scene), history_(&history), target_(target), global_(global), label_(std::move(label)) {
-    const auto* current = scene_->motion(target_, global_);
-    before_ = current != nullptr ? *current : core::VmdMotion{};
-    current_ = *before_;
-}
+    : scene_(&scene), history_(&history), target_(target), global_(global), label_(std::move(label)),
+      before_([&scene, target, global] {
+          const auto* current = scene.motion(target, global);
+          return current != nullptr ? *current : core::VmdMotion{};
+      }()),
+      current_(*before_) {}
 
 UndoTransaction::~UndoTransaction() {
     if (active_)
