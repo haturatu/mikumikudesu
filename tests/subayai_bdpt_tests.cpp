@@ -1564,6 +1564,12 @@ int main() {
             check(accumulation.persistentReady() && accumulation.spectralLutReady() && accumulation.blackbodyLutReady(),
                   "BDPT spectral/blackbody LUTs ready");
         ok &= check(accumulation.volumeCount() == BdptAccumulation::kVolumeSlots, "BDPT keeps 8 volume slots");
+        const auto& blackbody = accumulation.blackbodyLut();
+        const float expectedGreenAt15000K = 288.12216F * std::pow(90.0F, -0.07551485F) / 255.0F;
+        ok &= check(blackbody.size() == 256U * 3U &&
+                        std::abs(blackbody[(256U - 1U) * 3U + 1U] - expectedGreenAt15000K) < 0.0001F &&
+                        blackbody[(256U - 1U) * 3U + 1U] < 1.0F,
+                    "BDPT high-temperature green channel follows the blackbody approximation");
         bool volumesValid = true;
         for (std::size_t index = 0; index < accumulation.volumeCount(); ++index) {
             volumesValid &= accumulation.volume(index).valid;
