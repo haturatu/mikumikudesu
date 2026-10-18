@@ -1,148 +1,320 @@
 # mikumikudesu
 
-Windows環境が無いのでただの `GNU/Linux` + AMD 環境でどうしても動かしたい為だけのプロジェクト。
-  
-MikuMikuDayo 1.30を初回セットアップ時に取得して使用するLinux向けネイティブ実行系です。
-Linux側を`SDL3 + Vulkan 1.3 + HLSL/SPIR-V`で構成しています。
+mikumikudesu は、GNU/Linux 上で MMD のモデルとモーションを表示・編集するためのネイティブアプリケーションです。SDL3、Vulkan 1.3、ImGui を使用し、PMX モデルの表示、VMD の編集、カメラ・ライトの操作、音声・動画の出力に対応します。
 
-本アプリのバージョンは`0.1.0`、upstream互換対象は`1.30`として独立して管理します。
-1.30のassetを基準にしていますが、全FX・solverの完全互換を意味しません。
-対応段階と残件は[1.30互換性](docs/upstream-1.30.md)を参照してください。
+MikuMikuDayo 1.30 を互換対象としており、必要な配布物はセットアップ時に取得します。アプリケーションのバージョンは **0.1.0**、互換対象のバージョンは **1.30** として別々に管理しています。
 
-## Viewportとカメラ・ライトの編集
-
-Viewportの画像上で左ドラッグすると回転、右ドラッグすると平行移動、ホイールでズームします。
-右クリックのメニュー、または画像上部の`Reset view`で視点をリセットできます。
-カメラVMDがある場合、`Follow VMD camera`がONの間は手動操作をロックします。
-OFFにすると現在の視点と画角を維持して操作でき、リセットでもロックを解除します。
-Pan・Zoomの操作量はMMD座標に換算するため、モデルの正規化スケールに依存しません。
-
-画像上部の`Camera` / `Light`を押すと、現在のワークスペースのInspectorで編集できます。
-Inspector上部の`Selection` / `Camera` / `Light`でも切り替えられます。
-編集欄は表示中のカメラ・ライトの値を取得し、変更は即座にプレビューへ反映します。
-`Register camera key` / `Register light key`で現在フレームに保存し、`Ctrl+Z`で登録を取り消せます。
-
-設定を再利用するには、キーを登録してからInspectorの`VMD file`に保存先を指定し、
-`Export camera VMD` / `Export light VMD`を押します。読み込むときは同じ欄にファイルを指定して
-`Import camera keys` / `Import light keys`を押します。読み込みは対象トラックを置き換え、
-ほかのトラックを保持します。登録前のプレビュー変更はエクスポートに含まれません。
-
-## キーフレームの編集
-
-上部の`Animation`へ切り替えると、タイムラインとInspectorを並べて編集できます。
-トラック名の検索には日本語名と、モデルに設定されている英語名を使えます。種別の欄でボーン・
-モーフ・カメラなどを絞り込み、ダイヤ形のキーをクリックして選択します。選択キーは金色になります。
-
-キーをドラッグすると移動先が表示され、離すと1回のUndo単位で確定します。`Esc`でキャンセル、
-`Ctrl`クリックで選択の追加・解除、`Shift`クリックで同じトラックの範囲選択、空白からのドラッグで
-矩形選択ができます。`Ctrl+A`は検索条件に合うキーをすべて選択します。`-1f` / `+1f`または左右キーで
-1フレーム、`Shift`+左右キーで10フレーム移動できます。
-
-Inspectorには選択したキーの現在値が表示されます。フレームや位置、回転、モーフの重みなどを変更し、
-`Apply key`で反映します。複数選択では`Offset (frames)`に移動量を入力し、`Move selected keys`で
-まとめて移動できます。`Ctrl+Z` / `Ctrl+Y`で取り消し・やり直し、`Clear key selection`でモデルの設定へ戻ります。
-
-目盛りのクリック・ドラッグで再生位置を指定できます。`Ctrl`+ホイールでポインターを中心にズーム、
-中ボタンドラッグまたは`Shift`+ホイールで横移動、`Fit`で全体表示に戻ります。`Frame`欄と
-`Prev key` / `Next key`でも移動できます。`Playback / media`に再生速度・ループ・音声設定、
-`More...`に補間モードとVMDの書き出しをまとめています。
-
-画面の比較と検証内容は[UI/UX調査記録](docs/ui-ux/keyframe-editor.md)を参照してください。
-
-## 制約
-
-PreviewはLinux/AMDで実動します。SubayaiとBDPTについては、`.fxdayo`のraygen/miss/hit-groupを
-保持するFX契約、DXC→SPIR-V shader compiler、typed Vulkan resource/descriptor/pipeline/SBT、
-deform→BLAS/TLAS、environment/light GPU resource、native runtime、OpenEXR encoderまでを
-段階的に実装しています。
-
-Applicationのswapchain、viewport、offscreen、画像連番出力はnative rendererの出力bridgeに接続されています。
-ただし`nativeSubayai`と`nativeBdpt`は常に有効になるわけではありません。起動時にGPU capability、
-FX graphが要求するfeature、runtimeの初期化結果を確認し、いずれかが不足している場合は理由を記録して
-Previewへ戻します。要求featureはrenderer名だけでなく、各グラフの実際の宣言から判定されます。
-そのためnative pathが接続済みであることと、すべてのGPU・すべての`.fxdayo`でnative描画できることは
-別の契約です。対応外の環境では従来どおりPreviewを使用します。
-
-Subayaiの材質注釈はコア層から専用GPU ABIへリンクされ、標準の`hair.txt`に含まれる異方性、IOR、
-AutoNormalをPreview ABIと分離して保持します。Preview側のPBRプリセットはPMX材質ごとに指定します。
-
-### MP4を音声として使う
-
-MP4をD&Dすると、音声だけを読み込み、波形を表示してタイムラインと同期再生します。
-映像decoderと背景フレームのGPU転送は、背景動画を明示的に選ぶまで実行しません。
-音声を含まないMP4は、音声読み込みエラーとして表示します。
-
-読み込んだMP4の映像は、上部の「Media」メニュー、またはTimelineの「Media」欄にある
-「Show MP4 video」でON/OFFを切り替えます。モデル選択中も操作できます。
-同じ欄でVolume・Audio offsetを変更でき、操作エラーも表示されます。
-別の背景動画を指定する場合はSceneのInspectorで「Video file」を入力し、
-「Apply video file」を押します。OFF中は動画のdecode・GPU転送を止め、
-読み込んだ動画とタイムラインは保持します。再度ONにすると現在時刻のフレームへseekします。
-OFF時は読み込んだ背景画像があれば画像、なければ白い背景へ戻ります。
-背景動画と音声は独立しているため、別の音源に差し替えても指定済みの背景を維持します。
-音声と背景の指定はプロジェクトに保存され、音声はseek・ループ・再読み込み時に
-タイムラインの位置とAudio offsetから再生位置を求めます。再生速度の変更は音声にも反映します（ピッチも変化します）。
-
-### Previewの画質設定
-
-PreviewはRT機能を使わず、方向光の1024²/2048²シャドウマップ、comparison PCF、GGX直接反射、SH拡散IBL、
-GGXでプリフィルタした環境キューブ、圧縮法線プリパス、scalar SSAO、RGBA16F合成と
-ACESトーンマップを使用します。BRDF積分にはLUTの代わりに近似式を使います。
-HDRIのプリフィルタは画像の読み込みまたは更新時に計算します。GPUへ送る照明HDRIは
-最大2048×1024、環境キューブは最大512²で、元画像を線形色の面積平均で縮小します。
-環境用RGBA16Fテクスチャ3枚の合計は最大約44 MiBです（デコード時のCPUメモリやstagingは別）。
-SHは元画像から投影し、EnvironmentDesc::exposureはSHと照明画像に同じRGB倍率を適用します。
-
-SceneをInspectorで選択すると、背景画像とは別に2:1のequirectangular HDRIを照明に指定できます。
-HDRIを指定しない場合、2:1の背景画像を照明に使用します。モデルのInspectorでは材質ごとに
-PMX、Skin、Hair、Cloth、Metal、Plastic、Glassを選べます。これらの選択はプロジェクトに保存されます。
-
-画像連番出力ではPreview render scaleを1x、1.33x、2xから選び、Samplesを増やすと
-Haltonジッタを用いてRGBA16Fの結果を平均します。平均後に出力解像度へ縮小し、ACESで表示用画像へ
-変換します。APU profileではhardware PCF 1 tap、highでは3×3、静止画出力では7×7 comparison PCFを使用します。
-
-`--preview-quality auto|apu|high`で画質を選べます。既定のautoはintegrated GPUとmemory budgetを考慮します。
-Morph/skinningはframeごとのcompute結果を共有し、動画出力は3本のreadback ringを使います。
-Present mode、experimental async compute、HDRI cacheと測定方法は[Preview performance](docs/preview-performance.md)を参照してください。
-
-画像連番出力はOpenEXRが利用できるbuildではEXRをエンコードし、利用できない場合は従来どおり
-PNG/PPMを使います。Subayai/BDPTが選択されている場合は、viewport、offscreen render、画像連番出力が
-同じnative frame recorderの結果を使用します。native runtimeを利用できない場合は、renderer選択時に
-Previewへフォールバックします。
-`.vmdayo`は本家1.30ソースのv3レイアウト（header、model dictionary、metadata、全track、
-axis別MMD/Catmull-Rom方式）を実装しています。単体ファイルの二重headerと`.dayo`内の単一headerを
-区別し、カメラsubsetとモデル別subsetを双方向変換します。未知の入力はopaque payloadとして保持します。
-本家Windowsバイナリが生成したfixtureによる相互運用テストは、fixtureを同梱していないため未実施です。
+**注意:** すべてのエフェクトや描画結果が本家と一致するわけではありません。通常の作業には Preview レンダラを使用してください。Subayai / BDPT は GPU と FX の条件を満たす場合にのみ有効になります。詳細は[互換性と制限事項](docs/upstream-1.30.md)を参照してください。
 
 ## 必要環境
 
-- Linux x86_64
-- CMake 3.25以上、Ninja、C++20コンパイラ
-- argparse 3.2（通常presetはCMakeが取得、system-onlyはCONFIG packageが必要）
-- SDL 3.2以上
-- Vulkan loaderとVulkan 1.3対応ドライバ
-- glslc、またはDXC
-- Preview: Vulkan swapchain対応GPU
-- RT実装の開発・検証: RDNA2/RX 6000以降など、起動時に表示するRT featureを満たすGPU
+| 項目 | 要件 |
+| --- | --- |
+| OS | Linux x86_64 |
+| ビルド | CMake 3.25 以降、Ninja、C++20 対応コンパイラ |
+| GUI | SDL 3.2 以降 |
+| 描画 | Vulkan loader、Vulkan 1.3 対応ドライバ、swapchain 対応 GPU |
+| シェーダー | \`glslc\` または DXC |
+| セットアップ | Git、Python 3 |
 
-AMDではMesa RADVを推奨します。BDPTを将来有効化する構成ではRAM 16GB、VRAM 8GB以上を
-推奨します。
+AMD GPU では Mesa RADV を推奨します。Preview の利用にハードウェアレイトレーシングは不要です。Subayai / BDPT の検証には、要求される Vulkan RT feature を備えた GPU が必要です。BDPT を使用する構成では RAM 16 GiB、VRAM 8 GiB 以上を推奨します。
 
-### Linux release tuning
+### Arch Linux / Artix Linux
 
-ローカルCPU向けのISA最適化は既定で無効です。対象マシン専用のreleaseを作る場合は、
-`cmake --preset linux-release-native` を使えます。LLVM BOLTは通常のPGO収集後に、例えば
-`-DDAYO_ENABLE_BOLT=ON -DDAYO_BOLT_PROFILE=/path/to/perf.fdata` を付けて有効化します。
-BOLTのプロファイルは、対象バイナリを `perf record` で実行し、`perf2bolt` で変換して作成します。
-例えば `perf2bolt ./build/linux-release-native/mikumikudesu -p perf.data -o perf.fdata`
-のように生成します。
-BOLT版は通常の実行ファイルとは別に `mikumikudesu.bolt` として生成され、BOLT有効時のinstallだけが
-それを `mikumikudesu` として配置します。BOLTは対象環境専用の最終最適化として扱ってください。
-プロファイル取得時とBOLT適用時は同じ `build/linux-release-native/mikumikudesu` を対象にし、
-`--emit-relocs` を含む同じlink条件を使ってください。初回はBOLTを無効にしてrelocationを出力し、
-プロファイルを取得してから、同じbuild treeでBOLTを有効にして再ビルドします。
+AMD GPU でのパッケージ導入例:
 
-```sh
+\`\`\`sh
+sudo pacman -S --needed \
+  git python base-devel cmake ninja sdl3 ffmpeg bullet nlohmann-json \
+  vulkan-headers vulkan-icd-loader vulkan-radeon vulkan-tools \
+  vulkan-validation-layers shaderc
+\`\`\`
+
+AMD 以外の GPU では、使用する GPU に対応する Vulkan ドライバを導入してください。通常の CMake preset は argparse、stb、Dear ImGui、Jsonnet などの一部の依存関係を必要に応じて取得します。外部取得を禁止する \`linux-system-only\` preset では、開発用パッケージを別途揃える必要があります。
+
+ドライバの認識状況は \`vulkaninfo --summary\` で確認できます。
+
+## ビルド
+
+### ソースの取得と初期設定
+
+\`\`\`sh
+git clone --recurse-submodules https://github.com/haturatu/mikumikudesu.git
+cd mikumikudesu
+make setup
+\`\`\`
+
+\`make setup\` は \`external/libmmd\` を初期化し、\`deps/mikumikudayo.lock\` に固定された MikuMikuDayo 1.30 の Release ZIP を取得・検証して \`MikuMikuDayo/\` に展開します。ZIP は \`.cache/mikumikudayo/\` から再利用できます。すでに clone した作業ツリーでは、\`git submodule update --init --recursive\` で submodule を更新できます。
+
+**注記:** \`make\` および \`make build\` は MikuMikuDayo の配布物を取得しません。初回は先に \`make setup\` を実行してください。
+
+### Debug ビルド
+
+\`\`\`sh
+make
+\`\`\`
+
+\`make\` は \`linux-debug\` preset で CMake の設定とビルドを実行します。生成される実行ファイルは \`build/linux-debug/mikumikudesu\` です。
+
+ビルド済みの実行ファイルは、Makefile を経由せずに起動できます。
+
+\`\`\`sh
+./build/linux-debug/mikumikudesu
+./build/linux-debug/mikumikudesu --asset /path/to/model.pmx
+\`\`\`
+
+\`/path/to/model.pmx\` は実際のモデルファイルのパスに置き換えてください。
+
+### Release ビルドとテスト
+
+\`\`\`sh
+make release
+./build/linux-release/mikumikudesu --asset /path/to/model.pmx
+
+make test
+\`\`\`
+
+\`make release\` は \`linux-release\` preset、\`make test\` は \`setup\` とビルドの後に CTest を実行します。\`make help\` でほかのターゲットを確認できます。
+
+CMake を直接使う場合は、次のようにビルドできます。
+
+\`\`\`sh
+cmake --preset linux-debug
+cmake --build --preset linux-debug
+ctest --preset linux-debug --output-on-failure
+\`\`\`
+
+\`linux-system-only\` は依存関係の自動取得と ImGui を無効化します。通常の GUI ビルドとは機能が異なります。
+
+\`\`\`sh
+cmake --preset linux-system-only
+cmake --build --preset linux-system-only
+ctest --preset linux-system-only --output-on-failure
+\`\`\`
+
+## モデルとモーションの読み込み
+
+\`--asset\` には、モデル、モーション、画像、音声などの入力ファイルを指定します。同じオプションを複数回指定すると、複数のファイルを読み込めます。
+
+\`\`\`sh
+./build/linux-debug/mikumikudesu \
+  --asset /path/to/model.pmx \
+  --asset /path/to/dance.vmd \
+  --asset /path/to/background.png
+\`\`\`
+
+GUI へのドラッグ＆ドロップでもファイルを読み込めます。
+
+同じモデルに VMD を追加で読み込むと、既存のキーを残して新しいキーを取り込みます。同じボーン名またはモーフ名の同じフレームにキーが重なる場合は、後から読み込んだ値が優先されます。ダンス用の VMD に表情用の VMD を追加する場合にも使用できます。
+
+### サンプルモデル
+
+動作確認用のモデルは、配布元から取得して \`assets/models/\` 以下に配置できます。モデル本体の再配布条件は、各配布物の README に従ってください。
+
+| モデル | ローカルでのパス | 配布元 |
+| --- | --- | --- |
+| Tda 式初音ミク デフォ服 ver. | \`assets/models/miku/model/miku.pmx\` | [BowlRoll #16344](https://bowlroll.net/file/16344) |
+| Tda 式重音テト TypeS | \`assets/models/teto/model/teto.pmx\` | [BowlRoll #11308](https://bowlroll.net/file/11308) |
+
+上記はローカルに取得・展開した場合のパスであり、リポジトリにモデルファイルが同梱されていることを意味しません。重音テトを使った作品の公開・改変時には[公式ガイドライン](https://kasaneteto.jp/guidelines/)も確認してください。
+
+## GUI の操作
+
+### Viewport
+
+| 操作 | 動作 |
+| --- | --- |
+| 左ドラッグ | カメラの回転 |
+| 右ドラッグ | カメラの平行移動 |
+| マウスホイール | ズーム |
+| \`Reset view\` または右クリックメニュー | 視点のリセット |
+
+カメラ VMD の読み込み時に \`Follow VMD camera\` が有効だと、手動のカメラ操作はロックされます。操作するには無効にしてください。無効化すると現在の視点と画角を保ったまま操作できます。\`Reset view\` は追従によるロックも解除します。平行移動とズームの操作量はモデルの正規化スケールを考慮します。
+
+### カメラとライトの編集
+
+Viewport 上部の \`Camera\` または \`Light\` を選ぶと、Inspector に対応する編集欄が表示されます。Inspector の \`Selection\` / \`Camera\` / \`Light\` から切り替えることもできます。値の変更はプレビューへ即座に反映されます。
+
+変更を VMD に書き出すには、次の順番で操作します。
+
+1. \`Register camera key\` または \`Register light key\` で、現在のフレームにキーを登録します。
+2. Inspector の \`VMD file\` に保存先のパスを指定します。
+3. \`Export camera VMD\` または \`Export light VMD\` を選択します。
+
+キー登録前のプレビュー変更は、エクスポートされません。読み込む場合は \`VMD file\` を指定し、\`Import camera keys\` または \`Import light keys\` を選択します。読み込みは対象のトラックを置き換え、ほかのトラックは保持します。キー登録は \`Ctrl+Z\` で取り消せます。
+
+### キーフレームの編集
+
+上部の \`Animation\` に切り替えると、タイムラインと Inspector を並べて編集できます。検索は、モデルが持つ日本語名と英語名に対応します。トラックの種類でボーン・モーフ・カメラなどを絞り込めます。
+
+| 操作 | 動作 |
+| --- | --- |
+| キーをクリック | 選択する（選択キーは金色） |
+| キーをドラッグ | フレーム位置を移動する |
+| \`Ctrl\` + クリック | 選択の追加・解除 |
+| \`Shift\` + クリック | 同じトラックの範囲選択 |
+| 空白からドラッグ | 矩形選択 |
+| \`Ctrl+A\` | 検索・絞り込みに一致するキーを全選択 |
+| \`Esc\` | キーのドラッグをキャンセル |
+| 左右キー / \`-1f\` / \`+1f\` | 1 フレーム移動 |
+| \`Shift\` + 左右キー | 10 フレーム移動 |
+| \`Ctrl+Z\` / \`Ctrl+Y\` | 取り消し・やり直し |
+
+選択したキーの値は Inspector で変更し、\`Apply key\` で確定します。複数選択時は \`Offset (frames)\` と \`Move selected keys\` でまとめて移動できます。\`Clear key selection\` でキーの選択を解除できます。
+
+目盛りのクリック・ドラッグで再生位置を指定できます。\`Ctrl\` + ホイールでズーム、中ボタンドラッグまたは \`Shift\` + ホイールで横スクロールし、\`Fit\` で表示範囲を戻します。\`Prev key\` / \`Next key\` でもキー間を移動できます。実際の操作と検証内容は[キーフレームエディタの検証記録](docs/ui-ux/keyframe-editor.md)を参照してください。
+
+### 音声と背景動画
+
+MP4 をドラッグ＆ドロップすると、初期状態では音声を読み込み、波形を表示してタイムラインに同期します。映像は \`Media\` メニューまたはタイムラインの \`Media\` にある \`Show MP4 video\` から切り替えます。非表示にすると映像のデコードと GPU 転送を停止しますが、読み込んだファイルと再生位置は保持します。
+
+背景動画を別に指定するには、Scene の Inspector の \`Video file\` にパスを入力し、\`Apply video file\` を選択します。\`Volume\` と \`Audio offset\` で音量と音声の時間ずれを調整できます。再生速度の変更は音声にも適用され、ピッチも変わります。音声を含まない MP4 は、音声読み込みエラーになります。
+
+### 表示言語
+
+上部の \`Language / 言語 / 语言 / Язык\` で英語、日本語、簡体字中国語、ロシア語を選択できます。初回は OS の優先言語を使用し、未対応なら英語を使用します。
+
+選択は通常 \`~/.local/share/haturatu/mikumikudesu/language.txt\` に保存されます（実際の場所は SDL のユーザーデータディレクトリに依存します）。モデル名、ボーン名、モーフ名、ファイルパスは元のデータの表記を維持します。
+
+## レンダラと画質
+
+### Preview
+
+Preview は RT 機能を必要としない描画経路です。シャドウマップ、GGX 直接反射、IBL、SSAO、RGBA16F 合成、ACES トーンマッピングを使用します。2:1 の equirectangular HDRI を Scene の Inspector から照明用に指定できます。指定しない場合は、条件に合う背景画像を照明に使用します。
+
+モデルの Inspector では、材質ごとに \`PMX\`、\`Skin\`、\`Hair\`、\`Cloth\`、\`Metal\`、\`Plastic\`、\`Glass\` を選択できます。選択した内容はプロジェクトに保存されます。
+
+画質 profile は \`--preview-quality auto\`、\`apu\`、\`high\` から選択できます。既定値の \`auto\` は GPU の種類とメモリ使用状況を考慮します。\`--present\` では Present mode、\`--async-compute\` では実験的な別キューでの変形処理を指定できます。これらの設定と Vega 8 での計測結果は[Preview の性能](docs/preview-performance.md)を参照してください。
+
+### Subayai / BDPT
+
+Subayai / BDPT では、FX graph が必要とする機能、GPU の Vulkan capability、native runtime の初期化結果を起動時に確認します。いずれかが不足すると理由を記録し、Preview に切り替わります。native renderer の接続と、すべての GPU・FX で本家と同じ結果が得られることは別です。
+
+主な RT 関連の確認対象は次のとおりです。
+
+- \`VK_KHR_acceleration_structure\`
+- \`VK_KHR_ray_tracing_pipeline\`
+- \`VK_KHR_ray_query\`
+- \`VK_KHR_fragment_shader_barycentric\`
+- Buffer device address / descriptor indexing
+
+\`\`\`sh
+./build/linux-debug/mikumikudesu --probe --hidden
+./build/linux-debug/mikumikudesu --renderer subayai --asset /path/to/model.pmx
+\`\`\`
+
+\`--probe\` で GPU の機能情報を確認できます。互換性の詳細と未検証事項は[1.30 互換性](docs/upstream-1.30.md)に記載しています。
+
+## コマンドライン
+
+オプション一覧は次のとおりです。\`PATH\`、\`N\`、\`KBPS\` などは指定する値を表し、そのまま入力する文字列ではありません。
+
+### 読み込み・描画
+
+| オプション | 説明 |
+| --- | --- |
+| \`--asset PATH\` / \`--model PATH\` | 入力ファイル。複数指定可能 |
+| \`--save-project PATH\` | プロジェクトを \`.dayo\` に保存 |
+| \`--renderer RENDERER\` | \`preview\`、\`subayai\`、\`bdpt\`（既定: \`preview\`） |
+| \`--preview-quality PROFILE\` | \`auto\`、\`apu\`、\`high\`（既定: \`auto\`） |
+| \`--present MODE\` | \`fifo\`、\`fifo-relaxed\`、\`mailbox\`、\`immediate\`（既定: \`fifo\`） |
+| \`--async-compute\` | Preview の変形処理を別キューへ送る実験的な設定 |
+| \`--probe\` | GPU の機能情報を出力して終了 |
+| \`--hidden\` | 非表示ウィンドウを使用 |
+| \`--frames N\` | N フレーム描画後に終了 |
+| \`--no-validation\` | Vulkan validation を無効化 |
+
+### 音声・動画の書き出し
+
+| オプション | 説明 |
+| --- | --- |
+| \`--export-m4a PATH\` | 音声を M4A/AAC に書き出す |
+| \`--export-video PATH\` | 映像を MP4 に書き出す |
+| \`--audio-source PATH\` | 音声ソースを明示 |
+| \`--audio-bitrate KBPS\` | AAC ビットレート（既定: 192） |
+| \`--audio-from SEC\` / \`--audio-to SEC\` | 音声の出力範囲。M4A のみ |
+| \`--video-width PX\` / \`--video-height PX\` | 動画解像度（既定: 1920 × 1080） |
+| \`--video-fps FPS\` | 動画 FPS（既定: 30） |
+| \`--video-codec CODEC\` | \`h264\`、\`h265\`、\`hevc\`、\`av1\`（既定: \`h264\`） |
+| \`--video-bitrate KBPS\` | 映像ビットレート（既定: 8000） |
+| \`--video-hardware\` | ハードウェアエンコードを優先 |
+| \`--video-from-frame N\` / \`--video-to-frame N\` | 動画の出力フレーム範囲（0 始まり） |
+| \`--no-audio\` | MP4 に音声を含めない |
+| \`--overwrite\` | 既存の出力ファイルを置き換える |
+
+\`--export-m4a\` と \`--export-video\` は同時に使用できません。また、動画専用のオプションは \`--export-video\` と組み合わせ、\`--audio-from\` / \`--audio-to\` は \`--export-m4a\` と組み合わせてください。
+
+### M4A への音声書き出し
+
+音声書き出しではウィンドウや Vulkan を起動しません。
+
+\`\`\`sh
+./build/linux-debug/mikumikudesu \
+  --audio-source music.wav \
+  --export-m4a chorus.m4a \
+  --audio-bitrate 256 \
+  --audio-from 35 --audio-to 78.5
+\`\`\`
+
+出力は一時的な \`.m4a.part\` ファイルに書き込み、成功した場合に完成ファイルへ確定します。
+
+### MP4 への動画書き出し
+
+動画書き出しは Preview と Vulkan の非表示ウィンドウを使用します。GUI は映像に含まれません。完全にディスプレイ環境に依存しない処理ではありません。
+
+\`\`\`sh
+./build/linux-debug/mikumikudesu \
+  --asset miku.pmx --asset dance.vmd --asset camera.vmd --asset music.wav \
+  --export-video dance.mp4 \
+  --video-width 1920 --video-height 1080 \
+  --video-fps 30 --video-codec h264 --video-bitrate 8000
+\`\`\`
+
+\`--video-fps\` を変更してもモーションの再生速度は変わりません。複数の音声ソースがある場合は \`--audio-source\` で指定します。出力中は \`.mp4.part\` ファイルを使用します。
+
+## 開発と検証
+
+### 診断とテスト
+
+\`\`\`sh
+make help
+make presets
+make test
+./scripts/check-linux-amd.sh
+\`\`\`
+
+AMD 向けの診断スクリプトは \`vulkaninfo\` による確認、CTest、PMX/VMD、画像、\`.dayo\` の保存・再読み込み、FFmpeg の smoke test を実行します。実行前に submodule を初期化してください。
+
+### ビルドの最適化
+
+通常の Release はローカル CPU 専用の ISA 最適化を無効にしています。対象マシン専用にビルドする場合は \`linux-release-native\` を使用できます。
+
+\`\`\`sh
+cmake --preset linux-release-native
+cmake --build --preset linux-release-native
+\`\`\`
+
+Clang ThinLTO と PGO も任意で有効にできます。
+
+\`\`\`sh
+cmake --preset linux-clang-thinlto
+cmake --build --preset linux-clang-thinlto
+\`\`\`
+
+PGO では、profile 収集用にビルドして実際の作業に近い入力を与えてから、収集したデータを適用します。
+
+\`\`\`sh
+cmake --preset linux-pgo-generate
+cmake --build --preset linux-pgo-generate
+./build/linux-pgo-generate/mikumikudesu --asset model.pmx
+cmake --build build/linux-pgo-generate --target dayo_pgo_merge
+cmake --preset linux-pgo-use
+cmake --build --preset linux-pgo-use
+\`\`\`
+
+LLVM BOLT は CPU の profile を取得した後に有効化する追加の最適化です。同じビルド済みバイナリと link 条件で収集・適用してください。初回は relocation を出力し、profile を取得してから同じビルドツリーで BOLT を有効にします。
+
+\`\`\`sh
 cmake --preset linux-release-native \
   -DDAYO_ENABLE_BOLT=OFF -DCMAKE_EXE_LINKER_FLAGS=-Wl,--emit-relocs
 cmake --build --preset linux-release-native
@@ -151,262 +323,32 @@ perf2bolt ./build/linux-release-native/mikumikudesu -p perf.data -o perf.fdata
 cmake --preset linux-release-native \
   -DDAYO_ENABLE_BOLT=ON -DDAYO_BOLT_PROFILE="$PWD/perf.fdata"
 cmake --build --preset linux-release-native
-```
+\`\`\`
 
-確認するRT feature:
+BOLT の出力は \`mikumikudesu.bolt\` です。有効時の install はこの最適化済みバイナリを \`mikumikudesu\` として配置します。詳細な GPU 側の最適化・測定条件は[Preview の性能](docs/preview-performance.md)を参照してください。
 
-- `VK_KHR_acceleration_structure`
-- `VK_KHR_ray_tracing_pipeline`
-- `VK_KHR_ray_query`
-- `VK_KHR_fragment_shader_barycentric`
-- buffer device address / descriptor indexing
+### ソースコードの構成
 
-### Artix / Arch Linux
+| パス | 内容 |
+| --- | --- |
+| \`src/app/\` | CLI、GUI、イベント処理、起動 |
+| \`src/core/\` | シーン、アニメーション、物理、メディア、プロジェクト、出力 |
+| \`src/platform/\` | SDL3 ウィンドウ・イベント・音声 |
+| \`src/graphics/\` | レンダラと Vulkan リソース |
+| \`external/libmmd/\` | PMX、PMD、VMD、VPD などを扱うライブラリ |
+| \`deps/\` | 上流配布物の固定情報 |
+| \`scripts/\` | セットアップ・診断スクリプト |
 
-```bash
-sudo pacman -S --needed \
-  base-devel cmake ninja sdl3 ffmpeg bullet nlohmann-json \
-  vulkan-headers vulkan-icd-loader vulkan-radeon vulkan-tools \
-  vulkan-validation-layers shaderc
-```
+## 動作確認と制限事項
 
-不足するVulkan-Headers、stb、Dear ImGui、Bullet、Jsonnet等は、通常presetでは固定versionを
-CMakeが取得します。argparseも同様ですが、取得を禁止する場合はargparseを含む必要なdevelopment
-packageを先に導入してください。
+2026-08-24 に AMD Ryzen 5 PRO 3500U / Radeon Vega 8 / Mesa RADV 26.1.7 で、Preview の描画、VMD・PMX と Bullet の処理、画像読込、動画・音声、\`.dayo\` の保存・再読込を確認しています。この環境は Vulkan RT feature を備えていないため、Subayai / BDPT の GPU 実行結果は検証していません。
 
-## ビルドと実行
+この結果は記載した環境・日時のものです。現在の実装状況や GPU 機能の判断には \`--probe\` と[互換性資料](docs/upstream-1.30.md)を参照してください。
 
-MakefileからCMake Presetsを利用する簡易コマンドも用意しています。
+## ライセンス
 
-```bash
-# Debug（configure + build）
-make
+本プロジェクトのソースコードは [MIT License](LICENSE) です。
 
-# Pinned MikuMikuDayo assetを取得してテスト
-make setup
-make test
+MikuMikuDayo 1.30 の配布物は[公式リリース](https://github.com/pennennennennennenem/MikuMikuDayo/releases/tag/MikuMikuDayo130)から取得します。配布物の取得には \`scripts/fetch-mikumikudayo.py\` を使用し、\`deps/mikumikudayo-runtime.manifest\` の内容を install と共有します。再配布する場合は、上流配布物とそのサードパーティライブラリのライセンス表示を保持してください。
 
-# Test / run
-make run
-make run ARGS="--asset model.pmx --asset motion.vmd"
-
-# Release / package / sanitizers / system packages only
-make release
-make package
-make sanitize
-make system
-```
-
-依存関係としてMikuMikuDayoが必要ですが、`make`/`make build`はMikuMikuDayoを取得しません。MikuMikuDayoは`git`管理されていないのでリリースから取得するようになっています。`make setup`、`make test`、`make install`、
-`make package`でだけ、`deps/mikumikudayo.lock`に固定したGitHub Release ZIPを取得または
-`.cache/mikumikudayo/`から再利用します。
-
-`Makefile` の全ターゲットと変数は`make help`で確認できます。CMakeを直接実行する場合は以下です。
-
-```bash
-cmake --preset linux-debug
-cmake --build --preset linux-debug
-python3 scripts/fetch-mikumikudayo.py
-ctest --preset linux-debug --output-on-failure
-
-./build/linux-debug/mikumikudesu
-./build/linux-debug/mikumikudesu --asset model.pmx --asset motion.vmd
-```
-
-### Linux native optimization profiles
-
-Release builds can opt into Clang ThinLTO without changing the default presets:
-
-```bash
-cmake --preset linux-clang-thinlto
-cmake --build --preset linux-clang-thinlto
-```
-
-For representative profile-guided optimization, first build and run the
-profile-generation preset through a realistic workload. Clang writes
-per-process `.profraw` files into the configured profile directory; merge them
-before configuring the use build:
-
-```bash
-cmake --preset linux-pgo-generate
-cmake --build --preset linux-pgo-generate
-./build/linux-pgo-generate/mikumikudesu --asset model.pmx
-cmake --build build/linux-pgo-generate --target dayo_pgo_merge
-cmake --preset linux-pgo-use
-cmake --build --preset linux-pgo-use
-```
-
-The Clang path uses `llvm-profdata merge` and `-fprofile-instr-use`; GCC keeps
-its `-fprofile-use`/`-fprofile-correction` flow. PGO is intentionally opt-in
-because profile data is workload-specific and must not be committed.
-
-### ミク・テトのサンプルモデル
-
-動作確認用として、配布元のアーカイブをローカルの`assets/models/`へ取得できます。
-アーカイブは再配布しない前提で`.gitignore`対象にし、各モデルのREADMEとテクスチャは展開したまま保持しています。
-
-- `assets/models/miku/model/miku.pmx` — Tda式初音ミク デフォ服ver（[BowlRoll #16344](https://bowlroll.net/file/16344)、作者: 金子卵黄/Tda。ReadMeの利用条件を優先）
-- `assets/models/teto/model/teto.pmx` — Tda式重音テトTypeS（[BowlRoll #11308](https://bowlroll.net/file/11308)、作者: Tda/やまもと。ReadMeの利用条件を優先）
-
-起動例:
-
-```bash
-./build/linux-debug/mikumikudesu --asset assets/models/miku/model/miku.pmx
-./build/linux-debug/mikumikudesu --asset assets/models/teto/model/teto.pmx
-# 複数モデル + motion + 背景を同一Sceneへ読み込むこともできます
-./build/linux-debug/mikumikudesu \
-  --asset assets/models/miku/model/miku.pmx \
-  --asset assets/models/teto/model/teto.pmx \
-  --asset motion.vmd --asset background.png
-```
-
-同じモデルへ複数のVMDを読み込むと、既存のキーを保持しながら追加します。ダンス用VMDの後に
-表情用VMD（目線のボーンキーを含む場合も可）を読み込んでも、ダンスは消えません。同じボーン名・
-モーフ名の同じフレームにキーがある場合は、後から読み込んだ値を使います。
-
-重音テトを使った作品の公開や改変時は、[重音テト公式ガイドライン](https://kasaneteto.jp/guidelines/)と各モデル付属READMEを確認してください。
-
-主なオプション:
-
-```text
---renderer preview|subayai|bdpt  要求renderer（利用不可なら理由を表示してPreview）
---preview-quality auto|apu|high  Preview quality profile（既定: auto）
---present fifo|fifo-relaxed|mailbox|immediate  Present mode（既定: fifo）
---async-compute                 experimental Preview deform offload（既定: 無効）
---asset PATH                     起動時asset。複数指定可
---save-project PATH              読み込んだassetと状態を.dayoへ保存
---probe                          GPU featureをJSONで出力して終了
---hidden --frames N              非表示windowでN frame描画するsmoke test
---no-validation                 Vulkan validationを要求しない
---export-m4a PATH               Vulkanなしで音声をM4A/AACへ書き出す
---audio-source PATH             書き出す音声を明示（省略時はassetから一意に解決）
---audio-bitrate KBPS            AAC bitrate（既定: 192）
---audio-from SEC / --audio-to SEC  書き出し範囲（秒）
---overwrite                     既存のM4Aを置換する
---export-video PATH             PreviewをMP4へ書き出す（Vulkanが必要）
---video-width PX / --video-height PX  出力解像度（既定: 1920x1080）
---video-fps FPS                 固定フレームレート（既定: 30）
---video-codec h264|h265|av1     映像codec（既定: h264）
---video-bitrate KBPS            映像bitrate（既定: 8000）
---video-from-frame N / --video-to-frame N  フレーム範囲（0始まり）
---no-audio                      MP4に音声streamを含めない
-```
-
-音声だけを書き出す場合は、ウィンドウやVulkanを起動せずに実行します。
-
-```bash
-./build/linux-debug/mikumikudesu \
-  --asset music.wav \
-  --export-m4a music.m4a
-
-./build/linux-debug/mikumikudesu \
-  --audio-source music.wav \
-  --export-m4a chorus.m4a \
-  --audio-bitrate 256 \
-  --audio-from 35.0 --audio-to 78.5
-```
-
-出力は一時的な`.m4a.part`へ書き込み、成功時に完成ファイルへ原子的に置換します。Sceneの
-背景・再生用`MediaFile`や画像の`OutputQueue`とは独立した`AudioExporter`を使います。
-
-動画を書き出す場合はPreview rendererでSceneをタイムラインFPSのstepで評価し、指定解像度の
-offscreen Vulkan targetをCPUへreadbackしてMP4へ渡します。`--video-fps`を変更してもモーションの
-再生速度は変わりません。UIは動画に含めず、音声はassetから
-一意に解決します（複数ある場合は`--audio-source PATH`で指定）。映像・音声のエンコード中は
-`output.mp4.part`へ書き込み、完了時だけ`output.mp4`へ確定します。
-
-```bash
-./build/linux-debug/mikumikudesu \
-  --asset miku.pmx --asset dance.vmd --asset camera.vmd --asset music.wav \
-  --export-video dance.mp4 --video-width 1920 --video-height 1080 \
-  --video-fps 30 --video-codec h264 --video-bitrate 8000
-
-# 0〜300フレームを音声なしで書き出す
-./build/linux-debug/mikumikudesu \
-  --asset miku.pmx --asset dance.vmd --export-video preview.mp4 \
-  --video-to-frame 300 --no-audio
-```
-
-動画書き出しはGPUを使うため、音声書き出しのような完全headless処理ではありません。SDL/Vulkan
-のhidden windowとPreview deviceを起動します。Subayai/BDPTのnative output bridgeはまだ無効のため、
-動画書き出しではPreview rendererを使用してください。
-
-system packageのみで構成する場合:
-
-```bash
-cmake --preset linux-system-only
-cmake --build --preset linux-system-only
-ctest --preset linux-system-only --output-on-failure
-```
-
-AMD環境の一括診断:
-
-```bash
-./scripts/check-linux-amd.sh
-```
-
-このスクリプトはGPU probe、unit test、PMX+VMD+Bullet、画像、`.dayo` round trip、
-FFmpeg動画/音声（CLIがある場合）を実際に実行します。
-
-## シェーダーと依存
-
-`cmake/CompileHlsl.cmake`はDXCがあればVulkan 1.3向けSPIR-Vを生成し、Preview shaderは
-glslc HLSL frontendへfallbackします。既存のbindless/ray query/ray tracing shaderを移す場合は
-DXCが必須です。`SV_Barycentrics`はSPIR-V fragment barycentricへ写像する設計です。
-
-`vcpkg.json`にはSDL3、Vulkan、DXC、DirectXTex、Bullet、Dear ImGui、ImGuizmo、cereal、
-Jsonnetを宣言しています。Linux実行系の画像読込は現在stbと内蔵DDS decoderを使うため、
-WICには依存しません。OIDNは任意で、HIP deviceが使えなければCPUへfallbackします。
-
-## 構成
-
-```text
-src/
-├── app/                     CLI、D&D、ImGui、main loop、project連携
-├── core/                    Scene、PMX/VMD/VPD/VMdayo、animation、Bullet、media、effect、project、output
-├── platform/                SDL3 window/event/audio
-└── graphics/
-    ├── device.hpp           API非依存device/resource契約
-    ├── native_renderer.*    effect要件判定とnative runtime lifecycle
-    ├── subayai_*.{hpp,cpp}  deform/AS/material/environment/light契約
-    ├── bdpt_*.{hpp,cpp}     accumulation/LUT/volume/runtime契約
-    └── vulkan/              typed Vulkan resource/command/AS/pipeline/SBT実装
-
-deps/mikumikudayo.lock       取得するMikuMikuDayo Release ZIPの固定情報
-MikuMikuDayo/                 初回セットアップ時に展開されるローカル依存（Git管理外）
-scripts/fetch-mikumikudayo.py 依存ZIPの取得、検証、展開
-```
-
-## このAMD環境での確認結果
-
-2026-08-24、AMD Ryzen 5 PRO 3500U / Radeon Vega 8 / Mesa RADV 26.1.7:
-
-- Vulkan API 1.4.354、Preview対応
-- buffer device address / descriptor indexing対応
-- acceleration structure / ray query / RT pipeline / fragment barycentric非対応
-- unit test、Vulkan probe、ImGui build成功
-- 同梱PMX（4,694頂点、7,860三角形）+ VMD + Bulletを10 frame描画成功
-- PNG表示、FFmpeg動画/音声、`.dayo`保存/再読込成功
-- Subayai/BDPT要求時は不足featureを列挙しPreviewへfallback
-
-Vega 8はRDNA2ではないため、RT実行試験はハードウェア上不可能です。
-
-## LICENCE
-
-本プロジェクトのソースコードは、 [MIT License](LICENSE) です。
-
-`MikuMikuDayo/` はGit管理せず、`deps/mikumikudayo.lock`で固定した
-[MikuMikuDayo 1.30のRelease ZIP](https://github.com/pennennennennennenem/MikuMikuDayo/releases/download/MikuMikuDayo130/MikuMikuDayo130.zip)
-をセットアップ時に取得します。
-fetch時の必須ディレクトリ検証とCMake installは`deps/mikumikudayo-runtime.manifest`を共有します。
-HLSL、renderer、postprocess、particle、sample、resとlicenceをテクスチャ・importを含めて
-ディレクトリごと配布し、lockとmanifestも`share/mikumikudesu`に保存します。
-インストール前に上記fetchスクリプトを実行してください。assetがない場合、installは失敗します。
-
-MikuMikuDayo本体は upstream のMIT Licenseに従い、配布時はアーカイブ内のMikuMikuDayoおよびサードパーティのライセンス表示を保持してください。
-
-### 表示言語
-
-上部の **Language / 言語 / 语言 / Язык** メニューから、English（米国英語）、日本語、简体中文（簡体字中国語）、Русский（ロシア語）を切り替えられます。初回はOSの優先言語を使用し、未対応の場合は英語になります。選択はSDLのユーザーデータフォルダー内の `haturatu/mikumikudesu/language.txt`（Linuxでは通常 `~/.local/share/haturatu/mikumikudesu/language.txt`） に保存され、プロジェクトとは独立して次回起動時も適用されます。
-
-モデル名・ボーン名・モーフ名・ファイルパスは元のデータを表示します。数値入力と保存形式は従来どおり小数点に `.` を使用します。開発者向けログと外部ライブラリの詳細診断は原文で表示します。
+モデル、モーション、テクスチャ、音声などの素材には、本プロジェクトのライセンスとは別に、それぞれの利用条件が適用されます。

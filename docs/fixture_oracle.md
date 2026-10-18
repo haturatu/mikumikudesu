@@ -1,31 +1,34 @@
-# PR6 fixture oracle (skeleton)
+# MikuMikuDayo 1.30 との相互運用テスト
 
-Windows 1.30 fixtures are the oracle for solver/physics/IO parity.
-This document records the acceptance contract; binaries land out of tree.
+Windows 版 MikuMikuDayo 1.30 が生成したファイルを基準データ（oracle）として、モーション処理、物理演算、ファイル入出力の互換性を検証するための受け入れ条件を示します。
 
-## Fixtures (planned)
+**状態:** このページに示す fixture は計画段階です。Windows 版で生成したバイナリはリポジトリに含まれておらず、比較結果が得られたことを意味しません。
 
-| fixture | oracle | tolerance | status |
+## テスト対象
+
+| Fixture | 確認する内容 | 判定条件 | 状態 |
 | --- | --- | --- | --- |
-| `camera-parent.vmdayo` | parentModel/parentBone/parentBoneName resolve + missing fallback | exact match, missing -> identity | planned |
-| `catmull-axis.vmdayo` | bone 4-axis + camera 6-axis method routing | bezier within `SolverCompatibilityProfile::cameraTolerance` | planned |
-| `multi-model.dayo` | camera/light subset, dictionary, metadata, all tracks | exact subset names, key counts | planned |
-| `external-parent.dayo` | deleted parent, unresolved parent, cycle rejection | `Scene::addExternalParent` error strings | planned |
-| `gravity.dayo` | gravity keys + saved settings round trip | strength 1e-3, direction normalized | planned |
-| `limited-ik.pmx` + `limited-ik.vmdayo` | 1/2/3-axis + knee/asymmetric limits, same-frame bone matrix + endpoint | position 1e-3, rotation 1e-4 | planned |
+| \`camera-parent.vmdayo\` | カメラの親モデル・親ボーンと、親が見つからない場合の処理 | 値の一致。未解決の場合は単位変換 | 未実施 |
+| \`catmull-axis.vmdayo\` | ボーンの 4 軸とカメラの 6 軸の補間方式 | \`SolverCompatibilityProfile::cameraTolerance\` の範囲内 | 未実施 |
+| \`multi-model.dayo\` | 複数モデルの辞書・メタデータ・全トラックとカメラ・ライト | トラック名とキー数の一致 | 未実施 |
+| \`external-parent.dayo\` | 親モデルの削除、未解決親、循環参照 | \`Scene::addExternalParent\` のエラー内容の一致 | 未実施 |
+| \`gravity.dayo\` | 重力キーと保存設定 | 強度の誤差 1e-3、方向の正規化 | 未実施 |
+| \`limited-ik.pmx\` + \`limited-ik.vmdayo\` | 1～3 軸の IK 制限、膝・非対称制限 | 位置誤差 1e-3、回転誤差 1e-4 | 未実施 |
 
-## Procedure
+## 検証手順
 
-1. Native save is never presented as an upstream fixture.
-2. Upstream save -> native load -> native serialize -> native reload checks
-   unknown-payload preservation + the oracle column above.
-3. Native save -> upstream load confirms forward interop on Windows hardware.
-4. Record upstream Release, operation steps, model provenance/redistribution
-   terms, and execution environment with every new fixture.
+1. Windows 版 1.30 で対象データを保存し、基準 fixture として保管します。
+2. Linux 版で読み込み、再シリアライズしてから再読み込みします。値と未知の payload が保持されることを確認します。
+3. Linux 版で保存したファイルを Windows 版で開き、逆方向の互換性を確認します。
+4. 各 fixture に、生成に使った Release、操作手順、使用モデルの出典と再配布条件、OS・GPU・ドライバなどの検証環境を記録します。
 
-## Harness
+**注意:** Linux 版が生成したファイルを、Windows 版が生成した fixture の代わりとして扱わないでください。双方で同じ実装を使った往復試験だけでは、上流との互換性を検証できません。
 
-- `tools/capability_suite --list` enumerates suites.
-- `MotionSolver::compareBones/compareCamera` implement tolerance checks.
-- `PhysicsStepper` + `PhysicsCompatibilityProfile` pin the fixed-step path.
-- Sequence/HDR oracles live in `tests/editor_physics_io_tests.cpp`.
+## テストの実装箇所
+
+- \`tools/capability_suite --list\`: テストスイートの一覧
+- \`MotionSolver::compareBones\` / \`MotionSolver::compareCamera\`: 数値比較
+- \`PhysicsStepper\` / \`PhysicsCompatibilityProfile\`: 物理演算の固定ステップ処理
+- \`tests/editor_physics_io_tests.cpp\`: 画像連番や HDR などのテスト
+
+関連する互換性の状況は [MikuMikuDayo 1.30 互換性](upstream-1.30.md)を参照してください。
