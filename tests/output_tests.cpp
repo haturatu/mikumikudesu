@@ -55,8 +55,9 @@ int main() {
         std::ifstream ppm(ppmPath, std::ios::binary);
         const std::string data{std::istreambuf_iterator<char>{ppm}, std::istreambuf_iterator<char>{}};
         const std::string header = "P6\n2 1\n255\n";
-        const std::array<char, 6> expected = {
-            static_cast<char>(255), 0, 0, 0, static_cast<char>(128), static_cast<char>(255)};
+        constexpr char full = static_cast<char>(255);
+        constexpr char medium = static_cast<char>(128);
+        const std::array<char, 6> expected{full, 0, 0, 0, medium, full};
         std::string expectedData = header;
         expectedData.append(expected.data(), expected.size());
         ok &= check(data == expectedData, "PPM preserves binary RGB content without alpha");
