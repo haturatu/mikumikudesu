@@ -265,6 +265,9 @@ add_library(
 target_include_directories(dayo_fx PUBLIC src)
 target_link_libraries(dayo_fx PUBLIC dayo_core)
 
+add_library(dayo_i18n STATIC src/ui/i18n.cpp)
+target_include_directories(dayo_i18n PUBLIC src)
+
 add_library(
   dayo_graphics
   src/graphics/bdpt_accumulation.cpp
@@ -314,11 +317,15 @@ add_library(
   src/graphics/vulkan/vulkan_command_list.cpp
   src/graphics/vulkan/vulkan_upload_context.cpp
   src/graphics/vulkan_fx_executor.cpp
+  src/ui/i18n_platform.cpp
   src/ui/fonts.cpp
   src/ui/theme.cpp
 )
 target_include_directories(dayo_graphics PUBLIC src)
-target_link_libraries(dayo_graphics PUBLIC dayo_fx dayo_core Vulkan::Vulkan SDL3::SDL3)
+target_link_libraries(
+  dayo_graphics
+  PUBLIC dayo_fx dayo_core dayo_i18n Vulkan::Vulkan SDL3::SDL3
+)
 target_compile_definitions(dayo_graphics PRIVATE DAYO_ENABLE_VALIDATION=$<BOOL:${DAYO_ENABLE_VALIDATION}>)
 if(DAYO_ENABLE_VMA)
   target_sources(dayo_graphics PRIVATE src/graphics/vulkan/vma_impl.cpp)
@@ -760,6 +767,7 @@ function(dayo_enable_warnings target)
     endif()
   endif()
 endfunction()
+dayo_enable_warnings(dayo_i18n)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   foreach(
@@ -840,6 +848,11 @@ endif()
 if(BUILD_TESTING)
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
   add_test(NAME upstream_fetch COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/fetch_mikumikudayo_tests.py")
+  add_executable(dayo_i18n_tests tests/i18n_tests.cpp)
+  target_link_libraries(dayo_i18n_tests PRIVATE dayo_i18n)
+  dayo_enable_warnings(dayo_i18n_tests)
+  add_test(NAME i18n COMMAND dayo_i18n_tests)
+  add_test(NAME i18n_catalog COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/i18n_catalog_tests.py")
   add_library(dayo_test_assets STATIC tests/test_assets.cpp)
   dayo_enable_warnings(dayo_test_assets)
   add_executable(dayo_cli_tests tests/cli_tests.cpp)
@@ -856,7 +869,7 @@ if(BUILD_TESTING)
     dayo_enable_warnings(dayo_viewport_interaction_tests)
     add_test(NAME viewport_interaction COMMAND dayo_viewport_interaction_tests)
     add_executable(dayo_keyframe_editor_tests tests/keyframe_editor_tests.cpp src/ui/keyframe_editor.cpp)
-    target_link_libraries(dayo_keyframe_editor_tests PRIVATE dayo_core dayo_imgui)
+    target_link_libraries(dayo_keyframe_editor_tests PRIVATE dayo_core dayo_imgui dayo_i18n)
     dayo_enable_warnings(dayo_keyframe_editor_tests)
     add_test(NAME keyframe_editor COMMAND dayo_keyframe_editor_tests)
   endif()
@@ -964,6 +977,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_cli_tests
     dayo_core_tests
     dayo_keyframe_editor_tests
+    dayo_i18n_tests
     dayo_output_tests
     dayo_video_export_job_tests
     dayo_fx_executor_tests
@@ -979,7 +993,7 @@ if(DAYO_ENABLE_SANITIZERS)
   foreach(
     target
     IN
-    ITEMS dayo_core dayo_fx dayo_platform dayo_graphics dayo_test_assets
+    ITEMS dayo_i18n dayo_core dayo_fx dayo_platform dayo_graphics dayo_test_assets
   )
     if(TARGET ${target})
       target_compile_options(${target} PRIVATE ${DAYO_SANITIZER_COMPILE_OPTIONS})

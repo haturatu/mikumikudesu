@@ -20,11 +20,13 @@
 #include "core/vmdayo.hpp"
 #include "graphics/device.hpp"
 #include "platform/window.hpp"
+#include "ui/i18n.hpp"
 #include "ui/theme.hpp"
 
 #include <SDL3/SDL.h>
 
 #if DAYO_HAS_IMGUI
+#include "ui/i18n_imgui.hpp"
 #include <imgui.h>
 #include <imgui_internal.h>
 #endif
@@ -117,13 +119,13 @@ void drawMorphWeightControl(float& value, const std::optional<core::fx::FxMorphC
         if (intMin <= intMax) {
             int integerValue = static_cast<int>(std::clamp(std::round(static_cast<double>(value)),
                                                            static_cast<double>(intMin), static_cast<double>(intMax)));
-            changed = ImGui::SliderInt("Weight", &integerValue, intMin, intMax, "%d", flags);
+            changed = ImGui::SliderInt(ui::label("Weight"), &integerValue, intMin, intMax, "%d", flags);
             value = static_cast<float>(integerValue);
         } else {
-            changed = ImGui::SliderFloat("Weight", &value, minimum, maximum, "%.3f", flags);
+            changed = ImGui::SliderFloat(ui::label("Weight"), &value, minimum, maximum, "%.3f", flags);
         }
     } else {
-        changed = ImGui::SliderFloat("Weight", &value, minimum, maximum, "%.3f", flags);
+        changed = ImGui::SliderFloat(ui::label("Weight"), &value, minimum, maximum, "%.3f", flags);
     }
 
     if (changed && slider != nullptr && slider->step > 0.0F && std::isfinite(slider->step)) {
@@ -140,7 +142,7 @@ void drawMorphWeightControl(float& value, const std::optional<core::fx::FxMorphC
         ImGui::EndTooltip();
     }
     if (slider != nullptr && ImGui::BeginPopupContextItem("morph-weight-options")) {
-        if (ImGui::MenuItem("Reset to controller default"))
+        if (ImGui::MenuItem(ui::label("Reset to controller default")))
             value = std::clamp(slider->defaultValue, minimum, maximum);
         ImGui::EndPopup();
     }
@@ -931,7 +933,8 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
 
 std::string Application::workspaceWindowName(const char* title, const char* id) const {
 #if DAYO_HAS_IMGUI
-    return std::string(title) + "##" + id + "." + workspaceSuffix(uiState_.workspace);
+    // Hash the original complete English name so existing imgui.ini docking layouts also survive the upgrade.
+    return ui::label((std::string(title) + "##" + id + "." + workspaceSuffix(uiState_.workspace)).c_str());
 #else
     return std::string(title) + "##" + id;
 #endif
@@ -1602,8 +1605,9 @@ void Application::loadEffectAsset(const std::filesystem::path& path, std::option
     else if (device_ != nullptr && filename.find("bdpt") != std::string::npos)
         requestedRenderer_ = graphics::RendererKind::bdpt;
     requestRenderer(requestedRenderer_);
-    lastAsset_ = "Effect " + normalizedPath.filename().string() + " — " + std::to_string(graph.passes.size()) +
-                 " passes, " + std::to_string(graph.textures.size()) + " textures";
+    lastAsset_ = ui::Message("Effect {0} — passes: {1}, textures: {2}",
+                             {normalizedPath.filename().string(), std::to_string(graph.passes.size()),
+                              std::to_string(graph.textures.size())});
     log::info("Loaded effect graph: ", lastAsset_);
     const auto projectEffect = std::ranges::find_if(projectAssets_, [&](const auto& asset) {
         return asset.kind == "effect" && std::filesystem::absolute(asset.path).lexically_normal() == normalizedPath;
@@ -1615,7 +1619,7 @@ void Application::loadEffectAsset(const std::filesystem::path& path, std::option
 void Application::handleAsset(const std::filesystem::path& path) {
     const auto kind = core::classifyAsset(path);
     if (kind == core::AssetKind::unknown) {
-        lastAsset_ = "Unsupported asset: " + path.string();
+        lastAsset_ = ui::Message("Unsupported asset: {0}", {path.string()});
         log::warn(lastAsset_);
         return;
     }
@@ -1801,11 +1805,11 @@ void Application::handleAsset(const std::filesystem::path& path) {
             syncMediaAtCurrentFrame();
             if (!scene_.models().empty())
                 refreshAnimatedMesh(false);
-            lastAsset_ =
-                "Project " + path.filename().string() + " — " + std::to_string(project.assets.size()) + " assets";
+            lastAsset_ = ui::Message("Project {0} — assets: {1}",
+                                     {path.filename().string(), std::to_string(project.assets.size())});
             log::info("Loaded project: ", lastAsset_);
         } catch (const std::exception& exception) {
-            lastAsset_ = "Project error: " + std::string(exception.what());
+            lastAsset_ = ui::Message("Project error: {0}", {exception.what()});
             log::warn(lastAsset_);
         }
         return;
@@ -1821,11 +1825,11 @@ void Application::handleAsset(const std::filesystem::path& path) {
             syncMediaAtCurrentFrame();
             refreshAnimatedMesh(false);
             refreshPreviewScene();
-            lastAsset_ = "VMdayo " + path.filename().string();
+            lastAsset_ = ui::Message("VMdayo {0}", {path.filename().string()});
             projectAssets_.emplace_back("vmdayo", std::filesystem::absolute(path));
             log::info("Loaded VMdayo motion: ", path.string());
         } catch (const std::exception& exception) {
-            lastAsset_ = "VMdayo error: " + std::string(exception.what());
+            lastAsset_ = ui::Message("VMdayo error: {0}", {exception.what()});
             log::warn(lastAsset_);
         }
         return;
@@ -1857,12 +1861,12 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 refreshAnimatedMesh(true);
                 refreshPreviewScene();
             }
-            lastAsset_ = "Image " + path.filename().string() + " — " + std::to_string(image.width) + "x" +
-                         std::to_string(image.height);
+            lastAsset_ = ui::Message("Image {0} — {1}x{2}", {path.filename().string(), std::to_string(image.width),
+                                                             std::to_string(image.height)});
             projectAssets_.emplace_back("image", std::filesystem::absolute(path));
             log::info("Loaded image: ", lastAsset_);
         } catch (const std::exception& exception) {
-            lastAsset_ = "Image error: " + std::string(exception.what());
+            lastAsset_ = ui::Message("Image error: {0}", {exception.what()});
             log::warn(lastAsset_);
         }
         return;
@@ -1895,14 +1899,14 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 refreshVideoFrame();
             refreshPreviewScene();
             const auto* model = selectedModel();
-            lastAsset_ =
-                "PMX " + model->model->metadata.modelName + " — v" + std::to_string(model->model->metadata.version) +
-                ", vertices " + std::to_string(model->model->metadata.vertexCount) + ", triangles " +
-                std::to_string(model->model->indices.size() / 3) + ", bones " +
-                std::to_string(model->model->bones.size()) + ", models " + std::to_string(scene_.models().size());
+            lastAsset_ = ui::Message(
+                "PMX {0} — v{1}, vertices: {2}, triangles: {3}, bones: {4}, models: {5}",
+                {model->model->metadata.modelName, std::to_string(model->model->metadata.version),
+                 std::to_string(model->model->metadata.vertexCount), std::to_string(model->model->indices.size() / 3),
+                 std::to_string(model->model->bones.size()), std::to_string(scene_.models().size())});
             log::info("Loaded metadata: ", lastAsset_, " (", path.string(), ")");
         } catch (const std::exception& exception) {
-            lastAsset_ = "PMX error: " + std::string(exception.what());
+            lastAsset_ = ui::Message("PMX error: {0}", {exception.what()});
             log::warn(lastAsset_);
         }
         return;
@@ -1941,17 +1945,19 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 refreshAnimatedMesh(false);
             refreshPreviewScene();
             if (cameraOnly) {
-                lastAsset_ = "VMD camera/light — " + std::to_string(cameraKeyCount) + " camera keys, " +
-                             std::to_string(lightKeyCount) + " light keys, " + std::to_string(lastFrame) + " frames";
+                lastAsset_ = ui::Message(
+                    "VMD camera/light — camera keys: {0}, light keys: {1}, frames: {2}",
+                    {std::to_string(cameraKeyCount), std::to_string(lightKeyCount), std::to_string(lastFrame)});
             } else {
-                lastAsset_ = "VMD " + (motionName.empty() ? path.filename().string() : motionName) + " — " +
-                             std::to_string(boneKeyCount) + " bone keys, " + std::to_string(morphKeyCount) +
-                             " morph keys, " + std::to_string(lastFrame) + " frames";
+                lastAsset_ = ui::Message("VMD {0} — bone keys: {1}, morph keys: {2}, frames: {3}",
+                                         {motionName.empty() ? path.filename().string() : motionName,
+                                          std::to_string(boneKeyCount), std::to_string(morphKeyCount),
+                                          std::to_string(lastFrame)});
             }
             log::info("Loaded motion: ", lastAsset_, " (", path.string(), ")");
             projectAssets_.emplace_back("vmd", std::filesystem::absolute(path));
         } catch (const std::exception& exception) {
-            lastAsset_ = "VMD error: " + std::string(exception.what());
+            lastAsset_ = ui::Message("VMD error: {0}", {exception.what()});
             log::warn(lastAsset_);
         }
         return;
@@ -1962,11 +1968,11 @@ void Application::handleAsset(const std::filesystem::path& path) {
             if (selectedModel() != nullptr)
                 refreshAnimatedMesh(false);
             const auto* pose = selectedModel()->pose.get();
-            lastAsset_ = "VPD pose — " + std::to_string(pose->bones.size()) + " bones";
+            lastAsset_ = ui::Message("VPD pose — bones: {0}", {std::to_string(pose->bones.size())});
             log::info("Loaded pose: ", lastAsset_, " (", path.string(), ")");
             projectAssets_.emplace_back("vpd", std::filesystem::absolute(path));
         } catch (const std::exception& exception) {
-            lastAsset_ = "VPD error: " + std::string(exception.what());
+            lastAsset_ = ui::Message("VPD error: {0}", {exception.what()});
             log::warn(lastAsset_);
         }
         return;
@@ -1977,12 +1983,12 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 selectedModel() == nullptr ? std::nullopt : std::optional<core::ModelId>{selectedModel()->id};
             loadEffectAsset(path, owner);
         } catch (const std::exception& exception) {
-            lastAsset_ = "Effect error: " + std::string(exception.what());
+            lastAsset_ = ui::Message("Effect error: {0}", {exception.what()});
             log::warn(lastAsset_);
         }
         return;
     }
-    lastAsset_ = std::string(core::toString(kind)) + ": " + path.filename().string();
+    lastAsset_ = ui::Message("Asset {0}: {1}", {std::string(core::toString(kind)), path.filename().string()});
     log::info("Accepted ", core::toString(kind), " asset: ", path.string());
 }
 
@@ -2524,10 +2530,11 @@ void Application::loadAudioSource(const std::filesystem::path& path) {
         std::erase_if(projectAssets_, [](const auto& asset) { return asset.kind == "audio"; });
         projectAssets_.emplace_back("audio", audioSource_);
         restartAudioAtCurrentFrame();
-        lastAsset_ = "Audio " + path.filename().string() + " — " + std::to_string(source.info().durationSeconds) + " s";
+        lastAsset_ =
+            ui::Message("Audio {0} — {1} s", {path.filename().string(), std::to_string(source.info().durationSeconds)});
         log::info("Loaded audio: ", path.string());
     } catch (const std::exception& error) {
-        lastAsset_ = "Audio error: " + std::string(error.what());
+        lastAsset_ = ui::Message("Audio error: {0}", {error.what()});
         log::warn(lastAsset_);
     }
 }
@@ -2541,11 +2548,11 @@ void Application::loadBackgroundVideo(const std::filesystem::path& path, bool vi
         setVideoVisible(visible);
         std::erase_if(projectAssets_, [](const auto& asset) { return asset.kind == "video"; });
         projectAssets_.emplace_back("video", std::filesystem::absolute(path).lexically_normal());
-        lastAsset_ = "Background video " + path.filename().string();
+        lastAsset_ = ui::Message("Background video {0}", {path.filename().string()});
         log::info("Loaded background video: ", path.string());
     } catch (const std::exception& error) {
         mediaVideoError_ = error.what();
-        lastAsset_ = "Background video error: " + mediaVideoError_;
+        lastAsset_ = ui::Message("Background video error: {0}", {mediaVideoError_});
         log::warn(lastAsset_);
     }
 }
@@ -2582,21 +2589,21 @@ void Application::selectBackgroundSource(core::ScreenTextureSource source) {
 void Application::buildMediaPlaybackControls(bool compact) {
 #if DAYO_HAS_IMGUI
     if (!audioSource_.empty())
-        ImGui::TextWrapped("Audio: %s", audioSource_.filename().string().c_str());
+        ImGui::TextWrapped(ui::tr("Audio: %s"), audioSource_.filename().string().c_str());
     else
-        ImGui::TextDisabled("Drop an MP4 or audio file to load audio.");
+        ImGui::TextDisabled("%s", ui::tr("Drop an MP4 or audio file to load audio."));
     const auto videoPath = videoMode_ && scene_.background().videoPath.has_value()
                                ? *scene_.background().videoPath
                                : std::filesystem::path(backgroundVideoPath_.data());
     if (!videoPath.empty()) {
         if (compact && !audioSource_.empty())
             ImGui::SameLine();
-        ImGui::TextWrapped("Video: %s", videoPath.filename().string().c_str());
+        ImGui::TextWrapped(ui::tr("Video: %s"), videoPath.filename().string().c_str());
     }
     const bool canShowVideo = videoMode_ || backgroundVideoPath_[0] != '\0';
     ImGui::BeginDisabled(!canShowVideo);
     bool show = videoVisible_;
-    if (ImGui::Checkbox("Show MP4 video", &show)) {
+    if (ImGui::Checkbox(ui::label("Show MP4 video"), &show)) {
         if (show)
             selectBackgroundSource(core::ScreenTextureSource::backgroundVideo);
         else
@@ -2604,21 +2611,21 @@ void Application::buildMediaPlaybackControls(bool compact) {
     }
     ImGui::EndDisabled();
     if (!canShowVideo)
-        ImGui::TextDisabled("Drop an MP4 to enable video display.");
+        ImGui::TextDisabled("%s", ui::tr("Drop an MP4 to enable video display."));
     if (!mediaVideoError_.empty())
-        ImGui::TextWrapped("Video: %s", mediaVideoError_.c_str());
+        ImGui::TextWrapped(ui::tr("Video: %s"), mediaVideoError_.c_str());
     ImGui::BeginDisabled(loadedAudio_.samples.empty());
     if (compact) {
         ImGui::SameLine();
         ImGui::SetNextItemWidth(130.0F);
     }
-    if (ImGui::SliderFloat("Volume", &audioVolume_, 0.0F, 1.0F))
+    if (ImGui::SliderFloat(ui::label("Volume"), &audioVolume_, 0.0F, 1.0F))
         audioPlayer_.setVolume(audioVolume_);
     if (compact) {
         ImGui::SameLine();
         ImGui::SetNextItemWidth(110.0F);
     }
-    if (ImGui::DragFloat("Audio offset", &audioOffsetSeconds_, 0.01F, -60.0F, 60.0F, "%.2f s"))
+    if (ImGui::DragFloat(ui::label("Audio offset"), &audioOffsetSeconds_, 0.01F, -60.0F, 60.0F, "%.2f s"))
         restartAudioAtCurrentFrame();
     ImGui::EndDisabled();
 #else
@@ -2628,9 +2635,9 @@ void Application::buildMediaPlaybackControls(bool compact) {
 
 void Application::buildMediaBackgroundUi() {
 #if DAYO_HAS_IMGUI
-    ImGui::InputTextWithHint("Video file", "MP4 background (optional)", backgroundVideoPath_.data(),
+    ImGui::InputTextWithHint(ui::label("Video file"), ui::tr("MP4 background (optional)"), backgroundVideoPath_.data(),
                              backgroundVideoPath_.size());
-    if (ImGui::Button("Apply video file"))
+    if (ImGui::Button(ui::label("Apply video file")))
         loadBackgroundVideo(backgroundVideoPath_.data());
     buildMediaPlaybackControls();
 #endif
@@ -2813,17 +2820,17 @@ void Application::buildUi() {
             followVmdCamera_ = false;
             refreshPreviewScene();
         };
-        if (ImGui::Button("Camera"))
+        if (ImGui::Button(ui::label("Camera")))
             openInspector(InspectorPage::camera);
         ImGui::SameLine();
-        if (ImGui::Button("Light"))
+        if (ImGui::Button(ui::label("Light")))
             openInspector(InspectorPage::light);
         ImGui::SameLine();
-        if (ImGui::Button("Reset view"))
+        if (ImGui::Button(ui::label("Reset view")))
             resetView();
         if (hasCameraVmd) {
             bool follow = followVmdCamera_;
-            if (ImGui::Checkbox("Follow VMD camera", &follow)) {
+            if (ImGui::Checkbox(ui::label("Follow VMD camera"), &follow)) {
                 if (follow) {
                     manualCamera_ = false;
                     cameraEditPreview_ = false;
@@ -2843,9 +2850,9 @@ void Application::buildUi() {
             }
         }
         if (hasCameraVmd && followVmdCamera_)
-            ImGui::TextWrapped("VMD camera locked. Turn off Follow VMD camera to navigate.");
+            ImGui::TextWrapped("%s", ui::tr("VMD camera locked. Turn off Follow VMD camera to navigate."));
         else
-            ImGui::TextWrapped("Left-drag: orbit | Right-drag: pan | Wheel: zoom");
+            ImGui::TextWrapped("%s", ui::tr("Left-drag: orbit | Right-drag: pan | Wheel: zoom"));
         const ImVec2 available = ImGui::GetContentRegionAvail();
         if (available.x > 0.0F && available.y > 0.0F) {
             const auto* imguiViewport = ImGui::GetWindowViewport();
@@ -2860,7 +2867,7 @@ void Application::buildUi() {
                                                               available, !hasCameraVmd || !followVmdCamera_);
                 uiState_.viewportHovered = input.hovered;
                 if (scene_.models().empty() && !videoVisible_) {
-                    constexpr auto message = "No model loaded\nDrop a PMX file into the window";
+                    const auto* message = ui::tr("No model loaded\nDrop a PMX file into the window");
                     const auto messageSize = ImGui::CalcTextSize(message);
                     const ImVec2 padding{ImGui::GetStyle().FramePadding.x * 2.0F,
                                          ImGui::GetStyle().FramePadding.y * 2.0F};
@@ -2897,11 +2904,11 @@ void Application::buildUi() {
                 if (input.contextMenu)
                     ImGui::OpenPopup("Viewport view controls");
                 if (ImGui::BeginPopup("Viewport view controls")) {
-                    if (ImGui::MenuItem("Reset view"))
+                    if (ImGui::MenuItem(ui::label("Reset view")))
                         resetView();
-                    if (ImGui::MenuItem("Edit camera"))
+                    if (ImGui::MenuItem(ui::label("Edit camera")))
                         openInspector(InspectorPage::camera);
-                    if (ImGui::MenuItem("Edit light"))
+                    if (ImGui::MenuItem(ui::label("Edit light")))
                         openInspector(InspectorPage::light);
                     ImGui::EndPopup();
                 }
@@ -2917,33 +2924,35 @@ void Application::buildUi() {
     if (uiState_.performanceVisible && ImGui::Begin(workspaceWindowName("Performance", "performance").c_str())) {
         const auto& totals = frameProfiler_.totals();
         ImGui::TextUnformatted(frameProfiler_.report().c_str());
-        ImGui::Text("Upload: %.2f MiB/frame", totals.frames == 0 ? 0.0
-                                                                 : static_cast<double>(totals.uploadBytes) /
-                                                                       static_cast<double>(totals.frames) / 1048576.0);
-        ImGui::Text("Geometry: %llu vertices / %llu draws per frame",
+        ImGui::Text(ui::tr("Upload: %.2f MiB/frame"),
+                    totals.frames == 0
+                        ? 0.0
+                        : static_cast<double>(totals.uploadBytes) / static_cast<double>(totals.frames) / 1048576.0);
+        ImGui::Text(ui::tr("Geometry: %llu vertices / %llu draws per frame"),
                     static_cast<unsigned long long>(totals.frames == 0 ? 0 : totals.vertices / totals.frames),
                     static_cast<unsigned long long>(totals.frames == 0 ? 0 : totals.draws / totals.frames));
-        if (ImGui::Button("Reset profiler"))
+        if (ImGui::Button(ui::label("Reset profiler")))
             frameProfiler_.reset();
     }
     if (uiState_.performanceVisible)
         ImGui::End();
 
     if (uiState_.sceneVisible && ImGui::Begin(workspaceWindowName("Scene", "scene").c_str())) {
-        if (ImGui::Selectable("Scene / Background", uiState_.inspectScene)) {
+        if (ImGui::Selectable(ui::label("Scene / Background"), uiState_.inspectScene)) {
             uiState_.inspectScene = true;
             inspectorPage_ = InspectorPage::selection;
         }
-        ImGui::InputTextWithHint("##scene-filter", "Search scene...", uiState_.sceneFilter.data(),
+        ImGui::InputTextWithHint("##scene-filter", ui::tr("Search scene..."), uiState_.sceneFilter.data(),
                                  uiState_.sceneFilter.size());
-        ImGui::SeparatorText("Models");
+        ImGui::SeparatorText(ui::tr("Models"));
         for (const auto& instance : scene_.models()) {
             if (uiState_.sceneFilter[0] != '\0' &&
                 instance.displayName.find(uiState_.sceneFilter.data()) == std::string::npos)
                 continue;
             ImGui::PushID(static_cast<int>(instance.id));
             bool selected = !uiState_.inspectScene && scene_.selectedModelId() == instance.id;
-            const auto label = std::string(instance.visible ? "[visible]  " : "[hidden]  ") + instance.displayName;
+            const auto label = std::string(ui::tr(instance.visible ? "[visible]  " : "[hidden]  ")) +
+                               instance.displayName + "###model-" + std::to_string(instance.id);
             if (ImGui::Selectable(label.c_str(), selected)) {
                 uiState_.inspectScene = false;
                 inspectorPage_ = InspectorPage::selection;
@@ -2953,14 +2962,14 @@ void Application::buildUi() {
                 refreshPreviewScene();
             }
             if (ImGui::BeginPopupContextItem("scene-item-context")) {
-                ImGui::MenuItem("Rename", nullptr, false, false);
-                ImGui::MenuItem("Duplicate / Clone", nullptr, false, false);
-                if (ImGui::MenuItem("Open Source Folder")) {
+                ImGui::MenuItem(ui::label("Rename"), nullptr, false, false);
+                ImGui::MenuItem(ui::label("Duplicate / Clone"), nullptr, false, false);
+                if (ImGui::MenuItem(ui::label("Open Source Folder"))) {
                     const auto url = "file://" + instance.sourcePath.parent_path().generic_string();
                     if (!SDL_OpenURL(url.c_str()))
-                        lastAsset_ = std::string("Open folder: ") + SDL_GetError();
+                        lastAsset_ = ui::Message("Open folder: {0}", {SDL_GetError()});
                 }
-                ImGui::MenuItem("Set External Parent", nullptr, false, false);
+                ImGui::MenuItem(ui::label("Set External Parent"), nullptr, false, false);
                 ImGui::EndPopup();
             }
             ImGui::PopID();
@@ -2970,37 +2979,39 @@ void Application::buildUi() {
         ImGui::End();
 
     if (uiState_.physicsVisible && ImGui::Begin(workspaceWindowName("Physics", "physics").c_str())) {
-        ImGui::Text("Timeline: %.1f / %.1f frames", animationFrame_, scene_.timeline().duration);
-        ImGui::Checkbox("Repeat", &repeat_);
-        if (ImGui::SliderFloat("Playback speed", &playbackSpeed_, 0.1F, 4.0F, "%.2fx"))
+        ImGui::Text(ui::tr("Timeline: %.1f / %.1f frames"), animationFrame_, scene_.timeline().duration);
+        ImGui::Checkbox(ui::label("Repeat"), &repeat_);
+        if (ImGui::SliderFloat(ui::label("Playback speed"), &playbackSpeed_, 0.1F, 4.0F, "%.2fx"))
             restartAudioAtCurrentFrame();
         buildMediaPlaybackControls();
         if (!waveformPeaks_.empty()) {
-            ImGui::PlotLines("Waveform", waveformPeaks_.data(), static_cast<int>(waveformPeaks_.size()), 0, nullptr,
-                             0.0F, 1.0F, {0.0F, 72.0F});
+            ImGui::PlotLines(ui::label("Waveform"), waveformPeaks_.data(), static_cast<int>(waveformPeaks_.size()), 0,
+                             nullptr, 0.0F, 1.0F, {0.0F, 72.0F});
         }
         auto settings = scene_.physicsSettings();
-        bool physicsChanged = ImGui::DragFloat("Gravity", &settings.gravity, 0.01F, 0.0F, 100.0F);
-        physicsChanged |= ImGui::DragFloat3("Gravity direction", settings.gravityDirection.data(), 0.01F);
-        physicsChanged |= ImGui::DragFloat("Gravity noise amplitude", &settings.noiseAmplitude, 0.01F, 0.0F, 100.0F);
-        physicsChanged |= ImGui::DragFloat("Gravity noise frequency", &settings.noiseFrequency, 0.01F, 0.0F, 100.0F);
-        physicsChanged |= ImGui::Checkbox("Floor collision", &settings.floorCollision);
+        bool physicsChanged = ImGui::DragFloat(ui::label("Gravity"), &settings.gravity, 0.01F, 0.0F, 100.0F);
+        physicsChanged |= ImGui::DragFloat3(ui::label("Gravity direction"), settings.gravityDirection.data(), 0.01F);
+        physicsChanged |=
+            ImGui::DragFloat(ui::label("Gravity noise amplitude"), &settings.noiseAmplitude, 0.01F, 0.0F, 100.0F);
+        physicsChanged |=
+            ImGui::DragFloat(ui::label("Gravity noise frequency"), &settings.noiseFrequency, 0.01F, 0.0F, 100.0F);
+        physicsChanged |= ImGui::Checkbox(ui::label("Floor collision"), &settings.floorCollision);
         if (physicsChanged)
             scene_.setPhysicsSettings(settings);
         int runtimeMode = static_cast<int>(scene_.runtimeMode());
-        if (ImGui::Combo("Runtime mode", &runtimeMode, "Accumulate\0Realtime\0Idle\0")) {
+        if (ImGui::Combo(ui::label("Runtime mode"), &runtimeMode, ui::items("Accumulate|Realtime|Idle"))) {
             history_.execute(scene_, std::make_unique<core::SetRuntimeModeCommand>(
                                          scene_.runtimeMode(), static_cast<core::RuntimeMode>(runtimeMode)));
         }
-        ImGui::Text("Accumulated samples: %llu", static_cast<unsigned long long>(scene_.accumulatedSamples()));
-        if (ImGui::Button("Reset physics") && model != nullptr && model->physics != nullptr)
+        ImGui::Text(ui::tr("Accumulated samples: %llu"), static_cast<unsigned long long>(scene_.accumulatedSamples()));
+        if (ImGui::Button(ui::label("Reset physics")) && model != nullptr && model->physics != nullptr)
             model->physics->reset();
         ImGui::SameLine();
-        if (ImGui::Button("Update one frame") && model != nullptr) {
+        if (ImGui::Button(ui::label("Update one frame")) && model != nullptr) {
             refreshAnimatedMesh(false, 1.0F / 30.0F);
             refreshPreviewScene();
         }
-        ImGui::Checkbox("Rigid body debug", &physicsDebug_);
+        ImGui::Checkbox(ui::label("Rigid body debug"), &physicsDebug_);
         if (physicsDebug_ && model != nullptr && model->physics != nullptr) {
             const auto count = model->physics->bodyCount();
             if (ImGui::BeginChild("rigid-body-debug", {0.0F, 120.0F}, true)) {
@@ -3009,7 +3020,7 @@ void Application::buildUi() {
                 while (clipper.Step())
                     for (int body = clipper.DisplayStart; body < clipper.DisplayEnd; ++body) {
                         const auto transform = model->physics->bodyTransform(static_cast<std::size_t>(body));
-                        ImGui::Text("%d  mode %u  P %.2f %.2f %.2f", body,
+                        ImGui::Text(ui::tr("%d  mode %u  P %.2f %.2f %.2f"), body,
                                     model->physics->bodyMode(static_cast<std::size_t>(body)), transform.position[0],
                                     transform.position[1], transform.position[2]);
                     }
@@ -3101,90 +3112,110 @@ void Application::setWorkspace(ui::Workspace workspace) {
 
 void Application::buildMainMenuBar() {
 #if DAYO_HAS_IMGUI
+    ui::localizeImGui();
     if (!ImGui::BeginMainMenuBar())
         return;
-    if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("Save", "Ctrl+S"))
+    if (ImGui::BeginMenu(ui::label("File"))) {
+        if (ImGui::MenuItem(ui::label("Save"), "Ctrl+S"))
             saveProjectNow();
-        if (ImGui::MenuItem("Save As..."))
+        if (ImGui::MenuItem(ui::label("Save As...")))
             uiState_.saveAsOpen = true;
         ImGui::Separator();
-        if (ImGui::MenuItem("Quit", "Alt+F4")) {
+        if (ImGui::MenuItem(ui::label("Quit"), "Alt+F4")) {
             SDL_Event event{};
             event.type = SDL_EVENT_QUIT;
             SDL_PushEvent(&event);
         }
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Edit")) {
+    if (ImGui::BeginMenu(ui::label("Edit"))) {
         const bool canUndo = history_.canUndo();
         const bool canRedo = history_.canRedo();
-        if (ImGui::MenuItem("Undo", "Ctrl+Z", false, canUndo) && history_.undo(scene_)) {
+        if (ImGui::MenuItem(ui::label("Undo"), "Ctrl+Z", false, canUndo) && history_.undo(scene_)) {
             animationFrame_ = scene_.timeline().frame;
             refreshAnimatedMesh(false);
             refreshPreviewScene();
         }
-        if (ImGui::MenuItem("Redo", "Ctrl+Y", false, canRedo) && history_.redo(scene_)) {
+        if (ImGui::MenuItem(ui::label("Redo"), "Ctrl+Y", false, canRedo) && history_.redo(scene_)) {
             animationFrame_ = scene_.timeline().frame;
             refreshAnimatedMesh(false);
             refreshPreviewScene();
         }
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("View")) {
-        if (ImGui::MenuItem("Scene", nullptr, &uiState_.sceneVisible))
+    if (ImGui::BeginMenu(ui::label("View"))) {
+        if (ImGui::MenuItem(ui::label("Scene"), nullptr, &uiState_.sceneVisible))
             uiState_.resetLayoutRequested = true;
-        if (ImGui::MenuItem("Inspector", nullptr, &uiState_.inspectorVisible))
+        if (ImGui::MenuItem(ui::label("Inspector"), nullptr, &uiState_.inspectorVisible))
             uiState_.resetLayoutRequested = true;
-        if (ImGui::MenuItem("Timeline", nullptr, &uiState_.timelineVisible))
+        if (ImGui::MenuItem(ui::label("Timeline"), nullptr, &uiState_.timelineVisible))
             uiState_.resetLayoutRequested = true;
-        ImGui::MenuItem("Status bar", nullptr, &uiState_.statusBarVisible);
+        ImGui::MenuItem(ui::label("Status bar"), nullptr, &uiState_.statusBarVisible);
         ImGui::Separator();
-        if (ImGui::MenuItem("Reset Layout")) {
+        if (ImGui::MenuItem(ui::label("Reset Layout"))) {
             uiState_.resetLayoutRequested = true;
         }
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Media")) {
+    if (ImGui::BeginMenu(ui::label("Media"))) {
         buildMediaPlaybackControls();
-        if (ImGui::MenuItem("Open Timeline")) {
+        if (ImGui::MenuItem(ui::label("Open Timeline"))) {
             uiState_.timelineVisible = true;
             uiState_.resetLayoutRequested = true;
         }
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Animation")) {
-        if (ImGui::MenuItem(playing_ ? "Pause" : "Play", "Space")) {
+    if (ImGui::BeginMenu(ui::label("Animation"))) {
+        if (ImGui::MenuItem(playing_ ? ui::label("Pause") : ui::label("Play"), "Space")) {
             playing_ = !playing_;
             restartAudioAtCurrentFrame();
         }
-        ImGui::MenuItem("Loop", nullptr, &repeat_);
+        ImGui::MenuItem(ui::label("Loop"), nullptr, &repeat_);
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Render")) {
-        if (ImGui::MenuItem("Export Video..."))
+    if (ImGui::BeginMenu(ui::label("Render"))) {
+        if (ImGui::MenuItem(ui::label("Export Video...")))
             uiState_.videoExportOpen = true;
-        if (ImGui::MenuItem("Export Audio..."))
+        if (ImGui::MenuItem(ui::label("Export Audio...")))
             uiState_.audioExportOpen = true;
-        if (ImGui::MenuItem("Export Image Sequence...")) {
+        if (ImGui::MenuItem(ui::label("Export Image Sequence..."))) {
             uiState_.imageSequenceExportOpen = true;
             setWorkspace(ui::Workspace::render);
         }
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Help")) {
-        ImGui::TextUnformatted("Space  Play / Pause");
-        ImGui::TextUnformatted("Ctrl+Z / Ctrl+Y  Undo / Redo");
-        ImGui::TextUnformatted("Left-drag: Orbit / Right-drag: Pan / Wheel: Zoom / Right-click: Reset view");
+    if (ImGui::BeginMenu(ui::label("Help"))) {
+        ImGui::TextUnformatted(ui::tr("Space  Play / Pause"));
+        ImGui::TextUnformatted(ui::tr("Ctrl+Z / Ctrl+Y  Undo / Redo"));
+        ImGui::TextUnformatted(ui::tr("Left-drag: Orbit / Right-drag: Pan / Wheel: Zoom / Right-click: Reset view"));
         ImGui::EndMenu();
     }
-    ImGui::Separator();
-    ImGui::TextUnformatted("Workspace");
+    if (ImGui::BeginMenu(ui::label("Language"))) {
+        for (const auto candidate : ui::languages) {
+            if (ImGui::MenuItem(ui::languageName(candidate), nullptr, ui::language() == candidate)) {
+                ui::setLanguage(candidate);
+                languageSaveFailed_ = !ui::persistEditorLanguage();
+            }
+        }
+        if (languageSaveFailed_)
+            ImGui::TextUnformatted(ui::tr("Could not save language preference."));
+        ImGui::EndMenu();
+    }
+    ImGui::EndMainMenuBar();
+    if (!ImGui::BeginViewportSideBar("##workspace-bar", ImGui::GetMainViewport(), ImGuiDir_Up,
+                                     ImGui::GetFrameHeightWithSpacing(),
+                                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::End();
+        return;
+    }
+    ImGui::TextUnformatted(ui::tr("Workspace"));
     ImGui::PushID("WorkspaceSelector");
-    const auto workspaceButton = [&](const char* label, ui::Workspace workspace) {
+    const auto workspaceButton = [&](const char* source, ui::Workspace workspace) {
+        const auto* label = ui::label(source);
         ImGui::SameLine();
-        if (ImGui::Selectable(label, uiState_.workspace == workspace, ImGuiSelectableFlags_DontClosePopups,
-                              {ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0F, 0}))
+        if (ImGui::Selectable(
+                label, uiState_.workspace == workspace, ImGuiSelectableFlags_DontClosePopups,
+                {ImGui::CalcTextSize(label, nullptr, true).x + ImGui::GetStyle().FramePadding.x * 2.0F, 0}))
             setWorkspace(workspace);
     };
     workspaceButton("Layout", ui::Workspace::layout);
@@ -3193,7 +3224,7 @@ void Application::buildMainMenuBar() {
     workspaceButton("Render", ui::Workspace::render);
     workspaceButton("Debug", ui::Workspace::debug);
     ImGui::PopID();
-    ImGui::EndMainMenuBar();
+    ImGui::End();
 #endif
 }
 
@@ -3296,43 +3327,44 @@ void Application::buildCameraLightControls() {
         refreshPreviewScene();
     };
     const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
-    ImGui::Text("Frame %u  |  Camera / Lighting", frame);
+    ImGui::Text(ui::tr("Frame %u  |  Camera / Lighting"), frame);
     ImGui::TextWrapped(
-        "Changes preview immediately. Register a key to save them at this frame; Ctrl+Z undoes registration.");
-    ImGui::TextWrapped("Register a key before exporting a VMD for reuse.");
+        "%s",
+        ui::tr("Changes preview immediately. Register a key to save them at this frame; Ctrl+Z undoes registration."));
+    ImGui::TextWrapped("%s", ui::tr("Register a key before exporting a VMD for reuse."));
     ImGui::PushItemWidth(-ImGui::GetFontSize() * 9.0F);
 
     if (inspectorPage_ == InspectorPage::camera) {
         if (!cameraEditPreview_)
             captureCameraForEditing();
-        ImGui::SeparatorText("Camera");
-        if (ImGui::Button("Use current view")) {
+        ImGui::SeparatorText(ui::tr("Camera"));
+        if (ImGui::Button(ui::label("Use current view"))) {
             captureCameraForEditing();
             manualCamera_ = false;
             followVmdCamera_ = false;
             cameraEditPreview_ = true;
             refreshPreviewScene();
         }
-        if (ImGui::Button("Revert to animation##camera")) {
+        if (ImGui::Button(ui::label("Revert to animation##camera"))) {
             cameraEditPreview_ = false;
             manualCamera_ = false;
             followVmdCamera_ = true;
             captureCameraForEditing();
             refreshPreviewScene();
         }
-        ImGui::Checkbox("Realtime camera recording (Space registers)", &recordCamera_);
+        ImGui::Checkbox(ui::label("Realtime camera recording (Space registers)"), &recordCamera_);
         bool changed = false;
-        changed |= ImGui::DragFloat3("Target", editedCamera_.position.data(), 0.01F);
-        changed |= ImGui::DragFloat3("Rotation (radians)", editedCamera_.rotation.data(), 0.01F);
-        changed |= ImGui::DragFloat("Distance", &editedCamera_.distance, 0.1F);
+        changed |= ImGui::DragFloat3(ui::label("Target"), editedCamera_.position.data(), 0.01F);
+        changed |= ImGui::DragFloat3(ui::label("Rotation (radians)"), editedCamera_.rotation.data(), 0.01F);
+        changed |= ImGui::DragFloat(ui::label("Distance"), &editedCamera_.distance, 0.1F);
         if (editedCamera_.viewAngle <= 0.0F)
             editedCamera_.viewAngle = 30.0F;
-        changed |= ImGui::SliderFloat("Field of view", &editedCamera_.viewAngle, 1.0F, 179.0F, "%.1f deg");
-        changed |= ImGui::Checkbox("Perspective", &editedCamera_.perspective);
-        if (ImGui::CollapsingHeader("Camera parent (advanced)")) {
-            ImGui::InputInt("Parent model", &editedCamera_.parentModel);
-            ImGui::InputInt("Parent bone", &editedCamera_.parentBone);
-            ImGui::InputText("Parent bone name", cameraParentBoneName_.data(), cameraParentBoneName_.size());
+        changed |= ImGui::SliderFloat(ui::label("Field of view"), &editedCamera_.viewAngle, 1.0F, 179.0F, "%.1f deg");
+        changed |= ImGui::Checkbox(ui::label("Perspective"), &editedCamera_.perspective);
+        if (ImGui::CollapsingHeader(ui::label("Camera parent (advanced)"))) {
+            ImGui::InputInt(ui::label("Parent model"), &editedCamera_.parentModel);
+            ImGui::InputInt(ui::label("Parent bone"), &editedCamera_.parentBone);
+            ImGui::InputText(ui::label("Parent bone name"), cameraParentBoneName_.data(), cameraParentBoneName_.size());
         }
         if (changed) {
             manualCamera_ = false;
@@ -3340,7 +3372,7 @@ void Application::buildCameraLightControls() {
             cameraEditPreview_ = true;
             refreshPreviewScene();
         }
-        if (ImGui::Button("Register camera key")) {
+        if (ImGui::Button(ui::label("Register camera key"))) {
             core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
             auto document = core::toMotionDocument(before);
             editedCamera_.frame = frame;
@@ -3357,22 +3389,22 @@ void Application::buildCameraLightControls() {
     if (inspectorPage_ == InspectorPage::light) {
         if (!lightEditPreview_)
             captureLightForEditing();
-        ImGui::SeparatorText("Directional light");
-        if (ImGui::Button("Revert to animation##light")) {
+        ImGui::SeparatorText(ui::tr("Directional light"));
+        if (ImGui::Button(ui::label("Revert to animation##light"))) {
             lightEditPreview_ = false;
             captureLightForEditing();
             scene_.markDirty(core::DirtyFlag::lighting);
             refreshPreviewScene();
         }
         bool changed = false;
-        changed |= ImGui::ColorEdit3("Color", editedLight_.color.data());
-        changed |= ImGui::DragFloat3("Direction", editedLight_.position.data(), 0.01F, -1.0F, 1.0F);
+        changed |= ImGui::ColorEdit3(ui::label("Color"), editedLight_.color.data());
+        changed |= ImGui::DragFloat3(ui::label("Direction"), editedLight_.position.data(), 0.01F, -1.0F, 1.0F);
         if (changed) {
             lightEditPreview_ = true;
             scene_.markDirty(core::DirtyFlag::lighting);
             refreshPreviewScene();
         }
-        if (ImGui::Button("Register light key")) {
+        if (ImGui::Button(ui::label("Register light key"))) {
             core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
             auto document = core::toMotionDocument(before);
             editedLight_.frame = frame;
@@ -3384,12 +3416,12 @@ void Application::buildCameraLightControls() {
             execute(std::move(before), std::move(document), "Register light key");
         }
     }
-    if (inspectorPage_ == InspectorPage::light && ImGui::CollapsingHeader("Self shadow")) {
+    if (inspectorPage_ == InspectorPage::light && ImGui::CollapsingHeader(ui::label("Self shadow"))) {
         int shadowMode = editedShadow_.mode;
-        if (ImGui::Combo("Mode##self-shadow-mode", &shadowMode, "None\0Mode 1\0Mode 2\0"))
+        if (ImGui::Combo(ui::label("Mode##self-shadow-mode"), &shadowMode, ui::items("None|Mode 1|Mode 2")))
             editedShadow_.mode = static_cast<std::uint8_t>(shadowMode);
-        ImGui::DragFloat("Shadow distance", &editedShadow_.distance, 0.1F, 0.0F, 10'000.0F);
-        if (ImGui::Button("Register self shadow")) {
+        ImGui::DragFloat(ui::label("Shadow distance"), &editedShadow_.distance, 0.1F, 0.0F, 10'000.0F);
+        if (ImGui::Button(ui::label("Register self shadow"))) {
             core::VmdMotion before = scene_.cameraMotion() ? *scene_.cameraMotion() : core::VmdMotion{};
             auto document = core::toMotionDocument(before);
             editedShadow_.frame = frame;
@@ -3399,9 +3431,9 @@ void Application::buildCameraLightControls() {
             execute(std::move(before), std::move(document), "Register self shadow key");
         }
     }
-    ImGui::SeparatorText("Reusable camera / light motion");
-    ImGui::InputText("VMD file##camera-light", cameraLightVmdPath_.data(), cameraLightVmdPath_.size());
-    if (inspectorPage_ == InspectorPage::camera && ImGui::Button("Export camera VMD")) {
+    ImGui::SeparatorText(ui::tr("Reusable camera / light motion"));
+    ImGui::InputText(ui::label("VMD file##camera-light"), cameraLightVmdPath_.data(), cameraLightVmdPath_.size());
+    if (inspectorPage_ == InspectorPage::camera && ImGui::Button(ui::label("Export camera VMD"))) {
         try {
             if (cameraLightVmdPath_[0] == '\0')
                 throw std::invalid_argument("Choose a VMD destination");
@@ -3417,7 +3449,7 @@ void Application::buildCameraLightControls() {
             cameraLightVmdStatus_ = error.what();
         }
     }
-    if (inspectorPage_ == InspectorPage::light && ImGui::Button("Export light VMD")) {
+    if (inspectorPage_ == InspectorPage::light && ImGui::Button(ui::label("Export light VMD"))) {
         try {
             if (cameraLightVmdPath_[0] == '\0')
                 throw std::invalid_argument("Choose a VMD destination");
@@ -3433,7 +3465,7 @@ void Application::buildCameraLightControls() {
             cameraLightVmdStatus_ = error.what();
         }
     }
-    if (inspectorPage_ == InspectorPage::camera && ImGui::Button("Import camera keys")) {
+    if (inspectorPage_ == InspectorPage::camera && ImGui::Button(ui::label("Import camera keys"))) {
         try {
             if (cameraLightVmdPath_[0] == '\0')
                 throw std::invalid_argument("Choose a VMD source");
@@ -3453,7 +3485,7 @@ void Application::buildCameraLightControls() {
             cameraLightVmdStatus_ = error.what();
         }
     }
-    if (inspectorPage_ == InspectorPage::light && ImGui::Button("Import light keys")) {
+    if (inspectorPage_ == InspectorPage::light && ImGui::Button(ui::label("Import light keys"))) {
         try {
             if (cameraLightVmdPath_[0] == '\0')
                 throw std::invalid_argument("Choose a VMD source");
@@ -3473,7 +3505,7 @@ void Application::buildCameraLightControls() {
         }
     }
     if (!cameraLightVmdStatus_.empty())
-        ImGui::TextWrapped("%s", cameraLightVmdStatus_.c_str());
+        ImGui::TextWrapped("%s", ui::tr(cameraLightVmdStatus_.c_str()));
     ImGui::PopItemWidth();
 #endif
 }
@@ -3492,13 +3524,13 @@ void Application::buildInspectorPanel() {
         ImGui::End();
         return;
     }
-    if (ImGui::RadioButton("Selection", inspectorPage_ == InspectorPage::selection))
+    if (ImGui::RadioButton(ui::label("Selection"), inspectorPage_ == InspectorPage::selection))
         inspectorPage_ = InspectorPage::selection;
     ImGui::SameLine();
-    if (ImGui::RadioButton("Camera", inspectorPage_ == InspectorPage::camera))
+    if (ImGui::RadioButton(ui::label("Camera"), inspectorPage_ == InspectorPage::camera))
         inspectorPage_ = InspectorPage::camera;
     ImGui::SameLine();
-    if (ImGui::RadioButton("Light", inspectorPage_ == InspectorPage::light))
+    if (ImGui::RadioButton(ui::label("Light"), inspectorPage_ == InspectorPage::light))
         inspectorPage_ = InspectorPage::light;
     ImGui::Separator();
     if (inspectorPage_ == InspectorPage::selection && timelineEditor_.drawInspector(scene_, history_)) {
@@ -3517,7 +3549,7 @@ void Application::buildInspectorPanel() {
         }
     }
     if (inspectorPage_ == InspectorPage::selection && !timelineEditor_.selection().empty()) {
-        if (ImGui::Button("Clear key selection")) {
+        if (ImGui::Button(ui::label("Clear key selection"))) {
             timelineEditor_.clearSelection();
         } else {
             ImGui::End();
@@ -3530,73 +3562,75 @@ void Application::buildInspectorPanel() {
         return;
     }
     if (uiState_.inspectScene || model == nullptr || model->model == nullptr) {
-        ImGui::TextUnformatted("Scene settings");
-        if (ImGui::CollapsingHeader("Scene", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextUnformatted(ui::tr("Scene settings"));
+        if (ImGui::CollapsingHeader(ui::label("Scene"), ImGuiTreeNodeFlags_DefaultOpen)) {
             auto background = scene_.background();
             int source = static_cast<int>(background.screenSource);
             if (ImGui::BeginTable("scene-properties", 2, ImGuiTableFlags_SizingStretchProp)) {
-                ImGui::TableSetupColumn("Property", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 10.0F);
-                ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableSetupColumn(ui::label("Property"), ImGuiTableColumnFlags_WidthFixed,
+                                        ImGui::GetFontSize() * 10.0F);
+                ImGui::TableSetupColumn(ui::label("Value"), ImGuiTableColumnFlags_WidthStretch);
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
-                ImGui::TextUnformatted("Background");
+                ImGui::TextUnformatted(ui::tr("Background"));
                 ImGui::TableSetColumnIndex(1);
-                if (ImGui::Combo("##background-source", &source, "Previous frame\0Video\0Image\0White\0")) {
+                if (ImGui::Combo("##background-source", &source, ui::items("Previous frame|Video|Image|White"))) {
                     selectBackgroundSource(static_cast<core::ScreenTextureSource>(source));
                 }
                 ImGui::EndTable();
             }
             bool enabled = background.enabled;
-            if (ImGui::Checkbox("Enabled", &enabled)) {
+            if (ImGui::Checkbox(ui::label("Enabled"), &enabled)) {
                 scene_.setBackgroundEnabled(enabled);
                 refreshPreviewScene();
             }
             buildMediaBackgroundUi();
-            ImGui::SeparatorText("Preview lighting");
-            ImGui::InputText("HDRI file", previewHdriPath_.data(), previewHdriPath_.size());
-            if (ImGui::Button("Apply lighting HDRI")) {
+            ImGui::SeparatorText(ui::tr("Preview lighting"));
+            ImGui::InputText(ui::label("HDRI file"), previewHdriPath_.data(), previewHdriPath_.size());
+            if (ImGui::Button(ui::label("Apply lighting HDRI"))) {
                 projectEditorState_.skyboxFile = previewHdriPath_.data();
                 failedPreviewHdriPath_.clear();
                 scene_.markDirty(core::DirtyFlag::lighting);
             }
             ImGui::SameLine();
-            if (ImGui::Button("Use background lighting")) {
+            if (ImGui::Button(ui::label("Use background lighting"))) {
                 projectEditorState_.skyboxFile.clear();
                 previewHdriPath_.fill(0);
                 failedPreviewHdriPath_.clear();
                 scene_.markDirty(core::DirtyFlag::lighting);
             }
             if (!previewHdriError_.empty())
-                ImGui::TextWrapped("Lighting HDRI: %s", previewHdriError_.c_str());
+                ImGui::TextWrapped(ui::tr("Lighting HDRI: %s"), previewHdriError_.c_str());
         }
         ImGui::End();
         return;
     }
 
-    ImGui::Text("Model: %s", model->displayName.c_str());
-    ImGui::TextDisabled("PMX  ·  %zu bones  ·  %zu morphs", model->model->bones.size(), model->model->morphs.size());
+    ImGui::Text(ui::tr("Model: %s"), model->displayName.c_str());
+    ImGui::TextDisabled(ui::tr("PMX  ·  %zu bones  ·  %zu morphs"), model->model->bones.size(),
+                        model->model->morphs.size());
     ImGui::Separator();
-    if (ImGui::CollapsingHeader("Model", uiState_.workspace == ui::Workspace::animation
-                                             ? ImGuiTreeNodeFlags_None
-                                             : ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader(ui::label("Model"), uiState_.workspace == ui::Workspace::animation
+                                                        ? ImGuiTreeNodeFlags_None
+                                                        : ImGuiTreeNodeFlags_DefaultOpen)) {
         bool visible = model->visible;
-        if (ImGui::Checkbox("Visible", &visible)) {
+        if (ImGui::Checkbox(ui::label("Visible"), &visible)) {
             scene_.setModelVisible(model->id, visible);
             refreshAnimatedMesh(true);
         }
         int clones = static_cast<int>(model->cloneCount);
-        if (ImGui::DragInt("Clone count", &clones, 1.0F, 1, 16)) {
+        if (ImGui::DragInt(ui::label("Clone count"), &clones, 1.0F, 1, 16)) {
             scene_.setCloneCount(model->id, static_cast<std::uint32_t>(clones));
             refreshAnimatedMesh(true);
         }
-        ImGui::TextDisabled("Source: %s", model->sourcePath.filename().string().c_str());
+        ImGui::TextDisabled(ui::tr("Source: %s"), model->sourcePath.filename().string().c_str());
         ImGui::TextDisabled("%s", model->model->metadata.comment.c_str());
     }
-    if (ImGui::CollapsingHeader("Bone / Morph", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader(ui::label("Bone / Morph"), ImGuiTreeNodeFlags_DefaultOpen)) {
         const auto& bones = model->model->bones;
         if (!bones.empty()) {
             selectedBone_ = std::clamp(selectedBone_, 0, static_cast<int>(bones.size() - 1));
-            if (ImGui::BeginCombo("Bone##InspectorBoneSelector",
+            if (ImGui::BeginCombo(ui::label("Bone##InspectorBoneSelector"),
                                   bones[static_cast<std::size_t>(selectedBone_)].name.c_str())) {
                 for (std::size_t index = 0; index < bones.size(); ++index) {
                     ImGui::PushID(static_cast<int>(index));
@@ -3606,10 +3640,10 @@ void Application::buildInspectorPanel() {
                 }
                 ImGui::EndCombo();
             }
-            ImGui::DragFloat3("Position", editedBoneTranslation_.data(), 0.01F);
-            ImGui::DragFloat4("Rotation", editedBoneRotation_.data(), 0.01F, -1.0F, 1.0F);
-            ImGui::Checkbox("Physics", &editedBonePhysics_);
-            if (ImGui::Button("Register Bone Key")) {
+            ImGui::DragFloat3(ui::label("Position"), editedBoneTranslation_.data(), 0.01F);
+            ImGui::DragFloat4(ui::label("Rotation"), editedBoneRotation_.data(), 0.01F, -1.0F, 1.0F);
+            ImGui::Checkbox(ui::label("Physics"), &editedBonePhysics_);
+            if (ImGui::Button(ui::label("Register Bone Key"))) {
                 const auto before = model->motion ? *model->motion : core::VmdMotion{};
                 const auto outputModelName = before.modelName.empty() ? model->displayName : before.modelName;
                 auto document = core::toMotionDocument(before);
@@ -3630,7 +3664,7 @@ void Application::buildInspectorPanel() {
         const auto& morphs = model->model->morphs;
         if (!morphs.empty()) {
             selectedMorph_ = std::clamp(selectedMorph_, 0, static_cast<int>(morphs.size() - 1));
-            if (ImGui::BeginCombo("Morph##InspectorMorphSelector",
+            if (ImGui::BeginCombo(ui::label("Morph##InspectorMorphSelector"),
                                   morphs[static_cast<std::size_t>(selectedMorph_)].name.c_str())) {
                 for (std::size_t index = 0; index < morphs.size(); ++index) {
                     ImGui::PushID(static_cast<int>(index));
@@ -3643,7 +3677,7 @@ void Application::buildInspectorPanel() {
             const auto morphUi = core::fx::resolveFxMorphControllerUi(
                 scene_.effects(), *model, morphs[static_cast<std::size_t>(selectedMorph_)].name);
             drawMorphWeightControl(editedMorphWeight_, morphUi);
-            if (ImGui::Button("Register Morph Key")) {
+            if (ImGui::Button(ui::label("Register Morph Key"))) {
                 const auto before = model->motion ? *model->motion : core::VmdMotion{};
                 const auto outputModelName = before.modelName.empty() ? model->displayName : before.modelName;
                 auto document = core::toMotionDocument(before);
@@ -3661,17 +3695,17 @@ void Application::buildInspectorPanel() {
             }
         }
     }
-    if (ImGui::CollapsingHeader("Material", uiState_.workspace == ui::Workspace::animation
-                                                ? ImGuiTreeNodeFlags_None
-                                                : ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader(ui::label("Material"), uiState_.workspace == ui::Workspace::animation
+                                                           ? ImGuiTreeNodeFlags_None
+                                                           : ImGuiTreeNodeFlags_DefaultOpen)) {
         if (model->model->materials.empty()) {
-            ImGui::TextDisabled("No materials");
+            ImGui::TextDisabled("%s", ui::tr("No materials"));
         } else {
             int material = uiState_.selectedMaterial >= 0 &&
                                    uiState_.selectedMaterial < static_cast<std::int32_t>(model->model->materials.size())
                                ? uiState_.selectedMaterial
                                : 0;
-            if (ImGui::BeginCombo("Material##InspectorMaterialSelector",
+            if (ImGui::BeginCombo(ui::label("Material##InspectorMaterialSelector"),
                                   model->model->materials[static_cast<std::size_t>(material)].name.c_str())) {
                 for (std::size_t index = 0; index < model->model->materials.size(); ++index) {
                     ImGui::PushID(static_cast<int>(index));
@@ -3685,10 +3719,10 @@ void Application::buildInspectorPanel() {
                 ImGui::EndCombo();
             }
             const auto& selectedMaterial = model->model->materials[static_cast<std::size_t>(material)];
-            ImGui::Text("Diffuse %.2f  Specular %.2f  Edge %.3f", selectedMaterial.diffuse[0],
+            ImGui::Text(ui::tr("Diffuse %.2f  Specular %.2f  Edge %.3f"), selectedMaterial.diffuse[0],
                         selectedMaterial.specular[0], selectedMaterial.edgeSize);
             ImGui::TextWrapped(
-                "Base: %s",
+                ui::tr("Base: %s"),
                 selectedMaterial.textureIndex >= 0 &&
                         static_cast<std::size_t>(selectedMaterial.textureIndex) < model->model->textures.size()
                     ? mmd::pmx::resolveTexturePath(*model->model,
@@ -3696,29 +3730,32 @@ void Application::buildInspectorPanel() {
                           .filename()
                           .string()
                           .c_str()
-                    : "none");
+                    : ui::tr("none"));
             if (static_cast<std::size_t>(material) < model->materialSettings.size()) {
                 int preset = model->materialSettings[static_cast<std::size_t>(material)].previewPbrPreset;
-                if (ImGui::Combo("Preview material", &preset, "PMX\0Skin\0Hair\0Cloth\0Metal\0Plastic\0Glass\0")) {
+                if (ImGui::Combo(ui::label("Preview material"), &preset,
+                                 ui::items("PMX|Skin|Hair|Cloth|Metal|Plastic|Glass"))) {
                     model->materialSettings[static_cast<std::size_t>(material)].previewPbrPreset =
                         static_cast<std::uint8_t>(preset);
                     scene_.markDirty(core::DirtyFlag::material);
                     refreshAnimatedMesh(false);
                 }
             }
-            if (ImGui::Checkbox("Enable PMX outlines (preview)", &previewOutlineEnabled_))
+            if (ImGui::Checkbox(ui::label("Enable PMX outlines (preview)"), &previewOutlineEnabled_))
                 refreshPreviewScene();
         }
     }
-    if (uiState_.workspace == ui::Workspace::debug && ImGui::CollapsingHeader("Evaluation Order (experimental)")) {
-        ImGui::TextDisabled("Motion order drives animation evaluation. Other order fields are persisted; runtime "
-                            "scheduling support is partial.");
-        if (ImGui::DragInt("Motion", &model->order.motion, 1.0F, 0, 1024))
+    if (uiState_.workspace == ui::Workspace::debug &&
+        ImGui::CollapsingHeader(ui::label("Evaluation Order (experimental)"))) {
+        ImGui::TextDisabled(
+            "%s", ui::tr("Motion order drives animation evaluation. Other order fields are persisted; runtime "
+                         "scheduling support is partial."));
+        if (ImGui::DragInt(ui::label("Motion"), &model->order.motion, 1.0F, 0, 1024))
             scene_.markDirty(core::DirtyFlag::geometry);
         ImGui::BeginDisabled();
-        ImGui::DragInt("Deform", &model->order.deform, 1.0F, 0, 1024);
-        ImGui::DragInt("Postprocess", &model->order.postprocess, 1.0F, 0, 1024);
-        ImGui::DragInt("Raster", &model->order.raster, 1.0F, 0, 1024);
+        ImGui::DragInt(ui::label("Deform"), &model->order.deform, 1.0F, 0, 1024);
+        ImGui::DragInt(ui::label("Postprocess"), &model->order.postprocess, 1.0F, 0, 1024);
+        ImGui::DragInt(ui::label("Raster"), &model->order.raster, 1.0F, 0, 1024);
         ImGui::EndDisabled();
     }
     ImGui::End();
@@ -3728,23 +3765,23 @@ void Application::buildInspectorPanel() {
 void Application::buildSaveAsDialog() {
 #if DAYO_HAS_IMGUI
     if (uiState_.saveAsOpen) {
-        ImGui::OpenPopup("Save Project As");
+        ImGui::OpenPopup(ui::label("Save Project As"));
         uiState_.saveAsOpen = false;
     }
-    if (!ImGui::BeginPopupModal("Save Project As", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    if (!ImGui::BeginPopupModal(ui::label("Save Project As"), nullptr, ImGuiWindowFlags_AlwaysAutoResize))
         return;
-    ImGui::TextUnformatted("Choose a Dayo project destination.");
-    ImGui::InputText("Path", projectDestination_.data(), projectDestination_.size());
-    if (ImGui::Button("Save")) {
+    ImGui::TextUnformatted(ui::tr("Choose a Dayo project destination."));
+    ImGui::InputText(ui::label("Path"), projectDestination_.data(), projectDestination_.size());
+    if (ImGui::Button(ui::label("Save"))) {
         saveProjectAsNow();
         if (projectSaveStatus_ == "Project saved")
             ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Cancel"))
+    if (ImGui::Button(ui::label("Cancel")))
         ImGui::CloseCurrentPopup();
     if (!projectSaveStatus_.empty())
-        ImGui::TextWrapped("%s", projectSaveStatus_.c_str());
+        ImGui::TextWrapped("%s", ui::tr(projectSaveStatus_.c_str()));
     ImGui::EndPopup();
 #endif
 }
@@ -4069,14 +4106,14 @@ void Application::advanceImageSequenceExport() {
 void Application::buildImageSequenceExportUi() {
 #if DAYO_HAS_IMGUI
     if (uiState_.imageSequenceExportOpen) {
-        ImGui::OpenPopup("Export Image Sequence");
+        ImGui::OpenPopup(ui::label("Export Image Sequence"));
         uiState_.imageSequenceExportOpen = false;
     }
-    if (!ImGui::BeginPopupModal("Export Image Sequence", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    if (!ImGui::BeginPopupModal(ui::label("Export Image Sequence"), nullptr, ImGuiWindowFlags_AlwaysAutoResize))
         return;
     if (imageSequenceExportRunning_) {
         if (imageSequenceRestoring_) {
-            ImGui::TextUnformatted("Restoring preview state...");
+            ImGui::TextUnformatted(ui::tr("Restoring preview state..."));
         } else {
             const auto total = static_cast<std::uint64_t>(sequenceOutput_.lastFrame) -
                                static_cast<std::uint64_t>(sequenceOutput_.firstFrame) + 1U;
@@ -4086,18 +4123,19 @@ void Application::buildImageSequenceExportUi() {
                                                     : static_cast<std::uint64_t>(imageSequenceNextFrame_) -
                                                           static_cast<std::uint64_t>(sequenceOutput_.firstFrame))
                     : 0U;
-            ImGui::Text("Rendering %u / %u",
+            ImGui::Text(ui::tr("Rendering %u / %u"),
                         imageSequenceFramesFinished_ ? sequenceOutput_.lastFrame : imageSequenceNextFrame_,
                         sequenceOutput_.lastFrame);
             ImGui::ProgressBar(total == 0U ? 0.0F : static_cast<float>(completed) / static_cast<float>(total),
                                {-1.0F, 0.0F});
-            ImGui::Text("Current sample: %u / %u", imageSequenceSampleIndex_ + 1U, imageSequenceSampleCount_);
-            if (ImGui::Button("Cancel"))
+            ImGui::Text(ui::tr("Current sample: %u / %u"), imageSequenceSampleIndex_ + 1U, imageSequenceSampleCount_);
+            if (ImGui::Button(ui::label("Cancel")))
                 imageSequenceCancelRequested_ = true;
         }
     } else {
-        ImGui::InputText("Directory", sequenceOutputDirectory_.data(), sequenceOutputDirectory_.size());
-        if (ImGui::InputText("First filename", sequenceOutputFilename_.data(), sequenceOutputFilename_.size())) {
+        ImGui::InputText(ui::label("Directory"), sequenceOutputDirectory_.data(), sequenceOutputDirectory_.size());
+        if (ImGui::InputText(ui::label("First filename"), sequenceOutputFilename_.data(),
+                             sequenceOutputFilename_.size())) {
             const auto extension = std::filesystem::path(sequenceOutputFilename_.data()).extension().string();
             if (extension == ".png")
                 sequenceOutput_.format = core::OutputFormat::png;
@@ -4109,36 +4147,28 @@ void Application::buildImageSequenceExportUi() {
         int first = static_cast<int>(sequenceOutput_.firstFrame);
         int last = static_cast<int>(sequenceOutput_.lastFrame);
         int samples = static_cast<int>(sequenceOutput_.samples);
-        if (ImGui::InputInt("First frame", &first)) {
+        if (ImGui::InputInt(ui::label("First frame"), &first)) {
             sequenceOutput_.firstFrame = static_cast<std::uint32_t>(std::max(first, 0));
             projectEditorState_.recordStart = static_cast<std::int32_t>(sequenceOutput_.firstFrame);
         }
-        if (ImGui::InputInt("Last frame", &last)) {
+        if (ImGui::InputInt(ui::label("Last frame"), &last)) {
             sequenceOutput_.lastFrame = static_cast<std::uint32_t>(std::max(last, 0));
             projectEditorState_.recordEnd = static_cast<std::int32_t>(sequenceOutput_.lastFrame);
         }
-        if (ImGui::InputInt("Samples", &samples))
+        if (ImGui::InputInt(ui::label("Samples"), &samples))
             sequenceOutput_.samples = static_cast<std::uint32_t>(std::clamp(samples, 1, 4096));
-        ImGui::Combo("Preview render scale", &previewStillScale_,
-                     "1x\0"
-                     "1.33x\0"
-                     "2x\0");
+        ImGui::Combo(ui::label("Preview render scale"), &previewStillScale_, ui::items("1x|1.33x|2x"));
         int width = static_cast<int>(sequenceWidth_);
         int height = static_cast<int>(sequenceHeight_);
-        if (ImGui::InputInt("Width", &width)) {
+        if (ImGui::InputInt(ui::label("Width"), &width)) {
             sequenceWidth_ = static_cast<std::uint32_t>(std::max(width, 1));
             sequencePreset_ = 0;
         }
-        if (ImGui::InputInt("Height", &height)) {
+        if (ImGui::InputInt(ui::label("Height"), &height)) {
             sequenceHeight_ = static_cast<std::uint32_t>(std::max(height, 1));
             sequencePreset_ = 0;
         }
-        if (ImGui::Combo("Preset", &sequencePreset_,
-                         "Custom\0"
-                         "720p\0"
-                         "1080p\0"
-                         "1440p\0"
-                         "4K\0")) {
+        if (ImGui::Combo(ui::label("Preset"), &sequencePreset_, ui::items("Custom|720p|1080p|1440p|4K"))) {
             constexpr std::array<std::array<std::uint32_t, 2>, 5> presets{{
                 {0, 0},
                 {1280, 720},
@@ -4152,8 +4182,8 @@ void Application::buildImageSequenceExportUi() {
                 sequenceHeight_ = selected[1];
             }
         }
-        ImGui::Checkbox("Motion blur", &sequenceOutput_.motionBlur);
-        ImGui::Checkbox("Overwrite existing frames", &sequenceOutput_.overwrite);
+        ImGui::Checkbox(ui::label("Motion blur"), &sequenceOutput_.motionBlur);
+        ImGui::Checkbox(ui::label("Overwrite existing frames"), &sequenceOutput_.overwrite);
         int format = sequenceOutput_.format == core::OutputFormat::png   ? 1
                      : sequenceOutput_.format == core::OutputFormat::exr ? 2
                                                                          : 0;
@@ -4166,25 +4196,27 @@ void Application::buildImageSequenceExportUi() {
         format = std::min(format, formatCount - 1);
 #endif
         format = std::clamp(format, 0, formatCount - 1);
-        if (ImGui::Combo("Format", &format, formatNames))
+        if (ImGui::Combo(ui::label("Format"), &format, formatNames))
             sequenceOutput_.format = static_cast<core::OutputFormat>(format);
         try {
             auto previewSettings = sequenceOutput_;
             previewSettings.directory = sequenceOutputDirectory_.data();
             previewSettings.sequenceFile = sequenceOutputFilename_.data();
-            ImGui::TextWrapped("First output: %s", core::firstSequenceOutputPath(previewSettings).string().c_str());
-            ImGui::TextDisabled("Output numbers are independent of scene frames. Existing numbers are skipped unless "
-                                "overwrite is enabled.");
+            ImGui::TextWrapped(ui::tr("First output: %s"),
+                               core::firstSequenceOutputPath(previewSettings).string().c_str());
+            ImGui::TextDisabled(
+                "%s", ui::tr("Output numbers are independent of scene frames. Existing numbers are skipped unless "
+                             "overwrite is enabled."));
         } catch (const std::exception& error) {
-            ImGui::TextWrapped("%s", error.what());
+            ImGui::TextWrapped("%s", ui::tr(error.what()));
         }
-        if (ImGui::Button("Render sequence"))
+        if (ImGui::Button(ui::label("Render sequence")))
             startImageSequenceExport();
     }
     if (!sequenceOutputStatus_.empty())
-        ImGui::TextWrapped("%s", sequenceOutputStatus_.c_str());
+        ImGui::TextWrapped("%s", ui::tr(sequenceOutputStatus_.c_str()));
     ImGui::SameLine();
-    if (!imageSequenceExportRunning_ && ImGui::Button("Close"))
+    if (!imageSequenceExportRunning_ && ImGui::Button(ui::label("Close")))
         ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
 #endif
@@ -4200,27 +4232,29 @@ void Application::buildStatusBar() {
                            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollbar;
     if (ImGui::BeginViewportSideBar("##status-bar", viewport, ImGuiDir_Down, height, flags)) {
         if (ImGui::BeginTable("##editor-status", 5, ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 2.0F);
-            ImGui::TableSetupColumn("Model", ImGuiTableColumnFlags_WidthStretch, 1.0F);
-            ImGui::TableSetupColumn("Frame", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 9.0F);
-            ImGui::TableSetupColumn("FPS", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 5.0F);
-            ImGui::TableSetupColumn("Project", ImGuiTableColumnFlags_WidthStretch, 1.5F);
+            ImGui::TableSetupColumn(ui::label("Status"), ImGuiTableColumnFlags_WidthStretch, 2.0F);
+            ImGui::TableSetupColumn(ui::label("Model"), ImGuiTableColumnFlags_WidthStretch, 1.0F);
+            ImGui::TableSetupColumn(ui::label("Frame"), ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 9.0F);
+            ImGui::TableSetupColumn(ui::label("FPS"), ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 5.0F);
+            ImGui::TableSetupColumn(ui::label("Project"), ImGuiTableColumnFlags_WidthStretch, 1.5F);
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
-            ImGui::TextUnformatted(lastAsset_.c_str());
+            const auto statusText = lastAsset_.text();
+            ImGui::TextUnformatted(statusText.c_str());
             if (ImGui::IsItemHovered() && !lastAsset_.empty())
-                ImGui::SetTooltip("%s", lastAsset_.c_str());
+                ImGui::SetTooltip("%s", statusText.c_str());
             ImGui::TableSetColumnIndex(1);
             if (const auto* model = selectedModel())
                 ImGui::TextUnformatted(model->displayName.c_str());
             else
-                ImGui::TextDisabled("Scene");
+                ImGui::TextDisabled("%s", ui::tr("Scene"));
             ImGui::TableSetColumnIndex(2);
-            ImGui::Text("Frame %.0f / %.0f", animationFrame_, scene_.timeline().duration);
+            ImGui::Text(ui::tr("Frame %.0f / %.0f"), animationFrame_, scene_.timeline().duration);
             ImGui::TableSetColumnIndex(3);
-            ImGui::Text("%.0f FPS", ImGui::GetIO().Framerate);
+            ImGui::Text(ui::tr("%.0f FPS"), ImGui::GetIO().Framerate);
             ImGui::TableSetColumnIndex(4);
-            const std::string projectText = currentProjectPath_ ? currentProjectPath_->string() : "Untitled project";
+            const std::string projectText =
+                currentProjectPath_ ? currentProjectPath_->string() : ui::tr("Untitled project");
             ImGui::TextDisabled("%s", projectText.c_str());
             ImGui::EndTable();
         }
@@ -4253,7 +4287,7 @@ void Application::buildEditorUi() {
         if (ImGui::Button("<"))
             seekTimeline(std::max(0.0F, animationFrame_ - 1));
         ImGui::SameLine();
-        if (ImGui::Button(playing_ ? "Pause" : "Play")) {
+        if (ImGui::Button(playing_ ? ui::label("Pause") : ui::label("Play"))) {
             playing_ = !playing_;
             restartAudioAtCurrentFrame();
         }
@@ -4267,29 +4301,31 @@ void Application::buildEditorUi() {
         int frame = static_cast<int>(std::clamp(static_cast<double>(animationFrame_), 0.0,
                                                 static_cast<double>(std::numeric_limits<int>::max())));
         ImGui::SetNextItemWidth(85);
-        if (ImGui::InputInt("Frame", &frame, 0)) {
+        if (ImGui::InputInt(ui::label("Frame"), &frame, 0)) {
             playing_ = false;
             seekTimeline(std::clamp(static_cast<float>(frame), 0.0F, scene_.timeline().duration));
         }
         ImGui::SameLine();
-        if (ImGui::RadioButton("Model", !editGlobalMotion_))
+        if (ImGui::RadioButton(ui::label("Model"), !editGlobalMotion_))
             editGlobalMotion_ = false;
         ImGui::SameLine();
-        if (ImGui::RadioButton("Camera / light", editGlobalMotion_))
+        if (ImGui::RadioButton(ui::label("Camera / light"), editGlobalMotion_))
             editGlobalMotion_ = true;
         ImGui::SameLine();
-        if (ImGui::Button("Playback / media"))
+        if (ImGui::GetContentRegionAvail().x < ImGui::CalcTextSize(ui::tr("Playback / media")).x + 20.0F)
+            ImGui::NewLine();
+        if (ImGui::Button(ui::label("Playback / media")))
             ImGui::OpenPopup("timeline-playback");
         if (ImGui::BeginPopup("timeline-playback")) {
-            ImGui::Checkbox("Loop", &repeat_);
+            ImGui::Checkbox(ui::label("Loop"), &repeat_);
             ImGui::SetNextItemWidth(100);
-            if (ImGui::DragFloat("Speed", &playbackSpeed_, .01F, .1F, 4, "%.2fx"))
+            if (ImGui::DragFloat(ui::label("Speed"), &playbackSpeed_, .01F, .1F, 4, "%.2fx"))
                 restartAudioAtCurrentFrame();
-            ImGui::SeparatorText("Media");
+            ImGui::SeparatorText(ui::tr("Media"));
             buildMediaPlaybackControls(true);
             if (!waveformPeaks_.empty())
-                ImGui::PlotLines("Audio", waveformPeaks_.data(), static_cast<int>(waveformPeaks_.size()), 0, nullptr, 0,
-                                 1, {300, 44});
+                ImGui::PlotLines(ui::label("Audio"), waveformPeaks_.data(), static_cast<int>(waveformPeaks_.size()), 0,
+                                 nullptr, 0, 1, {300, 44});
             ImGui::EndPopup();
         }
         timelineEditor_.synchronize(scene_, target, editGlobalMotion_);
@@ -4321,12 +4357,12 @@ void Application::buildEditorUi() {
 
     if (debugWorkspace && ImGui::Begin(workspaceWindowName("Bone / Expression", "legacy-bone").c_str())) {
         if (model == nullptr || model->model == nullptr) {
-            ImGui::TextUnformatted("Select a model to edit bones and morphs.");
+            ImGui::TextUnformatted(ui::tr("Select a model to edit bones and morphs."));
         } else {
             const auto& bones = model->model->bones;
             if (!bones.empty()) {
                 selectedBone_ = std::clamp(selectedBone_, 0, static_cast<int>(bones.size() - 1));
-                if (ImGui::BeginCombo("Bone##LegacyBoneSelector",
+                if (ImGui::BeginCombo(ui::label("Bone##LegacyBoneSelector"),
                                       bones[static_cast<std::size_t>(selectedBone_)].name.c_str())) {
                     for (std::size_t i = 0; i < bones.size(); ++i) {
                         ImGui::PushID(static_cast<int>(i));
@@ -4336,10 +4372,10 @@ void Application::buildEditorUi() {
                     }
                     ImGui::EndCombo();
                 }
-                ImGui::DragFloat3("Translation", editedBoneTranslation_.data(), 0.01F);
-                ImGui::DragFloat4("Rotation quaternion", editedBoneRotation_.data(), 0.01F, -1.0F, 1.0F);
-                ImGui::Checkbox("Bone physics", &editedBonePhysics_);
-                if (ImGui::Button("Register bone")) {
+                ImGui::DragFloat3(ui::label("Translation"), editedBoneTranslation_.data(), 0.01F);
+                ImGui::DragFloat4(ui::label("Rotation quaternion"), editedBoneRotation_.data(), 0.01F, -1.0F, 1.0F);
+                ImGui::Checkbox(ui::label("Bone physics"), &editedBonePhysics_);
+                if (ImGui::Button(ui::label("Register bone"))) {
                     const core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
                     auto document = core::toMotionDocument(before);
                     const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
@@ -4355,7 +4391,7 @@ void Application::buildEditorUi() {
             const auto& morphs = model->model->morphs;
             if (!morphs.empty()) {
                 selectedMorph_ = std::clamp(selectedMorph_, 0, static_cast<int>(morphs.size() - 1));
-                if (ImGui::BeginCombo("Morph##LegacyMorphSelector",
+                if (ImGui::BeginCombo(ui::label("Morph##LegacyMorphSelector"),
                                       morphs[static_cast<std::size_t>(selectedMorph_)].name.c_str())) {
                     for (std::size_t i = 0; i < morphs.size(); ++i) {
                         ImGui::PushID(static_cast<int>(i));
@@ -4368,7 +4404,7 @@ void Application::buildEditorUi() {
                 const auto morphUi = core::fx::resolveFxMorphControllerUi(
                     scene_.effects(), *model, morphs[static_cast<std::size_t>(selectedMorph_)].name);
                 drawMorphWeightControl(editedMorphWeight_, morphUi);
-                if (ImGui::Button("Register morph")) {
+                if (ImGui::Button(ui::label("Register morph"))) {
                     const core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
                     auto document = core::toMotionDocument(before);
                     const auto frame = static_cast<std::uint32_t>(std::max(animationFrame_, 0.0F));
@@ -4386,74 +4422,74 @@ void Application::buildEditorUi() {
         ImGui::End();
 
     if (debugWorkspace && ImGui::Begin(workspaceWindowName("Project tools", "legacy-project").c_str())) {
-        ImGui::InputText("Project file", projectDestination_.data(), projectDestination_.size());
-        if (ImGui::Button("Save Dayo 1.30 project"))
+        ImGui::InputText(ui::label("Project file"), projectDestination_.data(), projectDestination_.size());
+        if (ImGui::Button(ui::label("Save Dayo 1.30 project")))
             saveProjectAsNow();
         if (!projectSaveStatus_.empty())
-            ImGui::TextWrapped("%s", projectSaveStatus_.c_str());
+            ImGui::TextWrapped("%s", ui::tr(projectSaveStatus_.c_str()));
         ImGui::Separator();
-        ImGui::TextUnformatted("Preview lighting HDRI (2:1 equirectangular)");
-        ImGui::InputText("HDRI file", previewHdriPath_.data(), previewHdriPath_.size());
-        if (ImGui::Button("Apply lighting HDRI")) {
+        ImGui::TextUnformatted(ui::tr("Preview lighting HDRI (2:1 equirectangular)"));
+        ImGui::InputText(ui::label("HDRI file"), previewHdriPath_.data(), previewHdriPath_.size());
+        if (ImGui::Button(ui::label("Apply lighting HDRI"))) {
             projectEditorState_.skyboxFile = previewHdriPath_.data();
             failedPreviewHdriPath_.clear();
             scene_.markDirty(core::DirtyFlag::lighting);
         }
         ImGui::SameLine();
-        if (ImGui::Button("Use background lighting")) {
+        if (ImGui::Button(ui::label("Use background lighting"))) {
             projectEditorState_.skyboxFile.clear();
             previewHdriPath_.fill(0);
             failedPreviewHdriPath_.clear();
             scene_.markDirty(core::DirtyFlag::lighting);
         }
         if (!projectEditorState_.skyboxFile.empty())
-            ImGui::TextWrapped("Active: %s", projectEditorState_.skyboxFile.string().c_str());
+            ImGui::TextWrapped(ui::tr("Active: %s"), projectEditorState_.skyboxFile.string().c_str());
         if (!previewHdriError_.empty())
-            ImGui::TextWrapped("Lighting HDRI: %s", previewHdriError_.c_str());
+            ImGui::TextWrapped(ui::tr("Lighting HDRI: %s"), previewHdriError_.c_str());
         ImGui::Separator();
         auto background = scene_.background();
         int source = static_cast<int>(background.screenSource);
-        if (ImGui::Combo("Background source", &source, "Previous frame\0Video\0Image\0White\0")) {
+        if (ImGui::Combo(ui::label("Background source"), &source, ui::items("Previous frame|Video|Image|White"))) {
             selectBackgroundSource(static_cast<core::ScreenTextureSource>(source));
         }
         buildMediaBackgroundUi();
         bool enabled = background.enabled;
-        if (ImGui::Checkbox("Background enabled", &enabled)) {
+        if (ImGui::Checkbox(ui::label("Background enabled"), &enabled)) {
             scene_.setBackgroundEnabled(enabled);
             refreshPreviewScene();
         }
         bool crop = background.crop == core::ScreenCropMode::crop4x3;
-        if (ImGui::Checkbox("Crop 4:3", &crop)) {
+        if (ImGui::Checkbox(ui::label("Crop 4:3"), &crop)) {
             scene_.setBackgroundCrop(crop ? core::ScreenCropMode::crop4x3 : core::ScreenCropMode::none);
             refreshPreviewScene();
         }
         bool alpha = background.mode == core::BackgroundMode::alpha;
-        if (ImGui::Checkbox("Alpha background", &alpha)) {
+        if (ImGui::Checkbox(ui::label("Alpha background"), &alpha)) {
             scene_.setBackgroundMode(alpha ? core::BackgroundMode::alpha : core::BackgroundMode::opaque);
             refreshPreviewScene();
         }
         if (model != nullptr) {
-            ImGui::SeparatorText("Model order");
-            ImGui::DragInt("Motion order", &model->order.motion, 1.0F, 0, 1024);
-            ImGui::DragInt("Deform order", &model->order.deform, 1.0F, 0, 1024);
-            ImGui::DragInt("Postprocess order", &model->order.postprocess, 1.0F, 0, 1024);
-            ImGui::DragInt("Raster order", &model->order.raster, 1.0F, 0, 1024);
-            if (ImGui::TreeNode("Model description")) {
+            ImGui::SeparatorText(ui::tr("Model order"));
+            ImGui::DragInt(ui::label("Motion order"), &model->order.motion, 1.0F, 0, 1024);
+            ImGui::DragInt(ui::label("Deform order"), &model->order.deform, 1.0F, 0, 1024);
+            ImGui::DragInt(ui::label("Postprocess order"), &model->order.postprocess, 1.0F, 0, 1024);
+            ImGui::DragInt(ui::label("Raster order"), &model->order.raster, 1.0F, 0, 1024);
+            if (ImGui::TreeNode(ui::label("Model description"))) {
                 ImGui::TextWrapped("%s", model->model->metadata.comment.c_str());
                 ImGui::TextUnformatted(model->sourcePath.parent_path().string().c_str());
-                if (ImGui::Button("Open model folder")) {
+                if (ImGui::Button(ui::label("Open model folder"))) {
                     const auto url = "file://" + model->sourcePath.parent_path().generic_string();
                     if (!SDL_OpenURL(url.c_str()))
-                        lastAsset_ = std::string("Open folder: ") + SDL_GetError();
+                        lastAsset_ = ui::Message("Open folder: {0}", {SDL_GetError()});
                 }
                 ImGui::TreePop();
             }
-            if (!model->materialSettings.empty() && ImGui::TreeNode("Material settings")) {
+            if (!model->materialSettings.empty() && ImGui::TreeNode(ui::label("Material settings"))) {
                 static int materialIndex = 0;
                 materialIndex = std::clamp(materialIndex, 0, static_cast<int>(model->materialSettings.size() - 1));
                 const auto& materials = model->model->materials;
                 const char* preview = materials[static_cast<std::size_t>(materialIndex)].name.c_str();
-                if (ImGui::BeginCombo("Material##MaterialAnnotationSelector", preview)) {
+                if (ImGui::BeginCombo(ui::label("Material##MaterialAnnotationSelector"), preview)) {
                     for (std::size_t i = 0; i < materials.size(); ++i) {
                         ImGui::PushID(static_cast<int>(i));
                         if (ImGui::Selectable(materials[i].name.c_str(), materialIndex == static_cast<int>(i)))
@@ -4463,13 +4499,14 @@ void Application::buildEditorUi() {
                     ImGui::EndCombo();
                 }
                 static std::array<char, 1024> annotation{};
-                ImGui::InputText("Annotation / MatDesc", annotation.data(), annotation.size());
-                if (ImGui::Button("Apply material annotation")) {
+                ImGui::InputText(ui::label("Annotation / MatDesc"), annotation.data(), annotation.size());
+                if (ImGui::Button(ui::label("Apply material annotation"))) {
                     model->materialSettings[static_cast<std::size_t>(materialIndex)].annotation = annotation.data();
                     scene_.markDirty(core::DirtyFlag::material | core::DirtyFlag::effect);
                 }
                 int preset = model->materialSettings[static_cast<std::size_t>(materialIndex)].previewPbrPreset;
-                if (ImGui::Combo("Preview material", &preset, "PMX\0Skin\0Hair\0Cloth\0Metal\0Plastic\0Glass\0")) {
+                if (ImGui::Combo(ui::label("Preview material"), &preset,
+                                 ui::items("PMX|Skin|Hair|Cloth|Metal|Plastic|Glass"))) {
                     model->materialSettings[static_cast<std::size_t>(materialIndex)].previewPbrPreset =
                         static_cast<std::uint8_t>(preset);
                     scene_.markDirty(core::DirtyFlag::material);
@@ -4477,12 +4514,12 @@ void Application::buildEditorUi() {
                 }
                 ImGui::TreePop();
             }
-            if (scene_.models().size() > 1 && ImGui::TreeNode("External parent")) {
+            if (scene_.models().size() > 1 && ImGui::TreeNode(ui::label("External parent"))) {
                 static int parentIndex = 0;
                 static std::array<char, 256> parentBone{};
                 static std::array<char, 256> childBone{};
                 parentIndex = std::clamp(parentIndex, 0, static_cast<int>(scene_.models().size() - 1));
-                if (ImGui::BeginCombo("Parent model##ExternalParentModelSelector",
+                if (ImGui::BeginCombo(ui::label("Parent model##ExternalParentModelSelector"),
                                       scene_.models()[static_cast<std::size_t>(parentIndex)].displayName.c_str())) {
                     for (std::size_t i = 0; i < scene_.models().size(); ++i) {
                         ImGui::PushID(static_cast<int>(scene_.models()[i].id));
@@ -4493,14 +4530,14 @@ void Application::buildEditorUi() {
                     }
                     ImGui::EndCombo();
                 }
-                ImGui::InputText("Parent bone", parentBone.data(), parentBone.size());
-                ImGui::InputText("Child bone", childBone.data(), childBone.size());
-                if (ImGui::Button("Add external parent")) {
+                ImGui::InputText(ui::label("Parent bone"), parentBone.data(), parentBone.size());
+                ImGui::InputText(ui::label("Child bone"), childBone.data(), childBone.size());
+                if (ImGui::Button(ui::label("Add external parent"))) {
                     std::string error;
                     const auto& parent = scene_.models()[static_cast<std::size_t>(parentIndex)];
                     if (!scene_.addExternalParent({parent.id, parentBone.data(), model->id, childBone.data()},
                                                   &error)) {
-                        lastAsset_ = "External parent: " + error;
+                        lastAsset_ = ui::Message("External parent: {0}", {error});
                     } else {
                         const core::VmdMotion before = model->motion ? *model->motion : core::VmdMotion{};
                         auto document = core::toMotionDocument(before);
@@ -4514,7 +4551,7 @@ void Application::buildEditorUi() {
                 ImGui::TreePop();
             }
         }
-        if (ImGui::Button("Copy borrowed-list")) {
+        if (ImGui::Button(ui::label("Copy borrowed-list"))) {
             std::string credits;
             std::vector<std::filesystem::path> scanned;
             for (const auto& asset : projectAssets_) {
@@ -4544,9 +4581,9 @@ void Application::buildEditorUi() {
                 credits += model->model->metadata.comment + "\n";
             ImGui::SetClipboardText(credits.c_str());
         }
-        if (ImGui::TreeNode("Shortcuts")) {
-            ImGui::TextUnformatted("Space: Play / Pause\nCtrl+Z: Undo\nCtrl+Y: Redo\nCtrl+C/X/V: Copy/Cut/Paste "
-                                   "keys\nDelete: Delete selected keys");
+        if (ImGui::TreeNode(ui::label("Shortcuts"))) {
+            ImGui::TextUnformatted(ui::tr("Space: Play / Pause\nCtrl+Z: Undo\nCtrl+Y: Redo\nCtrl+C/X/V: Copy/Cut/Paste "
+                                          "keys\nDelete: Delete selected keys"));
             ImGui::TreePop();
         }
     }
@@ -4556,7 +4593,7 @@ void Application::buildEditorUi() {
     if (uiState_.materialDebugVisible &&
         ImGui::Begin(workspaceWindowName("Preview Material Inspector", "material-debug").c_str())) {
         bool previewChanged = false;
-        previewChanged |= ImGui::Checkbox("Optional PMX outline", &previewOutlineEnabled_);
+        previewChanged |= ImGui::Checkbox(ui::label("Optional PMX outline"), &previewOutlineEnabled_);
         if (model != nullptr && !model->model->materials.empty()) {
             const auto materialBase = static_cast<std::int32_t>(scene_.materialBase(model->id));
             const auto localCount = static_cast<int>(model->model->materials.size());
@@ -4565,7 +4602,7 @@ void Application::buildEditorUi() {
                     ? previewDebugMaterial_ - materialBase
                     : 0;
             const auto& selectedMaterial = model->model->materials[static_cast<std::size_t>(localMaterial)];
-            if (ImGui::BeginCombo("Material##PreviewMaterialSelector", selectedMaterial.name.c_str())) {
+            if (ImGui::BeginCombo(ui::label("Material##PreviewMaterialSelector"), selectedMaterial.name.c_str())) {
                 for (std::size_t index = 0; index < model->model->materials.size(); ++index) {
                     ImGui::PushID(static_cast<int>(index));
                     if (ImGui::Selectable(model->model->materials[index].name.c_str(),
@@ -4578,38 +4615,39 @@ void Application::buildEditorUi() {
                 }
                 ImGui::EndCombo();
             }
-            if (ImGui::Button("Show all materials")) {
+            if (ImGui::Button(ui::label("Show all materials"))) {
                 previewDebugMaterial_ = -1;
                 previewChanged = true;
             }
             const auto& material = model->model->materials[static_cast<std::size_t>(localMaterial)];
             const auto textureName = [&](std::int32_t index) {
                 if (index < 0 || static_cast<std::size_t>(index) >= model->model->textures.size())
-                    return std::string("none");
+                    return std::string(ui::tr("none"));
                 return mmd::pmx::resolveTexturePath(*model->model, static_cast<std::size_t>(index)).filename().string();
             };
-            ImGui::Text("Base: %s", textureName(material.textureIndex).c_str());
-            ImGui::Text("Sphere: %s / mode %u", textureName(material.sphereTextureIndex).c_str(),
+            ImGui::Text(ui::tr("Base: %s"), textureName(material.textureIndex).c_str());
+            ImGui::Text(ui::tr("Sphere: %s / mode %u"), textureName(material.sphereTextureIndex).c_str(),
                         static_cast<unsigned>(material.sphereMode));
             if (material.toonMode == 0)
-                ImGui::Text("Toon: %s / individual", textureName(material.toonTextureIndex).c_str());
+                ImGui::Text(ui::tr("Toon: %s / individual"), textureName(material.toonTextureIndex).c_str());
             else
-                ImGui::Text("Toon: shared toon%02d.bmp", material.toonTextureIndex + 1);
-            ImGui::Text("Diffuse alpha: %.3f  edge size: %.5f", material.diffuse[3], material.edgeSize);
-            ImGui::Text("Double-sided: %s  indices: %u", (material.drawFlags & 0x01U) != 0 ? "yes" : "no",
-                        material.indexCount);
-            previewChanged |= ImGui::CheckboxFlags("Disable base texture", &previewDebugFlags_,
+                ImGui::Text(ui::tr("Toon: shared toon%02d.bmp"), material.toonTextureIndex + 1);
+            ImGui::Text(ui::tr("Diffuse alpha: %.3f  edge size: %.5f"), material.diffuse[3], material.edgeSize);
+            ImGui::Text(ui::tr("Double-sided: %s  indices: %u"),
+                        (material.drawFlags & 0x01U) != 0 ? ui::tr("yes") : ui::tr("no"), material.indexCount);
+            previewChanged |= ImGui::CheckboxFlags(ui::label("Disable base texture"), &previewDebugFlags_,
                                                    graphics::previewDebugDisableBaseTexture);
+            previewChanged |= ImGui::CheckboxFlags(ui::label("Disable sphere"), &previewDebugFlags_,
+                                                   graphics::previewDebugDisableSphere);
             previewChanged |=
-                ImGui::CheckboxFlags("Disable sphere", &previewDebugFlags_, graphics::previewDebugDisableSphere);
+                ImGui::CheckboxFlags(ui::label("Disable toon"), &previewDebugFlags_, graphics::previewDebugDisableToon);
             previewChanged |=
-                ImGui::CheckboxFlags("Disable toon", &previewDebugFlags_, graphics::previewDebugDisableToon);
-            previewChanged |= ImGui::CheckboxFlags("Show normals", &previewDebugFlags_, graphics::previewDebugNormals);
-            previewChanged |= ImGui::CheckboxFlags("Show UV", &previewDebugFlags_, graphics::previewDebugUv);
-            previewChanged |=
-                ImGui::CheckboxFlags("Disable sidedness", &previewDebugFlags_, graphics::previewDebugDisableSidedness);
+                ImGui::CheckboxFlags(ui::label("Show normals"), &previewDebugFlags_, graphics::previewDebugNormals);
+            previewChanged |= ImGui::CheckboxFlags(ui::label("Show UV"), &previewDebugFlags_, graphics::previewDebugUv);
+            previewChanged |= ImGui::CheckboxFlags(ui::label("Disable sidedness"), &previewDebugFlags_,
+                                                   graphics::previewDebugDisableSidedness);
         } else {
-            ImGui::TextUnformatted("No PMX model selected");
+            ImGui::TextUnformatted(ui::tr("No PMX model selected"));
         }
         if (previewChanged)
             refreshPreviewScene();
@@ -4622,32 +4660,32 @@ void Application::buildEditorUi() {
             const auto compiled = core::compileEffectGraph(*effect);
             const auto debug = core::FxRuntimeInspector::snapshot(
                 *effect, static_cast<std::uint64_t>(std::max(animationFrame_, 0.0F)));
-            ImGui::Text("Frame: %llu  Inspector: %s  Resources: %u  Global bytes: %u",
+            ImGui::Text(ui::tr("Frame: %llu  Inspector: %s  Resources: %u  Global bytes: %u"),
                         static_cast<unsigned long long>(debug.frame), debug.backend.c_str(), debug.resourceCount,
                         debug.globalVarSize);
             if (!debug.memos.empty()) {
-                ImGui::TextUnformatted("Memos:");
+                ImGui::TextUnformatted(ui::tr("Memos:"));
                 for (const auto& memo : debug.memos)
                     ImGui::BulletText("%s", memo.c_str());
             }
-            ImGui::SeparatorText("Resources");
+            ImGui::SeparatorText(ui::tr("Resources"));
             for (std::size_t index = 0; index < debug.resources.size(); ++index) {
                 const auto& resource = debug.resources[index];
                 ImGui::PushID(static_cast<int>(index));
                 if (ImGui::TreeNode(resource.name.c_str())) {
-                    ImGui::Text("Kind: %s  Format: %s  View: %s", resource.kind.c_str(), resource.format.c_str(),
-                                resource.view.c_str());
+                    ImGui::Text(ui::tr("Kind: %s  Format: %s  View: %s"), resource.kind.c_str(),
+                                resource.format.c_str(), resource.view.c_str());
                     if (resource.kind == "Buffer")
-                        ImGui::Text("Elements: %u  Element bytes: %u", resource.width, resource.elementSize);
+                        ImGui::Text(ui::tr("Elements: %u  Element bytes: %u"), resource.width, resource.elementSize);
                     else if (resource.kind != "Sampler")
-                        ImGui::Text("Extent: %u x %u x %u  Mips: %s", resource.width, resource.height, resource.depth,
-                                    resource.mipmapped ? "yes" : "no");
+                        ImGui::Text(ui::tr("Extent: %u x %u x %u  Mips: %s"), resource.width, resource.height,
+                                    resource.depth, resource.mipmapped ? ui::tr("yes") : ui::tr("no"));
                     if (!resource.sizeBase.empty())
-                        ImGui::Text("Size base: %s", resource.sizeBase.c_str());
+                        ImGui::Text(ui::tr("Size base: %s"), resource.sizeBase.c_str());
                     if (!resource.shared.empty())
-                        ImGui::Text("Shared: %s", resource.shared.c_str());
+                        ImGui::Text(ui::tr("Shared: %s"), resource.shared.c_str());
                     if (!resource.filename.empty())
-                        ImGui::TextWrapped("Source: %s", resource.filename.c_str());
+                        ImGui::TextWrapped(ui::tr("Source: %s"), resource.filename.c_str());
                     ImGui::TreePop();
                 }
                 ImGui::PopID();
@@ -4677,7 +4715,7 @@ void Application::buildEditorUi() {
                         }
                     }
                     ImGui::Dummy(ImVec2(static_cast<float>(columns) * cell, static_cast<float>(rows) * cell));
-                    ImGui::Text("Readback: %u x %u", image.width, image.height);
+                    ImGui::Text(ui::tr("Readback: %u x %u"), image.width, image.height);
                 }
                 for (std::size_t start = 0; start < std::min<std::size_t>(result->buffer.size(), 256); start += 16) {
                     std::string line;
@@ -4691,14 +4729,15 @@ void Application::buildEditorUi() {
                 }
             }
             const auto liveResources = nativeRenderer_.liveResources();
-            ImGui::SeparatorText("Live FX resource allocations");
-            ImGui::InputInt("Mip", &fxDebugMip_);
-            ImGui::InputInt("Depth slice", &fxDebugSlice_);
-            ImGui::Combo("Display", &fxDebugMode_, "RGBA on checker\0RGB\0R hue\0G hue\0B hue\0A hue\0");
-            ImGui::DragFloat("Display scale", &fxDebugScale_, 0.05F);
-            ImGui::InputText("Dump path (.bin / .png / .exr)", fxDebugDumpPath_.data(), fxDebugDumpPath_.size());
+            ImGui::SeparatorText(ui::tr("Live FX resource allocations"));
+            ImGui::InputInt(ui::label("Mip"), &fxDebugMip_);
+            ImGui::InputInt(ui::label("Depth slice"), &fxDebugSlice_);
+            ImGui::Combo(ui::label("Display"), &fxDebugMode_, ui::items("RGBA on checker|RGB|R hue|G hue|B hue|A hue"));
+            ImGui::DragFloat(ui::label("Display scale"), &fxDebugScale_, 0.05F);
+            ImGui::InputText(ui::label("Dump path (.bin / .png / .exr)"), fxDebugDumpPath_.data(),
+                             fxDebugDumpPath_.size());
             if (liveResources.empty()) {
-                ImGui::TextDisabled("No native FX resource allocations are active.");
+                ImGui::TextDisabled("%s", ui::tr("No native FX resource allocations are active."));
             } else {
                 for (std::size_t index = 0; index < liveResources.size(); ++index) {
                     const auto& resource = liveResources[index];
@@ -4710,19 +4749,19 @@ void Application::buildEditorUi() {
                         ImGui::Text("%s / %s  ·  %s", resource.effect.c_str(), resource.name.c_str(),
                                     resource.kind.c_str());
                     if (resource.kind == "Buffer") {
-                        ImGui::TextDisabled("Type: %s  Bytes: %llu  Elements: %u  Element bytes: %u",
+                        ImGui::TextDisabled(ui::tr("Type: %s  Bytes: %llu  Elements: %u  Element bytes: %u"),
                                             resource.elementType.c_str(),
                                             static_cast<unsigned long long>(resource.allocationBytes),
                                             resource.extent.width, resource.elementSize);
                     } else if (resource.kind == "Texture") {
-                        ImGui::TextDisabled("Extent: %u x %u x %u  Dimension: %u", resource.extent.width,
+                        ImGui::TextDisabled(ui::tr("Extent: %u x %u x %u  Dimension: %u"), resource.extent.width,
                                             resource.extent.height, resource.extent.depth, resource.dimension);
                     }
                     if (resource.kind != "Sampler") {
-                        const bool preview = ImGui::Button("Read / preview");
+                        const bool preview = ImGui::Button(ui::label("Read / preview"));
                         ImGui::SameLine();
                         ImGui::BeginDisabled(fxDebugDumpPath_[0] == '\0');
-                        const bool dump = ImGui::Button("Save dump");
+                        const bool dump = ImGui::Button(ui::label("Save dump"));
                         ImGui::EndDisabled();
                         if (preview || dump) {
                             const auto hlsl = findDayoHlslDirectory(scene_.effects(), nativeRenderer_.program());
@@ -4742,40 +4781,43 @@ void Application::buildEditorUi() {
                     ImGui::PopID();
                 }
             }
-            ImGui::SeparatorText("Passes");
+            ImGui::SeparatorText(ui::tr("Passes"));
             for (std::size_t index = 0; index < debug.passes.size(); ++index) {
                 const auto& debugPass = debug.passes[index];
                 const auto& compiledPass = compiled.passes[index];
                 ImGui::PushID(static_cast<int>(index));
                 if (ImGui::TreeNode(debugPass.name.c_str())) {
-                    ImGui::Text("Type: %s  Functional: %s", debugPass.type.c_str(), debugPass.functionalKind.c_str());
+                    ImGui::Text(ui::tr("Type: %s  Functional: %s"), debugPass.type.c_str(),
+                                debugPass.functionalKind.c_str());
                     for (const auto& access : debugPass.resources)
-                        ImGui::BulletText("%s %s", access.write ? "Write" : "Read", access.name.c_str());
+                        ImGui::BulletText("%s %s", access.write ? ui::tr("Write") : ui::tr("Read"),
+                                          access.name.c_str());
                     for (const auto& condition : debugPass.conditions)
-                        ImGui::BulletText("Condition: %s", condition.c_str());
+                        ImGui::BulletText(ui::tr("Condition: %s"), condition.c_str());
                     for (const auto& barrier : compiledPass.barriers)
-                        ImGui::BulletText("Barrier: %s", barrier.c_str());
+                        ImGui::BulletText(ui::tr("Barrier: %s"), barrier.c_str());
                     ImGui::TreePop();
                 }
                 ImGui::PopID();
             }
             if (!debug.controllers.empty()) {
-                ImGui::SeparatorText("Controllers");
+                ImGui::SeparatorText(ui::tr("Controllers"));
                 for (const auto& controller : debug.controllers) {
                     ImGui::Text("%s <- %s / %s (%s)", controller.name.c_str(), controller.controller.c_str(),
                                 controller.item.c_str(), controller.type.c_str());
                     if (controller.slider.has_value()) {
                         const auto& slider = *controller.slider;
-                        ImGui::Text("Range: %.4g .. %.4g  Step: %.4g  Default: %.4g%s%s", slider.minimum,
+                        ImGui::Text(ui::tr("Range: %.4g .. %.4g  Step: %.4g  Default: %.4g%s%s"), slider.minimum,
                                     slider.maximum, slider.step, slider.defaultValue,
-                                    slider.logarithmic ? "  logarithmic" : "", slider.integer ? "  integer" : "");
+                                    slider.logarithmic ? ui::tr("  logarithmic") : "",
+                                    slider.integer ? ui::tr("  integer") : "");
                     }
                     if (!controller.description.empty())
                         ImGui::TextWrapped("%s", controller.description.c_str());
                 }
             }
         } else
-            ImGui::TextUnformatted("Load an .fxdayo file to inspect resources and passes.");
+            ImGui::TextUnformatted(ui::tr("Load an .fxdayo file to inspect resources and passes."));
     }
     if (uiState_.fxDebugVisible)
         ImGui::End();
@@ -4796,35 +4838,35 @@ void Application::setAudioExportDestinationForSource(const std::filesystem::path
 void Application::buildAudioExportUi() {
 #if DAYO_HAS_IMGUI
     if (uiState_.audioExportOpen) {
-        ImGui::OpenPopup("Export Audio");
+        ImGui::OpenPopup(ui::label("Export Audio"));
         uiState_.audioExportOpen = false;
     }
-    if (ImGui::BeginPopupModal("Export Audio", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (ImGui::BeginPopupModal(ui::label("Export Audio"), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         if (!DAYO_HAS_MEDIA) {
-            ImGui::TextUnformatted("FFmpeg support is not available in this build.");
+            ImGui::TextUnformatted(ui::tr("FFmpeg support is not available in this build."));
         } else {
-            ImGui::TextUnformatted("Format");
+            ImGui::TextUnformatted(ui::tr("Format"));
             ImGui::SameLine(120.0F);
-            ImGui::TextUnformatted("M4A / AAC");
-            ImGui::TextUnformatted("Source");
+            ImGui::TextUnformatted(ui::tr("M4A / AAC"));
+            ImGui::TextUnformatted(ui::tr("Source"));
             ImGui::SameLine(120.0F);
             if (audioSource_.empty())
-                ImGui::TextUnformatted("Load an audio or video asset first");
+                ImGui::TextUnformatted(ui::tr("Load an audio or video asset first"));
             else
                 ImGui::TextWrapped("%s", audioSource_.string().c_str());
 
-            ImGui::SliderInt("Bitrate (kbps)", &audioBitrateKbps_, 64, 512);
-            ImGui::TextUnformatted("Range");
+            ImGui::SliderInt(ui::label("Bitrate (kbps)"), &audioBitrateKbps_, 64, 512);
+            ImGui::TextUnformatted(ui::tr("Range"));
             ImGui::SameLine(120.0F);
-            ImGui::RadioButton("Full", &audioRangeMode_, 0);
+            ImGui::RadioButton(ui::label("Full"), &audioRangeMode_, 0);
             ImGui::SameLine();
-            ImGui::RadioButton("Selection", &audioRangeMode_, 1);
+            ImGui::RadioButton(ui::label("Selection"), &audioRangeMode_, 1);
             if (audioRangeMode_ == 1) {
-                ImGui::DragFloat("From (seconds)", &audioFromSeconds_, 0.1F, 0.0F, audioToSeconds_);
-                ImGui::DragFloat("To (seconds)", &audioToSeconds_, 0.1F, audioFromSeconds_, 0.0F);
+                ImGui::DragFloat(ui::label("From (seconds)"), &audioFromSeconds_, 0.1F, 0.0F, audioToSeconds_);
+                ImGui::DragFloat(ui::label("To (seconds)"), &audioToSeconds_, 0.1F, audioFromSeconds_, 0.0F);
             }
-            ImGui::InputText("Output", audioDestination_.data(), audioDestination_.size());
-            ImGui::Checkbox("Overwrite existing file", &audioOverwrite_);
+            ImGui::InputText(ui::label("Output"), audioDestination_.data(), audioDestination_.size());
+            ImGui::Checkbox(ui::label("Overwrite existing file"), &audioOverwrite_);
             ImGui::Separator();
 
             if (audioExportJob_.running()) {
@@ -4833,18 +4875,19 @@ void Application::buildAudioExportUi() {
                 ImGui::Text("%.1f%%", static_cast<double>(progress) * 100.0);
                 if (audioExportJob_.totalSeconds() > 0.0) {
                     ImGui::SameLine();
-                    ImGui::Text("%.2f / %.2f s", audioExportJob_.processedSeconds(), audioExportJob_.totalSeconds());
+                    ImGui::Text(ui::tr("%.2f / %.2f s"), audioExportJob_.processedSeconds(),
+                                audioExportJob_.totalSeconds());
                 }
-                if (ImGui::Button("Cancel"))
+                if (ImGui::Button(ui::label("Cancel")))
                     audioExportJob_.cancel();
             } else {
                 const auto error = audioExportJob_.error();
                 if (error)
-                    ImGui::TextWrapped("Export error: %s", error->c_str());
+                    ImGui::TextWrapped(ui::tr("Export error: %s"), error->c_str());
                 const auto result = audioExportJob_.result();
                 if (result)
-                    ImGui::TextWrapped("Exported: %s", result->output.string().c_str());
-                if (ImGui::Button("Export")) {
+                    ImGui::TextWrapped(ui::tr("Exported: %s"), result->output.string().c_str());
+                if (ImGui::Button(ui::label("Export"))) {
                     core::AudioExportRequest request;
                     request.source = audioSource_;
                     request.destination = std::filesystem::path(audioDestination_.data());
@@ -4857,14 +4900,14 @@ void Application::buildAudioExportUi() {
                     try {
                         audioExportJob_.start(std::move(request));
                     } catch (const std::exception& exception) {
-                        ImGui::TextWrapped("Export error: %s", exception.what());
+                        ImGui::TextWrapped(ui::tr("Export error: %s"), exception.what());
                     }
                 }
             }
         }
         if (!audioExportJob_.running()) {
             ImGui::Separator();
-            if (ImGui::Button("Close"))
+            if (ImGui::Button(ui::label("Close")))
                 ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -4875,12 +4918,12 @@ void Application::buildAudioExportUi() {
 void Application::buildVideoExportUi() {
 #if DAYO_HAS_IMGUI
     if (uiState_.videoExportOpen) {
-        ImGui::OpenPopup("Export Video");
+        ImGui::OpenPopup(ui::label("Export Video"));
         uiState_.videoExportOpen = false;
     }
-    if (ImGui::BeginPopupModal("Export Video", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (ImGui::BeginPopupModal(ui::label("Export Video"), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         if (!DAYO_HAS_MEDIA) {
-            ImGui::TextUnformatted("FFmpeg support is not available in this build.");
+            ImGui::TextUnformatted(ui::tr("FFmpeg support is not available in this build."));
         } else {
             ImGui::BeginDisabled(videoExportUiActive_);
             if (!videoRangeInitialized_) {
@@ -4897,63 +4940,63 @@ void Application::buildVideoExportUi() {
                 std::copy_n(text.data(), count, videoDestination_.data());
                 videoDestination_[count] = '\0';
             }
-            ImGui::TextUnformatted("Format");
+            ImGui::TextUnformatted(ui::tr("Format"));
             ImGui::SameLine(120.0F);
-            ImGui::TextUnformatted("MP4 / H.264, H.265 or AV1");
-            ImGui::TextUnformatted("Source");
+            ImGui::TextUnformatted(ui::tr("MP4 / H.264, H.265 or AV1"));
+            ImGui::TextUnformatted(ui::tr("Source"));
             ImGui::SameLine(120.0F);
             if (audioSource_.empty())
-                ImGui::TextUnformatted("No audio source (optional)");
+                ImGui::TextUnformatted(ui::tr("No audio source (optional)"));
             else
                 ImGui::TextWrapped("%s", audioSource_.string().c_str());
-            ImGui::InputText("Output", videoDestination_.data(), videoDestination_.size());
+            ImGui::InputText(ui::label("Output"), videoDestination_.data(), videoDestination_.size());
             int width = static_cast<int>(videoWidth_);
             int height = static_cast<int>(videoHeight_);
-            if (ImGui::InputInt("Width", &width))
+            if (ImGui::InputInt(ui::label("Width"), &width))
                 videoWidth_ = static_cast<std::uint32_t>(std::max(width, 1));
-            if (ImGui::InputInt("Height", &height))
+            if (ImGui::InputInt(ui::label("Height"), &height))
                 videoHeight_ = static_cast<std::uint32_t>(std::max(height, 1));
-            ImGui::InputFloat("FPS", &videoFps_, 0.0F, 0.0F, "%.3f");
+            ImGui::InputFloat(ui::label("FPS"), &videoFps_, 0.0F, 0.0F, "%.3f");
             videoFps_ = std::max(videoFps_, 1.0F);
-            ImGui::Combo("Codec", &videoCodec_, "H.264\0H.265 / HEVC\0AV1\0");
-            ImGui::SliderInt("Video bitrate (kbps)", &videoBitrateKbps_, 500, 50000);
-            ImGui::SliderInt("Audio bitrate (kbps)", &videoAudioBitrateKbps_, 64, 512);
-            ImGui::Checkbox("Include audio", &videoIncludeAudio_);
+            ImGui::Combo(ui::label("Codec"), &videoCodec_, ui::items("H.264|H.265 / HEVC|AV1"));
+            ImGui::SliderInt(ui::label("Video bitrate (kbps)"), &videoBitrateKbps_, 500, 50000);
+            ImGui::SliderInt(ui::label("Audio bitrate (kbps)"), &videoAudioBitrateKbps_, 64, 512);
+            ImGui::Checkbox(ui::label("Include audio"), &videoIncludeAudio_);
             auto from = static_cast<unsigned long long>(videoFromFrame_);
             auto to = static_cast<unsigned long long>(videoToFrame_);
-            if (ImGui::InputScalar("From frame", ImGuiDataType_U64, &from))
+            if (ImGui::InputScalar(ui::label("From frame"), ImGuiDataType_U64, &from))
                 videoFromFrame_ = from;
-            if (ImGui::InputScalar("To frame", ImGuiDataType_U64, &to))
+            if (ImGui::InputScalar(ui::label("To frame"), ImGuiDataType_U64, &to))
                 videoToFrame_ = to;
-            ImGui::Checkbox("Overwrite existing file", &audioOverwrite_);
+            ImGui::Checkbox(ui::label("Overwrite existing file"), &audioOverwrite_);
             ImGui::EndDisabled();
             ImGui::Separator();
 
             if (videoExportUiActive_) {
                 if (videoExportFramesFinished_ && !videoExportJob_.running())
-                    ImGui::TextUnformatted("Restoring preview...");
+                    ImGui::TextUnformatted(ui::tr("Restoring preview..."));
                 else if (!videoPreRollDone_)
-                    ImGui::Text("Preparing frame %llu / %llu",
+                    ImGui::Text(ui::tr("Preparing frame %llu / %llu"),
                                 static_cast<unsigned long long>(videoEvaluationNextFrame_),
                                 static_cast<unsigned long long>(videoFromFrame_));
                 ImGui::ProgressBar(videoExportJob_.progress(), {-1.0F, 0.0F});
                 ImGui::Text("%.1f%%", static_cast<double>(videoExportJob_.progress()) * 100.0);
-                if (ImGui::Button("Cancel video export")) {
+                if (ImGui::Button(ui::label("Cancel video export"))) {
                     videoExportJob_.requestCancel();
                     videoExportFramesFinished_ = true;
                     videoExportStatus_ = "Cancelled";
                 }
             } else {
                 if (!videoExportStatus_.empty())
-                    ImGui::TextWrapped("%s", videoExportStatus_.c_str());
+                    ImGui::TextWrapped("%s", ui::tr(videoExportStatus_.c_str()));
                 if (const auto error = videoExportJob_.error()) {
-                    ImGui::TextWrapped("Export error: %s", error->c_str());
+                    ImGui::TextWrapped(ui::tr("Export error: %s"), error->c_str());
                 }
                 if (const auto result = videoExportJob_.result()) {
-                    ImGui::TextWrapped("Exported: %s (%.2f s)", result->output.string().c_str(),
+                    ImGui::TextWrapped(ui::tr("Exported: %s (%.2f s)"), result->output.string().c_str(),
                                        result->durationSeconds);
                 }
-                if (ImGui::Button("Export video")) {
+                if (ImGui::Button(ui::label("Export video"))) {
                     try {
                         if (videoDestination_[0] == '\0')
                             throw std::invalid_argument("video output is empty");
@@ -5014,7 +5057,7 @@ void Application::buildVideoExportUi() {
         }
         if (!videoExportUiActive_) {
             ImGui::Separator();
-            if (ImGui::Button("Close"))
+            if (ImGui::Button(ui::label("Close")))
                 ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();

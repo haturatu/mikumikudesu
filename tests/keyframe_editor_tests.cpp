@@ -1,3 +1,5 @@
+#include "ui/i18n.hpp"
+#include "ui/i18n_imgui.hpp"
 #include "ui/keyframe_edit.hpp"
 #include "ui/keyframe_editor.hpp"
 
@@ -122,6 +124,83 @@ void checkCanvasGestures() {
            "the ruler must render the full VMD frame range without overflow or a floating counter loop");
 }
 
+void checkLiveLanguageSwitch() {
+    Harness h;
+    h.frame({-10, -10});
+    h.frame({-10, -10});
+    h.frame(h.key(10));
+    h.frame(h.key(10), true);
+    h.frame(h.key(10));
+    expect(h.editor.selection().size() == 1, "select a key before changing language");
+    ImGuiID stableId{};
+    for (const auto candidate : dayo::ui::languages) {
+        dayo::ui::setLanguage(candidate);
+        dayo::ui::localizeImGui();
+        expect(std::string_view(ImGui::LocalizeGetMsg(ImGuiLocKey_DockingHideTabBar)) ==
+                   dayo::ui::label("Hide tab bar###HideTabBar"),
+               "built-in docking menus must follow the selected language");
+        h.frame({-10, -10});
+        expect(h.editor.selection().size() == 1 && h.history.undoCount() == 0,
+               "language changes must retain selection without modifying motion");
+        ImGui::NewFrame();
+        ImGui::Begin("Stable ID test");
+        const auto id = ImGui::GetID(dayo::ui::label("Bone##InspectorBoneSelector"));
+        expect(ImGui::GetID(dayo::ui::label("Viewport##viewport.Layout")) == ImGui::GetID("Viewport##viewport.Layout"),
+               "translated window IDs must match previously saved English layouts");
+        if (stableId == 0)
+            stableId = id;
+        expect(id == stableId, "ImGui widget hash must be stable across all four languages");
+        ImGui::End();
+        ImGui::Render();
+    }
+    dayo::ui::setLanguage(dayo::ui::Language::english);
+}
+
+void checkTranslatedTrackFocus() {
+    using namespace dayo::ui;
+    Harness h;
+    dayo::core::VmdMotion motion;
+    dayo::core::VmdCameraKey camera;
+    camera.frame = 10;
+    motion.cameras.push_back(camera);
+    motion.lights.push_back({.frame = 20});
+    updateMotionDuration(motion);
+    h.scene.replaceMotion(motion, 0, true);
+    h.editor.synchronize(h.scene, 0, true);
+    ImGuiID previousRowId{};
+    for (int row = 0; row < 2; ++row) {
+        setLanguage(Language::english);
+        h.frame({-10, -10});
+        h.frame({-10, -10});
+        const ImVec2 labelPosition{30, h.key(10).y + static_cast<float>(row) * h.editor.rowHeight()};
+        h.frame(labelPosition);
+        h.frame(labelPosition, true);
+        const auto id = ImGui::GetActiveID();
+        expect(id != 0 && id != previousRowId, "real camera and light labels must have distinct active IDs");
+        previousRowId = id;
+        for (const auto candidate : languages) {
+            setLanguage(candidate);
+            h.frame(labelPosition, true);
+            expect(ImGui::GetActiveID() == id, "holding a translated track label must retain its active ID");
+        }
+        setLanguage(Language::english);
+        h.frame(labelPosition, true);
+        h.frame(labelPosition);
+        const auto track = row == 0 ? dayo::core::MotionTrack::camera : dayo::core::MotionTrack::light;
+        expect(h.editor.selection().size() == 1 && h.editor.selection().front().track == track,
+               "releasing a track label must select its actual camera or light key");
+        expect(GImGui->NavId == id, "clicking a track label must establish its navigation focus");
+        for (const auto candidate : languages) {
+            setLanguage(candidate);
+            h.frame({-10, -10});
+            expect(GImGui->NavId == id && GImGui->NavIdIsAlive,
+                   "the focused track must resubmit the same navigation ID in every language");
+            expect(h.history.undoCount() == 0, "switching track label language must not edit motion");
+        }
+    }
+    setLanguage(Language::english);
+}
+
 } // namespace
 
 int main() {
@@ -132,6 +211,7 @@ int main() {
     io.DisplaySize = {1000, 700};
     io.DeltaTime = 1.0F / 60.0F;
     io.ConfigInputTrickleEventQueue = false;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     unsigned char* pixels{};
     int width{}, height{};
     io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
@@ -139,6 +219,8 @@ int main() {
     try {
         checkGroupMoves();
         checkCanvasGestures();
+        checkLiveLanguageSwitch();
+        checkTranslatedTrackFocus();
         std::cout << "Keyframe selection, captured drag, cancel, undo/redo, bounds and target invalidation passed\n";
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';
