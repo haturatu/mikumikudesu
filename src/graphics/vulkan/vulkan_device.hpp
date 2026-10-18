@@ -230,6 +230,8 @@ class VulkanDevice final : public Device {
         VkDeviceMemory previewDeformedMemory{};
         VkDeviceSize previewDeformedCapacity{};
         VkDescriptorSet previewDeformDescriptor{};
+        std::array<VkDescriptorBufferInfo, 5> previewDeformBindings{};
+        bool previewDeformBindingsValid{};
         VkBuffer previewVertexBuffer{};
         VkDeviceMemory previewVertexMemory{};
         void* mappedPreviewVertices{};
