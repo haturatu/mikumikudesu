@@ -914,6 +914,11 @@ std::optional<graphics::NativeFrameOutput> Application::recordNativeFrame(graphi
         auto output = nativeRenderer_.recordFrame(commands, frameContext, nativeDirty, materials, lightSampling,
                                                   nativeRenderer_.environment(), executionResources, outputExecution,
                                                   materialModels);
+        // Dirty flags describe pending scene changes, not a persistent state.
+        // Consume them only after a native frame accepted the changes. A
+        // failed frame must retain them for the next successful attempt.
+        if (output.has_value())
+            scene_.clearDirty();
         nativeOnStartPending_ = false;
         nativeFxPendingEvents_.clear();
         if (output.has_value() && outputExecution.sampleIndex + 1U == outputExecution.sampleCount)
@@ -2451,7 +2456,10 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     if (rebuildVertices)
         animatedVertexCount_ = static_cast<std::uint64_t>(vertices.size());
     uploadedAnimationFrame_ = static_cast<int>(animationFrame_);
-    scene_.clearDirty(core::DirtyFlag::geometry | core::DirtyFlag::material);
+    // Preview synchronizes these immediately, but native accumulation must
+    // still observe topology/material changes in recordNativeFrame().
+    if (device_->activeRenderer() == graphics::RendererKind::preview)
+        scene_.clearDirty(core::DirtyFlag::geometry | core::DirtyFlag::material);
 }
 
 void Application::refreshPreviewTextures() {
