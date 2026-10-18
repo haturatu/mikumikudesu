@@ -51,9 +51,9 @@ make
 make setup
 make test
 
-# Test / run
-make run
-make run ARGS="--asset model.pmx --asset motion.vmd"
+# 実行（Debug のビルド済みバイナリを直接起動）
+./build/linux-debug/mikumikudesu
+./build/linux-debug/mikumikudesu --asset model.pmx --asset motion.vmd
 
 # Release / package / sanitizers / system packages only
 make release
@@ -62,9 +62,9 @@ make sanitize
 make system
 ```
 
-依存関係としてMikuMikuDayoが必要ですが、`make`/`make build`はMikuMikuDayoを取得しません。MikuMikuDayoは`git`管理されていないのでリリースから取得するようになっています。`make setup`、`make test`、`make install`、
-`make package`でだけ、`deps/mikumikudayo.lock`に固定したGitHub Release ZIPを取得または
-`.cache/mikumikudayo/`から再利用します。
+`make` / `make build` は MikuMikuDayo の配布物を取得しません。必要に応じて先に `make setup` を実行してください。`make test`、`make install`、`make package` は `setup` を実行します。取得した ZIP は `.cache/mikumikudayo/` から再利用できます。
+
+ビルドが完了したらバイナリを直接実行できます。`make run` は再度 configure / build を行う開発用の補助ターゲットであり、通常の起動には不要です。Release preset を使った場合は `./build/linux-release/mikumikudesu` を実行してください。
 
 `Makefile` の全ターゲットと変数は`make help`で確認できます。CMakeを直接実行する場合は以下です。
 
@@ -73,9 +73,6 @@ cmake --preset linux-debug
 cmake --build --preset linux-debug
 python3 scripts/fetch-mikumikudayo.py
 ctest --preset linux-debug --output-on-failure
-
-./build/linux-debug/mikumikudesu
-./build/linux-debug/mikumikudesu --asset model.pmx --asset motion.vmd
 ```
 
 ## インストールと system-only ビルド
