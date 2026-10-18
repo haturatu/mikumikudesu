@@ -1,9 +1,12 @@
-# Preview performance on integrated AMD GPUs
+# Preview の性能と画質設定
 
-Previewの改善はGPU帯域、頂点変形、フレーム同期を中心に実装しています。既存のVulkan 1.3、
-VMA、upload ring、bindless、pipeline cache、ThinLTO/PGO/BOLTをそのまま利用します。
+この文書では、Preview レンダラのメモリ使用量と描画処理の最適化、画質 profile、Present mode、および計測方法を説明します。
 
-## 変更した処理
+主な改善対象は GPU メモリ帯域、頂点変形、フレーム同期です。Vulkan 1.3、VMA、upload ring、bindless descriptor、pipeline cache、ThinLTO / PGO / BOLT などの既存の仕組みを引き続き使用します。
+
+**注意:** このページに記載した速度・メモリ削減率は、指定した入力と検証環境での結果です。別の GPU、モデル、画質 profile で同じ改善が得られることを意味しません。
+
+## 最適化した処理
 
 - AO: scalar R8_UNORM。storage、sampling、linear filteringとextended storage formats featureを確認します。
   未対応ならR16_SFLOAT、extended formats自体が未対応ならR32_SFLOATへfallbackします。
@@ -34,11 +37,11 @@ VMA、upload ring、bindless、pipeline cache、ThinLTO/PGO/BOLTをそのまま�
   tempファイル、symlink、他の名前のファイルは削除しません。並列writerでは一時的な超過があり得ます。
   次回はcomputeを省略してcached facesをuploadします。checksum/寸法/長さが不一致なら再計算します。
 
-1080p・半解像度AOの理論上のattachment payloadは、従来の約23.73 MiBからR8 AO + RG16 normalで
-約8.90 MiBへ減ります（約62.5%削減）。allocation padding、depth、HDR合成、compute vertex出力は別です。
-この数字はFPSの改善率を表しません。
+1920 × 1080、半解像度 AO の場合、対象 attachment の理論上のデータ量は約 23.73 MiB から約 8.90 MiB に減少します（約 62.5% の削減）。これは R8 AO と RG16 normal に関する値であり、allocation padding、depth、HDR 合成、compute vertex 出力を含みません。**FPS が 62.5% 改善することを意味しません。**
 
-## Quality / presentation
+## 画質 profile と Present mode
+
+画質 profile は `--preview-quality auto|apu|high` で指定します。既定の `auto` は GPU とメモリ使用状況に応じて選択します。下表の「still quality」は静止画出力時に使用する設定であり、CLI の profile 名ではありません。
 
 | 設定 | Shadow | AO | Environment上限 | realtime shadow taps |
 | --- | --- | --- | --- | --- |
@@ -63,19 +66,19 @@ Environment上限の変更は次回のHDRI再生成時に反映されます。�
 WARNをstderrへ出してFIFOへ戻ります。MAILBOXでは可能なら3枚のswapchain imageを確保します。
 Offscreen出力はPresent modeの影響を受けません。
 
-## Async compute A/B
+## 非同期 compute の比較
 
 ```bash
 ./build/linux-release/mikumikudesu --async-compute --present immediate --asset model.pmx
 ```
 
-既定は無効です。compute-only familyがあればそのqueue、なければgraphics familyの第2queueを使います。
+この機能は既定では無効です。compute-only queue family があればその queue を使用し、なければ graphics family の第 2 queue を使用します。
 未対応ならserialへfallbackします。別familyではPreviewのsource/output bufferをconcurrent sharingとし、
 専用timelineからgraphicsのvertex inputへ依存を渡します。現時点でoffloadするのはPreviewDeformです。
 SSAOとenvironmentはgraphics queue上です。SSAOとShadowのoverlapにはpass分割・追加の測定が必要です。
 APUのCU/メモリ帯域は共有されるため、有効化だけで高速化したとは判断しません。
 
-## 測定とドライバー
+## 測定条件とドライバ
 
 GPU/driver、モデル、motion、解像度、profile、cacheのcold/warm状態、validationの有無を揃えます。
 CPUビルドや他のGPU処理を止め、通常設定とasyncの順序を交互にして複数回測ります。
@@ -92,7 +95,7 @@ RADV_PERFTEST=nircache MESA_SHADER_CACHE_SHOW_STATS=true ./build/linux-release/m
 nircacheはpipeline作成時間の比較用です。Vega/GFX9にGFX10+用wave32設定を推奨しません。
 既存のnative tuning、ThinLTO/PGO/BOLTはCPU workload向けのopt-in設定を利用してください。
 
-## Vega 8 / RADV 26.2.4での実測
+## Vega 8 / RADV 26.2.4 での測定結果
 
 2026-10-04、AMD Radeon Vega 8 Graphics (RADV RAVEN)、Mesa 26.2.4-arch1.1、GCC 16.2.1、
 Release・glslc build。比較元はmainの`d9e36b5`、同じ依存関係・UI有効のRelease buildです。
@@ -107,9 +110,7 @@ Teto PMX（31,954 vertices / 52,710 triangles）、VMDなし、既定の物理�
 | auto (APU) | 6.945 / 6.738 / 6.709 | 6.738 | 10.4% |
 | auto + async compute | 6.791 / 6.814 / 6.652 | 6.791 | 9.7% |
 
-ロード・初期化・CPU encode込みの単一workloadです。描画だけのGPU時間、interactive FPS、
-全モデルでの改善率は未測定です。autoとhighはShadow/AO精度も異なります。
-asyncはこの条件でserial autoを上回らず、既定では無効にしています。
+上記はロード、初期化、CPU エンコードを含む単一の workload の測定値です。描画処理だけの GPU 時間、対話操作中の FPS、別のモデルでの改善率は測定していません。また `auto` と `high` は Shadow / AO の設定が異なるため、画質を揃えた性能比較ではありません。この条件では非同期 compute は通常の `auto` を上回らず、既定では無効です。
 
 検証: ローカルReleaseのCTest 21件（既存で無効のupstream regression_testは除外）は通過。
 通常・high・asyncの描画比較もローカルのsynchronization validationで通過しています。

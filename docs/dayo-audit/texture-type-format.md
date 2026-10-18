@@ -1,15 +1,17 @@
-# 調査: textureの明示HLSL型とファイル形式の保持
+# texture の明示HLSL型とファイル形式の保持
 
 状態: **実装済み**。基準は `main@7ed41e0` と固定 MikuMikuDayo130。
+
+## 調査時点の問題
 
 本家 `src/YRZFx.ixx::FXRes::type` はTexture2D/3Dにも適用される。
 `createTextureLambda` / `createTexture3DLambda` はtypeが空の場合だけ実DXGI formatから型を推定し、
 明示型は保持する。ファイル読込後は実リソースのformat/sizeを宣言へ反映する。
 
-[EffectTexture](../../src/core/effect.hpp) にはtype fieldがなく、
+[EffectTexture](../../src/core/effect.hpp) には調査時点で type field がなく、
 [texture parser](../../src/core/effect.cpp) もtypeを読まない。
 [shader source生成](../../src/fx/fx_shader_source.cpp) はformatだけからfloat/float2/float4を推定する。
-従って、明示typeを与えた定義はparser→shaderの経路で保持されない。
+そのため、調査時点では明示 type が parser → shader の経路で保持されませんでした。
 
 外部画像は [loadDdsImageRgba8](../../src/core/image.cpp) 等でRGBA8へ変換し、
 [FxResourceRuntime](../../src/graphics/fx_resource_runtime.cpp) もそのupload形式を使う。
@@ -26,7 +28,7 @@ image formatを一致させる。対応外の明示型を黙ってfloat4に変�
 受け入れ条件は、明示型あり/なしのHLSL生成とSPIR-V reflection、float/HDR/uint/signedの
 fixture、2D/3D各mip、数値のGPU readback、対応外組合せのエラー。
 
-## 実装
+## 実装内容
 
 - `EffectTexture.type` を parser から HLSL 生成まで保持する。float/int/uint の1〜4成分を認識し、数値型の不一致を診断する。
 - `loadTextureImage` は DDS の8/16/32 bit、1/2/4成分の対応形式を保持する。float、UNORM、SNORM、UINT、SINT、sRGB と旧形式の浮動小数点 DDS を扱う。

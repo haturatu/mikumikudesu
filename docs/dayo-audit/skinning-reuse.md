@@ -1,23 +1,23 @@
-# 調査: 標準skinningのDayo HLSL再利用
+# 標準 skinningのDayo HLSL再利用
 
 状態: **実装済み**。基準は `main@7ed41e0` と固定 MikuMikuDayo130。
 
-## 確認した差分
+## 調査時点の差分
 
 本家 `hlsl/system/DefaultSkinning.hlsl::CS` は `hlsl/skinning.hlsli::DefaultSkinning` を呼び、
 `resources_deform.hlsli` のVB/Skin/BoneMatrix/MorphValues/MorphTable/MorphTablePointer/OutBufを使う。
 上流helperは位置・UV・追加UV morph、tangent、BDEF/SDEF/QDEFを扱う。
 
-[CMakeLists.txt](../../CMakeLists.txt) は独自の [native_deform.hlsl](../../shaders/native_deform.hlsl) をcompileし、
+[CMakeLists.txt](../../CMakeLists.txt) は調査時点では独自の [native_deform.hlsl](../../shaders/native_deform.hlsl) をcompileし、
 [VulkanDevice::createNativeDeformPipeline](../../src/graphics/vulkan/vulkan_device.cpp) はその `NativeDeform` を使う。
 同shaderはPreviewVertex/BoneTransform/NativeDeformedVertexの別ABIを持ち、LBS/SDEF/QDEFを再実装する。
-従ってDayoのskinning.hlsliを取得・同梱しても、この標準deform経路には変更が反映されない。
+そのため、調査時点では Dayo の skinning.hlsli を取得・同梱するだけでは、標準 deform 経路に変更が反映されませんでした。
 Preview/CPU側でmorphを処理する経路もあるため、これだけでUV morph全体が動かないとは断定しない。
 
 `CloneCount`自体はNativeSceneDerivedRuntimeでuploadされており、常に未bindという指摘は誤り。
 未解決なのは標準deformの上流コード再利用と、各経路を通した数値同等性の検証。
 
-## 対応案
+## 対応方針
 
 上流resources_deformのABIへモデル入力を揃え、Dayoの `DefaultSkinning` を呼ぶ小さなentry wrapperを
 DXCでcompileする。wrapperには実頂点数のbounds checkを置く。本家CSの1024頂点dispatchをそのまま
@@ -31,7 +31,7 @@ OutBufをBLAS refitとrendererの頂点参照へ接続する。アルゴリズ�
 - DXC SPIR-V ABI検証、Vulkan validation、GPU readback、Windows 1.30との差分を記録する。
 - portableなPreview fallbackも維持し、上流source欠損時は診断する。
 
-## 実装
+## 実装内容
 
 `native_deform.hlsl` は上流 `yrz.hlsli` / `dayotypes.hlsli` / `skinning.hlsli` を直接 include し、
 `Dayo::DefaultSkinning(0)` を呼ぶ。独自 LBS/SDEF/QDEF と quaternion 補間の実装を削除した。
