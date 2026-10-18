@@ -1037,6 +1037,8 @@ void Application::resetProjectRuntimeState() {
     std::copy(defaultFilename.begin(), defaultFilename.end(), sequenceOutputFilename_.begin());
 #endif
     projectEditorState_ = {};
+    if (device_ != nullptr)
+        device_->setPreviewRenderSettings({});
     previewHdriPath_.fill(0);
     failedPreviewHdriPath_.clear();
     previewHdriError_.clear();
@@ -1304,6 +1306,8 @@ core::DayoProject Application::currentProject() const {
     project.upstreamDocumentJson = upstreamDocumentJson_;
     project.assets = projectAssets_;
     project.editor = projectEditorState_;
+    if (device_ != nullptr)
+        project.renderSettings = device_->previewRenderSettings();
     project.editor.animationRepeat = repeat_;
     project.editor.wavVolume = audioVolume_;
     project.editor.wavOffset = audioOffsetSeconds_;
@@ -1642,6 +1646,8 @@ void Application::handleAsset(const std::filesystem::path& path) {
             upstreamDocumentJson_ = project.upstreamDocumentJson;
             projectModelMetadata_ = project.models;
             projectEditorState_ = project.editor;
+            if (device_ != nullptr)
+                device_->setPreviewRenderSettings(project.renderSettings);
             previewHdriPath_.fill(0);
             const auto lightingPath = projectEditorState_.skyboxFile.string();
             std::copy_n(lightingPath.data(), std::min(lightingPath.size(), previewHdriPath_.size() - 1U),
@@ -2367,6 +2373,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             material.specularStrength = 0.5F;
             material.skin = 0.0F;
             material.anisotropy = 0.0F;
+            material.sheen = material.clearcoat = 0.0F;
             const auto preset = materialIndex < instance.materialSettings.size()
                                     ? instance.materialSettings[materialIndex].previewPbrPreset
                                     : 0U;
@@ -2381,6 +2388,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                 material.anisotropy = 0.65F;
                 break;
             case 3: // Cloth
+                material.sheen = 0.6F;
                 material.roughness = 0.70F;
                 break;
             case 4: // Metal
@@ -2388,9 +2396,11 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                 material.metallic = 0.8F;
                 break;
             case 5: // Plastic
+                material.clearcoat = 0.5F;
                 material.roughness = 0.38F;
                 break;
             case 6: // Glass
+                material.clearcoat = 1.0F;
                 material.roughness = 0.08F;
                 material.specularStrength = 1.0F;
                 break;
@@ -2834,6 +2844,9 @@ void Application::buildUi() {
         if (ImGui::Button(ui::label("Light")))
             openInspector(InspectorPage::light);
         ImGui::SameLine();
+        if (ImGui::Button(ui::label("Effects")))
+            openInspector(InspectorPage::effects);
+        ImGui::SameLine();
         if (ImGui::Button(ui::label("Reset view")))
             resetView();
         if (hasCameraVmd) {
@@ -3105,6 +3118,8 @@ void Application::setWorkspace(ui::Workspace workspace) {
     uiState_.workspace = workspace;
     if (workspace == ui::Workspace::camera)
         inspectorPage_ = InspectorPage::camera;
+    if (workspace == ui::Workspace::render)
+        inspectorPage_ = InspectorPage::effects;
     const auto& panels = uiState_.workspacePanels[static_cast<std::size_t>(workspace)];
     uiState_.sceneVisible = panels.sceneVisible;
     uiState_.inspectorVisible = panels.inspectorVisible;
@@ -3518,6 +3533,114 @@ void Application::buildCameraLightControls() {
 #endif
 }
 
+void Application::buildRenderSettingsControls() {
+#if DAYO_HAS_IMGUI
+    using namespace graphics;
+    if (device_ == nullptr)
+        return;
+    ImGui::SeparatorText(ui::tr("Render Settings"));
+    if (device_->activeRenderer() != RendererKind::preview) {
+        ImGui::TextWrapped("%s", ui::tr("These effects apply to the Preview renderer and its exports."));
+    }
+    auto settings = device_->previewRenderSettings();
+    const auto resolved = device_->previewResolvedEffects();
+    bool changed = false;
+    const auto combo = [&](const char* label, auto& value, const char* choices) {
+        int selected = static_cast<int>(value);
+        if (ImGui::Combo(label, &selected, choices)) {
+            value = static_cast<std::remove_reference_t<decltype(value)>>(selected);
+            changed = true;
+        }
+    };
+    combo(ui::label("Quality preset"), settings.preset, ui::items("Auto|Performance|Balanced|High"));
+    if (ImGui::Button(ui::label("Reset effect overrides"))) {
+        for (auto* setting :
+             {&settings.ambientOcclusion, &settings.softShadows, &settings.skinSubsurface, &settings.hairShading,
+              &settings.clothSheen, &settings.clearcoat, &settings.bloom, &settings.depthOfField})
+            *setting = {};
+        settings.shadowFilter = PreviewShadowFilter::automatic;
+        settings.antiAliasing = PreviewAntiAliasing::automatic;
+        changed = true;
+    }
+    ImGui::TextWrapped("%s", ui::tr("Checked effects are active. Reset restores the selected preset."));
+    const auto effect = [&](const char* name, PreviewEffectSetting& setting, bool active, std::uint32_t bit) {
+        ImGui::PushID(name);
+        const bool supported = (device_->previewEffectSupport() & bit) != 0;
+        ImGui::BeginDisabled(!supported);
+        if (ImGui::Checkbox(name, &active)) {
+            setting.override = active ? EffectOverride::enabled : EffectOverride::disabled;
+            changed = true;
+        }
+        if (setting.override != EffectOverride::inherit) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton(ui::label("Reset"))) {
+                setting = {};
+                changed = true;
+            }
+        }
+        ImGui::EndDisabled();
+        if (!supported)
+            ImGui::TextWrapped("%s", ui::tr("Unavailable on this device."));
+        if (supported && ImGui::TreeNode(ui::label("Details"))) {
+            ImGui::BeginDisabled(!active);
+            changed |= ImGui::SliderFloat(ui::label("Intensity"), &setting.intensity, 0.0F, 4.0F, "%.2f");
+            ImGui::EndDisabled();
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    };
+    if (ImGui::CollapsingHeader(ui::label("Lighting"), ImGuiTreeNodeFlags_DefaultOpen)) {
+        effect(ui::label("Ambient occlusion"), settings.ambientOcclusion, resolved.ambientOcclusion,
+               previewEffectSupportAmbientOcclusion);
+        combo(ui::label("AO method"), settings.ambientOcclusionMode, ui::items("SSAO (legacy)|GTAO"));
+        effect(ui::label("Soft shadows"), settings.softShadows, resolved.softShadows, previewEffectSupportSoftShadows);
+        combo(ui::label("Shadow filter"), settings.shadowFilter, ui::items("PCF|PCSS|Auto"));
+    }
+    if (ImGui::CollapsingHeader(ui::label("Materials"), ImGuiTreeNodeFlags_DefaultOpen)) {
+        effect(ui::label("Skin scattering"), settings.skinSubsurface, resolved.skinSubsurface,
+               previewEffectSupportSkinSubsurface);
+        effect(ui::label("Hair highlights"), settings.hairShading, resolved.hairShading,
+               previewEffectSupportHairShading);
+        effect(ui::label("Cloth sheen"), settings.clothSheen, resolved.clothSheen, previewEffectSupportClothSheen);
+        effect(ui::label("Clearcoat"), settings.clearcoat, resolved.clearcoat, previewEffectSupportClearcoat);
+        ImGui::TextWrapped(
+            "%s", ui::tr("Choose Skin, Hair, Cloth, Plastic or Glass in the material inspector to use these effects."));
+    }
+    if (ImGui::CollapsingHeader(ui::label("Post processing"), ImGuiTreeNodeFlags_DefaultOpen)) {
+        effect(ui::label("Bloom"), settings.bloom, resolved.bloom, previewEffectSupportBloom);
+        ImGui::BeginDisabled(!resolved.bloom);
+        changed |= ImGui::SliderFloat(ui::label("Bloom threshold"), &settings.bloomThreshold, 0.0F, 5.0F, "%.2f");
+        ImGui::EndDisabled();
+        effect(ui::label("Depth of field"), settings.depthOfField, resolved.depthOfField,
+               previewEffectSupportDepthOfField);
+        ImGui::TextWrapped("%s", ui::tr("Depth of field focuses on the camera target."));
+        combo(ui::label("Anti-aliasing"), settings.antiAliasing, ui::items("Off|FXAA|Auto"));
+        combo(ui::label("View transform"), settings.viewTransform, ui::items("ACES|AgX|Neutral"));
+        changed |= ImGui::SliderFloat(ui::label("Exposure (EV)"), &settings.exposure, -8.0F, 8.0F, "%.2f");
+        changed |=
+            ImGui::SliderFloat(ui::label("White balance (K)"), &settings.whiteBalance, 1000.0F, 15000.0F, "%.0f");
+    }
+    if (ImGui::CollapsingHeader(ui::label("Render performance"))) {
+        const auto timings = device_->previewPassTimings();
+        if (device_->previewGpuNanoseconds() == 0) {
+            ImGui::TextUnformatted(ui::tr("GPU timing unavailable"));
+        } else {
+            const auto timing = [](const char* name, std::uint64_t nanoseconds) {
+                ImGui::Text("%s: %.2f ms", name, static_cast<double>(nanoseconds) / 1e6);
+            };
+            timing(ui::tr("Shadows"), timings.shadow);
+            timing(ui::tr("AO / depth prepass"), timings.ambientOcclusion);
+            timing(ui::tr("Materials"), timings.model);
+            timing(ui::tr("Bloom"), timings.postProcess);
+            timing(ui::tr("Tone mapping"), timings.toneMap);
+            timing(ui::tr("Total"), device_->previewGpuNanoseconds());
+        }
+    }
+    if (changed)
+        device_->setPreviewRenderSettings(settings);
+#endif
+}
+
 void Application::buildInspectorPanel() {
 #if DAYO_HAS_IMGUI
     if (!uiState_.inspectorVisible)
@@ -3540,7 +3663,15 @@ void Application::buildInspectorPanel() {
     ImGui::SameLine();
     if (ImGui::RadioButton(ui::label("Light"), inspectorPage_ == InspectorPage::light))
         inspectorPage_ = InspectorPage::light;
+    ImGui::SameLine();
+    if (ImGui::RadioButton(ui::label("Effects"), inspectorPage_ == InspectorPage::effects))
+        inspectorPage_ = InspectorPage::effects;
     ImGui::Separator();
+    if (inspectorPage_ == InspectorPage::effects) {
+        buildRenderSettingsControls();
+        ImGui::End();
+        return;
+    }
     if (inspectorPage_ == InspectorPage::selection && timelineEditor_.drawInspector(scene_, history_)) {
         playing_ = false;
         if (editGlobalMotion_) {

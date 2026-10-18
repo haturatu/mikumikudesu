@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/motion.hpp"
+#include "graphics/preview_effects.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -87,6 +88,7 @@ struct DayoProject {
     std::vector<ProjectAsset> assets;
     std::vector<ProjectModelState> models;
     ProjectEditorState editor;
+    graphics::PreviewRenderSettings renderSettings;
     // The upstream JSON object is retained verbatim semantically so fields
     // unknown to desu survive a load/save cycle.
     std::string upstreamDocumentJson;

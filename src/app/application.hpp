@@ -76,6 +76,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void buildMainMenuBar();
     void buildDockLayout();
     void buildInspectorPanel();
+    void buildRenderSettingsControls();
     void buildCameraLightControls();
     void captureCameraForEditing();
     void captureLightForEditing();
@@ -284,7 +285,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     bool recordCamera_{};
     bool followVmdCamera_{true};
     ui::ViewportInteraction viewportInteraction_;
-    enum class InspectorPage { selection, camera, light };
+    enum class InspectorPage { selection, camera, light, effects };
     InspectorPage inspectorPage_{InspectorPage::selection};
     bool inspectorFocusRequested_{};
     bool cameraEditPreview_{};

@@ -20,6 +20,138 @@ namespace {
 
 using Json = nlohmann::json;
 
+graphics::PreviewRenderSettings readRenderSettings(const Json& json) {
+    graphics::PreviewRenderSettings settings;
+    if (!json.is_object())
+        return settings;
+    const auto readEnum = [](const Json& object, const char* key, auto fallback, auto maximum) {
+        if (!object.contains(key) || !object.at(key).is_number_integer())
+            return fallback;
+        const auto value = object.at(key).get<std::int64_t>();
+        return value >= 0 && value <= static_cast<std::int64_t>(maximum) ? static_cast<decltype(fallback)>(value)
+                                                                         : fallback;
+    };
+    settings.preset = readEnum(json, "preset", settings.preset, graphics::PreviewQualityPreset::high);
+    settings.ambientOcclusionMode =
+        readEnum(json, "ambientOcclusionMode", settings.ambientOcclusionMode, graphics::PreviewAmbientOcclusion::gtao);
+    settings.shadowFilter =
+        readEnum(json, "shadowFilter", settings.shadowFilter, graphics::PreviewShadowFilter::automatic);
+    settings.viewTransform =
+        readEnum(json, "viewTransform", settings.viewTransform, graphics::PreviewViewTransform::neutral);
+    settings.antiAliasing =
+        readEnum(json, "antiAliasing", settings.antiAliasing, graphics::PreviewAntiAliasing::automatic);
+    if (json.contains("exposure") && json.at("exposure").is_number())
+        settings.exposure = json.at("exposure").get<float>();
+    if (json.contains("whiteBalance") && json.at("whiteBalance").is_number())
+        settings.whiteBalance = json.at("whiteBalance").get<float>();
+    if (json.contains("bloomThreshold") && json.at("bloomThreshold").is_number())
+        settings.bloomThreshold = json.at("bloomThreshold").get<float>();
+    if (json.contains("ambientOcclusion") && json.at("ambientOcclusion").is_object()) {
+        const auto& effect = json.at("ambientOcclusion");
+        settings.ambientOcclusion.override =
+            readEnum(effect, "override", settings.ambientOcclusion.override, graphics::EffectOverride::disabled);
+        if (effect.contains("intensity") && effect.at("intensity").is_number())
+            settings.ambientOcclusion.intensity = effect.at("intensity").get<float>();
+    }
+    if (json.contains("softShadows") && json.at("softShadows").is_object()) {
+        const auto& effect = json.at("softShadows");
+        settings.softShadows.override =
+            readEnum(effect, "override", settings.softShadows.override, graphics::EffectOverride::disabled);
+        if (effect.contains("intensity") && effect.at("intensity").is_number())
+            settings.softShadows.intensity = effect.at("intensity").get<float>();
+    }
+    if (json.contains("skinSubsurface") && json.at("skinSubsurface").is_object()) {
+        const auto& effect = json.at("skinSubsurface");
+        settings.skinSubsurface.override =
+            readEnum(effect, "override", settings.skinSubsurface.override, graphics::EffectOverride::disabled);
+        if (effect.contains("intensity") && effect.at("intensity").is_number())
+            settings.skinSubsurface.intensity = effect.at("intensity").get<float>();
+    }
+    if (json.contains("hairShading") && json.at("hairShading").is_object()) {
+        const auto& effect = json.at("hairShading");
+        settings.hairShading.override =
+            readEnum(effect, "override", settings.hairShading.override, graphics::EffectOverride::disabled);
+        if (effect.contains("intensity") && effect.at("intensity").is_number())
+            settings.hairShading.intensity = effect.at("intensity").get<float>();
+    }
+    if (json.contains("clothSheen") && json.at("clothSheen").is_object()) {
+        const auto& effect = json.at("clothSheen");
+        settings.clothSheen.override =
+            readEnum(effect, "override", settings.clothSheen.override, graphics::EffectOverride::disabled);
+        if (effect.contains("intensity") && effect.at("intensity").is_number())
+            settings.clothSheen.intensity = effect.at("intensity").get<float>();
+    }
+    if (json.contains("clearcoat") && json.at("clearcoat").is_object()) {
+        const auto& effect = json.at("clearcoat");
+        settings.clearcoat.override =
+            readEnum(effect, "override", settings.clearcoat.override, graphics::EffectOverride::disabled);
+        if (effect.contains("intensity") && effect.at("intensity").is_number())
+            settings.clearcoat.intensity = effect.at("intensity").get<float>();
+    }
+    if (json.contains("bloom") && json.at("bloom").is_object()) {
+        const auto& effect = json.at("bloom");
+        settings.bloom.override =
+            readEnum(effect, "override", settings.bloom.override, graphics::EffectOverride::disabled);
+        if (effect.contains("intensity") && effect.at("intensity").is_number())
+            settings.bloom.intensity = effect.at("intensity").get<float>();
+    }
+    if (json.contains("depthOfField") && json.at("depthOfField").is_object()) {
+        const auto& effect = json.at("depthOfField");
+        settings.depthOfField.override =
+            readEnum(effect, "override", settings.depthOfField.override, graphics::EffectOverride::disabled);
+        if (effect.contains("intensity") && effect.at("intensity").is_number())
+            settings.depthOfField.intensity = effect.at("intensity").get<float>();
+    }
+    return graphics::sanitizePreviewRenderSettings(settings);
+}
+
+Json writeRenderSettings(const graphics::PreviewRenderSettings& source, Json json) {
+    if (!json.is_object())
+        json = Json::object();
+    const auto settings = graphics::sanitizePreviewRenderSettings(source);
+    json["preset"] = static_cast<int>(settings.preset);
+    json["ambientOcclusionMode"] = static_cast<int>(settings.ambientOcclusionMode);
+    json["shadowFilter"] = static_cast<int>(settings.shadowFilter);
+    json["viewTransform"] = static_cast<int>(settings.viewTransform);
+    json["antiAliasing"] = static_cast<int>(settings.antiAliasing);
+    json["exposure"] = settings.exposure;
+    json["whiteBalance"] = settings.whiteBalance;
+    json["bloomThreshold"] = settings.bloomThreshold;
+    if (!json["ambientOcclusion"].is_object())
+        json["ambientOcclusion"] = Json::object();
+    json["ambientOcclusion"]["override"] = static_cast<int>(settings.ambientOcclusion.override);
+    json["ambientOcclusion"]["intensity"] = settings.ambientOcclusion.intensity;
+    if (!json["softShadows"].is_object())
+        json["softShadows"] = Json::object();
+    json["softShadows"]["override"] = static_cast<int>(settings.softShadows.override);
+    json["softShadows"]["intensity"] = settings.softShadows.intensity;
+    if (!json["skinSubsurface"].is_object())
+        json["skinSubsurface"] = Json::object();
+    json["skinSubsurface"]["override"] = static_cast<int>(settings.skinSubsurface.override);
+    json["skinSubsurface"]["intensity"] = settings.skinSubsurface.intensity;
+    if (!json["hairShading"].is_object())
+        json["hairShading"] = Json::object();
+    json["hairShading"]["override"] = static_cast<int>(settings.hairShading.override);
+    json["hairShading"]["intensity"] = settings.hairShading.intensity;
+    if (!json["clothSheen"].is_object())
+        json["clothSheen"] = Json::object();
+    json["clothSheen"]["override"] = static_cast<int>(settings.clothSheen.override);
+    json["clothSheen"]["intensity"] = settings.clothSheen.intensity;
+    if (!json["clearcoat"].is_object())
+        json["clearcoat"] = Json::object();
+    json["clearcoat"]["override"] = static_cast<int>(settings.clearcoat.override);
+    json["clearcoat"]["intensity"] = settings.clearcoat.intensity;
+    if (!json["bloom"].is_object())
+        json["bloom"] = Json::object();
+    json["bloom"]["override"] = static_cast<int>(settings.bloom.override);
+    json["bloom"]["intensity"] = settings.bloom.intensity;
+    if (!json["depthOfField"].is_object())
+        json["depthOfField"] = Json::object();
+    json["depthOfField"]["override"] = static_cast<int>(settings.depthOfField.override);
+    json["depthOfField"]["intensity"] = settings.depthOfField.intensity;
+    return json;
+}
+
 std::filesystem::path resolveAsset(const std::filesystem::path& base, const std::filesystem::path& value) {
     if (value.empty())
         return {};
@@ -496,6 +628,7 @@ DayoProject loadProject(const std::filesystem::path& path) {
     auto upstream = readUpstreamJson(root, base);
 
     DayoProject result;
+    result.renderSettings = graphics::legacyPreviewRenderSettings();
     if (root.contains("mikumikudesu")) {
         result.upstreamDocumentJson = root.dump();
         const auto& native = root.at("mikumikudesu");
@@ -504,6 +637,8 @@ DayoProject loadProject(const std::filesystem::path& path) {
             throw std::runtime_error("unsupported .dayo project version " + std::to_string(result.version));
         }
         result.renderer = native.value("renderer", upstream.renderer);
+        result.renderSettings = native.contains("renderSettings") ? readRenderSettings(native.at("renderSettings"))
+                                                                  : graphics::legacyPreviewRenderSettings();
         result.frame = native.value("frame", upstream.frame);
         result.playing = native.value("playing", true);
         if (native.contains("assets") && native.at("assets").is_array()) {
@@ -660,6 +795,7 @@ DayoProject loadProject(const std::filesystem::path& path) {
     if (!root.contains("MikuMikuDayo") || !root.at("MikuMikuDayo").is_object())
         throw std::runtime_error("unrecognized .dayo project: " + path.string());
     result = std::move(upstream);
+    result.renderSettings = graphics::legacyPreviewRenderSettings();
     result.upstreamDocumentJson = root.dump();
     const auto modelCount =
         root.at("MikuMikuDayo").contains("models") && root.at("MikuMikuDayo").at("models").is_array()
@@ -889,6 +1025,8 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
             state["upstreamId"] = *model.upstreamId;
         native["modelState"].push_back(std::move(state));
     }
+    native["renderSettings"] =
+        writeRenderSettings(project.renderSettings, native.value("renderSettings", Json::object()));
     root["mikumikudesu"] = std::move(native);
 
     auto temporary = absolute;
