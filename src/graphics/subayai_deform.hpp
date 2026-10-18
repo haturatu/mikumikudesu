@@ -1,6 +1,7 @@
 #pragma once
 
 #include "graphics/device.hpp"
+#include "graphics/skirt_collision.hpp"
 
 #include <algorithm>
 #include <array>
@@ -41,6 +42,7 @@ struct NativeDeformUpload {
     // Optional host-evaluated positions used to seed the first BLAS build.
     // The GPU deform pass replaces these values once it is recorded.
     std::span<const NativeDeformedVertex> deformedVertices;
+    SkirtCollisionUpload skirtCollision{};
 };
 
 struct NativeDeformPlan {
@@ -129,6 +131,10 @@ class NativeDeformRuntime {
         return pipeline_;
     }
     [[nodiscard]] BlasGeometryDesc blasGeometry() const;
+    // Caller waits for the recorded frame before requesting diagnostic readback.
+    [[nodiscard]] core::SkirtCollisionStats skirtCollisionStats() const {
+        return skirtCollision_.readStats();
+    }
 
     // Records: typed pipeline bind -> descriptor bind -> deform constants ->
     // compute dispatch. The caller must submit/wait this command list before
@@ -144,6 +150,7 @@ class NativeDeformRuntime {
         return device_ == nullptr ? 0 : device_->currentFrameSlot() % kNativeFramesInFlight;
     }
 
+    SkirtCollisionRuntime skirtCollision_;
     Device* device_{nullptr};
     NativeDeformPlan plan_;
     std::array<NativeDeformResources, kNativeFramesInFlight> resources_{};

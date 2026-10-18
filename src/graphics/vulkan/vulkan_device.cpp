@@ -656,6 +656,7 @@ VulkanDevice::VulkanDevice(platform::Window& window, bool validation, VulkanOpti
     createPreviewDescriptors();
     createPipeline();
     createNativeOutputPipeline();
+    createSkirtCollisionPipeline();
     createNativeDeformPipeline();
     createNativeEnvironmentPipelines();
     createFrames();
@@ -726,6 +727,8 @@ VulkanDevice::~VulkanDevice() {
     }
     uploadContext_.reset();
     destroyNativeEnvironmentPipelines();
+    previewSkirtCollision_.reset();
+    destroySkirtCollisionPipeline();
     destroyNativeDeformPipeline();
     for (auto& frame : frames_) {
         destroyPreviewAoResources(frame);
@@ -738,6 +741,14 @@ VulkanDevice::~VulkanDevice() {
     if (previewFallbackAoTexture_.valid()) {
         destroyTextureEx(previewFallbackAoTexture_);
         previewFallbackAoTexture_ = {};
+    }
+    // The Preview output aliases borrow raw storage freed with the frame.
+    for (auto& frame : frames_) {
+        if (frame.previewDeformedAlias.valid()) {
+            typedBuffers_.erase(frame.previewDeformedAlias);
+            typedBufferHandles_.destroy(frame.previewDeformedAlias);
+            frame.previewDeformedAlias = {};
+        }
     }
     destroyTypedResources();
     destroyViewportResources();
@@ -1796,6 +1807,74 @@ void VulkanDevice::destroyNativeOutputPipeline() noexcept {
     nativeOutputDescriptorPool_ = VK_NULL_HANDLE;
     nativeOutputDescriptorSetLayout_ = VK_NULL_HANDLE;
     nativeOutputDescriptors_.fill(VK_NULL_HANDLE);
+}
+
+void VulkanDevice::createSkirtCollisionPipeline() {
+    if (options_.skirtCollisionIterations > 64)
+        throw std::invalid_argument("skirt collision iterations exceed 64");
+    skirtCollisionDescriptorLayout_ = createDescriptorSetLayoutEx(graphics::skirtCollisionDescriptorLayout());
+    skirtCollisionPipelineLayout_ =
+        createPipelineLayoutEx(graphics::skirtCollisionPipelineLayout(skirtCollisionDescriptorLayout_));
+    const auto bytes = readBinary(DAYO_SKIRT_COLLISION_SPV);
+    std::vector<std::uint32_t> words(bytes.size() / sizeof(std::uint32_t));
+    std::memcpy(words.data(), bytes.data(), bytes.size());
+    skirtCollisionShader_ =
+        createShaderEx({.spirv = words, .entryPoint = "SkirtCollision", .stage = ShaderStageMask::compute});
+    skirtCollisionPipeline_ =
+        createComputePipelineEx({.layout = skirtCollisionPipelineLayout_, .shaders = {skirtCollisionShader_}});
+}
+void VulkanDevice::destroySkirtCollisionPipeline() noexcept {
+    try {
+        if (skirtCollisionPipeline_.valid())
+            destroyPipelineEx(skirtCollisionPipeline_);
+    } catch (...) {
+    }
+    try {
+        if (skirtCollisionShader_.valid())
+            destroyShaderEx(skirtCollisionShader_);
+    } catch (...) {
+    }
+    try {
+        if (skirtCollisionPipelineLayout_.valid())
+            destroyPipelineLayoutEx(skirtCollisionPipelineLayout_);
+    } catch (...) {
+    }
+    try {
+        if (skirtCollisionDescriptorLayout_.valid())
+            destroyDescriptorSetLayoutEx(skirtCollisionDescriptorLayout_);
+    } catch (...) {
+    }
+    skirtCollisionPipeline_ = {};
+    skirtCollisionShader_ = {};
+    skirtCollisionPipelineLayout_ = {};
+    skirtCollisionDescriptorLayout_ = {};
+}
+
+std::vector<PreviewDeformedVertex> VulkanDevice::readbackPreviewDeformedVertices() {
+    const auto& frame = frames_[(frameIndex_ + frames_.size() - 1) % frames_.size()];
+    if (!frame.previewDeformedAlias.valid())
+        return {};
+    waitIdle();
+    std::vector<PreviewDeformedVertex> vertices(static_cast<std::size_t>(previewVertexSize_ / sizeof(PreviewVertex)));
+    const auto bytes = readbackBufferEx(frame.previewDeformedAlias, 0, vertices.size() * sizeof(PreviewDeformedVertex));
+    std::memcpy(vertices.data(), bytes.data(), bytes.size());
+    return vertices;
+}
+
+void VulkanDevice::updatePreviewSkirtCollision(std::span<const core::SkirtVertex> vertices,
+                                               std::span<const std::array<std::uint32_t, 4>> triangles,
+                                               std::span<const std::uint32_t> adjacency,
+                                               std::span<const core::SkirtCapsule> capsules,
+                                               std::uint64_t historyGeneration,
+                                               std::span<const std::array<std::uint32_t, 2>> legRanges,
+                                               std::span<const std::uint32_t> legVertices) {
+    previewGpuScene_.skirtVertices.assign(vertices.begin(), vertices.end());
+    previewGpuScene_.skirtTriangles.assign(triangles.begin(), triangles.end());
+    previewGpuScene_.skirtAdjacency.assign(adjacency.begin(), adjacency.end());
+    previewGpuScene_.skirtCapsules.assign(capsules.begin(), capsules.end());
+    previewGpuScene_.skirtLegRanges.assign(legRanges.begin(), legRanges.end());
+    previewGpuScene_.skirtLegVertices.assign(legVertices.begin(), legVertices.end());
+    previewGpuScene_.skirtHistoryGeneration = historyGeneration;
 }
 
 void VulkanDevice::createNativeDeformPipeline() {
@@ -3497,6 +3576,12 @@ void VulkanDevice::recordPreviewBackground(VkCommandBuffer command) {
 }
 
 void VulkanDevice::destroyPreviewDeformBuffers(Frame& frame) {
+    if (frame.previewDeformedAlias.valid()) {
+        // Borrowed descriptor alias: raw Preview storage retains ownership.
+        typedBuffers_.erase(frame.previewDeformedAlias);
+        typedBufferHandles_.destroy(frame.previewDeformedAlias);
+        frame.previewDeformedAlias = {};
+    }
     if (frame.previewDeformDescriptor != VK_NULL_HANDLE)
         check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &frame.previewDeformDescriptor),
               "free Preview deform descriptor");
@@ -3531,7 +3616,8 @@ void VulkanDevice::recordPreviewDeform(VkCommandBuffer command, Frame& frame) {
         const VkBufferCreateInfo info{
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             .size = frame.previewDeformedCapacity,
-            .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             .sharingMode = concurrent ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
             .queueFamilyIndexCount = concurrent ? 2U : 0U,
             .pQueueFamilyIndices = concurrent ? sharedFamilies.data() : nullptr,
@@ -3548,6 +3634,14 @@ void VulkanDevice::recordPreviewDeform(VkCommandBuffer command, Frame& frame) {
               "allocate Preview deform output");
         check(vkBindBufferMemory(device_, frame.previewDeformedBuffer, frame.previewDeformedMemory, 0),
               "bind Preview deform output");
+        TypedBuffer alias{};
+        alias.resource.buffer = frame.previewDeformedBuffer;
+        alias.resource.size = frame.previewDeformedCapacity;
+        alias.desc = {.size = static_cast<std::size_t>(frame.previewDeformedCapacity),
+                      .usage = ResourceUsage::storageRead | ResourceUsage::storageWrite | ResourceUsage::vertexRead |
+                               ResourceUsage::transferSrc};
+        frame.previewDeformedAlias = typedBufferHandles_.create();
+        typedBuffers_.emplace(frame.previewDeformedAlias, alias);
         const VkDescriptorSetAllocateInfo setInfo{
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
             .descriptorPool = previewDescriptorPool_,
@@ -3584,6 +3678,19 @@ void VulkanDevice::recordPreviewDeform(VkCommandBuffer command, Frame& frame) {
     vkCmdPushConstants(command, previewDeformPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants),
                        constants.data());
     vkCmdDispatch(command, (vertexCount + 63U) / 64U, 1, 1);
+    if (!previewGpuScene_.skirtVertices.empty() && options_.skirtCollisionIterations != 0) {
+        VulkanCommandList commands(*this, command);
+        previewSkirtCollision_.record(*this, commands, frame.previewDeformedAlias,
+                                      {.vertices = previewGpuScene_.skirtVertices,
+                                       .triangles = previewGpuScene_.skirtTriangles,
+                                       .adjacency = previewGpuScene_.skirtAdjacency,
+                                       .capsules = previewGpuScene_.skirtCapsules,
+                                       .historyGeneration = previewGpuScene_.skirtHistoryGeneration,
+                                       .iterations = options_.skirtCollisionIterations,
+                                       .legRanges = previewGpuScene_.skirtLegRanges,
+                                       .legVertices = previewGpuScene_.skirtLegVertices},
+                                      sizeof(PreviewDeformedVertex), offsetof(PreviewDeformedVertex, normal));
+    }
     const VkMemoryBarrier2 visible{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
         .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -5586,6 +5693,7 @@ void VulkanDevice::clearPreviewResources() {
     uploadPreviewTextures(std::span<const PreviewTexture>{});
     updatePreviewMaterials(std::span<const PreviewMaterial>{});
     previewGpuScene_.draws.clear();
+    updatePreviewSkirtCollision({}, {}, {}, {}, 0);
     previewGpuScene_.view = {};
     previewGpuScene_.view.screenSource = PreviewScene::ScreenSource::white;
     updatePreviewEnvironment({});

@@ -186,6 +186,7 @@ add_library(
   src/core/profiling.cpp
   src/core/project.cpp
   src/core/scene.cpp
+  src/core/skirt_collision.cpp
   src/core/upload_ring.cpp
   src/core/task_scheduler.cpp
   src/core/subayai_hair.cpp
@@ -300,6 +301,7 @@ add_library(
   src/graphics/sbt.cpp
   src/graphics/subayai_acceleration_structure.cpp
   src/graphics/subayai_deform.cpp
+  src/graphics/skirt_collision.cpp
   src/graphics/subayai_geometry.cpp
   src/graphics/subayai_environment.cpp
   src/graphics/subayai_environment_runtime.cpp
@@ -368,6 +370,14 @@ endif()
 target_compile_definitions(dayo_core PUBLIC DAYO_HAS_BULLET=${DAYO_HAS_BULLET})
 
 include(cmake/CompileHlsl.cmake)
+dayo_compile_hlsl(
+  DAYO_SKIRT_COLLISION_SPV
+  SOURCE shaders/skirt_collision.hlsl
+  ENTRY SkirtCollision
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS shaders/skirt_collision.hlsli
+)
 dayo_compile_hlsl(
   DAYO_PREVIEW_DEFORM_SPV
   SOURCE shaders/preview_deform.hlsl
@@ -539,6 +549,7 @@ add_custom_target(
   DEPENDS
     ${DAYO_PREVIEW_VERTEX_SPV}
     ${DAYO_PREVIEW_DEFORM_SPV}
+    ${DAYO_SKIRT_COLLISION_SPV}
     ${DAYO_PREVIEW_EDGE_VERTEX_SPV}
     ${DAYO_PREVIEW_SHADOW_VERTEX_SPV}
     ${DAYO_PREVIEW_SHADOW_FRAGMENT_SPV}
@@ -574,6 +585,7 @@ target_compile_definitions(
     DAYO_ENVIRONMENT_CACHE_VERSION="${DAYO_ENV_EQUIRECT_DIGEST}-${DAYO_ENV_PREFILTER_DIGEST}-samples-1-64-48-32-16-v1"
     DAYO_PREVIEW_VERTEX_SPV="${DAYO_PREVIEW_VERTEX_SPV}"
     DAYO_PREVIEW_DEFORM_SPV="${DAYO_PREVIEW_DEFORM_SPV}"
+    DAYO_SKIRT_COLLISION_SPV="${DAYO_SKIRT_COLLISION_SPV}"
     DAYO_PREVIEW_EDGE_VERTEX_SPV="${DAYO_PREVIEW_EDGE_VERTEX_SPV}"
     DAYO_PREVIEW_SHADOW_VERTEX_SPV="${DAYO_PREVIEW_SHADOW_VERTEX_SPV}"
     DAYO_PREVIEW_SHADOW_FRAGMENT_SPV="${DAYO_PREVIEW_SHADOW_FRAGMENT_SPV}"
@@ -941,6 +953,16 @@ if(BUILD_TESTING)
   add_test(NAME upstream_compat COMMAND dayo_upstream_compat_tests)
   set_tests_properties(upstream_compat PROPERTIES LABELS "upstream" TIMEOUT 180)
   add_test(NAME vulkan_probe COMMAND mikumikudesu --probe --hidden)
+  add_executable(dayo_skirt_collision_tests tests/skirt_collision_tests.cpp)
+  target_link_libraries(dayo_skirt_collision_tests PRIVATE dayo_core dayo_graphics dayo_platform)
+  dayo_enable_warnings(dayo_skirt_collision_tests)
+  add_test(NAME skirt_collision COMMAND dayo_skirt_collision_tests)
+  add_test(NAME skirt_collision_async COMMAND dayo_skirt_collision_tests --async-compute)
+  set_tests_properties(
+    skirt_collision
+    skirt_collision_async
+    PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE ENVIRONMENT "VK_LAYER_VALIDATE_SYNC=1"
+  )
   add_test(NAME preview_render COMMAND dayo_preview_tests)
   set_tests_properties(vulkan_probe PROPERTIES TIMEOUT 60)
   add_test(NAME preview_render_high COMMAND dayo_preview_tests --high)
@@ -988,6 +1010,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_fx_linker_tests
     dayo_fx_semantic_tests
     dayo_subayai_bdpt_tests
+    dayo_skirt_collision_tests
     dayo_native_renderer_tests
   )
   foreach(
