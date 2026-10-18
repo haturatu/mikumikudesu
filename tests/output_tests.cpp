@@ -57,9 +57,9 @@ int main() {
         const std::string header = "P6\n2 1\n255\n";
         const std::array<char, 6> expected = {
             static_cast<char>(255), 0, 0, 0, static_cast<char>(128), static_cast<char>(255)};
-        ok &= check(data.size() == header.size() + expected.size() && data.compare(0, header.size(), header) == 0 &&
-                        std::equal(expected.begin(), expected.end(), data.begin() + header.size()),
-                    "PPM preserves binary RGB content without alpha");
+        std::string expectedData = header;
+        expectedData.append(expected.data(), expected.size());
+        ok &= check(data == expectedData, "PPM preserves binary RGB content without alpha");
     }
     std::filesystem::remove(ppmPath, cleanupError);
 
