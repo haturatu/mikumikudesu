@@ -1,52 +1,78 @@
-# Keyframe editor usability study
+# キーフレームエディタの操作性と検証結果
 
-## Before implementation
+Animation ワークスペースのキーフレーム編集について、変更前の問題、設計上の要件、実装内容、検証結果を記録します。
 
-Tested the native application with Tda Miku and the combined telephone dance/facial motion (119,365 bone keys and 2,815 morph keys). Captured the default layout, resized the timeline, scrolled its controls, switched to the key list, selected a list row, and attempted to drag a diamond.
+この記録は、Tda 式初音ミクとダンス・表情を組み合わせた VMD を使用した検証に基づきます。変更前後の画面は、下記のスクリーンショットで比較できます。
 
-- At 1280×720, playback and always-expanded media controls push the canvas and editing actions below the visible panel. Scrolling to the actions hides playback and the canvas.
-- Canvas diamonds cannot be selected or dragged: a click only seeks. Selection requires a separate, unfiltered flat list containing over 122,000 keys.
-- The list has no search, track filter, frame navigation, or useful connection to the Inspector. The Inspector still displays an unrelated bone and zero-valued registration controls after selecting a key.
-- The workspace selector uses unconstrained `Selectable` widths. The first item occupies the remaining menu bar and overlaps the later workspace targets.
-- Canvas labels, selected keys, multi-selection, navigation gestures and disabled actions do not explain what can be edited.
+## 変更前の問題
 
-![Default layout before changes](before-layout.png)
-![Expanded timeline before changes](before-timeline.png)
-![Key list before changes](before-key-list.png)
+119,365 個のボーンキーと 2,815 個のモーフキーを含むモーションを、1280 × 720 のウィンドウで操作して確認しました。
 
-## Acceptance goals
+- 再生操作や常時展開されたメディア設定が領域を占め、タイムラインと編集ボタンを同時に表示しにくい状態でした。
+- タイムライン上のキーをクリックしても再生位置が移動するだけで、キーを選択・ドラッグできませんでした。編集対象は 12 万個以上のキーを並べた別の一覧から探す必要がありました。
+- キー一覧に検索やトラックの絞り込みがなく、選択しても Inspector の対象が切り替わりませんでした。
+- ワークスペースを切り替えるボタンのクリック領域が重なり、後続の項目を操作できない場合がありました。
+- 選択中のキー、ドラッグ可能な領域、操作が無効な理由が画面から読み取りにくい状態でした。
 
-At 1280×720, keep playback, frame navigation and editing actions visible alongside a usable timeline. Support searchable tracks, visible key selection, modifier multi-selection, direct dragging, precise frame moves and selected-key value editing. A drag or an Apply action must create one undo step; Escape must cancel a drag. Keep model and global motion targets independent, preserve key interpolation data and avoid processing every key during ordinary repainting. Verify real gestures and project persistence with the telephone motion, record after screenshots, and run compiler/test/static-analysis coverage primarily in GitHub Actions.
+![変更前のレイアウト](before-layout.png)
+![変更前のタイムライン](before-timeline.png)
+![変更前のキー一覧](before-key-list.png)
 
-## Implemented workflow
+## 改善の要件
 
-Playback, the editable frame number, the motion target, search, track filtering and edit actions stay above the canvas. Playback/media settings and export/interpolation options are in their own popups. Animation uses a taller timeline and collapses model/material properties. Workspace buttons have individual hit regions.
+1280 × 720 の画面でも、再生操作、フレーム移動、編集操作とタイムラインを同時に使用できることを目標としました。
 
-The canvas selects actual keys, shows selected keys in gold, supports captured dragging, Ctrl toggling, Shift ranges, rectangular selection and filtered Ctrl+A. Dragging shows a ghost and commits on release; Escape leaves the document untouched. Single-key edits follow the key's new frame. Group moves preserve relative spacing and the current playhead, including when a bound clamps the offset. Search matches Japanese names and any English names supplied by the model. The ruler scrubs, zooms around the pointer and pans; Fit and previous/next-key actions remain visible.
+キーの検索、種類別の絞り込み、複数選択、ドラッグ移動、数値による編集を一つの作業領域で行えるようにします。ドラッグと Apply はそれぞれ一回の Undo 単位とし、Esc ではドラッグ中の変更を破棄します。
 
-The Inspector displays only the selected key's existing fields while editing. Bone rotations are in degrees; interpolation controls and physics flags are retained. Apply creates one history entry. Multiple selection provides a numeric frame offset. Clear key selection returns to model properties. Non-finite values cannot be applied.
+モデル固有のモーションとカメラなどの共通トラックは独立して扱い、既存の補間情報を保持します。また、キー数が多い場合でも通常の画面更新で毎回すべてのキーを処理しないことを要件としました。
 
-![Selected bone frame and position after editing](after-bone-edit.png)
-![Filtered facial track and its selected morph weight](after-morph-edit.png)
-![610 facial keys selected for a precise group move](after-group-selection.png)
+## 実装した操作
 
-## Real application verification
+### 画面の構成
 
-Used the native Vulkan application in a 1280×720 X11 window, with screenshots captured from its window. The model is Tda式初音ミク デフォ服ver (Tda / 金子卵黄). Input went through the window system, including keyboard shortcuts and clipboard paste of Japanese track names.
+`Animation` ワークスペースでは、再生・フレーム指定・検索・絞り込み・編集操作をタイムラインの上部にまとめています。再生速度とメディア設定は `Playback / media`、補間と書き出しは `More...` に配置しています。
 
-| Operation | Observed result |
+タイムラインの表示領域を確保し、ワークスペース選択ボタンのクリック領域を分離しました。モデル・材質のプロパティは必要に応じて折り畳みます。
+
+### キーの選択と移動
+
+- キーのクリックで選択し、選択されたキーを金色で表示します。
+- キーをドラッグすると移動先を示し、ボタンを離した時点で変更を確定します。`Esc` でキャンセルできます。
+- `Ctrl` + クリックで選択を追加・解除し、`Shift` + クリックで同じトラック内の範囲を選択します。
+- 空白部分からのドラッグで矩形選択し、`Ctrl+A` で現在の検索条件に一致するキーを全選択します。
+- 目盛りでは再生位置を移動でき、ポインター位置を基準とするズーム、横スクロール、`Fit` に対応します。
+
+日本語名に加え、モデルに英語名が設定されている場合はその名前でも検索できます。複数キーの移動では相対的な間隔を保ち、フレーム範囲の境界で移動量が制限された場合も、再生位置を不要に変更しません。
+
+### Inspector による数値編集
+
+キーを一つ選ぶと、そのキーが持つフィールドだけを Inspector に表示します。ボーン回転は度数法で入力でき、補間点と物理フラグを保持します。`Apply key` で一つの履歴として確定します。複数選択時はフレーム単位のオフセットで移動できます。
+
+`Clear key selection` を選ぶと、Inspector はモデルのプロパティ表示に戻ります。有限でない数値は適用できません。
+
+![変更後のボーンキー編集](after-bone-edit.png)
+![変更後のモーフキー編集](after-morph-edit.png)
+![610 個のキーを選択した状態](after-group-selection.png)
+
+## 実機での確認
+
+Tda 式初音ミク デフォ服 ver.（Tda / 金子卵黄）を使用し、1280 × 720 の X11 ウィンドウで実際のマウス・キーボード操作を確認しました。日本語トラック名の入力にはクリップボード貼り付けも使用しています。
+
+| 操作 | 確認した結果 |
 | --- | --- |
-| Switch Layout → Animation | The distinct workspace button responds; playback, filtering, actions and the canvas remain visible. |
-| Select and drag a center key | Frame 665 → 673; one Undo restores it, and Redo reapplies it. |
-| Edit the selected key in Inspector | Set frame 675 and position X = 1.234, then Apply. The playhead follows the key. |
-| Search `あ` and edit a facial key | At frame 674, change weight 0.800 → 0.250. Undo and Redo restore the two values. |
-| Filtered Ctrl+A and numeric group move | Select all 610 `あ` keys, move +1 frame, then Undo. Relative timing and the final stored document are restored. |
-| Save and reopen the project | The application loads the saved edits. The parser finds 119,365 bone keys, 2,815 morph keys and a 4,668-frame duration. |
-| Compare saved data to the original | Exactly one bone key and one morph key changed as above. All other values, rotations and interpolation control points are retained. |
-| Add camera VMD, select global motion, drag then Escape | Camera fields appear in Inspector. After saving, all 1,158 camera keys match the input, independently of model edits. |
+| Layout から Animation へ切り替え | 操作が可能で、再生・検索・編集ボタンとタイムラインを同時に表示 |
+| センターキーをドラッグ | フレーム 665 → 673 に移動。Undo で復元し、Redo で再適用 |
+| 選択キーを Inspector で編集 | フレームを 675、X 位置を 1.234 に設定して Apply。再生位置が追従 |
+| `あ` で検索してモーフを編集 | フレーム 674 の重みを 0.800 → 0.250 に変更。Undo / Redo を確認 |
+| 絞り込み後に `Ctrl+A` と一括移動 | `あ` の 610 個のキーを 1 フレーム移動し、Undo で復元 |
+| プロジェクトを保存して再読込 | 119,365 ボーンキー、2,815 モーフキー、全 4,668 フレームを再読込 |
+| 元データとの比較 | 変更対象のボーンキー 1 個とモーフキー 1 個以外の値・回転・補間点を保持 |
+| カメラ VMD を追加してドラッグをキャンセル | 保存後のカメラキー 1,158 個は元データと一致 |
 
-## Automated coverage
+## 自動テストと制限
 
-The new `keyframe_editor` CTest target drives real ImGui mouse/key events without a GPU. It verifies diamond selection and seeking, captured drag with a single history entry, cancellation, Undo/Redo, Ctrl selection, filtered select-all, stale-selection invalidation and rendering the full VMD frame range. Additional checks cover mixed-track movement, zero/upper frame bounds, duplicate references, unrelated tracks and interpolation preservation.
+`keyframe_editor` の CTest は、GPU を使わず ImGui のマウス・キーイベントを再現します。選択、ドラッグ移動、Undo / Redo、キャンセル、複数選択、検索結果の全選択、無効になった選択の解除、全フレーム範囲の表示を確認します。
 
-Compiler, complete test, sanitizer, formatting and clang-tidy coverage runs in the [PR's GitHub Actions checks](https://github.com/haturatu/mikumikudesu/pull/267/checks). Local compilation is for the native interaction review; local test execution was limited to debugging the new interaction harness. The review also includes CodeQL.
+混在トラックの移動、フレーム範囲の下限・上限、重複参照、未編集トラック、補間の保持も対象です。
+
+ビルド・テスト・sanitizer・format・clang-tidy の結果は [PR #267 の Checks](https://github.com/haturatu/mikumikudesu/pull/267/checks) に記録されています。ローカルでは主に操作確認と新しい入力テストのデバッグを実施しました。このページは検証時点の結果を記載したものであり、すべての OS・解像度で同じ操作性を保証するものではありません。
