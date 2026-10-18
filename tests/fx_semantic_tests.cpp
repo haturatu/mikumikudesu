@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <numbers>
 #include <ranges>
 #include <string>
@@ -212,6 +213,20 @@ int main() {
     ok &= check(isSupportedFxFunction("frac") && isSupportedFxFunction("noise") &&
                     !isSupportedFxFunction("notAnExprFunction"),
                 "Expr.ixx function inventory");
+    // hash()/noise() must not cast NaN, infinity, or huge finite seeds
+    // to uint32_t. Exercise the function path so sanitizers can detect UB.
+    {
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const double inf = std::numeric_limits<double>::infinity();
+        const double zeroHash = fxToDouble(evaluateFxFunction("hash", std::array<FxScalar, 1>{0.0}));
+        for (const double input : std::array<double, 5>{nan, inf, -inf, 1.0e300, -1.0e300}) {
+            const double hashed = fxToDouble(evaluateFxFunction("hash", std::array<FxScalar, 1>{input}));
+            ok &= expectDouble(hashed, zeroHash, "hash seed outside float domain falls back to zero");
+            const double noisy = fxToDouble(evaluateFxFunction("noise", std::array<FxScalar, 1>{input}));
+            ok &= check(std::isfinite(noisy) && noisy >= 0.0 && noisy < 1.0,
+                        "noise on non-finite/oversized input produces finite normalized result");
+        }
+    }
     ok &= testUpstreamExpressionFunctionTable();
     ok &= testFxRuntimeDebugInventory();
 

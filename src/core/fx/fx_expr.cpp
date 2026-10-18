@@ -623,6 +623,10 @@ constexpr std::array<std::string_view, 42> kSupportedFunctions{
     "step", "smoothstep", "bit",  "hsvR", "hsvG",    "hsvB",    "select", "hash",  "noise"};
 
 std::uint32_t hashSeed(double input) {
+    // Avoid non-finite values and out-of-range double-to-float conversions
+    // before truncation, fmod, and the final float-to-integer conversion.
+    if (!std::isfinite(input) || std::abs(input) > static_cast<double>(std::numeric_limits<float>::max()))
+        return 0;
     const double value = std::trunc(static_cast<float>(input));
     double wrapped = std::fmod(value, 4294967296.0);
     if (wrapped < 0.0)
@@ -717,6 +721,10 @@ FxScalar evaluateFunctionImpl(std::string_view name, std::span<const FxScalar> a
             return FxScalar{std::clamp(input, 0.0, 1.0)};
         if (name == "hash")
             return FxScalar{hashValue(input)};
+        // noise() also performs floor/fraction arithmetic; never let NaN or
+        // infinity propagate into the blend or seed conversion.
+        if (!std::isfinite(input))
+            return FxScalar{0.0};
         const double fraction = input - std::floor(input);
         const double integer = input - fraction;
         const double blend = fraction * fraction * fraction * (fraction * (fraction * 6.0 - 15.0) + 10.0);
