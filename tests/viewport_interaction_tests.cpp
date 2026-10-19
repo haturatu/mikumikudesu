@@ -1,5 +1,6 @@
 #include "ui/viewport_interaction.hpp"
 
+#include <cmath>
 #include <iostream>
 #include <stdexcept>
 
@@ -17,9 +18,11 @@ struct Harness {
     ImVec2 windowPosition{};
     bool cameraClicked{};
 
-    dayo::ui::ViewportInput frame(ImVec2 mouse, int button = -1, bool navigationEnabled = true, float wheel = 0.0F) {
+    dayo::ui::ViewportInput frame(ImVec2 mouse, int button = -1, bool navigationEnabled = true, float wheel = 0.0F,
+                                  bool ctrl = false) {
         auto& io = ImGui::GetIO();
         io.AddMousePosEvent(mouse.x, mouse.y);
+        io.AddKeyEvent(ImGuiMod_Ctrl, ctrl);
         io.AddMouseButtonEvent(ImGuiMouseButton_Left, button == ImGuiMouseButton_Left);
         io.AddMouseButtonEvent(ImGuiMouseButton_Right, button == ImGuiMouseButton_Right);
         if (wheel != 0.0F)
@@ -85,6 +88,18 @@ void checkGestures() {
     harness.frame(inside);
     expect(harness.frame(inside, -1, true, 1.0F).wheel == 1.0F, "Wheel must zoom over the image");
     expect(harness.frame(outside, -1, true, 1.0F).wheel == 0.0F, "Wheel outside the image must not zoom");
+
+    harness.frame(inside, -1, false, 0.0F, true);
+    harness.frame(inside, ImGuiMouseButton_Left, false, 0.0F, true);
+    input = harness.frame(inside, -1, false);
+    expect(input.focusPick && !input.orbit && !input.pan, "Ctrl-click focuses even while VMD locks navigation");
+    expect(std::abs(input.focusUv.x - 50.0F / 300.0F) < 0.001F && std::abs(input.focusUv.y - 50.0F / 200.0F) < 0.001F,
+           "Focus UV uses image coordinates independently of framebuffer DPI");
+    expect(!harness.frame(inside).focusPick, "A focus click is emitted only once");
+    harness.frame(inside, ImGuiMouseButton_Left, true, 0.0F, true);
+    input = harness.frame(moved, ImGuiMouseButton_Left);
+    expect(!input.orbit, "Releasing Ctrl mid-gesture must not turn focus into camera orbit");
+    expect(!harness.frame(moved).focusPick, "A Ctrl-drag must not focus on release");
 
     const auto cameraButton = harness.cameraButtonPosition;
     harness.frame(cameraButton);

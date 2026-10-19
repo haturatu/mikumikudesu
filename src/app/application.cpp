@@ -1,5 +1,6 @@
 #include "app/application.hpp"
 #include "app/preview_conversion.hpp"
+#include "app/preview_focus.hpp"
 #include "app/viewport_navigation.hpp"
 #include <deque>
 
@@ -1037,8 +1038,10 @@ void Application::resetProjectRuntimeState() {
     std::copy(defaultFilename.begin(), defaultFilename.end(), sequenceOutputFilename_.begin());
 #endif
     projectEditorState_ = {};
-    if (device_ != nullptr)
+    if (device_ != nullptr) {
+        device_->cancelPreviewFocusPick();
         device_->setPreviewRenderSettings({});
+    }
     previewHdriPath_.fill(0);
     failedPreviewHdriPath_.clear();
     previewHdriError_.clear();
@@ -1646,8 +1649,10 @@ void Application::handleAsset(const std::filesystem::path& path) {
             upstreamDocumentJson_ = project.upstreamDocumentJson;
             projectModelMetadata_ = project.models;
             projectEditorState_ = project.editor;
-            if (device_ != nullptr)
+            if (device_ != nullptr) {
+                device_->cancelPreviewFocusPick();
                 device_->setPreviewRenderSettings(project.renderSettings);
+            }
             previewHdriPath_.fill(0);
             const auto lightingPath = projectEditorState_.skyboxFile.string();
             std::copy_n(lightingPath.data(), std::min(lightingPath.size(), previewHdriPath_.size() - 1U),
@@ -2745,6 +2750,10 @@ void Application::refreshPreviewScene() {
     std::copy(cameraState.position.begin(), cameraState.position.end(), scene.target);
     scene.verticalFovRadians = cameraState.verticalFovRadians;
     scene.perspective = cameraState.perspective;
+    const graphics::PreviewFocusCamera focusCamera{cameraState.rotation, cameraState.position, cameraState.distance,
+                                                   cameraState.verticalFovRadians, cameraState.perspective};
+    scene.focusDistance = resolvePreviewFocusDistance(device_->previewRenderSettings().dof, focusCamera,
+                                                      scene_.models(), evaluatedModels_);
     scene.debugMaterial = previewDebugMaterial_;
     scene.debugFlags = previewDebugFlags_;
     scene.outlineEnabled = previewOutlineEnabled_;
@@ -2887,6 +2896,17 @@ void Application::buildUi() {
                 const auto input = viewportInteraction_.image(ImTextureRef{static_cast<ImTextureID>(preview.textureId)},
                                                               available, !hasCameraVmd || !followVmdCamera_);
                 uiState_.viewportHovered = input.hovered;
+                if (input.focusPick) {
+                    device_->requestPreviewFocusPick({input.focusUv.x, input.focusUv.y});
+                }
+                if (const auto point = device_->pollPreviewFocusPick()) {
+                    auto settings = device_->previewRenderSettings();
+                    settings.dof.focusMode = graphics::PreviewFocusMode::viewportPoint;
+                    settings.dof.worldPoint = *point;
+                    settings.depthOfField.override = graphics::EffectOverride::enabled;
+                    device_->setPreviewRenderSettings(settings);
+                    refreshPreviewScene();
+                }
                 if (scene_.models().empty() && !videoVisible_) {
                     const auto* message = ui::tr("No model loaded\nDrop a PMX file into the window");
                     const auto messageSize = ImGui::CalcTextSize(message);
@@ -3613,7 +3633,105 @@ void Application::buildRenderSettingsControls() {
         ImGui::EndDisabled();
         effect(ui::label("Depth of field"), settings.depthOfField, resolved.depthOfField,
                previewEffectSupportDepthOfField);
-        ImGui::TextWrapped("%s", ui::tr("Depth of field focuses on the camera target."));
+        if (resolved.depthOfField && ImGui::TreeNodeEx(ui::label("Lens and focus"), ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushItemWidth(-1.0F);
+            const auto lensSlider = [&](const char* name, float& value, float low, float high, const char* format,
+                                        ImGuiSliderFlags flags = 0) {
+                ImGui::TextWrapped("%s", ui::tr(name));
+                ImGui::PushID(name);
+                changed |= ImGui::SliderFloat("##value", &value, low, high, format, flags);
+                ImGui::PopID();
+            };
+            const auto lensCombo = [&](const char* name, auto& value, const char* choices) {
+                ImGui::TextWrapped("%s", ui::tr(name));
+                ImGui::PushID(name);
+                combo("##value", value, choices);
+                ImGui::PopID();
+            };
+            lensSlider("Aperture (F-number)", settings.dof.fNumber, 0.7F, 32.0F, "f/%.1f",
+                       ImGuiSliderFlags_Logarithmic);
+            lensCombo("Focus target", settings.dof.focusMode,
+                      ui::items("Camera target|Manual distance|Bone|Face|Eyes|Viewport point"));
+            lensCombo("DoF quality", settings.dof.quality, ui::items("Auto|Performance|Balanced|High"));
+            if (settings.dof.focusMode == PreviewFocusMode::manual) {
+                lensSlider("Focus distance (m)", settings.dof.focusDistanceMetres, 0.05F, 100.0F, "%.3f",
+                           ImGuiSliderFlags_Logarithmic);
+            }
+            if (settings.dof.focusMode == PreviewFocusMode::bone || settings.dof.focusMode == PreviewFocusMode::face ||
+                settings.dof.focusMode == PreviewFocusMode::eyes) {
+                const auto& models = scene_.models();
+                const auto index = settings.dof.modelIndex;
+                const char* selectedName =
+                    index < models.size() ? models[index].displayName.c_str() : ui::tr("Missing focus model");
+                ImGui::TextWrapped("%s", ui::tr("Focus model"));
+                if (ImGui::BeginCombo("##focus-model", selectedName)) {
+                    for (std::size_t i = 0; i < models.size(); ++i) {
+                        ImGui::PushID(static_cast<int>(i));
+                        if (ImGui::Selectable(models[i].displayName.c_str(), i == index)) {
+                            settings.dof.modelIndex = static_cast<std::uint32_t>(i);
+                            changed = true;
+                        }
+                        ImGui::PopID();
+                    }
+                    ImGui::EndCombo();
+                }
+                if (settings.dof.focusMode == PreviewFocusMode::bone && settings.dof.modelIndex < models.size() &&
+                    models[settings.dof.modelIndex].model != nullptr) {
+                    const auto& bones = models[settings.dof.modelIndex].model->bones;
+                    ImGui::TextWrapped("%s", ui::tr("Focus bone"));
+                    if (ImGui::BeginCombo("##focus-bone", settings.dof.boneName.c_str())) {
+                        for (const auto& bone : bones) {
+                            if (ImGui::Selectable(bone.name.c_str(), settings.dof.boneName == bone.name)) {
+                                settings.dof.boneName = bone.name;
+                                changed = true;
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                }
+                const auto* selected = selectedModel();
+                if (selected != nullptr && selected->model != nullptr && !selected->model->bones.empty() &&
+                    ImGui::Button(ui::label("Focus selected bone"))) {
+                    const auto found = std::ranges::find(models, selected->id, &core::ModelInstance::id);
+                    settings.dof.modelIndex = static_cast<std::uint32_t>(std::distance(models.begin(), found));
+                    const auto boneIndex =
+                        std::clamp(selectedBone_, 0, static_cast<int>(selected->model->bones.size() - 1U));
+                    settings.dof.boneName = selected->model->bones[static_cast<std::size_t>(boneIndex)].name;
+                    settings.dof.focusMode = PreviewFocusMode::bone;
+                    changed = true;
+                }
+                if (settings.dof.modelIndex >= models.size() ||
+                    !previewFocusBonePoint(models[settings.dof.modelIndex], evaluatedModels_, settings.dof))
+                    ImGui::TextWrapped("%s", ui::tr("Focus target unavailable; using the camera target."));
+            }
+            lensSlider("Focus offset (m)", settings.dof.focusOffsetMetres, -1.0F, 1.0F, "%.3f");
+            const auto focusCamera = makeSceneCameraState();
+            const PreviewFocusCamera focusView{focusCamera.rotation, focusCamera.position, focusCamera.distance,
+                                               focusCamera.verticalFovRadians, focusCamera.perspective};
+            const float focus = resolvePreviewFocusDistance(settings.dof, focusView, scene_.models(), evaluatedModels_);
+            const auto lens =
+                previewDofLens(settings.dof, focus, focusCamera.verticalFovRadians, 1080, PreviewDofQuality::balanced);
+            ImGui::Text("%s: %.3f m", ui::tr("Resolved focus distance"), static_cast<double>(lens.focusMetres));
+            if (ImGui::Button(ui::label("Reset lens and focus"))) {
+                settings.dof = {};
+                changed = true;
+            }
+            if (ImGui::TreeNode(ui::label("Lens calibration"))) {
+                lensSlider("Sensor height (mm)", settings.dof.sensorHeightMm, 1.0F, 100.0F, "%.1f");
+                lensSlider("Metres per preview unit", settings.dof.metresPerUnit, 0.01F, 10.0F, "%.3f",
+                           ImGuiSliderFlags_Logarithmic);
+                ImGui::TextWrapped("%s", ui::tr("A two-unit character is 1.6 m tall at the default scale."));
+                ImGui::TreePop();
+            }
+            ImGui::PopItemWidth();
+            ImGui::TreePop();
+        }
+        ImGui::TextWrapped("%s", ui::tr("Ctrl + left click in the viewport to focus on a surface."));
+        if (resolved.depthOfField && scene_.background().enabled &&
+            scene_.background().screenSource == core::ScreenTextureSource::previousFrame)
+            ImGui::TextWrapped("%s", ui::tr("Choose White, Image or Video background to preview depth of field."));
+        if (!makeSceneCameraState().perspective)
+            ImGui::TextWrapped("%s", ui::tr("Depth of field requires a perspective camera."));
         combo(ui::label("Anti-aliasing"), settings.antiAliasing, ui::items("Off|FXAA|Auto"));
         combo(ui::label("View transform"), settings.viewTransform, ui::items("ACES|AgX|Neutral"));
         changed |= ImGui::SliderFloat(ui::label("Exposure (EV)"), &settings.exposure, -8.0F, 8.0F, "%.2f");
@@ -3631,13 +3749,21 @@ void Application::buildRenderSettingsControls() {
             timing(ui::tr("Shadows"), timings.shadow);
             timing(ui::tr("AO / depth prepass"), timings.ambientOcclusion);
             timing(ui::tr("Materials"), timings.model);
+            timing(ui::tr("Skin scattering"), timings.subsurface);
+            timing(ui::tr("Circle of confusion"), timings.coc);
+            timing(ui::tr("DoF downsample / tiles"), timings.dofDownsample);
+            timing(ui::tr("DoF near / far blur"), timings.dofBlur);
+            timing(ui::tr("DoF composite"), timings.dofComposite);
             timing(ui::tr("Bloom"), timings.postProcess);
             timing(ui::tr("Tone mapping"), timings.toneMap);
             timing(ui::tr("Total"), device_->previewGpuNanoseconds());
         }
     }
-    if (changed)
+    if (changed) {
+        device_->cancelPreviewFocusPick();
         device_->setPreviewRenderSettings(settings);
+        refreshPreviewScene();
+    }
 #endif
 }
 
