@@ -43,20 +43,24 @@ fall back safely, and numeric values are checked for finiteness and clamped.
 | View transform | ACES fit, compact AgX approximation, or Khronos PBR Neutral | SDR linear sRGB output followed by hardware sRGB transfer; not Blender OCIO/LUT parity |
 | Exposure / white balance | EV gain and normalized Planckian RGB white-point correction | Approximate white balance, neutral at 6500 K |
 | Anti-aliasing | Off / FXAA / Auto | Spatial filter; no temporal history |
-| Depth of field | Thin-lens signed CoC; half-resolution near/far blur and coverage composite | F-number, animated face/eyes/bone and surface-click focus; perspective camera |
+| Depth of field | Thin-lens signed CoC, depth-aware MIP/ring gathers, near coverage, motion-reprojected history | F-number, bone/face/eye tracking, static/tracked surface clicks, curved aperture blades; perspective camera |
 
 Skin diffuse is separate from specular highlights and hair, so diffusion does
 not smear the final scene image. Transparent overlays and outlines erase the
 skin mask where they draw; this conservatively leaves these boundaries sharp.
 The low-cost transmission approximation also remains useful for backlit skin.
 Screen-space effects cannot recover hidden or off-screen geometry. SSR, SSGI,
-TAA, refractive glass and polygonal aperture bokeh remain separate work.
+general TAA, refractive glass and real-time highlight scatter remain separate work.
 
 The previous-frame background mode uses the direct shading path. Color
 management and material lighting still apply, but HDR postprocessing is bypassed
 in that mode. Normal previews and exported frames use the HDR path.
 
 ## Lens and focus
+
+![Japanese lens and focus controls](lens-controls-ja.png)
+
+[English lens controls](lens-controls-en.png)
 
 Enable **Depth of field**, then open **Lens and focus**. Aperture is an F-number:
 opening from f/5.6 to f/1.4 multiplies the uncapped blur radius by four.
@@ -130,9 +134,13 @@ Normal exports use the same HDR/DoF implementation.
 
 A synthetic red foreground / blue background comparison from the GPU fixture:
 
-| f/32, focus 2.4 m | f/0.7, focus 2.4 m | f/0.7, focus 0.8 m |
-| --- | --- | --- |
-| ![Closed aperture](dof-closed.png) | ![Foreground blur expands](dof-open.png) | ![Foreground in focus](dof-focused.png) |
+| f/32, focus 2.4 m | f/0.7, focus 2.4 m | f/0.7, focus 0.8 m | 64 physical lens samples, f/0.7, focus 2.4 m |
+| --- | --- | --- | --- |
+| ![Closed aperture](dof-closed.png) | ![Foreground blur expands](dof-open.png) | ![Foreground in focus](dof-focused.png) | ![Cinematic HDR integration](dof-cinematic.png) |
+
+The physical lens result uses the uncapped aperture and can reveal the actual
+background shadow hidden behind the foreground. It is not a comparison at an
+identical spatial radius cap.
 
 ## Spatial processing pipeline
 
@@ -140,10 +148,12 @@ A synthetic red foreground / blue background comparison from the GPU fixture:
 Depth / normal prepass -> HDR color + skin diffuse
   -> full-resolution SSS (once per pixel)
   -> full-resolution signed CoC
-  -> depth-compatible 2x2 near/far downsample
+  -> depth-compatible 2x2 near/far downsample + layer MIP chain
   -> 8x8 half-resolution tile ranges + radius dilation
-  -> half-resolution near / far disk gathers
-  -> full-resolution composite -> Bloom -> tone mapping + FXAA
+  -> half-resolution near / far ring gathers with subpixel sampling
+  -> full-resolution small-CoC reconstruction and bilateral composite
+  -> optional motion-reprojected DoF history
+  -> Bloom -> tone mapping + FXAA
 ```
 
 CoC uses sampled/storage R16_SFLOAT when the device enables extended storage
@@ -155,17 +165,34 @@ dummy images for unused descriptors. With both disabled, spatial dispatches are
 skipped. Empty tiles skip disk sampling. No subgroup, RDNA-specific or FP16
 arithmetic instructions are required.
 
+Layer color, alpha-weighted depth and CoC use the same continuous sample
+coordinates. There is no integer rounding of gather offsets. Three or four
+equal-area rings are visited from outer to inner; source footprint chooses a
+trilinear MIP level. The MIP prefilter keeps near and far depth compatibility
+separate. This is an independent implementation inspired by the referenced
+techniques, not an embedded FidelityFX SDK or Unreal implementation.
+
 Near gathers test each source disk's radius against the receiving pixel, so
 foreground coverage can extend beyond the original silhouette. Premultiplied
 RGB and alpha travel together. Far downsampling/gather and upsampling reject
 incompatible depth; near coverage deliberately crosses depth boundaries.
-Near is composed over the far result. Blur activation fades smoothly between
-0.5 and 2 full-resolution pixels so subpixel CoC retains the sharp image.
+Near is composed over the far result. A finite-kernel normalization preserves
+constant foreground radiance. Far occupancy holes under opaque source geometry
+retain opacity; when no background support exists they retain source radiance.
+A full-resolution depth/CoC-compatible 3x3 filter covers small CoC, transitioning
+to the half-resolution reconstruction between 1.5 and 3 full-resolution pixels.
 Hidden background is approximated from available far samples; off-screen or
 occluded detail and the depth of blended glass/hair cannot be reconstructed
-from a single opaque depth layer. Aperture shape is a disk, not polygonal bokeh.
+from a single opaque depth layer.
 
-| DoF quality | Resolution (both axes) | Disk samples | Radius cap at 1080p |
+**Aperture shape** selects a circle or 5–12 blades, curvature and rotation.
+CPU cubic Bezier edges interpolate a polygon toward circular arcs; a 128x128
+mask integrates four subpixel coverage samples. Only changing the shape uploads
+this LUT into frame-owned storage. Gathers use its antialiased coverage and
+normalize their energy. This models the bokeh outline, not a complete optical
+lens or cat-eye effect.
+
+| DoF quality | Resolution (both axes) | Gather taps | Radius cap at 1080p |
 | --- | --- | --- | --- |
 | Performance | 1/2 | 12 | 20 px |
 | Balanced | 1/2 | 24 | 32 px |
@@ -173,24 +200,77 @@ from a single opaque depth layer. Aperture shape is a disk, not polygonal bokeh.
 
 Auto follows the effective device/override preset. Radius caps scale with image
 height; changing viewport resolution does not change the normalized blur size.
-Smaller F-numbers stop increasing blur after the selected cap is reached.
+Smaller F-numbers stop increasing the spatial blur after the selected cap is
+reached. **Blur quality and export** exposes the radius cap at 1080p: zero uses
+the table, a positive override is bounded at 128 px. Increasing the cap can cost
+more even with an unchanged sample budget.
 The legacy intensity remains an optional artistic CoC multiplier; use F-number
 for lens control.
 
-For the included 1080p synthetic scene (focused foreground rectangle, defocused
-background), median warmed DoF GPU times on Radeon Vega 8 / RADV RAVEN with
-validation enabled were:
+### Temporal stability
 
-| Quality | CoC | Downsample / tiles | Near / far | Composite | DoF sum |
+**Temporal DoF** is available in Balanced/High and disabled in Performance and
+still-quality export. The opaque prepass writes packed material/clone IDs and
+motion from the previous deformed vertex stream and camera. This follows GPU
+skinning, morphs, CPU deformation and clone placement. The near gather also
+retains a contributing foreground anchor for blur extending over the background.
+History is reprojected with motion, validated against ID, depth and signed CoC,
+then clamped to the current 3x3 color/alpha range. Disocclusions, invalid anchors,
+alpha discontinuities, focus jumps, camera cuts, backward seeks, long timeline
+steps, topology/setting changes and resize reject history. Four deterministic
+sample orientations accumulate while history is valid. The first frame after
+invalidation uses orientation zero.
+
+History images and previous vertices are GPU-owned on the graphics queue;
+barriers order reads, copies and subsequent frames. Camera buffers/descriptors
+belong to completed frame slots. Returning to Performance drops the extra motion
+attachments and shrinks the shared history. This is DoF stabilization, not
+whole-scene TAA. Very thin blended hair has no opaque motion/depth representation;
+those boundaries remain approximate.
+
+### Cinematic image export
+
+**Blur quality and export → Cinematic lens samples** selects Off, 64, 128 or 256
+for Preview image/image-sequence exports. The existing output sample count can
+request more. A low-discrepancy disk is mapped through the shared aperture boundary's angular
+area CDF, retaining uniform density without a pixel-grid distribution. Each
+sample uses an off-axis perspective projection: geometry on the focal plane
+stays fixed and other depths move across the aperture. The existing float32 HDR
+accumulator averages radiance before its image resolve. Spatial DoF and temporal
+history are disabled during physical lens samples; pixel jitter and requested
+motion blur can be combined. Cancellation and completion restore the central
+preview camera. Orthographic keys suspend the lens shift.
+
+Physical accumulation uses the uncapped lens aperture, so it can exceed the
+spatial radius cap. It costs 64–256 scene renders and is deliberately separate
+from interactive preview. The video exporter uses temporal spatial DoF; physical
+lens accumulation is available through image sequences. The existing Preview
+image-sequence resolve uses ACES and does not reapply the selected view transform,
+exposure/white balance, Bloom or FXAA after HDR averaging. It therefore does not
+yet provide full postprocessing parity with the viewport.
+
+### GPU measurements
+
+On Radeon Vega 8 / RADV RAVEN, the 1080p synthetic fixture used six renders per
+quality, discarded three warm-ups and took per-pass medians of the remaining
+three. Vulkan and synchronization validation were enabled. Spatial results
+below explicitly disable temporal stabilization:
+
+| Quality | CoC | Downsample / tiles / MIPs | Near / far | Composite | DoF sum |
 | --- | --- | --- | --- | --- | --- |
-| Performance | 1.04 ms | 2.79 ms | 4.29 ms | 5.06 ms | 13.18 ms |
-| Balanced | 1.04 ms | 2.78 ms | 8.19 ms | 5.06 ms | 17.07 ms |
-| High | 1.04 ms | 2.82 ms | 10.93 ms | 5.02 ms | 19.81 ms |
+| Performance | 0.48 ms | 2.46 ms | 1.67 ms | 6.00 ms | 10.62 ms |
+| Balanced | 0.48 ms | 2.42 ms | 2.82 ms | 5.80 ms | 11.53 ms |
+| High | 0.47 ms | 2.42 ms | 3.72 ms | 5.56 ms | 12.18 ms |
 
-These figures exclude scene rendering, SSS, Bloom and tone mapping. They are
-measurements of this fixture, not a whole-frame or complex-model performance
-promise. Start with Performance on an APU; opening the lens does not remove the
-selected blur-radius cap.
+With temporal enabled, Balanced/High measured 15.76 / 16.36 ms for DoF including
+history resolve/copies. Their separate opaque motion/ID prepass measured
+3.02 / 3.07 ms and is included in the AO/depth profiler bucket, not the DoF sum.
+These figures exclude scene rendering, SSS, Bloom and tone mapping. GPU clocks,
+cache and other load change timings; a separate run measured spatial sums of
+11.22 / 12.17 / 14.47 ms. The former integer-gather implementation's historical
+13.18 / 17.07 / 19.81 ms are not a controlled speedup comparison. This fixture is
+not a whole-frame or complex-model performance promise. Start with Performance
+on an APU.
 
 ## Runtime behavior
 
@@ -215,7 +295,9 @@ values. A device without timestamp support displays an unavailable message.
 zero intensity, unsupported effects, malformed values, project round trips,
 legacy loading and unknown-field preservation without a GPU. It also checks
 F-number/radius scaling, signed CoC, rotated camera unprojection, animated bone
-positions and eye/head fallbacks. Lens persistence and malformed fields are
+positions, distinct face/eye anchors, rotated local offsets, clone binding,
+fractional VMD evaluation, AF response/deadband/speed/reset, aperture area and
+coverage, physical lens distributions, and eye/head fallbacks. Lens persistence and malformed fields are
 covered by the same suite; it also passes Clang ASan/UBSan.
 
 `preview_render`, `preview_render_high` and `preview_render_async` cover real
@@ -262,3 +344,13 @@ these presets do not promise a frame rate on every Vega 8 system.
 The compact AgX approximation is not a complete implementation of Blender's
 color management. Validate production looks against the intended output images,
 not only the view-transform name.
+
+The animated GPU fixture renders a moving skinned foreground and camera for 32
+frames, checks disoccluded background, backward seeks and camera cuts against
+fresh spatial frames, and verifies a 64-sample physical HDR lens integration.
+Set `DAYO_TEST_DOF_OUTPUT` to save spatial/Cinematic images and temporal frames.
+These are synthetic regression scenes, not a measured claim for every PMX/VMD.
+
+[Animated GPU fixture: 32 frames, played at 5x slow motion](dof-temporal.mp4).
+The test animates a skinned rectangle and camera; it is not a character-video
+benchmark or evidence of full PMX hair/cloth coverage.
