@@ -95,8 +95,9 @@ struct PreviewDofConstants {
     std::uint32_t samples;
     float lens[4];
     float projection[4];
+    float filter[4];
 };
-static_assert(sizeof(PreviewDofConstants) == 48);
+static_assert(sizeof(PreviewDofConstants) == 64);
 
 struct PreviewTonemapConstants {
     float options[4];
@@ -2151,6 +2152,9 @@ void VulkanDevice::createPreviewDescriptors() {
     clampSamplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     clampSamplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     check(vkCreateSampler(device_, &clampSamplerInfo, nullptr, &previewClampSampler_), "create preview clamp sampler");
+    auto dofSamplerInfo = clampSamplerInfo;
+    dofSamplerInfo.maxLod = 4.0F;
+    check(vkCreateSampler(device_, &dofSamplerInfo, nullptr, &previewDofSampler_), "create DoF mip sampler");
 
     auto shadowSamplerInfo = clampSamplerInfo;
     shadowSamplerInfo.maxLod = 0.0F;
@@ -2322,7 +2326,7 @@ void VulkanDevice::createPreviewDescriptors() {
         const auto type = i == 1    ? VK_DESCRIPTOR_TYPE_SAMPLER
                           : i >= 11 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
                                     : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-        dofBindings[i] = {i, type, 1, VK_SHADER_STAGE_COMPUTE_BIT, i == 1 ? &previewClampSampler_ : nullptr};
+        dofBindings[i] = {i, type, 1, VK_SHADER_STAGE_COMPUTE_BIT, i == 1 ? &previewDofSampler_ : nullptr};
     }
     const VkDescriptorSetLayoutCreateInfo dofDescriptorInfo{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -2504,6 +2508,8 @@ void VulkanDevice::destroyPreviewDescriptors() {
         vkDestroySampler(device_, previewAoSampler_, nullptr);
     if (previewShadowSampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device_, previewShadowSampler_, nullptr);
+    if (previewDofSampler_ != VK_NULL_HANDLE)
+        vkDestroySampler(device_, previewDofSampler_, nullptr);
     if (previewClampSampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device_, previewClampSampler_, nullptr);
     if (previewSampler_ != VK_NULL_HANDLE)
@@ -2511,6 +2517,7 @@ void VulkanDevice::destroyPreviewDescriptors() {
     previewAoSampler_ = VK_NULL_HANDLE;
     previewShadowSampler_ = VK_NULL_HANDLE;
     previewClampSampler_ = VK_NULL_HANDLE;
+    previewDofSampler_ = VK_NULL_HANDLE;
     previewSampler_ = VK_NULL_HANDLE;
     previewDescriptorPool_ = VK_NULL_HANDLE;
     previewDescriptorSetLayout_ = VK_NULL_HANDLE;
@@ -3372,6 +3379,13 @@ void VulkanDevice::ensurePreviewDofResource(Frame& frame, VkExtent2D extent, boo
         resource.extent.height == extent.height && resource.fullDof == fullDof)
         return;
     destroyPreviewDofResource(frame);
+    if (fullDof) {
+        auto size = std::max((extent.width + 1U) / 2U, (extent.height + 1U) / 2U);
+        while (size > 1U && resource.mipLevels < 5U) {
+            size >>= 1U;
+            ++resource.mipLevels;
+        }
+    }
     try {
         for (std::size_t i = 0; i < resource.textures.size(); ++i) {
             VkExtent2D size = extent;
@@ -3387,7 +3401,7 @@ void VulkanDevice::ensurePreviewDofResource(Frame& frame, VkExtent2D extent, boo
                 .format = i == 2
                               ? (dofCocFormat_ == VK_FORMAT_R16_SFLOAT ? PixelFormat::r16Float : PixelFormat::r32Float)
                               : PixelFormat::rgba16Float,
-                .mipLevels = 1,
+                .mipLevels = i >= 3 && i <= 5 ? resource.mipLevels : 1U,
                 .arrayLayers = 1,
                 .usage = ResourceUsage::storageWrite | ResourceUsage::sampledRead | ResourceUsage::transferSrc,
                 .lifetime = ResourceLifetime::persistent,
@@ -3396,7 +3410,7 @@ void VulkanDevice::ensurePreviewDofResource(Frame& frame, VkExtent2D extent, boo
             resource.images[i] = typed.resource.image;
             resource.views[i] = typed.view;
         }
-        std::array<VkDescriptorSetLayout, 7> layouts{};
+        std::array<VkDescriptorSetLayout, 11> layouts{};
         layouts.fill(dofDescriptorSetLayout_);
         const VkDescriptorSetAllocateInfo allocate{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
                                                    .descriptorPool = previewDescriptorPool_,
@@ -3441,8 +3455,8 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .image = resource.images[i],
-            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-        typedTextures_.at(resource.textures[i]).mipLayouts[0] = VK_IMAGE_LAYOUT_GENERAL;
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, i >= 3 && i <= 5 ? resource.mipLevels : 1U, 0, 1}};
+        std::ranges::fill(typedTextures_.at(resource.textures[i]).mipLayouts, VK_IMAGE_LAYOUT_GENERAL);
     }
     const VkDependencyInfo start{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                                  .imageMemoryBarrierCount = static_cast<std::uint32_t>(barriers.size()),
@@ -3477,7 +3491,8 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
         {lens.focusMetres, lens.cocScale * effects.depthOfFieldIntensity, lens.maxRadius, settings.metresPerUnit},
         {1.0F / std::tan(std::max(previewGpuScene_.view.verticalFovRadians, 0.05F) * 0.5F),
          static_cast<float>(extent.width) / static_cast<float>(extent.height),
-         previewGpuScene_.view.perspective ? 1.0F : 0.0F, sss ? effects.skinSubsurfaceIntensity : 0.0F}};
+         previewGpuScene_.view.perspective ? 1.0F : 0.0F, sss ? effects.skinSubsurfaceIntensity : 0.0F},
+        {static_cast<float>(resource.mipLevels - 1U), 0.0F, 0.0F, 0.0F}};
     if (!previewGpuScene_.view.perspective)
         constants.projection[0] =
             previewGpuScene_.view.cameraDistance * std::tan(previewGpuScene_.view.verticalFovRadians * 0.5F);
@@ -3489,8 +3504,8 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
         .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT};
     const VkDependencyInfo dependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &between};
-    const auto dispatch = [&](std::uint32_t mode) {
-        const auto set = resource.sets[mode];
+    const auto dispatch = [&](std::uint32_t mode, std::uint32_t mip = 0U) {
+        const auto set = resource.sets[mode == 7U ? 6U + mip : mode];
         std::array<VkDescriptorImageInfo, 15> infos{};
         const auto image = [&](std::size_t index) {
             return VkDescriptorImageInfo{VK_NULL_HANDLE, resource.views[index], VK_IMAGE_LAYOUT_GENERAL};
@@ -3498,7 +3513,7 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
         infos[0] = mode == 0 || !sss ? VkDescriptorImageInfo{VK_NULL_HANDLE, frame.previewHdr.view,
                                                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}
                                      : image(0);
-        infos[1] = {previewClampSampler_, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
+        infos[1] = {previewDofSampler_, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
         infos[2] = {VK_NULL_HANDLE, frame.previewAo.depthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         infos[3] = {VK_NULL_HANDLE, frame.previewHdr.skinView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         infos[4] = image(2);
@@ -3512,6 +3527,29 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
         infos[12] = image(mode == 3 ? 6U : mode == 6 ? 7U : mode == 4 ? 8U : 3U);
         infos[13] = image(mode == 4 ? 9U : 4U);
         infos[14] = image(2);
+        const auto mipImage = [&](std::size_t index, std::uint32_t level) {
+            return VkDescriptorImageInfo{VK_NULL_HANDLE, typedTextures_.at(resource.textures[index]).mipViews[level],
+                                         VK_IMAGE_LAYOUT_GENERAL};
+        };
+        infos[12] = mode == 2 ? mipImage(3, 0) : infos[12];
+        infos[13] = mode == 2 ? mipImage(4, 0) : infos[13];
+        infos[11] = mode == 2 ? mipImage(5, 0) : infos[11];
+        if (mode == 7U) {
+            infos[5] = mipImage(3, mip - 1U);
+            infos[6] = mipImage(4, mip - 1U);
+            infos[7] = mipImage(5, mip - 1U);
+            infos[11] = mipImage(5, mip);
+            infos[12] = mipImage(3, mip);
+            infos[13] = mipImage(4, mip);
+        }
+        // Other modes do not write the layer images, but their unused UAVs
+        // must still be valid single-mip descriptors.
+        if (mode != 2U && mode != 7U) {
+            if (mode != 3U && mode != 6U && mode != 4U)
+                infos[12] = mipImage(3, 0);
+            if (mode != 4U)
+                infos[13] = mipImage(4, 0);
+        }
         std::array<VkWriteDescriptorSet, 15> writes{};
         for (std::uint32_t i = 0; i < writes.size(); ++i)
             writes[i] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -3532,6 +3570,8 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
             size = {(extent.width + 1U) / 2U, (extent.height + 1U) / 2U};
         if (mode == 3 || mode == 6)
             size = {(size.width + 7U) / 8U, (size.height + 7U) / 8U};
+        if (mode == 7U)
+            size = {std::max(1U, ((extent.width + 1U) / 2U) >> mip), std::max(1U, ((extent.height + 1U) / 2U) >> mip)};
         vkCmdDispatch(command, (size.width + 7U) / 8U, (size.height + 7U) / 8U, 1);
         vkCmdPipelineBarrier2(command, &dependency);
     };
@@ -3543,6 +3583,8 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
     stamp(previewTimestampCoc);
     if (dof) {
         dispatch(2);
+        for (std::uint32_t mip = 1; mip < resource.mipLevels; ++mip)
+            dispatch(7, mip);
         dispatch(3);
         dispatch(6);
     }

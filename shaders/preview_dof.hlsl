@@ -9,6 +9,8 @@ struct DofConstants {
     float4 lens;
     // perspective focal (or ortho extent), aspect, perspective flag, SSS strength
     float4 projection;
+    // Available layer mip count minus one; remaining fields reserved.
+    float4 filter;
 };
 [[vk::push_constant]] ConstantBuffer<DofConstants> dof;
 [[vk::binding(0, 0)]] Texture2D<float4> colorTexture;
@@ -90,12 +92,12 @@ struct LayerSample {
     float4 farColor;
     float4 data;
 };
-LayerSample layerAt(float2 position) {
+LayerSample layerAt(float2 position, float lod = 0.0) {
     const float2 uv = position / float2(halfSize());
     LayerSample sample;
-    sample.nearColor = nearTexture.SampleLevel(clampSampler, uv, 0);
-    sample.farColor = farTexture.SampleLevel(clampSampler, uv, 0);
-    sample.data = halfData.SampleLevel(clampSampler, uv, 0);
+    sample.nearColor = nearTexture.SampleLevel(clampSampler, uv, lod);
+    sample.farColor = farTexture.SampleLevel(clampSampler, uv, lod);
+    sample.data = halfData.SampleLevel(clampSampler, uv, lod);
     sample.data.xz /= max(sample.nearColor.a, 0.0001);
     sample.data.yw /= max(sample.farColor.a, 0.0001);
     return sample;
@@ -130,9 +132,56 @@ float4 smallCocColor(int2 pixel, float coc, float z) {
     return total / max(totalWeight, 0.0001);
 }
 
+// Build each layer independently. Near occupancy includes empty texels;
+// far radiance fills available support. Depth and CoC remain alpha-weighted
+// and expressed in base half-resolution pixels at every mip level.
+void prefilterLayers(int2 p) {
+    uint width, height;
+    outputColor.GetDimensions(width, height);
+    if (any(p >= int2(width, height))) return;
+    uint sourceWidth, sourceHeight;
+    halfData.GetDimensions(sourceWidth, sourceHeight);
+    const int2 first = p * 2;
+    const int2 last = min(first + 2 + int2(p.x == int(width) - 1, p.y == int(height) - 1),
+                          int2(sourceWidth, sourceHeight));
+    float nearZ = 100.0, farZ = 0.05, nearRadius = 0.0, farRadius = 0.0;
+    [loop] for (int y = first.y; y < last.y; ++y)
+        [loop] for (int x = first.x; x < last.x; ++x) {
+            const float4 n = nearTexture.Load(int3(x,y,0));
+            const float4 f = farTexture.Load(int3(x,y,0));
+            const float4 data = halfData.Load(int3(x,y,0));
+            if (n.a > 0.0001) nearZ = min(nearZ, data.z / n.a);
+            if (f.a > 0.0001) farZ = max(farZ, data.w / f.a);
+            nearRadius = max(nearRadius, data.x / max(n.a, 0.0001));
+            farRadius = max(farRadius, data.y / max(f.a, 0.0001));
+        }
+    float4 nearColor = 0.0.xxxx, farColor = 0.0.xxxx;
+    float farWeight = 0.0;
+    [loop] for (int y = first.y; y < last.y; ++y)
+        [loop] for (int x = first.x; x < last.x; ++x) {
+            const float4 n = nearTexture.Load(int3(x,y,0));
+            const float4 f = farTexture.Load(int3(x,y,0));
+            const float4 data = halfData.Load(int3(x,y,0));
+            const float nz = data.z / max(n.a, 0.0001);
+            const float fz = data.w / max(f.a, 0.0001);
+            const float nw = saturate(1.0 - abs(nz - nearZ) / max(0.02, nearZ * 0.03));
+            const float fw = f.a > 0.0001 ? saturate(1.0 - abs(fz - farZ) / max(0.05, farZ * 0.05)) : 0.0;
+            nearColor += n * nw;
+            farColor += f * fw;
+            farWeight += fw;
+        }
+    nearColor /= max(float((last.x - first.x) * (last.y - first.y)), 1.0);
+    farColor /= max(farWeight, 0.0001);
+    outputNear[p] = nearColor;
+    outputFar[p] = farColor;
+    outputColor[p] = float4(nearRadius * nearColor.a, farRadius * farColor.a,
+                            nearZ * nearColor.a, farZ * farColor.a);
+}
+
 [numthreads(8, 8, 1)]
 void DofFilter(uint3 id : SV_DispatchThreadID) {
     const int2 p = int2(id.xy);
+    if (dof.mode == 7) { prefilterLayers(p); return; }
     if (dof.mode == 0 || dof.mode == 1 || dof.mode == 5) {
         if (id.x >= dof.width || id.y >= dof.height) return;
     } else if (dof.mode == 3 || dof.mode == 6) {
@@ -200,12 +249,18 @@ void DofFilter(uint3 id : SV_DispatchThreadID) {
         const float nearSearch = max(0.5, range.x);
         const float farSearch = max(0.5, center.data.x > 0.0 ? max(range.x, range.y) : center.data.y);
         [loop] for (uint i = 0; i < dof.samples; ++i) {
-            const float fraction = (float(i) + 0.5) / float(dof.samples);
-            const float angle = float(i) * 2.39996322973;
+            // Equal-area annuli, visited from outer to inner. Rotating each
+            // ring avoids radial spokes without introducing temporal noise.
+            const uint rings = dof.samples >= 32 ? 4 : 3;
+            const uint taps = dof.samples / rings;
+            const uint ring = i / taps;
+            const float fraction = (float(rings - ring) - 0.5) / float(rings);
+            const float angle = float(i % taps) * 6.28318530718 / float(taps) + float(ring) * 2.39996322973;
             const float2 disk = float2(cos(angle), sin(angle)) * sqrt(fraction);
             if (range.x >= 0.25) {
                 const float2 offset = disk * nearSearch;
-                const LayerSample sample = layerAt(float2(p) + 0.5 + offset);
+                const float lod = clamp(log2(max(1.0, nearSearch * sqrt(3.14159265 / float(dof.samples)))), 0.0, dof.filter.x);
+                const LayerSample sample = layerAt(float2(p) + 0.5 + offset, lod);
                 const float distance = length(offset);
                 const float weight = diskCoverage(sample.data.x, distance) * smoothstep(0.1, 0.6, sample.data.x) *
                                      nearSearch * nearSearch / max(sample.data.x * sample.data.x, 0.25);
@@ -218,7 +273,8 @@ void DofFilter(uint3 id : SV_DispatchThreadID) {
             }
             if ((range.y >= 0.25 || center.data.x > 0.0) && farSearch >= 0.25) {
                 const float2 offset = disk * farSearch;
-                const LayerSample sample = layerAt(float2(p) + 0.5 + offset);
+                const float lod = clamp(log2(max(1.0, farSearch * sqrt(3.14159265 / float(dof.samples)))), 0.0, dof.filter.x);
+                const LayerSample sample = layerAt(float2(p) + 0.5 + offset, lod);
                 const float radius = center.data.x > 0.0 ? farSearch : min(sample.data.y, max(center.data.y, 0.25));
                 const float depthWeight = center.data.x > 0.0 ? 1.0 :
                     saturate(1.0 - abs(sample.data.w - center.data.w) / max(0.05, center.data.w * 0.05));

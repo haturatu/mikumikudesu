@@ -269,7 +269,8 @@ class VulkanDevice final : public Device {
         std::array<handles::TextureHandle, 10> textures{};
         std::array<VkImage, 10> images{};
         std::array<VkImageView, 10> views{};
-        std::array<VkDescriptorSet, 7> sets{};
+        std::array<VkDescriptorSet, 11> sets{};
+        std::uint32_t mipLevels{1};
         VkExtent2D extent{};
         bool initialized{};
         std::uint32_t output{}; // 0 or 1, selected for this submission.
@@ -706,6 +707,7 @@ class VulkanDevice final : public Device {
     VkDescriptorPool previewDescriptorPool_{};
     VkSampler previewSampler_{};
     VkSampler previewClampSampler_{};
+    VkSampler previewDofSampler_{};
     VkDescriptorSet previewBindlessDescriptor_{};
     VkDescriptorSet previewEnvironmentDescriptor_{};
     VkDescriptorSet previewShadowDescriptor_{};
