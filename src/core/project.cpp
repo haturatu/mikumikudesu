@@ -102,6 +102,33 @@ graphics::PreviewRenderSettings readRenderSettings(const Json& json) {
         if (effect.contains("intensity") && effect.at("intensity").is_number())
             settings.depthOfField.intensity = effect.at("intensity").get<float>();
     }
+    if (json.contains("dof") && json.at("dof").is_object()) {
+        const auto& lens = json.at("dof");
+        auto& dof = settings.dof;
+        dof.focusMode = readEnum(lens, "focusMode", dof.focusMode, graphics::PreviewFocusMode::viewportPoint);
+        dof.quality = readEnum(lens, "quality", dof.quality, graphics::PreviewDofQuality::high);
+        const auto readFloat = [&](const char* key, float& value) {
+            if (lens.contains(key) && lens.at(key).is_number())
+                value = lens.at(key).get<float>();
+        };
+        readFloat("fNumber", dof.fNumber);
+        readFloat("sensorHeightMm", dof.sensorHeightMm);
+        readFloat("metresPerUnit", dof.metresPerUnit);
+        readFloat("focusDistanceMetres", dof.focusDistanceMetres);
+        readFloat("focusOffsetMetres", dof.focusOffsetMetres);
+        if (lens.contains("modelIndex") && lens.at("modelIndex").is_number_integer()) {
+            const auto index = lens.at("modelIndex").get<std::int64_t>();
+            if (index >= 0 && index <= std::numeric_limits<std::uint32_t>::max())
+                dof.modelIndex = static_cast<std::uint32_t>(index);
+        }
+        if (lens.contains("boneName") && lens.at("boneName").is_string())
+            dof.boneName = lens.at("boneName").get<std::string>();
+        if (lens.contains("worldPoint") && lens.at("worldPoint").is_array() && lens.at("worldPoint").size() == 3) {
+            for (std::size_t i = 0; i < 3; ++i)
+                if (lens.at("worldPoint").at(i).is_number())
+                    dof.worldPoint[i] = lens.at("worldPoint").at(i).get<float>();
+        }
+    }
     return graphics::sanitizePreviewRenderSettings(settings);
 }
 
@@ -149,6 +176,19 @@ Json writeRenderSettings(const graphics::PreviewRenderSettings& source, Json jso
         json["depthOfField"] = Json::object();
     json["depthOfField"]["override"] = static_cast<int>(settings.depthOfField.override);
     json["depthOfField"]["intensity"] = settings.depthOfField.intensity;
+    if (!json["dof"].is_object())
+        json["dof"] = Json::object();
+    auto& lens = json["dof"];
+    lens["focusMode"] = static_cast<int>(settings.dof.focusMode);
+    lens["quality"] = static_cast<int>(settings.dof.quality);
+    lens["fNumber"] = settings.dof.fNumber;
+    lens["sensorHeightMm"] = settings.dof.sensorHeightMm;
+    lens["metresPerUnit"] = settings.dof.metresPerUnit;
+    lens["focusDistanceMetres"] = settings.dof.focusDistanceMetres;
+    lens["focusOffsetMetres"] = settings.dof.focusOffsetMetres;
+    lens["modelIndex"] = settings.dof.modelIndex;
+    lens["boneName"] = settings.dof.boneName;
+    lens["worldPoint"] = settings.dof.worldPoint;
     return json;
 }
 

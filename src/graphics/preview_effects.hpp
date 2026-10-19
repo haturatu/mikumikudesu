@@ -1,5 +1,6 @@
 #pragma once
 
+#include "graphics/preview_dof.hpp"
 #include "graphics/preview_quality.hpp"
 
 #include <algorithm>
@@ -61,6 +62,7 @@ struct PreviewRenderSettings {
     PreviewEffectSetting clearcoat{};
     PreviewEffectSetting bloom{};
     PreviewEffectSetting depthOfField{};
+    PreviewDofSettings dof{};
 };
 
 // Older projects did not opt into the new postprocessing passes.
@@ -102,6 +104,7 @@ inline PreviewRenderSettings sanitizePreviewRenderSettings(PreviewRenderSettings
             effect->override = EffectOverride::inherit;
         effect->intensity = finiteClamp(effect->intensity, 1.0F, 0.0F, 4.0F);
     }
+    settings.dof = sanitizePreviewDofSettings(std::move(settings.dof));
     return settings;
 }
 

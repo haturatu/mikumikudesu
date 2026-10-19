@@ -1,0 +1,91 @@
+#pragma once
+
+#include "app/preview_conversion.hpp"
+#include "core/fx/fx_controller_resolver.hpp"
+
+#include <cctype>
+#include <span>
+#include <string_view>
+
+namespace dayo::app {
+
+inline std::string canonicalFocusBoneName(std::string_view name) {
+    std::string result;
+    for (const char rawLetter : name) {
+        const auto letter = static_cast<unsigned char>(rawLetter);
+        if (letter != ' ' && letter != '_' && letter != '-')
+            result += static_cast<char>(letter < 128 ? std::tolower(letter) : letter);
+    }
+    return result;
+}
+
+// Resolve against the same evaluated skinning transforms used by the mesh.
+// A BoneTransform rotates a bind-space point; its translation alone is not
+// the animated bone origin. Model order and bone name survive project reload.
+inline std::optional<core::Float3> previewFocusBonePoint(const core::ModelInstance& instance,
+                                                         const core::fx::SceneEvaluationSnapshot& snapshot,
+                                                         const graphics::PreviewDofSettings& settings) {
+    if (instance.model == nullptr)
+        return std::nullopt;
+    const auto evaluated = std::ranges::find(snapshot.models, instance.id, &core::fx::EvaluatedModelState::id);
+    const auto point = [&](std::span<const std::string_view> names) -> std::optional<core::Float3> {
+        for (const auto name : names) {
+            const auto canonical = canonicalFocusBoneName(name);
+            const auto& bones = instance.model->bones;
+            for (std::size_t i = 0; i < bones.size(); ++i) {
+                if (canonicalFocusBoneName(bones[i].name) != canonical &&
+                    canonicalFocusBoneName(bones[i].englishName) != canonical)
+                    continue;
+                auto position = bones[i].position;
+                if (evaluated != snapshot.models.end() && i < evaluated->bones.size()) {
+                    const auto& transform = evaluated->bones[i];
+                    position = rotateQuaternion(transform.rotation, position);
+                    for (std::size_t axis = 0; axis < 3; ++axis)
+                        position[axis] += transform.translation[axis];
+                }
+                return normalizePreviewPoint(position, instance.normalization);
+            }
+        }
+        return std::nullopt;
+    };
+    if (settings.focusMode == graphics::PreviewFocusMode::bone) {
+        const std::array<std::string_view, 1> names{settings.boneName};
+        if (settings.boneName.empty())
+            return std::nullopt;
+        return point(names);
+    }
+    const std::array<std::string_view, 4> leftNames{"左目", "left eye", "eye_l", "eye.l"};
+    const std::array<std::string_view, 4> rightNames{"右目", "right eye", "eye_r", "eye.r"};
+    const auto left = point(leftNames);
+    const auto right = point(rightNames);
+    if (left && right)
+        return core::Float3{((*left)[0] + (*right)[0]) * 0.5F, ((*left)[1] + (*right)[1]) * 0.5F,
+                            ((*left)[2] + (*right)[2]) * 0.5F};
+    if (left)
+        return left;
+    if (right)
+        return right;
+    const std::array<std::string_view, 3> eyeNames{"両目", "eyes", "eye"};
+    if (const auto eyes = point(eyeNames))
+        return eyes;
+    const std::array<std::string_view, 2> headNames{"頭", "head"};
+    return point(headNames);
+}
+
+inline float resolvePreviewFocusDistance(const graphics::PreviewDofSettings& settings,
+                                         const graphics::PreviewFocusCamera& camera,
+                                         std::span<const core::ModelInstance> models,
+                                         const core::fx::SceneEvaluationSnapshot& snapshot) {
+    using graphics::PreviewFocusMode;
+    if (settings.focusMode == PreviewFocusMode::manual)
+        return settings.focusDistanceMetres / settings.metresPerUnit;
+    if (settings.focusMode == PreviewFocusMode::viewportPoint)
+        return std::max(0.05F, graphics::previewFocusViewPoint(camera, settings.worldPoint)[2]);
+    if (settings.focusMode != PreviewFocusMode::cameraTarget && settings.modelIndex < models.size()) {
+        if (const auto point = previewFocusBonePoint(models[settings.modelIndex], snapshot, settings))
+            return std::max(0.05F, graphics::previewFocusViewPoint(camera, *point)[2]);
+    }
+    return std::max(std::abs(camera.distance), 0.1F);
+}
+
+} // namespace dayo::app
