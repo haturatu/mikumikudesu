@@ -544,4 +544,4 @@
 {"Focus tracking", {"Focus tracking", "フォーカス追従", "对焦跟踪", "Отслеживание фокуса"}},
 {"Aperture shape", {"Aperture shape", "絞りの形状", "光圈形状", "Форма диафрагмы"}},
 {"Blur quality and export", {"Blur quality and export", "ぼかし画質と画像出力", "模糊质量与导出", "Качество размытия и экспорт"}},
-{"Cinematic images use ACES; exposure, white balance and Bloom are not reapplied.", {"Cinematic images use ACES; exposure, white balance and Bloom are not reapplied.", "レンズ多重サンプリングの画像出力はACESを使用します。露出・ホワイトバランス・Bloomは再適用されません。", "电影图像使用ACES；不会重新应用曝光、白平衡或Bloom。", "Киноизображения используют ACES; экспозиция, баланс белого и Bloom повторно не применяются."}},
+{"Cinematic images apply the selected color settings and Bloom after HDR averaging.", {"Cinematic images apply the selected color settings and Bloom after HDR averaging.", "画像出力ではHDR統合後に、選択した色管理設定とBloomを適用します。", "电影图像在HDR平均后应用所选色彩设置和Bloom。", "После усреднения HDR применяются выбранные настройки цвета и Bloom."}},

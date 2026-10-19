@@ -3829,7 +3829,7 @@ void Application::buildRenderSettingsControls() {
                 if (settings.dof.cinematicSamples != 0)
                     ImGui::TextWrapped(
                         "%s",
-                        ui::tr("Cinematic images use ACES; exposure, white balance and Bloom are not reapplied."));
+                        ui::tr("Cinematic images apply the selected color settings and Bloom after HDR averaging."));
                 lensSlider("Radius cap at 1080p (px; 0 = Auto)", settings.dof.maxRadiusPixels, 0.0F, 128.0F, "%.1f");
                 ImGui::TreePop();
             }

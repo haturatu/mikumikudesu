@@ -43,7 +43,7 @@ fall back safely, and numeric values are checked for finiteness and clamped.
 | View transform | ACES fit, compact AgX approximation, or Khronos PBR Neutral | SDR linear sRGB output followed by hardware sRGB transfer; not Blender OCIO/LUT parity |
 | Exposure / white balance | EV gain and normalized Planckian RGB white-point correction | Approximate white balance, neutral at 6500 K |
 | Anti-aliasing | Off / FXAA / Auto | Spatial filter; no temporal history |
-| Depth of field | Thin-lens signed CoC, depth-aware MIP/ring gathers, near coverage, motion-reprojected history | F-number, bone/face/eye tracking, static/tracked surface clicks, curved aperture blades; perspective camera |
+| Depth of field | Thin-lens signed CoC, depth-aware MIP/ring gathers, near coverage, motion-reprojected history | F-number, bone/face/eye tracking, static point/nearest-bone tracking clicks, curved aperture blades; perspective camera |
 
 Skin diffuse is separate from specular highlights and hair, so diffusion does
 not smear the final scene image. Transparent overlays and outlines erase the
@@ -91,13 +91,19 @@ controls and loading/resetting projects invalidate older picks. Clear depth is
 ignored. The depth prepass includes opaque/alpha-tested fragments with combined
 alpha >= 0.98; picking sees the opaque surface behind blended materials.
 
-Ctrl + Shift + left click selects **Tracking point**. The rendered material ID
+Ctrl + Shift + left click selects **Track nearest bone**. The rendered material ID
 selects the model, then the nearest evaluated bone stores a local anchor and
 clone index. This is bone-based tracking, not a deforming-triangle attachment:
 loose cloth, morphs and skin weights can move independently of the anchor.
 Unidentified surfaces fall back to a static point with a visible message.
 The GPU result includes the submitted bone transforms, so an asynchronous
 result is bound in the pose in which it was clicked.
+
+Model instances and their PMX asset references carry persistent IDs in `.dayo`.
+Focus targets resolve by this ID, including multiple instances of the same PMX.
+A missing identified instance never redirects focus to another copy. Legacy
+projects without IDs are upgraded by source occurrence before assets are loaded;
+source-path matching is retained only for legacy references.
 
 Playback evaluates the shared pose at each rendered fractional VMD time, once
 for mesh, physics and focus. AF response (seconds), deadband (metres) and maximum
@@ -245,10 +251,32 @@ preview camera. Orthographic keys suspend the lens shift.
 Physical accumulation uses the uncapped lens aperture, so it can exceed the
 spatial radius cap. It costs 64–256 scene renders and is deliberately separate
 from interactive preview. The video exporter uses temporal spatial DoF; physical
-lens accumulation is available through image sequences. The existing Preview
-image-sequence resolve uses ACES and does not reapply the selected view transform,
-exposure/white balance, Bloom or FXAA after HDR averaging. It therefore does not
-yet provide full postprocessing parity with the viewport.
+lens accumulation is available through image sequences. After float32 HDR
+averaging and linear area downsampling, the resolved RGBA16F image enters the
+same GPU final pass as the viewport: Bloom, selected ACES/AgX/Neutral transform,
+exposure, white balance, FXAA and display-background composition. These nonlinear
+operations run once over the average; scene SSS/DoF are not repeated.
+
+### 1080p temporal foreground regression
+
+A dedicated `preview_dof_edge_1080p` GPU test moves a skinned foreground by
+0.37 pixels/frame for 24 frames and inspects only its silhouette halo. The
+coverage-weighted anchor pyramid preserves actual full-resolution foreground
+pixels independently of colour MIPs. Gather and reconstruction select valid
+anchors without interpolating their coordinates across identities or background.
+The source pixel supplies the existing identity, motion, depth and CoC checks.
+The pyramid adds about 5.5 MB per temporal frame slot at 1080p (up to five mips),
+and is a 1x1 placeholder when temporal DoF is disabled.
+
+On Vega 8, the original shader retained foreground anchors for 0/1056 inspected
+halo samples; the corrected shader retained 1056/1056. The original image still
+had small edge errors, so the anchor defect was clearer than visible flicker.
+After correction, the 1080p edge MAE/RMS against fresh spatial frames were
+0.518/0.996 byte values. Motion-compensated mean squared frame differences were
+0.421 byte² (original 0.432; spatial reference 0.576). These are synthetic-scene
+measurements, not a claim that all animated PMX boundaries have been validated.
+The regression requires at least 98% valid foreground anchors and separately
+bounds edge error and motion-compensated frame differences.
 
 ### GPU measurements
 
@@ -259,19 +287,24 @@ below explicitly disable temporal stabilization:
 
 | Quality | CoC | Downsample / tiles / MIPs | Near / far | Composite | DoF sum |
 | --- | --- | --- | --- | --- | --- |
-| Performance | 0.48 ms | 2.46 ms | 1.67 ms | 6.00 ms | 10.62 ms |
-| Balanced | 0.48 ms | 2.42 ms | 2.82 ms | 5.80 ms | 11.53 ms |
-| High | 0.47 ms | 2.42 ms | 3.72 ms | 5.56 ms | 12.18 ms |
+| Performance | 1.65 ms | 7.78 ms | 6.25 ms | 19.07 ms | 34.75 ms |
+| Balanced | 1.69 ms | 7.80 ms | 11.14 ms | 17.10 ms | 37.73 ms |
+| High | 1.66 ms | 7.89 ms | 14.54 ms | 15.83 ms | 39.93 ms |
 
-With temporal enabled, Balanced/High measured 15.76 / 16.36 ms for DoF including
-history resolve/copies. Their separate opaque motion/ID prepass measured
-3.02 / 3.07 ms and is included in the AO/depth profiler bucket, not the DoF sum.
-These figures exclude scene rendering, SSS, Bloom and tone mapping. GPU clocks,
-cache and other load change timings; a separate run measured spatial sums of
-11.22 / 12.17 / 14.47 ms. The former integer-gather implementation's historical
-13.18 / 17.07 / 19.81 ms are not a controlled speedup comparison. This fixture is
-not a whole-frame or complex-model performance promise. Start with Performance
-on an APU.
+With temporal enabled, Balanced/High measured 45.55 / 48.80 ms for DoF including
+anchor-pyramid generation and history resolve/copies. Their separate opaque
+motion/ID prepass measured 9.51 / 9.47 ms and is included in the AO/depth profiler
+bucket, not the DoF sum. In the immediately preceding run with the original
+shader, spatial sums were 34.57 / 37.65 / 40.37 ms and temporal sums were
+44.95 / 47.00 ms. The added anchor processing is skipped in Performance.
+
+These figures exclude scene rendering, SSS, Bloom and tone mapping. The GPU uses
+automatic clocks; clock and competing workload were not fixed. Earlier runs on
+the same APU measured spatial sums of 10.62 / 11.53 / 12.18 ms and temporal sums
+of 15.76 / 16.36 ms, so those earlier numbers do not represent the current test
+environment. The paired original-shader run above checks that this large timing
+change also occurs without the anchor fix. This fixture is not a whole-frame or
+complex-model performance promise. Start with Performance on an APU.
 
 ## Runtime behavior
 
@@ -294,6 +327,7 @@ values. A device without timestamp support displays an unavailable message.
 
 `preview_effect_settings` checks preset/override resolution, explicit Off,
 zero intensity, unsupported effects, malformed values, project round trips,
+ID-based duplicate-PMX focus restoration and missing-instance rejection,
 legacy loading and unknown-field preservation without a GPU. It also checks
 F-number/radius scaling, signed CoC, rotated camera unprojection, animated bone
 positions, distinct face/eye anchors, rotated local offsets, clone binding,
@@ -307,18 +341,19 @@ with different settings, small/odd extents and resource resize/reuse, in additio
 to existing skinning, transparency, texture and background regressions. Tests run
 with Vulkan validation and synchronization validation enabled. DoF-specific
 checks cover aperture response, foreground coverage outside its silhouette,
-focused foreground isolation, per-pass timings, all quality modes, tiny/odd
+focused foreground isolation, exact HDR final-pass parity for ACES/AgX/Neutral
+with exposure/WB/Bloom/FXAA, per-pass timings, all quality modes, tiny/odd
 extents, orthographic suspension, asynchronous picking with camera changes,
 opaque-surface selection behind blending, sky rejection and cancellation.
 `viewport_interaction` verifies Ctrl-click UVs, one-shot delivery and navigation
 capture while VMD follow is active.
 
 Validated on AMD Radeon Vega 8 (RADV RAVEN): the Release/glslc build succeeds
-and all 29 enabled CTest cases pass, including auto/high/async Preview rendering
+and all 30 enabled CTest cases pass, including auto/high/async Preview rendering
 and audio/video export. The existing `regression_test` is disabled by the
-repository configuration and was not counted as executed. All 20 Preview shader
+repository configuration and was not counted as executed. All 23 Preview shader
 entry/format variants also compile with the CI-pinned DXC v1.9.2602.24; the
-three auto/high/async Preview GPU suites also pass with those DXC shader
+four auto/high/async and 1080p edge Preview GPU suites also pass with those DXC shader
 artifacts. The glslc artifacts were restored after this cross-compiler check.
 Japanese and English panels were also visually inspected.
 
