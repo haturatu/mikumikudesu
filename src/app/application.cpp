@@ -2784,6 +2784,9 @@ void Application::refreshPreviewScene(float focusDeltaOverride) {
                                                    cameraState.verticalFovRadians, cameraState.perspective};
     const auto dof = device_->previewRenderSettings().dof;
     const float targetUnits = resolvePreviewFocusDistance(dof, focusCamera, scene_.models(), evaluatedModels_);
+    const float targetMetres = graphics::previewDofLens(dof, targetUnits, cameraState.verticalFovRadians, 1U,
+                                                        graphics::PreviewDofQuality::balanced)
+                                   .focusMetres;
     const bool followsModel = dof.focusMode == graphics::PreviewFocusMode::bone ||
                               dof.focusMode == graphics::PreviewFocusMode::face ||
                               dof.focusMode == graphics::PreviewFocusMode::eyes ||
@@ -2795,10 +2798,8 @@ void Application::refreshPreviewScene(float focusDeltaOverride) {
                              : previewFocusEvaluatedFrame_ < 0.0F ? 0.0F
                                                                   : (animationFrame_ - previewFocusEvaluatedFrame_) /
                                                                         static_cast<float>(sceneTimelineFps(scene_));
-    if (!previewFocusState_.trackingValid || focusDelta != 0.0F ||
-        previewFocusState_.targetMetres != targetUnits * dof.metresPerUnit + dof.focusOffsetMetres)
-        graphics::updatePreviewFocusState(previewFocusState_, targetUnits * dof.metresPerUnit + dof.focusOffsetMetres,
-                                          focusDelta, dof, valid, !followsModel);
+    if (!previewFocusState_.trackingValid || focusDelta != 0.0F || previewFocusState_.targetMetres != targetMetres)
+        graphics::updatePreviewFocusState(previewFocusState_, targetMetres, focusDelta, dof, valid, !followsModel);
     previewFocusEvaluatedFrame_ = animationFrame_;
     scene.focusDistance = (previewFocusState_.currentMetres - dof.focusOffsetMetres) / dof.metresPerUnit;
     scene.debugMaterial = previewDebugMaterial_;

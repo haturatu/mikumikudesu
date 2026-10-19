@@ -285,7 +285,7 @@ class VulkanDevice final : public Device {
         bool apertureValid{};
         VkExtent2D extent{};
         bool initialized{};
-        std::uint32_t output{}; // 0 or 1, selected for this submission.
+        std::uint32_t output{}; // SSS (0), spatial composite (1) or temporal resolve (10).
         bool active{};
         bool fullDof{};
         bool temporal{};
