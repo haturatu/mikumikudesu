@@ -1892,6 +1892,32 @@ bool physicalDofAndFocusPicking(dayo::graphics::VulkanDevice& device) {
                 ++expandedPixels;
         }
     expect(expandedPixels > 40, "near coverage must spread red foreground beyond its sharp silhouette");
+    const auto maxGreen = [](const dayo::core::ImageRgba8& image) {
+        std::uint8_t maximum = 0;
+        for (std::size_t i = 1; i < image.pixels.size(); i += 4)
+            maximum = std::max(maximum, image.pixels[i]);
+        return maximum;
+    };
+    expect(maxGreen(open) <= maxGreen(closed) + 5,
+           "near reconstruction must not expose white clear color through an opaque background");
+    const auto interior = (96U * 192U + 65U) * 4U;
+    expect(std::abs(static_cast<int>(open.pixels[interior]) - static_cast<int>(closed.pixels[interior])) <= 3,
+           "normalized near coverage must preserve constant foreground radiance");
+    dayo::core::ImageRgba8 previousAperture;
+    for (int step = 0; step < 12; ++step) {
+        settings.dof.fNumber = 2.05F + static_cast<float>(step) * 0.002F;
+        device.setPreviewRenderSettings(settings);
+        auto image = device.renderToImage({192, 192});
+        if (!previousAperture.pixels.empty()) {
+            int largestChange = 0;
+            for (std::size_t i = 0; i < image.pixels.size(); ++i)
+                largestChange = std::max(largestChange, std::abs(static_cast<int>(image.pixels[i]) -
+                                                                 static_cast<int>(previousAperture.pixels[i])));
+            expect(largestChange <= 8, "subpixel CoC changes must not produce discontinuous integer-grid blur jumps");
+        }
+        previousAperture = std::move(image);
+    }
+    settings.dof.fNumber = 0.7F;
     settings.dof.quality = PreviewDofQuality::automatic;
     device.setPreviewRenderSettings(settings);
     device.setPreviewStillQuality(true);
