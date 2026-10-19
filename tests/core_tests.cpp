@@ -722,6 +722,9 @@ int main() {
         modelState.motionOrder = 5;
         modelState.cloneCount = 3;
         project.models.push_back(modelState);
+        modelState.instanceId = "first-instance";
+        project.models[0].instanceId = modelState.instanceId;
+        project.assets[0].modelInstanceId = modelState.instanceId;
         dayo::core::saveProject(projectPath, project);
         const auto loaded = dayo::core::loadProject(projectPath);
         ok &= check(loaded.renderer == "subayai" && loaded.frame == 42.5F && !loaded.playing,
@@ -732,7 +735,8 @@ int main() {
                     ".dayo effect owner and MatDesc source round trip");
         ok &= check(loaded.models.size() == 1 && loaded.models[0].bones == modelState.bones &&
                         loaded.models[0].materialAnnotations == modelState.materialAnnotations &&
-                        loaded.models[0].cloneCount == 3 && loaded.editor.samplesPerFrame == 32 &&
+                        loaded.models[0].cloneCount == 3 && loaded.models[0].instanceId == "first-instance" &&
+                        loaded.assets[0].modelInstanceId == "first-instance" && loaded.editor.samplesPerFrame == 32 &&
                         loaded.editor.motionBlur && loaded.editor.outputWidth == 2560 &&
                         loaded.editor.animationSpeed == 1.5F,
                     ".dayo model order/material metadata and editor output settings round trip");
@@ -755,6 +759,29 @@ int main() {
         project.embeddedMotion.emplace();
         project.embeddedMotion->modelName = "Miku";
         project.embeddedMotion->morphs.push_back({"smile", 24, 1.0F});
+        {
+            auto duplicates = project;
+            duplicates.assets.insert(duplicates.assets.begin() + 1, duplicates.assets[0]);
+            duplicates.assets[1].modelInstanceId = "second-instance";
+            auto second = duplicates.models[0];
+            second.instanceId = "second-instance";
+            second.cloneCount = 7;
+            second.source = duplicates.assets[0].path;
+            duplicates.models[0].source = second.source;
+            duplicates.models.insert(duplicates.models.begin(), second);
+            // Metadata is [second, first], asset loading order is [first, second].
+            duplicates.renderSettings.dof.modelIndex = 0;
+            const auto duplicatePath = projectPath.parent_path() / "duplicate-instances.dayo";
+            dayo::core::saveProject(duplicatePath, duplicates);
+            const auto restored = dayo::core::loadProject(duplicatePath);
+            ok &= check(restored.models.size() == 2 && restored.models[0].instanceId == "first-instance" &&
+                            restored.models[1].instanceId == "second-instance" && restored.models[1].cloneCount == 7 &&
+                            restored.renderSettings.dof.modelIndex == 1 &&
+                            restored.assets[1].modelInstanceId == "second-instance" &&
+                            restored.assets[3].ownerModelIndex == 1,
+                        "duplicate PMX identity, settings and focus survive reordered metadata save/load");
+            std::filesystem::remove(duplicatePath);
+        }
         dayo::core::saveProject(projectPath, project);
         const auto editableProject = dayo::core::loadProject(projectPath);
         ok &= check(editableProject.embeddedMotion && editableProject.embeddedMotion->morphs.size() == 1 &&

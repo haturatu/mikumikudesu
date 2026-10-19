@@ -109,6 +109,22 @@ bool focusAndLensMath() {
                 "focus model references survive different project metadata and loading order");
     ok &= check(dayo::app::previewFocusSceneIndex(models, references, 1) == dayo::app::previewMissingFocusModel,
                 "a failed model load must not retarget focus to the next loaded model");
+    models[0].sourcePath = models[1].sourcePath = "same-character.pmx";
+    models[0].instanceId = "first-instance";
+    models[1].instanceId = "second-instance";
+    references[0].source = references[1].source = references[2].source = models[0].sourcePath;
+    references[0].instanceId = "second-instance";
+    references[1].instanceId = "missing-instance";
+    references[2].instanceId = "first-instance";
+    ok &= check(dayo::app::previewFocusProjectIndex(models, references, 1) == 0 &&
+                    dayo::app::previewFocusSceneIndex(models, references, 0) == 1,
+                "duplicate PMX instances retain focus across reordered project metadata");
+    ok &= check(dayo::app::previewFocusSceneIndex(models, references, 1) == dayo::app::previewMissingFocusModel,
+                "a missing persistent instance never falls back to another instance of the same PMX");
+    // A legacy path must not shadow a later exact identity match.
+    references[0].instanceId.clear();
+    ok &= check(dayo::app::previewFocusProjectIndex(models, references, 0) == 2,
+                "persistent identity takes priority over legacy source references");
     return ok;
 }
 bool focusTrackingAndResponse() {

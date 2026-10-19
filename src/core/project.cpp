@@ -362,6 +362,7 @@ Json modelOrderArray(const std::vector<ProjectModelState>& models, ProjectOrderF
 
 ProjectModelState readNativeModelState(const Json& item, const std::filesystem::path& base) {
     ProjectModelState state;
+    state.instanceId = item.value("instanceId", std::string{});
     if (item.contains("source") && item.at("source").is_string())
         state.source = resolveAsset(base, item.at("source").get<std::string>());
     if (item.contains("upstreamId") && item.at("upstreamId").is_number_integer())
@@ -730,6 +731,7 @@ DayoProject loadProject(const std::filesystem::path& path) {
                     continue;
                 ProjectAsset loaded{asset.value("kind", "unknown"),
                                     resolveAsset(base, asset.at("path").get<std::string>())};
+                loaded.modelInstanceId = asset.value("modelInstanceId", std::string{});
                 if (asset.contains("ownerModelIndex") && asset.at("ownerModelIndex").is_number_unsigned())
                     loaded.ownerModelIndex = asset.at("ownerModelIndex").get<std::size_t>();
                 if (asset.contains("upstreamId") && asset.at("upstreamId").is_number_integer())
@@ -916,11 +918,57 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
             throw std::invalid_argument("preserved .dayo document root must be an object");
     }
 
+    std::vector<const ProjectAsset*> modelAssets;
+    for (const auto& asset : project.assets)
+        if (asset.kind == "pmx")
+            modelAssets.push_back(&asset);
+    std::vector<ProjectModelState> modelStates;
+    std::vector<bool> used(project.models.size(), false);
+    std::vector<std::size_t> modelIndices;
+    modelStates.reserve(modelAssets.size());
+    for (const auto* asset : modelAssets) {
+        const auto assetPath = std::filesystem::absolute(asset->path).lexically_normal();
+        std::size_t match = project.models.size();
+        for (std::size_t i = 0; i < project.models.size(); ++i) {
+            const auto& state = project.models[i];
+            if (used[i])
+                continue;
+            if (!asset->modelInstanceId.empty()
+                    ? state.instanceId == asset->modelInstanceId
+                    : (!state.source.empty() &&
+                       std::filesystem::absolute(state.source).lexically_normal() == assetPath)) {
+                match = i;
+                break;
+            }
+        }
+        // Old native metadata may omit the source as well as the instance ID.
+        const auto index = modelStates.size();
+        if (match == project.models.size() && asset->modelInstanceId.empty() && index < project.models.size() &&
+            !used[index] && project.models[index].source.empty())
+            match = index;
+        auto state = match < project.models.size() ? project.models[match] : ProjectModelState{};
+        if (match < used.size())
+            used[match] = true;
+        modelIndices.push_back(match);
+        state.source = assetPath;
+        if (!asset->modelInstanceId.empty())
+            state.instanceId = asset->modelInstanceId;
+        if (!state.upstreamId.has_value() && asset->upstreamId.has_value())
+            state.upstreamId = asset->upstreamId;
+        modelStates.push_back(std::move(state));
+    }
+    const auto remapModelIndex = [&](std::size_t index) {
+        const auto found = std::ranges::find(modelIndices, index);
+        return found == modelIndices.end() ? modelStates.size()
+                                           : static_cast<std::size_t>(std::distance(modelIndices.begin(), found));
+    };
     Json assets = Json::array();
     for (const auto& asset : project.assets) {
         Json value{{"kind", asset.kind}, {"path", portablePath(base, asset.path).generic_string()}};
+        if (!asset.modelInstanceId.empty())
+            value["modelInstanceId"] = asset.modelInstanceId;
         if (asset.ownerModelIndex.has_value())
-            value["ownerModelIndex"] = *asset.ownerModelIndex;
+            value["ownerModelIndex"] = remapModelIndex(*asset.ownerModelIndex);
         if (asset.upstreamId.has_value())
             value["upstreamId"] = *asset.upstreamId;
         if (!asset.materialSourceFiles.empty())
@@ -928,25 +976,6 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
         assets.push_back(std::move(value));
     }
 
-    std::vector<const ProjectAsset*> modelAssets;
-    for (const auto& asset : project.assets)
-        if (asset.kind == "pmx")
-            modelAssets.push_back(&asset);
-    std::vector<ProjectModelState> modelStates;
-    modelStates.reserve(modelAssets.size());
-    for (std::size_t index = 0; index < modelAssets.size(); ++index) {
-        const auto assetPath = std::filesystem::absolute(modelAssets[index]->path).lexically_normal();
-        const auto bySource = std::ranges::find_if(project.models, [&](const auto& state) {
-            return !state.source.empty() && std::filesystem::absolute(state.source).lexically_normal() == assetPath;
-        });
-        auto state = bySource != project.models.end()
-                         ? *bySource
-                         : (index < project.models.size() ? project.models[index] : ProjectModelState{});
-        state.source = assetPath;
-        if (!state.upstreamId.has_value() && modelAssets[index]->upstreamId.has_value())
-            state.upstreamId = modelAssets[index]->upstreamId;
-        modelStates.push_back(std::move(state));
-    }
     const auto& oldUpstream =
         root.contains("MikuMikuDayo") && root.at("MikuMikuDayo").is_object() ? root.at("MikuMikuDayo") : Json::object();
     const auto oldModels = oldUpstream.value("models", Json::array());
@@ -969,9 +998,10 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
     for (const auto& asset : project.assets) {
         if (asset.kind != "effect")
             continue;
-        const auto modelId = asset.ownerModelIndex.has_value() && *asset.ownerModelIndex < modelStates.size()
-                                 ? modelStates[*asset.ownerModelIndex].upstreamId.value_or(
-                                       static_cast<std::int32_t>(*asset.ownerModelIndex + 1U))
+        const auto owner =
+            asset.ownerModelIndex.has_value() ? remapModelIndex(*asset.ownerModelIndex) : modelStates.size();
+        const auto modelId = owner < modelStates.size()
+                                 ? modelStates[owner].upstreamId.value_or(static_cast<std::int32_t>(owner + 1U))
                                  : -1;
         const auto id = asset.upstreamId.value_or(modelId);
         Json effect = Json::object();
@@ -1092,7 +1122,8 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
                              {"freeCamera", project.editor.freeCamera}};
     native["modelState"] = Json::array();
     for (const auto& model : modelStates) {
-        Json state{{"source", portablePath(base, model.source).generic_string()},
+        Json state{{"instanceId", model.instanceId},
+                   {"source", portablePath(base, model.source).generic_string()},
                    {"bones", model.bones},
                    {"morphs", model.morphs},
                    {"materials", model.materials},
@@ -1108,8 +1139,13 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
             state["upstreamId"] = *model.upstreamId;
         native["modelState"].push_back(std::move(state));
     }
-    native["renderSettings"] =
-        writeRenderSettings(project.renderSettings, native.value("renderSettings", Json::object()));
+    auto renderSettings = project.renderSettings;
+    const auto focus = std::ranges::find(modelIndices, static_cast<std::size_t>(renderSettings.dof.modelIndex));
+    if (renderSettings.dof.modelIndex < project.models.size())
+        renderSettings.dof.modelIndex = focus == modelIndices.end()
+                                            ? std::numeric_limits<std::uint32_t>::max()
+                                            : static_cast<std::uint32_t>(std::distance(modelIndices.begin(), focus));
+    native["renderSettings"] = writeRenderSettings(renderSettings, native.value("renderSettings", Json::object()));
     root["mikumikudesu"] = std::move(native);
 
     auto temporary = absolute;

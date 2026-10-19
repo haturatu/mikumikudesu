@@ -1346,11 +1346,10 @@ core::DayoProject Application::currentProject() const {
     project.models = projectModelMetadata_;
     for (const auto& instance : scene_.models()) {
         core::ProjectModelState state;
+        state.instanceId = instance.instanceId;
         state.source = instance.sourcePath;
-        auto savedModel = std::ranges::find_if(project.models, [&](const auto& previous) {
-            return !previous.source.empty() && std::filesystem::absolute(previous.source).lexically_normal() ==
-                                                   std::filesystem::absolute(instance.sourcePath).lexically_normal();
-        });
+        auto savedModel = std::ranges::find_if(
+            project.models, [&](const auto& previous) { return previous.instanceId == instance.instanceId; });
         if (savedModel != project.models.end())
             state.upstreamId = savedModel->upstreamId;
         if (instance.model != nullptr) {
@@ -1397,10 +1396,8 @@ core::DayoProject Application::currentProject() const {
                                ? std::ranges::find(scene_.models(), *loaded->owner, &core::ModelInstance::id)
                                : scene_.models().end();
         if (owner != scene_.models().end()) {
-            const auto ownerState = std::ranges::find_if(project.models, [&](const auto& state) {
-                return !state.source.empty() && std::filesystem::absolute(state.source).lexically_normal() ==
-                                                    std::filesystem::absolute(owner->sourcePath).lexically_normal();
-            });
+            const auto ownerState = std::ranges::find_if(
+                project.models, [&](const auto& state) { return state.instanceId == owner->instanceId; });
             if (ownerState != project.models.end()) {
                 asset.ownerModelIndex = static_cast<std::size_t>(std::distance(project.models.begin(), ownerState));
                 asset.upstreamId =
@@ -1653,7 +1650,29 @@ void Application::handleAsset(const std::filesystem::path& path) {
     }
     if (kind == core::AssetKind::project) {
         try {
-            const auto project = core::loadProject(path);
+            auto project = core::loadProject(path);
+            // Upgrade legacy references by source occurrence before any load can
+            // fail. A missing duplicate must not consume the next instance's ID.
+            std::vector<bool> assigned(project.models.size(), false);
+            for (auto& state : project.models)
+                if (state.instanceId.empty())
+                    state.instanceId = core::newModelInstanceId();
+            for (const auto& asset : project.assets)
+                if (!asset.modelInstanceId.empty())
+                    for (std::size_t i = 0; i < project.models.size(); ++i)
+                        if (project.models[i].instanceId == asset.modelInstanceId)
+                            assigned[i] = true;
+            for (auto& asset : project.assets) {
+                if (asset.kind != "pmx" || !asset.modelInstanceId.empty())
+                    continue;
+                for (std::size_t i = 0; i < project.models.size(); ++i) {
+                    if (assigned[i] || !samePreviewFocusSource(asset.path, project.models[i].source))
+                        continue;
+                    asset.modelInstanceId = project.models[i].instanceId;
+                    assigned[i] = true;
+                    break;
+                }
+            }
             currentProjectPath_ = std::filesystem::absolute(path).lexically_normal();
 #if DAYO_HAS_IMGUI
             const auto projectText = currentProjectPath_->string();
@@ -1713,21 +1732,25 @@ void Application::handleAsset(const std::filesystem::path& path) {
             sequenceHeight_ = project.editor.outputHeight;
 #endif
             const auto findLoadedModel = [&](std::size_t projectIndex) -> core::ModelInstance* {
-                if (projectIndex < project.models.size() && !project.models[projectIndex].source.empty()) {
-                    const auto& source = project.models[projectIndex].source;
-                    const auto found = std::ranges::find_if(scene_.models(), [&](const auto& instance) {
-                        return std::filesystem::absolute(instance.sourcePath).lexically_normal() ==
-                               std::filesystem::absolute(source).lexically_normal();
-                    });
-                    return found == scene_.models().end() ? nullptr : scene_.model(found->id);
-                }
-                return projectIndex < scene_.models().size() ? scene_.model(scene_.models()[projectIndex].id) : nullptr;
+                const auto index =
+                    previewFocusSceneIndex(scene_.models(), project.models, static_cast<std::uint32_t>(projectIndex));
+                return index < scene_.models().size() ? scene_.model(scene_.models()[index].id) : nullptr;
             };
             for (const auto& asset : project.assets) {
                 if (asset.kind != "pmx")
                     continue;
                 try {
+                    const auto previousCount = scene_.models().size();
                     handleAsset(asset.path);
+                    if (scene_.models().size() > previousCount && !asset.modelInstanceId.empty()) {
+                        auto* instance = scene_.selectedModel();
+                        const auto loaded = std::ranges::find_if(projectAssets_, [&](const auto& entry) {
+                            return entry.kind == "pmx" && entry.modelInstanceId == instance->instanceId;
+                        });
+                        if (loaded != projectAssets_.end())
+                            loaded->modelInstanceId = asset.modelInstanceId;
+                        instance->instanceId = asset.modelInstanceId;
+                    }
                 } catch (const std::exception& exception) {
                     log::warn("Project model could not be loaded: ", asset.path.string(), ": ", exception.what());
                 }
@@ -1809,6 +1832,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             for (const auto& savedAsset : project.assets) {
                 const auto existing = std::ranges::find_if(projectAssets_, [&](const auto& loaded) {
                     return loaded.kind == savedAsset.kind &&
+                           (savedAsset.kind != "pmx" || loaded.modelInstanceId == savedAsset.modelInstanceId) &&
                            std::filesystem::absolute(loaded.path).lexically_normal() ==
                                std::filesystem::absolute(savedAsset.path).lexically_normal();
                 });
@@ -1916,6 +1940,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             const auto modelId = scene_.addModel(path);
             scene_.selectModel(modelId);
             projectAssets_.emplace_back("pmx", std::filesystem::absolute(path));
+            projectAssets_.back().modelInstanceId = scene_.selectedModel()->instanceId;
             if (scene_.models().empty() || scene_.selectedModelId() != modelId)
                 throw std::logic_error("PMX model was not retained in the scene");
             log::info("PMX scene state: models=", scene_.models().size(), " selected=", scene_.selectedModelId());

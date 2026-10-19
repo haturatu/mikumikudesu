@@ -19,14 +19,19 @@ inline bool samePreviewFocusSource(const std::filesystem::path& left, const std:
 }
 
 // Native project metadata order can differ from asset loading order. Map through
-// the project's existing source reference, including missing model entries.
+// persistent instance identity, including missing model entries. Paths are
+// only a compatibility fallback for metadata written before instance IDs.
 inline std::uint32_t previewFocusProjectIndex(std::span<const core::ModelInstance> models,
                                               std::span<const core::ProjectModelState> projectModels,
                                               std::uint32_t sceneIndex) {
     if (sceneIndex >= models.size())
         return previewMissingFocusModel;
     for (std::size_t i = 0; i < projectModels.size(); ++i)
-        if (samePreviewFocusSource(models[sceneIndex].sourcePath, projectModels[i].source))
+        if (!projectModels[i].instanceId.empty() && projectModels[i].instanceId == models[sceneIndex].instanceId)
+            return static_cast<std::uint32_t>(i);
+    for (std::size_t i = 0; i < projectModels.size(); ++i)
+        if (projectModels[i].instanceId.empty() &&
+            samePreviewFocusSource(models[sceneIndex].sourcePath, projectModels[i].source))
             return static_cast<std::uint32_t>(i);
     return previewMissingFocusModel;
 }
@@ -36,6 +41,12 @@ inline std::uint32_t previewFocusSceneIndex(std::span<const core::ModelInstance>
                                             std::uint32_t projectIndex) {
     if (projectIndex >= projectModels.size())
         return previewMissingFocusModel;
+    if (!projectModels[projectIndex].instanceId.empty()) {
+        for (std::size_t i = 0; i < models.size(); ++i)
+            if (models[i].instanceId == projectModels[projectIndex].instanceId)
+                return static_cast<std::uint32_t>(i);
+        return previewMissingFocusModel;
+    }
     if (projectModels[projectIndex].source.empty())
         return projectIndex < models.size() ? projectIndex : previewMissingFocusModel;
     for (std::size_t i = 0; i < models.size(); ++i)

@@ -14,6 +14,7 @@
 namespace dayo::core {
 
 struct ProjectAsset {
+    std::string modelInstanceId;
     std::string kind;
     std::filesystem::path path;
     std::optional<std::size_t> ownerModelIndex;
@@ -26,6 +27,7 @@ struct ProjectAsset {
 };
 
 struct ProjectModelState {
+    std::string instanceId;
     std::filesystem::path source;
     std::optional<std::int32_t> upstreamId;
     std::vector<std::string> bones;
