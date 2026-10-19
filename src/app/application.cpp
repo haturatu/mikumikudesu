@@ -1259,8 +1259,11 @@ int Application::run() {
             }
             refreshPreviewScene(deltaSeconds);
         }
-        if (!playing_ && !imageSequenceExportRunning_ && !videoExportUiActive_)
-            refreshPreviewScene(deltaSeconds);
+#if DAYO_HAS_IMGUI
+        if (!imageSequenceExportRunning_)
+#endif
+            if (!playing_ && !videoExportUiActive_)
+                refreshPreviewScene(deltaSeconds);
         auto* media = scene_.backgroundMedia();
         for (auto& effect : reloadedEffects_) {
             std::string reloadError;
