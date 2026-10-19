@@ -22,7 +22,13 @@ struct BloomConstants {
 
 [[vk::binding(0, 0)]] Texture2D<float4> bloomSource;
 [[vk::binding(1, 0)]] SamplerState bloomSampler;
-[[vk::binding(2, 0)]] RWTexture2D<float4> bloomOutput;
+[[vk::binding(2, 0)]]
+#ifdef DAYO_GLSLC
+[[spv::format_rgba16f]]
+#else
+[[vk::image_format("rgba16f")]]
+#endif
+RWTexture2D<float4> bloomOutput;
 
 static const float bloomWeights[5] = {0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216};
 
