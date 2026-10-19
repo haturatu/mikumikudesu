@@ -2,10 +2,9 @@
 
 // Tone mapping pass for the HDR preview path.
 //
-// It samples the scene-referred half float buffer (plus the bloom chain and the
-// depth prepass), applies exposure and white balance, the selected view
-// transform, depth of field and FXAA, and writes display-referred premultiplied
-// colour. The sRGB swapchain performs the transfer encode.
+// It samples the prepared scene-referred SSS/DoF image and bloom chain, applies
+// exposure, white balance, the selected view transform and FXAA, and writes
+// display-referred premultiplied colour. The sRGB swapchain encodes the transfer.
 
 struct FullscreenVertex {
     float4 position : SV_Position;
@@ -15,11 +14,10 @@ struct FullscreenVertex {
 struct TonemapConstants {
     // x = view transform (DAYO_VIEW_*), y = exposure EV, z = white balance K, w = bloom intensity
     float4 options;
-    // x = bloom, y = FXAA, z = depth of field, w = depth of field intensity
+    // x = bloom, y = FXAA, zw = reserved
     float4 flags;
-    // x = focal length or orthographic extent, y = aspect, z = near, w = far
+    // Reserved ABI words. Spatial effects run in preview_dof.hlsl.
     float4 projection;
-    // x = focus distance, y = aperture, z = maximum circle of confusion, w = viewport height
     float4 depthOfField;
     // xy = viewport size in pixels
     float4 viewport;
@@ -47,52 +45,8 @@ float3 sceneAt(float2 uv) {
     return sample.rgb / max(saturate(sample.a), 1e-5);
 }
 
-// preview.hlsl flips clip space Y and uses a [0, 1] Vulkan depth range, so the
-// stored depth is clipDepth = far / (far - near) - far * near / ((far - near) * viewZ).
-float reconstructViewZ(float depth) {
-    const float nearPlane = max(tonemap.projection.z, 1e-5);
-    const float farPlane = max(tonemap.projection.w, nearPlane + 1e-3);
-    if (tonemap.viewport.z < 0.5) return nearPlane + depth * (farPlane - nearPlane);
-    const float scale = farPlane / (farPlane - nearPlane);
-    const float offset = farPlane * nearPlane / (farPlane - nearPlane);
-    return offset / max(scale - depth, 1e-6);
-}
-
-// Edge-aware screen-space diffusion operates on skin diffuse only. Specular,
-// sheen, hair and non-skin materials remain in the original HDR color.
-float3 scatterSkin(float2 uv, float3 color) {
-    if (tonemap.viewport.w <= 0.0) return color;
-    const float4 center = skinDiffuse.SampleLevel(colorSampler, uv, 0);
-    if (center.a <= 0.01) return color;
-    const float centerZ = reconstructViewZ(sceneDepth.SampleLevel(colorSampler, uv, 0));
-    const float pixelsPerUnit = tonemap.viewport.z > 0.5
-        ? 0.5 * tonemap.viewport.y * tonemap.projection.x / max(centerZ, 0.05)
-        : 0.5 * tonemap.viewport.y / max(tonemap.projection.x, 0.01);
-    const float radius = clamp(pixelsPerUnit * 0.025 * tonemap.viewport.w, 0.0, 24.0);
-    if (radius < 0.5) return color;
-    float3 total = center.rgb;
-    float3 weights = 1.0.xxx;
-    const float2 texel = 1.0 / max(tonemap.viewport.xy, 1.0.xx);
-    [loop]
-    for (uint tap = 0; tap < 16; ++tap) {
-        const float fraction = (float(tap) + 0.5) / 16.0;
-        const float r = sqrt(fraction);
-        const float angle = float(tap) * 2.39996322973;
-        const float2 sampleUv = uv + float2(cos(angle), sin(angle)) * r * radius * texel;
-        const float4 sample = skinDiffuse.SampleLevel(colorSampler, sampleUv, 0);
-        const float sampleZ = reconstructViewZ(sceneDepth.SampleLevel(colorSampler, sampleUv, 0));
-        const float edge = exp(-abs(sampleZ - centerZ) / 0.02) * saturate(sample.a);
-        // Red travels furthest, blue least: approximate RGB diffusion profile.
-        const float3 weight = exp(-fraction * float3(2.0, 5.0, 10.0)) * edge;
-        total += sample.rgb * weight;
-        weights += weight;
-    }
-    const float blend = saturate(center.a * tonemap.viewport.w);
-    return max(color + (total / weights - center.rgb) * blend, 0.0);
-}
-
 float3 sceneAtWithBloom(float2 uv) {
-    float3 color = scatterSkin(uv, sceneAt(uv));
+    float3 color = sceneAt(uv);
     if (tonemap.flags.x > 0.5)
         color += bloomColor.Sample(colorSampler, uv).rgb * tonemap.options.w;
     return color;
@@ -102,39 +56,8 @@ float displayLuma(float3 color) {
     return dot(color, float3(0.299, 0.587, 0.114));
 }
 
-// 24 tap ring blur with a smooth circle of confusion. Cheap enough for the
-// preview resolution and stable because the sample pattern is fixed.
-float3 depthOfFieldSample(float2 uv, float3 center, float viewZ) {
-    const float focus = max(tonemap.depthOfField.x, 1e-3);
-    const float coc = clamp(abs(viewZ - focus) / focus * tonemap.depthOfField.y, 0.0, 1.0) *
-                      tonemap.depthOfField.z * max(tonemap.flags.w, 0.0);
-    if (coc < 0.75)
-        return center;
-    const float2 texel = 1.0 / max(tonemap.viewport.xy, 1.0.xx);
-    float3 total = center;
-    float weight = 1.0;
-    [unroll]
-    for (int ring = 1; ring <= 3; ++ring) {
-        const float radius = coc * float(ring) / 3.0;
-        [unroll]
-        for (int tap = 0; tap < 8; ++tap) {
-            const float angle = (float(tap) + 0.5) * 0.7853981634 + float(ring) * 0.3;
-            const float2 sampleUv = uv + float2(cos(angle), sin(angle)) * radius * texel;
-            const float sampleZ = reconstructViewZ(sceneDepth.SampleLevel(colorSampler, sampleUv, 0).r);
-            const float sampleWeight = exp(-abs(sampleZ - viewZ) / max(0.1 * viewZ, 0.01));
-            total += sceneAtWithBloom(sampleUv) * sampleWeight;
-            weight += sampleWeight;
-        }
-    }
-    return total / weight;
-}
-
 float3 displayAt(float2 uv) {
     float3 color = sceneAtWithBloom(uv);
-    if (tonemap.flags.z > 0.5) {
-        const float viewZ = reconstructViewZ(sceneDepth.SampleLevel(colorSampler, uv, 0).r);
-        color = depthOfFieldSample(uv, color, viewZ);
-    }
     return applyViewTransform(applyExposureAndWhiteBalance(color, tonemap.options.y, tonemap.options.z),
                               uint(tonemap.options.x));
 }

@@ -224,7 +224,9 @@ float2 NormalPS(VertexOutput input) : SV_Target0 {
     const PreviewMaterialData material = previewMaterials[input.materialIndex];
     const float4 alpha = applyTextureMorphRgb(samplePreviewTextureRepeat(material.textureSlots.x, input.uv),
                                              material.textureMultiply, material.textureAdd, 1.0.xxx);
-    clip(alpha.a * material.diffuse.a - 0.5);
+    // Blended surfaces have no unique depth. Match the preview opaque threshold
+    // for AO/DoF and surface picking; keep alpha-tested opaque hair strands.
+    clip(alpha.a * material.diffuse.a - 0.98);
     return encodeOctNormal(safeNormalize(input.normal, float3(0.0, 0.0, 1.0)));
 }
 

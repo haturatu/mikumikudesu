@@ -1,4 +1,5 @@
 #include "core/model_probe.hpp"
+#include "core/output.hpp"
 #include "fx/fx_compiler.hpp"
 #include "fx/fx_shader_compiler.hpp"
 #include "graphics/fx_pipeline_runtime.hpp"
@@ -1835,6 +1836,147 @@ bool renderEffectsReachGpu(dayo::graphics::VulkanDevice& device) {
     return ok;
 }
 
+bool physicalDofAndFocusPicking(dayo::graphics::VulkanDevice& device) {
+    using namespace dayo::graphics;
+    const auto saved = device.previewRenderSettings();
+    auto settings = legacyPreviewRenderSettings();
+    settings.ambientOcclusion.override = settings.softShadows.override = settings.hairShading.override =
+        EffectOverride::disabled;
+    settings.depthOfField.override = EffectOverride::enabled;
+    settings.dof.focusMode = PreviewFocusMode::manual;
+    settings.dof.focusDistanceMetres = 2.4F;
+    settings.dof.quality = PreviewDofQuality::high;
+    settings.dof.fNumber = 32.0F;
+    PreviewScene scene;
+    scene.backgroundEnabled = false;
+    scene.verticalFovRadians = 0.4F;
+    scene.lightDirection[0] = scene.lightDirection[1] = 0.0F;
+    scene.lightDirection[2] = 1.0F;
+    device.updatePreviewScene(scene);
+    std::array<PreviewVertex, 8> vertices{};
+    const std::array positions{Float3{-1.0F, -1.0F, 1.0F}, Float3{1.0F, -1.0F, 1.0F},     Float3{1.0F, 1.0F, 1.0F},
+                               Float3{-1.0F, 1.0F, 1.0F},  Float3{-0.14F, -0.14F, -2.0F}, Float3{0.0F, -0.14F, -2.0F},
+                               Float3{0.0F, 0.14F, -2.0F}, Float3{-0.14F, 0.14F, -2.0F}};
+    for (std::size_t i = 0; i < vertices.size(); ++i) {
+        std::copy(positions[i].begin(), positions[i].end(), vertices[i].position);
+        vertices[i].normal[2] = -1.0F;
+    }
+    const std::array<std::uint32_t, 12> indices{0, 2, 1, 0, 3, 2, 4, 6, 5, 4, 7, 6};
+    std::array<PreviewMaterial, 2> materials{};
+    materials[0].diffuse[0] = materials[0].diffuse[1] = 0.02F;
+    materials[0].diffuse[2] = 0.7F;
+    materials[1].diffuse[0] = 0.7F;
+    materials[1].diffuse[1] = materials[1].diffuse[2] = 0.02F;
+    device.uploadPreviewMesh(vertices, indices);
+    device.uploadPreviewTextures({});
+    device.updatePreviewMaterials(materials);
+    device.updatePreviewDraws(std::array<PreviewDraw, 2>{{{0, 6, 0}, {6, 6, 1}}});
+    device.setPreviewRenderSettings(settings);
+    const auto closed = device.renderToImage({192, 192});
+    settings.dof.fNumber = 0.7F;
+    device.setPreviewRenderSettings(settings);
+    const auto open = device.renderToImage({192, 192});
+    bool ok = true;
+    const auto expect = [&](bool condition, const char* message) {
+        if (!condition) {
+            std::cerr << "FAIL: " << message << '\n';
+            ok = false;
+        }
+    };
+    expect(!imagesMatch(open, closed), "opening the aperture must change a depth discontinuity");
+    std::size_t expandedPixels = 0;
+    for (std::size_t y = 50; y < 142; ++y)
+        for (std::size_t x = 97; x < 104; ++x) {
+            const auto offset = (y * 192U + x) * 4U;
+            if (open.pixels[offset] > closed.pixels[offset] + 5)
+                ++expandedPixels;
+        }
+    expect(expandedPixels > 40, "near coverage must spread red foreground beyond its sharp silhouette");
+    settings.dof.focusDistanceMetres = 0.8F;
+    device.setPreviewRenderSettings(settings);
+    const auto focused = device.renderToImage({192, 192});
+    const auto edgePixel = (96U * 192U + 98U) * 4U;
+    expect(focused.pixels[edgePixel] + 5 < open.pixels[edgePixel],
+           "focused foreground must not leak red into blurred background");
+    if (const auto* directory = std::getenv("DAYO_TEST_DOF_OUTPUT")) {
+        std::filesystem::create_directories(directory);
+        dayo::core::writeFrame(std::filesystem::path(directory) / "dof-closed.png", closed,
+                               dayo::core::OutputFormat::png);
+        dayo::core::writeFrame(std::filesystem::path(directory) / "dof-open.png", open, dayo::core::OutputFormat::png);
+        dayo::core::writeFrame(std::filesystem::path(directory) / "dof-focused.png", focused,
+                               dayo::core::OutputFormat::png);
+    }
+    const auto timings = device.previewPassTimings();
+    if (device.previewGpuNanoseconds() != 0)
+        expect(timings.coc > 0 && timings.dofDownsample > 0 && timings.dofBlur > 0 && timings.dofComposite > 0,
+               "independent DoF passes must have GPU timing samples");
+    std::cout << "DoF GPU ns: CoC=" << timings.coc << ", downsample/tiles=" << timings.dofDownsample
+              << ", near/far=" << timings.dofBlur << ", composite=" << timings.dofComposite << '\n';
+    if (std::getenv("DAYO_TEST_DOF_BENCHMARK") != nullptr) {
+        for (const auto quality :
+             {PreviewDofQuality::performance, PreviewDofQuality::balanced, PreviewDofQuality::high}) {
+            settings.dof.quality = quality;
+            device.setPreviewRenderSettings(settings);
+            for (int sample = 0; sample < 6; ++sample) {
+                static_cast<void>(device.renderToImage({1920, 1080}));
+                if (sample < 3)
+                    continue;
+                const auto time = device.previewPassTimings();
+                std::cout << "DoF 1080p quality=" << static_cast<int>(quality) << " sample=" << sample
+                          << " ns CoC=" << time.coc << " downsample/tiles=" << time.dofDownsample
+                          << " blur=" << time.dofBlur << " composite=" << time.dofComposite << '\n';
+            }
+        }
+    }
+    // Force the depth prepass solely for the pick, with all spatial effects off.
+    settings.depthOfField.override = EffectOverride::disabled;
+    device.setPreviewRenderSettings(settings);
+    device.requestPreviewFocusPick({0.4F, 0.5F});
+    const auto ticket = device.enqueueRenderToImage({193, 191});
+    scene.cameraRotation[1] = 0.8F;
+    device.updatePreviewScene(scene);
+    static_cast<void>(device.collectRenderedImage(ticket));
+    const auto pick = device.pollPreviewFocusPick();
+    expect(pick && std::abs((*pick)[2] + 2.0F) < 0.001F, "asynchronous pick must use the submitted camera snapshot");
+    expect(!device.pollPreviewFocusPick(), "focus pick result must be consumed once");
+    scene.cameraRotation[1] = 0.0F;
+    device.updatePreviewScene(scene);
+    materials[1].diffuse[3] = 0.6F;
+    device.updatePreviewMaterials(materials);
+    device.requestPreviewFocusPick({0.4F, 0.5F});
+    static_cast<void>(device.renderToImage({192, 192}));
+    const auto throughBlend = device.pollPreviewFocusPick();
+    expect(throughBlend && std::abs((*throughBlend)[2] - 1.0F) < 0.001F,
+           "focus picking must select the opaque surface behind blended material");
+    materials[1].diffuse[3] = 1.0F;
+    device.updatePreviewMaterials(materials);
+    device.updatePreviewDraws(std::array<PreviewDraw, 1>{{{6, 6, 1}}});
+    device.requestPreviewFocusPick({0.99F, 0.99F});
+    static_cast<void>(device.renderToImage({65, 63}));
+    expect(!device.pollPreviewFocusPick(), "clear depth after resize must not become a focus point");
+    device.requestPreviewFocusPick({0.4F, 0.5F});
+    static_cast<void>(device.renderToImage({192, 192}));
+    device.cancelPreviewFocusPick();
+    expect(!device.pollPreviewFocusPick(), "cancelled pick must not overwrite a new project or focus mode");
+    // All quality levels and tiny/odd extents must initialize their tile and blur resources.
+    settings.depthOfField.override = EffectOverride::enabled;
+    for (const auto quality : {PreviewDofQuality::performance, PreviewDofQuality::balanced, PreviewDofQuality::high}) {
+        settings.dof.quality = quality;
+        device.setPreviewRenderSettings(settings);
+        for (const auto extent : {RenderTargetDesc{65, 63}, RenderTargetDesc{1, 1}})
+            static_cast<void>(device.renderToImage(extent));
+    }
+    scene.perspective = false;
+    device.updatePreviewScene(scene);
+    const auto orthoOn = device.renderToImage({65, 63});
+    settings.depthOfField.override = EffectOverride::disabled;
+    device.setPreviewRenderSettings(settings);
+    expect(imagesMatch(orthoOn, device.renderToImage({65, 63})), "orthographic VMD keys must suspend thin-lens DoF");
+    device.setPreviewRenderSettings(saved);
+    resetPreviewScene(device);
+    return ok;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1972,6 +2114,8 @@ int main(int argc, char** argv) {
         if (!spatialEffectsPreserveMaterialBoundaries(device))
             return 1;
         if (!renderEffectsReachGpu(device))
+            return 1;
+        if (!physicalDofAndFocusPicking(device))
             return 1;
         device.waitIdle();
         if (device.validationErrorCount() != 0) {

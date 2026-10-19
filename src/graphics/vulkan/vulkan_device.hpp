@@ -91,6 +91,9 @@ class VulkanDevice final : public Device {
     [[nodiscard]] PreviewPassTimings previewPassTimings() const noexcept override {
         return previewPassTimings_;
     }
+    void requestPreviewFocusPick(std::array<float, 2> uv) override;
+    void cancelPreviewFocusPick() override;
+    [[nodiscard]] std::optional<std::array<float, 3>> pollPreviewFocusPick() override;
     void setPreviewRenderSettings(const PreviewRenderSettings& settings) override;
     [[nodiscard]] PreviewRenderSettings previewRenderSettings() const noexcept override {
         return previewRenderSettings_;
@@ -107,11 +110,11 @@ class VulkanDevice final : public Device {
         if (depthPrepassPipeline_ != VK_NULL_HANDLE && aoPipelines_[0] != VK_NULL_HANDLE)
             support |= previewEffectSupportAmbientOcclusion;
         if (previewTonemapPipeline_ != VK_NULL_HANDLE) {
-            if (capabilities_.independentBlend)
+            if (capabilities_.independentBlend && dofPipeline_ != VK_NULL_HANDLE)
                 support |= previewEffectSupportSkinSubsurface;
             if (bloomPipeline_ != VK_NULL_HANDLE)
                 support |= previewEffectSupportBloom;
-            if (depthPrepassPipeline_ != VK_NULL_HANDLE)
+            if (depthPrepassPipeline_ != VK_NULL_HANDLE && dofPipeline_ != VK_NULL_HANDLE)
                 support |= previewEffectSupportDepthOfField;
         }
         return support;
@@ -255,6 +258,28 @@ class VulkanDevice final : public Device {
         bool initialized{};
     };
 
+    struct PreviewDofResource {
+        // SSS, composite, signed CoC, near/far/data at half resolution,
+        // tile ranges, dilated ranges, near blur, far blur.
+        std::array<handles::TextureHandle, 10> textures{};
+        std::array<VkImage, 10> images{};
+        std::array<VkImageView, 10> views{};
+        std::array<VkDescriptorSet, 7> sets{};
+        VkExtent2D extent{};
+        bool initialized{};
+        std::uint32_t output{}; // 0 or 1, selected for this submission.
+        bool active{};
+        bool fullDof{};
+    };
+    struct PreviewFocusReadback {
+        PreviewFocusCamera camera;
+        std::array<float, 2> uv{};
+        float aspect{1.0F};
+        VkBuffer buffer{};
+        VkDeviceMemory memory{};
+        void* mapped{};
+        std::uint64_t serial{};
+    };
     struct Frame {
         VkCommandPool commandPool{};
         VkCommandBuffer commandBuffer{};
@@ -304,6 +329,8 @@ class VulkanDevice final : public Device {
         PreviewAoResource previewAo;
         PreviewHdrResource previewHdr;
         PreviewBloomResource previewBloom;
+        PreviewDofResource previewDof;
+        PreviewFocusReadback focusReadback;
         VkBuffer previewIndirectBuffer{};
         VkDeviceMemory previewIndirectMemory{};
         void* mappedPreviewIndirect{};
@@ -446,6 +473,11 @@ class VulkanDevice final : public Device {
     void ensurePreviewAoResources(Frame& frame, VkExtent2D extent);
     void destroyPreviewAoResources(Frame& frame) noexcept;
     void recordPreviewBackground(VkCommandBuffer command);
+    void ensurePreviewDofResource(Frame& frame, VkExtent2D extent, bool fullDof);
+    void destroyPreviewDofResource(Frame& frame) noexcept;
+    void recordPreviewDofPass(VkCommandBuffer command, Frame& frame, VkExtent2D extent);
+    void recordPreviewFocusPick(VkCommandBuffer command, Frame& frame, VkExtent2D extent);
+    void collectPreviewFocusPick(Frame& frame);
     void ensurePreviewHdrResource(Frame& frame, VkExtent2D extent);
     void destroyPreviewHdrResource(Frame& frame) noexcept;
     void ensurePreviewBloomResource(Frame& frame, VkExtent2D extent);
@@ -618,6 +650,13 @@ class VulkanDevice final : public Device {
     VkPipeline hdrEdgePipeline_{};
     VkPipeline previewTonemapPipeline_{};
     VkPipelineLayout previewTonemapPipelineLayout_{};
+    VkPipeline dofPipeline_{};
+    VkPipelineLayout dofPipelineLayout_{};
+    VkDescriptorSetLayout dofDescriptorSetLayout_{};
+    VkFormat dofCocFormat_{VK_FORMAT_R16_SFLOAT};
+    std::optional<std::array<float, 2>> focusPickRequest_;
+    std::optional<std::array<float, 3>> focusPickResult_;
+    std::uint64_t focusPickSerial_{};
     VkPipeline bloomPipeline_{};
     VkPipelineLayout bloomPipelineLayout_{};
     VkPipeline aoPipelines_[3]{};

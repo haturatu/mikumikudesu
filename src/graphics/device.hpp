@@ -222,6 +222,7 @@ struct PreviewEnvironment {
 struct PreviewScene {
     float cameraRotation[3]{};
     float cameraDistance{3.0F};
+    float focusDistance{}; // Resolved view-space Z; never changes the camera pose.
     float target[3]{};
     float verticalFovRadians{0.785398163F};
     float lightDirection[3]{-0.5F, -1.0F, 0.5F};
@@ -277,6 +278,10 @@ struct PreviewPassTimings {
     std::uint64_t ambientOcclusion{};
     std::uint64_t subsurface{};
     std::uint64_t model{};
+    std::uint64_t coc{};
+    std::uint64_t dofDownsample{};
+    std::uint64_t dofBlur{};
+    std::uint64_t dofComposite{};
     std::uint64_t postProcess{};
     std::uint64_t toneMap{};
 };
@@ -830,6 +835,12 @@ class Device {
     // Backends that do not expose timestamp queries report zero.
     [[nodiscard]] virtual std::uint64_t previewGpuNanoseconds() const noexcept {
         return 0;
+    }
+    // A nonblocking one-pixel depth pick. A new request supersedes older picks.
+    virtual void requestPreviewFocusPick(std::array<float, 2>) {}
+    virtual void cancelPreviewFocusPick() {}
+    [[nodiscard]] virtual std::optional<std::array<float, 3>> pollPreviewFocusPick() {
+        return std::nullopt;
     }
     // Per-pass breakdown of the same interval.
     [[nodiscard]] virtual PreviewPassTimings previewPassTimings() const noexcept {
