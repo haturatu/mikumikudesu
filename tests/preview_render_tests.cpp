@@ -31,6 +31,17 @@
 #include <string>
 #include <vector>
 
+// Test-only access to completed diagnostic images; production callers use the
+// final image and public timings rather than renderer implementation resources.
+namespace dayo::graphics {
+struct VulkanPreviewTestAccess {
+    static std::array<handles::TextureHandle, 3> nearDiagnostics(const VulkanDevice& device) {
+        const auto& frame = device.frames_[(device.frameIndex_ + device.frames_.size() - 1U) % device.frames_.size()];
+        return {frame.previewDof.textures[8], frame.previewDof.textures[11], frame.previewDof.textures[2]};
+    }
+};
+} // namespace dayo::graphics
+
 namespace {
 
 using dayo::core::Float3;
@@ -2078,6 +2089,110 @@ bool physicalDofAndFocusPicking(dayo::graphics::VulkanDevice& device) {
     scene.cameraRotation[1] = 0.0F;
     scene.animationTimeSeconds = 0.0F;
     device.updatePreviewScene(scene);
+
+    if (std::getenv("DAYO_TEST_DOF_EDGE") != nullptr) {
+        // Isolate a moving near silhouette at 1080p. Measure only its 96-pixel
+        // halo, not the mostly unchanged background which dilutes global means.
+        constexpr int count = 24, firstX = 912, firstY = 492, width = 112, height = 96;
+        constexpr float pixelStep = 0.37F;
+        std::array<std::vector<float>, count> temporalEdges, spatialEdges;
+        const auto capture = [&](auto& frames, bool temporal) {
+            settings.dof.temporal = temporal;
+            settings.dof.focusDistanceMetres = 2.4F;
+            settings.dof.fNumber = 0.7F;
+            device.setPreviewRenderSettings(settings);
+            for (int frame = 0; frame < count; ++frame) {
+                PreviewBoneTransform bone;
+                bone.translation[0] = static_cast<float>(frame) * pixelStep * 2.0F * std::tan(0.2F) / 1080.0F;
+                device.updatePreviewBones(std::array{bone});
+                scene.animationTimeSeconds = static_cast<float>(frame) / 60.0F;
+                device.updatePreviewScene(scene);
+                const auto image = device.renderToImage({1920, 1080});
+                if (temporal && frame == 8) {
+                    const auto textures = VulkanPreviewTestAccess::nearDiagnostics(device);
+                    const auto coverage = device.readbackTextureEx(textures[0], 0, 0);
+                    const auto anchors = device.readbackTextureEx(textures[1], 0, 0);
+                    const auto coc = device.readbackTextureEx(textures[2], 0, 0);
+                    const auto half = [](const auto& bytes, std::size_t channel) {
+                        std::uint16_t bits{};
+                        std::memcpy(&bits, bytes.data() + channel * 2U, sizeof(bits));
+                        return dayo::core::halfToFloat(bits);
+                    };
+                    const auto cocAt = [&](std::size_t pixel) {
+                        if (coc.size() == 1920U * 1080U * sizeof(float)) {
+                            float value{};
+                            std::memcpy(&value, coc.data() + pixel * sizeof(float), sizeof(value));
+                            return value;
+                        }
+                        return half(coc, pixel);
+                    };
+                    std::size_t halo = 0, valid = 0;
+                    for (std::size_t y = 246; y < 294; ++y)
+                        for (std::size_t x = 456; x < 512; ++x) {
+                            const auto offset = (y * 960U + x) * 4U;
+                            if (half(coverage, offset + 3U) < 0.03F || cocAt(y * 2U * 1920U + x * 2U) > 0.0F)
+                                continue;
+                            ++halo;
+                            const float w = half(anchors, offset + 3U);
+                            if (w < 0.5F)
+                                continue;
+                            const auto high = static_cast<std::uint32_t>(w) - 1U;
+                            const auto ax = static_cast<std::size_t>(half(anchors, offset)) + ((high & 31U) << 11U);
+                            const auto ay =
+                                static_cast<std::size_t>(half(anchors, offset + 1U)) + ((high >> 5U) << 11U);
+                            if (ax < 1920 && ay < 1080 && cocAt(ay * 1920U + ax) > 0.5F)
+                                ++valid;
+                        }
+                    std::cout << "1080p foreground halo valid source anchors=" << valid << '/' << halo << '\n';
+                    expect(halo > 100 && valid * 100U >= halo * 98U,
+                           "at least 98 percent of the 1080p near halo must retain a real foreground source anchor");
+                }
+                auto& edge = frames[static_cast<std::size_t>(frame)];
+                edge.reserve(width * height * 3);
+                for (int y = firstY; y < firstY + height; ++y)
+                    for (int x = firstX; x < firstX + width; ++x)
+                        for (std::size_t channel = 0; channel < 3; ++channel)
+                            edge.push_back(
+                                image.pixels[(static_cast<std::size_t>(y) * 1920U + static_cast<std::size_t>(x)) * 4U +
+                                             channel]);
+            }
+        };
+        capture(temporalEdges, true);
+        capture(spatialEdges, false);
+        double error = 0.0, squaredError = 0.0, temporalVariance = 0.0, spatialVariance = 0.0;
+        std::size_t samples = 0;
+        for (int frame = 4; frame < count; ++frame) {
+            const auto index = static_cast<std::size_t>(frame);
+            for (int y = 0; y < height; ++y)
+                for (int x = 2; x < width - 2; ++x)
+                    for (std::size_t channel = 0; channel < 3; ++channel) {
+                        const auto i =
+                            (static_cast<std::size_t>(y) * width + static_cast<std::size_t>(x)) * 3U + channel;
+                        const auto previous = [&](const auto& frames) {
+                            return std::lerp(frames[index - 1][i], frames[index - 1][i - 3U], pixelStep);
+                        };
+                        const double difference = temporalEdges[index][i] - spatialEdges[index][i];
+                        error += std::abs(difference);
+                        squaredError += difference * difference;
+                        const double td = temporalEdges[index][i] - previous(temporalEdges);
+                        const double sd = spatialEdges[index][i] - previous(spatialEdges);
+                        temporalVariance += td * td;
+                        spatialVariance += sd * sd;
+                        ++samples;
+                    }
+        }
+        const double denominator = static_cast<double>(samples);
+        std::cout << "1080p near-edge MAE=" << error / denominator << " RMS=" << std::sqrt(squaredError / denominator)
+                  << " motion-compensated frame variance=" << temporalVariance / denominator
+                  << " spatial=" << spatialVariance / denominator << '\n';
+        expect(error / denominator < 4.0 && std::sqrt(squaredError / denominator) < 7.0,
+               "1080p moving foreground halo must follow the spatial reference without broad ghosts");
+        expect(temporalVariance / denominator < 8.0,
+               "1080p motion-compensated foreground edge must remain temporally stable");
+        device.updatePreviewBones({});
+        scene.animationTimeSeconds = 0.0F;
+        device.updatePreviewScene(scene);
+    }
 
     // Physical export sampling moves the lens while retaining the focal plane.
     settings.dof.focusDistanceMetres = 2.4F;

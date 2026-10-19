@@ -203,6 +203,82 @@ void prefilterLayers(int2 p) {
                             nearZ * nearColor.a, farZ * farColor.a);
 }
 
+// Preserve an actual full-resolution foreground pixel through the coverage
+// pyramid. Split the coordinates into exactly representable half-float words;
+// averaging UVs (including valid neighbours) can land on the background.
+float4 encodeNearAnchor(int2 q, float coverage) {
+    return float4(q.x & 2047, q.y & 2047, coverage, 1 + (q.x >> 11) + ((q.y >> 11) << 5));
+}
+int2 decodeNearAnchor(float4 anchor) {
+    const uint high = uint(anchor.w) - 1;
+    return int2(uint(anchor.x) + ((high & 31) << 11), uint(anchor.y) + ((high >> 5) << 11));
+}
+
+// The source identity is reduced independently of filtered colour. Keep a
+// coverage-weighted representative from the nearest compatible foreground.
+// This avoids reading a background ID at the centre of a mixed colour MIP.
+void prefilterNearAnchors(int2 p) {
+    uint width, height;
+    outputColor.GetDimensions(width, height);
+    if (any(p >= int2(width, height))) return;
+    const bool base = dof.mode == 9;
+    uint sourceWidth = dof.width, sourceHeight = dof.height;
+    if (!base) skinTexture.GetDimensions(sourceWidth, sourceHeight);
+    const int2 first = p * 2;
+    const int2 last = min(first + 2 + int2(p.x == int(width) - 1, p.y == int(height) - 1),
+                          int2(sourceWidth, sourceHeight));
+    float nearest = 100.0;
+    [loop] for (int y = first.y; y < last.y; ++y)
+        [loop] for (int x = first.x; x < last.x; ++x) {
+            const float4 anchor = base ? encodeNearAnchor(int2(x,y), 1.0) : skinTexture.Load(int3(x,y,0));
+            if (anchor.w < 0.5) continue;
+            const int2 q = decodeNearAnchor(anchor);
+            if (cocTexture.Load(int3(q,0)) <= 0.5 || identityTexture.Load(int3(q,0)) == 0) continue;
+            nearest = min(nearest, viewZ(depthTexture.Load(int3(q,0))));
+        }
+    float4 result = 0.0.xxxx;
+    float strongest = 0.0, coverage = 0.0;
+    [loop] for (int y = first.y; y < last.y; ++y)
+        [loop] for (int x = first.x; x < last.x; ++x) {
+            const float4 anchor = base ? encodeNearAnchor(int2(x,y), colorTexture.Load(int3(x,y,0)).a) :
+                                         skinTexture.Load(int3(x,y,0));
+            if (anchor.w < 0.5) continue;
+            const int2 q = decodeNearAnchor(anchor);
+            if (cocTexture.Load(int3(q,0)) <= 0.5 || identityTexture.Load(int3(q,0)) == 0) continue;
+            const float z = viewZ(depthTexture.Load(int3(q,0)));
+            const float weight = anchor.z * saturate(1.0 - abs(z - nearest) / max(0.02, nearest * 0.03));
+            coverage += weight;
+            if (weight > strongest) { result = anchor; strongest = weight; }
+        }
+    result.z = coverage / max(1.0, float((last.x - first.x) * (last.y - first.y)));
+    outputColor[p] = result;
+}
+
+float4 nearAnchorAt(float2 uv, uint lod, float sourceZ) {
+    uint width, height, levels;
+    skinTexture.GetDimensions(lod, width, height, levels);
+    const float2 position = uv * float2(width, height) - 0.5;
+    const int2 first = int2(floor(position));
+    const float2 fraction = frac(position);
+    float4 result = 0.0.xxxx;
+    float strongest = 0.0;
+    [unroll] for (int i = 0; i < 4; ++i) {
+        const int2 corner = int2(i & 1, i >> 1);
+        const int2 q = clamp(first + corner, int2(0,0), int2(width,height) - 1);
+        const float4 anchor = skinTexture.Load(int3(q,lod));
+        if (anchor.w < 0.5) continue;
+        const int2 source = decodeNearAnchor(anchor);
+        if (any(source >= int2(dof.width, dof.height)) || cocTexture.Load(int3(source,0)) <= 0.5 ||
+            identityTexture.Load(int3(source,0)) == 0) continue;
+        const float z = viewZ(depthTexture.Load(int3(source,0)));
+        const float compatible = sourceZ > 0.0 ? saturate(1.0 - abs(z - sourceZ) / max(0.02, sourceZ * 0.03)) : 1.0;
+        const float2 w = lerp(1.0 - fraction, fraction, float2(corner));
+        const float weight = anchor.z * w.x * w.y * compatible;
+        if (weight > strongest) { result = anchor; strongest = weight; }
+    }
+    return result;
+}
+
 float4 stabilizeDof(int2 p) {
     const float4 current = colorTexture.Load(int3(p,0));
     if (dof.history.x < 0.5) return current;
@@ -215,9 +291,9 @@ float4 stabilizeDof(int2 p) {
     if (coc <= 0.0 && coverage > 0.01) {
         // A blurred near silhouette moves with the source foreground, even
         // when its receiving pixel belongs to the static background.
-        const float4 anchor = skinTexture.SampleLevel(clampSampler, uv, 0);
+        const float4 anchor = nearAnchorAt(uv, 0, 0.0);
         if (anchor.w < 0.5) return current;
-        sourceUv = anchor.xy;
+        sourceUv = (float2(decodeNearAnchor(anchor)) + 0.5) / size;
     }
     const int2 source = fullPixel(int2(sourceUv * size));
     const float4 motion = motionTexture.Load(int3(source,0));
@@ -249,6 +325,7 @@ float4 stabilizeDof(int2 p) {
 void DofFilter(uint3 id : SV_DispatchThreadID) {
     const int2 p = int2(id.xy);
     if (dof.mode == 7) { prefilterLayers(p); return; }
+    if (dof.mode == 9 || dof.mode == 10) { prefilterNearAnchors(p); return; }
     if (dof.mode == 0 || dof.mode == 1 || dof.mode == 5 || dof.mode == 8) {
         if (id.x >= dof.width || id.y >= dof.height) return;
     } else if (dof.mode == 3 || dof.mode == 6) {
@@ -339,11 +416,11 @@ void DofFilter(uint3 id : SV_DispatchThreadID) {
                 n += sample.nearColor * weight;
                 const float influence = sample.nearColor.a * weight;
                 if (dof.filter.w > 0.5 && influence > strongestNear) {
-                    strongestNear = influence;
                     const float2 sourceUv = (float2(p) + 0.5 + offset) / float2(halfSize());
-                    const int2 q = fullPixel(int2(sourceUv * float2(dof.width, dof.height)));
-                    if (identityTexture.Load(int3(q,0)) != 0)
-                        nearAnchor = float4((float2(q) + 0.5) / float2(dof.width, dof.height), influence, 1.0);
+                    const float4 anchor = nearAnchorAt(sourceUv, uint(ceil(lod)), sample.data.z);
+                    // An invalid high-weight footprint must not suppress a
+                    // later valid source from another part of the near disk.
+                    if (anchor.w > 0.5) { strongestNear = influence; nearAnchor = anchor; }
                 }
                 // Normalize the finite sample pattern against its own disk
                 // integral: constant foreground has unit coverage, independent

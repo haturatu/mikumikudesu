@@ -1047,6 +1047,11 @@ if(BUILD_TESTING)
   set_tests_properties(vulkan_probe PROPERTIES TIMEOUT 60)
   add_test(NAME preview_render_high COMMAND dayo_preview_tests --high)
   add_test(NAME preview_render_async COMMAND dayo_preview_tests --async-compute)
+  add_test(NAME preview_dof_edge_1080p COMMAND dayo_preview_tests --high)
+  set_tests_properties(
+    preview_dof_edge_1080p
+    PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE ENVIRONMENT "VK_LAYER_VALIDATE_SYNC=1;DAYO_TEST_DOF_EDGE=1"
+  )
   set_tests_properties(
     preview_render
     preview_render_high

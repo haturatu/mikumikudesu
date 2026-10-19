@@ -3445,7 +3445,7 @@ void VulkanDevice::ensurePreviewDofResource(Frame& frame, VkExtent2D extent, boo
                 .format = i == 2
                               ? (dofCocFormat_ == VK_FORMAT_R16_SFLOAT ? PixelFormat::r16Float : PixelFormat::r32Float)
                               : PixelFormat::rgba16Float,
-                .mipLevels = i >= 3 && i <= 5 ? resource.mipLevels : 1U,
+                .mipLevels = (i >= 3 && i <= 5) || (i == 12 && temporal) ? resource.mipLevels : 1U,
                 .arrayLayers = 1,
                 .usage = ResourceUsage::storageWrite | ResourceUsage::sampledRead | ResourceUsage::transferSrc,
                 .lifetime = ResourceLifetime::persistent,
@@ -3454,7 +3454,7 @@ void VulkanDevice::ensurePreviewDofResource(Frame& frame, VkExtent2D extent, boo
             resource.images[i] = typed.resource.image;
             resource.views[i] = typed.view;
         }
-        std::array<VkDescriptorSetLayout, 12> layouts{};
+        std::array<VkDescriptorSetLayout, 17> layouts{};
         layouts.fill(dofDescriptorSetLayout_);
         const VkDescriptorSetAllocateInfo allocate{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
                                                    .descriptorPool = previewDescriptorPool_,
@@ -3489,7 +3489,7 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
     if (!previewTemporalHistory_.textures[0].valid())
         ensurePreviewTemporalHistory(command, {1, 1});
     ensurePreviewDofResource(frame, extent, dof, frame.motion.enabled);
-    std::array<VkImageMemoryBarrier2, 12> barriers{};
+    std::array<VkImageMemoryBarrier2, 13> barriers{};
     for (std::size_t i = 0; i < barriers.size(); ++i) {
         barriers[i] = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -3502,7 +3502,9 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .image = resource.images[i],
-            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, i >= 3 && i <= 5 ? resource.mipLevels : 1U, 0, 1}};
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                                 (i >= 3 && i <= 5) || (i == 12 && frame.motion.enabled) ? resource.mipLevels : 1U, 0,
+                                 1}};
         std::ranges::fill(typedTextures_.at(resource.textures[i]).mipLayouts, VK_IMAGE_LAYOUT_GENERAL);
     }
     const VkDependencyInfo start{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -3556,7 +3558,11 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
     const VkDependencyInfo dependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &between};
     const auto dispatch = [&](std::uint32_t mode, std::uint32_t mip = 0U) {
-        const auto set = resource.sets[mode == 7U ? 6U + mip : mode == 8U ? 11U : mode];
+        const auto set = resource.sets[mode == 7U    ? 6U + mip
+                                       : mode == 8U  ? 11U
+                                       : mode == 9U  ? 12U
+                                       : mode == 10U ? 12U + mip
+                                                     : mode];
         std::array<VkDescriptorImageInfo, 22> infos{};
         const auto image = [&](std::size_t index) {
             return VkDescriptorImageInfo{VK_NULL_HANDLE, resource.views[index], VK_IMAGE_LAYOUT_GENERAL};
@@ -3591,8 +3597,10 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
                                          : historyImage(3);
         for (std::uint32_t i = 0; i < 4; ++i)
             infos[18 + i] = historyImage(i);
-        if (mode == 4U)
+        if (mode == 4U) {
             infos[11] = image(11);
+            infos[3] = image(12);
+        }
         if (mode == 8U) {
             infos[0] = image(1);
             infos[3] = image(11);
@@ -3612,6 +3620,11 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
             infos[11] = mipImage(5, mip);
             infos[12] = mipImage(3, mip);
             infos[13] = mipImage(4, mip);
+        }
+        if (mode == 9U || mode == 10U) {
+            infos[11] = mipImage(12, mip);
+            if (mode == 10U)
+                infos[3] = mipImage(12, mip - 1U);
         }
         // Other modes do not write the layer images, but their unused UAVs
         // must still be valid single-mip descriptors.
@@ -3640,11 +3653,11 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, dofPipelineLayout_, 0, 1, &set, 0, nullptr);
         vkCmdPushConstants(command, dofPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants), &constants);
         VkExtent2D size = extent;
-        if (mode == 2 || mode == 3 || mode == 4 || mode == 6)
+        if (mode == 2 || mode == 3 || mode == 4 || mode == 6 || mode == 9)
             size = {(extent.width + 1U) / 2U, (extent.height + 1U) / 2U};
         if (mode == 3 || mode == 6)
             size = {(size.width + 7U) / 8U, (size.height + 7U) / 8U};
-        if (mode == 7U)
+        if (mode == 7U || mode == 10U)
             size = {std::max(1U, ((extent.width + 1U) / 2U) >> mip), std::max(1U, ((extent.height + 1U) / 2U) >> mip)};
         vkCmdDispatch(command, (size.width + 7U) / 8U, (size.height + 7U) / 8U, 1);
         vkCmdPipelineBarrier2(command, &dependency);
@@ -3657,8 +3670,13 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
     stamp(previewTimestampCoc);
     if (dof) {
         dispatch(2);
-        for (std::uint32_t mip = 1; mip < resource.mipLevels; ++mip)
+        if (frame.motion.enabled)
+            dispatch(9);
+        for (std::uint32_t mip = 1; mip < resource.mipLevels; ++mip) {
             dispatch(7, mip);
+            if (frame.motion.enabled)
+                dispatch(10, mip);
+        }
         dispatch(3);
         dispatch(6);
     }

@@ -26,6 +26,8 @@ class VulkanUploadContext;
 class VulkanCommandList;
 
 class VulkanDevice final : public Device {
+    friend struct VulkanPreviewTestAccess;
+
   public:
     VulkanDevice(platform::Window& window, bool validation, VulkanOptions options = {});
     ~VulkanDevice() override;
@@ -275,10 +277,10 @@ class VulkanDevice final : public Device {
     struct PreviewDofResource {
         // SSS, composite, signed CoC, near/far/data at half resolution,
         // tile ranges, dilated ranges, near blur, far blur.
-        std::array<handles::TextureHandle, 12> textures{};
-        std::array<VkImage, 12> images{};
-        std::array<VkImageView, 12> views{};
-        std::array<VkDescriptorSet, 12> sets{};
+        std::array<handles::TextureHandle, 13> textures{};
+        std::array<VkImage, 13> images{};
+        std::array<VkImageView, 13> views{};
+        std::array<VkDescriptorSet, 17> sets{};
         std::uint32_t mipLevels{1};
         VkBuffer apertureBuffer{};
         VkDeviceMemory apertureMemory{};
