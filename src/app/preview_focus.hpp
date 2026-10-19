@@ -2,12 +2,47 @@
 
 #include "app/preview_conversion.hpp"
 #include "core/fx/fx_controller_resolver.hpp"
+#include "core/project.hpp"
+#include <limits>
 
 #include <cctype>
 #include <span>
 #include <string_view>
 
 namespace dayo::app {
+
+constexpr auto previewMissingFocusModel = std::numeric_limits<std::uint32_t>::max();
+
+inline bool samePreviewFocusSource(const std::filesystem::path& left, const std::filesystem::path& right) {
+    return !left.empty() && !right.empty() &&
+           std::filesystem::absolute(left).lexically_normal() == std::filesystem::absolute(right).lexically_normal();
+}
+
+// Native project metadata order can differ from asset loading order. Map through
+// the project's existing source reference, including missing model entries.
+inline std::uint32_t previewFocusProjectIndex(std::span<const core::ModelInstance> models,
+                                              std::span<const core::ProjectModelState> projectModels,
+                                              std::uint32_t sceneIndex) {
+    if (sceneIndex >= models.size())
+        return previewMissingFocusModel;
+    for (std::size_t i = 0; i < projectModels.size(); ++i)
+        if (samePreviewFocusSource(models[sceneIndex].sourcePath, projectModels[i].source))
+            return static_cast<std::uint32_t>(i);
+    return previewMissingFocusModel;
+}
+
+inline std::uint32_t previewFocusSceneIndex(std::span<const core::ModelInstance> models,
+                                            std::span<const core::ProjectModelState> projectModels,
+                                            std::uint32_t projectIndex) {
+    if (projectIndex >= projectModels.size())
+        return previewMissingFocusModel;
+    if (projectModels[projectIndex].source.empty())
+        return projectIndex < models.size() ? projectIndex : previewMissingFocusModel;
+    for (std::size_t i = 0; i < models.size(); ++i)
+        if (samePreviewFocusSource(models[i].sourcePath, projectModels[projectIndex].source))
+            return static_cast<std::uint32_t>(i);
+    return previewMissingFocusModel;
+}
 
 inline std::string canonicalFocusBoneName(std::string_view name) {
     std::string result;

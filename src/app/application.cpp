@@ -1038,6 +1038,7 @@ void Application::resetProjectRuntimeState() {
     std::copy(defaultFilename.begin(), defaultFilename.end(), sequenceOutputFilename_.begin());
 #endif
     projectEditorState_ = {};
+    missingFocusModelProjectIndex_.reset();
     if (device_ != nullptr) {
         device_->cancelPreviewFocusPick();
         device_->setPreviewRenderSettings({});
@@ -1369,6 +1370,11 @@ core::DayoProject Application::currentProject() const {
         else
             *savedModel = std::move(state);
     }
+    auto& focusIndex = project.renderSettings.dof.modelIndex;
+    if (focusIndex < scene_.models().size())
+        focusIndex = previewFocusProjectIndex(scene_.models(), project.models, focusIndex);
+    else if (missingFocusModelProjectIndex_)
+        focusIndex = *missingFocusModelProjectIndex_;
     for (auto& asset : project.assets) {
         if (asset.kind != "effect")
             continue;
@@ -1715,6 +1721,14 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 } catch (const std::exception& exception) {
                     log::warn("Project model could not be loaded: ", asset.path.string(), ": ", exception.what());
                 }
+            }
+            if (device_ != nullptr && !project.models.empty()) {
+                auto settings = device_->previewRenderSettings();
+                const auto requestedIndex = settings.dof.modelIndex;
+                settings.dof.modelIndex = previewFocusSceneIndex(scene_.models(), project.models, requestedIndex);
+                if (settings.dof.modelIndex == previewMissingFocusModel)
+                    missingFocusModelProjectIndex_ = requestedIndex;
+                device_->setPreviewRenderSettings(settings);
             }
             for (std::size_t index = 0; index < project.models.size(); ++index) {
                 auto* instance = findLoadedModel(index);
@@ -3760,6 +3774,8 @@ void Application::buildRenderSettingsControls() {
         }
     }
     if (changed) {
+        if (settings.dof.modelIndex != previewMissingFocusModel)
+            missingFocusModelProjectIndex_.reset();
         device_->cancelPreviewFocusPick();
         device_->setPreviewRenderSettings(settings);
         refreshPreviewScene();

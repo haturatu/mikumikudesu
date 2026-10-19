@@ -90,6 +90,19 @@ bool focusAndLensMath() {
     const auto rotated = dayo::app::previewFocusBonePoint(model, snapshot, lensSettings);
     ok &= check(rotated && std::abs((*rotated)[2] + 2.0F) < 0.0001F,
                 "animated bone focus rotates the bind position before translating");
+    models.resize(2);
+    models[0].sourcePath = "character-a.pmx";
+    models[1].sourcePath = "character-b.pmx";
+    std::array<dayo::core::ProjectModelState, 3> references{};
+    references[0].source = "character-b.pmx";
+    references[1].source = "missing.pmx";
+    references[2].source = "character-a.pmx";
+    ok &= check(dayo::app::previewFocusProjectIndex(models, references, 0) == 2 &&
+                    dayo::app::previewFocusSceneIndex(models, references, 2) == 0 &&
+                    dayo::app::previewFocusSceneIndex(models, references, 0) == 1,
+                "focus model references survive different project metadata and loading order");
+    ok &= check(dayo::app::previewFocusSceneIndex(models, references, 1) == dayo::app::previewMissingFocusModel,
+                "a failed model load must not retarget focus to the next loaded model");
     return ok;
 }
 } // namespace

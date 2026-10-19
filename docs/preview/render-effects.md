@@ -66,6 +66,9 @@ animation. Eyes uses the left/right eye midpoint, then available eye/head bone
 aliases. Face also prefers eye locations and falls back to the head. Missing
 models/bones fall back to the camera target and show a message.
 **Focus selected bone** uses the bone currently selected in the Inspector.
+Model references are mapped through the project model source when asset loading
+order differs from metadata order. A missing model keeps its saved reference
+instead of focusing on whichever model loaded into its old slot.
 Neither focus mode changes the camera pose or a VMD camera track.
 
 Ctrl + left click on a viewport surface selects **Viewport point** and enables

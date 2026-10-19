@@ -132,6 +132,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     graphics::NativeOidnProvider nativeOidnProvider_;
     core::Scene scene_;
     core::fx::SceneEvaluationSnapshot evaluatedModels_;
+    std::optional<std::uint32_t> missingFocusModelProjectIndex_;
     std::vector<core::EffectController> nativeControllerDeclarations_;
     core::FrameScratch frameScratch_;
     core::FrameProfiler frameProfiler_;
