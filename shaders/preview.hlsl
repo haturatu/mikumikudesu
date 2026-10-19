@@ -20,6 +20,8 @@ struct VertexOutput {
     [[vk::location(7)]] float3 worldPosition : TEXCOORD5;
     [[vk::location(8)]] float3 worldNormal : TEXCOORD6;
     [[vk::location(9)]] nointerpolation uint instanceIndex : TEXCOORD7;
+    [[vk::location(10)]] float4 previousClip : TEXCOORD8;
+    [[vk::location(11)]] nointerpolation float motionValid : TEXCOORD9;
 };
 
 struct PreviewSceneConstants {
@@ -101,6 +103,8 @@ float3 previewShadowCoordinates(float3 worldPosition) {
 VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, uint instanceIndex)
 {
     VertexOutput output;
+    output.previousClip = 0.0.xxxx;
+    output.motionValid = 0.0;
     output.uv = input.uv;
     output.materialIndex = materialIndex;
     output.edgePass = edgePass;
@@ -182,6 +186,30 @@ VertexOutput EdgeVS(VertexInput input, uint instanceIndex : SV_InstanceID) {
     return makeVertex(input, indirect ? instanceIndex : scene.materialIndex, 1, indirect ? 0 : instanceIndex);
 }
 
+// The deform pass already produced both vertex streams. Reuse the original
+// skinning set layout for this motion-only camera buffer; other raster vertex
+// shaders no longer read bones after GPU deformation.
+[[vk::binding(0, 1)]] StructuredBuffer<float4> previousCamera;
+VertexOutput NormalMotionVS(VertexInput input, [[vk::location(10)]] float3 previousPosition : TEXCOORD9,
+                            uint instanceIndex : SV_InstanceID) {
+    VertexOutput output = makeVertex(input, scene.materialIndex, 0, instanceIndex);
+    float3 p = previousPosition;
+    p.x += (float(instanceIndex) - (float(scene.instanceCount) - 1.0) * 0.5) * 2.2;
+    p -= previousCamera[1].xyz;
+    const float3 s = sin(previousCamera[0].xyz);
+    const float3 c = cos(previousCamera[0].xyz);
+    p.yz = float2(c.x * p.y - s.x * p.z, s.x * p.y + c.x * p.z);
+    p.xz = float2(c.y * p.x + s.y * p.z, -s.y * p.x + c.y * p.z);
+    p.xy = float2(c.z * p.x - s.z * p.y, s.z * p.x + c.z * p.y);
+    p.z += max(previousCamera[0].w, 0.1);
+    const float focal = 1.0 / tan(max(previousCamera[1].w, 0.05) * 0.5);
+    const float2 size = max(previousCamera[2].xy, 1.0.xx);
+    output.previousClip = float4(p.x * focal * size.y / size.x, -p.y * focal, 0.0, p.z);
+    output.previousClip.xy += previousCamera[2].zw * (2.0 / size) * p.z;
+    output.motionValid = previousCamera[3].x;
+    return output;
+}
+
 struct ShadowOutput {
     float4 position : SV_Position;
     [[vk::location(0)]] float2 uv : TEXCOORD0;
@@ -241,6 +269,23 @@ FocusPickOutput NormalPickPS(VertexOutput input) {
     output.normal = NormalPS(input);
     output.identity = input.materialIndex < 1048575 && input.instanceIndex < 4096
                     ? (input.materialIndex + 1) | (input.instanceIndex << 20) : 0;
+    return output;
+}
+
+struct MotionOutput {
+    float2 normal : SV_Target0;
+    uint identity : SV_Target1;
+    float4 motion : SV_Target2;
+};
+MotionOutput NormalMotionPS(VertexOutput input) {
+    const FocusPickOutput picked = NormalPickPS(input);
+    MotionOutput output;
+    output.normal = picked.normal;
+    output.identity = picked.identity;
+    const float2 previousUv = input.previousClip.xy / max(input.previousClip.w, 0.0001) * 0.5 + 0.5;
+    const float2 uv = input.position.xy / scene.viewport.xy;
+    output.motion = float4(previousUv - uv, input.previousClip.w,
+                           input.previousClip.w > 0.05 ? input.motionValid : 0.0);
     return output;
 }
 

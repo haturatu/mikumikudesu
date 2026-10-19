@@ -231,6 +231,7 @@ struct PreviewScene {
     float cameraRotation[3]{};
     float cameraDistance{3.0F};
     float focusDistance{}; // Resolved view-space Z; never changes the camera pose.
+    float animationTimeSeconds{};
     float target[3]{};
     float verticalFovRadians{0.785398163F};
     float lightDirection[3]{-0.5F, -1.0F, 0.5F};

@@ -224,6 +224,10 @@ class VulkanDevice final : public Device {
         VkImage depthImage{};
         VkDeviceMemory depthMemory{};
         VkImageView depthView{};
+        VkImage motionImage{};
+        VkDeviceMemory motionMemory{};
+        VkImageView motionView{};
+        bool motionInitialized{};
         VkImage focusIdImage{};
         VkDeviceMemory focusIdMemory{};
         VkImageView focusIdView{};
@@ -266,10 +270,10 @@ class VulkanDevice final : public Device {
     struct PreviewDofResource {
         // SSS, composite, signed CoC, near/far/data at half resolution,
         // tile ranges, dilated ranges, near blur, far blur.
-        std::array<handles::TextureHandle, 10> textures{};
-        std::array<VkImage, 10> images{};
-        std::array<VkImageView, 10> views{};
-        std::array<VkDescriptorSet, 11> sets{};
+        std::array<handles::TextureHandle, 12> textures{};
+        std::array<VkImage, 12> images{};
+        std::array<VkImageView, 12> views{};
+        std::array<VkDescriptorSet, 12> sets{};
         std::uint32_t mipLevels{1};
         VkBuffer apertureBuffer{};
         VkDeviceMemory apertureMemory{};
@@ -281,6 +285,27 @@ class VulkanDevice final : public Device {
         std::uint32_t output{}; // 0 or 1, selected for this submission.
         bool active{};
         bool fullDof{};
+        bool temporal{};
+    };
+    struct PreviewMotionResource {
+        VkBuffer cameraBuffer{};
+        VkDeviceMemory cameraMemory{};
+        void* mappedCamera{};
+        VkDescriptorSet descriptor{};
+        bool enabled{};
+        bool valid{};
+    };
+    struct PreviewTemporalHistory {
+        // Resolved color, opaque depth, signed CoC and packed material/clone ID.
+        std::array<handles::TextureHandle, 4> textures{};
+        VkExtent2D extent{};
+        VkBuffer positions{};
+        VkDeviceMemory positionsMemory{};
+        VkDeviceSize capacity{};
+        PreviewScene scene;
+        std::array<float, 2> jitter{};
+        std::uint32_t phase{};
+        bool valid{};
     };
     struct PreviewFocusReadback {
         PreviewFocusCamera camera;
@@ -344,6 +369,7 @@ class VulkanDevice final : public Device {
         PreviewBloomResource previewBloom;
         PreviewDofResource previewDof;
         PreviewFocusReadback focusReadback;
+        PreviewMotionResource motion;
         VkBuffer previewIndirectBuffer{};
         VkDeviceMemory previewIndirectMemory{};
         void* mappedPreviewIndirect{};
@@ -487,7 +513,11 @@ class VulkanDevice final : public Device {
     void ensurePreviewAoResources(Frame& frame, VkExtent2D extent);
     void destroyPreviewAoResources(Frame& frame) noexcept;
     void recordPreviewBackground(VkCommandBuffer command);
-    void ensurePreviewDofResource(Frame& frame, VkExtent2D extent, bool fullDof);
+    void ensurePreviewDofResource(Frame& frame, VkExtent2D extent, bool fullDof, bool temporal);
+    void ensurePreviewTemporalHistory(VkCommandBuffer command, VkExtent2D extent);
+    void preparePreviewTemporal(VkCommandBuffer command, Frame& frame, VkExtent2D extent, bool available);
+    void recordPreviewTemporalHistory(VkCommandBuffer command, Frame& frame, VkExtent2D extent);
+    void destroyPreviewTemporalHistory() noexcept;
     void destroyPreviewDofResource(Frame& frame) noexcept;
     void recordPreviewDofPass(VkCommandBuffer command, Frame& frame, VkExtent2D extent);
     void recordPreviewFocusPick(VkCommandBuffer command, Frame& frame, VkExtent2D extent);
@@ -660,6 +690,8 @@ class VulkanDevice final : public Device {
     VkPipeline shadowPipeline_{};
     VkPipeline depthPrepassPipeline_{};
     VkPipeline depthPickPipeline_{};
+    VkPipeline depthMotionPipeline_{};
+    PreviewTemporalHistory previewTemporalHistory_;
     VkPipeline hdrPipeline_{};
     VkPipeline hdrTransparentPipeline_{};
     VkPipeline hdrEdgePipeline_{};

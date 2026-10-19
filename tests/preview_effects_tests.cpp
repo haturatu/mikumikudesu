@@ -301,6 +301,7 @@ int main() {
         dof.focusMode = PreviewFocusMode::trackedSurface;
         dof.quality = PreviewDofQuality::high;
         dof.fNumber = 1.4F;
+        dof.temporal = false;
         dof.apertureBlades = 7;
         dof.apertureCurvature = 0.35F;
         dof.apertureRotationDegrees = 28.0F;
@@ -331,7 +332,8 @@ int main() {
                     "project round trip preserves effect overrides, methods and color management");
         ok &= check(
             value.dof.focusMode == dof.focusMode && value.dof.quality == dof.quality &&
-                value.dof.fNumber == dof.fNumber && value.dof.apertureBlades == dof.apertureBlades &&
+                value.dof.fNumber == dof.fNumber && value.dof.temporal == dof.temporal &&
+                value.dof.apertureBlades == dof.apertureBlades &&
                 value.dof.apertureCurvature == dof.apertureCurvature &&
                 value.dof.apertureRotationDegrees == dof.apertureRotationDegrees &&
                 value.dof.maxRadiusPixels == dof.maxRadiusPixels &&

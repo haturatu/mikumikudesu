@@ -312,6 +312,7 @@ add_library(
   src/graphics/fx_resource_runtime.cpp
   src/graphics/native_fx_runtime.cpp
   src/graphics/vulkan/vulkan_device.cpp
+  src/graphics/vulkan/vulkan_preview_temporal.cpp
   src/graphics/vulkan/vulkan_acceleration_structure.cpp
   src/graphics/vulkan/vulkan_acceleration_resources.cpp
   src/graphics/vulkan/vulkan_command_list.cpp
@@ -425,6 +426,22 @@ dayo_compile_hlsl(
   DAYO_PREVIEW_NORMAL_FRAGMENT_SPV
   SOURCE shaders/preview.hlsl
   ENTRY NormalPS
+  PROFILE ps_6_6
+  STAGE frag
+  DEPENDS shaders/preview_normal.hlsli shaders/preview_color.hlsli
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_MOTION_VERTEX_SPV
+  SOURCE shaders/preview.hlsl
+  ENTRY NormalMotionVS
+  PROFILE vs_6_6
+  STAGE vert
+  DEPENDS shaders/preview_normal.hlsli shaders/preview_color.hlsli
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_MOTION_FRAGMENT_SPV
+  SOURCE shaders/preview.hlsl
+  ENTRY NormalMotionPS
   PROFILE ps_6_6
   STAGE frag
   DEPENDS shaders/preview_normal.hlsli shaders/preview_color.hlsli
@@ -590,6 +607,8 @@ add_custom_target(
     ${DAYO_PREVIEW_BACKGROUND_FRAGMENT_SPV}
     ${DAYO_PREVIEW_NORMAL_FRAGMENT_SPV}
     ${DAYO_PREVIEW_PICK_FRAGMENT_SPV}
+    ${DAYO_PREVIEW_MOTION_VERTEX_SPV}
+    ${DAYO_PREVIEW_MOTION_FRAGMENT_SPV}
     ${DAYO_PREVIEW_AO_GTAO_SPV}
     ${DAYO_PREVIEW_AO_LEGACY_SPV}
     ${DAYO_PREVIEW_AO_BLUR_SPV}
@@ -632,6 +651,8 @@ target_compile_definitions(
     DAYO_PREVIEW_BACKGROUND_FRAGMENT_SPV="${DAYO_PREVIEW_BACKGROUND_FRAGMENT_SPV}"
     DAYO_PREVIEW_NORMAL_FRAGMENT_SPV="${DAYO_PREVIEW_NORMAL_FRAGMENT_SPV}"
     DAYO_PREVIEW_PICK_FRAGMENT_SPV="${DAYO_PREVIEW_PICK_FRAGMENT_SPV}"
+    DAYO_PREVIEW_MOTION_VERTEX_SPV="${DAYO_PREVIEW_MOTION_VERTEX_SPV}"
+    DAYO_PREVIEW_MOTION_FRAGMENT_SPV="${DAYO_PREVIEW_MOTION_FRAGMENT_SPV}"
     DAYO_PREVIEW_AO_GTAO_SPV="${DAYO_PREVIEW_AO_GTAO_SPV}"
     DAYO_PREVIEW_AO_LEGACY_SPV="${DAYO_PREVIEW_AO_LEGACY_SPV}"
     DAYO_PREVIEW_AO_BLUR_SPV="${DAYO_PREVIEW_AO_BLUR_SPV}"

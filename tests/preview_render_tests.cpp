@@ -1844,6 +1844,7 @@ bool physicalDofAndFocusPicking(dayo::graphics::VulkanDevice& device) {
         EffectOverride::disabled;
     settings.depthOfField.override = EffectOverride::enabled;
     settings.dof.focusMode = PreviewFocusMode::manual;
+    settings.dof.temporal = false;
     settings.dof.focusDistanceMetres = 2.4F;
     settings.dof.quality = PreviewDofQuality::high;
     settings.dof.fNumber = 32.0F;
@@ -1973,6 +1974,89 @@ bool physicalDofAndFocusPicking(dayo::graphics::VulkanDevice& device) {
             }
         }
     }
+    // Exercise moving, GPU-skinned geometry and a moving camera together.
+    // Compare the sequence against fresh spatial frames and test history cuts.
+    settings.dof.quality = PreviewDofQuality::high;
+    settings.dof.focusDistanceMetres = 2.4F;
+    settings.dof.temporal = true;
+    for (std::size_t i = 4; i < vertices.size(); ++i) {
+        vertices[i].gpuSkinning = 1;
+        vertices[i].bones[0] = 0;
+        vertices[i].weights[0] = 1.0F;
+    }
+    device.uploadPreviewMesh(vertices, indices);
+    device.setPreviewRenderSettings(settings);
+    const auto animate = [&](int frame) {
+        PreviewBoneTransform bone;
+        bone.translation[0] = frame < 16 ? 0.0F : static_cast<float>(frame - 16) * 0.012F;
+        device.updatePreviewBones(std::array{bone});
+        scene.cameraRotation[1] = frame < 16 ? 0.0F : static_cast<float>(frame - 16) * 0.001F;
+        scene.animationTimeSeconds = static_cast<float>(frame) / 60.0F;
+        device.updatePreviewScene(scene);
+    };
+    std::vector<dayo::core::ImageRgba8> temporalFrames;
+    for (int frame = 0; frame < 32; ++frame) {
+        animate(frame);
+        temporalFrames.push_back(device.renderToImage({192, 192}));
+        expect(maxGreen(temporalFrames.back()) <= maxGreen(closed) + 5,
+               "temporal reconstruction must preserve opaque near/far radiance");
+        if (const auto* directory = std::getenv("DAYO_TEST_DOF_OUTPUT")) {
+            const auto path = std::filesystem::path(directory) / "temporal";
+            std::filesystem::create_directories(path);
+            dayo::core::writeFrame(path / (std::to_string(1000 + frame) + ".png"), temporalFrames.back(),
+                                   dayo::core::OutputFormat::png);
+        }
+    }
+    PreviewBoneTransform hiddenBone;
+    hiddenBone.translation[0] = 0.6F;
+    device.updatePreviewBones(std::array{hiddenBone});
+    scene.animationTimeSeconds = 32.0F / 60.0F;
+    device.updatePreviewScene(scene);
+    const auto uncovered = device.renderToImage({192, 192});
+    device.updatePreviewBones({});
+    scene.cameraRotation[1] = 0.0F;
+    scene.animationTimeSeconds = 0.0F;
+    device.updatePreviewScene(scene);
+    const auto seeked = device.renderToImage({192, 192});
+    scene.cameraRotation[1] = 0.8F;
+    scene.animationTimeSeconds = 1.0F / 60.0F;
+    device.updatePreviewScene(scene);
+    const auto cut = device.renderToImage({192, 192});
+    settings.dof.temporal = false;
+    device.setPreviewRenderSettings(settings);
+    expect(imagesMatch(cut, device.renderToImage({192, 192})),
+           "camera cuts must discard temporal color and sample phase");
+    scene.cameraRotation[1] = 0.0F;
+    scene.animationTimeSeconds = 0.0F;
+    device.updatePreviewScene(scene);
+    expect(imagesMatch(seeked, device.renderToImage({192, 192})), "backward seeks must discard temporal history");
+    double movingError = 0.0;
+    for (int frame = 16; frame < 32; ++frame) {
+        animate(frame);
+        const auto reference = device.renderToImage({192, 192});
+        for (std::size_t i = 0; i < reference.pixels.size(); ++i)
+            movingError += std::abs(static_cast<int>(reference.pixels[i]) -
+                                    static_cast<int>(temporalFrames[static_cast<std::size_t>(frame)].pixels[i]));
+    }
+    movingError /= 16.0 * static_cast<double>(open.pixels.size());
+    std::cout << "Temporal moving-frame mean byte error against spatial reference: " << movingError << '\n';
+    expect(movingError < 4.0,
+           "reprojected history must follow skinned geometry and camera motion without broad ghosting");
+    device.updatePreviewBones(std::array{hiddenBone});
+    scene.animationTimeSeconds = 32.0F / 60.0F;
+    device.updatePreviewScene(scene);
+    const auto uncoveredReference = device.renderToImage({192, 192});
+    double uncoveredError = 0.0;
+    for (std::size_t i = 0; i < uncovered.pixels.size(); ++i)
+        uncoveredError +=
+            std::abs(static_cast<int>(uncovered.pixels[i]) - static_cast<int>(uncoveredReference.pixels[i]));
+    uncoveredError /= static_cast<double>(uncovered.pixels.size());
+    expect(uncoveredError < 1.0, "disoccluded background must reject the old foreground and its blur halo");
+    device.updatePreviewBones({});
+    scene.cameraRotation[1] = 0.0F;
+    scene.animationTimeSeconds = 0.0F;
+    device.updatePreviewScene(scene);
+
     // Force the depth prepass solely for the pick, with all spatial effects off.
     settings.depthOfField.override = EffectOverride::disabled;
     device.setPreviewRenderSettings(settings);

@@ -536,3 +536,4 @@
 {"10", {"10", "10", "10", "10"}},
 {"11", {"11", "11", "11", "11"}},
 {"12", {"12", "12", "12", "12"}},
+{"Temporal DoF (Balanced / High)", {"Temporal DoF (Balanced / High)", "時間方向の安定化（Balanced・High）", "时域景深（Balanced / High）", "Временная стабилизация (Balanced / High)"}},

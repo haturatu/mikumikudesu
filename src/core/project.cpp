@@ -111,6 +111,8 @@ graphics::PreviewRenderSettings readRenderSettings(const Json& json) {
             if (lens.contains(key) && lens.at(key).is_number())
                 value = lens.at(key).get<float>();
         };
+        if (lens.contains("temporal") && lens.at("temporal").is_boolean())
+            dof.temporal = lens.at("temporal").get<bool>();
         readFloat("fNumber", dof.fNumber);
         readFloat("apertureCurvature", dof.apertureCurvature);
         readFloat("apertureRotationDegrees", dof.apertureRotationDegrees);
@@ -205,6 +207,7 @@ Json writeRenderSettings(const graphics::PreviewRenderSettings& source, Json jso
     auto& lens = json["dof"];
     lens["focusMode"] = static_cast<int>(settings.dof.focusMode);
     lens["quality"] = static_cast<int>(settings.dof.quality);
+    lens["temporal"] = settings.dof.temporal;
     lens["fNumber"] = settings.dof.fNumber;
     lens["apertureCurvature"] = settings.dof.apertureCurvature;
     lens["apertureRotationDegrees"] = settings.dof.apertureRotationDegrees;

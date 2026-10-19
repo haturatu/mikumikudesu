@@ -11,6 +11,8 @@ struct DofConstants {
     float4 projection;
     // Available layer mip count minus one; remaining fields reserved.
     float4 filter;
+    // History valid, blend weight, reserved.
+    float4 history;
 };
 [[vk::push_constant]] ConstantBuffer<DofConstants> dof;
 [[vk::binding(0, 0)]] Texture2D<float4> colorTexture;
@@ -48,6 +50,12 @@ struct DofConstants {
 #endif
 RWTexture2D<float> outputCoc;
 [[vk::binding(15, 0)]] StructuredBuffer<float> apertureLut;
+[[vk::binding(16, 0)]] Texture2D<float4> motionTexture;
+[[vk::binding(17, 0)]] Texture2D<uint> identityTexture;
+[[vk::binding(18, 0)]] Texture2D<float4> historyColor;
+[[vk::binding(19, 0)]] Texture2D<float> historyDepth;
+[[vk::binding(20, 0)]] Texture2D<float> historyCoc;
+[[vk::binding(21, 0)]] Texture2D<uint> historyIdentity;
 
 float apertureCoverage(float2 position) {
     if (dof.filter.y < 0.5) return 1.0;
@@ -195,11 +203,53 @@ void prefilterLayers(int2 p) {
                             nearZ * nearColor.a, farZ * farColor.a);
 }
 
+float4 stabilizeDof(int2 p) {
+    const float4 current = colorTexture.Load(int3(p,0));
+    if (dof.history.x < 0.5) return current;
+    const float2 size = float2(dof.width, dof.height);
+    const float2 uv = (float2(p) + 0.5) / size;
+    const float coc = cocTexture.Load(int3(p,0));
+    const float coverage = nearBlur.SampleLevel(clampSampler, uv, 0).a;
+    if (abs(coc) < 0.5 && coverage < 0.01) return current;
+    float2 sourceUv = uv;
+    if (coc <= 0.0 && coverage > 0.01) {
+        // A blurred near silhouette moves with the source foreground, even
+        // when its receiving pixel belongs to the static background.
+        const float4 anchor = skinTexture.SampleLevel(clampSampler, uv, 0);
+        if (anchor.w < 0.5) return current;
+        sourceUv = anchor.xy;
+    }
+    const int2 source = fullPixel(int2(sourceUv * size));
+    const float4 motion = motionTexture.Load(int3(source,0));
+    const float2 previousUv = uv + motion.xy;
+    const float2 previousSourceUv = sourceUv + motion.xy;
+    if (motion.w < 0.5 || any(previousUv <= 0.0) || any(previousUv >= 1.0) ||
+        any(previousSourceUv <= 0.0) || any(previousSourceUv >= 1.0)) return current;
+    const int2 previousSource = fullPixel(int2(previousSourceUv * size));
+    const uint identity = identityTexture.Load(int3(source,0));
+    if (identity == 0 || identity != historyIdentity.Load(int3(previousSource,0))) return current;
+    const float oldZ = viewZ(historyDepth.Load(int3(previousSource,0)));
+    if (abs(oldZ - motion.z) > max(0.02, motion.z * 0.02)) return current;
+    const float sourceCoc = cocTexture.Load(int3(source,0));
+    const float oldCoc = historyCoc.Load(int3(previousSource,0));
+    if (sourceCoc * oldCoc < 0.0 || abs(sourceCoc - oldCoc) > max(1.0, abs(sourceCoc) * 0.2)) return current;
+    float4 minimum = current, maximum = current;
+    [unroll] for (int y = -1; y <= 1; ++y)
+        [unroll] for (int x = -1; x <= 1; ++x) {
+            const float4 neighbor = colorTexture.Load(int3(fullPixel(p + int2(x,y)),0));
+            minimum = min(minimum, neighbor);
+            maximum = max(maximum, neighbor);
+        }
+    const float4 old = historyColor.SampleLevel(clampSampler, previousUv, 0);
+    if (abs(old.a - current.a) > 0.2) return current;
+    return lerp(current, clamp(old, minimum, maximum), dof.history.y);
+}
+
 [numthreads(8, 8, 1)]
 void DofFilter(uint3 id : SV_DispatchThreadID) {
     const int2 p = int2(id.xy);
     if (dof.mode == 7) { prefilterLayers(p); return; }
-    if (dof.mode == 0 || dof.mode == 1 || dof.mode == 5) {
+    if (dof.mode == 0 || dof.mode == 1 || dof.mode == 5 || dof.mode == 8) {
         if (id.x >= dof.width || id.y >= dof.height) return;
     } else if (dof.mode == 3 || dof.mode == 6) {
         if (any(p >= (halfSize() + 7) / 8)) return;
@@ -259,10 +309,14 @@ void DofFilter(uint3 id : SV_DispatchThreadID) {
         const LayerSample center = layerAt(float2(p) + 0.5);
         const float2 range = tileTexture.Load(int3(p / 8, 0)).xy;
         if (max(range.x, range.y) < 0.25) {
-            outputNear[p] = 0.0.xxxx; outputFar[p] = 0.0.xxxx; return;
+            outputNear[p] = 0.0.xxxx; outputFar[p] = 0.0.xxxx;
+            if (dof.filter.w > 0.5) outputColor[p] = 0.0.xxxx;
+            return;
         }
         float4 n = 0.0.xxxx, f = 0.0.xxxx;
         float nwTotal = 0.0, fwTotal = 0.0;
+        float strongestNear = 0.0;
+        float4 nearAnchor = 0.0.xxxx;
         const float nearSearch = max(0.5, range.x);
         const float farSearch = max(0.5, center.data.x > 0.0 ? max(range.x, range.y) : center.data.y);
         [loop] for (uint i = 0; i < dof.samples; ++i) {
@@ -272,7 +326,7 @@ void DofFilter(uint3 id : SV_DispatchThreadID) {
             const uint taps = dof.samples / rings;
             const uint ring = i / taps;
             const float fraction = (float(rings - ring) - 0.5) / float(rings);
-            const float angle = float(i % taps) * 6.28318530718 / float(taps) + float(ring) * 2.39996322973;
+            const float angle = float(i % taps) * 6.28318530718 / float(taps) + float(ring) * 2.39996322973 + dof.filter.z * 0.3926990817;
             const float2 disk = float2(cos(angle), sin(angle)) * sqrt(fraction);
             if (range.x >= 0.25) {
                 const float2 offset = disk * nearSearch;
@@ -283,6 +337,14 @@ void DofFilter(uint3 id : SV_DispatchThreadID) {
                                      nearSearch * nearSearch / max(sample.data.x * sample.data.x, 0.25) *
                                      apertureCoverage(-offset / max(sample.data.x, 0.5));
                 n += sample.nearColor * weight;
+                const float influence = sample.nearColor.a * weight;
+                if (dof.filter.w > 0.5 && influence > strongestNear) {
+                    strongestNear = influence;
+                    const float2 sourceUv = (float2(p) + 0.5 + offset) / float2(halfSize());
+                    const int2 q = fullPixel(int2(sourceUv * float2(dof.width, dof.height)));
+                    if (identityTexture.Load(int3(q,0)) != 0)
+                        nearAnchor = float4((float2(q) + 0.5) / float2(dof.width, dof.height), influence, 1.0);
+                }
                 // Normalize the finite sample pattern against its own disk
                 // integral: constant foreground has unit coverage, independent
                 // of radius and sample count. Never normalize by foreground
@@ -309,6 +371,9 @@ void DofFilter(uint3 id : SV_DispatchThreadID) {
         if (center.data.x > 0.0 && farResult.a > 0.0001)
             farResult = float4(farResult.rgb / farResult.a, 1.0);
         outputFar[p] = farResult;
+        if (dof.filter.w > 0.5) outputColor[p] = nearAnchor;
+    } else if (dof.mode == 8) {
+        outputColor[p] = stabilizeDof(p);
     } else if (dof.mode == 5) {
         const float2 uv = (float2(p) + 0.5) / float2(dof.width, dof.height);
         const float coc = cocTexture.Load(int3(p,0));

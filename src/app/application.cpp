@@ -2755,6 +2755,7 @@ void Application::refreshPreviewScene(float focusDeltaOverride) {
                              ? globalLightMotion
                              : (model != nullptr ? model->motion.get() : nullptr);
     graphics::PreviewScene scene;
+    scene.animationTimeSeconds = animationFrame_ / static_cast<float>(sceneTimelineFps(scene_));
     switch (scene_.background().screenSource) {
     case core::ScreenTextureSource::previousFrame:
         scene.screenSource = graphics::PreviewScene::ScreenSource::previousFrame;
@@ -3722,6 +3723,7 @@ void Application::buildRenderSettingsControls() {
             lensCombo("Focus target", settings.dof.focusMode,
                       ui::items("Camera target|Manual distance|Bone|Face|Eyes|Static point|Tracking point"));
             lensCombo("DoF quality", settings.dof.quality, ui::items("Auto|Performance|Balanced|High"));
+            changed |= ImGui::Checkbox(ui::label("Temporal DoF (Balanced / High)"), &settings.dof.temporal);
             int bladeChoice = settings.dof.apertureBlades == 0 ? 0 : static_cast<int>(settings.dof.apertureBlades) - 4;
             ImGui::TextWrapped("%s", ui::tr("Aperture blades"));
             if (ImGui::Combo("##aperture-blades", &bladeChoice, ui::items("Circle|5|6|7|8|9|10|11|12"))) {

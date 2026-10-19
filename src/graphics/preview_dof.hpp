@@ -18,6 +18,7 @@ struct PreviewDofSettings {
     std::array<float, 3> localOffsetMetres{};
     std::array<float, 3> faceOffsetMetres{0.0F, 0.1F, -0.06F};
     float fNumber{2.8F};
+    bool temporal{true};
     float apertureCurvature{1.0F};
     float apertureRotationDegrees{};
     float maxRadiusPixels{};        // 1080p radius; zero inherits the quality cap.
