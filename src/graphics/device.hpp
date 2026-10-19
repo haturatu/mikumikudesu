@@ -2,6 +2,7 @@
 
 #include "core/image.hpp"
 #include "graphics/handles.hpp"
+#include "graphics/preview_effects.hpp"
 #include "graphics/preview_quality.hpp"
 #include "graphics/resource.hpp"
 
@@ -146,6 +147,14 @@ struct PreviewBoneTransform {
     float translation[4]{};
 };
 
+struct PreviewFocusSample {
+    std::array<float, 3> worldPoint{};
+    std::uint32_t materialIndex{0xffffffffU};
+    std::uint32_t instanceIndex{};
+    std::uint32_t instanceCount{1};
+    std::vector<PreviewBoneTransform> bones;
+};
+
 struct PreviewMaterial {
     float diffuse[4]{1.0F, 1.0F, 1.0F, 1.0F};
     float ambient[3]{0.2F, 0.2F, 0.2F};
@@ -171,6 +180,8 @@ struct PreviewMaterial {
     float specularStrength{0.5F};
     float skin{};
     float anisotropy{};
+    float sheen{};
+    float clearcoat{};
 };
 
 struct PreviewDraw {
@@ -198,7 +209,7 @@ struct PreviewMaterialGpu {
     std::uint32_t reserved[2]{};
     std::uint32_t textureSlots[4]{};
     float pbr[4]{};  // roughness, metallic, specular strength, skin
-    float hair[4]{}; // anisotropy, reserved
+    float hair[4]{}; // anisotropy, sheen, clearcoat, reserved
 };
 static_assert(sizeof(PreviewMaterialGpu) == 224);
 
@@ -219,6 +230,8 @@ struct PreviewEnvironment {
 struct PreviewScene {
     float cameraRotation[3]{};
     float cameraDistance{3.0F};
+    float focusDistance{}; // Resolved view-space Z; never changes the camera pose.
+    float animationTimeSeconds{};
     float target[3]{};
     float verticalFovRadians{0.785398163F};
     float lightDirection[3]{-0.5F, -1.0F, 0.5F};
@@ -248,8 +261,9 @@ struct PreviewPushConstants {
     std::array<float, 4> lightColor{};
     std::array<float, 4> viewport{};
     std::array<float, 4> debug{};
+    std::array<float, 4> lens{}; // View-space aperture xy, axial focus Z, active flag.
 };
-static_assert(sizeof(PreviewPushConstants) == 112);
+static_assert(sizeof(PreviewPushConstants) == 128);
 
 struct RenderTargetDesc {
     std::uint32_t width{};
@@ -264,6 +278,22 @@ struct PreviewViewport {
     [[nodiscard]] explicit operator bool() const noexcept {
         return textureId != 0 && width != 0 && height != 0;
     }
+};
+
+// Per-pass GPU time of the most recently completed preview frame, in
+// nanoseconds. Zero means the pass did not run or the backend cannot measure it.
+// The values come from the same timestamp submission as previewGpuNanoseconds().
+struct PreviewPassTimings {
+    std::uint64_t shadow{};
+    std::uint64_t ambientOcclusion{};
+    std::uint64_t subsurface{};
+    std::uint64_t model{};
+    std::uint64_t coc{};
+    std::uint64_t dofDownsample{};
+    std::uint64_t dofBlur{};
+    std::uint64_t dofComposite{};
+    std::uint64_t postProcess{};
+    std::uint64_t toneMap{};
 };
 
 using BufferHandle = std::uint64_t;
@@ -816,10 +846,37 @@ class Device {
     [[nodiscard]] virtual std::uint64_t previewGpuNanoseconds() const noexcept {
         return 0;
     }
+    // A nonblocking one-pixel depth pick. A new request supersedes older picks.
+    virtual void requestPreviewFocusPick(std::array<float, 2>) {}
+    virtual void cancelPreviewFocusPick() {}
+    // Null disables physical aperture sampling; (0,0) is an active central ray.
+    virtual void setPreviewLensSample(std::optional<std::array<float, 2>>) {}
+    [[nodiscard]] virtual std::optional<std::array<float, 3>> pollPreviewFocusPick() {
+        return std::nullopt;
+    }
+    [[nodiscard]] virtual std::optional<PreviewFocusSample> pollPreviewFocusSample() {
+        if (const auto point = pollPreviewFocusPick()) {
+            PreviewFocusSample sample;
+            sample.worldPoint = *point;
+            return sample;
+        }
+        return std::nullopt;
+    }
+    // Per-pass breakdown of the same interval.
+    [[nodiscard]] virtual PreviewPassTimings previewPassTimings() const noexcept {
+        return {};
+    }
     // Renders the current preview scene without ImGui and returns a CPU image.
     // Backends that do not provide an offscreen target report this explicitly.
     [[nodiscard]] virtual core::ImageRgba8 renderToImage(const RenderTargetDesc&) {
         throw std::logic_error("offscreen rendering is not implemented by this backend");
+    }
+    // Applies the preview's common Bloom/color-management/FXAA output pass to
+    // an already integrated, premultiplied linear RGBA16F image. Spatial scene
+    // effects and physical lens sampling must have been evaluated before this.
+    [[nodiscard]] virtual core::ImageRgba8 renderPreviewHdrToImage(const RenderTargetDesc&,
+                                                                   std::span<const std::uint8_t>) {
+        throw std::logic_error("preview HDR final output is not implemented by this backend");
     }
     [[nodiscard]] virtual bool supportsPipelinedReadback() const noexcept {
         return false;
@@ -852,6 +909,22 @@ class Device {
     virtual void clearPreviewResources() = 0;
     virtual void updatePreviewScene(const PreviewScene& scene) = 0;
     virtual void updatePreviewEnvironment(const PreviewEnvironment&) {}
+    // Quality effects requested by the project. The device resolves the settings
+    // against its quality profile and device capabilities; callers read the
+    // result back through previewResolvedEffects() so the UI can show the state
+    // that is actually being rendered.
+    virtual void setPreviewRenderSettings(const PreviewRenderSettings&) {}
+    [[nodiscard]] virtual PreviewRenderSettings previewRenderSettings() const noexcept {
+        return {};
+    }
+    [[nodiscard]] virtual ResolvedPreviewEffects previewResolvedEffects() const noexcept {
+        return {};
+    }
+    // Bitmask of PreviewEffectSupport values the current device and quality
+    // profile can run. Effects not listed here must be reported as unavailable.
+    [[nodiscard]] virtual std::uint32_t previewEffectSupport() const noexcept {
+        return 0;
+    }
     [[nodiscard]] virtual bool supportsTextureFormat(PixelFormat, ResourceUsage) const noexcept {
         return false;
     }

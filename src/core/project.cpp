@@ -20,6 +20,221 @@ namespace {
 
 using Json = nlohmann::json;
 
+graphics::PreviewRenderSettings readRenderSettings(const Json& json) {
+    graphics::PreviewRenderSettings settings;
+    if (!json.is_object())
+        return settings;
+    const auto readEnum = [](const Json& object, const char* key, auto fallback, auto maximum) {
+        if (!object.contains(key) || !object.at(key).is_number_integer())
+            return fallback;
+        const auto value = object.at(key).get<std::int64_t>();
+        return value >= 0 && value <= static_cast<std::int64_t>(maximum) ? static_cast<decltype(fallback)>(value)
+                                                                         : fallback;
+    };
+    settings.preset = readEnum(json, "preset", settings.preset, graphics::PreviewQualityPreset::high);
+    settings.ambientOcclusionMode =
+        readEnum(json, "ambientOcclusionMode", settings.ambientOcclusionMode, graphics::PreviewAmbientOcclusion::gtao);
+    settings.shadowFilter =
+        readEnum(json, "shadowFilter", settings.shadowFilter, graphics::PreviewShadowFilter::automatic);
+    settings.viewTransform =
+        readEnum(json, "viewTransform", settings.viewTransform, graphics::PreviewViewTransform::neutral);
+    settings.antiAliasing =
+        readEnum(json, "antiAliasing", settings.antiAliasing, graphics::PreviewAntiAliasing::automatic);
+    if (json.contains("exposure") && json.at("exposure").is_number())
+        settings.exposure = json.at("exposure").get<float>();
+    if (json.contains("whiteBalance") && json.at("whiteBalance").is_number())
+        settings.whiteBalance = json.at("whiteBalance").get<float>();
+    if (json.contains("bloomThreshold") && json.at("bloomThreshold").is_number())
+        settings.bloomThreshold = json.at("bloomThreshold").get<float>();
+    if (json.contains("ambientOcclusion") && json.at("ambientOcclusion").is_object()) {
+        const auto& effect = json.at("ambientOcclusion");
+        settings.ambientOcclusion.override =
+            readEnum(effect, "override", settings.ambientOcclusion.override, graphics::EffectOverride::disabled);
+        if (effect.contains("intensity") && effect.at("intensity").is_number())
+            settings.ambientOcclusion.intensity = effect.at("intensity").get<float>();
+    }
+    if (json.contains("softShadows") && json.at("softShadows").is_object()) {
+        const auto& effect = json.at("softShadows");
+        settings.softShadows.override =
+            readEnum(effect, "override", settings.softShadows.override, graphics::EffectOverride::disabled);
+        if (effect.contains("intensity") && effect.at("intensity").is_number())
+            settings.softShadows.intensity = effect.at("intensity").get<float>();
+    }
+    if (json.contains("skinSubsurface") && json.at("skinSubsurface").is_object()) {
+        const auto& effect = json.at("skinSubsurface");
+        settings.skinSubsurface.override =
+            readEnum(effect, "override", settings.skinSubsurface.override, graphics::EffectOverride::disabled);
+        if (effect.contains("intensity") && effect.at("intensity").is_number())
+            settings.skinSubsurface.intensity = effect.at("intensity").get<float>();
+    }
+    if (json.contains("hairShading") && json.at("hairShading").is_object()) {
+        const auto& effect = json.at("hairShading");
+        settings.hairShading.override =
+            readEnum(effect, "override", settings.hairShading.override, graphics::EffectOverride::disabled);
+        if (effect.contains("intensity") && effect.at("intensity").is_number())
+            settings.hairShading.intensity = effect.at("intensity").get<float>();
+    }
+    if (json.contains("clothSheen") && json.at("clothSheen").is_object()) {
+        const auto& effect = json.at("clothSheen");
+        settings.clothSheen.override =
+            readEnum(effect, "override", settings.clothSheen.override, graphics::EffectOverride::disabled);
+        if (effect.contains("intensity") && effect.at("intensity").is_number())
+            settings.clothSheen.intensity = effect.at("intensity").get<float>();
+    }
+    if (json.contains("clearcoat") && json.at("clearcoat").is_object()) {
+        const auto& effect = json.at("clearcoat");
+        settings.clearcoat.override =
+            readEnum(effect, "override", settings.clearcoat.override, graphics::EffectOverride::disabled);
+        if (effect.contains("intensity") && effect.at("intensity").is_number())
+            settings.clearcoat.intensity = effect.at("intensity").get<float>();
+    }
+    if (json.contains("bloom") && json.at("bloom").is_object()) {
+        const auto& effect = json.at("bloom");
+        settings.bloom.override =
+            readEnum(effect, "override", settings.bloom.override, graphics::EffectOverride::disabled);
+        if (effect.contains("intensity") && effect.at("intensity").is_number())
+            settings.bloom.intensity = effect.at("intensity").get<float>();
+    }
+    if (json.contains("depthOfField") && json.at("depthOfField").is_object()) {
+        const auto& effect = json.at("depthOfField");
+        settings.depthOfField.override =
+            readEnum(effect, "override", settings.depthOfField.override, graphics::EffectOverride::disabled);
+        if (effect.contains("intensity") && effect.at("intensity").is_number())
+            settings.depthOfField.intensity = effect.at("intensity").get<float>();
+    }
+    if (json.contains("dof") && json.at("dof").is_object()) {
+        const auto& lens = json.at("dof");
+        auto& dof = settings.dof;
+        dof.focusMode = readEnum(lens, "focusMode", dof.focusMode, graphics::PreviewFocusMode::trackedSurface);
+        dof.quality = readEnum(lens, "quality", dof.quality, graphics::PreviewDofQuality::high);
+        const auto readFloat = [&](const char* key, float& value) {
+            if (lens.contains(key) && lens.at(key).is_number())
+                value = lens.at(key).get<float>();
+        };
+        if (lens.contains("temporal") && lens.at("temporal").is_boolean())
+            dof.temporal = lens.at("temporal").get<bool>();
+        readFloat("fNumber", dof.fNumber);
+        readFloat("apertureCurvature", dof.apertureCurvature);
+        readFloat("apertureRotationDegrees", dof.apertureRotationDegrees);
+        readFloat("maxRadiusPixels", dof.maxRadiusPixels);
+        if (lens.contains("cinematicSamples") && lens.at("cinematicSamples").is_number_integer()) {
+            const auto samples = lens.at("cinematicSamples").get<std::int64_t>();
+            if (samples > 0 && samples <= 256)
+                dof.cinematicSamples = static_cast<std::uint32_t>(samples);
+        }
+        if (lens.contains("apertureBlades") && lens.at("apertureBlades").is_number_integer()) {
+            const auto blades = lens.at("apertureBlades").get<std::int64_t>();
+            if (blades >= 5 && blades <= 12)
+                dof.apertureBlades = static_cast<std::uint32_t>(blades);
+        }
+        readFloat("sensorHeightMm", dof.sensorHeightMm);
+        readFloat("metresPerUnit", dof.metresPerUnit);
+        readFloat("focusDistanceMetres", dof.focusDistanceMetres);
+        readFloat("focusOffsetMetres", dof.focusOffsetMetres);
+        readFloat("focusResponseSeconds", dof.focusResponseSeconds);
+        readFloat("focusDeadbandMetres", dof.focusDeadbandMetres);
+        readFloat("focusMaxSpeed", dof.focusMaxSpeed);
+        const auto readPoint = [&](const char* key, std::array<float, 3>& point) {
+            if (lens.contains(key) && lens.at(key).is_array() && lens.at(key).size() == 3)
+                for (std::size_t i = 0; i < 3; ++i)
+                    if (lens.at(key).at(i).is_number())
+                        point[i] = lens.at(key).at(i).get<float>();
+        };
+        readPoint("localOffsetMetres", dof.localOffsetMetres);
+        readPoint("faceOffsetMetres", dof.faceOffsetMetres);
+        if (lens.contains("trackingInstance") && lens.at("trackingInstance").is_number_integer()) {
+            const auto index = lens.at("trackingInstance").get<std::int64_t>();
+            if (index >= 0 && index <= std::numeric_limits<std::uint32_t>::max())
+                dof.trackingInstance = static_cast<std::uint32_t>(index);
+        }
+        if (lens.contains("modelIndex") && lens.at("modelIndex").is_number_integer()) {
+            const auto index = lens.at("modelIndex").get<std::int64_t>();
+            if (index >= 0 && index <= std::numeric_limits<std::uint32_t>::max())
+                dof.modelIndex = static_cast<std::uint32_t>(index);
+        }
+        if (lens.contains("boneName") && lens.at("boneName").is_string())
+            dof.boneName = lens.at("boneName").get<std::string>();
+        if (lens.contains("worldPoint") && lens.at("worldPoint").is_array() && lens.at("worldPoint").size() == 3) {
+            for (std::size_t i = 0; i < 3; ++i)
+                if (lens.at("worldPoint").at(i).is_number())
+                    dof.worldPoint[i] = lens.at("worldPoint").at(i).get<float>();
+        }
+    }
+    return graphics::sanitizePreviewRenderSettings(settings);
+}
+
+Json writeRenderSettings(const graphics::PreviewRenderSettings& source, Json json) {
+    if (!json.is_object())
+        json = Json::object();
+    const auto settings = graphics::sanitizePreviewRenderSettings(source);
+    json["preset"] = static_cast<int>(settings.preset);
+    json["ambientOcclusionMode"] = static_cast<int>(settings.ambientOcclusionMode);
+    json["shadowFilter"] = static_cast<int>(settings.shadowFilter);
+    json["viewTransform"] = static_cast<int>(settings.viewTransform);
+    json["antiAliasing"] = static_cast<int>(settings.antiAliasing);
+    json["exposure"] = settings.exposure;
+    json["whiteBalance"] = settings.whiteBalance;
+    json["bloomThreshold"] = settings.bloomThreshold;
+    if (!json["ambientOcclusion"].is_object())
+        json["ambientOcclusion"] = Json::object();
+    json["ambientOcclusion"]["override"] = static_cast<int>(settings.ambientOcclusion.override);
+    json["ambientOcclusion"]["intensity"] = settings.ambientOcclusion.intensity;
+    if (!json["softShadows"].is_object())
+        json["softShadows"] = Json::object();
+    json["softShadows"]["override"] = static_cast<int>(settings.softShadows.override);
+    json["softShadows"]["intensity"] = settings.softShadows.intensity;
+    if (!json["skinSubsurface"].is_object())
+        json["skinSubsurface"] = Json::object();
+    json["skinSubsurface"]["override"] = static_cast<int>(settings.skinSubsurface.override);
+    json["skinSubsurface"]["intensity"] = settings.skinSubsurface.intensity;
+    if (!json["hairShading"].is_object())
+        json["hairShading"] = Json::object();
+    json["hairShading"]["override"] = static_cast<int>(settings.hairShading.override);
+    json["hairShading"]["intensity"] = settings.hairShading.intensity;
+    if (!json["clothSheen"].is_object())
+        json["clothSheen"] = Json::object();
+    json["clothSheen"]["override"] = static_cast<int>(settings.clothSheen.override);
+    json["clothSheen"]["intensity"] = settings.clothSheen.intensity;
+    if (!json["clearcoat"].is_object())
+        json["clearcoat"] = Json::object();
+    json["clearcoat"]["override"] = static_cast<int>(settings.clearcoat.override);
+    json["clearcoat"]["intensity"] = settings.clearcoat.intensity;
+    if (!json["bloom"].is_object())
+        json["bloom"] = Json::object();
+    json["bloom"]["override"] = static_cast<int>(settings.bloom.override);
+    json["bloom"]["intensity"] = settings.bloom.intensity;
+    if (!json["depthOfField"].is_object())
+        json["depthOfField"] = Json::object();
+    json["depthOfField"]["override"] = static_cast<int>(settings.depthOfField.override);
+    json["depthOfField"]["intensity"] = settings.depthOfField.intensity;
+    if (!json["dof"].is_object())
+        json["dof"] = Json::object();
+    auto& lens = json["dof"];
+    lens["focusMode"] = static_cast<int>(settings.dof.focusMode);
+    lens["quality"] = static_cast<int>(settings.dof.quality);
+    lens["temporal"] = settings.dof.temporal;
+    lens["fNumber"] = settings.dof.fNumber;
+    lens["apertureCurvature"] = settings.dof.apertureCurvature;
+    lens["apertureRotationDegrees"] = settings.dof.apertureRotationDegrees;
+    lens["maxRadiusPixels"] = settings.dof.maxRadiusPixels;
+    lens["apertureBlades"] = settings.dof.apertureBlades;
+    lens["cinematicSamples"] = settings.dof.cinematicSamples;
+    lens["sensorHeightMm"] = settings.dof.sensorHeightMm;
+    lens["metresPerUnit"] = settings.dof.metresPerUnit;
+    lens["focusDistanceMetres"] = settings.dof.focusDistanceMetres;
+    lens["focusOffsetMetres"] = settings.dof.focusOffsetMetres;
+    lens["modelIndex"] = settings.dof.modelIndex;
+    lens["boneName"] = settings.dof.boneName;
+    lens["worldPoint"] = settings.dof.worldPoint;
+    lens["localOffsetMetres"] = settings.dof.localOffsetMetres;
+    lens["faceOffsetMetres"] = settings.dof.faceOffsetMetres;
+    lens["focusResponseSeconds"] = settings.dof.focusResponseSeconds;
+    lens["focusDeadbandMetres"] = settings.dof.focusDeadbandMetres;
+    lens["focusMaxSpeed"] = settings.dof.focusMaxSpeed;
+    lens["trackingInstance"] = settings.dof.trackingInstance;
+    return json;
+}
+
 std::filesystem::path resolveAsset(const std::filesystem::path& base, const std::filesystem::path& value) {
     if (value.empty())
         return {};
@@ -147,6 +362,7 @@ Json modelOrderArray(const std::vector<ProjectModelState>& models, ProjectOrderF
 
 ProjectModelState readNativeModelState(const Json& item, const std::filesystem::path& base) {
     ProjectModelState state;
+    state.instanceId = item.value("instanceId", std::string{});
     if (item.contains("source") && item.at("source").is_string())
         state.source = resolveAsset(base, item.at("source").get<std::string>());
     if (item.contains("upstreamId") && item.at("upstreamId").is_number_integer())
@@ -496,6 +712,7 @@ DayoProject loadProject(const std::filesystem::path& path) {
     auto upstream = readUpstreamJson(root, base);
 
     DayoProject result;
+    result.renderSettings = graphics::legacyPreviewRenderSettings();
     if (root.contains("mikumikudesu")) {
         result.upstreamDocumentJson = root.dump();
         const auto& native = root.at("mikumikudesu");
@@ -504,6 +721,8 @@ DayoProject loadProject(const std::filesystem::path& path) {
             throw std::runtime_error("unsupported .dayo project version " + std::to_string(result.version));
         }
         result.renderer = native.value("renderer", upstream.renderer);
+        result.renderSettings = native.contains("renderSettings") ? readRenderSettings(native.at("renderSettings"))
+                                                                  : graphics::legacyPreviewRenderSettings();
         result.frame = native.value("frame", upstream.frame);
         result.playing = native.value("playing", true);
         if (native.contains("assets") && native.at("assets").is_array()) {
@@ -512,6 +731,7 @@ DayoProject loadProject(const std::filesystem::path& path) {
                     continue;
                 ProjectAsset loaded{asset.value("kind", "unknown"),
                                     resolveAsset(base, asset.at("path").get<std::string>())};
+                loaded.modelInstanceId = asset.value("modelInstanceId", std::string{});
                 if (asset.contains("ownerModelIndex") && asset.at("ownerModelIndex").is_number_unsigned())
                     loaded.ownerModelIndex = asset.at("ownerModelIndex").get<std::size_t>();
                 if (asset.contains("upstreamId") && asset.at("upstreamId").is_number_integer())
@@ -660,6 +880,7 @@ DayoProject loadProject(const std::filesystem::path& path) {
     if (!root.contains("MikuMikuDayo") || !root.at("MikuMikuDayo").is_object())
         throw std::runtime_error("unrecognized .dayo project: " + path.string());
     result = std::move(upstream);
+    result.renderSettings = graphics::legacyPreviewRenderSettings();
     result.upstreamDocumentJson = root.dump();
     const auto modelCount =
         root.at("MikuMikuDayo").contains("models") && root.at("MikuMikuDayo").at("models").is_array()
@@ -697,11 +918,57 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
             throw std::invalid_argument("preserved .dayo document root must be an object");
     }
 
+    std::vector<const ProjectAsset*> modelAssets;
+    for (const auto& asset : project.assets)
+        if (asset.kind == "pmx")
+            modelAssets.push_back(&asset);
+    std::vector<ProjectModelState> modelStates;
+    std::vector<bool> used(project.models.size(), false);
+    std::vector<std::size_t> modelIndices;
+    modelStates.reserve(modelAssets.size());
+    for (const auto* asset : modelAssets) {
+        const auto assetPath = std::filesystem::absolute(asset->path).lexically_normal();
+        std::size_t match = project.models.size();
+        for (std::size_t i = 0; i < project.models.size(); ++i) {
+            const auto& state = project.models[i];
+            if (used[i])
+                continue;
+            if (!asset->modelInstanceId.empty()
+                    ? state.instanceId == asset->modelInstanceId
+                    : (!state.source.empty() &&
+                       std::filesystem::absolute(state.source).lexically_normal() == assetPath)) {
+                match = i;
+                break;
+            }
+        }
+        // Old native metadata may omit the source as well as the instance ID.
+        const auto index = modelStates.size();
+        if (match == project.models.size() && asset->modelInstanceId.empty() && index < project.models.size() &&
+            !used[index] && project.models[index].source.empty())
+            match = index;
+        auto state = match < project.models.size() ? project.models[match] : ProjectModelState{};
+        if (match < used.size())
+            used[match] = true;
+        modelIndices.push_back(match);
+        state.source = assetPath;
+        if (!asset->modelInstanceId.empty())
+            state.instanceId = asset->modelInstanceId;
+        if (!state.upstreamId.has_value() && asset->upstreamId.has_value())
+            state.upstreamId = asset->upstreamId;
+        modelStates.push_back(std::move(state));
+    }
+    const auto remapModelIndex = [&](std::size_t index) {
+        const auto found = std::ranges::find(modelIndices, index);
+        return found == modelIndices.end() ? modelStates.size()
+                                           : static_cast<std::size_t>(std::distance(modelIndices.begin(), found));
+    };
     Json assets = Json::array();
     for (const auto& asset : project.assets) {
         Json value{{"kind", asset.kind}, {"path", portablePath(base, asset.path).generic_string()}};
+        if (!asset.modelInstanceId.empty())
+            value["modelInstanceId"] = asset.modelInstanceId;
         if (asset.ownerModelIndex.has_value())
-            value["ownerModelIndex"] = *asset.ownerModelIndex;
+            value["ownerModelIndex"] = remapModelIndex(*asset.ownerModelIndex);
         if (asset.upstreamId.has_value())
             value["upstreamId"] = *asset.upstreamId;
         if (!asset.materialSourceFiles.empty())
@@ -709,25 +976,6 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
         assets.push_back(std::move(value));
     }
 
-    std::vector<const ProjectAsset*> modelAssets;
-    for (const auto& asset : project.assets)
-        if (asset.kind == "pmx")
-            modelAssets.push_back(&asset);
-    std::vector<ProjectModelState> modelStates;
-    modelStates.reserve(modelAssets.size());
-    for (std::size_t index = 0; index < modelAssets.size(); ++index) {
-        const auto assetPath = std::filesystem::absolute(modelAssets[index]->path).lexically_normal();
-        const auto bySource = std::ranges::find_if(project.models, [&](const auto& state) {
-            return !state.source.empty() && std::filesystem::absolute(state.source).lexically_normal() == assetPath;
-        });
-        auto state = bySource != project.models.end()
-                         ? *bySource
-                         : (index < project.models.size() ? project.models[index] : ProjectModelState{});
-        state.source = assetPath;
-        if (!state.upstreamId.has_value() && modelAssets[index]->upstreamId.has_value())
-            state.upstreamId = modelAssets[index]->upstreamId;
-        modelStates.push_back(std::move(state));
-    }
     const auto& oldUpstream =
         root.contains("MikuMikuDayo") && root.at("MikuMikuDayo").is_object() ? root.at("MikuMikuDayo") : Json::object();
     const auto oldModels = oldUpstream.value("models", Json::array());
@@ -750,9 +998,10 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
     for (const auto& asset : project.assets) {
         if (asset.kind != "effect")
             continue;
-        const auto modelId = asset.ownerModelIndex.has_value() && *asset.ownerModelIndex < modelStates.size()
-                                 ? modelStates[*asset.ownerModelIndex].upstreamId.value_or(
-                                       static_cast<std::int32_t>(*asset.ownerModelIndex + 1U))
+        const auto owner =
+            asset.ownerModelIndex.has_value() ? remapModelIndex(*asset.ownerModelIndex) : modelStates.size();
+        const auto modelId = owner < modelStates.size()
+                                 ? modelStates[owner].upstreamId.value_or(static_cast<std::int32_t>(owner + 1U))
                                  : -1;
         const auto id = asset.upstreamId.value_or(modelId);
         Json effect = Json::object();
@@ -873,7 +1122,8 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
                              {"freeCamera", project.editor.freeCamera}};
     native["modelState"] = Json::array();
     for (const auto& model : modelStates) {
-        Json state{{"source", portablePath(base, model.source).generic_string()},
+        Json state{{"instanceId", model.instanceId},
+                   {"source", portablePath(base, model.source).generic_string()},
                    {"bones", model.bones},
                    {"morphs", model.morphs},
                    {"materials", model.materials},
@@ -889,6 +1139,13 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
             state["upstreamId"] = *model.upstreamId;
         native["modelState"].push_back(std::move(state));
     }
+    auto renderSettings = project.renderSettings;
+    const auto focus = std::ranges::find(modelIndices, static_cast<std::size_t>(renderSettings.dof.modelIndex));
+    if (renderSettings.dof.modelIndex < project.models.size())
+        renderSettings.dof.modelIndex = focus == modelIndices.end()
+                                            ? std::numeric_limits<std::uint32_t>::max()
+                                            : static_cast<std::uint32_t>(std::distance(modelIndices.begin(), focus));
+    native["renderSettings"] = writeRenderSettings(renderSettings, native.value("renderSettings", Json::object()));
     root["mikumikudesu"] = std::move(native);
 
     auto temporary = absolute;

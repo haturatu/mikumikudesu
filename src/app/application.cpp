@@ -1,10 +1,12 @@
 #include "app/application.hpp"
 #include "app/preview_conversion.hpp"
+#include "app/preview_focus.hpp"
 #include "app/viewport_navigation.hpp"
 #include <deque>
 
 #include "graphics/camera_matrices.hpp"
 #include "graphics/fx_raster_semantics.hpp"
+#include "graphics/preview_aperture.hpp"
 
 #include "core/animation.hpp"
 #include "core/asset.hpp"
@@ -57,42 +59,6 @@ float halton(std::uint32_t index, std::uint32_t base) noexcept {
         fraction /= static_cast<float>(base);
     }
     return result;
-}
-
-std::uint8_t linearToSrgb(float value) noexcept {
-    const float channel = std::clamp(value, 0.0F, 1.0F);
-    const float encoded = channel <= 0.0031308F ? 12.92F * channel : 1.055F * std::pow(channel, 1.0F / 2.4F) - 0.055F;
-    return static_cast<std::uint8_t>(std::clamp(std::lround(encoded * 255.0F), 0L, 255L));
-}
-
-float srgbToLinear(std::uint8_t value) noexcept {
-    const float encoded = static_cast<float>(value) / 255.0F;
-    return encoded <= 0.04045F ? encoded / 12.92F : std::pow((encoded + 0.055F) / 1.055F, 2.4F);
-}
-
-std::array<float, 4> sampleDisplayBackground(const core::ImageRgba8& image, float u, float v) {
-    const float x = u * static_cast<float>(image.width) - 0.5F;
-    const float y = v * static_cast<float>(image.height) - 0.5F;
-    const auto x0 = static_cast<int>(std::floor(x)), y0 = static_cast<int>(std::floor(y));
-    const float fx = x - std::floor(x), fy = y - std::floor(y);
-    std::array<float, 4> color{};
-    for (int dy = 0; dy < 2; ++dy) {
-        for (int dx = 0; dx < 2; ++dx) {
-            const auto sx = std::clamp(x0 + dx, 0, static_cast<int>(image.width) - 1);
-            const auto sy = std::clamp(y0 + dy, 0, static_cast<int>(image.height) - 1);
-            const auto offset = (static_cast<std::size_t>(sy) * image.width + static_cast<std::size_t>(sx)) * 4U;
-            const float weight = (dx == 0 ? 1.0F - fx : fx) * (dy == 0 ? 1.0F - fy : fy);
-            for (std::size_t channel = 0; channel < 4; ++channel)
-                color[channel] += weight * (channel == 3 ? static_cast<float>(image.pixels[offset + channel]) / 255.0F
-                                                         : srgbToLinear(image.pixels[offset + channel]));
-        }
-    }
-    return color;
-}
-
-float acesFilm(float value) noexcept {
-    const float x = std::max(value, 0.0F);
-    return std::clamp((x * (2.51F * x + 0.03F)) / std::max(x * (2.43F * x + 0.59F) + 0.14F, 1e-5F), 0.0F, 1.0F);
 }
 
 void drawMorphWeightControl(float& value, const std::optional<core::fx::FxMorphControllerUi>& metadata) {
@@ -1037,6 +1003,13 @@ void Application::resetProjectRuntimeState() {
     std::copy(defaultFilename.begin(), defaultFilename.end(), sequenceOutputFilename_.begin());
 #endif
     projectEditorState_ = {};
+    missingFocusModelProjectIndex_.reset();
+    previewFocusState_ = {};
+    previewFocusEvaluatedFrame_ = -1.0F;
+    if (device_ != nullptr) {
+        device_->cancelPreviewFocusPick();
+        device_->setPreviewRenderSettings({});
+    }
     previewHdriPath_.fill(0);
     failedPreviewHdriPath_.clear();
     previewHdriError_.clear();
@@ -1236,18 +1209,25 @@ int Application::run() {
                                scene_.timeline().duration + 1.0;
 
             animationFrame_ = scene_.timeline().frame;
-            if (wrapped)
+            if (wrapped) {
                 restartAudioAtCurrentFrame();
+                previewFocusState_.trackingValid = false;
+            }
             if (!repeat_ && animationFrame_ >= scene_.timeline().duration) {
                 playing_ = false;
                 audioPlayer_.setPaused(true);
             }
-            const int integerFrame = static_cast<int>(animationFrame_);
-            if (integerFrame != uploadedAnimationFrame_ && !scene_.models().empty()) {
+            // Pose, physics, camera and focus all use this rendered fractional
+            // timeline sample. Do not evaluate a separate pose for autofocus.
+            if (!scene_.models().empty()) {
                 refreshAnimatedMesh(false, deltaSeconds * playbackSpeed_);
             }
-            refreshPreviewScene();
         }
+#if DAYO_HAS_IMGUI
+        if (!imageSequenceExportRunning_)
+#endif
+            if (!videoExportUiActive_)
+                refreshPreviewScene(deltaSeconds);
         auto* media = scene_.backgroundMedia();
         for (auto& effect : reloadedEffects_) {
             std::string reloadError;
@@ -1304,6 +1284,8 @@ core::DayoProject Application::currentProject() const {
     project.upstreamDocumentJson = upstreamDocumentJson_;
     project.assets = projectAssets_;
     project.editor = projectEditorState_;
+    if (device_ != nullptr)
+        project.renderSettings = device_->previewRenderSettings();
     project.editor.animationRepeat = repeat_;
     project.editor.wavVolume = audioVolume_;
     project.editor.wavOffset = audioOffsetSeconds_;
@@ -1328,11 +1310,10 @@ core::DayoProject Application::currentProject() const {
     project.models = projectModelMetadata_;
     for (const auto& instance : scene_.models()) {
         core::ProjectModelState state;
+        state.instanceId = instance.instanceId;
         state.source = instance.sourcePath;
-        auto savedModel = std::ranges::find_if(project.models, [&](const auto& previous) {
-            return !previous.source.empty() && std::filesystem::absolute(previous.source).lexically_normal() ==
-                                                   std::filesystem::absolute(instance.sourcePath).lexically_normal();
-        });
+        auto savedModel = std::ranges::find_if(
+            project.models, [&](const auto& previous) { return previous.instanceId == instance.instanceId; });
         if (savedModel != project.models.end())
             state.upstreamId = savedModel->upstreamId;
         if (instance.model != nullptr) {
@@ -1362,6 +1343,11 @@ core::DayoProject Application::currentProject() const {
         else
             *savedModel = std::move(state);
     }
+    auto& focusIndex = project.renderSettings.dof.modelIndex;
+    if (focusIndex < scene_.models().size())
+        focusIndex = previewFocusProjectIndex(scene_.models(), project.models, focusIndex);
+    else if (missingFocusModelProjectIndex_)
+        focusIndex = *missingFocusModelProjectIndex_;
     for (auto& asset : project.assets) {
         if (asset.kind != "effect")
             continue;
@@ -1374,10 +1360,8 @@ core::DayoProject Application::currentProject() const {
                                ? std::ranges::find(scene_.models(), *loaded->owner, &core::ModelInstance::id)
                                : scene_.models().end();
         if (owner != scene_.models().end()) {
-            const auto ownerState = std::ranges::find_if(project.models, [&](const auto& state) {
-                return !state.source.empty() && std::filesystem::absolute(state.source).lexically_normal() ==
-                                                    std::filesystem::absolute(owner->sourcePath).lexically_normal();
-            });
+            const auto ownerState = std::ranges::find_if(
+                project.models, [&](const auto& state) { return state.instanceId == owner->instanceId; });
             if (ownerState != project.models.end()) {
                 asset.ownerModelIndex = static_cast<std::size_t>(std::distance(project.models.begin(), ownerState));
                 asset.upstreamId =
@@ -1630,7 +1614,29 @@ void Application::handleAsset(const std::filesystem::path& path) {
     }
     if (kind == core::AssetKind::project) {
         try {
-            const auto project = core::loadProject(path);
+            auto project = core::loadProject(path);
+            // Upgrade legacy references by source occurrence before any load can
+            // fail. A missing duplicate must not consume the next instance's ID.
+            std::vector<bool> assigned(project.models.size(), false);
+            for (auto& state : project.models)
+                if (state.instanceId.empty())
+                    state.instanceId = core::newModelInstanceId();
+            for (const auto& asset : project.assets)
+                if (!asset.modelInstanceId.empty())
+                    for (std::size_t i = 0; i < project.models.size(); ++i)
+                        if (project.models[i].instanceId == asset.modelInstanceId)
+                            assigned[i] = true;
+            for (auto& asset : project.assets) {
+                if (asset.kind != "pmx" || !asset.modelInstanceId.empty())
+                    continue;
+                for (std::size_t i = 0; i < project.models.size(); ++i) {
+                    if (assigned[i] || !samePreviewFocusSource(asset.path, project.models[i].source))
+                        continue;
+                    asset.modelInstanceId = project.models[i].instanceId;
+                    assigned[i] = true;
+                    break;
+                }
+            }
             currentProjectPath_ = std::filesystem::absolute(path).lexically_normal();
 #if DAYO_HAS_IMGUI
             const auto projectText = currentProjectPath_->string();
@@ -1642,6 +1648,10 @@ void Application::handleAsset(const std::filesystem::path& path) {
             upstreamDocumentJson_ = project.upstreamDocumentJson;
             projectModelMetadata_ = project.models;
             projectEditorState_ = project.editor;
+            if (device_ != nullptr) {
+                device_->cancelPreviewFocusPick();
+                device_->setPreviewRenderSettings(project.renderSettings);
+            }
             previewHdriPath_.fill(0);
             const auto lightingPath = projectEditorState_.skyboxFile.string();
             std::copy_n(lightingPath.data(), std::min(lightingPath.size(), previewHdriPath_.size() - 1U),
@@ -1686,24 +1696,36 @@ void Application::handleAsset(const std::filesystem::path& path) {
             sequenceHeight_ = project.editor.outputHeight;
 #endif
             const auto findLoadedModel = [&](std::size_t projectIndex) -> core::ModelInstance* {
-                if (projectIndex < project.models.size() && !project.models[projectIndex].source.empty()) {
-                    const auto& source = project.models[projectIndex].source;
-                    const auto found = std::ranges::find_if(scene_.models(), [&](const auto& instance) {
-                        return std::filesystem::absolute(instance.sourcePath).lexically_normal() ==
-                               std::filesystem::absolute(source).lexically_normal();
-                    });
-                    return found == scene_.models().end() ? nullptr : scene_.model(found->id);
-                }
-                return projectIndex < scene_.models().size() ? scene_.model(scene_.models()[projectIndex].id) : nullptr;
+                const auto index =
+                    previewFocusSceneIndex(scene_.models(), project.models, static_cast<std::uint32_t>(projectIndex));
+                return index < scene_.models().size() ? scene_.model(scene_.models()[index].id) : nullptr;
             };
             for (const auto& asset : project.assets) {
                 if (asset.kind != "pmx")
                     continue;
                 try {
+                    const auto previousCount = scene_.models().size();
                     handleAsset(asset.path);
+                    if (scene_.models().size() > previousCount && !asset.modelInstanceId.empty()) {
+                        auto* instance = scene_.selectedModel();
+                        const auto loaded = std::ranges::find_if(projectAssets_, [&](const auto& entry) {
+                            return entry.kind == "pmx" && entry.modelInstanceId == instance->instanceId;
+                        });
+                        if (loaded != projectAssets_.end())
+                            loaded->modelInstanceId = asset.modelInstanceId;
+                        instance->instanceId = asset.modelInstanceId;
+                    }
                 } catch (const std::exception& exception) {
                     log::warn("Project model could not be loaded: ", asset.path.string(), ": ", exception.what());
                 }
+            }
+            if (device_ != nullptr && !project.models.empty()) {
+                auto settings = device_->previewRenderSettings();
+                const auto requestedIndex = settings.dof.modelIndex;
+                settings.dof.modelIndex = previewFocusSceneIndex(scene_.models(), project.models, requestedIndex);
+                if (settings.dof.modelIndex == previewMissingFocusModel)
+                    missingFocusModelProjectIndex_ = requestedIndex;
+                device_->setPreviewRenderSettings(settings);
             }
             for (std::size_t index = 0; index < project.models.size(); ++index) {
                 auto* instance = findLoadedModel(index);
@@ -1774,6 +1796,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             for (const auto& savedAsset : project.assets) {
                 const auto existing = std::ranges::find_if(projectAssets_, [&](const auto& loaded) {
                     return loaded.kind == savedAsset.kind &&
+                           (savedAsset.kind != "pmx" || loaded.modelInstanceId == savedAsset.modelInstanceId) &&
                            std::filesystem::absolute(loaded.path).lexically_normal() ==
                                std::filesystem::absolute(savedAsset.path).lexically_normal();
                 });
@@ -1881,6 +1904,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             const auto modelId = scene_.addModel(path);
             scene_.selectModel(modelId);
             projectAssets_.emplace_back("pmx", std::filesystem::absolute(path));
+            projectAssets_.back().modelInstanceId = scene_.selectedModel()->instanceId;
             if (scene_.models().empty() || scene_.selectedModelId() != modelId)
                 throw std::logic_error("PMX model was not retained in the scene");
             log::info("PMX scene state: models=", scene_.models().size(), " selected=", scene_.selectedModelId());
@@ -2122,6 +2146,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         snapshot.bones = evaluatedModel.frame.bones;
         evaluatedModels_.models.push_back(std::move(snapshot));
     }
+    previewFocusBindings_.clear();
     std::size_t materialCursor = 0;
     std::uint32_t indexCursor = 0;
     std::pmr::vector<graphics::PreviewBoneTransform> bones(scratch);
@@ -2187,6 +2212,10 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                        vertex[0], ",", vertex[1], ",", vertex[2], ")");
         }
         const auto boneBase = static_cast<std::int32_t>(bones.size());
+        previewFocusBindings_.push_back({instance.model, instance.normalization, instance.id,
+                                         static_cast<std::uint32_t>(materialCursor),
+                                         static_cast<std::uint32_t>(instance.model->materials.size()),
+                                         static_cast<std::uint32_t>(boneBase), gpuSkinning});
         if (gpuSkinning) {
             bones.reserve(bones.size() + frame.bones.size());
             for (const auto& source : frame.bones)
@@ -2367,6 +2396,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             material.specularStrength = 0.5F;
             material.skin = 0.0F;
             material.anisotropy = 0.0F;
+            material.sheen = material.clearcoat = 0.0F;
             const auto preset = materialIndex < instance.materialSettings.size()
                                     ? instance.materialSettings[materialIndex].previewPbrPreset
                                     : 0U;
@@ -2381,6 +2411,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                 material.anisotropy = 0.65F;
                 break;
             case 3: // Cloth
+                material.sheen = 0.6F;
                 material.roughness = 0.70F;
                 break;
             case 4: // Metal
@@ -2388,9 +2419,11 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                 material.metallic = 0.8F;
                 break;
             case 5: // Plastic
+                material.clearcoat = 0.5F;
                 material.roughness = 0.38F;
                 break;
             case 6: // Glass
+                material.clearcoat = 1.0F;
                 material.roughness = 0.08F;
                 material.specularStrength = 1.0F;
                 break;
@@ -2702,7 +2735,7 @@ void Application::refreshVideoFrame() {
     uploadedVideoFrame_ = frameIndex;
 }
 
-void Application::refreshPreviewScene() {
+void Application::refreshPreviewScene(float focusDeltaOverride) {
     if (device_ == nullptr)
         return;
     const auto* model = selectedModel();
@@ -2711,6 +2744,7 @@ void Application::refreshPreviewScene() {
                              ? globalLightMotion
                              : (model != nullptr ? model->motion.get() : nullptr);
     graphics::PreviewScene scene;
+    scene.animationTimeSeconds = animationFrame_ / static_cast<float>(sceneTimelineFps(scene_));
     switch (scene_.background().screenSource) {
     case core::ScreenTextureSource::previousFrame:
         scene.screenSource = graphics::PreviewScene::ScreenSource::previousFrame;
@@ -2735,6 +2769,28 @@ void Application::refreshPreviewScene() {
     std::copy(cameraState.position.begin(), cameraState.position.end(), scene.target);
     scene.verticalFovRadians = cameraState.verticalFovRadians;
     scene.perspective = cameraState.perspective;
+    const graphics::PreviewFocusCamera focusCamera{cameraState.rotation, cameraState.position, cameraState.distance,
+                                                   cameraState.verticalFovRadians, cameraState.perspective};
+    const auto dof = device_->previewRenderSettings().dof;
+    const float targetUnits = resolvePreviewFocusDistance(dof, focusCamera, scene_.models(), evaluatedModels_);
+    const float targetMetres = graphics::previewDofLens(dof, targetUnits, cameraState.verticalFovRadians, 1U,
+                                                        graphics::PreviewDofQuality::balanced)
+                                   .focusMetres;
+    const bool followsModel = dof.focusMode == graphics::PreviewFocusMode::bone ||
+                              dof.focusMode == graphics::PreviewFocusMode::face ||
+                              dof.focusMode == graphics::PreviewFocusMode::eyes ||
+                              dof.focusMode == graphics::PreviewFocusMode::trackedSurface;
+    const bool valid =
+        !followsModel || (dof.modelIndex < scene_.models().size() &&
+                          previewFocusBonePoint(scene_.models()[dof.modelIndex], evaluatedModels_, dof).has_value());
+    const float focusDelta = focusDeltaOverride >= 0.0F           ? focusDeltaOverride
+                             : previewFocusEvaluatedFrame_ < 0.0F ? 0.0F
+                                                                  : (animationFrame_ - previewFocusEvaluatedFrame_) /
+                                                                        static_cast<float>(sceneTimelineFps(scene_));
+    if (!previewFocusState_.trackingValid || focusDelta != 0.0F || previewFocusState_.targetMetres != targetMetres)
+        graphics::updatePreviewFocusState(previewFocusState_, targetMetres, focusDelta, dof, valid, !followsModel);
+    previewFocusEvaluatedFrame_ = animationFrame_;
+    scene.focusDistance = (previewFocusState_.currentMetres - dof.focusOffsetMetres) / dof.metresPerUnit;
     scene.debugMaterial = previewDebugMaterial_;
     scene.debugFlags = previewDebugFlags_;
     scene.outlineEnabled = previewOutlineEnabled_;
@@ -2753,6 +2809,8 @@ void Application::refreshPreviewScene() {
 }
 
 void Application::resetPhysicsSimulation() {
+    previewFocusState_ = {};
+    previewFocusEvaluatedFrame_ = -1.0F;
     for (auto& instance : scene_.models()) {
         if (instance.physics != nullptr)
             (*instance.physics).reset();
@@ -2834,6 +2892,9 @@ void Application::buildUi() {
         if (ImGui::Button(ui::label("Light")))
             openInspector(InspectorPage::light);
         ImGui::SameLine();
+        if (ImGui::Button(ui::label("Effects")))
+            openInspector(InspectorPage::effects);
+        ImGui::SameLine();
         if (ImGui::Button(ui::label("Reset view")))
             resetView();
         if (hasCameraVmd) {
@@ -2874,6 +2935,39 @@ void Application::buildUi() {
                 const auto input = viewportInteraction_.image(ImTextureRef{static_cast<ImTextureID>(preview.textureId)},
                                                               available, !hasCameraVmd || !followVmdCamera_);
                 uiState_.viewportHovered = input.hovered;
+                if (input.focusPick) {
+                    pendingTrackingFocus_ = input.focusTracking;
+                    pendingFocusBindings_ = previewFocusBindings_;
+                    pendingFocusSnapshot_ = evaluatedModels_;
+                    trackingFocusFallback_ = false;
+                    device_->requestPreviewFocusPick({input.focusUv.x, input.focusUv.y});
+                }
+                if (const auto point = device_->pollPreviewFocusSample()) {
+                    auto settings = device_->previewRenderSettings();
+                    settings.dof.focusMode = graphics::PreviewFocusMode::viewportPoint;
+                    settings.dof.worldPoint = point->worldPoint;
+                    if (pendingTrackingFocus_) {
+                        const auto target = previewTrackedFocus(*point, pendingFocusBindings_, pendingFocusSnapshot_,
+                                                                settings.dof.metresPerUnit);
+                        const auto found =
+                            target ? std::ranges::find(scene_.models(), target->model, &core::ModelInstance::id)
+                                   : scene_.models().end();
+                        if (target && found != scene_.models().end()) {
+                            settings.dof.focusMode = graphics::PreviewFocusMode::trackedSurface;
+                            settings.dof.modelIndex =
+                                static_cast<std::uint32_t>(std::distance(scene_.models().begin(), found));
+                            settings.dof.boneName = target->boneName;
+                            settings.dof.localOffsetMetres = target->localOffsetMetres;
+                            settings.dof.trackingInstance = target->instance;
+                        } else {
+                            trackingFocusFallback_ = true;
+                        }
+                    }
+                    previewFocusState_.trackingValid = false;
+                    settings.depthOfField.override = graphics::EffectOverride::enabled;
+                    device_->setPreviewRenderSettings(settings);
+                    refreshPreviewScene();
+                }
                 if (scene_.models().empty() && !videoVisible_) {
                     const auto* message = ui::tr("No model loaded\nDrop a PMX file into the window");
                     const auto messageSize = ImGui::CalcTextSize(message);
@@ -3105,6 +3199,8 @@ void Application::setWorkspace(ui::Workspace workspace) {
     uiState_.workspace = workspace;
     if (workspace == ui::Workspace::camera)
         inspectorPage_ = InspectorPage::camera;
+    if (workspace == ui::Workspace::render)
+        inspectorPage_ = InspectorPage::effects;
     const auto& panels = uiState_.workspacePanels[static_cast<std::size_t>(workspace)];
     uiState_.sceneVisible = panels.sceneVisible;
     uiState_.inspectorVisible = panels.inspectorVisible;
@@ -3518,6 +3614,281 @@ void Application::buildCameraLightControls() {
 #endif
 }
 
+void Application::buildRenderSettingsControls() {
+#if DAYO_HAS_IMGUI
+    using namespace graphics;
+    if (device_ == nullptr)
+        return;
+    ImGui::SeparatorText(ui::tr("Render Settings"));
+    if (device_->activeRenderer() != RendererKind::preview) {
+        ImGui::TextWrapped("%s", ui::tr("These effects apply to the Preview renderer and its exports."));
+    }
+    auto settings = device_->previewRenderSettings();
+    const auto resolved = device_->previewResolvedEffects();
+    bool changed = false;
+    const auto combo = [&](const char* label, auto& value, const char* choices) {
+        int selected = static_cast<int>(value);
+        if (ImGui::Combo(label, &selected, choices)) {
+            value = static_cast<std::remove_reference_t<decltype(value)>>(selected);
+            changed = true;
+        }
+    };
+    combo(ui::label("Quality preset"), settings.preset, ui::items("Auto|Performance|Balanced|High"));
+    if (ImGui::Button(ui::label("Reset effect overrides"))) {
+        for (auto* setting :
+             {&settings.ambientOcclusion, &settings.softShadows, &settings.skinSubsurface, &settings.hairShading,
+              &settings.clothSheen, &settings.clearcoat, &settings.bloom, &settings.depthOfField})
+            *setting = {};
+        settings.shadowFilter = PreviewShadowFilter::automatic;
+        settings.antiAliasing = PreviewAntiAliasing::automatic;
+        changed = true;
+    }
+    ImGui::TextWrapped("%s", ui::tr("Checked effects are active. Reset restores the selected preset."));
+    const auto effect = [&](const char* name, PreviewEffectSetting& setting, bool active, std::uint32_t bit) {
+        ImGui::PushID(name);
+        const bool supported = (device_->previewEffectSupport() & bit) != 0;
+        ImGui::BeginDisabled(!supported);
+        if (ImGui::Checkbox(name, &active)) {
+            setting.override = active ? EffectOverride::enabled : EffectOverride::disabled;
+            changed = true;
+        }
+        if (setting.override != EffectOverride::inherit) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton(ui::label("Reset"))) {
+                setting = {};
+                changed = true;
+            }
+        }
+        ImGui::EndDisabled();
+        if (!supported)
+            ImGui::TextWrapped("%s", ui::tr("Unavailable on this device."));
+        if (supported && ImGui::TreeNode(ui::label("Details"))) {
+            ImGui::BeginDisabled(!active);
+            changed |= ImGui::SliderFloat(ui::label("Intensity"), &setting.intensity, 0.0F, 4.0F, "%.2f");
+            ImGui::EndDisabled();
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    };
+    if (ImGui::CollapsingHeader(ui::label("Lighting"), ImGuiTreeNodeFlags_DefaultOpen)) {
+        effect(ui::label("Ambient occlusion"), settings.ambientOcclusion, resolved.ambientOcclusion,
+               previewEffectSupportAmbientOcclusion);
+        combo(ui::label("AO method"), settings.ambientOcclusionMode, ui::items("SSAO (legacy)|GTAO"));
+        effect(ui::label("Soft shadows"), settings.softShadows, resolved.softShadows, previewEffectSupportSoftShadows);
+        combo(ui::label("Shadow filter"), settings.shadowFilter, ui::items("PCF|PCSS|Auto"));
+    }
+    if (ImGui::CollapsingHeader(ui::label("Materials"), ImGuiTreeNodeFlags_DefaultOpen)) {
+        effect(ui::label("Skin scattering"), settings.skinSubsurface, resolved.skinSubsurface,
+               previewEffectSupportSkinSubsurface);
+        effect(ui::label("Hair highlights"), settings.hairShading, resolved.hairShading,
+               previewEffectSupportHairShading);
+        effect(ui::label("Cloth sheen"), settings.clothSheen, resolved.clothSheen, previewEffectSupportClothSheen);
+        effect(ui::label("Clearcoat"), settings.clearcoat, resolved.clearcoat, previewEffectSupportClearcoat);
+        ImGui::TextWrapped(
+            "%s", ui::tr("Choose Skin, Hair, Cloth, Plastic or Glass in the material inspector to use these effects."));
+    }
+    if (ImGui::CollapsingHeader(ui::label("Post processing"), ImGuiTreeNodeFlags_DefaultOpen)) {
+        effect(ui::label("Bloom"), settings.bloom, resolved.bloom, previewEffectSupportBloom);
+        ImGui::BeginDisabled(!resolved.bloom);
+        changed |= ImGui::SliderFloat(ui::label("Bloom threshold"), &settings.bloomThreshold, 0.0F, 5.0F, "%.2f");
+        ImGui::EndDisabled();
+        effect(ui::label("Depth of field"), settings.depthOfField, resolved.depthOfField,
+               previewEffectSupportDepthOfField);
+        if (resolved.depthOfField && ImGui::TreeNodeEx(ui::label("Lens and focus"), ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushItemWidth(-1.0F);
+            const auto lensSlider = [&](const char* name, float& value, float low, float high, const char* format,
+                                        ImGuiSliderFlags flags = 0) {
+                ImGui::TextWrapped("%s", ui::tr(name));
+                ImGui::PushID(name);
+                changed |= ImGui::SliderFloat("##value", &value, low, high, format, flags);
+                ImGui::PopID();
+            };
+            const auto lensCombo = [&](const char* name, auto& value, const char* choices) {
+                ImGui::TextWrapped("%s", ui::tr(name));
+                ImGui::PushID(name);
+                combo("##value", value, choices);
+                ImGui::PopID();
+            };
+            lensSlider("Aperture (F-number)", settings.dof.fNumber, 0.7F, 32.0F, "f/%.1f",
+                       ImGuiSliderFlags_Logarithmic);
+            lensCombo("Focus target", settings.dof.focusMode,
+                      ui::items("Camera target|Manual distance|Bone|Face|Eyes|Static point|Track nearest bone"));
+            lensCombo("DoF quality", settings.dof.quality, ui::items("Auto|Performance|Balanced|High"));
+            if (settings.dof.focusMode == PreviewFocusMode::manual) {
+                lensSlider("Focus distance (m)", settings.dof.focusDistanceMetres, 0.05F, 100.0F, "%.3f",
+                           ImGuiSliderFlags_Logarithmic);
+            }
+            if (settings.dof.focusMode == PreviewFocusMode::bone || settings.dof.focusMode == PreviewFocusMode::face ||
+                settings.dof.focusMode == PreviewFocusMode::eyes ||
+                settings.dof.focusMode == PreviewFocusMode::trackedSurface) {
+                const auto& models = scene_.models();
+                const auto index = settings.dof.modelIndex;
+                const char* selectedName =
+                    index < models.size() ? models[index].displayName.c_str() : ui::tr("Missing focus model");
+                ImGui::TextWrapped("%s", ui::tr("Focus model"));
+                if (ImGui::BeginCombo("##focus-model", selectedName)) {
+                    for (std::size_t i = 0; i < models.size(); ++i) {
+                        ImGui::PushID(static_cast<int>(i));
+                        if (ImGui::Selectable(models[i].displayName.c_str(), i == index)) {
+                            settings.dof.modelIndex = static_cast<std::uint32_t>(i);
+                            changed = true;
+                        }
+                        ImGui::PopID();
+                    }
+                    ImGui::EndCombo();
+                }
+                if ((settings.dof.focusMode == PreviewFocusMode::bone ||
+                     settings.dof.focusMode == PreviewFocusMode::trackedSurface) &&
+                    settings.dof.modelIndex < models.size() && models[settings.dof.modelIndex].model != nullptr) {
+                    const auto& bones = models[settings.dof.modelIndex].model->bones;
+                    ImGui::TextWrapped("%s", ui::tr("Focus bone"));
+                    if (ImGui::BeginCombo("##focus-bone", settings.dof.boneName.c_str())) {
+                        for (const auto& bone : bones) {
+                            if (ImGui::Selectable(bone.name.c_str(), settings.dof.boneName == bone.name)) {
+                                settings.dof.boneName = bone.name;
+                                changed = true;
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                }
+                const auto* selected = selectedModel();
+                if (selected != nullptr && selected->model != nullptr && !selected->model->bones.empty() &&
+                    ImGui::Button(ui::label("Focus selected bone"))) {
+                    const auto found = std::ranges::find(models, selected->id, &core::ModelInstance::id);
+                    settings.dof.modelIndex = static_cast<std::uint32_t>(std::distance(models.begin(), found));
+                    const auto boneIndex =
+                        std::clamp(selectedBone_, 0, static_cast<int>(selected->model->bones.size() - 1U));
+                    settings.dof.boneName = selected->model->bones[static_cast<std::size_t>(boneIndex)].name;
+                    settings.dof.focusMode = PreviewFocusMode::bone;
+                    changed = true;
+                }
+                if (settings.dof.modelIndex >= models.size() ||
+                    !previewFocusBonePoint(models[settings.dof.modelIndex], evaluatedModels_, settings.dof))
+                    ImGui::TextWrapped("%s", ui::tr("Focus target unavailable; using the camera target."));
+            }
+            if ((settings.dof.focusMode == PreviewFocusMode::bone || settings.dof.focusMode == PreviewFocusMode::face ||
+                 settings.dof.focusMode == PreviewFocusMode::eyes ||
+                 settings.dof.focusMode == PreviewFocusMode::trackedSurface) &&
+                ImGui::TreeNode(ui::label("Focus tracking"))) {
+                ImGui::TextWrapped("%s", ui::tr("Local offset (m)"));
+                changed |= ImGui::InputFloat3("##focus-local-offset", settings.dof.localOffsetMetres.data(), "%.3f");
+                if (settings.dof.focusMode == PreviewFocusMode::face) {
+                    ImGui::TextWrapped("%s", ui::tr("Face anchor offset (m)"));
+                    changed |= ImGui::InputFloat3("##face-anchor-offset", settings.dof.faceOffsetMetres.data(), "%.3f");
+                }
+                lensSlider("AF response (s)", settings.dof.focusResponseSeconds, 0.0F, 1.0F, "%.3f");
+                lensSlider("AF deadband (m)", settings.dof.focusDeadbandMetres, 0.0F, 0.05F, "%.3f");
+                lensSlider("AF maximum speed (m/s)", settings.dof.focusMaxSpeed, 0.05F, 100.0F, "%.2f",
+                           ImGuiSliderFlags_Logarithmic);
+                ImGui::TreePop();
+            }
+            lensSlider("Focus offset (m)", settings.dof.focusOffsetMetres, -1.0F, 1.0F, "%.3f");
+            const auto focusCamera = makeSceneCameraState();
+            const PreviewFocusCamera focusView{focusCamera.rotation, focusCamera.position, focusCamera.distance,
+                                               focusCamera.verticalFovRadians, focusCamera.perspective};
+            const float focus = resolvePreviewFocusDistance(settings.dof, focusView, scene_.models(), evaluatedModels_);
+            const auto lens =
+                previewDofLens(settings.dof, focus, focusCamera.verticalFovRadians, 1080, PreviewDofQuality::balanced);
+            ImGui::Text("%s: %.3f m", ui::tr("Resolved focus distance"),
+                        static_cast<double>(previewFocusState_.currentMetres));
+            ImGui::Text("%s: %.3f m", ui::tr("Target focus distance"), static_cast<double>(lens.focusMetres));
+            ImGui::Text("%s: %.3f m/s", ui::tr("Focus velocity"), static_cast<double>(previewFocusState_.velocity));
+            if (ImGui::Button(ui::label("Reset lens and focus"))) {
+                settings.dof = {};
+                changed = true;
+            }
+            if (ImGui::TreeNode(ui::label("Aperture shape"))) {
+                int bladeChoice =
+                    settings.dof.apertureBlades == 0 ? 0 : static_cast<int>(settings.dof.apertureBlades) - 4;
+                ImGui::TextWrapped("%s", ui::tr("Aperture blades"));
+                if (ImGui::Combo("##aperture-blades", &bladeChoice, ui::items("Circle|5|6|7|8|9|10|11|12"))) {
+                    settings.dof.apertureBlades = bladeChoice == 0 ? 0U : static_cast<std::uint32_t>(bladeChoice + 4);
+                    changed = true;
+                }
+                if (settings.dof.apertureBlades != 0) {
+                    lensSlider("Blade curvature", settings.dof.apertureCurvature, 0.0F, 1.0F, "%.2f");
+                    lensSlider("Aperture rotation", settings.dof.apertureRotationDegrees, -180.0F, 180.0F, "%.1f");
+                }
+                ImGui::TreePop();
+            }
+            if (ImGui::TreeNode(ui::label("Blur quality and export"))) {
+                changed |= ImGui::Checkbox(ui::label("Temporal DoF (Balanced / High)"), &settings.dof.temporal);
+                ImGui::TextWrapped("%s", ui::tr("Cinematic lens samples (image exports)"));
+                int cinematic = settings.dof.cinematicSamples == 0     ? 0
+                                : settings.dof.cinematicSamples == 64  ? 1
+                                : settings.dof.cinematicSamples == 128 ? 2
+                                                                       : 3;
+                if (ImGui::Combo("##cinematic-samples", &cinematic, ui::items("Off|64|128|256"))) {
+                    settings.dof.cinematicSamples = cinematic == 0   ? 0U
+                                                    : cinematic == 1 ? 64U
+                                                    : cinematic == 2 ? 128U
+                                                                     : 256U;
+                    changed = true;
+                }
+                if (settings.dof.cinematicSamples != 0)
+                    ImGui::TextWrapped(
+                        "%s",
+                        ui::tr("Cinematic images apply the selected color settings and Bloom after HDR averaging."));
+                lensSlider("Radius cap at 1080p (px; 0 = Auto)", settings.dof.maxRadiusPixels, 0.0F, 128.0F, "%.1f");
+                ImGui::TreePop();
+            }
+            if (ImGui::TreeNode(ui::label("Lens calibration"))) {
+                lensSlider("Sensor height (mm)", settings.dof.sensorHeightMm, 1.0F, 100.0F, "%.1f");
+                lensSlider("Metres per preview unit", settings.dof.metresPerUnit, 0.01F, 10.0F, "%.3f",
+                           ImGuiSliderFlags_Logarithmic);
+                ImGui::TextWrapped("%s", ui::tr("A two-unit character is 1.6 m tall at the default scale."));
+                ImGui::TreePop();
+            }
+            ImGui::PopItemWidth();
+            ImGui::TreePop();
+        }
+        ImGui::TextWrapped("%s", ui::tr("Ctrl + click: static focus. Ctrl + Shift + click: track the nearest bone."));
+        if (trackingFocusFallback_)
+            ImGui::TextWrapped("%s", ui::tr("No bone anchor found; using static focus."));
+        if (resolved.depthOfField && scene_.background().enabled &&
+            scene_.background().screenSource == core::ScreenTextureSource::previousFrame)
+            ImGui::TextWrapped("%s", ui::tr("Choose White, Image or Video background to preview depth of field."));
+        if (!makeSceneCameraState().perspective)
+            ImGui::TextWrapped("%s", ui::tr("Depth of field requires a perspective camera."));
+        combo(ui::label("Anti-aliasing"), settings.antiAliasing, ui::items("Off|FXAA|Auto"));
+        combo(ui::label("View transform"), settings.viewTransform, ui::items("ACES|AgX|Neutral"));
+        changed |= ImGui::SliderFloat(ui::label("Exposure (EV)"), &settings.exposure, -8.0F, 8.0F, "%.2f");
+        changed |=
+            ImGui::SliderFloat(ui::label("White balance (K)"), &settings.whiteBalance, 1000.0F, 15000.0F, "%.0f");
+    }
+    if (ImGui::CollapsingHeader(ui::label("Render performance"))) {
+        const auto timings = device_->previewPassTimings();
+        if (device_->previewGpuNanoseconds() == 0) {
+            ImGui::TextUnformatted(ui::tr("GPU timing unavailable"));
+        } else {
+            const auto timing = [](const char* name, std::uint64_t nanoseconds) {
+                ImGui::Text("%s: %.2f ms", name, static_cast<double>(nanoseconds) / 1e6);
+            };
+            timing(ui::tr("Shadows"), timings.shadow);
+            timing(ui::tr("AO / depth prepass"), timings.ambientOcclusion);
+            timing(ui::tr("Materials"), timings.model);
+            timing(ui::tr("Skin scattering"), timings.subsurface);
+            timing(ui::tr("Circle of confusion"), timings.coc);
+            timing(ui::tr("DoF downsample / tiles"), timings.dofDownsample);
+            timing(ui::tr("DoF near / far blur"), timings.dofBlur);
+            timing(ui::tr("DoF composite"), timings.dofComposite);
+            timing(ui::tr("Bloom"), timings.postProcess);
+            timing(ui::tr("Tone mapping"), timings.toneMap);
+            timing(ui::tr("Total"), device_->previewGpuNanoseconds());
+        }
+    }
+    if (changed) {
+        previewFocusState_.trackingValid = false;
+        if (settings.dof.modelIndex != previewMissingFocusModel)
+            missingFocusModelProjectIndex_.reset();
+        device_->cancelPreviewFocusPick();
+        device_->setPreviewRenderSettings(settings);
+        refreshPreviewScene();
+    }
+#endif
+}
+
 void Application::buildInspectorPanel() {
 #if DAYO_HAS_IMGUI
     if (!uiState_.inspectorVisible)
@@ -3540,7 +3911,15 @@ void Application::buildInspectorPanel() {
     ImGui::SameLine();
     if (ImGui::RadioButton(ui::label("Light"), inspectorPage_ == InspectorPage::light))
         inspectorPage_ = InspectorPage::light;
+    ImGui::SameLine();
+    if (ImGui::RadioButton(ui::label("Effects"), inspectorPage_ == InspectorPage::effects))
+        inspectorPage_ = InspectorPage::effects;
     ImGui::Separator();
+    if (inspectorPage_ == InspectorPage::effects) {
+        buildRenderSettingsControls();
+        ImGui::End();
+        return;
+    }
     if (inspectorPage_ == InspectorPage::selection && timelineEditor_.drawInspector(scene_, history_)) {
         playing_ = false;
         if (editGlobalMotion_) {
@@ -3883,6 +4262,19 @@ void Application::startImageSequenceExport() {
         imageSequenceNextFrame_ = sequenceOutput_.firstFrame;
         imageSequenceSampleIndex_ = 0;
         imageSequenceSampleCount_ = std::max(sequenceOutput_.samples, std::uint32_t{1});
+        imageSequenceLensSamples_.clear();
+        auto outputSettings = device_->previewRenderSettings();
+        if (outputSettings.preset == graphics::PreviewQualityPreset::automatic)
+            outputSettings.preset = graphics::PreviewQualityPreset::high;
+        const auto outputEffects = graphics::resolvePreviewEffects(outputSettings, graphics::PreviewQuality::apu, true,
+                                                                   false, device_->previewEffectSupport());
+        if (device_->activeRenderer() == graphics::RendererKind::preview && outputSettings.dof.cinematicSamples != 0 &&
+            outputEffects.depthOfField && outputEffects.depthOfFieldIntensity > 0.0F) {
+            imageSequenceSampleCount_ = std::max(imageSequenceSampleCount_, outputSettings.dof.cinematicSamples);
+            imageSequenceLensSamples_ = graphics::previewApertureSamples(
+                outputSettings.dof.apertureBlades, outputSettings.dof.apertureCurvature,
+                outputSettings.dof.apertureRotationDegrees, imageSequenceSampleCount_);
+        }
         imageSequencePreviousSampleFrame_ = static_cast<float>(sequenceOutput_.firstFrame);
         imageSequenceFramesFinished_ = false;
         imageSequencePreRollDone_ = sequenceOutput_.firstFrame == 0U;
@@ -3938,6 +4330,8 @@ void Application::restoreImageSequenceState() {
 
 void Application::finishImageSequenceExport(std::string status) {
 #if DAYO_HAS_IMGUI
+    if (device_ != nullptr)
+        device_->setPreviewLensSample(std::nullopt);
     if (device_ != nullptr)
         device_->setPreviewJitter(0.0F, 0.0F);
     if (device_ != nullptr)
@@ -4026,10 +4420,14 @@ void Application::advanceImageSequenceExport() {
             const auto sample = imageSequenceSampleIndex_ + 1U;
             device_->setPreviewJitter(halton(sample, 2U) - 0.5F, halton(sample, 3U) - 0.5F);
         }
-        if (previewRender)
+        if (previewRender) {
             device_->setPreviewStillQuality(true);
+            if (!imageSequenceLensSamples_.empty())
+                device_->setPreviewLensSample(imageSequenceLensSamples_[imageSequenceSampleIndex_]);
+        }
         auto rendered = device_->renderToImage({renderWidth, renderHeight});
         if (previewRender) {
+            device_->setPreviewLensSample(std::nullopt);
             device_->setPreviewJitter(0.0F, 0.0F);
             device_->setPreviewStillQuality(false);
         }
@@ -4066,9 +4464,7 @@ void Application::advanceImageSequenceExport() {
             return;
 
         const auto averaged = imageSequenceHdrSamples_.resolveFloat32();
-        const auto displayBackground = device_->previewDisplayBackground();
-        imageSequenceImage_ = {.width = sequenceWidth_, .height = sequenceHeight_, .pixels = {}};
-        imageSequenceImage_.pixels.resize(static_cast<std::size_t>(sequenceWidth_) * sequenceHeight_ * 4U);
+        std::vector<std::uint8_t> averagedHdr(static_cast<std::size_t>(sequenceWidth_) * sequenceHeight_ * 8U);
         const float scaleX = static_cast<float>(renderWidth) / static_cast<float>(sequenceWidth_);
         const float scaleY = static_cast<float>(renderHeight) / static_cast<float>(sequenceHeight_);
         for (std::uint32_t y = 0; y < sequenceHeight_; ++y) {
@@ -4091,19 +4487,14 @@ void Application::advanceImageSequenceExport() {
                     }
                 }
                 const float denominator = scaleX * scaleY;
-                const auto destination = (static_cast<std::size_t>(y) * sequenceWidth_ + x) * 4U;
-                const float alpha = std::clamp(color[3] / denominator, 0.0F, 1.0F);
-                const auto background = sampleDisplayBackground(
-                    displayBackground, (static_cast<float>(x) + 0.5F) / static_cast<float>(sequenceWidth_),
-                    (static_cast<float>(y) + 0.5F) / static_cast<float>(sequenceHeight_));
-                for (std::size_t channel = 0; channel < 3; ++channel)
-                    imageSequenceImage_.pixels[destination + channel] =
-                        linearToSrgb(acesFilm(color[channel] / denominator / std::max(alpha, 1e-5F)) * alpha +
-                                     background[channel] * (1.0F - alpha));
-                imageSequenceImage_.pixels[destination + 3] = static_cast<std::uint8_t>(
-                    std::clamp(std::lround((alpha + background[3] * (1.0F - alpha)) * 255.0F), 0L, 255L));
+                const auto destination = (static_cast<std::size_t>(y) * sequenceWidth_ + x) * 8U;
+                for (std::size_t channel = 0; channel < 4; ++channel) {
+                    const auto half = core::floatToHalf(color[channel] / denominator);
+                    std::memcpy(averagedHdr.data() + destination + channel * sizeof(half), &half, sizeof(half));
+                }
             }
         }
+        imageSequenceImage_ = device_->renderPreviewHdrToImage({sequenceWidth_, sequenceHeight_}, averagedHdr);
         finishOutputFrame();
     } catch (const std::exception& error) {
         finishImageSequenceExport(error.what());

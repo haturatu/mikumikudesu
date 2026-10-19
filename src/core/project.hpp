@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/motion.hpp"
+#include "graphics/preview_effects.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -13,6 +14,7 @@
 namespace dayo::core {
 
 struct ProjectAsset {
+    std::string modelInstanceId;
     std::string kind;
     std::filesystem::path path;
     std::optional<std::size_t> ownerModelIndex;
@@ -25,6 +27,7 @@ struct ProjectAsset {
 };
 
 struct ProjectModelState {
+    std::string instanceId;
     std::filesystem::path source;
     std::optional<std::int32_t> upstreamId;
     std::vector<std::string> bones;
@@ -87,6 +90,7 @@ struct DayoProject {
     std::vector<ProjectAsset> assets;
     std::vector<ProjectModelState> models;
     ProjectEditorState editor;
+    graphics::PreviewRenderSettings renderSettings;
     // The upstream JSON object is retained verbatim semantically so fields
     // unknown to desu survive a load/save cycle.
     std::string upstreamDocumentJson;

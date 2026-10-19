@@ -1,7 +1,10 @@
 #include "core/model_probe.hpp"
+#include "core/output.hpp"
 #include "fx/fx_compiler.hpp"
 #include "fx/fx_shader_compiler.hpp"
 #include "graphics/fx_pipeline_runtime.hpp"
+#include "graphics/output_sample_accumulator.hpp"
+#include "graphics/preview_aperture.hpp"
 #include "graphics/subayai_deform.hpp"
 #include "graphics/subayai_environment.hpp"
 #include "graphics/vulkan/vulkan_device.hpp"
@@ -27,6 +30,17 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+// Test-only access to completed diagnostic images; production callers use the
+// final image and public timings rather than renderer implementation resources.
+namespace dayo::graphics {
+struct VulkanPreviewTestAccess {
+    static std::array<handles::TextureHandle, 3> nearDiagnostics(const VulkanDevice& device) {
+        const auto& frame = device.frames_[(device.frameIndex_ + device.frames_.size() - 1U) % device.frames_.size()];
+        return {frame.previewDof.textures[8], frame.previewDof.textures[11], frame.previewDof.textures[2]};
+    }
+};
+} // namespace dayo::graphics
 
 namespace {
 
@@ -1593,6 +1607,733 @@ bool pipelinedReadbackPreservesFrames(dayo::graphics::VulkanDevice& device) {
     return ok;
 }
 
+bool spatialEffectsPreserveMaterialBoundaries(dayo::graphics::VulkanDevice& device) {
+    using namespace dayo::graphics;
+    const auto saved = device.previewRenderSettings();
+    auto settings = legacyPreviewRenderSettings();
+    settings.ambientOcclusion.override = EffectOverride::disabled;
+    settings.softShadows.override = EffectOverride::disabled;
+    settings.hairShading.override = EffectOverride::disabled;
+    device.setPreviewRenderSettings(settings);
+    PreviewScene scene;
+    scene.backgroundEnabled = false;
+    scene.lightDirection[0] = 0.0F;
+    scene.lightDirection[1] = 0.0F;
+    scene.lightDirection[2] = 1.0F;
+    device.updatePreviewScene(scene);
+    std::array<PreviewVertex, 8> vertices{};
+    const std::array positions{Float3{-0.8F, -0.8F, 0.0F}, Float3{0.0F, -0.8F, 0.0F}, Float3{0.0F, 0.8F, 0.0F},
+                               Float3{-0.8F, 0.8F, 0.0F},  Float3{0.0F, -0.8F, 0.0F}, Float3{0.8F, -0.8F, 0.0F},
+                               Float3{0.8F, 0.8F, 0.0F},   Float3{0.0F, 0.8F, 0.0F}};
+    for (std::size_t index = 0; index < vertices.size(); ++index) {
+        std::copy(positions[index].begin(), positions[index].end(), vertices[index].position);
+        vertices[index].normal[2] = -1.0F;
+    }
+    const std::array<std::uint32_t, 12> indices{0, 2, 1, 0, 3, 2, 4, 6, 5, 4, 7, 6};
+    std::array<PreviewMaterial, 2> materials{};
+    materials[0].diffuse[0] = 0.6F;
+    materials[0].diffuse[1] = materials[0].diffuse[2] = 0.03F;
+    materials[1].diffuse[0] = materials[1].diffuse[1] = 0.03F;
+    materials[1].diffuse[2] = 0.6F;
+    materials[0].skin = materials[1].skin = 1.0F;
+    device.uploadPreviewMesh(vertices, indices);
+    device.uploadPreviewTextures({});
+    device.updatePreviewMaterials(materials);
+    device.updatePreviewDraws(std::array<PreviewDraw, 2>{{{0, 6, 0}, {6, 6, 1}}});
+    const auto off = device.renderToImage({192, 192});
+    settings.skinSubsurface = {EffectOverride::enabled, 3.0F};
+    device.setPreviewRenderSettings(settings);
+    const auto on = device.renderToImage({192, 192});
+    bool ok = true;
+    if (off.pixels == on.pixels) {
+        std::cerr << "FAIL: screen-space SSS did not diffuse adjacent skin colors\n";
+        ok = false;
+    }
+    materials[0].skin = materials[1].skin = 0.0F;
+    device.updatePreviewMaterials(materials);
+    const auto nonSkinOn = device.renderToImage({192, 192});
+    settings.skinSubsurface.override = EffectOverride::disabled;
+    device.setPreviewRenderSettings(settings);
+    const auto nonSkinOff = device.renderToImage({192, 192});
+    if (!imagesMatch(nonSkinOn, nonSkinOff)) {
+        std::cerr << "FAIL: SSS blurred non-skin materials\n";
+        ok = false;
+    }
+    // A thin raised card creates a view-space contact edge on the plane.
+    for (std::size_t index = 4; index < 8; ++index)
+        vertices[index].position[2] = -0.08F;
+    device.updatePreviewVertices(vertices);
+    const auto noAo = device.renderToImage({192, 192});
+    settings.ambientOcclusionMode = PreviewAmbientOcclusion::gtao;
+    settings.ambientOcclusion = {EffectOverride::enabled, 3.0F};
+    device.setPreviewRenderSettings(settings);
+    const auto gtao = device.renderToImage({192, 192});
+    if (noAo.pixels == gtao.pixels) {
+        std::cerr << "FAIL: GTAO had no contact occlusion at a view-space depth edge\n";
+        ok = false;
+    }
+    settings.ambientOcclusionMode = PreviewAmbientOcclusion::ssao;
+    device.setPreviewRenderSettings(settings);
+    static_cast<void>(device.renderToImage({192, 192}));
+    settings.ambientOcclusion.intensity = 0.0F;
+    device.setPreviewRenderSettings(settings);
+    if (!imagesMatch(noAo, device.renderToImage({192, 192}))) {
+        std::cerr << "FAIL: legacy SSAO ignored zero intensity\n";
+        ok = false;
+    }
+    settings.ambientOcclusion.override = EffectOverride::disabled;
+    device.setPreviewRenderSettings(settings);
+    if (!imagesMatch(noAo, device.renderToImage({192, 192}))) {
+        std::cerr << "FAIL: disabling AO sampled stale occlusion\n";
+        ok = false;
+    }
+    device.setPreviewRenderSettings(saved);
+    resetPreviewScene(device);
+    return ok;
+}
+
+bool renderEffectsReachGpu(dayo::graphics::VulkanDevice& device) {
+    using namespace dayo::graphics;
+    const auto saved = device.previewRenderSettings();
+    PreviewRenderSettings settings;
+    settings.preset = PreviewQualityPreset::performance;
+    settings.antiAliasing = PreviewAntiAliasing::off;
+    settings.ambientOcclusion.override = EffectOverride::disabled;
+    settings.softShadows.override = EffectOverride::disabled;
+    settings.bloom.override = EffectOverride::disabled;
+    settings.depthOfField.override = EffectOverride::disabled;
+    settings.skinSubsurface.override = EffectOverride::disabled;
+    settings.hairShading.override = EffectOverride::disabled;
+    settings.clothSheen.override = EffectOverride::disabled;
+    settings.clearcoat.override = EffectOverride::disabled;
+    device.setPreviewRenderSettings(settings);
+    PreviewScene scene;
+    scene.backgroundEnabled = false;
+    scene.lightDirection[0] = -0.3F;
+    scene.lightDirection[1] = -0.5F;
+    scene.lightDirection[2] = 1.0F;
+    device.updatePreviewScene(scene);
+    auto vertices = makeFlatTriangle();
+    for (auto& vertex : vertices)
+        vertex.normal[2] = -1.0F;
+    vertices[1].uv[0] = 1.0F;
+    vertices[2].uv[1] = 1.0F;
+    device.uploadPreviewMesh(vertices, std::array<std::uint32_t, 3>{0, 2, 1});
+    device.uploadPreviewTextures({});
+    PreviewMaterial material;
+    material.diffuse[0] = 0.45F;
+    material.diffuse[1] = 0.2F;
+    material.diffuse[2] = 0.1F;
+    material.roughness = 0.3F;
+    material.sheen = material.clearcoat = material.anisotropy = 1.0F;
+    device.updatePreviewMaterials(std::array{material});
+    device.updatePreviewDraws(std::array<PreviewDraw, 1>{{{0, 3, 0}}});
+    const auto render = [&] { return device.renderToImage({97, 95}); };
+    const auto baseline = render();
+    const auto changed = [&](const dayo::core::ImageRgba8& image, const char* name) {
+        if (image.pixels == baseline.pixels) {
+            std::cerr << "FAIL: render effect had no GPU output change: " << name << '\n';
+            return false;
+        }
+        return true;
+    };
+    bool ok = true;
+    settings.exposure = 2.0F;
+    device.setPreviewRenderSettings(settings);
+    ok &= changed(render(), "exposure");
+    settings.exposure = 0.0F;
+    for (const auto transform : {PreviewViewTransform::agx, PreviewViewTransform::neutral}) {
+        settings.viewTransform = transform;
+        device.setPreviewRenderSettings(settings);
+        ok &= changed(render(), "view transform");
+    }
+    settings.viewTransform = PreviewViewTransform::aces;
+    settings.whiteBalance = 3000.0F;
+    device.setPreviewRenderSettings(settings);
+    ok &= changed(render(), "white balance");
+    settings.whiteBalance = 6500.0F;
+    settings.antiAliasing = PreviewAntiAliasing::fxaa;
+    device.setPreviewRenderSettings(settings);
+    ok &= changed(render(), "FXAA");
+    settings.antiAliasing = PreviewAntiAliasing::off;
+    for (auto* effect :
+         {&settings.bloom, &settings.depthOfField, &settings.hairShading, &settings.clothSheen, &settings.clearcoat}) {
+        effect->override = EffectOverride::enabled;
+        settings.bloomThreshold = 0.0F;
+        device.setPreviewRenderSettings(settings);
+        if (effect == &settings.depthOfField) {
+            // Place geometry away from the focus plane to produce a measurable CoC.
+            for (auto& vertex : vertices)
+                vertex.position[2] = -1.2F;
+            device.updatePreviewVertices(vertices);
+        }
+        ok &= changed(render(), "material or postprocess toggle");
+        effect->override = EffectOverride::disabled;
+        if (effect == &settings.depthOfField) {
+            for (auto& vertex : vertices)
+                vertex.position[2] = 0.0F;
+            device.updatePreviewVertices(vertices);
+        }
+        device.setPreviewRenderSettings(settings);
+        if (!imagesMatch(baseline, render())) {
+            std::cerr << "FAIL: disabling an effect failed to restore the baseline\n";
+            ok = false;
+        }
+    }
+    scene.backgroundEnabled = true;
+    scene.screenSource = PreviewScene::ScreenSource::backgroundImage;
+    device.updatePreviewScene(scene);
+    const auto darkBaseline = render();
+    settings.bloom.override = EffectOverride::enabled;
+    device.setPreviewRenderSettings(settings);
+    const auto bloomHalo = render();
+    std::size_t haloPixels = 0;
+    // The first pixel is outside the centered triangle and gives the clear color.
+    for (std::size_t pixel = 0; pixel < darkBaseline.pixels.size(); pixel += 4) {
+        bool clear = true;
+        for (std::size_t channel = 0; channel < 3; ++channel)
+            clear &= darkBaseline.pixels[pixel + channel] == darkBaseline.pixels[channel];
+        if (clear && bloomHalo.pixels[pixel] > darkBaseline.pixels[pixel] + 2)
+            ++haloPixels;
+    }
+    if (haloPixels == 0) {
+        std::cerr << "FAIL: Bloom halo was clipped to the model silhouette\n";
+        ok = false;
+    }
+    settings.bloom.override = EffectOverride::disabled;
+    scene.backgroundEnabled = false;
+    device.updatePreviewScene(scene);
+    device.setPreviewRenderSettings(settings);
+    // A new frame may use the new settings while queued readbacks retain the old buffer.
+    device.setPreviewRenderSettings(settings);
+    const auto first = device.enqueueRenderToImage({97, 95});
+    settings.exposure = 2.0F;
+    device.setPreviewRenderSettings(settings);
+    const auto second = device.enqueueRenderToImage({97, 95});
+    const auto oldImage = device.collectRenderedImage(first).value();
+    const auto newImage = device.collectRenderedImage(second).value();
+    ok &= imagesMatch(baseline, oldImage) && !imagesMatch(oldImage, newImage);
+    const auto timings = device.previewPassTimings();
+    const auto totalTime = device.previewGpuNanoseconds();
+    if (totalTime != 0 &&
+        (timings.model == 0 || timings.toneMap == 0 ||
+         timings.shadow + timings.ambientOcclusion + timings.model + timings.postProcess + timings.toneMap >
+             totalTime)) {
+        std::cerr << "FAIL: GPU pass timings were unavailable or outside their frame interval\n";
+        ok = false;
+    }
+    // Exercise bloom reallocation, odd extents and repeated on/off transitions.
+    for (const auto extent : {RenderTargetDesc{65, 63}, RenderTargetDesc{66, 64}, RenderTargetDesc{1, 1}}) {
+        settings.bloom.override = EffectOverride::enabled;
+        device.setPreviewRenderSettings(settings);
+        static_cast<void>(device.renderToImage(extent));
+        settings.bloom.override = EffectOverride::disabled;
+        device.setPreviewRenderSettings(settings);
+        static_cast<void>(device.renderToImage(extent));
+    }
+    material.skin = 1.0F;
+    device.updatePreviewMaterials(std::array{material});
+    scene.lightDirection[2] = -1.0F;
+    device.updatePreviewScene(scene);
+    settings.exposure = 0.0F;
+    device.setPreviewRenderSettings(settings);
+    const auto skinOff = render();
+    settings.skinSubsurface.override = EffectOverride::enabled;
+    device.setPreviewRenderSettings(settings);
+    if (skinOff.pixels == render().pixels) {
+        std::cerr << "FAIL: skin scattering toggle had no effect under back lighting\n";
+        ok = false;
+    }
+    device.setPreviewRenderSettings(saved);
+    resetPreviewScene(device);
+    return ok;
+}
+
+bool physicalDofAndFocusPicking(dayo::graphics::VulkanDevice& device) {
+    using namespace dayo::graphics;
+    const auto saved = device.previewRenderSettings();
+    auto settings = legacyPreviewRenderSettings();
+    settings.ambientOcclusion.override = settings.softShadows.override = settings.hairShading.override =
+        EffectOverride::disabled;
+    settings.depthOfField.override = EffectOverride::enabled;
+    settings.dof.focusMode = PreviewFocusMode::manual;
+    settings.dof.temporal = false;
+    settings.dof.focusDistanceMetres = 2.4F;
+    settings.dof.quality = PreviewDofQuality::high;
+    settings.dof.fNumber = 32.0F;
+    PreviewScene scene;
+    scene.backgroundEnabled = false;
+    scene.verticalFovRadians = 0.4F;
+    scene.lightDirection[0] = scene.lightDirection[1] = 0.0F;
+    scene.lightDirection[2] = 1.0F;
+    device.updatePreviewScene(scene);
+    std::array<PreviewVertex, 8> vertices{};
+    const std::array positions{Float3{-1.0F, -1.0F, 1.0F}, Float3{1.0F, -1.0F, 1.0F},     Float3{1.0F, 1.0F, 1.0F},
+                               Float3{-1.0F, 1.0F, 1.0F},  Float3{-0.14F, -0.14F, -2.0F}, Float3{0.0F, -0.14F, -2.0F},
+                               Float3{0.0F, 0.14F, -2.0F}, Float3{-0.14F, 0.14F, -2.0F}};
+    for (std::size_t i = 0; i < vertices.size(); ++i) {
+        std::copy(positions[i].begin(), positions[i].end(), vertices[i].position);
+        vertices[i].normal[2] = -1.0F;
+    }
+    const std::array<std::uint32_t, 12> indices{0, 2, 1, 0, 3, 2, 4, 6, 5, 4, 7, 6};
+    std::array<PreviewMaterial, 2> materials{};
+    materials[0].diffuse[0] = materials[0].diffuse[1] = 0.02F;
+    materials[0].diffuse[2] = 0.7F;
+    materials[1].diffuse[0] = 0.7F;
+    materials[1].diffuse[1] = materials[1].diffuse[2] = 0.02F;
+    device.uploadPreviewMesh(vertices, indices);
+    device.uploadPreviewTextures({});
+    device.updatePreviewMaterials(materials);
+    device.updatePreviewDraws(std::array<PreviewDraw, 2>{{{0, 6, 0}, {6, 6, 1}}});
+    device.setPreviewRenderSettings(settings);
+    const auto closed = device.renderToImage({192, 192});
+    settings.dof.fNumber = 0.7F;
+    device.setPreviewRenderSettings(settings);
+    const auto open = device.renderToImage({192, 192});
+    bool ok = true;
+    const auto expect = [&](bool condition, const char* message) {
+        if (!condition) {
+            std::cerr << "FAIL: " << message << '\n';
+            ok = false;
+        }
+    };
+    expect(!imagesMatch(open, closed), "opening the aperture must change a depth discontinuity");
+    std::size_t expandedPixels = 0;
+    for (std::size_t y = 50; y < 142; ++y)
+        for (std::size_t x = 97; x < 104; ++x) {
+            const auto offset = (y * 192U + x) * 4U;
+            if (open.pixels[offset] > closed.pixels[offset] + 5)
+                ++expandedPixels;
+        }
+    expect(expandedPixels > 40, "near coverage must spread red foreground beyond its sharp silhouette");
+    const auto maxGreen = [](const dayo::core::ImageRgba8& image) {
+        std::uint8_t maximum = 0;
+        for (std::size_t i = 1; i < image.pixels.size(); i += 4)
+            maximum = std::max(maximum, image.pixels[i]);
+        return maximum;
+    };
+    expect(maxGreen(open) <= maxGreen(closed) + 5,
+           "near reconstruction must not expose white clear color through an opaque background");
+    const auto interior = (96U * 192U + 65U) * 4U;
+    expect(std::abs(static_cast<int>(open.pixels[interior]) - static_cast<int>(closed.pixels[interior])) <= 3,
+           "normalized near coverage must preserve constant foreground radiance");
+    dayo::core::ImageRgba8 previousAperture;
+    for (int step = 0; step < 12; ++step) {
+        settings.dof.fNumber = 2.05F + static_cast<float>(step) * 0.002F;
+        device.setPreviewRenderSettings(settings);
+        auto image = device.renderToImage({192, 192});
+        if (!previousAperture.pixels.empty()) {
+            int largestChange = 0;
+            for (std::size_t i = 0; i < image.pixels.size(); ++i)
+                largestChange = std::max(largestChange, std::abs(static_cast<int>(image.pixels[i]) -
+                                                                 static_cast<int>(previousAperture.pixels[i])));
+            expect(largestChange <= 8, "subpixel CoC changes must not produce discontinuous integer-grid blur jumps");
+        }
+        previousAperture = std::move(image);
+    }
+    settings.dof.fNumber = 0.7F;
+    settings.dof.apertureBlades = 5;
+    settings.dof.apertureCurvature = 0.0F;
+    device.setPreviewRenderSettings(settings);
+    const auto pentagon = device.renderToImage({192, 192});
+    expect(!imagesMatch(open, pentagon), "aperture LUT must change the rendered bokeh shape");
+    expect(maxGreen(pentagon) <= maxGreen(closed) + 5, "polygonal bokeh must preserve opaque-layer energy");
+    settings.dof.apertureRotationDegrees = 36.0F;
+    device.setPreviewRenderSettings(settings);
+    expect(!imagesMatch(pentagon, device.renderToImage({192, 192})), "aperture rotation must reach the GPU lookup");
+    settings.dof.apertureBlades = 0;
+    settings.dof.apertureCurvature = 1.0F;
+    settings.dof.apertureRotationDegrees = 0.0F;
+    settings.dof.quality = PreviewDofQuality::automatic;
+    device.setPreviewRenderSettings(settings);
+    device.setPreviewStillQuality(true);
+    expect(imagesMatch(open, device.renderToImage({192, 192})),
+           "automatic still quality must use the high-quality lens radius and sample budget on an APU");
+    device.setPreviewStillQuality(false);
+    settings.dof.quality = PreviewDofQuality::high;
+    settings.dof.focusDistanceMetres = 0.8F;
+    device.setPreviewRenderSettings(settings);
+    const auto focused = device.renderToImage({192, 192});
+    const auto edgePixel = (96U * 192U + 98U) * 4U;
+    expect(focused.pixels[edgePixel] + 5 < open.pixels[edgePixel],
+           "focused foreground must not leak red into blurred background");
+    if (const auto* directory = std::getenv("DAYO_TEST_DOF_OUTPUT")) {
+        std::filesystem::create_directories(directory);
+        dayo::core::writeFrame(std::filesystem::path(directory) / "dof-closed.png", closed,
+                               dayo::core::OutputFormat::png);
+        dayo::core::writeFrame(std::filesystem::path(directory) / "dof-open.png", open, dayo::core::OutputFormat::png);
+        dayo::core::writeFrame(std::filesystem::path(directory) / "dof-focused.png", focused,
+                               dayo::core::OutputFormat::png);
+    }
+    const auto timings = device.previewPassTimings();
+    if (device.previewGpuNanoseconds() != 0)
+        expect(timings.coc > 0 && timings.dofDownsample > 0 && timings.dofBlur > 0 && timings.dofComposite > 0,
+               "independent DoF passes must have GPU timing samples");
+    std::cout << "DoF GPU ns: CoC=" << timings.coc << ", downsample/tiles=" << timings.dofDownsample
+              << ", near/far=" << timings.dofBlur << ", composite=" << timings.dofComposite << '\n';
+    if (std::getenv("DAYO_TEST_DOF_BENCHMARK") != nullptr) {
+        for (const auto quality :
+             {PreviewDofQuality::performance, PreviewDofQuality::balanced, PreviewDofQuality::high}) {
+            settings.dof.quality = quality;
+            device.setPreviewRenderSettings(settings);
+            for (int sample = 0; sample < 6; ++sample) {
+                static_cast<void>(device.renderToImage({1920, 1080}));
+                if (sample < 3)
+                    continue;
+                const auto time = device.previewPassTimings();
+                std::cout << "DoF 1080p quality=" << static_cast<int>(quality) << " sample=" << sample
+                          << " ns CoC=" << time.coc << " downsample/tiles=" << time.dofDownsample
+                          << " blur=" << time.dofBlur << " composite=" << time.dofComposite << '\n';
+            }
+        }
+        for (const auto quality : {PreviewDofQuality::balanced, PreviewDofQuality::high}) {
+            settings.dof.temporal = true;
+            settings.dof.quality = quality;
+            device.setPreviewRenderSettings(settings);
+            for (int sample = 0; sample < 6; ++sample) {
+                scene.animationTimeSeconds += 1.0F / 60.0F;
+                device.updatePreviewScene(scene);
+                static_cast<void>(device.renderToImage({1920, 1080}));
+                if (sample < 3)
+                    continue;
+                const auto time = device.previewPassTimings();
+                std::cout << "Temporal DoF 1080p quality=" << static_cast<int>(quality) << " sample=" << sample
+                          << " ns prepass=" << time.ambientOcclusion << " CoC=" << time.coc
+                          << " downsample/tiles=" << time.dofDownsample << " blur=" << time.dofBlur
+                          << " composite/history=" << time.dofComposite << '\n';
+            }
+        }
+        settings.dof.temporal = false;
+        scene.animationTimeSeconds = 0.0F;
+        device.updatePreviewScene(scene);
+    }
+    // Exercise moving, GPU-skinned geometry and a moving camera together.
+    // Compare the sequence against fresh spatial frames and test history cuts.
+    settings.dof.quality = PreviewDofQuality::high;
+    settings.dof.focusDistanceMetres = 2.4F;
+    settings.dof.temporal = true;
+    for (std::size_t i = 4; i < vertices.size(); ++i) {
+        vertices[i].gpuSkinning = 1;
+        vertices[i].bones[0] = 0;
+        vertices[i].weights[0] = 1.0F;
+    }
+    device.uploadPreviewMesh(vertices, indices);
+    device.setPreviewRenderSettings(settings);
+    const auto animate = [&](int frame) {
+        PreviewBoneTransform bone;
+        bone.translation[0] = frame < 16 ? 0.0F : static_cast<float>(frame - 16) * 0.012F;
+        device.updatePreviewBones(std::array{bone});
+        scene.cameraRotation[1] = frame < 16 ? 0.0F : static_cast<float>(frame - 16) * 0.001F;
+        scene.animationTimeSeconds = static_cast<float>(frame) / 60.0F;
+        device.updatePreviewScene(scene);
+    };
+    std::vector<dayo::core::ImageRgba8> temporalFrames;
+    for (int frame = 0; frame < 32; ++frame) {
+        animate(frame);
+        temporalFrames.push_back(device.renderToImage({192, 192}));
+        expect(maxGreen(temporalFrames.back()) <= maxGreen(closed) + 5,
+               "temporal reconstruction must preserve opaque near/far radiance");
+        if (const auto* directory = std::getenv("DAYO_TEST_DOF_OUTPUT")) {
+            const auto path = std::filesystem::path(directory) / "temporal";
+            std::filesystem::create_directories(path);
+            dayo::core::writeFrame(path / (std::to_string(1000 + frame) + ".png"), temporalFrames.back(),
+                                   dayo::core::OutputFormat::png);
+        }
+    }
+    PreviewBoneTransform hiddenBone;
+    hiddenBone.translation[0] = 0.6F;
+    device.updatePreviewBones(std::array{hiddenBone});
+    scene.animationTimeSeconds = 32.0F / 60.0F;
+    device.updatePreviewScene(scene);
+    const auto uncovered = device.renderToImage({192, 192});
+    device.updatePreviewBones({});
+    scene.cameraRotation[1] = 0.0F;
+    scene.animationTimeSeconds = 0.0F;
+    device.updatePreviewScene(scene);
+    const auto seeked = device.renderToImage({192, 192});
+    scene.cameraRotation[1] = 0.8F;
+    scene.animationTimeSeconds = 1.0F / 60.0F;
+    device.updatePreviewScene(scene);
+    const auto cut = device.renderToImage({192, 192});
+    settings.dof.temporal = false;
+    device.setPreviewRenderSettings(settings);
+    expect(imagesMatch(cut, device.renderToImage({192, 192})),
+           "camera cuts must discard temporal color and sample phase");
+    scene.cameraRotation[1] = 0.0F;
+    scene.animationTimeSeconds = 0.0F;
+    device.updatePreviewScene(scene);
+    expect(imagesMatch(seeked, device.renderToImage({192, 192})), "backward seeks must discard temporal history");
+    double movingError = 0.0;
+    for (int frame = 16; frame < 32; ++frame) {
+        animate(frame);
+        const auto reference = device.renderToImage({192, 192});
+        for (std::size_t i = 0; i < reference.pixels.size(); ++i)
+            movingError += std::abs(static_cast<int>(reference.pixels[i]) -
+                                    static_cast<int>(temporalFrames[static_cast<std::size_t>(frame)].pixels[i]));
+    }
+    movingError /= 16.0 * static_cast<double>(open.pixels.size());
+    std::cout << "Temporal moving-frame mean byte error against spatial reference: " << movingError << '\n';
+    expect(movingError < 4.0,
+           "reprojected history must follow skinned geometry and camera motion without broad ghosting");
+    device.updatePreviewBones(std::array{hiddenBone});
+    scene.animationTimeSeconds = 32.0F / 60.0F;
+    device.updatePreviewScene(scene);
+    const auto uncoveredReference = device.renderToImage({192, 192});
+    double uncoveredError = 0.0;
+    for (std::size_t i = 0; i < uncovered.pixels.size(); ++i)
+        uncoveredError +=
+            std::abs(static_cast<int>(uncovered.pixels[i]) - static_cast<int>(uncoveredReference.pixels[i]));
+    uncoveredError /= static_cast<double>(uncovered.pixels.size());
+    expect(uncoveredError < 1.0, "disoccluded background must reject the old foreground and its blur halo");
+    device.updatePreviewBones({});
+    scene.cameraRotation[1] = 0.0F;
+    scene.animationTimeSeconds = 0.0F;
+    device.updatePreviewScene(scene);
+
+    if (std::getenv("DAYO_TEST_DOF_EDGE") != nullptr) {
+        // Isolate a moving near silhouette at 1080p. Measure only its 96-pixel
+        // halo, not the mostly unchanged background which dilutes global means.
+        constexpr int count = 24, firstX = 912, firstY = 492, width = 112, height = 96;
+        constexpr float pixelStep = 0.37F;
+        std::array<std::vector<float>, count> temporalEdges, spatialEdges;
+        const auto capture = [&](auto& frames, bool temporal) {
+            settings.dof.temporal = temporal;
+            settings.dof.focusDistanceMetres = 2.4F;
+            settings.dof.fNumber = 0.7F;
+            device.setPreviewRenderSettings(settings);
+            for (int frame = 0; frame < count; ++frame) {
+                PreviewBoneTransform bone;
+                bone.translation[0] = static_cast<float>(frame) * pixelStep * 2.0F * std::tan(0.2F) / 1080.0F;
+                device.updatePreviewBones(std::array{bone});
+                scene.animationTimeSeconds = static_cast<float>(frame) / 60.0F;
+                device.updatePreviewScene(scene);
+                const auto image = device.renderToImage({1920, 1080});
+                if (temporal && frame == 8) {
+                    const auto textures = VulkanPreviewTestAccess::nearDiagnostics(device);
+                    const auto coverage = device.readbackTextureEx(textures[0], 0, 0);
+                    const auto anchors = device.readbackTextureEx(textures[1], 0, 0);
+                    const auto coc = device.readbackTextureEx(textures[2], 0, 0);
+                    const auto half = [](const auto& bytes, std::size_t channel) {
+                        std::uint16_t bits{};
+                        std::memcpy(&bits, bytes.data() + channel * 2U, sizeof(bits));
+                        return dayo::core::halfToFloat(bits);
+                    };
+                    const auto cocAt = [&](std::size_t pixel) {
+                        if (coc.size() == 1920U * 1080U * sizeof(float)) {
+                            float value{};
+                            std::memcpy(&value, coc.data() + pixel * sizeof(float), sizeof(value));
+                            return value;
+                        }
+                        return half(coc, pixel);
+                    };
+                    std::size_t halo = 0, valid = 0;
+                    for (std::size_t y = 246; y < 294; ++y)
+                        for (std::size_t x = 456; x < 512; ++x) {
+                            const auto offset = (y * 960U + x) * 4U;
+                            if (half(coverage, offset + 3U) < 0.03F || cocAt(y * 2U * 1920U + x * 2U) > 0.0F)
+                                continue;
+                            ++halo;
+                            const float w = half(anchors, offset + 3U);
+                            if (w < 0.5F)
+                                continue;
+                            const auto high = static_cast<std::uint32_t>(w) - 1U;
+                            const auto ax = static_cast<std::size_t>(half(anchors, offset)) + ((high & 31U) << 11U);
+                            const auto ay =
+                                static_cast<std::size_t>(half(anchors, offset + 1U)) + ((high >> 5U) << 11U);
+                            if (ax < 1920 && ay < 1080 && cocAt(ay * 1920U + ax) > 0.5F)
+                                ++valid;
+                        }
+                    std::cout << "1080p foreground halo valid source anchors=" << valid << '/' << halo << '\n';
+                    expect(halo > 100 && valid * 100U >= halo * 98U,
+                           "at least 98 percent of the 1080p near halo must retain a real foreground source anchor");
+                }
+                auto& edge = frames[static_cast<std::size_t>(frame)];
+                edge.reserve(width * height * 3);
+                for (int y = firstY; y < firstY + height; ++y)
+                    for (int x = firstX; x < firstX + width; ++x)
+                        for (std::size_t channel = 0; channel < 3; ++channel)
+                            edge.push_back(
+                                image.pixels[(static_cast<std::size_t>(y) * 1920U + static_cast<std::size_t>(x)) * 4U +
+                                             channel]);
+            }
+        };
+        capture(temporalEdges, true);
+        capture(spatialEdges, false);
+        double error = 0.0, squaredError = 0.0, temporalVariance = 0.0, spatialVariance = 0.0;
+        std::size_t samples = 0;
+        for (int frame = 4; frame < count; ++frame) {
+            const auto index = static_cast<std::size_t>(frame);
+            for (int y = 0; y < height; ++y)
+                for (int x = 2; x < width - 2; ++x)
+                    for (std::size_t channel = 0; channel < 3; ++channel) {
+                        const auto i =
+                            (static_cast<std::size_t>(y) * width + static_cast<std::size_t>(x)) * 3U + channel;
+                        const auto previous = [&](const auto& frames) {
+                            return std::lerp(frames[index - 1][i], frames[index - 1][i - 3U], pixelStep);
+                        };
+                        const double difference = temporalEdges[index][i] - spatialEdges[index][i];
+                        error += std::abs(difference);
+                        squaredError += difference * difference;
+                        const double td = temporalEdges[index][i] - previous(temporalEdges);
+                        const double sd = spatialEdges[index][i] - previous(spatialEdges);
+                        temporalVariance += td * td;
+                        spatialVariance += sd * sd;
+                        ++samples;
+                    }
+        }
+        const double denominator = static_cast<double>(samples);
+        std::cout << "1080p near-edge MAE=" << error / denominator << " RMS=" << std::sqrt(squaredError / denominator)
+                  << " motion-compensated frame variance=" << temporalVariance / denominator
+                  << " spatial=" << spatialVariance / denominator << '\n';
+        expect(error / denominator < 4.0 && std::sqrt(squaredError / denominator) < 7.0,
+               "1080p moving foreground halo must follow the spatial reference without broad ghosts");
+        expect(temporalVariance / denominator < 8.0,
+               "1080p motion-compensated foreground edge must remain temporally stable");
+        device.updatePreviewBones({});
+        scene.animationTimeSeconds = 0.0F;
+        device.updatePreviewScene(scene);
+    }
+
+    // Physical export sampling moves the lens while retaining the focal plane.
+    settings.dof.focusDistanceMetres = 2.4F;
+    device.setPreviewRenderSettings(settings);
+    device.setPreviewStillQuality(true);
+    device.setPreviewLensSample(std::array{0.0F, 0.0F});
+    const auto centralRay = device.renderToImage({192, 192});
+    expect(imagesMatch(centralRay, closed),
+           "physical lens accumulation must bypass the spatial blur instead of doubling DoF");
+    settings.dof.focusDistanceMetres = 0.8F;
+    device.setPreviewRenderSettings(settings);
+    device.setPreviewLensSample(std::array{-0.7F, -0.2F});
+    const auto focusedLeft = device.renderToImage({192, 192});
+    device.setPreviewLensSample(std::array{0.7F, 0.2F});
+    const auto focusedRight = device.renderToImage({192, 192});
+    bool focalSilhouetteMatches = true;
+    for (std::size_t i = 0; i < focusedLeft.pixels.size(); i += 4U)
+        focalSilhouetteMatches &= (focusedLeft.pixels[i] > focusedLeft.pixels[i + 2]) ==
+                                  (focusedRight.pixels[i] > focusedRight.pixels[i + 2]);
+    expect(focalSilhouetteMatches, "off-axis aperture samples must leave geometry on the focal plane fixed");
+    settings.dof.focusDistanceMetres = 2.4F;
+    device.setPreviewRenderSettings(settings);
+    device.setPreviewLensSample(std::array{-0.7F, -0.2F});
+    const auto defocusedLeft = device.renderToImage({192, 192});
+    device.setPreviewLensSample(std::array{0.7F, 0.2F});
+    expect(!imagesMatch(defocusedLeft, device.renderToImage({192, 192})),
+           "geometry away from the focal plane must shift across physical lens samples");
+    Rgba16fSampleAccumulator lensAccumulator;
+    lensAccumulator.begin({192, 192, 1}, 64);
+    for (const auto& sample : previewApertureSamples(0, 1.0F, 0.0F, 64)) {
+        device.setPreviewLensSample(sample);
+        static_cast<void>(device.renderToImage({192, 192}));
+        lensAccumulator.add(device.readbackTextureEx(device.previewHdrTexture(), 0, 0));
+    }
+    const auto lensAverage = lensAccumulator.resolveFloat32();
+    const auto outsideEdge = (96U * 192U + 102U) * 4U;
+    expect(
+        lensAverage[outsideEdge] > 0.04F && lensAverage[outsideEdge + 3] > 0.99F,
+        "64-sample HDR lens integration must spread foreground radiance while preserving opaque background coverage");
+    const auto integratedDisplay = device.renderPreviewHdrToImage({192, 192}, lensAccumulator.resolve());
+    if (const auto* directory = std::getenv("DAYO_TEST_DOF_OUTPUT"))
+        dayo::core::writeFrame(std::filesystem::path(directory) / "dof-cinematic.png", integratedDisplay,
+                               dayo::core::OutputFormat::png);
+    device.setPreviewLensSample(std::nullopt);
+    device.setPreviewStillQuality(false);
+
+    settings.depthOfField.override = EffectOverride::disabled;
+    settings.antiAliasing = PreviewAntiAliasing::fxaa;
+    device.setPreviewStillQuality(true);
+    dayo::core::ImageRgba8 firstTransform;
+    for (const auto transform :
+         {PreviewViewTransform::aces, PreviewViewTransform::agx, PreviewViewTransform::neutral}) {
+        settings.viewTransform = transform;
+        settings.exposure = 1.3F;
+        settings.whiteBalance = 4300.0F;
+        settings.bloom.override = EffectOverride::enabled;
+        settings.bloomThreshold = 0.03F;
+        settings.bloom.intensity = 0.7F;
+        device.setPreviewRenderSettings(settings);
+        const auto preview = device.renderToImage({192, 192});
+        const auto hdr = device.readbackTextureEx(device.previewHdrTexture(), 0, 0);
+        const auto output = device.renderPreviewHdrToImage({192, 192}, hdr);
+        expect(imagesMatch(preview, output), "integrated HDR export must share preview color, Bloom and FXAA exactly");
+        if (firstTransform.pixels.empty())
+            firstTransform = output;
+        else
+            expect(!imagesMatch(firstTransform, output), "selected AgX/Neutral must change integrated HDR output");
+    }
+    device.setPreviewStillQuality(false);
+    settings = saved;
+    // Force the depth prepass solely for the pick, with all spatial effects off.
+    settings.depthOfField.override = EffectOverride::disabled;
+    device.setPreviewRenderSettings(settings);
+    device.requestPreviewFocusPick({0.4F, 0.5F});
+    const auto ticket = device.enqueueRenderToImage({193, 191});
+    scene.cameraRotation[1] = 0.8F;
+    device.updatePreviewScene(scene);
+    static_cast<void>(device.collectRenderedImage(ticket));
+    const auto pick = device.pollPreviewFocusSample();
+    expect(pick && std::abs(pick->worldPoint[2] + 2.0F) < 0.001F,
+           "asynchronous pick must use the submitted camera snapshot");
+    expect(pick && pick->materialIndex == 1 && pick->instanceIndex == 0 && pick->instanceCount == 1,
+           "asynchronous pick must return the rendered material and clone identity");
+    expect(!device.pollPreviewFocusPick(), "focus pick result must be consumed once");
+    scene.cameraRotation[1] = 0.0F;
+    device.updatePreviewScene(scene);
+    materials[1].diffuse[3] = 0.6F;
+    device.updatePreviewMaterials(materials);
+    device.requestPreviewFocusPick({0.4F, 0.5F});
+    static_cast<void>(device.renderToImage({192, 192}));
+    const auto throughBlend = device.pollPreviewFocusPick();
+    expect(throughBlend && std::abs((*throughBlend)[2] - 1.0F) < 0.001F,
+           "focus picking must select the opaque surface behind blended material");
+    materials[1].diffuse[3] = 1.0F;
+    device.updatePreviewMaterials(materials);
+    scene.cameraDistance = 8.0F;
+    device.updatePreviewScene(scene);
+    device.updatePreviewDraws(std::array<PreviewDraw, 1>{{{6, 6, 1, 2}}});
+    PreviewBoneTransform submittedBone;
+    submittedBone.translation[2] = 0.3F;
+    device.updatePreviewBones(std::array{submittedBone});
+    device.requestPreviewFocusPick({0.925F, 0.5F});
+    const auto cloneTicket = device.enqueueRenderToImage({192, 192});
+    submittedBone.translation[2] = 0.9F;
+    device.updatePreviewBones(std::array{submittedBone});
+    static_cast<void>(device.collectRenderedImage(cloneTicket));
+    const auto clonePick = device.pollPreviewFocusSample();
+    expect(clonePick && clonePick->materialIndex == 1 && clonePick->instanceIndex == 1 && clonePick->instanceCount == 2,
+           "focus identity must distinguish rendered clones of the same material");
+    expect(clonePick && clonePick->bones.size() == 1 && clonePick->bones[0].translation[2] == 0.3F,
+           "focus binding must retain the submitted bone pose across asynchronous updates");
+    device.updatePreviewBones({});
+    scene.cameraDistance = 3.0F;
+    device.updatePreviewScene(scene);
+    device.updatePreviewDraws(std::array<PreviewDraw, 1>{{{6, 6, 1}}});
+    device.requestPreviewFocusPick({0.99F, 0.99F});
+    static_cast<void>(device.renderToImage({65, 63}));
+    expect(!device.pollPreviewFocusPick(), "clear depth after resize must not become a focus point");
+    device.requestPreviewFocusPick({0.4F, 0.5F});
+    static_cast<void>(device.renderToImage({192, 192}));
+    device.cancelPreviewFocusPick();
+    expect(!device.pollPreviewFocusPick(), "cancelled pick must not overwrite a new project or focus mode");
+    // All quality levels and tiny/odd extents must initialize their tile and blur resources.
+    settings.depthOfField.override = EffectOverride::enabled;
+    for (const auto quality : {PreviewDofQuality::performance, PreviewDofQuality::balanced, PreviewDofQuality::high}) {
+        settings.dof.quality = quality;
+        device.setPreviewRenderSettings(settings);
+        for (const auto extent : {RenderTargetDesc{65, 63}, RenderTargetDesc{1, 1}})
+            static_cast<void>(device.renderToImage(extent));
+    }
+    scene.perspective = false;
+    device.updatePreviewScene(scene);
+    const auto orthoOn = device.renderToImage({65, 63});
+    settings.depthOfField.override = EffectOverride::disabled;
+    device.setPreviewRenderSettings(settings);
+    expect(imagesMatch(orthoOn, device.renderToImage({65, 63})), "orthographic VMD keys must suspend thin-lens DoF");
+    device.setPreviewRenderSettings(saved);
+    resetPreviewScene(device);
+    return ok;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1727,6 +2468,12 @@ int main(int argc, char** argv) {
             std::cerr << "FAIL: VMD light color did not affect diffuse shading\n";
             return 1;
         }
+        if (!spatialEffectsPreserveMaterialBoundaries(device))
+            return 1;
+        if (!renderEffectsReachGpu(device))
+            return 1;
+        if (!physicalDofAndFocusPicking(device))
+            return 1;
         device.waitIdle();
         if (device.validationErrorCount() != 0) {
             std::cerr << "FAIL: Preview emitted " << device.validationErrorCount() << " Vulkan validation errors\n";

@@ -184,6 +184,8 @@ Preview は RT 機能を必要としない描画経路です。シャドウマ�
 
 モデルの Inspector では、材質ごとに `PMX`、`Skin`、`Hair`、`Cloth`、`Metal`、`Plastic`、`Glass` を選択できます。選択した内容はプロジェクトに保存されます。
 
+Viewport の `Effects` または Render ワークスペースの Inspector から、AO（SSAO/GTAO）、肌SSS、髪のハイライト、布の光沢、Clearcoat、PCSS、Bloom、FXAA、被写界深度を切り替えられます。プリセットに対する個別上書きとリセット、ACES／AgX／Neutral、露出・ホワイトバランスに対応し、設定は `.dayo` に保存されます。材質の効果は Skin／Hair／Cloth／Plastic／Glass プリセットに対応します。方式の詳細と制限は[描画エフェクト](docs/preview/render-effects.md)を参照してください。
+
 画質 profile は `--preview-quality auto`、`apu`、`high` から選択できます。既定値の `auto` は GPU の種類とメモリ使用状況を考慮します。`--present` では Present mode、`--async-compute` では実験的な別キューでの変形処理を指定できます。これらの設定と Vega 8 での計測結果は[Preview の性能](docs/preview-performance.md)を参照してください。
 
 ### Subayai / BDPT

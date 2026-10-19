@@ -4,6 +4,7 @@
 
 #include "app/application_options.hpp"
 #include "app/audio_export_job.hpp"
+#include "app/preview_focus.hpp"
 #include "app/video_export_job.hpp"
 #include "core/editor.hpp"
 #include "core/frame_scratch.hpp"
@@ -71,11 +72,12 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void refreshVideoFrame();
     void refreshPreviewTextures();
     void refreshPreviewBackground();
-    void refreshPreviewScene();
+    void refreshPreviewScene(float focusDeltaOverride = -1.0F);
     void buildUi();
     void buildMainMenuBar();
     void buildDockLayout();
     void buildInspectorPanel();
+    void buildRenderSettingsControls();
     void buildCameraLightControls();
     void captureCameraForEditing();
     void captureLightForEditing();
@@ -131,6 +133,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     graphics::NativeOidnProvider nativeOidnProvider_;
     core::Scene scene_;
     core::fx::SceneEvaluationSnapshot evaluatedModels_;
+    std::optional<std::uint32_t> missingFocusModelProjectIndex_;
     std::vector<core::EffectController> nativeControllerDeclarations_;
     core::FrameScratch frameScratch_;
     core::FrameProfiler frameProfiler_;
@@ -180,6 +183,13 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::uint64_t animatedTopologyGeneration_{};
     float animationFrame_{};
     int uploadedAnimationFrame_{-1};
+    graphics::PreviewFocusState previewFocusState_;
+    std::vector<PreviewFocusModelBinding> previewFocusBindings_;
+    std::vector<PreviewFocusModelBinding> pendingFocusBindings_;
+    core::fx::SceneEvaluationSnapshot pendingFocusSnapshot_;
+    bool pendingTrackingFocus_{};
+    bool trackingFocusFallback_{};
+    float previewFocusEvaluatedFrame_{-1.0F};
     bool playing_{true};
     bool nativePlaybackWasActive_{};
     bool nativeOnStartPending_{true};
@@ -284,7 +294,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     bool recordCamera_{};
     bool followVmdCamera_{true};
     ui::ViewportInteraction viewportInteraction_;
-    enum class InspectorPage { selection, camera, light };
+    enum class InspectorPage { selection, camera, light, effects };
     InspectorPage inspectorPage_{InspectorPage::selection};
     bool inspectorFocusRequested_{};
     bool cameraEditPreview_{};
@@ -318,6 +328,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::uint32_t imageSequenceNextFrame_{};
     std::uint32_t imageSequenceSampleIndex_{};
     std::uint32_t imageSequenceSampleCount_{1};
+    std::vector<std::array<float, 2>> imageSequenceLensSamples_;
     std::uint64_t imageSequencePreRollFrame_{};
     std::uint64_t imageSequenceRestoreNextFrame_{};
     float imageSequencePreviousSampleFrame_{};

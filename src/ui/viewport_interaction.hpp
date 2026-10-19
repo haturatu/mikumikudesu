@@ -10,6 +10,9 @@ struct ViewportInput {
     bool pan{};
     float wheel{};
     bool contextMenu{};
+    bool focusPick{};
+    ImVec2 focusUv{};
+    bool focusTracking{};
 };
 
 // Own the mouse gesture instead of letting the image's empty space move its window.
@@ -23,6 +26,18 @@ class ViewportInteraction {
         const bool hovered = ImGui::IsItemHovered();
         const bool active = ImGui::IsItemActive();
         const auto& io = ImGui::GetIO();
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+            focusStarted_ = io.KeyCtrl;
+            focusTracking_ = io.KeyShift;
+            focusDragged_ = false;
+        }
+        if (focusStarted_ && ImGui::IsMouseDragging(ImGuiMouseButton_Left))
+            focusDragged_ = true;
+        const bool focusPick =
+            focusStarted_ && !focusDragged_ && hovered && ImGui::IsMouseReleased(ImGuiMouseButton_Left);
+        const bool focusGesture = focusStarted_;
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
+            focusStarted_ = false;
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
             rightClickStarted_ = true;
             rightDragged_ = false;
@@ -35,14 +50,20 @@ class ViewportInteraction {
             rightClickStarted_ = false;
         return {
             hovered,
-            navigationEnabled && active && ImGui::IsMouseDragging(ImGuiMouseButton_Left),
+            navigationEnabled && !focusGesture && active && ImGui::IsMouseDragging(ImGuiMouseButton_Left),
             navigationEnabled && active && ImGui::IsMouseDragging(ImGuiMouseButton_Right),
             navigationEnabled && hovered ? io.MouseWheel : 0.0F,
             contextMenu,
+            focusPick,
+            {(io.MousePos.x - position.x) / size.x, (io.MousePos.y - position.y) / size.y},
+            focusPick && focusTracking_,
         };
     }
 
   private:
+    bool focusStarted_{};
+    bool focusTracking_{};
+    bool focusDragged_{};
     bool rightClickStarted_{};
     bool rightDragged_{};
 };

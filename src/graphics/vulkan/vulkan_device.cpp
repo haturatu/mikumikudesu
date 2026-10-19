@@ -1,4 +1,5 @@
 #include "graphics/vulkan/vulkan_device.hpp"
+#include "graphics/preview_aperture.hpp"
 #include "graphics/vulkan/vulkan_command_list.hpp"
 #include "graphics/vulkan/vulkan_upload_context.hpp"
 
@@ -67,6 +68,74 @@ void check(VkResult result, std::string_view operation) {
     }
 }
 
+// Push constant blocks. Keep every layout byte-for-byte compatible with the
+// matching ConstantBuffer declaration in the shader.
+struct PreviewAoConstants {
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t horizontal;
+    std::uint32_t mode;
+    float projection[4];
+    float params[4];
+};
+static_assert(sizeof(PreviewAoConstants) == 48);
+
+struct PreviewBloomConstants {
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t mode;
+    std::uint32_t reserved;
+    float params[4];
+};
+static_assert(sizeof(PreviewBloomConstants) == 32);
+
+struct PreviewDofConstants {
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t mode;
+    std::uint32_t samples;
+    float lens[4];
+    float projection[4];
+    float filter[4];
+    float history[4];
+};
+static_assert(sizeof(PreviewDofConstants) == 80);
+
+struct PreviewTonemapConstants {
+    float options[4];
+    float flags[4];
+    float projection[4];
+    float depthOfField[4];
+    float viewport[4];
+};
+static_assert(sizeof(PreviewTonemapConstants) == 80);
+
+// Per-pass timestamps written into the frame query pool. The slot order is the
+// order the passes execute so previewPassTimings() can diff adjacent pairs.
+constexpr std::uint32_t previewTimestampCount = 13;
+enum PreviewTimestampSlot : std::uint32_t {
+    previewTimestampFrameStart = 0,
+    previewTimestampSceneStart = 1,
+    previewTimestampShadow = 2,
+    previewTimestampAmbientOcclusion = 3,
+    previewTimestampModel = 4,
+    previewTimestampSubsurface = 5,
+    previewTimestampCoc = 6,
+    previewTimestampDofDownsample = 7,
+    previewTimestampDofBlur = 8,
+    previewTimestampDofComposite = 9,
+    previewTimestampPostProcess = 10,
+    previewTimestampToneMap = 11,
+    previewTimestampFrameEnd = 12,
+};
+
+void writePreviewTimestamp(VkCommandBuffer command, const VkQueryPool pool, std::uint32_t slot) {
+    // A common completion stage keeps adjacent pass markers ordered even when
+    // graphics and compute work would otherwise overlap at different stages.
+    if (pool != VK_NULL_HANDLE)
+        vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pool, slot);
+}
+
 #if DAYO_HAS_IMGUI
 template <typename Descriptor> std::uint64_t descriptorId(Descriptor descriptor) noexcept {
     if constexpr (std::is_pointer_v<Descriptor>) {
@@ -110,7 +179,7 @@ bool samePreviewMaterial(const PreviewMaterial& left, const PreviewMaterial& rig
            left.toonMode == right.toonMode && left.sphereMode == right.sphereMode &&
            left.roughness == right.roughness && left.metallic == right.metallic &&
            left.specularStrength == right.specularStrength && left.skin == right.skin &&
-           left.anisotropy == right.anisotropy;
+           left.anisotropy == right.anisotropy && left.sheen == right.sheen && left.clearcoat == right.clearcoat;
 }
 
 VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -730,6 +799,18 @@ VulkanDevice::~VulkanDevice() {
     for (auto& frame : frames_) {
         destroyPreviewAoResources(frame);
         destroyPreviewHdrResource(frame);
+        if (frame.motion.mappedCamera != nullptr)
+            vkUnmapMemory(device_, frame.motion.cameraMemory);
+        if (frame.motion.cameraBuffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, frame.motion.cameraBuffer, nullptr);
+        if (frame.motion.cameraMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, frame.motion.cameraMemory, nullptr);
+        if (frame.focusReadback.mapped != nullptr)
+            vkUnmapMemory(device_, frame.focusReadback.memory);
+        if (frame.focusReadback.buffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device_, frame.focusReadback.buffer, nullptr);
+        if (frame.focusReadback.memory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, frame.focusReadback.memory, nullptr);
     }
     if (previewFallbackEnvironmentTexture_.valid()) {
         destroyTextureEx(previewFallbackEnvironmentTexture_);
@@ -739,6 +820,7 @@ VulkanDevice::~VulkanDevice() {
         destroyTextureEx(previewFallbackAoTexture_);
         previewFallbackAoTexture_ = {};
     }
+    destroyPreviewTemporalHistory();
     destroyTypedResources();
     destroyViewportResources();
     destroyUi();
@@ -1474,7 +1556,16 @@ void VulkanDevice::createPipeline() {
         background.vertexBindings = {{0, sizeof(PreviewVertex)}};
         background.vertexAttributes = {{0, 0, VertexInputFormatEx::r32g32b32Sfloat, offsetof(PreviewVertex, position)}};
         const std::array swapchainFormats{swapchainFormat_};
-        const std::array hdrFormats{VK_FORMAT_R16G16B16A16_SFLOAT};
+        const std::array hdrFormats{VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT};
+        auto hdrOpaque = opaque;
+        hdrOpaque.blendAttachments.resize(2);
+        auto hdrTransparent = transparent;
+        hdrTransparent.blendAttachments.push_back(capabilities_.independentBlend ? BlendAttachmentStateEx{}
+                                                                                 : transparent.blendAttachments[0]);
+        hdrTransparent.independentBlend = capabilities_.independentBlend;
+        auto hdrEdge = hdrTransparent;
+        hdrEdge.rasterizer = edge.rasterizer;
+        hdrEdge.depthStencil = edge.depthStencil;
         pipeline_ =
             createGraphicsPipelineResource(opaque, pipelineLayout_, stages, swapchainFormats, VK_FORMAT_D32_SFLOAT);
         transparentPipeline_ = createGraphicsPipelineResource(transparent, pipelineLayout_, stages, swapchainFormats,
@@ -1487,19 +1578,39 @@ void VulkanDevice::createPipeline() {
             createGraphicsPipelineResource(opaque, pipelineLayout_, shadowStages, {}, VK_FORMAT_D32_SFLOAT);
         depthPrepassPipeline_ = createGraphicsPipelineResource(opaque, pipelineLayout_, normalStages,
                                                                std::array{previewNormalFormat_}, VK_FORMAT_D32_SFLOAT);
+        auto pickOpaque = opaque;
+        pickOpaque.blendAttachments.resize(2);
+        const std::array pickStages{
+            stages[0], stage(DAYO_PREVIEW_PICK_FRAGMENT_SPV, VK_SHADER_STAGE_FRAGMENT_BIT, "NormalPickPS")};
+        depthPickPipeline_ =
+            createGraphicsPipelineResource(pickOpaque, pipelineLayout_, pickStages,
+                                           std::array{previewNormalFormat_, VK_FORMAT_R32_UINT}, VK_FORMAT_D32_SFLOAT);
+        auto motionOpaque = opaque;
+        motionOpaque.blendAttachments.resize(3);
+        motionOpaque.vertexBindings.push_back({1, sizeof(PreviewDeformedVertex)});
+        motionOpaque.vertexAttributes.push_back({10, 1, VertexInputFormatEx::r32g32b32Sfloat, 0});
+        const std::array motionStages{
+            stage(DAYO_PREVIEW_MOTION_VERTEX_SPV, VK_SHADER_STAGE_VERTEX_BIT, "NormalMotionVS"),
+            stage(DAYO_PREVIEW_MOTION_FRAGMENT_SPV, VK_SHADER_STAGE_FRAGMENT_BIT, "NormalMotionPS")};
+        depthMotionPipeline_ = createGraphicsPipelineResource(
+            motionOpaque, pipelineLayout_, motionStages,
+            std::array{previewNormalFormat_, VK_FORMAT_R32_UINT, VK_FORMAT_R16G16B16A16_SFLOAT}, VK_FORMAT_D32_SFLOAT);
         hdrPipeline_ =
-            createGraphicsPipelineResource(opaque, pipelineLayout_, stages, hdrFormats, VK_FORMAT_D32_SFLOAT);
+            createGraphicsPipelineResource(hdrOpaque, pipelineLayout_, stages, hdrFormats, VK_FORMAT_D32_SFLOAT);
         hdrTransparentPipeline_ =
-            createGraphicsPipelineResource(transparent, pipelineLayout_, stages, hdrFormats, VK_FORMAT_D32_SFLOAT);
+            createGraphicsPipelineResource(hdrTransparent, pipelineLayout_, stages, hdrFormats, VK_FORMAT_D32_SFLOAT);
         hdrEdgePipeline_ =
-            createGraphicsPipelineResource(edge, pipelineLayout_, edgeStages, hdrFormats, VK_FORMAT_D32_SFLOAT);
-        const auto aoCode = readBinary(previewAoFormat_ == VK_FORMAT_R8_UNORM     ? DAYO_PREVIEW_AO_SPV
-                                       : previewAoFormat_ == VK_FORMAT_R16_SFLOAT ? DAYO_PREVIEW_AO16_SPV
-                                                                                  : DAYO_PREVIEW_AO32_SPV);
+            createGraphicsPipelineResource(hdrEdge, pipelineLayout_, edgeStages, hdrFormats, VK_FORMAT_D32_SFLOAT);
+        const auto aoGtaoCode = readBinary(previewAoFormat_ == VK_FORMAT_R8_UNORM     ? DAYO_PREVIEW_AO_GTAO_SPV
+                                           : previewAoFormat_ == VK_FORMAT_R16_SFLOAT ? DAYO_PREVIEW_AO16_GTAO_SPV
+                                                                                      : DAYO_PREVIEW_AO32_GTAO_SPV);
+        const auto aoLegacyCode = readBinary(previewAoFormat_ == VK_FORMAT_R8_UNORM     ? DAYO_PREVIEW_AO_LEGACY_SPV
+                                             : previewAoFormat_ == VK_FORMAT_R16_SFLOAT ? DAYO_PREVIEW_AO16_LEGACY_SPV
+                                                                                        : DAYO_PREVIEW_AO32_LEGACY_SPV);
         const auto blurCode = readBinary(previewAoFormat_ == VK_FORMAT_R8_UNORM     ? DAYO_PREVIEW_AO_BLUR_SPV
                                          : previewAoFormat_ == VK_FORMAT_R16_SFLOAT ? DAYO_PREVIEW_AO16_BLUR_SPV
                                                                                     : DAYO_PREVIEW_AO32_BLUR_SPV);
-        const VkPushConstantRange aoPush{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
+        const VkPushConstantRange aoPush{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PreviewAoConstants)};
         const VkPipelineLayoutCreateInfo aoLayoutInfo{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .setLayoutCount = 1,
@@ -1509,8 +1620,8 @@ void VulkanDevice::createPipeline() {
         };
         check(vkCreatePipelineLayout(device_, &aoLayoutInfo, nullptr, &aoPipelineLayout_),
               "create preview AO pipeline layout");
-        const std::array shaderCodes{std::cref(aoCode), std::cref(blurCode)};
-        const std::array<const char*, 2> entryPoints{"ComputeAO", "BlurAO"};
+        const std::array shaderCodes{std::cref(aoGtaoCode), std::cref(aoLegacyCode), std::cref(blurCode)};
+        const std::array<const char*, 3> entryPoints{"ComputeGtao", "ComputeLegacy", "BlurAo"};
         for (std::size_t index = 0; index < shaderCodes.size(); ++index) {
             const auto module = createModule(shaderCodes[index].get());
             const VkComputePipelineCreateInfo computeInfo{
@@ -1524,6 +1635,61 @@ void VulkanDevice::createPipeline() {
             const auto computeResult =
                 vkCreateComputePipelines(device_, pipelineCache_, 1, &computeInfo, nullptr, &aoPipelines_[index]);
             check(computeResult, "create preview AO compute pipeline");
+        }
+
+        VkFormatProperties cocProperties{};
+        vkGetPhysicalDeviceFormatProperties(physicalDevice_, VK_FORMAT_R16_SFLOAT, &cocProperties);
+        constexpr VkFormatFeatureFlags cocFeatures =
+            VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+        dofCocFormat_ =
+            storageImageExtendedFormats_ && (cocProperties.optimalTilingFeatures & cocFeatures) == cocFeatures
+                ? VK_FORMAT_R16_SFLOAT
+                : VK_FORMAT_R32_SFLOAT;
+        const VkPushConstantRange dofPush{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PreviewDofConstants)};
+        const VkPipelineLayoutCreateInfo dofLayoutInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 1,
+            .pSetLayouts = &dofDescriptorSetLayout_,
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &dofPush,
+        };
+        check(vkCreatePipelineLayout(device_, &dofLayoutInfo, nullptr, &dofPipelineLayout_), "create DoF layout");
+        const auto dofModule = createModule(
+            readBinary(dofCocFormat_ == VK_FORMAT_R16_SFLOAT ? DAYO_PREVIEW_DOF_SPV : DAYO_PREVIEW_DOF32_SPV));
+        const VkComputePipelineCreateInfo dofInfo{
+            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                      .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                      .module = dofModule,
+                      .pName = "DofFilter"},
+            .layout = dofPipelineLayout_,
+        };
+        check(vkCreateComputePipelines(device_, pipelineCache_, 1, &dofInfo, nullptr, &dofPipeline_),
+              "create DoF pipeline");
+
+        // Bloom: one compute pipeline drives the prefilter and both blur passes.
+        const VkPushConstantRange bloomPush{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PreviewBloomConstants)};
+        const VkPipelineLayoutCreateInfo bloomLayoutInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 1,
+            .pSetLayouts = &bloomDescriptorSetLayout_,
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &bloomPush,
+        };
+        check(vkCreatePipelineLayout(device_, &bloomLayoutInfo, nullptr, &bloomPipelineLayout_),
+              "create preview bloom pipeline layout");
+        {
+            const auto bloomModule = createModule(readBinary(DAYO_PREVIEW_BLOOM_SPV));
+            const VkComputePipelineCreateInfo bloomInfo{
+                .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                          .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                          .module = bloomModule,
+                          .pName = "BloomFilter"},
+                .layout = bloomPipelineLayout_,
+            };
+            check(vkCreateComputePipelines(device_, pipelineCache_, 1, &bloomInfo, nullptr, &bloomPipeline_),
+                  "create preview bloom compute pipeline");
         }
 
         std::array<VkDescriptorSetLayoutBinding, 5> deformBindings{};
@@ -1561,7 +1727,9 @@ void VulkanDevice::createPipeline() {
 
         const std::array toneStages{stage(DAYO_PREVIEW_TONEMAP_VERTEX_SPV, VK_SHADER_STAGE_VERTEX_BIT, "VS"),
                                     stage(DAYO_PREVIEW_TONEMAP_FRAGMENT_SPV, VK_SHADER_STAGE_FRAGMENT_BIT, "PS")};
-        previewTonemapPipelineLayout_ = createLayout(std::array{previewTonemapDescriptorSetLayout_});
+        const std::array tonePushes{VkPushConstantRange{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                                        sizeof(PreviewTonemapConstants)}};
+        previewTonemapPipelineLayout_ = createLayout(std::array{previewTonemapDescriptorSetLayout_}, tonePushes);
         GraphicsPipelineDescEx tone;
         tone.rasterizer = opaque.rasterizer;
         tone.blendAttachments = transparent.blendAttachments;
@@ -1608,6 +1776,24 @@ void VulkanDevice::destroyPipeline() {
     if (aoPipelineLayout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device_, aoPipelineLayout_, nullptr);
     aoPipelineLayout_ = VK_NULL_HANDLE;
+    if (dofPipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device_, dofPipeline_, nullptr);
+    if (dofPipelineLayout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device_, dofPipelineLayout_, nullptr);
+    dofPipeline_ = VK_NULL_HANDLE;
+    dofPipelineLayout_ = VK_NULL_HANDLE;
+    if (bloomPipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device_, bloomPipeline_, nullptr);
+    if (bloomPipelineLayout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device_, bloomPipelineLayout_, nullptr);
+    bloomPipeline_ = VK_NULL_HANDLE;
+    bloomPipelineLayout_ = VK_NULL_HANDLE;
+    if (depthMotionPipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device_, depthMotionPipeline_, nullptr);
+    depthMotionPipeline_ = VK_NULL_HANDLE;
+    if (depthPickPipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device_, depthPickPipeline_, nullptr);
+    depthPickPipeline_ = VK_NULL_HANDLE;
     if (depthPrepassPipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, depthPrepassPipeline_, nullptr);
     if (shadowPipeline_ != VK_NULL_HANDLE)
@@ -1988,6 +2174,9 @@ void VulkanDevice::createPreviewDescriptors() {
     clampSamplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     clampSamplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     check(vkCreateSampler(device_, &clampSamplerInfo, nullptr, &previewClampSampler_), "create preview clamp sampler");
+    auto dofSamplerInfo = clampSamplerInfo;
+    dofSamplerInfo.maxLod = 4.0F;
+    check(vkCreateSampler(device_, &dofSamplerInfo, nullptr, &previewDofSampler_), "create DoF mip sampler");
 
     auto shadowSamplerInfo = clampSamplerInfo;
     shadowSamplerInfo.maxLod = 0.0F;
@@ -2089,6 +2278,9 @@ void VulkanDevice::createPreviewDescriptors() {
         VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
                                      &previewShadowSampler_},
+        // Non comparison sampler used by the PCSS blocker search.
+        VkDescriptorSetLayoutBinding{2, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                     &previewAoSampler_},
     };
     const VkDescriptorSetLayoutCreateInfo shadowLayoutInfo{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -2123,15 +2315,56 @@ void VulkanDevice::createPreviewDescriptors() {
     };
     check(vkCreateDescriptorSetLayout(device_, &aoSampleLayoutInfo, nullptr, &previewAoSampleDescriptorSetLayout_),
           "create preview AO sample descriptor layout");
-    check(vkCreateDescriptorSetLayout(device_, &aoSampleLayoutInfo, nullptr, &previewTonemapDescriptorSetLayout_),
+    const std::array tonemapBindings{
+        VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                     &previewClampSampler_},
+        VkDescriptorSetLayoutBinding{2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        VkDescriptorSetLayoutBinding{3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        VkDescriptorSetLayoutBinding{4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+    };
+    const VkDescriptorSetLayoutCreateInfo tonemapLayoutInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = static_cast<std::uint32_t>(tonemapBindings.size()),
+        .pBindings = tonemapBindings.data(),
+    };
+    check(vkCreateDescriptorSetLayout(device_, &tonemapLayoutInfo, nullptr, &previewTonemapDescriptorSetLayout_),
           "create preview tonemap descriptor layout");
+    const std::array bloomBindings{
+        VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
+                                     &previewClampSampler_},
+        VkDescriptorSetLayoutBinding{2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+    };
+    const VkDescriptorSetLayoutCreateInfo bloomLayoutInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = static_cast<std::uint32_t>(bloomBindings.size()),
+        .pBindings = bloomBindings.data(),
+    };
+    check(vkCreateDescriptorSetLayout(device_, &bloomLayoutInfo, nullptr, &bloomDescriptorSetLayout_),
+          "create preview bloom descriptor layout");
+    std::array<VkDescriptorSetLayoutBinding, 22> dofBindings{};
+    for (std::uint32_t i = 0; i < dofBindings.size(); ++i) {
+        const auto type = i == 1               ? VK_DESCRIPTOR_TYPE_SAMPLER
+                          : i == 15            ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
+                          : i >= 11 && i <= 14 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+                                               : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        dofBindings[i] = {i, type, 1, VK_SHADER_STAGE_COMPUTE_BIT, i == 1 ? &previewDofSampler_ : nullptr};
+    }
+    const VkDescriptorSetLayoutCreateInfo dofDescriptorInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = static_cast<std::uint32_t>(dofBindings.size()),
+        .pBindings = dofBindings.data(),
+    };
+    check(vkCreateDescriptorSetLayout(device_, &dofDescriptorInfo, nullptr, &dofDescriptorSetLayout_),
+          "create DoF descriptors");
     constexpr std::uint32_t legacySampledImagePoolSize = 32768U;
     const auto sampledImagePoolSize = legacySampledImagePoolSize + previewBindlessTextureCapacity_;
     const std::array poolSizes{
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sampledImagePoolSize},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 16384},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 128},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 32},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 256},
     };
     const VkDescriptorPoolCreateInfo poolInfo{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -2231,6 +2464,8 @@ void VulkanDevice::destroyPreviewDescriptors() {
         destroyPreviewAoResources(frame);
     for (auto& frame : frames_)
         destroyPreviewHdrResource(frame);
+    for (auto& frame : frames_)
+        destroyPreviewBloomResource(frame);
     if (previewFallbackEnvironmentTexture_.valid())
         destroyTextureEx(previewFallbackEnvironmentTexture_);
     previewFallbackEnvironmentTexture_ = {};
@@ -2284,13 +2519,20 @@ void VulkanDevice::destroyPreviewDescriptors() {
         vkDestroyDescriptorSetLayout(device_, previewAoSampleDescriptorSetLayout_, nullptr);
     if (previewAoDescriptorSetLayout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, previewAoDescriptorSetLayout_, nullptr);
+    if (dofDescriptorSetLayout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device_, dofDescriptorSetLayout_, nullptr);
+    dofDescriptorSetLayout_ = VK_NULL_HANDLE;
     if (previewTonemapDescriptorSetLayout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, previewTonemapDescriptorSetLayout_, nullptr);
+    if (bloomDescriptorSetLayout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device_, bloomDescriptorSetLayout_, nullptr);
     // Immutable samplers must outlive every pool/set and layout that copied them.
     if (previewAoSampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device_, previewAoSampler_, nullptr);
     if (previewShadowSampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device_, previewShadowSampler_, nullptr);
+    if (previewDofSampler_ != VK_NULL_HANDLE)
+        vkDestroySampler(device_, previewDofSampler_, nullptr);
     if (previewClampSampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device_, previewClampSampler_, nullptr);
     if (previewSampler_ != VK_NULL_HANDLE)
@@ -2298,6 +2540,7 @@ void VulkanDevice::destroyPreviewDescriptors() {
     previewAoSampler_ = VK_NULL_HANDLE;
     previewShadowSampler_ = VK_NULL_HANDLE;
     previewClampSampler_ = VK_NULL_HANDLE;
+    previewDofSampler_ = VK_NULL_HANDLE;
     previewSampler_ = VK_NULL_HANDLE;
     previewDescriptorPool_ = VK_NULL_HANDLE;
     previewDescriptorSetLayout_ = VK_NULL_HANDLE;
@@ -2310,6 +2553,7 @@ void VulkanDevice::destroyPreviewDescriptors() {
     previewAoDescriptorSetLayout_ = VK_NULL_HANDLE;
     previewAoSampleDescriptorSetLayout_ = VK_NULL_HANDLE;
     previewTonemapDescriptorSetLayout_ = VK_NULL_HANDLE;
+    bloomDescriptorSetLayout_ = VK_NULL_HANDLE;
     previewBindlessTextureCapacity_ = 0;
 }
 
@@ -2609,7 +2853,7 @@ void VulkanDevice::createFrames() {
             const VkQueryPoolCreateInfo queryInfo{
                 .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
                 .queryType = VK_QUERY_TYPE_TIMESTAMP,
-                .queryCount = 2,
+                .queryCount = previewTimestampCount,
             };
             check(vkCreateQueryPool(device_, &queryInfo, nullptr, &frame.timestampQueryPool),
                   "create preview timestamp query pool");
@@ -2703,17 +2947,39 @@ VulkanDevice::Frame::NativeUploadBuffer& VulkanDevice::allocateNativeUploadBuffe
 
 void VulkanDevice::resolveTimestampQuery(Frame& frame) noexcept {
     previewGpuNanoseconds_ = 0;
+    previewPassTimings_ = {};
     if (!frame.timestampsSubmitted || frame.timestampQueryPool == VK_NULL_HANDLE || timestampValidBits_ == 0 ||
         physicalProperties_.limits.timestampPeriod <= 0.0F)
         return;
-    std::array<std::uint64_t, 2> timestamps{};
-    const auto result = vkGetQueryPoolResults(device_, frame.timestampQueryPool, 0, 2, sizeof(timestamps),
-                                              timestamps.data(), sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT);
-    if (result != VK_SUCCESS)
+    struct Timestamp {
+        std::uint64_t ticks;
+        std::uint64_t available;
+    };
+    std::array<Timestamp, previewTimestampCount> timestamps{};
+    const auto result = vkGetQueryPoolResults(device_, frame.timestampQueryPool, 0, previewTimestampCount,
+                                              sizeof(timestamps), timestamps.data(), sizeof(Timestamp),
+                                              VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+    if (result != VK_SUCCESS && result != VK_NOT_READY)
         return;
-    const auto ticks = timestampDelta(timestamps[0], timestamps[1], timestampValidBits_);
-    previewGpuNanoseconds_ = static_cast<std::uint64_t>(
-        static_cast<double>(ticks) * static_cast<double>(physicalProperties_.limits.timestampPeriod));
+    const auto period = static_cast<double>(physicalProperties_.limits.timestampPeriod);
+    const auto elapsed = [&](std::size_t begin, std::size_t end) -> std::uint64_t {
+        if (timestamps[begin].available == 0 || timestamps[end].available == 0)
+            return 0;
+        return static_cast<std::uint64_t>(
+            static_cast<double>(timestampDelta(timestamps[begin].ticks, timestamps[end].ticks, timestampValidBits_)) *
+            period);
+    };
+    previewPassTimings_.shadow = elapsed(previewTimestampSceneStart, previewTimestampShadow);
+    previewPassTimings_.ambientOcclusion = elapsed(previewTimestampShadow, previewTimestampAmbientOcclusion);
+    previewPassTimings_.model = elapsed(previewTimestampAmbientOcclusion, previewTimestampModel);
+    previewPassTimings_.subsurface = elapsed(previewTimestampModel, previewTimestampSubsurface);
+    previewPassTimings_.coc = elapsed(previewTimestampSubsurface, previewTimestampCoc);
+    previewPassTimings_.dofDownsample = elapsed(previewTimestampCoc, previewTimestampDofDownsample);
+    previewPassTimings_.dofBlur = elapsed(previewTimestampDofDownsample, previewTimestampDofBlur);
+    previewPassTimings_.dofComposite = elapsed(previewTimestampDofBlur, previewTimestampDofComposite);
+    previewPassTimings_.postProcess = elapsed(previewTimestampDofComposite, previewTimestampPostProcess);
+    previewPassTimings_.toneMap = elapsed(previewTimestampPostProcess, previewTimestampToneMap);
+    previewGpuNanoseconds_ = elapsed(previewTimestampFrameStart, previewTimestampFrameEnd);
 }
 
 void VulkanDevice::createUi() {
@@ -3031,6 +3297,7 @@ void VulkanDevice::recordPreviewShadowPass(VkCommandBuffer command, Frame& frame
     vkCmdBindVertexBuffers(command, 0, 1, &vertexBuffer, &vertexOffset);
     vkCmdBindIndexBuffer(command, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     PreviewPushConstants constants;
+    constants.lens = previewLensConstants();
     std::copy_n(previewGpuScene_.view.target, 3, constants.target.begin());
     std::copy_n(previewGpuScene_.view.lightDirection, 3, constants.light.begin());
     if (previewGpuScene_.draws.empty() && previewIndexCount_ != 0) {
@@ -3083,6 +3350,18 @@ void VulkanDevice::destroyPreviewAoResources(Frame& frame) noexcept {
         if (resource.sampleSet != VK_NULL_HANDLE)
             vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &resource.sampleSet);
     }
+    if (resource.motionView != VK_NULL_HANDLE)
+        vkDestroyImageView(device_, resource.motionView, nullptr);
+    if (resource.motionImage != VK_NULL_HANDLE)
+        vkDestroyImage(device_, resource.motionImage, nullptr);
+    if (resource.motionMemory != VK_NULL_HANDLE)
+        vkFreeMemory(device_, resource.motionMemory, nullptr);
+    if (resource.focusIdView != VK_NULL_HANDLE)
+        vkDestroyImageView(device_, resource.focusIdView, nullptr);
+    if (resource.focusIdImage != VK_NULL_HANDLE)
+        vkDestroyImage(device_, resource.focusIdImage, nullptr);
+    if (resource.focusIdMemory != VK_NULL_HANDLE)
+        vkFreeMemory(device_, resource.focusIdMemory, nullptr);
     if (resource.depthView != VK_NULL_HANDLE)
         vkDestroyImageView(device_, resource.depthView, nullptr);
     if (resource.depthImage != VK_NULL_HANDLE)
@@ -3106,12 +3385,470 @@ void VulkanDevice::destroyPreviewAoResources(Frame& frame) noexcept {
     resource = {};
 }
 
+void VulkanDevice::destroyPreviewDofResource(Frame& frame) noexcept {
+    auto& resource = frame.previewDof;
+    for (auto& set : resource.sets)
+        if (set != VK_NULL_HANDLE && previewDescriptorPool_ != VK_NULL_HANDLE)
+            vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &set);
+    if (resource.mappedAperture != nullptr)
+        vkUnmapMemory(device_, resource.apertureMemory);
+    if (resource.apertureBuffer != VK_NULL_HANDLE)
+        vkDestroyBuffer(device_, resource.apertureBuffer, nullptr);
+    if (resource.apertureMemory != VK_NULL_HANDLE)
+        vkFreeMemory(device_, resource.apertureMemory, nullptr);
+    for (auto texture : resource.textures) {
+        if (lastPreviewHdrTexture_ == texture)
+            lastPreviewHdrTexture_ = {};
+        if (texture.valid()) {
+            try {
+                destroyTextureEx(texture);
+            } catch (...) {
+            }
+        }
+    }
+    resource = {};
+}
+
+void VulkanDevice::ensurePreviewDofResource(Frame& frame, VkExtent2D extent, bool fullDof, bool temporal) {
+    auto& resource = frame.previewDof;
+    if (resource.images[0] != VK_NULL_HANDLE && resource.extent.width == extent.width &&
+        resource.extent.height == extent.height && resource.fullDof == fullDof && resource.temporal == temporal)
+        return;
+    destroyPreviewDofResource(frame);
+    if (fullDof) {
+        auto size = std::max((extent.width + 1U) / 2U, (extent.height + 1U) / 2U);
+        while (size > 1U && resource.mipLevels < 5U) {
+            size >>= 1U;
+            ++resource.mipLevels;
+        }
+    }
+    try {
+        const VkBufferCreateInfo apertureInfo{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                              .size = sizeof(PreviewApertureLut),
+                                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+        allocateBufferMemory(apertureInfo, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             resource.apertureBuffer, resource.apertureMemory);
+        check(vkMapMemory(device_, resource.apertureMemory, 0, sizeof(PreviewApertureLut), 0, &resource.mappedAperture),
+              "map aperture lookup");
+        for (std::size_t i = 0; i < resource.textures.size(); ++i) {
+            VkExtent2D size = extent;
+            if (i >= 3 && i != 10)
+                size = {(extent.width + 1U) / 2U, (extent.height + 1U) / 2U};
+            if (i == 6 || i == 7)
+                size = {(size.width + 7U) / 8U, (size.height + 7U) / 8U};
+            if ((!fullDof && i != 0) || (!temporal && i >= 10))
+                size = {1, 1};
+            resource.textures[i] = createTextureEx({
+                .dimension = TextureDimension::d2,
+                .extent = {size.width, size.height, 1},
+                .format = i == 2
+                              ? (dofCocFormat_ == VK_FORMAT_R16_SFLOAT ? PixelFormat::r16Float : PixelFormat::r32Float)
+                              : PixelFormat::rgba16Float,
+                .mipLevels = (i >= 3 && i <= 5) || (i == 12 && temporal) ? resource.mipLevels : 1U,
+                .arrayLayers = 1,
+                .usage = ResourceUsage::storageWrite | ResourceUsage::sampledRead | ResourceUsage::transferSrc,
+                .lifetime = ResourceLifetime::persistent,
+            });
+            const auto& typed = typedTextures_.at(resource.textures[i]);
+            resource.images[i] = typed.resource.image;
+            resource.views[i] = typed.view;
+        }
+        std::array<VkDescriptorSetLayout, 17> layouts{};
+        layouts.fill(dofDescriptorSetLayout_);
+        const VkDescriptorSetAllocateInfo allocate{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                                   .descriptorPool = previewDescriptorPool_,
+                                                   .descriptorSetCount = static_cast<std::uint32_t>(layouts.size()),
+                                                   .pSetLayouts = layouts.data()};
+        check(vkAllocateDescriptorSets(device_, &allocate, resource.sets.data()), "allocate DoF descriptors");
+        resource.extent = extent;
+        resource.fullDof = fullDof;
+        resource.temporal = temporal;
+    } catch (...) {
+        destroyPreviewDofResource(frame);
+        throw;
+    }
+}
+
+void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, VkExtent2D extent) {
+    const auto effects = previewResolvedEffects();
+    auto& resource = frame.previewDof;
+    resource.active = false;
+    const bool sss = effects.skinSubsurface && effects.skinSubsurfaceIntensity > 0.0F && frame.previewAo.initialized;
+    // A thin lens has no orthographic optical counterpart. Keep SSS available,
+    // and suspend DoF while an orthographic VMD camera key is active.
+    const bool dof = effects.depthOfField && effects.depthOfFieldIntensity > 0.0F && frame.previewAo.initialized &&
+                     previewGpuScene_.view.perspective && !previewLensSample_;
+    const auto stamp = [&](std::uint32_t slot) { writePreviewTimestamp(command, frame.timestampQueryPool, slot); };
+    if ((!sss && !dof) || dofPipeline_ == VK_NULL_HANDLE) {
+        for (auto slot : {previewTimestampSubsurface, previewTimestampCoc, previewTimestampDofDownsample,
+                          previewTimestampDofBlur, previewTimestampDofComposite})
+            stamp(slot);
+        return;
+    }
+    if (!previewTemporalHistory_.textures[0].valid())
+        ensurePreviewTemporalHistory(command, {1, 1});
+    ensurePreviewDofResource(frame, extent, dof, frame.motion.enabled);
+    std::array<VkImageMemoryBarrier2, 13> barriers{};
+    for (std::size_t i = 0; i < barriers.size(); ++i) {
+        barriers[i] = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = resource.initialized ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_NONE,
+            .srcAccessMask = resource.initialized ? VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT : 0U,
+            .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            .oldLayout = resource.initialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = resource.images[i],
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                                 (i >= 3 && i <= 5) || (i == 12 && frame.motion.enabled) ? resource.mipLevels : 1U, 0,
+                                 1}};
+        std::ranges::fill(typedTextures_.at(resource.textures[i]).mipLayouts, VK_IMAGE_LAYOUT_GENERAL);
+    }
+    const VkDependencyInfo start{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                 .imageMemoryBarrierCount = static_cast<std::uint32_t>(barriers.size()),
+                                 .pImageMemoryBarriers = barriers.data()};
+    vkCmdPipelineBarrier2(command, &start);
+    resource.initialized = true;
+    const auto& settings = previewRenderSettings_.dof;
+    const std::array apertureKey{static_cast<float>(settings.apertureBlades), settings.apertureCurvature,
+                                 settings.apertureRotationDegrees};
+    if (!resource.apertureValid || resource.apertureKey != apertureKey) {
+        if (settings.apertureBlades != 0) {
+            const auto lut = previewApertureLut(settings.apertureBlades, settings.apertureCurvature,
+                                                settings.apertureRotationDegrees);
+            std::memcpy(resource.mappedAperture, lut.data(), sizeof(lut));
+        }
+        resource.apertureKey = apertureKey;
+        resource.apertureValid = true;
+    }
+    auto quality = settings.quality;
+    if (quality == PreviewDofQuality::automatic)
+        quality = previewStillQuality_ && previewRenderSettings_.preset == PreviewQualityPreset::automatic
+                      ? PreviewDofQuality::high
+                      : static_cast<PreviewDofQuality>(previewEffectivePreset(previewRenderSettings_.preset,
+                                                                              options_.quality, previewIntegrated()));
+    const float focusUnits = previewFocusDistanceUnits();
+    const auto lens =
+        previewDofLens(settings, focusUnits, previewGpuScene_.view.verticalFovRadians, extent.height, quality);
+    PreviewDofConstants constants{
+        extent.width,
+        extent.height,
+        0U,
+        lens.samples,
+        {lens.focusMetres, lens.cocScale * effects.depthOfFieldIntensity, lens.maxRadius, settings.metresPerUnit},
+        {1.0F / std::tan(std::max(previewGpuScene_.view.verticalFovRadians, 0.05F) * 0.5F),
+         static_cast<float>(extent.width) / static_cast<float>(extent.height),
+         previewGpuScene_.view.perspective ? 1.0F : 0.0F, sss ? effects.skinSubsurfaceIntensity : 0.0F},
+        {static_cast<float>(resource.mipLevels - 1U), settings.apertureBlades != 0 ? 1.0F : 0.0F,
+         frame.motion.enabled ? static_cast<float>(previewTemporalHistory_.phase) : 0.0F,
+         frame.motion.enabled ? 1.0F : 0.0F},
+        {frame.motion.valid ? 1.0F : 0.0F, 0.85F, 0.0F, 0.0F}};
+    if (!previewGpuScene_.view.perspective)
+        constants.projection[0] =
+            previewGpuScene_.view.cameraDistance * std::tan(previewGpuScene_.view.verticalFovRadians * 0.5F);
+    const VkMemoryBarrier2 between{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT};
+    const VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &between};
+    const auto dispatch = [&](std::uint32_t mode, std::uint32_t mip = 0U) {
+        const auto set = resource.sets[mode == 7U    ? 6U + mip
+                                       : mode == 8U  ? 11U
+                                       : mode == 9U  ? 12U
+                                       : mode == 10U ? 12U + mip
+                                                     : mode];
+        std::array<VkDescriptorImageInfo, 22> infos{};
+        const auto image = [&](std::size_t index) {
+            return VkDescriptorImageInfo{VK_NULL_HANDLE, resource.views[index], VK_IMAGE_LAYOUT_GENERAL};
+        };
+        infos[0] = mode == 0 || !sss ? VkDescriptorImageInfo{VK_NULL_HANDLE, frame.previewHdr.view,
+                                                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}
+                                     : image(0);
+        infos[1] = {previewDofSampler_, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
+        infos[2] = {VK_NULL_HANDLE, frame.previewAo.depthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        infos[3] = {VK_NULL_HANDLE, frame.previewHdr.skinView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        infos[4] = image(2);
+        infos[5] = image(3);
+        infos[6] = image(4);
+        infos[7] = image(5);
+        infos[8] = image(mode == 6 ? 6U : 7U);
+        infos[9] = image(8);
+        infos[10] = image(9);
+        infos[11] = image(mode == 2 ? 5U : mode == 5 ? 1U : 0U);
+        infos[12] = image(mode == 3 ? 6U : mode == 6 ? 7U : mode == 4 ? 8U : 3U);
+        infos[13] = image(mode == 4 ? 9U : 4U);
+        infos[14] = image(2);
+        const auto historyImage = [&](std::size_t index) {
+            return VkDescriptorImageInfo{VK_NULL_HANDLE,
+                                         typedTextures_.at(previewTemporalHistory_.textures[index]).view,
+                                         VK_IMAGE_LAYOUT_GENERAL};
+        };
+        infos[16] = frame.motion.enabled
+                        ? VkDescriptorImageInfo{VK_NULL_HANDLE, frame.previewAo.motionView, VK_IMAGE_LAYOUT_GENERAL}
+                        : historyImage(0);
+        infos[17] = frame.motion.enabled ? VkDescriptorImageInfo{VK_NULL_HANDLE, frame.previewAo.focusIdView,
+                                                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}
+                                         : historyImage(3);
+        for (std::uint32_t i = 0; i < 4; ++i)
+            infos[18 + i] = historyImage(i);
+        if (mode == 4U) {
+            infos[11] = image(11);
+            infos[3] = image(12);
+        }
+        if (mode == 8U) {
+            infos[0] = image(1);
+            infos[3] = image(11);
+            infos[11] = image(10);
+        }
+        const auto mipImage = [&](std::size_t index, std::uint32_t level) {
+            return VkDescriptorImageInfo{VK_NULL_HANDLE, typedTextures_.at(resource.textures[index]).mipViews[level],
+                                         VK_IMAGE_LAYOUT_GENERAL};
+        };
+        infos[12] = mode == 2 ? mipImage(3, 0) : infos[12];
+        infos[13] = mode == 2 ? mipImage(4, 0) : infos[13];
+        infos[11] = mode == 2 ? mipImage(5, 0) : infos[11];
+        if (mode == 7U) {
+            infos[5] = mipImage(3, mip - 1U);
+            infos[6] = mipImage(4, mip - 1U);
+            infos[7] = mipImage(5, mip - 1U);
+            infos[11] = mipImage(5, mip);
+            infos[12] = mipImage(3, mip);
+            infos[13] = mipImage(4, mip);
+        }
+        if (mode == 9U || mode == 10U) {
+            infos[11] = mipImage(12, mip);
+            if (mode == 10U)
+                infos[3] = mipImage(12, mip - 1U);
+        }
+        // Other modes do not write the layer images, but their unused UAVs
+        // must still be valid single-mip descriptors.
+        if (mode != 2U && mode != 7U) {
+            if (mode != 3U && mode != 6U && mode != 4U)
+                infos[12] = mipImage(3, 0);
+            if (mode != 4U)
+                infos[13] = mipImage(4, 0);
+        }
+        const VkDescriptorBufferInfo apertureBuffer{resource.apertureBuffer, 0, sizeof(PreviewApertureLut)};
+        std::array<VkWriteDescriptorSet, 22> writes{};
+        for (std::uint32_t i = 0; i < writes.size(); ++i)
+            writes[i] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                         .dstSet = set,
+                         .dstBinding = i,
+                         .descriptorCount = 1,
+                         .descriptorType = i == 1               ? VK_DESCRIPTOR_TYPE_SAMPLER
+                                           : i == 15            ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
+                                           : i >= 11 && i <= 14 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+                                                                : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                         .pImageInfo = i == 15 ? nullptr : &infos[i],
+                         .pBufferInfo = i == 15 ? &apertureBuffer : nullptr};
+        updatePreviewImageDescriptors(writes);
+        constants.mode = mode;
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, dofPipeline_);
+        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, dofPipelineLayout_, 0, 1, &set, 0, nullptr);
+        vkCmdPushConstants(command, dofPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants), &constants);
+        VkExtent2D size = extent;
+        if (mode == 2 || mode == 3 || mode == 4 || mode == 6 || mode == 9)
+            size = {(extent.width + 1U) / 2U, (extent.height + 1U) / 2U};
+        if (mode == 3 || mode == 6)
+            size = {(size.width + 7U) / 8U, (size.height + 7U) / 8U};
+        if (mode == 7U || mode == 10U)
+            size = {std::max(1U, ((extent.width + 1U) / 2U) >> mip), std::max(1U, ((extent.height + 1U) / 2U) >> mip)};
+        vkCmdDispatch(command, (size.width + 7U) / 8U, (size.height + 7U) / 8U, 1);
+        vkCmdPipelineBarrier2(command, &dependency);
+    };
+    if (sss)
+        dispatch(0);
+    stamp(previewTimestampSubsurface);
+    if (dof)
+        dispatch(1);
+    stamp(previewTimestampCoc);
+    if (dof) {
+        dispatch(2);
+        if (frame.motion.enabled)
+            dispatch(9);
+        for (std::uint32_t mip = 1; mip < resource.mipLevels; ++mip) {
+            dispatch(7, mip);
+            if (frame.motion.enabled)
+                dispatch(10, mip);
+        }
+        dispatch(3);
+        dispatch(6);
+    }
+    stamp(previewTimestampDofDownsample);
+    if (dof)
+        dispatch(4);
+    stamp(previewTimestampDofBlur);
+    if (dof)
+        dispatch(5);
+    if (dof && frame.motion.enabled) {
+        dispatch(8);
+        recordPreviewTemporalHistory(command, frame, extent);
+    }
+    stamp(previewTimestampDofComposite);
+    resource.active = true;
+    resource.output = dof ? (frame.motion.enabled ? 10U : 1U) : 0U;
+    lastPreviewHdrTexture_ = resource.textures[resource.output];
+}
+
+void VulkanDevice::requestPreviewFocusPick(std::array<float, 2> uv) {
+    if (!std::isfinite(uv[0]) || !std::isfinite(uv[1]) || uv[0] < 0.0F || uv[0] >= 1.0F || uv[1] < 0.0F ||
+        uv[1] >= 1.0F)
+        return;
+    ++focusPickSerial_;
+    focusPickRequest_ = uv;
+    focusPickResult_.reset();
+}
+
+void VulkanDevice::cancelPreviewFocusPick() {
+    ++focusPickSerial_;
+    focusPickRequest_.reset();
+    focusPickResult_.reset();
+}
+
+void VulkanDevice::collectPreviewFocusPick(Frame& frame) {
+    auto& pick = frame.focusReadback;
+    if (pick.serial == 0 || vkGetFenceStatus(device_, frame.inFlight) != VK_SUCCESS)
+        return;
+    if (pick.serial == focusPickSerial_) {
+        float depth{};
+        std::memcpy(&depth, pick.mapped, sizeof(depth));
+        if (const auto point = previewFocusUnproject(pick.camera, pick.uv, pick.aspect, depth)) {
+            std::uint32_t identity{};
+            std::memcpy(&identity, static_cast<const std::byte*>(pick.mapped) + sizeof(float), sizeof(identity));
+            PreviewFocusSample sample;
+            sample.worldPoint = *point;
+            sample.materialIndex = identity == 0 ? 0xffffffffU : (identity & 0xfffffU) - 1U;
+            sample.instanceIndex = identity >> 20U;
+            for (const auto& draw : pick.draws)
+                if (draw.materialIndex == sample.materialIndex)
+                    sample.instanceCount = draw.instanceCount;
+            sample.bones = std::move(pick.bones);
+            focusPickResult_ = std::move(sample);
+        }
+    }
+    pick.serial = 0;
+}
+
+std::optional<std::array<float, 3>> VulkanDevice::pollPreviewFocusPick() {
+    if (auto sample = pollPreviewFocusSample())
+        return sample->worldPoint;
+    return std::nullopt;
+}
+std::optional<PreviewFocusSample> VulkanDevice::pollPreviewFocusSample() {
+    for (auto& frame : frames_)
+        collectPreviewFocusPick(frame);
+    return std::exchange(focusPickResult_, std::nullopt);
+}
+
+void VulkanDevice::recordPreviewFocusPick(VkCommandBuffer command, Frame& frame, VkExtent2D extent) {
+    if (!focusPickRequest_ || !frame.previewAo.initialized || extent.width == 0 || extent.height == 0)
+        return;
+    auto& pick = frame.focusReadback;
+    if (pick.buffer == VK_NULL_HANDLE) {
+        const VkBufferCreateInfo info{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                      .size = sizeof(float) + sizeof(std::uint32_t),
+                                      .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                      .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+        allocateBufferMemory(info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             pick.buffer, pick.memory);
+        check(vkMapMemory(device_, pick.memory, 0, sizeof(float) + sizeof(std::uint32_t), 0, &pick.mapped),
+              "map focus depth readback");
+    }
+    const auto x = std::min(static_cast<std::uint32_t>((*focusPickRequest_)[0] * static_cast<float>(extent.width)),
+                            extent.width - 1U);
+    const auto y = std::min(static_cast<std::uint32_t>((*focusPickRequest_)[1] * static_cast<float>(extent.height)),
+                            extent.height - 1U);
+    pick.uv = {(static_cast<float>(x) + 0.5F) / static_cast<float>(extent.width),
+               (static_cast<float>(y) + 0.5F) / static_cast<float>(extent.height)};
+    pick.aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+    const auto& scene = previewGpuScene_.view;
+    std::copy_n(scene.cameraRotation, 3, pick.camera.rotation.begin());
+    std::copy_n(scene.target, 3, pick.camera.target.begin());
+    pick.camera.distance = scene.cameraDistance;
+    pick.camera.verticalFovRadians = scene.verticalFovRadians;
+    pick.camera.perspective = scene.perspective;
+    pick.serial = focusPickSerial_;
+    pick.bones = previewGpuScene_.bones;
+    pick.draws = previewGpuScene_.draws;
+    focusPickRequest_.reset();
+    VkImageMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                  .srcStageMask =
+                                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                  .srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                  .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                  .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+                                  .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                  .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                  .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                  .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                  .image = frame.previewAo.depthImage,
+                                  .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1}};
+    VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier};
+    vkCmdPipelineBarrier2(command, &dependency);
+    const VkBufferImageCopy copy{.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+                                 .imageOffset = {static_cast<std::int32_t>(x), static_cast<std::int32_t>(y), 0},
+                                 .imageExtent = {1, 1, 1}};
+    vkCmdCopyImageToBuffer(command, frame.previewAo.depthImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, pick.buffer, 1,
+                           &copy);
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    vkCmdPipelineBarrier2(command, &dependency);
+    auto idBarrier = barrier;
+    idBarrier.image = frame.previewAo.focusIdImage;
+    idBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    idBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    idBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    idBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    idBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    idBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    idBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    dependency.pImageMemoryBarriers = &idBarrier;
+    vkCmdPipelineBarrier2(command, &dependency);
+    auto idCopy = copy;
+    idCopy.bufferOffset = sizeof(float);
+    idCopy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vkCmdCopyImageToBuffer(command, idBarrier.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, pick.buffer, 1, &idCopy);
+    idBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    idBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    idBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    idBarrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    idBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    idBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    const VkMemoryBarrier2 host{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                                .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+    dependency.memoryBarrierCount = 1;
+    dependency.pMemoryBarriers = &host;
+    vkCmdPipelineBarrier2(command, &dependency);
+}
+
 void VulkanDevice::destroyPreviewHdrResource(Frame& frame) noexcept {
+    destroyPreviewBloomResource(frame);
+    destroyPreviewDofResource(frame);
     auto& resource = frame.previewHdr;
     if (lastPreviewHdrTexture_ == resource.texture)
         lastPreviewHdrTexture_ = {};
     if (previewDescriptorPool_ != VK_NULL_HANDLE && resource.descriptor != VK_NULL_HANDLE)
         vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &resource.descriptor);
+    if (resource.skinTexture.valid()) {
+        try {
+            destroyTextureEx(resource.skinTexture);
+        } catch (...) {
+        }
+    }
     if (resource.texture.valid()) {
         try {
             destroyTextureEx(resource.texture);
@@ -3140,6 +3877,17 @@ void VulkanDevice::ensurePreviewHdrResource(Frame& frame, VkExtent2D extent) {
         const auto& typed = typedTextures_.at(resource.texture);
         resource.image = typed.resource.image;
         resource.view = typed.view;
+        resource.skinTexture = createTextureEx({
+            .dimension = TextureDimension::d2,
+            .extent = {extent.width, extent.height, 1},
+            .format = PixelFormat::rgba16Float,
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .usage = ResourceUsage::colorAttachment | ResourceUsage::sampledRead,
+            .lifetime = ResourceLifetime::persistent,
+        });
+        resource.skinImage = typedTextures_.at(resource.skinTexture).resource.image;
+        resource.skinView = typedTextures_.at(resource.skinTexture).view;
         const VkDescriptorSetAllocateInfo setInfo{
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
             .descriptorPool = previewDescriptorPool_,
@@ -3147,21 +3895,231 @@ void VulkanDevice::ensurePreviewHdrResource(Frame& frame, VkExtent2D extent) {
             .pSetLayouts = &previewTonemapDescriptorSetLayout_,
         };
         check(vkAllocateDescriptorSets(device_, &setInfo, &resource.descriptor), "allocate preview tonemap descriptor");
-        const VkDescriptorImageInfo image{VK_NULL_HANDLE, resource.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        const std::array writes{
-            VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                 .dstSet = resource.descriptor,
-                                 .dstBinding = 0,
-                                 .descriptorCount = 1,
-                                 .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                                 .pImageInfo = &image},
-        };
-        updatePreviewImageDescriptors(writes);
+        // Bindings are written per frame in writePreviewTonemapDescriptor, once
+        // the depth and bloom views for this frame are known.
         resource.extent = extent;
     } catch (...) {
         destroyPreviewHdrResource(frame);
         throw;
     }
+}
+
+void VulkanDevice::destroyPreviewBloomResource(Frame& frame) noexcept {
+    auto& resource = frame.previewBloom;
+    if (previewDescriptorPool_ != VK_NULL_HANDLE) {
+        for (auto& set : resource.sets) {
+            if (set != VK_NULL_HANDLE)
+                vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &set);
+        }
+    }
+    for (std::size_t index = 0; index < 2; ++index) {
+        if (resource.views[index] != VK_NULL_HANDLE)
+            vkDestroyImageView(device_, resource.views[index], nullptr);
+        if (resource.images[index] != VK_NULL_HANDLE)
+            vkDestroyImage(device_, resource.images[index], nullptr);
+        if (resource.memories[index] != VK_NULL_HANDLE)
+            vkFreeMemory(device_, resource.memories[index], nullptr);
+    }
+    resource = {};
+}
+
+void VulkanDevice::ensurePreviewBloomResource(Frame& frame, VkExtent2D extent) {
+    auto& resource = frame.previewBloom;
+    const VkExtent2D half{std::max(1U, extent.width / 2U), std::max(1U, extent.height / 2U)};
+    if (resource.images[0] != VK_NULL_HANDLE && resource.extent.width == half.width &&
+        resource.extent.height == half.height)
+        return;
+    destroyPreviewBloomResource(frame);
+    const auto createImage = [this](VkExtent2D size, VkImage& image, VkDeviceMemory& memory, VkImageView& view) {
+        const VkImageCreateInfo imageInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+            .extent = {size.width, size.height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        allocateImageMemory(imageInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, memory);
+        const VkImageViewCreateInfo viewInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+        };
+        check(vkCreateImageView(device_, &viewInfo, nullptr, &view), "create preview bloom image view");
+    };
+    try {
+        for (std::size_t index = 0; index < 2; ++index)
+            createImage(half, resource.images[index], resource.memories[index], resource.views[index]);
+        const std::array layouts{bloomDescriptorSetLayout_, bloomDescriptorSetLayout_, bloomDescriptorSetLayout_};
+        const VkDescriptorSetAllocateInfo allocate{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = previewDescriptorPool_,
+            .descriptorSetCount = 3,
+            .pSetLayouts = layouts.data(),
+        };
+        check(vkAllocateDescriptorSets(device_, &allocate, resource.sets), "allocate preview bloom descriptors");
+        const VkDescriptorImageInfo sampler{previewClampSampler_, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
+        const auto writePass = [this, &resource, &sampler](std::size_t pass, VkImageView source, VkImageView target) {
+            const VkDescriptorImageInfo input{
+                VK_NULL_HANDLE, source, pass == 0 ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL};
+            const VkDescriptorImageInfo output{VK_NULL_HANDLE, target, VK_IMAGE_LAYOUT_GENERAL};
+            const std::array writes{
+                VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                     .dstSet = resource.sets[pass],
+                                     .dstBinding = 0,
+                                     .descriptorCount = 1,
+                                     .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                                     .pImageInfo = &input},
+                VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                     .dstSet = resource.sets[pass],
+                                     .dstBinding = 1,
+                                     .descriptorCount = 1,
+                                     .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+                                     .pImageInfo = &sampler},
+                VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                     .dstSet = resource.sets[pass],
+                                     .dstBinding = 2,
+                                     .descriptorCount = 1,
+                                     .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                     .pImageInfo = &output},
+            };
+            updatePreviewImageDescriptors(writes);
+        };
+        writePass(0, frame.previewHdr.view, resource.views[0]);
+        writePass(1, resource.views[0], resource.views[1]);
+        writePass(2, resource.views[1], resource.views[0]);
+        resource.extent = half;
+    } catch (...) {
+        destroyPreviewBloomResource(frame);
+        throw;
+    }
+}
+
+void VulkanDevice::recordPreviewBloomPass(VkCommandBuffer command, Frame& frame, VkExtent2D extent) {
+    const auto resolved = previewResolvedEffects();
+    if (!resolved.bloom || bloomPipeline_ == VK_NULL_HANDLE || frame.previewHdr.image == VK_NULL_HANDLE)
+        return;
+    ensurePreviewBloomResource(frame, extent);
+    auto& bloom = frame.previewBloom;
+    if (bloom.images[0] == VK_NULL_HANDLE)
+        return;
+    const auto& post = frame.previewDof;
+    const VkDescriptorImageInfo source{
+        VK_NULL_HANDLE,
+        previewFinalHdr_.valid() ? typedTextures_.at(previewFinalHdr_).view
+                                 : (post.active ? post.views[post.output] : frame.previewHdr.view),
+        !previewFinalHdr_.valid() && post.active ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkWriteDescriptorSet sourceWrite{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                           .dstSet = bloom.sets[0],
+                                           .dstBinding = 0,
+                                           .descriptorCount = 1,
+                                           .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                                           .pImageInfo = &source};
+    updatePreviewImageDescriptors(std::span{&sourceWrite, 1});
+    std::array<VkImageMemoryBarrier2, 2> toStorage{};
+    for (std::size_t index = 0; index < 2; ++index) {
+        toStorage[index] = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            .oldLayout = bloom.initialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = bloom.images[index],
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+        };
+    }
+    const VkDependencyInfo begin{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = static_cast<std::uint32_t>(toStorage.size()),
+        .pImageMemoryBarriers = toStorage.data(),
+    };
+    vkCmdPipelineBarrier2(command, &begin);
+    bloom.initialized = true;
+    const PreviewBloomConstants constants{
+        bloom.extent.width, bloom.extent.height, 0U, 0U, {resolved.bloomThreshold, 0.0F, 0.0F, 0.0F}};
+    const VkMemoryBarrier2 between{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+    };
+    const VkDependencyInfo betweenInfo{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &between,
+    };
+    const std::uint32_t groupsX = (bloom.extent.width + 7U) / 8U;
+    const std::uint32_t groupsY = (bloom.extent.height + 7U) / 8U;
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, bloomPipeline_);
+    for (std::uint32_t pass = 0; pass < 3; ++pass) {
+        auto passConstants = constants;
+        passConstants.mode = pass;
+        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, bloomPipelineLayout_, 0, 1, &bloom.sets[pass],
+                                0, nullptr);
+        vkCmdPushConstants(command, bloomPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(passConstants),
+                           &passConstants);
+        vkCmdDispatch(command, groupsX, groupsY, 1);
+        vkCmdPipelineBarrier2(command, &betweenInfo);
+    }
+}
+
+void VulkanDevice::writePreviewTonemapDescriptor(Frame& frame, VkImageView depthView, VkImageView bloomView) {
+    auto& resource = frame.previewHdr;
+    if (resource.descriptor == VK_NULL_HANDLE || resource.view == VK_NULL_HANDLE)
+        return;
+    const auto& post = frame.previewDof;
+    const VkDescriptorImageInfo hdr{
+        VK_NULL_HANDLE,
+        previewFinalHdr_.valid() ? typedTextures_.at(previewFinalHdr_).view
+                                 : (post.active ? post.views[post.output] : resource.view),
+        !previewFinalHdr_.valid() && post.active ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkDescriptorImageInfo depth{VK_NULL_HANDLE, depthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkDescriptorImageInfo bloom{VK_NULL_HANDLE, bloomView,
+                                      frame.previewBloom.initialized ? VK_IMAGE_LAYOUT_GENERAL
+                                                                     : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkDescriptorImageInfo skin{VK_NULL_HANDLE,
+                                     previewFinalHdr_.valid() ? typedTextures_.at(previewFallbackAoTexture_).view
+                                                              : resource.skinView,
+                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const std::array writes{
+        VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                             .dstSet = resource.descriptor,
+                             .dstBinding = 0,
+                             .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                             .pImageInfo = &hdr},
+        VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                             .dstSet = resource.descriptor,
+                             .dstBinding = 2,
+                             .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                             .pImageInfo = &depth},
+        VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                             .dstSet = resource.descriptor,
+                             .dstBinding = 3,
+                             .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                             .pImageInfo = &bloom},
+        VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                             .dstSet = resource.descriptor,
+                             .dstBinding = 4,
+                             .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                             .pImageInfo = &skin},
+    };
+    updatePreviewImageDescriptors(writes);
 }
 
 void VulkanDevice::ensurePreviewAoResources(Frame& frame, VkExtent2D extent) {
@@ -3201,8 +4159,9 @@ void VulkanDevice::ensurePreviewAoResources(Frame& frame, VkExtent2D extent) {
     try {
         resource.divisor = previewQuality_.aoDivisor;
         createImage(extent, VK_FORMAT_D32_SFLOAT,
-                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_DEPTH_BIT,
-                    resource.depthImage, resource.depthMemory, resource.depthView);
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT, resource.depthImage, resource.depthMemory, resource.depthView);
         createImage(extent, previewNormalFormat_, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, resource.normalImage, resource.normalMemory, resource.normalView);
         for (std::size_t index = 0; index < 2; ++index)
@@ -3293,15 +4252,44 @@ void VulkanDevice::ensurePreviewAoResources(Frame& frame, VkExtent2D extent) {
     }
 }
 
+void VulkanDevice::ensurePreviewFocusIdResource(Frame& frame, VkExtent2D extent) {
+    auto& resource = frame.previewAo;
+    if (resource.focusIdImage != VK_NULL_HANDLE)
+        return;
+    const VkImageCreateInfo info{.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                 .imageType = VK_IMAGE_TYPE_2D,
+                                 .format = VK_FORMAT_R32_UINT,
+                                 .extent = {extent.width, extent.height, 1},
+                                 .mipLevels = 1,
+                                 .arrayLayers = 1,
+                                 .samples = VK_SAMPLE_COUNT_1_BIT,
+                                 .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                 .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                          VK_IMAGE_USAGE_SAMPLED_BIT,
+                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    allocateImageMemory(info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, resource.focusIdImage, resource.focusIdMemory);
+    const VkImageViewCreateInfo view{.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                     .image = resource.focusIdImage,
+                                     .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                     .format = VK_FORMAT_R32_UINT,
+                                     .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    check(vkCreateImageView(device_, &view, nullptr, &resource.focusIdView), "create focus identity image");
+}
+
 void VulkanDevice::recordPreviewAoPass(VkCommandBuffer command, Frame& frame, VkExtent2D extent) {
     if (depthPrepassPipeline_ == VK_NULL_HANDLE || aoPipelines_[0] == VK_NULL_HANDLE ||
-        previewIndexBuffer_ == VK_NULL_HANDLE)
+        aoPipelines_[2] == VK_NULL_HANDLE || previewIndexBuffer_ == VK_NULL_HANDLE)
+        return;
+    const auto effects = previewResolvedEffects();
+    if (!effects.ambientOcclusion && !effects.depthOfField && !effects.skinSubsurface && !focusPickRequest_)
         return;
     ensurePreviewAoResources(frame, extent);
     auto& resource = frame.previewAo;
     const VkImageMemoryBarrier2 toDepth{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask = resource.initialized ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_2_NONE,
+        .srcStageMask = resource.initialized
+                            ? (VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT)
+                            : VK_PIPELINE_STAGE_2_NONE,
         .srcAccessMask = resource.initialized ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : 0U,
         .dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
         .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
@@ -3352,12 +4340,68 @@ void VulkanDevice::recordPreviewAoPass(VkCommandBuffer command, Frame& frame, Vk
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
         .clearValue = normalClear,
     };
+    const bool pickIdentity = focusPickRequest_.has_value() || frame.motion.enabled;
+    VkRenderingAttachmentInfo identityAttachment{.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    if (pickIdentity) {
+        ensurePreviewFocusIdResource(frame, extent);
+        const VkImageMemoryBarrier2 identityToColor{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask =
+                resource.focusIdInitialized ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_NONE,
+            .srcAccessMask = resource.focusIdInitialized ? VK_ACCESS_2_MEMORY_READ_BIT : 0U,
+            .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            .oldLayout =
+                resource.focusIdInitialized ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = resource.focusIdImage,
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        const VkDependencyInfo beginId{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                       .imageMemoryBarrierCount = 1,
+                                       .pImageMemoryBarriers = &identityToColor};
+        vkCmdPipelineBarrier2(command, &beginId);
+        identityAttachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                              .imageView = resource.focusIdView,
+                              .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                              .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+    }
+    VkRenderingAttachmentInfo motionAttachment{.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    if (frame.motion.enabled) {
+        const VkImageMemoryBarrier2 toMotion{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask =
+                resource.motionInitialized ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_2_NONE,
+            .srcAccessMask = resource.motionInitialized ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : 0U,
+            .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            .oldLayout = resource.motionInitialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = resource.motionImage,
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        const VkDependencyInfo beginMotion{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                           .imageMemoryBarrierCount = 1,
+                                           .pImageMemoryBarriers = &toMotion};
+        vkCmdPipelineBarrier2(command, &beginMotion);
+        motionAttachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                            .imageView = resource.motionView,
+                            .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                            .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+    }
+    const std::array normalAttachments{normalAttachment, identityAttachment, motionAttachment};
     const VkRenderingInfo rendering{
         .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
         .renderArea = {{0, 0}, extent},
         .layerCount = 1,
-        .colorAttachmentCount = 1,
-        .pColorAttachments = &normalAttachment,
+        .colorAttachmentCount = frame.motion.enabled ? 3U
+                                : pickIdentity       ? 2U
+                                                     : 1U,
+        .pColorAttachments = normalAttachments.data(),
         .pDepthAttachment = &attachment,
     };
     vkCmdBeginRendering(command, &rendering);
@@ -3366,20 +4410,33 @@ void VulkanDevice::recordPreviewAoPass(VkCommandBuffer command, Frame& frame, Vk
     const VkRect2D scissor{{0, 0}, extent};
     vkCmdSetViewport(command, 0, 1, &viewport);
     vkCmdSetScissor(command, 0, 1, &scissor);
-    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrepassPipeline_);
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      frame.motion.enabled ? depthMotionPipeline_
+                      : pickIdentity       ? depthPickPipeline_
+                                           : depthPrepassPipeline_);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 1, 1,
-                            &frame.previewBoneDescriptor, 0, nullptr);
+                            frame.motion.enabled ? &frame.motion.descriptor : &frame.previewBoneDescriptor, 0, nullptr);
     if (frame.previewMaterialDescriptor != VK_NULL_HANDLE)
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 2, 1,
                                 &frame.previewMaterialDescriptor, 0, nullptr);
     if (frame.previewMorphDescriptor != VK_NULL_HANDLE)
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 4, 1,
                                 &frame.previewMorphDescriptor, 0, nullptr);
+    if (previewBindlessDescriptor_ != VK_NULL_HANDLE)
+        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 3, 1,
+                                &previewBindlessDescriptor_, 0, nullptr);
     const auto vertexBuffer = frame.previewDeformedBuffer;
     const VkDeviceSize vertexOffset = 0;
-    vkCmdBindVertexBuffers(command, 0, 1, &vertexBuffer, &vertexOffset);
+    if (frame.motion.enabled) {
+        const std::array buffers{vertexBuffer, frame.motion.valid ? previewTemporalHistory_.positions : vertexBuffer};
+        const std::array<VkDeviceSize, 2> offsets{};
+        vkCmdBindVertexBuffers(command, 0, 2, buffers.data(), offsets.data());
+    } else {
+        vkCmdBindVertexBuffers(command, 0, 1, &vertexBuffer, &vertexOffset);
+    }
     vkCmdBindIndexBuffer(command, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     PreviewPushConstants constants;
+    constants.lens = previewLensConstants();
     std::copy_n(previewGpuScene_.view.cameraRotation, 3, constants.camera.begin());
     constants.camera[3] = previewGpuScene_.view.cameraDistance;
     std::copy_n(previewGpuScene_.view.target, 3, constants.target.begin());
@@ -3407,11 +4464,47 @@ void VulkanDevice::recordPreviewAoPass(VkCommandBuffer command, Frame& frame, Vk
                          constants.instanceCount, draw.firstIndex, 0, 0);
     }
     vkCmdEndRendering(command);
+    if (frame.motion.enabled) {
+        const VkImageMemoryBarrier2 toRead{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                           .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                           .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                           .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                           .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                           .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                           .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                           .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                           .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                           .image = resource.motionImage,
+                                           .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        const VkDependencyInfo endMotion{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &toRead};
+        vkCmdPipelineBarrier2(command, &endMotion);
+        resource.motionInitialized = true;
+    }
+    if (pickIdentity) {
+        const VkImageMemoryBarrier2 identityToRead{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = resource.focusIdImage,
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        const VkDependencyInfo endId{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                     .imageMemoryBarrierCount = 1,
+                                     .pImageMemoryBarriers = &identityToRead};
+        vkCmdPipelineBarrier2(command, &endId);
+        resource.focusIdInitialized = true;
+    }
     const VkImageMemoryBarrier2 toRead{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+        .srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
         .srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
         .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         .oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
         .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -3455,9 +4548,13 @@ void VulkanDevice::recordPreviewAoPass(VkCommandBuffer command, Frame& frame, Vk
         .pImageMemoryBarriers = barriers.data(),
     };
     vkCmdPipelineBarrier2(command, &computeBegin);
-    const std::array<std::uint32_t, 4> dispatchConstants{
-        std::max(1U, (extent.width + previewQuality_.aoDivisor - 1U) / previewQuality_.aoDivisor),
-        std::max(1U, (extent.height + previewQuality_.aoDivisor - 1U) / previewQuality_.aoDivisor), 0U, 0U};
+    const auto aoWidth = std::max(1U, (extent.width + previewQuality_.aoDivisor - 1U) / previewQuality_.aoDivisor);
+    const auto aoHeight = std::max(1U, (extent.height + previewQuality_.aoDivisor - 1U) / previewQuality_.aoDivisor);
+    const auto resolved = previewResolvedEffects();
+    const bool gtao = resolved.ambientOcclusionMode == PreviewAmbientOcclusion::gtao;
+    VkPipeline aoPipeline = gtao ? aoPipelines_[0] : aoPipelines_[1];
+    if (aoPipeline == VK_NULL_HANDLE)
+        aoPipeline = aoPipelines_[0];
     const VkMemoryBarrier2 computeBarrier{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
         .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -3470,15 +4567,34 @@ void VulkanDevice::recordPreviewAoPass(VkCommandBuffer command, Frame& frame, Vk
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &computeBarrier,
     };
+    PreviewAoConstants aoConstants{};
+    aoConstants.width = aoWidth;
+    aoConstants.height = aoHeight;
+    aoConstants.horizontal = 0U;
+    aoConstants.mode = gtao ? 1U : 0U;
+    const float aspect =
+        extent.height == 0 ? 1.0F : static_cast<float>(extent.width) / static_cast<float>(extent.height);
+    const bool perspective = previewGpuScene_.view.perspective;
+    const float focal = perspective ? 1.0F / std::tan(std::max(previewGpuScene_.view.verticalFovRadians, 0.05F) * 0.5F)
+                                    : previewGpuScene_.view.cameraDistance *
+                                          std::tan(std::max(previewGpuScene_.view.verticalFovRadians, 0.05F) * 0.5F);
+    aoConstants.projection[0] = focal;
+    aoConstants.projection[1] = aspect;
+    aoConstants.projection[2] = 0.05F;
+    aoConstants.projection[3] = 100.0F;
+    aoConstants.params[0] = resolved.ambientOcclusion ? resolved.ambientOcclusionIntensity : 0.0F;
+    aoConstants.params[1] = 0.15F;
+    aoConstants.params[2] = perspective ? 1.0F : 0.0F;
+    aoConstants.params[3] = 0.0F;
     for (std::uint32_t pass = 0; pass < 3; ++pass) {
-        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, aoPipelines_[pass == 0 ? 0 : 1]);
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pass == 0 ? aoPipeline : aoPipelines_[2]);
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, aoPipelineLayout_, 0, 1,
                                 &resource.computeSets[pass], 0, nullptr);
-        auto passConstants = dispatchConstants;
-        passConstants[2] = pass == 1 ? 1U : 0U;
+        auto passConstants = aoConstants;
+        passConstants.horizontal = pass == 1 ? 1U : 0U;
         vkCmdPushConstants(command, aoPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(passConstants),
-                           passConstants.data());
-        vkCmdDispatch(command, (dispatchConstants[0] + 7U) / 8U, (dispatchConstants[1] + 7U) / 8U, 1);
+                           &passConstants);
+        vkCmdDispatch(command, (aoWidth + 7U) / 8U, (aoHeight + 7U) / 8U, 1);
         vkCmdPipelineBarrier2(command, &betweenPasses);
     }
     resource.initialized = true;
@@ -3532,7 +4648,8 @@ void VulkanDevice::recordPreviewDeform(VkCommandBuffer command, Frame& frame) {
         const VkBufferCreateInfo info{
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             .size = frame.previewDeformedCapacity,
-            .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             .sharingMode = concurrent ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
             .queueFamilyIndexCount = concurrent ? 2U : 0U,
             .pQueueFamilyIndices = concurrent ? sharedFamilies.data() : nullptr,
@@ -3641,25 +4758,56 @@ void VulkanDevice::recordPreviewPass(VkCommandBuffer command, Frame& frame, VkIm
                                      DepthResource& depth, VkExtent2D extent, bool colorInitialized,
                                      VkImageLayout previousColorLayout, VkPipelineStageFlags2 previousColorStage,
                                      VkAccessFlags2 previousColorAccess, bool preservePreviousFrame) {
+    if (previewFinalHdr_.valid()) {
+        ensurePreviewHdrResource(frame, extent);
+        frame.previewDof.active = false;
+        recordPreviewFinalPass(command, frame, colorImage, colorView, extent, colorInitialized, previousColorLayout,
+                               previousColorStage, previousColorAccess);
+        return;
+    }
     recordPreviewDeform(command, frame);
+    const bool previousFrame = preservePreviousFrame && previewGpuScene_.view.backgroundEnabled &&
+                               previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::previousFrame;
+    preparePreviewTemporal(command, frame, extent, !previousFrame);
     if (preservePreviousFrame && previewGpuScene_.view.backgroundEnabled &&
         previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::previousFrame) {
         previewHdrActive_ = false;
         recordPreviewScenePass(command, frame, colorImage, colorView, depth, extent, colorInitialized,
                                previousColorLayout, previousColorStage, previousColorAccess, true);
+        recordPreviewFocusPick(command, frame, extent);
+        writePreviewTimestamp(command, frame.timestampQueryPool, previewTimestampPostProcess);
         return;
     }
     ensurePreviewHdrResource(frame, extent);
     auto& hdr = frame.previewHdr;
+    VkImageMemoryBarrier2 skinToColor{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = hdr.initialized
+                            ? (VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                            : VK_PIPELINE_STAGE_2_NONE,
+        .srcAccessMask = hdr.initialized ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : 0U,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        .oldLayout = hdr.initialized ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = hdr.skinImage,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    const VkDependencyInfo skinBegin{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &skinToColor};
+    vkCmdPipelineBarrier2(command, &skinBegin);
     previewHdrActive_ = true;
     recordPreviewScenePass(command, frame, hdr.image, hdr.view, depth, extent, hdr.initialized,
-                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, false);
     const VkImageMemoryBarrier2 hdrToSample{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
         .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -3668,6 +4816,32 @@ void VulkanDevice::recordPreviewPass(VkCommandBuffer command, Frame& frame, VkIm
         .image = hdr.image,
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
     };
+    auto skinToSample = hdrToSample;
+    skinToSample.image = hdr.skinImage;
+    const std::array barriers{hdrToSample, skinToSample};
+    const VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = static_cast<std::uint32_t>(barriers.size()),
+        .pImageMemoryBarriers = barriers.data(),
+    };
+    vkCmdPipelineBarrier2(command, &dependency);
+    hdr.initialized = true;
+    typedTextures_.at(hdr.texture).mipLayouts[0] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    typedTextures_.at(hdr.skinTexture).mipLayouts[0] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    lastPreviewHdrTexture_ = hdr.texture;
+
+    recordPreviewFocusPick(command, frame, extent);
+    recordPreviewDofPass(command, frame, extent);
+
+    recordPreviewFinalPass(command, frame, colorImage, colorView, extent, colorInitialized, previousColorLayout,
+                           previousColorStage, previousColorAccess);
+}
+
+void VulkanDevice::recordPreviewFinalPass(VkCommandBuffer command, Frame& frame, VkImage colorImage,
+                                          VkImageView colorView, VkExtent2D extent, bool colorInitialized,
+                                          VkImageLayout previousColorLayout, VkPipelineStageFlags2 previousColorStage,
+                                          VkAccessFlags2 previousColorAccess) {
+    auto& hdr = frame.previewHdr;
     const VkImageMemoryBarrier2 outputToColor{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .srcStageMask = colorInitialized ? previousColorStage : VK_PIPELINE_STAGE_2_NONE,
@@ -3681,16 +4855,35 @@ void VulkanDevice::recordPreviewPass(VkCommandBuffer command, Frame& frame, VkIm
         .image = colorImage,
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
     };
-    const std::array barriers{hdrToSample, outputToColor};
-    const VkDependencyInfo dependency{
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .imageMemoryBarrierCount = static_cast<std::uint32_t>(barriers.size()),
-        .pImageMemoryBarriers = barriers.data(),
+    const VkDependencyInfo outputDependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                            .imageMemoryBarrierCount = 1,
+                                            .pImageMemoryBarriers = &outputToColor};
+    vkCmdPipelineBarrier2(command, &outputDependency);
+    // Bloom chain reads the HDR buffer; it must run before the tone mapping pass
+    // because that pass composites the result.
+    recordPreviewBloomPass(command, frame, extent);
+    const VkMemoryBarrier2 bloomToTonemap{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
     };
-    vkCmdPipelineBarrier2(command, &dependency);
-    hdr.initialized = true;
-    typedTextures_.at(hdr.texture).mipLayouts[0] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    lastPreviewHdrTexture_ = hdr.texture;
+    const VkDependencyInfo bloomDependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &bloomToTonemap,
+    };
+    vkCmdPipelineBarrier2(command, &bloomDependency);
+    writePreviewTimestamp(command, frame.timestampQueryPool, previewTimestampPostProcess);
+
+    const auto resolved = previewResolvedEffects();
+    const auto depthView =
+        frame.previewAo.initialized ? frame.previewAo.depthView : typedTextures_.at(previewFallbackAoTexture_).view;
+    const auto bloomView = frame.previewBloom.initialized ? frame.previewBloom.views[0]
+                                                          : typedTextures_.at(previewFallbackAoTexture_).view;
+    writePreviewTonemapDescriptor(frame, depthView, bloomView);
+
     VkClearValue clear{};
     clear.color = !previewGpuScene_.view.backgroundEnabled ||
                           previewGpuScene_.view.screenSource == PreviewScene::ScreenSource::white
@@ -3721,8 +4914,22 @@ void VulkanDevice::recordPreviewPass(VkCommandBuffer command, Frame& frame, VkIm
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, previewTonemapPipeline_);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, previewTonemapPipelineLayout_, 0, 1,
                             &hdr.descriptor, 0, nullptr);
+    PreviewTonemapConstants tonemapConstants{};
+    tonemapConstants.options[0] = static_cast<float>(resolved.viewTransform);
+    tonemapConstants.options[1] = resolved.exposure;
+    tonemapConstants.options[2] = resolved.whiteBalance;
+    tonemapConstants.options[3] = resolved.bloomIntensity;
+    tonemapConstants.flags[0] = resolved.bloom && frame.previewBloom.initialized ? 1.0F : 0.0F;
+    tonemapConstants.flags[1] = resolved.antiAliasing == PreviewAntiAliasing::fxaa ? 1.0F : 0.0F;
+    tonemapConstants.viewport[0] = static_cast<float>(extent.width);
+    tonemapConstants.viewport[1] = static_cast<float>(extent.height);
+
+    vkCmdPushConstants(command, previewTonemapPipelineLayout_,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(tonemapConstants),
+                       &tonemapConstants);
     vkCmdDraw(command, 3, 1, 0, 0);
     vkCmdEndRendering(command);
+    writePreviewTimestamp(command, frame.timestampQueryPool, previewTimestampToneMap);
     previewHdrActive_ = false;
 }
 
@@ -3731,8 +4938,11 @@ void VulkanDevice::recordPreviewScenePass(VkCommandBuffer command, Frame& frame,
                                           bool colorInitialized, VkImageLayout previousColorLayout,
                                           VkPipelineStageFlags2 previousColorStage, VkAccessFlags2 previousColorAccess,
                                           bool preservePreviousFrame) {
+    writePreviewTimestamp(command, frame.timestampQueryPool, previewTimestampSceneStart);
     recordPreviewShadowPass(command, frame);
+    writePreviewTimestamp(command, frame.timestampQueryPool, previewTimestampShadow);
     recordPreviewAoPass(command, frame, extent);
+    writePreviewTimestamp(command, frame.timestampQueryPool, previewTimestampAmbientOcclusion);
     const VkImageMemoryBarrier2 toColor{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .srcStageMask = colorInitialized ? previousColorStage : VK_PIPELINE_STAGE_2_NONE,
@@ -3796,12 +5006,17 @@ void VulkanDevice::recordPreviewScenePass(VkCommandBuffer command, Frame& frame,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
         .clearValue = depthClear,
     };
+    auto skinAttachment = colorAttachment;
+    skinAttachment.imageView = frame.previewHdr.skinView;
+    skinAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    skinAttachment.clearValue.color = {{0.0F, 0.0F, 0.0F, 0.0F}};
+    const std::array colorAttachments{colorAttachment, skinAttachment};
     const VkRenderingInfo renderingInfo{
         .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
         .renderArea = {{0, 0}, extent},
         .layerCount = 1,
-        .colorAttachmentCount = 1,
-        .pColorAttachments = &colorAttachment,
+        .colorAttachmentCount = previewHdrActive_ ? 2U : 1U,
+        .pColorAttachments = colorAttachments.data(),
         .pDepthAttachment = &depthAttachment,
     };
     vkCmdBeginRendering(command, &renderingInfo);
@@ -3829,6 +5044,7 @@ void VulkanDevice::recordPreviewScenePass(VkCommandBuffer command, Frame& frame,
     vkCmdBindIndexBuffer(command, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
 
     PreviewPushConstants constants;
+    constants.lens = previewLensConstants();
     std::copy_n(previewGpuScene_.view.cameraRotation, 3, constants.camera.begin());
     constants.camera[3] = previewGpuScene_.view.cameraDistance;
     std::copy_n(previewGpuScene_.view.target, 3, constants.target.begin());
@@ -3841,12 +5057,14 @@ void VulkanDevice::recordPreviewScenePass(VkCommandBuffer command, Frame& frame,
     constants.debug = {static_cast<float>(previewGpuScene_.view.debugMaterial),
                        static_cast<float>(previewGpuScene_.view.debugFlags), previewEnvironmentEnabled_ ? 1.0F : 0.0F,
                        previewShadowDepth_.initialized ? (previewStillQuality_ ? 1.0F : 0.0F) : -1.0F};
-    constants.materialPadding = (frame.previewAo.initialized ? 1U : 0U) | (previewHdrActive_ ? 2U : 0U) |
+    constants.materialPadding = (frame.previewAo.initialized && previewResolvedEffects().ambientOcclusion ? 1U : 0U) |
+                                (previewHdrActive_ ? 2U : 0U) |
                                 (previewQuality_.cheapShadow && !previewStillQuality_ ? 4U : 0U);
     constants.viewport = {static_cast<float>(extent.width), static_cast<float>(extent.height), previewJitter_[0],
                           previewJitter_[1]};
     const auto plan = buildPreviewRenderPlan(false);
     recordPreviewModel(command, constants, plan);
+    writePreviewTimestamp(command, frame.timestampQueryPool, previewTimestampModel);
     vkCmdEndRendering(command);
 }
 
@@ -3863,6 +5081,7 @@ void VulkanDevice::renderFrame() {
         updatePreviewQualityBudget();
     reclaimAccelerationScratch(frameIndex_);
     resetNativeUploadBuffers(frame);
+    collectPreviewFocusPick(frame);
     resolveTimestampQuery(frame);
     if (frame.deformCommandPool != VK_NULL_HANDLE)
         check(vkResetCommandPool(device_, frame.deformCommandPool, 0), "reset async deform pool");
@@ -3888,8 +5107,9 @@ void VulkanDevice::renderFrame() {
     const VkCommandBufferBeginInfo beginInfo{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     check(vkBeginCommandBuffer(frame.commandBuffer, &beginInfo), "begin command buffer");
     if (frame.timestampQueryPool != VK_NULL_HANDLE) {
-        vkCmdResetQueryPool(frame.commandBuffer, frame.timestampQueryPool, 0, 2);
-        vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, frame.timestampQueryPool, 0);
+        vkCmdResetQueryPool(frame.commandBuffer, frame.timestampQueryPool, 0, previewTimestampCount);
+        vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, frame.timestampQueryPool,
+                            previewTimestampFrameStart);
     }
     recordPreviewBackgroundUpload(frame.commandBuffer, frame);
 
@@ -4008,7 +5228,8 @@ void VulkanDevice::renderFrame() {
     // Both the ImGui and non-ImGui paths must complete the timestamp pair.
     // Otherwise the query pool remains unavailable and GPU timing reads as zero.
     if (frame.timestampQueryPool != VK_NULL_HANDLE)
-        vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timestampQueryPool, 1);
+        vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timestampQueryPool,
+                            previewTimestampFrameEnd);
 
     const VkImageMemoryBarrier2 toPresent{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -4321,6 +5542,37 @@ core::ImageRgba8 VulkanDevice::renderToImage(const RenderTargetDesc& target) {
     return std::move(collectRenderedImage(enqueueRenderToImage(target), true).value());
 }
 
+core::ImageRgba8 VulkanDevice::renderPreviewHdrToImage(const RenderTargetDesc& target,
+                                                       std::span<const std::uint8_t> rgba16f) {
+    if (target.width == 0 || target.height == 0 ||
+        static_cast<std::uint64_t>(target.width) * target.height > std::numeric_limits<std::size_t>::max() / 8U ||
+        rgba16f.size() != static_cast<std::size_t>(target.width) * target.height * 8U)
+        throw std::invalid_argument("preview final output requires a matching non-empty RGBA16F image");
+    const bool previousStillQuality = previewStillQuality_;
+    const auto input = createTextureEx({.dimension = TextureDimension::d2,
+                                        .extent = {target.width, target.height, 1},
+                                        .format = PixelFormat::rgba16Float,
+                                        .mipLevels = 1,
+                                        .arrayLayers = 1,
+                                        .usage = ResourceUsage::sampledRead | ResourceUsage::transferDst,
+                                        .lifetime = ResourceLifetime::persistent});
+    try {
+        uploadTextureEx(input, rgba16f, 0, 0);
+        previewFinalHdr_ = input;
+        setPreviewStillQuality(true);
+        auto image = renderToImage(target);
+        previewFinalHdr_ = {};
+        setPreviewStillQuality(previousStillQuality);
+        destroyTextureEx(input);
+        return image;
+    } catch (...) {
+        previewFinalHdr_ = {};
+        setPreviewStillQuality(previousStillQuality);
+        destroyTextureEx(input);
+        throw;
+    }
+}
+
 std::uint64_t VulkanDevice::enqueueRenderToImage(const RenderTargetDesc& target) {
     if (target.width == 0 || target.height == 0)
         throw std::invalid_argument("video dimensions must be non-zero");
@@ -4359,6 +5611,7 @@ std::uint64_t VulkanDevice::enqueueRenderToImage(const RenderTargetDesc& target)
     resetNativeUploadBuffers(frame);
     const auto uploadWaitValue = uploadContext_->lastSubmittedValue();
     createOffscreenResource(extent);
+    collectPreviewFocusPick(frame);
     resolveTimestampQuery(frame);
     if (frame.deformCommandPool != VK_NULL_HANDLE)
         check(vkResetCommandPool(device_, frame.deformCommandPool, 0), "reset async deform pool");
@@ -4377,14 +5630,15 @@ std::uint64_t VulkanDevice::enqueueRenderToImage(const RenderTargetDesc& target)
     };
     check(vkBeginCommandBuffer(frame.commandBuffer, &beginInfo), "begin offscreen command buffer");
     if (frame.timestampQueryPool != VK_NULL_HANDLE) {
-        vkCmdResetQueryPool(frame.commandBuffer, frame.timestampQueryPool, 0, 2);
-        vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, frame.timestampQueryPool, 0);
+        vkCmdResetQueryPool(frame.commandBuffer, frame.timestampQueryPool, 0, previewTimestampCount);
+        vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, frame.timestampQueryPool,
+                            previewTimestampFrameStart);
     }
     recordPreviewBackgroundUpload(frame.commandBuffer, frame);
 
     lastPreviewHdrTexture_ = {};
     std::optional<NativeFrameOutput> nativeOutput;
-    if (nativeFrameRecorder_) {
+    if (!previewFinalHdr_.valid() && nativeFrameRecorder_) {
         VulkanCommandList commands(*this, frame.commandBuffer);
         nativeOutput = nativeFrameRecorder_(commands, target);
         if (nativeOutput.has_value() && !nativeOutput->valid())
@@ -4402,7 +5656,8 @@ std::uint64_t VulkanDevice::enqueueRenderToImage(const RenderTargetDesc& target)
                           VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, false);
     }
     if (frame.timestampQueryPool != VK_NULL_HANDLE)
-        vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timestampQueryPool, 1);
+        vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.timestampQueryPool,
+                            previewTimestampFrameEnd);
 
     const VkImageMemoryBarrier2 toTransfer{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -5147,6 +6402,7 @@ void VulkanDevice::uploadPreviewDeviceLocalBuffer(const void* data, VkDeviceSize
 }
 
 void VulkanDevice::uploadPreviewMesh(std::span<const PreviewVertex> vertices, std::span<const std::uint32_t> indices) {
+    previewTemporalHistory_.valid = false;
     if (vertices.empty() || indices.empty())
         throw std::invalid_argument("preview mesh is empty");
     collectPreviewRetirements();
@@ -5344,6 +6600,8 @@ void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> mater
         gpu.pbr[2] = material.specularStrength;
         gpu.pbr[3] = material.skin;
         gpu.hair[0] = material.anisotropy;
+        gpu.hair[1] = material.sheen;
+        gpu.hair[2] = material.clearcoat;
         previewGpuScene_.materialData.push_back(gpu);
     }
     if (previewGpuScene_.materialData.empty()) {
@@ -5405,6 +6663,29 @@ void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> mater
     }
 }
 
+void VulkanDevice::setPreviewRenderSettings(const PreviewRenderSettings& settings) {
+    previewTemporalHistory_.valid = false;
+    previewRenderSettings_ = sanitizePreviewRenderSettings(settings);
+    refreshPreviewEffectUniforms();
+}
+
+void VulkanDevice::refreshPreviewEffectUniforms() {
+    if (previewEnvironmentDescriptor_ == VK_NULL_HANDLE)
+        return;
+    PreviewEnvironment environment;
+    if (previewEnvironmentEnabled_) {
+        environment.prefiltered = previewEnvironmentTexture_;
+        environment.mipLevels = static_cast<std::uint32_t>(previewEnvironmentData_[36]) + 1U;
+        environment.intensity = previewEnvironmentData_[37];
+        for (std::size_t coefficient = 0; coefficient < 9; ++coefficient)
+            std::copy_n(previewEnvironmentData_.data() + coefficient * 4, 3,
+                        environment.sphericalHarmonics.data() + coefficient * 3);
+    }
+    // updatePreviewEnvironment retires the old buffer until its frame fences
+    // complete. Editing settings never overwrites in-flight uniform data.
+    updatePreviewEnvironment(environment);
+}
+
 void VulkanDevice::updatePreviewEnvironment(const PreviewEnvironment& environment) {
     const bool enabled = environment.prefiltered.valid() && environment.mipLevels != 0;
     auto selected = environment;
@@ -5431,11 +6712,13 @@ void VulkanDevice::updatePreviewEnvironment(const PreviewEnvironment& environmen
     if (texture->second.desc.dimension != TextureDimension::cube)
         throw std::invalid_argument("preview environment requires a cubemap");
 
-    std::array<float, 40> data{};
+    std::array<float, 64> data{};
     for (std::size_t coefficient = 0; coefficient < 9; ++coefficient)
         std::copy_n(selected.sphericalHarmonics.data() + coefficient * 3, 3, data.data() + coefficient * 4);
     data[36] = static_cast<float>(selected.mipLevels - 1U);
     data[37] = selected.intensity;
+    const auto effects = packPreviewEffectData(previewResolvedEffects());
+    std::copy(effects.begin(), effects.end(), data.begin() + previewEffectDataIndex * 4);
     if (previewEnvironmentTexture_ == selected.prefiltered && data == previewEnvironmentData_ &&
         previewEnvironmentDescriptor_ != VK_NULL_HANDLE) {
         previewEnvironmentEnabled_ = enabled;
@@ -5518,6 +6801,9 @@ void VulkanDevice::updatePreviewEnvironment(const PreviewEnvironment& environmen
 }
 
 void VulkanDevice::updatePreviewDraws(std::span<const PreviewDraw> draws) {
+    if (previewGpuScene_.draws.size() != draws.size() ||
+        (!draws.empty() && std::memcmp(previewGpuScene_.draws.data(), draws.data(), draws.size_bytes()) != 0))
+        previewTemporalHistory_.valid = false;
     previewGpuScene_.draws.assign(draws.begin(), draws.end());
     previewIndirectCommands_.resize(draws.size());
     for (std::size_t index = 0; index < draws.size(); ++index) {
@@ -5588,6 +6874,7 @@ void VulkanDevice::uploadPreviewTextures(std::span<const PreviewTexture> texture
 }
 
 void VulkanDevice::clearPreviewResources() {
+    previewLensSample_.reset();
     collectPreviewRetirements();
     const std::array<PreviewVertex, 3> fallbackVertices{{
         {{0.0F, -0.65F, 0.0F}, {}, {}},

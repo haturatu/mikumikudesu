@@ -26,6 +26,8 @@ class VulkanUploadContext;
 class VulkanCommandList;
 
 class VulkanDevice final : public Device {
+    friend struct VulkanPreviewTestAccess;
+
   public:
     VulkanDevice(platform::Window& window, bool validation, VulkanOptions options = {});
     ~VulkanDevice() override;
@@ -88,7 +90,44 @@ class VulkanDevice final : public Device {
     [[nodiscard]] std::uint64_t previewGpuNanoseconds() const noexcept override {
         return previewGpuNanoseconds_;
     }
+    [[nodiscard]] PreviewPassTimings previewPassTimings() const noexcept override {
+        return previewPassTimings_;
+    }
+    [[nodiscard]] std::optional<PreviewFocusSample> pollPreviewFocusSample() override;
+    void requestPreviewFocusPick(std::array<float, 2> uv) override;
+    void cancelPreviewFocusPick() override;
+    void setPreviewLensSample(std::optional<std::array<float, 2>> sample) override {
+        previewLensSample_ = sample;
+    }
+    [[nodiscard]] std::optional<std::array<float, 3>> pollPreviewFocusPick() override;
+    void setPreviewRenderSettings(const PreviewRenderSettings& settings) override;
+    [[nodiscard]] PreviewRenderSettings previewRenderSettings() const noexcept override {
+        return previewRenderSettings_;
+    }
+    [[nodiscard]] ResolvedPreviewEffects previewResolvedEffects() const noexcept override {
+        return resolvePreviewEffects(previewRenderSettings_, options_.quality, previewIntegrated(),
+                                     previewStillQuality_, previewEffectSupport());
+    }
+    [[nodiscard]] std::uint32_t previewEffectSupport() const noexcept override {
+        std::uint32_t support =
+            previewEffectSupportHairShading | previewEffectSupportClothSheen | previewEffectSupportClearcoat;
+        if (shadowPipeline_ != VK_NULL_HANDLE)
+            support |= previewEffectSupportSoftShadows;
+        if (depthPrepassPipeline_ != VK_NULL_HANDLE && aoPipelines_[0] != VK_NULL_HANDLE)
+            support |= previewEffectSupportAmbientOcclusion;
+        if (previewTonemapPipeline_ != VK_NULL_HANDLE) {
+            if (capabilities_.independentBlend && dofPipeline_ != VK_NULL_HANDLE)
+                support |= previewEffectSupportSkinSubsurface;
+            if (bloomPipeline_ != VK_NULL_HANDLE)
+                support |= previewEffectSupportBloom;
+            if (depthPrepassPipeline_ != VK_NULL_HANDLE && dofPipeline_ != VK_NULL_HANDLE)
+                support |= previewEffectSupportDepthOfField;
+        }
+        return support;
+    }
     [[nodiscard]] core::ImageRgba8 renderToImage(const RenderTargetDesc& target) override;
+    [[nodiscard]] core::ImageRgba8 renderPreviewHdrToImage(const RenderTargetDesc& target,
+                                                           std::span<const std::uint8_t> rgba16f) override;
     [[nodiscard]] bool supportsPipelinedReadback() const noexcept override {
         return true;
     }
@@ -117,7 +156,10 @@ class VulkanDevice final : public Device {
         previewJitter_ = {x, y};
     }
     void setPreviewStillQuality(bool enabled) override {
+        if (previewStillQuality_ == enabled)
+            return;
         previewStillQuality_ = enabled;
+        refreshPreviewEffectUniforms();
     }
     [[nodiscard]] BufferHandle createBuffer(const BufferDesc& desc) override;
     [[nodiscard]] TextureHandle createTexture(const TextureDesc& desc) override;
@@ -189,6 +231,14 @@ class VulkanDevice final : public Device {
         VkImage depthImage{};
         VkDeviceMemory depthMemory{};
         VkImageView depthView{};
+        VkImage motionImage{};
+        VkDeviceMemory motionMemory{};
+        VkImageView motionView{};
+        bool motionInitialized{};
+        VkImage focusIdImage{};
+        VkDeviceMemory focusIdMemory{};
+        VkImageView focusIdView{};
+        bool focusIdInitialized{};
         VkImage normalImage{};
         VkDeviceMemory normalMemory{};
         VkImageView normalView{};
@@ -203,13 +253,78 @@ class VulkanDevice final : public Device {
     };
     struct PreviewHdrResource {
         handles::TextureHandle texture{};
+        handles::TextureHandle skinTexture{};
+        VkImage skinImage{};
+        VkImageView skinView{};
         VkImage image{};
         VkImageView view{};
         VkDescriptorSet descriptor{};
         VkExtent2D extent{};
         bool initialized{};
     };
+    // Ping-pong pair of half resolution images used by the bloom chain. sets[0]
+    // prefilters the HDR buffer, sets[1]/sets[2] are the horizontal and vertical
+    // blur passes.
+    struct PreviewBloomResource {
+        VkImage images[2]{};
+        VkDeviceMemory memories[2]{};
+        VkImageView views[2]{};
+        VkDescriptorSet sets[3]{};
+        VkExtent2D extent{};
+        bool initialized{};
+    };
 
+    struct PreviewDofResource {
+        // SSS, composite, signed CoC, near/far/data at half resolution,
+        // tile ranges, dilated ranges, near blur, far blur.
+        std::array<handles::TextureHandle, 13> textures{};
+        std::array<VkImage, 13> images{};
+        std::array<VkImageView, 13> views{};
+        std::array<VkDescriptorSet, 17> sets{};
+        std::uint32_t mipLevels{1};
+        VkBuffer apertureBuffer{};
+        VkDeviceMemory apertureMemory{};
+        void* mappedAperture{};
+        std::array<float, 3> apertureKey{};
+        bool apertureValid{};
+        VkExtent2D extent{};
+        bool initialized{};
+        std::uint32_t output{}; // SSS (0), spatial composite (1) or temporal resolve (10).
+        bool active{};
+        bool fullDof{};
+        bool temporal{};
+    };
+    struct PreviewMotionResource {
+        VkBuffer cameraBuffer{};
+        VkDeviceMemory cameraMemory{};
+        void* mappedCamera{};
+        VkDescriptorSet descriptor{};
+        bool enabled{};
+        bool valid{};
+    };
+    struct PreviewTemporalHistory {
+        // Resolved color, opaque depth, signed CoC and packed material/clone ID.
+        std::array<handles::TextureHandle, 4> textures{};
+        VkExtent2D extent{};
+        VkBuffer positions{};
+        VkDeviceMemory positionsMemory{};
+        VkDeviceSize capacity{};
+        PreviewScene scene;
+        std::array<float, 2> jitter{};
+        std::uint32_t phase{};
+        bool valid{};
+    };
+    struct PreviewFocusReadback {
+        PreviewFocusCamera camera;
+        std::array<float, 2> uv{};
+        float aspect{1.0F};
+        VkBuffer buffer{};
+        VkDeviceMemory memory{};
+        void* mapped{};
+        std::uint64_t serial{};
+        std::vector<PreviewBoneTransform> bones;
+        std::vector<PreviewDraw> draws;
+    };
     struct Frame {
         VkCommandPool commandPool{};
         VkCommandBuffer commandBuffer{};
@@ -258,6 +373,10 @@ class VulkanDevice final : public Device {
         PreviewDirtyRange previewMaterialDirty;
         PreviewAoResource previewAo;
         PreviewHdrResource previewHdr;
+        PreviewBloomResource previewBloom;
+        PreviewDofResource previewDof;
+        PreviewFocusReadback focusReadback;
+        PreviewMotionResource motion;
         VkBuffer previewIndirectBuffer{};
         VkDeviceMemory previewIndirectMemory{};
         void* mappedPreviewIndirect{};
@@ -310,6 +429,9 @@ class VulkanDevice final : public Device {
         bool colorInitialized{};
     };
 
+    [[nodiscard]] bool previewIntegrated() const noexcept {
+        return physicalProperties_.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+    }
     void retirePreviewResource(std::function<void()> destroy);
     void collectPreviewRetirements();
     struct PendingPreviewDeletion {
@@ -394,11 +516,28 @@ class VulkanDevice final : public Device {
     void destroyPreviewDeformBuffers(Frame& frame);
     void recordPreviewShadowPass(VkCommandBuffer command, Frame& frame);
     void recordPreviewAoPass(VkCommandBuffer command, Frame& frame, VkExtent2D extent);
+    void ensurePreviewFocusIdResource(Frame& frame, VkExtent2D extent);
     void ensurePreviewAoResources(Frame& frame, VkExtent2D extent);
     void destroyPreviewAoResources(Frame& frame) noexcept;
     void recordPreviewBackground(VkCommandBuffer command);
+    [[nodiscard]] std::array<float, 4> previewLensConstants() const;
+    [[nodiscard]] float previewFocusDistanceUnits() const;
+    void ensurePreviewDofResource(Frame& frame, VkExtent2D extent, bool fullDof, bool temporal);
+    void ensurePreviewTemporalHistory(VkCommandBuffer command, VkExtent2D extent);
+    void preparePreviewTemporal(VkCommandBuffer command, Frame& frame, VkExtent2D extent, bool available);
+    void recordPreviewTemporalHistory(VkCommandBuffer command, Frame& frame, VkExtent2D extent);
+    void destroyPreviewTemporalHistory() noexcept;
+    void destroyPreviewDofResource(Frame& frame) noexcept;
+    void recordPreviewDofPass(VkCommandBuffer command, Frame& frame, VkExtent2D extent);
+    void recordPreviewFocusPick(VkCommandBuffer command, Frame& frame, VkExtent2D extent);
+    void collectPreviewFocusPick(Frame& frame);
     void ensurePreviewHdrResource(Frame& frame, VkExtent2D extent);
     void destroyPreviewHdrResource(Frame& frame) noexcept;
+    void ensurePreviewBloomResource(Frame& frame, VkExtent2D extent);
+    void destroyPreviewBloomResource(Frame& frame) noexcept;
+    void recordPreviewBloomPass(VkCommandBuffer command, Frame& frame, VkExtent2D extent);
+    void writePreviewTonemapDescriptor(Frame& frame, VkImageView depthView, VkImageView bloomView);
+    void refreshPreviewEffectUniforms();
     void recordPreviewScenePass(VkCommandBuffer command, Frame& frame, VkImage colorImage, VkImageView colorView,
                                 DepthResource& depth, VkExtent2D extent, bool colorInitialized,
                                 VkImageLayout previousColorLayout, VkPipelineStageFlags2 previousColorStage,
@@ -407,6 +546,9 @@ class VulkanDevice final : public Device {
                            DepthResource& depth, VkExtent2D extent, bool colorInitialized,
                            VkImageLayout previousColorLayout, VkPipelineStageFlags2 previousColorStage,
                            VkAccessFlags2 previousColorAccess, bool preservePreviousFrame);
+    void recordPreviewFinalPass(VkCommandBuffer command, Frame& frame, VkImage colorImage, VkImageView colorView,
+                                VkExtent2D extent, bool colorInitialized, VkImageLayout previousColorLayout,
+                                VkPipelineStageFlags2 previousColorStage, VkAccessFlags2 previousColorAccess);
     void uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer,
                              VkDeviceMemory& memory, VkDeviceSize allocationSize = 0);
     [[nodiscard]] VkPipeline createGraphicsPipelineResource(const GraphicsPipelineDescEx& desc, VkPipelineLayout layout,
@@ -559,12 +701,24 @@ class VulkanDevice final : public Device {
     VkPipeline pipeline_{};
     VkPipeline shadowPipeline_{};
     VkPipeline depthPrepassPipeline_{};
+    VkPipeline depthPickPipeline_{};
+    VkPipeline depthMotionPipeline_{};
+    PreviewTemporalHistory previewTemporalHistory_;
     VkPipeline hdrPipeline_{};
     VkPipeline hdrTransparentPipeline_{};
     VkPipeline hdrEdgePipeline_{};
     VkPipeline previewTonemapPipeline_{};
     VkPipelineLayout previewTonemapPipelineLayout_{};
-    VkPipeline aoPipelines_[2]{};
+    VkPipeline dofPipeline_{};
+    VkPipelineLayout dofPipelineLayout_{};
+    VkDescriptorSetLayout dofDescriptorSetLayout_{};
+    VkFormat dofCocFormat_{VK_FORMAT_R16_SFLOAT};
+    std::optional<std::array<float, 2>> focusPickRequest_;
+    std::optional<PreviewFocusSample> focusPickResult_;
+    std::uint64_t focusPickSerial_{};
+    VkPipeline bloomPipeline_{};
+    VkPipelineLayout bloomPipelineLayout_{};
+    VkPipeline aoPipelines_[3]{};
     VkPipelineLayout aoPipelineLayout_{};
     VkPipeline transparentPipeline_{};
     VkPipeline edgePipeline_{};
@@ -598,9 +752,11 @@ class VulkanDevice final : public Device {
     VkDescriptorSetLayout previewAoDescriptorSetLayout_{};
     VkDescriptorSetLayout previewAoSampleDescriptorSetLayout_{};
     VkDescriptorSetLayout previewTonemapDescriptorSetLayout_{};
+    VkDescriptorSetLayout bloomDescriptorSetLayout_{};
     VkDescriptorPool previewDescriptorPool_{};
     VkSampler previewSampler_{};
     VkSampler previewClampSampler_{};
+    VkSampler previewDofSampler_{};
     VkDescriptorSet previewBindlessDescriptor_{};
     VkDescriptorSet previewEnvironmentDescriptor_{};
     VkDescriptorSet previewShadowDescriptor_{};
@@ -616,12 +772,16 @@ class VulkanDevice final : public Device {
     VkSampler previewEnvironmentSampler_{};
     handles::TextureHandle previewEnvironmentTexture_{};
     handles::TextureHandle previewFallbackEnvironmentTexture_{};
-    std::array<float, 40> previewEnvironmentData_{};
+    std::array<float, 64> previewEnvironmentData_{};
     std::array<float, 2> previewJitter_{};
+    std::optional<std::array<float, 2>> previewLensSample_;
     bool previewStillQuality_{};
     bool previewHdrActive_{};
+    PreviewRenderSettings previewRenderSettings_{};
+    PreviewPassTimings previewPassTimings_{};
     core::ImageRgba8 previewDisplayBackground_;
     handles::TextureHandle lastPreviewHdrTexture_{};
+    handles::TextureHandle previewFinalHdr_{};
     std::uint32_t previewBindlessTextureCapacity_{};
     bool previewBindlessSupported_{};
     bool scalarBlockLayoutSupported_{};

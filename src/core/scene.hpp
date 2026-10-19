@@ -106,7 +106,11 @@ struct MaterialEditorState {
     std::uint8_t previewPbrPreset{};
 };
 
+[[nodiscard]] std::string newModelInstanceId();
+
 struct ModelInstance {
+    // Persistent project identity, independent of the transient scene handle.
+    std::string instanceId{newModelInstanceId()};
     ModelId id{};
     std::filesystem::path sourcePath;
     std::shared_ptr<PmxModel> model;

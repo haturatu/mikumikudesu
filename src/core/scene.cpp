@@ -8,6 +8,7 @@
 #include <functional>
 #include <iomanip>
 #include <numeric>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <tuple>
@@ -65,6 +66,15 @@ bool isUpstreamDrawableModel(const PmxModel& model) noexcept {
         const auto z = static_cast<double>(vertex.position[2]);
         return x * x + y * y + z * z >= thresholdSquared;
     });
+}
+
+std::string newModelInstanceId() {
+    std::random_device random;
+    std::ostringstream value;
+    value << std::hex << std::setfill('0');
+    for (int i = 0; i < 4; ++i)
+        value << std::setw(8) << static_cast<std::uint32_t>(random());
+    return value.str();
 }
 
 ModelId Scene::addModel(const std::filesystem::path& path) {
