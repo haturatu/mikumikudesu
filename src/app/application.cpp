@@ -1258,12 +1258,11 @@ int Application::run() {
             if (!scene_.models().empty()) {
                 refreshAnimatedMesh(false, deltaSeconds * playbackSpeed_);
             }
-            refreshPreviewScene(deltaSeconds);
         }
 #if DAYO_HAS_IMGUI
         if (!imageSequenceExportRunning_)
 #endif
-            if (!playing_ && !videoExportUiActive_)
+            if (!videoExportUiActive_)
                 refreshPreviewScene(deltaSeconds);
         auto* media = scene_.backgroundMedia();
         for (auto& effect : reloadedEffects_) {
