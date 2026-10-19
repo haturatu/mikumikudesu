@@ -871,6 +871,13 @@ class Device {
     [[nodiscard]] virtual core::ImageRgba8 renderToImage(const RenderTargetDesc&) {
         throw std::logic_error("offscreen rendering is not implemented by this backend");
     }
+    // Applies the preview's common Bloom/color-management/FXAA output pass to
+    // an already integrated, premultiplied linear RGBA16F image. Spatial scene
+    // effects and physical lens sampling must have been evaluated before this.
+    [[nodiscard]] virtual core::ImageRgba8 renderPreviewHdrToImage(const RenderTargetDesc&,
+                                                                   std::span<const std::uint8_t>) {
+        throw std::logic_error("preview HDR final output is not implemented by this backend");
+    }
     [[nodiscard]] virtual bool supportsPipelinedReadback() const noexcept {
         return false;
     }

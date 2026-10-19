@@ -61,42 +61,6 @@ float halton(std::uint32_t index, std::uint32_t base) noexcept {
     return result;
 }
 
-std::uint8_t linearToSrgb(float value) noexcept {
-    const float channel = std::clamp(value, 0.0F, 1.0F);
-    const float encoded = channel <= 0.0031308F ? 12.92F * channel : 1.055F * std::pow(channel, 1.0F / 2.4F) - 0.055F;
-    return static_cast<std::uint8_t>(std::clamp(std::lround(encoded * 255.0F), 0L, 255L));
-}
-
-float srgbToLinear(std::uint8_t value) noexcept {
-    const float encoded = static_cast<float>(value) / 255.0F;
-    return encoded <= 0.04045F ? encoded / 12.92F : std::pow((encoded + 0.055F) / 1.055F, 2.4F);
-}
-
-std::array<float, 4> sampleDisplayBackground(const core::ImageRgba8& image, float u, float v) {
-    const float x = u * static_cast<float>(image.width) - 0.5F;
-    const float y = v * static_cast<float>(image.height) - 0.5F;
-    const auto x0 = static_cast<int>(std::floor(x)), y0 = static_cast<int>(std::floor(y));
-    const float fx = x - std::floor(x), fy = y - std::floor(y);
-    std::array<float, 4> color{};
-    for (int dy = 0; dy < 2; ++dy) {
-        for (int dx = 0; dx < 2; ++dx) {
-            const auto sx = std::clamp(x0 + dx, 0, static_cast<int>(image.width) - 1);
-            const auto sy = std::clamp(y0 + dy, 0, static_cast<int>(image.height) - 1);
-            const auto offset = (static_cast<std::size_t>(sy) * image.width + static_cast<std::size_t>(sx)) * 4U;
-            const float weight = (dx == 0 ? 1.0F - fx : fx) * (dy == 0 ? 1.0F - fy : fy);
-            for (std::size_t channel = 0; channel < 4; ++channel)
-                color[channel] += weight * (channel == 3 ? static_cast<float>(image.pixels[offset + channel]) / 255.0F
-                                                         : srgbToLinear(image.pixels[offset + channel]));
-        }
-    }
-    return color;
-}
-
-float acesFilm(float value) noexcept {
-    const float x = std::max(value, 0.0F);
-    return std::clamp((x * (2.51F * x + 0.03F)) / std::max(x * (2.43F * x + 0.59F) + 0.14F, 1e-5F), 0.0F, 1.0F);
-}
-
 void drawMorphWeightControl(float& value, const std::optional<core::fx::FxMorphControllerUi>& metadata) {
     const core::EffectSlider* slider =
         metadata.has_value() && metadata->slider.has_value() ? &*metadata->slider : nullptr;
@@ -4500,9 +4464,7 @@ void Application::advanceImageSequenceExport() {
             return;
 
         const auto averaged = imageSequenceHdrSamples_.resolveFloat32();
-        const auto displayBackground = device_->previewDisplayBackground();
-        imageSequenceImage_ = {.width = sequenceWidth_, .height = sequenceHeight_, .pixels = {}};
-        imageSequenceImage_.pixels.resize(static_cast<std::size_t>(sequenceWidth_) * sequenceHeight_ * 4U);
+        std::vector<std::uint8_t> averagedHdr(static_cast<std::size_t>(sequenceWidth_) * sequenceHeight_ * 8U);
         const float scaleX = static_cast<float>(renderWidth) / static_cast<float>(sequenceWidth_);
         const float scaleY = static_cast<float>(renderHeight) / static_cast<float>(sequenceHeight_);
         for (std::uint32_t y = 0; y < sequenceHeight_; ++y) {
@@ -4525,19 +4487,14 @@ void Application::advanceImageSequenceExport() {
                     }
                 }
                 const float denominator = scaleX * scaleY;
-                const auto destination = (static_cast<std::size_t>(y) * sequenceWidth_ + x) * 4U;
-                const float alpha = std::clamp(color[3] / denominator, 0.0F, 1.0F);
-                const auto background = sampleDisplayBackground(
-                    displayBackground, (static_cast<float>(x) + 0.5F) / static_cast<float>(sequenceWidth_),
-                    (static_cast<float>(y) + 0.5F) / static_cast<float>(sequenceHeight_));
-                for (std::size_t channel = 0; channel < 3; ++channel)
-                    imageSequenceImage_.pixels[destination + channel] =
-                        linearToSrgb(acesFilm(color[channel] / denominator / std::max(alpha, 1e-5F)) * alpha +
-                                     background[channel] * (1.0F - alpha));
-                imageSequenceImage_.pixels[destination + 3] = static_cast<std::uint8_t>(
-                    std::clamp(std::lround((alpha + background[3] * (1.0F - alpha)) * 255.0F), 0L, 255L));
+                const auto destination = (static_cast<std::size_t>(y) * sequenceWidth_ + x) * 8U;
+                for (std::size_t channel = 0; channel < 4; ++channel) {
+                    const auto half = core::floatToHalf(color[channel] / denominator);
+                    std::memcpy(averagedHdr.data() + destination + channel * sizeof(half), &half, sizeof(half));
+                }
             }
         }
+        imageSequenceImage_ = device_->renderPreviewHdrToImage({sequenceWidth_, sequenceHeight_}, averagedHdr);
         finishOutputFrame();
     } catch (const std::exception& error) {
         finishImageSequenceExport(error.what());

@@ -124,6 +124,8 @@ class VulkanDevice final : public Device {
         return support;
     }
     [[nodiscard]] core::ImageRgba8 renderToImage(const RenderTargetDesc& target) override;
+    [[nodiscard]] core::ImageRgba8 renderPreviewHdrToImage(const RenderTargetDesc& target,
+                                                           std::span<const std::uint8_t> rgba16f) override;
     [[nodiscard]] bool supportsPipelinedReadback() const noexcept override {
         return true;
     }
@@ -542,6 +544,9 @@ class VulkanDevice final : public Device {
                            DepthResource& depth, VkExtent2D extent, bool colorInitialized,
                            VkImageLayout previousColorLayout, VkPipelineStageFlags2 previousColorStage,
                            VkAccessFlags2 previousColorAccess, bool preservePreviousFrame);
+    void recordPreviewFinalPass(VkCommandBuffer command, Frame& frame, VkImage colorImage, VkImageView colorView,
+                                VkExtent2D extent, bool colorInitialized, VkImageLayout previousColorLayout,
+                                VkPipelineStageFlags2 previousColorStage, VkAccessFlags2 previousColorAccess);
     void uploadPreviewBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer,
                              VkDeviceMemory& memory, VkDeviceSize allocationSize = 0);
     [[nodiscard]] VkPipeline createGraphicsPipelineResource(const GraphicsPipelineDescEx& desc, VkPipelineLayout layout,
@@ -774,6 +779,7 @@ class VulkanDevice final : public Device {
     PreviewPassTimings previewPassTimings_{};
     core::ImageRgba8 previewDisplayBackground_;
     handles::TextureHandle lastPreviewHdrTexture_{};
+    handles::TextureHandle previewFinalHdr_{};
     std::uint32_t previewBindlessTextureCapacity_{};
     bool previewBindlessSupported_{};
     bool scalarBlockLayoutSupported_{};

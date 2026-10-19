@@ -2117,23 +2117,37 @@ bool physicalDofAndFocusPicking(dayo::graphics::VulkanDevice& device) {
     expect(
         lensAverage[outsideEdge] > 0.04F && lensAverage[outsideEdge + 3] > 0.99F,
         "64-sample HDR lens integration must spread foreground radiance while preserving opaque background coverage");
-    if (const auto* directory = std::getenv("DAYO_TEST_DOF_OUTPUT")) {
-        auto display = centralRay;
-        for (std::size_t i = 0; i < display.pixels.size(); ++i) {
-            float value = lensAverage[i];
-            if (i % 4U != 3U) {
-                value =
-                    std::clamp(value * (2.51F * value + 0.03F) / (value * (2.43F * value + 0.59F) + 0.14F), 0.0F, 1.0F);
-                value = value <= 0.0031308F ? 12.92F * value : 1.055F * std::pow(value, 1.0F / 2.4F) - 0.055F;
-            }
-            display.pixels[i] = static_cast<std::uint8_t>(std::clamp(std::lround(value * 255.0F), 0L, 255L));
-        }
-        dayo::core::writeFrame(std::filesystem::path(directory) / "dof-cinematic.png", display,
+    const auto integratedDisplay = device.renderPreviewHdrToImage({192, 192}, lensAccumulator.resolve());
+    if (const auto* directory = std::getenv("DAYO_TEST_DOF_OUTPUT"))
+        dayo::core::writeFrame(std::filesystem::path(directory) / "dof-cinematic.png", integratedDisplay,
                                dayo::core::OutputFormat::png);
-    }
     device.setPreviewLensSample(std::nullopt);
     device.setPreviewStillQuality(false);
 
+    settings.depthOfField.override = EffectOverride::disabled;
+    settings.antiAliasing = PreviewAntiAliasing::fxaa;
+    device.setPreviewStillQuality(true);
+    dayo::core::ImageRgba8 firstTransform;
+    for (const auto transform :
+         {PreviewViewTransform::aces, PreviewViewTransform::agx, PreviewViewTransform::neutral}) {
+        settings.viewTransform = transform;
+        settings.exposure = 1.3F;
+        settings.whiteBalance = 4300.0F;
+        settings.bloom.override = EffectOverride::enabled;
+        settings.bloomThreshold = 0.03F;
+        settings.bloom.intensity = 0.7F;
+        device.setPreviewRenderSettings(settings);
+        const auto preview = device.renderToImage({192, 192});
+        const auto hdr = device.readbackTextureEx(device.previewHdrTexture(), 0, 0);
+        const auto output = device.renderPreviewHdrToImage({192, 192}, hdr);
+        expect(imagesMatch(preview, output), "integrated HDR export must share preview color, Bloom and FXAA exactly");
+        if (firstTransform.pixels.empty())
+            firstTransform = output;
+        else
+            expect(!imagesMatch(firstTransform, output), "selected AgX/Neutral must change integrated HDR output");
+    }
+    device.setPreviewStillQuality(false);
+    settings = saved;
     // Force the depth prepass solely for the pick, with all spatial effects off.
     settings.depthOfField.override = EffectOverride::disabled;
     device.setPreviewRenderSettings(settings);
