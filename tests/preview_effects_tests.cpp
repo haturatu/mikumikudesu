@@ -1,5 +1,6 @@
 #include "app/preview_focus.hpp"
 #include "core/project.hpp"
+#include "graphics/preview_aperture.hpp"
 #include "graphics/preview_effects.hpp"
 
 #include <cmath>
@@ -7,6 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <numeric>
 #include <string>
 
 namespace {
@@ -207,12 +209,46 @@ bool focusTrackingAndResponse() {
     return ok;
 }
 
+bool apertureShape() {
+    using namespace dayo::graphics;
+    bool ok = true;
+    const auto circle = previewApertureLut(0, 0.0F, 0.0F);
+    const auto polygon = previewApertureLut(5, 0.0F, 0.0F);
+    const auto rounded = previewApertureLut(5, 1.0F, 0.0F);
+    const auto rotated = previewApertureLut(5, 0.0F, 36.0F);
+    const auto area = [](const auto& lut) { return std::accumulate(lut.begin(), lut.end(), 0.0F); };
+    ok &= check(std::abs(area(circle) / static_cast<float>(circle.size()) - 0.785398F) < 0.001F &&
+                    std::abs(area(polygon) / static_cast<float>(polygon.size()) - 0.59441F) < 0.002F,
+                "aperture coverage integrates circle and regular pentagon areas");
+    ok &= check(area(rounded) > area(polygon) && std::abs(area(rounded) - area(circle)) / area(circle) < 0.002F,
+                "cubic blade curvature smoothly approaches the circular aperture");
+    ok &= check(polygon != rotated && std::abs(area(polygon) - area(rotated)) < 16.0F,
+                "rotating aperture blades changes the mask while preserving area");
+    ok &= check(std::ranges::all_of(polygon, [](float value) { return value >= 0.0F && value <= 1.0F; }) &&
+                    std::ranges::any_of(polygon, [](float value) { return value > 0.0F && value < 1.0F; }),
+                "aperture boundaries contain antialiased fractional coverage");
+    PreviewDofSettings settings;
+    settings.maxRadiusPixels = 96.0F;
+    const auto lens = previewDofLens(settings, 3.0F, 0.7F, 540, PreviewDofQuality::performance);
+    ok &= check(lens.maxRadius == 48.0F && lens.samples == 12,
+                "an explicit radius cap scales with resolution without increasing the APU sample budget");
+    settings.apertureBlades = 3;
+    settings.apertureCurvature = 4.0F;
+    settings.maxRadiusPixels = 999.0F;
+    settings = sanitizePreviewDofSettings(settings);
+    ok &=
+        check(settings.apertureBlades == 0 && settings.apertureCurvature == 1.0F && settings.maxRadiusPixels == 128.0F,
+              "invalid aperture shapes and unbounded radii are sanitized");
+    return ok;
+}
+
 } // namespace
 
 int main() {
     using namespace dayo::graphics;
     bool ok = focusAndLensMath();
     ok &= focusTrackingAndResponse();
+    ok &= apertureShape();
     PreviewRenderSettings settings;
     auto effective = resolvePreviewEffects(settings, PreviewQuality::apu, true);
     ok &= check(effective.shadowFilter == PreviewShadowFilter::pcf && !effective.depthOfField,
@@ -265,6 +301,10 @@ int main() {
         dof.focusMode = PreviewFocusMode::trackedSurface;
         dof.quality = PreviewDofQuality::high;
         dof.fNumber = 1.4F;
+        dof.apertureBlades = 7;
+        dof.apertureCurvature = 0.35F;
+        dof.apertureRotationDegrees = 28.0F;
+        dof.maxRadiusPixels = 64.0F;
         dof.focusDistanceMetres = 1.8F;
         dof.focusOffsetMetres = -0.05F;
         dof.metresPerUnit = 0.6F;
@@ -291,7 +331,11 @@ int main() {
                     "project round trip preserves effect overrides, methods and color management");
         ok &= check(
             value.dof.focusMode == dof.focusMode && value.dof.quality == dof.quality &&
-                value.dof.fNumber == dof.fNumber && value.dof.focusDistanceMetres == dof.focusDistanceMetres &&
+                value.dof.fNumber == dof.fNumber && value.dof.apertureBlades == dof.apertureBlades &&
+                value.dof.apertureCurvature == dof.apertureCurvature &&
+                value.dof.apertureRotationDegrees == dof.apertureRotationDegrees &&
+                value.dof.maxRadiusPixels == dof.maxRadiusPixels &&
+                value.dof.focusDistanceMetres == dof.focusDistanceMetres &&
                 value.dof.focusOffsetMetres == dof.focusOffsetMetres && value.dof.metresPerUnit == dof.metresPerUnit &&
                 value.dof.sensorHeightMm == dof.sensorHeightMm && value.dof.modelIndex == dof.modelIndex &&
                 value.dof.boneName == dof.boneName && value.dof.worldPoint == dof.worldPoint &&

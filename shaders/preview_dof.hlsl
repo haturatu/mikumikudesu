@@ -47,6 +47,23 @@ struct DofConstants {
 #endif
 #endif
 RWTexture2D<float> outputCoc;
+[[vk::binding(15, 0)]] StructuredBuffer<float> apertureLut;
+
+float apertureCoverage(float2 position) {
+    if (dof.filter.y < 0.5) return 1.0;
+    if (any(abs(position) > 1.0)) return 0.0;
+    const float2 p = (position * 0.5 + 0.5) * 128.0 - 0.5;
+    const int2 first = int2(floor(p));
+    const float2 fraction = frac(p);
+    float coverage = 0.0;
+    [unroll] for (int i = 0; i < 4; ++i) {
+        const int2 corner = int2(i & 1, i >> 1);
+        const int2 q = clamp(first + corner, int2(0,0), int2(127,127));
+        const float2 w = lerp(1.0 - fraction, fraction, float2(corner));
+        coverage += apertureLut[q.y * 128 + q.x] * w.x * w.y;
+    }
+    return coverage;
+}
 
 float viewZ(float depth) {
     return dof.projection.z > 0.5 ? 5.0 / max(100.0 - depth * 99.95, 0.0001)
@@ -263,13 +280,14 @@ void DofFilter(uint3 id : SV_DispatchThreadID) {
                 const LayerSample sample = layerAt(float2(p) + 0.5 + offset, lod);
                 const float distance = length(offset);
                 const float weight = diskCoverage(sample.data.x, distance) * smoothstep(0.1, 0.6, sample.data.x) *
-                                     nearSearch * nearSearch / max(sample.data.x * sample.data.x, 0.25);
+                                     nearSearch * nearSearch / max(sample.data.x * sample.data.x, 0.25) *
+                                     apertureCoverage(-offset / max(sample.data.x, 0.5));
                 n += sample.nearColor * weight;
                 // Normalize the finite sample pattern against its own disk
                 // integral: constant foreground has unit coverage, independent
                 // of radius and sample count. Never normalize by foreground
                 // coverage, which would turn silhouette pixels opaque.
-                nwTotal += diskCoverage(nearSearch, distance);
+                nwTotal += diskCoverage(nearSearch, distance) * apertureCoverage(-disk);
             }
             if ((range.y >= 0.25 || center.data.x > 0.0) && farSearch >= 0.25) {
                 const float2 offset = disk * farSearch;
@@ -279,7 +297,8 @@ void DofFilter(uint3 id : SV_DispatchThreadID) {
                 const float depthWeight = center.data.x > 0.0 ? 1.0 :
                     saturate(1.0 - abs(sample.data.w - center.data.w) / max(0.05, center.data.w * 0.05));
                 const float weight = diskCoverage(radius, length(offset)) *
-                    ((center.data.x > 0.0 || sample.data.y > 0.0) && sample.farColor.a > 0.0 ? 1.0 : 0.0) * depthWeight;
+                    ((center.data.x > 0.0 || sample.data.y > 0.0) && sample.farColor.a > 0.0 ? 1.0 : 0.0) * depthWeight *
+                    apertureCoverage(-offset / max(radius, 0.5));
                 f += sample.farColor * weight; fwTotal += weight;
             }
         }

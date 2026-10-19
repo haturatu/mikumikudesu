@@ -3722,6 +3722,17 @@ void Application::buildRenderSettingsControls() {
             lensCombo("Focus target", settings.dof.focusMode,
                       ui::items("Camera target|Manual distance|Bone|Face|Eyes|Static point|Tracking point"));
             lensCombo("DoF quality", settings.dof.quality, ui::items("Auto|Performance|Balanced|High"));
+            int bladeChoice = settings.dof.apertureBlades == 0 ? 0 : static_cast<int>(settings.dof.apertureBlades) - 4;
+            ImGui::TextWrapped("%s", ui::tr("Aperture blades"));
+            if (ImGui::Combo("##aperture-blades", &bladeChoice, ui::items("Circle|5|6|7|8|9|10|11|12"))) {
+                settings.dof.apertureBlades = bladeChoice == 0 ? 0U : static_cast<std::uint32_t>(bladeChoice + 4);
+                changed = true;
+            }
+            if (settings.dof.apertureBlades != 0) {
+                lensSlider("Blade curvature", settings.dof.apertureCurvature, 0.0F, 1.0F, "%.2f");
+                lensSlider("Aperture rotation", settings.dof.apertureRotationDegrees, -180.0F, 180.0F, "%.1f");
+            }
+            lensSlider("Radius cap at 1080p (px; 0 = Auto)", settings.dof.maxRadiusPixels, 0.0F, 128.0F, "%.1f");
             if (settings.dof.focusMode == PreviewFocusMode::manual) {
                 lensSlider("Focus distance (m)", settings.dof.focusDistanceMetres, 0.05F, 100.0F, "%.3f",
                            ImGuiSliderFlags_Logarithmic);

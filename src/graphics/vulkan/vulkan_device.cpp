@@ -1,4 +1,5 @@
 #include "graphics/vulkan/vulkan_device.hpp"
+#include "graphics/preview_aperture.hpp"
 #include "graphics/vulkan/vulkan_command_list.hpp"
 #include "graphics/vulkan/vulkan_upload_context.hpp"
 
@@ -2321,9 +2322,10 @@ void VulkanDevice::createPreviewDescriptors() {
     };
     check(vkCreateDescriptorSetLayout(device_, &bloomLayoutInfo, nullptr, &bloomDescriptorSetLayout_),
           "create preview bloom descriptor layout");
-    std::array<VkDescriptorSetLayoutBinding, 15> dofBindings{};
+    std::array<VkDescriptorSetLayoutBinding, 16> dofBindings{};
     for (std::uint32_t i = 0; i < dofBindings.size(); ++i) {
         const auto type = i == 1    ? VK_DESCRIPTOR_TYPE_SAMPLER
+                          : i == 15 ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
                           : i >= 11 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
                                     : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
         dofBindings[i] = {i, type, 1, VK_SHADER_STAGE_COMPUTE_BIT, i == 1 ? &previewDofSampler_ : nullptr};
@@ -3360,6 +3362,12 @@ void VulkanDevice::destroyPreviewDofResource(Frame& frame) noexcept {
     for (auto& set : resource.sets)
         if (set != VK_NULL_HANDLE && previewDescriptorPool_ != VK_NULL_HANDLE)
             vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &set);
+    if (resource.mappedAperture != nullptr)
+        vkUnmapMemory(device_, resource.apertureMemory);
+    if (resource.apertureBuffer != VK_NULL_HANDLE)
+        vkDestroyBuffer(device_, resource.apertureBuffer, nullptr);
+    if (resource.apertureMemory != VK_NULL_HANDLE)
+        vkFreeMemory(device_, resource.apertureMemory, nullptr);
     for (auto texture : resource.textures) {
         if (lastPreviewHdrTexture_ == texture)
             lastPreviewHdrTexture_ = {};
@@ -3387,6 +3395,14 @@ void VulkanDevice::ensurePreviewDofResource(Frame& frame, VkExtent2D extent, boo
         }
     }
     try {
+        const VkBufferCreateInfo apertureInfo{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                              .size = sizeof(PreviewApertureLut),
+                                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+        allocateBufferMemory(apertureInfo, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             resource.apertureBuffer, resource.apertureMemory);
+        check(vkMapMemory(device_, resource.apertureMemory, 0, sizeof(PreviewApertureLut), 0, &resource.mappedAperture),
+              "map aperture lookup");
         for (std::size_t i = 0; i < resource.textures.size(); ++i) {
             VkExtent2D size = extent;
             if (i >= 3)
@@ -3464,6 +3480,17 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
     vkCmdPipelineBarrier2(command, &start);
     resource.initialized = true;
     const auto& settings = previewRenderSettings_.dof;
+    const std::array apertureKey{static_cast<float>(settings.apertureBlades), settings.apertureCurvature,
+                                 settings.apertureRotationDegrees};
+    if (!resource.apertureValid || resource.apertureKey != apertureKey) {
+        if (settings.apertureBlades != 0) {
+            const auto lut = previewApertureLut(settings.apertureBlades, settings.apertureCurvature,
+                                                settings.apertureRotationDegrees);
+            std::memcpy(resource.mappedAperture, lut.data(), sizeof(lut));
+        }
+        resource.apertureKey = apertureKey;
+        resource.apertureValid = true;
+    }
     auto quality = settings.quality;
     if (quality == PreviewDofQuality::automatic)
         quality = previewStillQuality_ && previewRenderSettings_.preset == PreviewQualityPreset::automatic
@@ -3492,7 +3519,7 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
         {1.0F / std::tan(std::max(previewGpuScene_.view.verticalFovRadians, 0.05F) * 0.5F),
          static_cast<float>(extent.width) / static_cast<float>(extent.height),
          previewGpuScene_.view.perspective ? 1.0F : 0.0F, sss ? effects.skinSubsurfaceIntensity : 0.0F},
-        {static_cast<float>(resource.mipLevels - 1U), 0.0F, 0.0F, 0.0F}};
+        {static_cast<float>(resource.mipLevels - 1U), settings.apertureBlades != 0 ? 1.0F : 0.0F, 0.0F, 0.0F}};
     if (!previewGpuScene_.view.perspective)
         constants.projection[0] =
             previewGpuScene_.view.cameraDistance * std::tan(previewGpuScene_.view.verticalFovRadians * 0.5F);
@@ -3561,6 +3588,14 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
                                                      : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                          .pImageInfo = &infos[i]};
         updatePreviewImageDescriptors(writes);
+        const VkDescriptorBufferInfo apertureBuffer{resource.apertureBuffer, 0, sizeof(PreviewApertureLut)};
+        const VkWriteDescriptorSet apertureWrite{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                                 .dstSet = set,
+                                                 .dstBinding = 15,
+                                                 .descriptorCount = 1,
+                                                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                                 .pBufferInfo = &apertureBuffer};
+        vkUpdateDescriptorSets(device_, 1, &apertureWrite, 0, nullptr);
         constants.mode = mode;
         vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, dofPipeline_);
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, dofPipelineLayout_, 0, 1, &set, 0, nullptr);

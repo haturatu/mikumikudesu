@@ -271,6 +271,11 @@ class VulkanDevice final : public Device {
         std::array<VkImageView, 10> views{};
         std::array<VkDescriptorSet, 11> sets{};
         std::uint32_t mipLevels{1};
+        VkBuffer apertureBuffer{};
+        VkDeviceMemory apertureMemory{};
+        void* mappedAperture{};
+        std::array<float, 3> apertureKey{};
+        bool apertureValid{};
         VkExtent2D extent{};
         bool initialized{};
         std::uint32_t output{}; // 0 or 1, selected for this submission.

@@ -18,6 +18,10 @@ struct PreviewDofSettings {
     std::array<float, 3> localOffsetMetres{};
     std::array<float, 3> faceOffsetMetres{0.0F, 0.1F, -0.06F};
     float fNumber{2.8F};
+    float apertureCurvature{1.0F};
+    float apertureRotationDegrees{};
+    float maxRadiusPixels{};        // 1080p radius; zero inherits the quality cap.
+    std::uint32_t apertureBlades{}; // Zero is circular; otherwise 5..12.
     float sensorHeightMm{24.0F};
     // Each model is normalized to preview coordinates. A two-unit character
     // is 1.6 m tall at the default scale; projects can calibrate this explicitly.
@@ -38,6 +42,11 @@ inline PreviewDofSettings sanitizePreviewDofSettings(PreviewDofSettings settings
         return std::isfinite(value) ? std::clamp(value, low, high) : fallback;
     };
     settings.fNumber = clamp(settings.fNumber, 2.8F, 0.7F, 32.0F);
+    settings.apertureCurvature = clamp(settings.apertureCurvature, 1.0F, 0.0F, 1.0F);
+    settings.apertureRotationDegrees = clamp(settings.apertureRotationDegrees, 0.0F, -180.0F, 180.0F);
+    settings.maxRadiusPixels = clamp(settings.maxRadiusPixels, 0.0F, 0.0F, 128.0F);
+    if (settings.apertureBlades != 0 && (settings.apertureBlades < 5 || settings.apertureBlades > 12))
+        settings.apertureBlades = 0;
     settings.sensorHeightMm = clamp(settings.sensorHeightMm, 24.0F, 1.0F, 100.0F);
     settings.metresPerUnit = clamp(settings.metresPerUnit, 0.8F, 0.01F, 100.0F);
     settings.focusDistanceMetres = clamp(settings.focusDistanceMetres, 2.4F, 0.05F, 10000.0F);
@@ -161,9 +170,10 @@ inline PreviewDofLens previewDofLens(const PreviewDofSettings& settings, float f
     const bool performance = quality == PreviewDofQuality::performance;
     const bool high = quality == PreviewDofQuality::high;
     return {focus, scale,
-            (performance ? 20.0F
-             : high      ? 48.0F
-                         : 32.0F) *
+            (settings.maxRadiusPixels > 0.0F ? settings.maxRadiusPixels
+             : performance                   ? 20.0F
+             : high                          ? 48.0F
+                                             : 32.0F) *
                 static_cast<float>(height) / 1080.0F,
             performance ? 12U
             : high      ? 32U

@@ -1918,6 +1918,18 @@ bool physicalDofAndFocusPicking(dayo::graphics::VulkanDevice& device) {
         previousAperture = std::move(image);
     }
     settings.dof.fNumber = 0.7F;
+    settings.dof.apertureBlades = 5;
+    settings.dof.apertureCurvature = 0.0F;
+    device.setPreviewRenderSettings(settings);
+    const auto pentagon = device.renderToImage({192, 192});
+    expect(!imagesMatch(open, pentagon), "aperture LUT must change the rendered bokeh shape");
+    expect(maxGreen(pentagon) <= maxGreen(closed) + 5, "polygonal bokeh must preserve opaque-layer energy");
+    settings.dof.apertureRotationDegrees = 36.0F;
+    device.setPreviewRenderSettings(settings);
+    expect(!imagesMatch(pentagon, device.renderToImage({192, 192})), "aperture rotation must reach the GPU lookup");
+    settings.dof.apertureBlades = 0;
+    settings.dof.apertureCurvature = 1.0F;
+    settings.dof.apertureRotationDegrees = 0.0F;
     settings.dof.quality = PreviewDofQuality::automatic;
     device.setPreviewRenderSettings(settings);
     device.setPreviewStillQuality(true);
