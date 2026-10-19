@@ -1892,6 +1892,13 @@ bool physicalDofAndFocusPicking(dayo::graphics::VulkanDevice& device) {
                 ++expandedPixels;
         }
     expect(expandedPixels > 40, "near coverage must spread red foreground beyond its sharp silhouette");
+    settings.dof.quality = PreviewDofQuality::automatic;
+    device.setPreviewRenderSettings(settings);
+    device.setPreviewStillQuality(true);
+    expect(imagesMatch(open, device.renderToImage({192, 192})),
+           "automatic still quality must use the high-quality lens radius and sample budget on an APU");
+    device.setPreviewStillQuality(false);
+    settings.dof.quality = PreviewDofQuality::high;
     settings.dof.focusDistanceMetres = 0.8F;
     device.setPreviewRenderSettings(settings);
     const auto focused = device.renderToImage({192, 192});

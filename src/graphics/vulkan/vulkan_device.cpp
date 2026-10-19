@@ -3436,8 +3436,10 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
     const auto& settings = previewRenderSettings_.dof;
     auto quality = settings.quality;
     if (quality == PreviewDofQuality::automatic)
-        quality = static_cast<PreviewDofQuality>(
-            previewEffectivePreset(previewRenderSettings_.preset, options_.quality, previewIntegrated()));
+        quality = previewStillQuality_ && previewRenderSettings_.preset == PreviewQualityPreset::automatic
+                      ? PreviewDofQuality::high
+                      : static_cast<PreviewDofQuality>(previewEffectivePreset(previewRenderSettings_.preset,
+                                                                              options_.quality, previewIntegrated()));
     const auto& view = previewGpuScene_.view;
     float focusUnits = view.focusDistance > 0.0F ? view.focusDistance : view.cameraDistance;
     if (settings.focusMode == PreviewFocusMode::manual)
