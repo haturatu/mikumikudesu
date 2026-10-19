@@ -2820,6 +2820,8 @@ void Application::refreshPreviewScene(float focusDeltaOverride) {
 }
 
 void Application::resetPhysicsSimulation() {
+    previewFocusState_ = {};
+    previewFocusEvaluatedFrame_ = -1.0F;
     for (auto& instance : scene_.models()) {
         if (instance.physics != nullptr)
             (*instance.physics).reset();

@@ -103,7 +103,8 @@ Playback evaluates the shared pose at each rendered fractional VMD time, once
 for mesh, physics and focus. AF response (seconds), deadband (metres) and maximum
 speed (m/s) control model tracking. Zero response is immediate. Paused previews
 can finish converging without evaluating physics again. Backward seeks, repeat
-wraps, long timeline jumps, target changes and project resets clear AF state.
+wraps, long timeline jumps, target changes, simulation resets and project resets
+clear AF state.
 The Inspector shows actual/target distance and focus velocity.
 
 **Focus offset** moves the focal plane along the camera axis in metres. The UI
