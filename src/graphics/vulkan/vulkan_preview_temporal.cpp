@@ -16,6 +16,36 @@ constexpr VkImageSubresourceRange colorRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
 constexpr VkImageSubresourceRange depthRange{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
 } // namespace
 
+float VulkanDevice::previewFocusDistanceUnits() const {
+    const auto& view = previewGpuScene_.view;
+    const auto& settings = previewRenderSettings_.dof;
+    if (settings.focusMode == PreviewFocusMode::manual)
+        return settings.focusDistanceMetres / settings.metresPerUnit;
+    if (settings.focusMode == PreviewFocusMode::viewportPoint) {
+        PreviewFocusCamera camera;
+        std::copy_n(view.cameraRotation, 3, camera.rotation.begin());
+        std::copy_n(view.target, 3, camera.target.begin());
+        camera.distance = view.cameraDistance;
+        return std::max(0.05F, previewFocusViewPoint(camera, settings.worldPoint)[2]);
+    }
+    return view.focusDistance > 0.0F ? view.focusDistance : view.cameraDistance;
+}
+
+std::array<float, 4> VulkanDevice::previewLensConstants() const {
+    if (!previewLensSample_ || !previewGpuScene_.view.perspective)
+        return {};
+    const auto effects = previewResolvedEffects();
+    if (!effects.depthOfField || effects.depthOfFieldIntensity <= 0.0F)
+        return {};
+    const auto& settings = previewRenderSettings_.dof;
+    const float focal = settings.sensorHeightMm * 0.001F /
+                        (2.0F * std::tan(std::clamp(previewGpuScene_.view.verticalFovRadians, 0.05F, 3.13F) * 0.5F));
+    const float radius = focal / (2.0F * settings.fNumber * settings.metresPerUnit) * effects.depthOfFieldIntensity;
+    const float focus =
+        std::max(focal + 0.001F, previewFocusDistanceUnits() * settings.metresPerUnit + settings.focusOffsetMetres);
+    return {(*previewLensSample_)[0] * radius, (*previewLensSample_)[1] * radius, focus / settings.metresPerUnit, 1.0F};
+}
+
 void VulkanDevice::ensurePreviewTemporalHistory(VkCommandBuffer command, VkExtent2D extent) {
     auto& history = previewTemporalHistory_;
     if (history.textures[0].valid() && history.extent.width == extent.width && history.extent.height == extent.height)
@@ -68,7 +98,8 @@ void VulkanDevice::preparePreviewTemporal(VkCommandBuffer command, Frame& frame,
             previewEffectivePreset(previewRenderSettings_.preset, options_.quality, previewIntegrated()));
     motion.enabled = available && previewRenderSettings_.dof.temporal && effects.depthOfField &&
                      effects.depthOfFieldIntensity > 0.0F && quality != PreviewDofQuality::performance &&
-                     !previewStillQuality_ && previewGpuScene_.view.perspective && previewVertexSize_ != 0;
+                     !previewStillQuality_ && !previewLensSample_ && previewGpuScene_.view.perspective &&
+                     previewVertexSize_ != 0;
     auto& history = previewTemporalHistory_;
     if (!motion.enabled) {
         motion.valid = false;

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <numbers>
+#include <numeric>
 #include <vector>
 
 namespace dayo::graphics {
@@ -15,7 +16,7 @@ using PreviewApertureLut = std::array<float, previewApertureSize * previewApertu
 // Cubic edges interpolate between a regular polygon and circular arcs.
 // Rasterize radial intersections with four subpixel coverage samples. The
 // resulting mask changes only when the aperture shape controls change.
-inline PreviewApertureLut previewApertureLut(std::uint32_t blades, float curvature, float rotationDegrees) {
+inline std::array<float, 512> previewApertureRadii(std::uint32_t blades, float curvature, float rotationDegrees) {
     constexpr float tau = 2.0F * std::numbers::pi_v<float>;
     constexpr std::size_t angularSamples = 512;
     std::array<float, angularSamples> radii{};
@@ -69,6 +70,13 @@ inline PreviewApertureLut previewApertureLut(std::uint32_t blades, float curvatu
             }
         }
     }
+    return radii;
+}
+
+inline PreviewApertureLut previewApertureLut(std::uint32_t blades, float curvature, float rotationDegrees) {
+    constexpr float tau = 2.0F * std::numbers::pi_v<float>;
+    constexpr std::size_t angularSamples = 512;
+    const auto radii = previewApertureRadii(blades, curvature, rotationDegrees);
     PreviewApertureLut lut{};
     for (std::uint32_t y = 0; y < previewApertureSize; ++y)
         for (std::uint32_t x = 0; x < previewApertureSize; ++x)
@@ -87,6 +95,34 @@ inline PreviewApertureLut previewApertureLut(std::uint32_t blades, float curvatu
                     lut[static_cast<std::size_t>(y) * previewApertureSize + x] += 0.25F;
             }
     return lut;
+}
+
+inline std::vector<std::array<float, 2>> previewApertureSamples(std::uint32_t blades, float curvature,
+                                                                float rotationDegrees, std::uint32_t count) {
+    const auto radii = previewApertureRadii(blades, curvature, rotationDegrees);
+    auto cumulative = radii;
+    for (std::size_t i = 0; i < radii.size(); ++i)
+        cumulative[i] = (radii[i] * radii[i] + radii[(i + 1) % radii.size()] * radii[(i + 1) % radii.size()]) * 0.5F;
+    std::partial_sum(cumulative.begin(), cumulative.end(), cumulative.begin());
+    std::vector<std::array<float, 2>> samples;
+    samples.reserve(count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        // A Vogel disk mapped through the aperture's angular area CDF. The
+        // Jacobian R(theta)^2 preserves uniform density without row/column
+        // quantization or rejection reducing the requested sample budget.
+        const float turn = static_cast<float>(i) * 0.38196601125F;
+        const float value = (turn - std::floor(turn)) * cumulative.back();
+        const auto it = std::lower_bound(cumulative.begin(), cumulative.end(), value);
+        const auto index = static_cast<std::size_t>(std::distance(cumulative.begin(), it));
+        const float previous = index == 0 ? 0.0F : cumulative[index - 1];
+        const float fraction = (value - previous) / std::max(cumulative[index] - previous, 0.0001F);
+        const float angle = (static_cast<float>(index) + fraction) *
+                            (2.0F * std::numbers::pi_v<float> / static_cast<float>(radii.size()));
+        const float radius = std::lerp(radii[index], radii[(index + 1) % radii.size()], fraction) *
+                             std::sqrt((static_cast<float>(i) + 0.5F) / static_cast<float>(count));
+        samples.push_back({std::cos(angle) * radius, std::sin(angle) * radius});
+    }
+    return samples;
 }
 
 } // namespace dayo::graphics

@@ -227,7 +227,21 @@ bool apertureShape() {
     ok &= check(std::ranges::all_of(polygon, [](float value) { return value >= 0.0F && value <= 1.0F; }) &&
                     std::ranges::any_of(polygon, [](float value) { return value > 0.0F && value < 1.0F; }),
                 "aperture boundaries contain antialiased fractional coverage");
+    const auto samples = previewApertureSamples(0, 1.0F, 0.0F, 256);
+    std::array<float, 2> centroid{};
+    float meanRadiusSquared = 0.0F;
+    for (const auto& sample : samples) {
+        centroid[0] += sample[0] / 256.0F;
+        centroid[1] += sample[1] / 256.0F;
+        meanRadiusSquared += (sample[0] * sample[0] + sample[1] * sample[1]) / 256.0F;
+    }
+    ok &= check(samples.size() == 256 && std::abs(centroid[0]) < 0.025F && std::abs(centroid[1]) < 0.025F &&
+                    std::abs(meanRadiusSquared - 0.5F) < 0.025F,
+                "cinematic lens samples integrate a centered uniform aperture disk");
     PreviewDofSettings settings;
+    settings.cinematicSamples = 90;
+    ok &= check(sanitizePreviewDofSettings(settings).cinematicSamples == 128,
+                "cinematic exports use bounded 64, 128 or 256 sample budgets");
     settings.maxRadiusPixels = 96.0F;
     const auto lens = previewDofLens(settings, 3.0F, 0.7F, 540, PreviewDofQuality::performance);
     ok &= check(lens.maxRadius == 48.0F && lens.samples == 12,
@@ -302,6 +316,7 @@ int main() {
         dof.quality = PreviewDofQuality::high;
         dof.fNumber = 1.4F;
         dof.temporal = false;
+        dof.cinematicSamples = 128;
         dof.apertureBlades = 7;
         dof.apertureCurvature = 0.35F;
         dof.apertureRotationDegrees = 28.0F;
@@ -333,7 +348,7 @@ int main() {
         ok &= check(
             value.dof.focusMode == dof.focusMode && value.dof.quality == dof.quality &&
                 value.dof.fNumber == dof.fNumber && value.dof.temporal == dof.temporal &&
-                value.dof.apertureBlades == dof.apertureBlades &&
+                value.dof.cinematicSamples == dof.cinematicSamples && value.dof.apertureBlades == dof.apertureBlades &&
                 value.dof.apertureCurvature == dof.apertureCurvature &&
                 value.dof.apertureRotationDegrees == dof.apertureRotationDegrees &&
                 value.dof.maxRadiusPixels == dof.maxRadiusPixels &&

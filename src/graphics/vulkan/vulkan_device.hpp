@@ -94,6 +94,9 @@ class VulkanDevice final : public Device {
     [[nodiscard]] std::optional<PreviewFocusSample> pollPreviewFocusSample() override;
     void requestPreviewFocusPick(std::array<float, 2> uv) override;
     void cancelPreviewFocusPick() override;
+    void setPreviewLensSample(std::optional<std::array<float, 2>> sample) override {
+        previewLensSample_ = sample;
+    }
     [[nodiscard]] std::optional<std::array<float, 3>> pollPreviewFocusPick() override;
     void setPreviewRenderSettings(const PreviewRenderSettings& settings) override;
     [[nodiscard]] PreviewRenderSettings previewRenderSettings() const noexcept override {
@@ -513,6 +516,8 @@ class VulkanDevice final : public Device {
     void ensurePreviewAoResources(Frame& frame, VkExtent2D extent);
     void destroyPreviewAoResources(Frame& frame) noexcept;
     void recordPreviewBackground(VkCommandBuffer command);
+    [[nodiscard]] std::array<float, 4> previewLensConstants() const;
+    [[nodiscard]] float previewFocusDistanceUnits() const;
     void ensurePreviewDofResource(Frame& frame, VkExtent2D extent, bool fullDof, bool temporal);
     void ensurePreviewTemporalHistory(VkCommandBuffer command, VkExtent2D extent);
     void preparePreviewTemporal(VkCommandBuffer command, Frame& frame, VkExtent2D extent, bool available);
@@ -762,6 +767,7 @@ class VulkanDevice final : public Device {
     handles::TextureHandle previewFallbackEnvironmentTexture_{};
     std::array<float, 64> previewEnvironmentData_{};
     std::array<float, 2> previewJitter_{};
+    std::optional<std::array<float, 2>> previewLensSample_;
     bool previewStillQuality_{};
     bool previewHdrActive_{};
     PreviewRenderSettings previewRenderSettings_{};

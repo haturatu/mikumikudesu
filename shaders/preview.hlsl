@@ -35,6 +35,7 @@ struct PreviewSceneConstants {
     float4 lightColor;
     float4 viewport; // xy framebuffer size
     float4 debug; // x isolated material, y debug flags
+    float4 lens; // aperture xy in view units, axial focus depth, enabled
 };
 [[vk::push_constant]] ConstantBuffer<PreviewSceneConstants> scene;
 
@@ -149,6 +150,15 @@ VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, ui
         const float farPlane = 100.0;
         const float z = (p.z - nearPlane) / (farPlane - nearPlane);
         output.position = float4(p.x / (aspect * extent), -p.y / extent, z, 1.0);
+    }
+    if (scene.lens.w > 0.5 && scene.target.w >= 0.0) {
+        // Off-axis projection keeps the focal plane fixed while sampling a
+        // physical point on the lens. Other depths shift and integrate into
+        // bokeh in the HDR export accumulator. The spatial DoF is disabled.
+        const float focal = 1.0 / tan(max(scene.target.w, 0.05) * 0.5);
+        const float2 shift = scene.lens.xy * (p.z / max(scene.lens.z, 0.05) - 1.0);
+        output.position.xy += shift * float2(focal / aspect, -focal);
+        p.xy -= scene.lens.xy;
     }
     if (edgePass != 0)
     {

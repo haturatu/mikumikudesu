@@ -21,8 +21,9 @@ struct PreviewDofSettings {
     bool temporal{true};
     float apertureCurvature{1.0F};
     float apertureRotationDegrees{};
-    float maxRadiusPixels{};        // 1080p radius; zero inherits the quality cap.
-    std::uint32_t apertureBlades{}; // Zero is circular; otherwise 5..12.
+    float maxRadiusPixels{};          // 1080p radius; zero inherits the quality cap.
+    std::uint32_t cinematicSamples{}; // Zero disables image-export lens accumulation.
+    std::uint32_t apertureBlades{};   // Zero is circular; otherwise 5..12.
     float sensorHeightMm{24.0F};
     // Each model is normalized to preview coordinates. A two-unit character
     // is 1.6 m tall at the default scale; projects can calibrate this explicitly.
@@ -46,6 +47,10 @@ inline PreviewDofSettings sanitizePreviewDofSettings(PreviewDofSettings settings
     settings.apertureCurvature = clamp(settings.apertureCurvature, 1.0F, 0.0F, 1.0F);
     settings.apertureRotationDegrees = clamp(settings.apertureRotationDegrees, 0.0F, -180.0F, 180.0F);
     settings.maxRadiusPixels = clamp(settings.maxRadiusPixels, 0.0F, 0.0F, 128.0F);
+    if (settings.cinematicSamples != 0)
+        settings.cinematicSamples = settings.cinematicSamples <= 64    ? 64U
+                                    : settings.cinematicSamples <= 128 ? 128U
+                                                                       : 256U;
     if (settings.apertureBlades != 0 && (settings.apertureBlades < 5 || settings.apertureBlades > 12))
         settings.apertureBlades = 0;
     settings.sensorHeightMm = clamp(settings.sensorHeightMm, 24.0F, 1.0F, 100.0F);

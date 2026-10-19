@@ -3,6 +3,8 @@
 #include "fx/fx_compiler.hpp"
 #include "fx/fx_shader_compiler.hpp"
 #include "graphics/fx_pipeline_runtime.hpp"
+#include "graphics/output_sample_accumulator.hpp"
+#include "graphics/preview_aperture.hpp"
 #include "graphics/subayai_deform.hpp"
 #include "graphics/subayai_environment.hpp"
 #include "graphics/vulkan/vulkan_device.hpp"
@@ -1973,6 +1975,26 @@ bool physicalDofAndFocusPicking(dayo::graphics::VulkanDevice& device) {
                           << " blur=" << time.dofBlur << " composite=" << time.dofComposite << '\n';
             }
         }
+        for (const auto quality : {PreviewDofQuality::balanced, PreviewDofQuality::high}) {
+            settings.dof.temporal = true;
+            settings.dof.quality = quality;
+            device.setPreviewRenderSettings(settings);
+            for (int sample = 0; sample < 6; ++sample) {
+                scene.animationTimeSeconds += 1.0F / 60.0F;
+                device.updatePreviewScene(scene);
+                static_cast<void>(device.renderToImage({1920, 1080}));
+                if (sample < 3)
+                    continue;
+                const auto time = device.previewPassTimings();
+                std::cout << "Temporal DoF 1080p quality=" << static_cast<int>(quality) << " sample=" << sample
+                          << " ns prepass=" << time.ambientOcclusion << " CoC=" << time.coc
+                          << " downsample/tiles=" << time.dofDownsample << " blur=" << time.dofBlur
+                          << " composite/history=" << time.dofComposite << '\n';
+            }
+        }
+        settings.dof.temporal = false;
+        scene.animationTimeSeconds = 0.0F;
+        device.updatePreviewScene(scene);
     }
     // Exercise moving, GPU-skinned geometry and a moving camera together.
     // Compare the sequence against fresh spatial frames and test history cuts.
@@ -2056,6 +2078,61 @@ bool physicalDofAndFocusPicking(dayo::graphics::VulkanDevice& device) {
     scene.cameraRotation[1] = 0.0F;
     scene.animationTimeSeconds = 0.0F;
     device.updatePreviewScene(scene);
+
+    // Physical export sampling moves the lens while retaining the focal plane.
+    settings.dof.focusDistanceMetres = 2.4F;
+    device.setPreviewRenderSettings(settings);
+    device.setPreviewStillQuality(true);
+    device.setPreviewLensSample(std::array{0.0F, 0.0F});
+    const auto centralRay = device.renderToImage({192, 192});
+    expect(imagesMatch(centralRay, closed),
+           "physical lens accumulation must bypass the spatial blur instead of doubling DoF");
+    settings.dof.focusDistanceMetres = 0.8F;
+    device.setPreviewRenderSettings(settings);
+    device.setPreviewLensSample(std::array{-0.7F, -0.2F});
+    const auto focusedLeft = device.renderToImage({192, 192});
+    device.setPreviewLensSample(std::array{0.7F, 0.2F});
+    const auto focusedRight = device.renderToImage({192, 192});
+    bool focalSilhouetteMatches = true;
+    for (std::size_t i = 0; i < focusedLeft.pixels.size(); i += 4U)
+        focalSilhouetteMatches &= (focusedLeft.pixels[i] > focusedLeft.pixels[i + 2]) ==
+                                  (focusedRight.pixels[i] > focusedRight.pixels[i + 2]);
+    expect(focalSilhouetteMatches, "off-axis aperture samples must leave geometry on the focal plane fixed");
+    settings.dof.focusDistanceMetres = 2.4F;
+    device.setPreviewRenderSettings(settings);
+    device.setPreviewLensSample(std::array{-0.7F, -0.2F});
+    const auto defocusedLeft = device.renderToImage({192, 192});
+    device.setPreviewLensSample(std::array{0.7F, 0.2F});
+    expect(!imagesMatch(defocusedLeft, device.renderToImage({192, 192})),
+           "geometry away from the focal plane must shift across physical lens samples");
+    Rgba16fSampleAccumulator lensAccumulator;
+    lensAccumulator.begin({192, 192, 1}, 64);
+    for (const auto& sample : previewApertureSamples(0, 1.0F, 0.0F, 64)) {
+        device.setPreviewLensSample(sample);
+        static_cast<void>(device.renderToImage({192, 192}));
+        lensAccumulator.add(device.readbackTextureEx(device.previewHdrTexture(), 0, 0));
+    }
+    const auto lensAverage = lensAccumulator.resolveFloat32();
+    const auto outsideEdge = (96U * 192U + 102U) * 4U;
+    expect(
+        lensAverage[outsideEdge] > 0.04F && lensAverage[outsideEdge + 3] > 0.99F,
+        "64-sample HDR lens integration must spread foreground radiance while preserving opaque background coverage");
+    if (const auto* directory = std::getenv("DAYO_TEST_DOF_OUTPUT")) {
+        auto display = centralRay;
+        for (std::size_t i = 0; i < display.pixels.size(); ++i) {
+            float value = lensAverage[i];
+            if (i % 4U != 3U) {
+                value =
+                    std::clamp(value * (2.51F * value + 0.03F) / (value * (2.43F * value + 0.59F) + 0.14F), 0.0F, 1.0F);
+                value = value <= 0.0031308F ? 12.92F * value : 1.055F * std::pow(value, 1.0F / 2.4F) - 0.055F;
+            }
+            display.pixels[i] = static_cast<std::uint8_t>(std::clamp(std::lround(value * 255.0F), 0L, 255L));
+        }
+        dayo::core::writeFrame(std::filesystem::path(directory) / "dof-cinematic.png", display,
+                               dayo::core::OutputFormat::png);
+    }
+    device.setPreviewLensSample(std::nullopt);
+    device.setPreviewStillQuality(false);
 
     // Force the depth prepass solely for the pick, with all spatial effects off.
     settings.depthOfField.override = EffectOverride::disabled;

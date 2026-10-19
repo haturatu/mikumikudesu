@@ -6,6 +6,7 @@
 
 #include "graphics/camera_matrices.hpp"
 #include "graphics/fx_raster_semantics.hpp"
+#include "graphics/preview_aperture.hpp"
 
 #include "core/animation.hpp"
 #include "core/asset.hpp"
@@ -2944,8 +2945,7 @@ void Application::buildUi() {
                                                               available, !hasCameraVmd || !followVmdCamera_);
                 uiState_.viewportHovered = input.hovered;
                 if (input.focusPick) {
-                    pendingTrackingFocus_ = input.focusTracking || device_->previewRenderSettings().dof.focusMode ==
-                                                                       graphics::PreviewFocusMode::trackedSurface;
+                    pendingTrackingFocus_ = input.focusTracking;
                     pendingFocusBindings_ = previewFocusBindings_;
                     pendingFocusSnapshot_ = evaluatedModels_;
                     trackingFocusFallback_ = false;
@@ -3723,18 +3723,6 @@ void Application::buildRenderSettingsControls() {
             lensCombo("Focus target", settings.dof.focusMode,
                       ui::items("Camera target|Manual distance|Bone|Face|Eyes|Static point|Tracking point"));
             lensCombo("DoF quality", settings.dof.quality, ui::items("Auto|Performance|Balanced|High"));
-            changed |= ImGui::Checkbox(ui::label("Temporal DoF (Balanced / High)"), &settings.dof.temporal);
-            int bladeChoice = settings.dof.apertureBlades == 0 ? 0 : static_cast<int>(settings.dof.apertureBlades) - 4;
-            ImGui::TextWrapped("%s", ui::tr("Aperture blades"));
-            if (ImGui::Combo("##aperture-blades", &bladeChoice, ui::items("Circle|5|6|7|8|9|10|11|12"))) {
-                settings.dof.apertureBlades = bladeChoice == 0 ? 0U : static_cast<std::uint32_t>(bladeChoice + 4);
-                changed = true;
-            }
-            if (settings.dof.apertureBlades != 0) {
-                lensSlider("Blade curvature", settings.dof.apertureCurvature, 0.0F, 1.0F, "%.2f");
-                lensSlider("Aperture rotation", settings.dof.apertureRotationDegrees, -180.0F, 180.0F, "%.1f");
-            }
-            lensSlider("Radius cap at 1080p (px; 0 = Auto)", settings.dof.maxRadiusPixels, 0.0F, 128.0F, "%.1f");
             if (settings.dof.focusMode == PreviewFocusMode::manual) {
                 lensSlider("Focus distance (m)", settings.dof.focusDistanceMetres, 0.05F, 100.0F, "%.3f",
                            ImGuiSliderFlags_Logarithmic);
@@ -3788,16 +3776,22 @@ void Application::buildRenderSettingsControls() {
                     !previewFocusBonePoint(models[settings.dof.modelIndex], evaluatedModels_, settings.dof))
                     ImGui::TextWrapped("%s", ui::tr("Focus target unavailable; using the camera target."));
             }
-            ImGui::TextWrapped("%s", ui::tr("Local offset (m)"));
-            changed |= ImGui::InputFloat3("##focus-local-offset", settings.dof.localOffsetMetres.data(), "%.3f");
-            if (settings.dof.focusMode == PreviewFocusMode::face) {
-                ImGui::TextWrapped("%s", ui::tr("Face anchor offset (m)"));
-                changed |= ImGui::InputFloat3("##face-anchor-offset", settings.dof.faceOffsetMetres.data(), "%.3f");
+            if ((settings.dof.focusMode == PreviewFocusMode::bone || settings.dof.focusMode == PreviewFocusMode::face ||
+                 settings.dof.focusMode == PreviewFocusMode::eyes ||
+                 settings.dof.focusMode == PreviewFocusMode::trackedSurface) &&
+                ImGui::TreeNode(ui::label("Focus tracking"))) {
+                ImGui::TextWrapped("%s", ui::tr("Local offset (m)"));
+                changed |= ImGui::InputFloat3("##focus-local-offset", settings.dof.localOffsetMetres.data(), "%.3f");
+                if (settings.dof.focusMode == PreviewFocusMode::face) {
+                    ImGui::TextWrapped("%s", ui::tr("Face anchor offset (m)"));
+                    changed |= ImGui::InputFloat3("##face-anchor-offset", settings.dof.faceOffsetMetres.data(), "%.3f");
+                }
+                lensSlider("AF response (s)", settings.dof.focusResponseSeconds, 0.0F, 1.0F, "%.3f");
+                lensSlider("AF deadband (m)", settings.dof.focusDeadbandMetres, 0.0F, 0.05F, "%.3f");
+                lensSlider("AF maximum speed (m/s)", settings.dof.focusMaxSpeed, 0.05F, 100.0F, "%.2f",
+                           ImGuiSliderFlags_Logarithmic);
+                ImGui::TreePop();
             }
-            lensSlider("AF response (s)", settings.dof.focusResponseSeconds, 0.0F, 1.0F, "%.3f");
-            lensSlider("AF deadband (m)", settings.dof.focusDeadbandMetres, 0.0F, 0.05F, "%.3f");
-            lensSlider("AF maximum speed (m/s)", settings.dof.focusMaxSpeed, 0.05F, 100.0F, "%.2f",
-                       ImGuiSliderFlags_Logarithmic);
             lensSlider("Focus offset (m)", settings.dof.focusOffsetMetres, -1.0F, 1.0F, "%.3f");
             const auto focusCamera = makeSceneCameraState();
             const PreviewFocusCamera focusView{focusCamera.rotation, focusCamera.position, focusCamera.distance,
@@ -3812,6 +3806,41 @@ void Application::buildRenderSettingsControls() {
             if (ImGui::Button(ui::label("Reset lens and focus"))) {
                 settings.dof = {};
                 changed = true;
+            }
+            if (ImGui::TreeNode(ui::label("Aperture shape"))) {
+                int bladeChoice =
+                    settings.dof.apertureBlades == 0 ? 0 : static_cast<int>(settings.dof.apertureBlades) - 4;
+                ImGui::TextWrapped("%s", ui::tr("Aperture blades"));
+                if (ImGui::Combo("##aperture-blades", &bladeChoice, ui::items("Circle|5|6|7|8|9|10|11|12"))) {
+                    settings.dof.apertureBlades = bladeChoice == 0 ? 0U : static_cast<std::uint32_t>(bladeChoice + 4);
+                    changed = true;
+                }
+                if (settings.dof.apertureBlades != 0) {
+                    lensSlider("Blade curvature", settings.dof.apertureCurvature, 0.0F, 1.0F, "%.2f");
+                    lensSlider("Aperture rotation", settings.dof.apertureRotationDegrees, -180.0F, 180.0F, "%.1f");
+                }
+                ImGui::TreePop();
+            }
+            if (ImGui::TreeNode(ui::label("Blur quality and export"))) {
+                changed |= ImGui::Checkbox(ui::label("Temporal DoF (Balanced / High)"), &settings.dof.temporal);
+                ImGui::TextWrapped("%s", ui::tr("Cinematic lens samples (image exports)"));
+                int cinematic = settings.dof.cinematicSamples == 0     ? 0
+                                : settings.dof.cinematicSamples == 64  ? 1
+                                : settings.dof.cinematicSamples == 128 ? 2
+                                                                       : 3;
+                if (ImGui::Combo("##cinematic-samples", &cinematic, ui::items("Off|64|128|256"))) {
+                    settings.dof.cinematicSamples = cinematic == 0   ? 0U
+                                                    : cinematic == 1 ? 64U
+                                                    : cinematic == 2 ? 128U
+                                                                     : 256U;
+                    changed = true;
+                }
+                if (settings.dof.cinematicSamples != 0)
+                    ImGui::TextWrapped(
+                        "%s",
+                        ui::tr("Cinematic images use ACES; exposure, white balance and Bloom are not reapplied."));
+                lensSlider("Radius cap at 1080p (px; 0 = Auto)", settings.dof.maxRadiusPixels, 0.0F, 128.0F, "%.1f");
+                ImGui::TreePop();
             }
             if (ImGui::TreeNode(ui::label("Lens calibration"))) {
                 lensSlider("Sensor height (mm)", settings.dof.sensorHeightMm, 1.0F, 100.0F, "%.1f");
@@ -4242,6 +4271,19 @@ void Application::startImageSequenceExport() {
         imageSequenceNextFrame_ = sequenceOutput_.firstFrame;
         imageSequenceSampleIndex_ = 0;
         imageSequenceSampleCount_ = std::max(sequenceOutput_.samples, std::uint32_t{1});
+        imageSequenceLensSamples_.clear();
+        auto outputSettings = device_->previewRenderSettings();
+        if (outputSettings.preset == graphics::PreviewQualityPreset::automatic)
+            outputSettings.preset = graphics::PreviewQualityPreset::high;
+        const auto outputEffects = graphics::resolvePreviewEffects(outputSettings, graphics::PreviewQuality::apu, true,
+                                                                   false, device_->previewEffectSupport());
+        if (device_->activeRenderer() == graphics::RendererKind::preview && outputSettings.dof.cinematicSamples != 0 &&
+            outputEffects.depthOfField && outputEffects.depthOfFieldIntensity > 0.0F) {
+            imageSequenceSampleCount_ = std::max(imageSequenceSampleCount_, outputSettings.dof.cinematicSamples);
+            imageSequenceLensSamples_ = graphics::previewApertureSamples(
+                outputSettings.dof.apertureBlades, outputSettings.dof.apertureCurvature,
+                outputSettings.dof.apertureRotationDegrees, imageSequenceSampleCount_);
+        }
         imageSequencePreviousSampleFrame_ = static_cast<float>(sequenceOutput_.firstFrame);
         imageSequenceFramesFinished_ = false;
         imageSequencePreRollDone_ = sequenceOutput_.firstFrame == 0U;
@@ -4297,6 +4339,8 @@ void Application::restoreImageSequenceState() {
 
 void Application::finishImageSequenceExport(std::string status) {
 #if DAYO_HAS_IMGUI
+    if (device_ != nullptr)
+        device_->setPreviewLensSample(std::nullopt);
     if (device_ != nullptr)
         device_->setPreviewJitter(0.0F, 0.0F);
     if (device_ != nullptr)
@@ -4385,10 +4429,14 @@ void Application::advanceImageSequenceExport() {
             const auto sample = imageSequenceSampleIndex_ + 1U;
             device_->setPreviewJitter(halton(sample, 2U) - 0.5F, halton(sample, 3U) - 0.5F);
         }
-        if (previewRender)
+        if (previewRender) {
             device_->setPreviewStillQuality(true);
+            if (!imageSequenceLensSamples_.empty())
+                device_->setPreviewLensSample(imageSequenceLensSamples_[imageSequenceSampleIndex_]);
+        }
         auto rendered = device_->renderToImage({renderWidth, renderHeight});
         if (previewRender) {
+            device_->setPreviewLensSample(std::nullopt);
             device_->setPreviewJitter(0.0F, 0.0F);
             device_->setPreviewStillQuality(false);
         }

@@ -3297,6 +3297,7 @@ void VulkanDevice::recordPreviewShadowPass(VkCommandBuffer command, Frame& frame
     vkCmdBindVertexBuffers(command, 0, 1, &vertexBuffer, &vertexOffset);
     vkCmdBindIndexBuffer(command, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     PreviewPushConstants constants;
+    constants.lens = previewLensConstants();
     std::copy_n(previewGpuScene_.view.target, 3, constants.target.begin());
     std::copy_n(previewGpuScene_.view.lightDirection, 3, constants.light.begin());
     if (previewGpuScene_.draws.empty() && previewIndexCount_ != 0) {
@@ -3477,7 +3478,7 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
     // A thin lens has no orthographic optical counterpart. Keep SSS available,
     // and suspend DoF while an orthographic VMD camera key is active.
     const bool dof = effects.depthOfField && effects.depthOfFieldIntensity > 0.0F && frame.previewAo.initialized &&
-                     previewGpuScene_.view.perspective;
+                     previewGpuScene_.view.perspective && !previewLensSample_;
     const auto stamp = [&](std::uint32_t slot) { writePreviewTimestamp(command, frame.timestampQueryPool, slot); };
     if ((!sss && !dof) || dofPipeline_ == VK_NULL_HANDLE) {
         for (auto slot : {previewTimestampSubsurface, previewTimestampCoc, previewTimestampDofDownsample,
@@ -3527,17 +3528,7 @@ void VulkanDevice::recordPreviewDofPass(VkCommandBuffer command, Frame& frame, V
                       ? PreviewDofQuality::high
                       : static_cast<PreviewDofQuality>(previewEffectivePreset(previewRenderSettings_.preset,
                                                                               options_.quality, previewIntegrated()));
-    const auto& view = previewGpuScene_.view;
-    float focusUnits = view.focusDistance > 0.0F ? view.focusDistance : view.cameraDistance;
-    if (settings.focusMode == PreviewFocusMode::manual)
-        focusUnits = settings.focusDistanceMetres / settings.metresPerUnit;
-    if (settings.focusMode == PreviewFocusMode::viewportPoint) {
-        PreviewFocusCamera camera;
-        std::copy_n(view.cameraRotation, 3, camera.rotation.begin());
-        std::copy_n(view.target, 3, camera.target.begin());
-        camera.distance = view.cameraDistance;
-        focusUnits = std::max(0.05F, previewFocusViewPoint(camera, settings.worldPoint)[2]);
-    }
+    const float focusUnits = previewFocusDistanceUnits();
     const auto lens =
         previewDofLens(settings, focusUnits, previewGpuScene_.view.verticalFovRadians, extent.height, quality);
     PreviewDofConstants constants{
@@ -4419,6 +4410,7 @@ void VulkanDevice::recordPreviewAoPass(VkCommandBuffer command, Frame& frame, Vk
     }
     vkCmdBindIndexBuffer(command, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
     PreviewPushConstants constants;
+    constants.lens = previewLensConstants();
     std::copy_n(previewGpuScene_.view.cameraRotation, 3, constants.camera.begin());
     constants.camera[3] = previewGpuScene_.view.cameraDistance;
     std::copy_n(previewGpuScene_.view.target, 3, constants.target.begin());
@@ -5006,6 +4998,7 @@ void VulkanDevice::recordPreviewScenePass(VkCommandBuffer command, Frame& frame,
     vkCmdBindIndexBuffer(command, previewIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
 
     PreviewPushConstants constants;
+    constants.lens = previewLensConstants();
     std::copy_n(previewGpuScene_.view.cameraRotation, 3, constants.camera.begin());
     constants.camera[3] = previewGpuScene_.view.cameraDistance;
     std::copy_n(previewGpuScene_.view.target, 3, constants.target.begin());
@@ -6804,6 +6797,7 @@ void VulkanDevice::uploadPreviewTextures(std::span<const PreviewTexture> texture
 }
 
 void VulkanDevice::clearPreviewResources() {
+    previewLensSample_.reset();
     collectPreviewRetirements();
     const std::array<PreviewVertex, 3> fallbackVertices{{
         {{0.0F, -0.65F, 0.0F}, {}, {}},

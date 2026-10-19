@@ -261,8 +261,9 @@ struct PreviewPushConstants {
     std::array<float, 4> lightColor{};
     std::array<float, 4> viewport{};
     std::array<float, 4> debug{};
+    std::array<float, 4> lens{}; // View-space aperture xy, axial focus Z, active flag.
 };
-static_assert(sizeof(PreviewPushConstants) == 112);
+static_assert(sizeof(PreviewPushConstants) == 128);
 
 struct RenderTargetDesc {
     std::uint32_t width{};
@@ -848,6 +849,8 @@ class Device {
     // A nonblocking one-pixel depth pick. A new request supersedes older picks.
     virtual void requestPreviewFocusPick(std::array<float, 2>) {}
     virtual void cancelPreviewFocusPick() {}
+    // Null disables physical aperture sampling; (0,0) is an active central ray.
+    virtual void setPreviewLensSample(std::optional<std::array<float, 2>>) {}
     [[nodiscard]] virtual std::optional<std::array<float, 3>> pollPreviewFocusPick() {
         return std::nullopt;
     }

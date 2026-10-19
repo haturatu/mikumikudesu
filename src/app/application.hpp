@@ -328,6 +328,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::uint32_t imageSequenceNextFrame_{};
     std::uint32_t imageSequenceSampleIndex_{};
     std::uint32_t imageSequenceSampleCount_{1};
+    std::vector<std::array<float, 2>> imageSequenceLensSamples_;
     std::uint64_t imageSequencePreRollFrame_{};
     std::uint64_t imageSequenceRestoreNextFrame_{};
     float imageSequencePreviousSampleFrame_{};

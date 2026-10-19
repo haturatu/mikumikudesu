@@ -117,6 +117,11 @@ graphics::PreviewRenderSettings readRenderSettings(const Json& json) {
         readFloat("apertureCurvature", dof.apertureCurvature);
         readFloat("apertureRotationDegrees", dof.apertureRotationDegrees);
         readFloat("maxRadiusPixels", dof.maxRadiusPixels);
+        if (lens.contains("cinematicSamples") && lens.at("cinematicSamples").is_number_integer()) {
+            const auto samples = lens.at("cinematicSamples").get<std::int64_t>();
+            if (samples > 0 && samples <= 256)
+                dof.cinematicSamples = static_cast<std::uint32_t>(samples);
+        }
         if (lens.contains("apertureBlades") && lens.at("apertureBlades").is_number_integer()) {
             const auto blades = lens.at("apertureBlades").get<std::int64_t>();
             if (blades >= 5 && blades <= 12)
@@ -213,6 +218,7 @@ Json writeRenderSettings(const graphics::PreviewRenderSettings& source, Json jso
     lens["apertureRotationDegrees"] = settings.dof.apertureRotationDegrees;
     lens["maxRadiusPixels"] = settings.dof.maxRadiusPixels;
     lens["apertureBlades"] = settings.dof.apertureBlades;
+    lens["cinematicSamples"] = settings.dof.cinematicSamples;
     lens["sensorHeightMm"] = settings.dof.sensorHeightMm;
     lens["metresPerUnit"] = settings.dof.metresPerUnit;
     lens["focusDistanceMetres"] = settings.dof.focusDistanceMetres;
