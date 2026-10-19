@@ -3712,7 +3712,7 @@ void Application::buildRenderSettingsControls() {
             lensSlider("Aperture (F-number)", settings.dof.fNumber, 0.7F, 32.0F, "f/%.1f",
                        ImGuiSliderFlags_Logarithmic);
             lensCombo("Focus target", settings.dof.focusMode,
-                      ui::items("Camera target|Manual distance|Bone|Face|Eyes|Static point|Tracking point"));
+                      ui::items("Camera target|Manual distance|Bone|Face|Eyes|Static point|Track nearest bone"));
             lensCombo("DoF quality", settings.dof.quality, ui::items("Auto|Performance|Balanced|High"));
             if (settings.dof.focusMode == PreviewFocusMode::manual) {
                 lensSlider("Focus distance (m)", settings.dof.focusDistanceMetres, 0.05F, 100.0F, "%.3f",
@@ -3843,7 +3843,7 @@ void Application::buildRenderSettingsControls() {
             ImGui::PopItemWidth();
             ImGui::TreePop();
         }
-        ImGui::TextWrapped("%s", ui::tr("Ctrl + click: static focus. Ctrl + Shift + click: track the surface."));
+        ImGui::TextWrapped("%s", ui::tr("Ctrl + click: static focus. Ctrl + Shift + click: track the nearest bone."));
         if (trackingFocusFallback_)
             ImGui::TextWrapped("%s", ui::tr("No bone anchor found; using static focus."));
         if (resolved.depthOfField && scene_.background().enabled &&
