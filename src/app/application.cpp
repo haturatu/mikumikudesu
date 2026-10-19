@@ -1039,6 +1039,8 @@ void Application::resetProjectRuntimeState() {
 #endif
     projectEditorState_ = {};
     missingFocusModelProjectIndex_.reset();
+    previewFocusState_ = {};
+    previewFocusEvaluatedFrame_ = -1.0F;
     if (device_ != nullptr) {
         device_->cancelPreviewFocusPick();
         device_->setPreviewRenderSettings({});
@@ -1242,18 +1244,23 @@ int Application::run() {
                                scene_.timeline().duration + 1.0;
 
             animationFrame_ = scene_.timeline().frame;
-            if (wrapped)
+            if (wrapped) {
                 restartAudioAtCurrentFrame();
+                previewFocusState_.trackingValid = false;
+            }
             if (!repeat_ && animationFrame_ >= scene_.timeline().duration) {
                 playing_ = false;
                 audioPlayer_.setPaused(true);
             }
-            const int integerFrame = static_cast<int>(animationFrame_);
-            if (integerFrame != uploadedAnimationFrame_ && !scene_.models().empty()) {
+            // Pose, physics, camera and focus all use this rendered fractional
+            // timeline sample. Do not evaluate a separate pose for autofocus.
+            if (!scene_.models().empty()) {
                 refreshAnimatedMesh(false, deltaSeconds * playbackSpeed_);
             }
-            refreshPreviewScene();
+            refreshPreviewScene(deltaSeconds);
         }
+        if (!playing_ && !imageSequenceExportRunning_ && !videoExportUiActive_)
+            refreshPreviewScene(deltaSeconds);
         auto* media = scene_.backgroundMedia();
         for (auto& effect : reloadedEffects_) {
             std::string reloadError;
@@ -2147,6 +2154,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         snapshot.bones = evaluatedModel.frame.bones;
         evaluatedModels_.models.push_back(std::move(snapshot));
     }
+    previewFocusBindings_.clear();
     std::size_t materialCursor = 0;
     std::uint32_t indexCursor = 0;
     std::pmr::vector<graphics::PreviewBoneTransform> bones(scratch);
@@ -2212,6 +2220,10 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                        vertex[0], ",", vertex[1], ",", vertex[2], ")");
         }
         const auto boneBase = static_cast<std::int32_t>(bones.size());
+        previewFocusBindings_.push_back({instance.model, instance.normalization, instance.id,
+                                         static_cast<std::uint32_t>(materialCursor),
+                                         static_cast<std::uint32_t>(instance.model->materials.size()),
+                                         static_cast<std::uint32_t>(boneBase), gpuSkinning});
         if (gpuSkinning) {
             bones.reserve(bones.size() + frame.bones.size());
             for (const auto& source : frame.bones)
@@ -2731,7 +2743,7 @@ void Application::refreshVideoFrame() {
     uploadedVideoFrame_ = frameIndex;
 }
 
-void Application::refreshPreviewScene() {
+void Application::refreshPreviewScene(float focusDeltaOverride) {
     if (device_ == nullptr)
         return;
     const auto* model = selectedModel();
@@ -2766,8 +2778,25 @@ void Application::refreshPreviewScene() {
     scene.perspective = cameraState.perspective;
     const graphics::PreviewFocusCamera focusCamera{cameraState.rotation, cameraState.position, cameraState.distance,
                                                    cameraState.verticalFovRadians, cameraState.perspective};
-    scene.focusDistance = resolvePreviewFocusDistance(device_->previewRenderSettings().dof, focusCamera,
-                                                      scene_.models(), evaluatedModels_);
+    const auto dof = device_->previewRenderSettings().dof;
+    const float targetUnits = resolvePreviewFocusDistance(dof, focusCamera, scene_.models(), evaluatedModels_);
+    const bool followsModel = dof.focusMode == graphics::PreviewFocusMode::bone ||
+                              dof.focusMode == graphics::PreviewFocusMode::face ||
+                              dof.focusMode == graphics::PreviewFocusMode::eyes ||
+                              dof.focusMode == graphics::PreviewFocusMode::trackedSurface;
+    const bool valid =
+        !followsModel || (dof.modelIndex < scene_.models().size() &&
+                          previewFocusBonePoint(scene_.models()[dof.modelIndex], evaluatedModels_, dof).has_value());
+    const float focusDelta = focusDeltaOverride >= 0.0F           ? focusDeltaOverride
+                             : previewFocusEvaluatedFrame_ < 0.0F ? 0.0F
+                                                                  : (animationFrame_ - previewFocusEvaluatedFrame_) /
+                                                                        static_cast<float>(sceneTimelineFps(scene_));
+    if (!previewFocusState_.trackingValid || focusDelta != 0.0F ||
+        previewFocusState_.targetMetres != targetUnits * dof.metresPerUnit + dof.focusOffsetMetres)
+        graphics::updatePreviewFocusState(previewFocusState_, targetUnits * dof.metresPerUnit + dof.focusOffsetMetres,
+                                          focusDelta, dof, valid, !followsModel);
+    previewFocusEvaluatedFrame_ = animationFrame_;
+    scene.focusDistance = (previewFocusState_.currentMetres - dof.focusOffsetMetres) / dof.metresPerUnit;
     scene.debugMaterial = previewDebugMaterial_;
     scene.debugFlags = previewDebugFlags_;
     scene.outlineEnabled = previewOutlineEnabled_;
@@ -2911,12 +2940,35 @@ void Application::buildUi() {
                                                               available, !hasCameraVmd || !followVmdCamera_);
                 uiState_.viewportHovered = input.hovered;
                 if (input.focusPick) {
+                    pendingTrackingFocus_ = input.focusTracking || device_->previewRenderSettings().dof.focusMode ==
+                                                                       graphics::PreviewFocusMode::trackedSurface;
+                    pendingFocusBindings_ = previewFocusBindings_;
+                    pendingFocusSnapshot_ = evaluatedModels_;
+                    trackingFocusFallback_ = false;
                     device_->requestPreviewFocusPick({input.focusUv.x, input.focusUv.y});
                 }
-                if (const auto point = device_->pollPreviewFocusPick()) {
+                if (const auto point = device_->pollPreviewFocusSample()) {
                     auto settings = device_->previewRenderSettings();
                     settings.dof.focusMode = graphics::PreviewFocusMode::viewportPoint;
-                    settings.dof.worldPoint = *point;
+                    settings.dof.worldPoint = point->worldPoint;
+                    if (pendingTrackingFocus_) {
+                        const auto target = previewTrackedFocus(*point, pendingFocusBindings_, pendingFocusSnapshot_,
+                                                                settings.dof.metresPerUnit);
+                        const auto found =
+                            target ? std::ranges::find(scene_.models(), target->model, &core::ModelInstance::id)
+                                   : scene_.models().end();
+                        if (target && found != scene_.models().end()) {
+                            settings.dof.focusMode = graphics::PreviewFocusMode::trackedSurface;
+                            settings.dof.modelIndex =
+                                static_cast<std::uint32_t>(std::distance(scene_.models().begin(), found));
+                            settings.dof.boneName = target->boneName;
+                            settings.dof.localOffsetMetres = target->localOffsetMetres;
+                            settings.dof.trackingInstance = target->instance;
+                        } else {
+                            trackingFocusFallback_ = true;
+                        }
+                    }
+                    previewFocusState_.trackingValid = false;
                     settings.depthOfField.override = graphics::EffectOverride::enabled;
                     device_->setPreviewRenderSettings(settings);
                     refreshPreviewScene();
@@ -3665,14 +3717,15 @@ void Application::buildRenderSettingsControls() {
             lensSlider("Aperture (F-number)", settings.dof.fNumber, 0.7F, 32.0F, "f/%.1f",
                        ImGuiSliderFlags_Logarithmic);
             lensCombo("Focus target", settings.dof.focusMode,
-                      ui::items("Camera target|Manual distance|Bone|Face|Eyes|Viewport point"));
+                      ui::items("Camera target|Manual distance|Bone|Face|Eyes|Static point|Tracking point"));
             lensCombo("DoF quality", settings.dof.quality, ui::items("Auto|Performance|Balanced|High"));
             if (settings.dof.focusMode == PreviewFocusMode::manual) {
                 lensSlider("Focus distance (m)", settings.dof.focusDistanceMetres, 0.05F, 100.0F, "%.3f",
                            ImGuiSliderFlags_Logarithmic);
             }
             if (settings.dof.focusMode == PreviewFocusMode::bone || settings.dof.focusMode == PreviewFocusMode::face ||
-                settings.dof.focusMode == PreviewFocusMode::eyes) {
+                settings.dof.focusMode == PreviewFocusMode::eyes ||
+                settings.dof.focusMode == PreviewFocusMode::trackedSurface) {
                 const auto& models = scene_.models();
                 const auto index = settings.dof.modelIndex;
                 const char* selectedName =
@@ -3689,8 +3742,9 @@ void Application::buildRenderSettingsControls() {
                     }
                     ImGui::EndCombo();
                 }
-                if (settings.dof.focusMode == PreviewFocusMode::bone && settings.dof.modelIndex < models.size() &&
-                    models[settings.dof.modelIndex].model != nullptr) {
+                if ((settings.dof.focusMode == PreviewFocusMode::bone ||
+                     settings.dof.focusMode == PreviewFocusMode::trackedSurface) &&
+                    settings.dof.modelIndex < models.size() && models[settings.dof.modelIndex].model != nullptr) {
                     const auto& bones = models[settings.dof.modelIndex].model->bones;
                     ImGui::TextWrapped("%s", ui::tr("Focus bone"));
                     if (ImGui::BeginCombo("##focus-bone", settings.dof.boneName.c_str())) {
@@ -3718,6 +3772,16 @@ void Application::buildRenderSettingsControls() {
                     !previewFocusBonePoint(models[settings.dof.modelIndex], evaluatedModels_, settings.dof))
                     ImGui::TextWrapped("%s", ui::tr("Focus target unavailable; using the camera target."));
             }
+            ImGui::TextWrapped("%s", ui::tr("Local offset (m)"));
+            changed |= ImGui::InputFloat3("##focus-local-offset", settings.dof.localOffsetMetres.data(), "%.3f");
+            if (settings.dof.focusMode == PreviewFocusMode::face) {
+                ImGui::TextWrapped("%s", ui::tr("Face anchor offset (m)"));
+                changed |= ImGui::InputFloat3("##face-anchor-offset", settings.dof.faceOffsetMetres.data(), "%.3f");
+            }
+            lensSlider("AF response (s)", settings.dof.focusResponseSeconds, 0.0F, 1.0F, "%.3f");
+            lensSlider("AF deadband (m)", settings.dof.focusDeadbandMetres, 0.0F, 0.05F, "%.3f");
+            lensSlider("AF maximum speed (m/s)", settings.dof.focusMaxSpeed, 0.05F, 100.0F, "%.2f",
+                       ImGuiSliderFlags_Logarithmic);
             lensSlider("Focus offset (m)", settings.dof.focusOffsetMetres, -1.0F, 1.0F, "%.3f");
             const auto focusCamera = makeSceneCameraState();
             const PreviewFocusCamera focusView{focusCamera.rotation, focusCamera.position, focusCamera.distance,
@@ -3725,7 +3789,10 @@ void Application::buildRenderSettingsControls() {
             const float focus = resolvePreviewFocusDistance(settings.dof, focusView, scene_.models(), evaluatedModels_);
             const auto lens =
                 previewDofLens(settings.dof, focus, focusCamera.verticalFovRadians, 1080, PreviewDofQuality::balanced);
-            ImGui::Text("%s: %.3f m", ui::tr("Resolved focus distance"), static_cast<double>(lens.focusMetres));
+            ImGui::Text("%s: %.3f m", ui::tr("Resolved focus distance"),
+                        static_cast<double>(previewFocusState_.currentMetres));
+            ImGui::Text("%s: %.3f m", ui::tr("Target focus distance"), static_cast<double>(lens.focusMetres));
+            ImGui::Text("%s: %.3f m/s", ui::tr("Focus velocity"), static_cast<double>(previewFocusState_.velocity));
             if (ImGui::Button(ui::label("Reset lens and focus"))) {
                 settings.dof = {};
                 changed = true;
@@ -3740,7 +3807,9 @@ void Application::buildRenderSettingsControls() {
             ImGui::PopItemWidth();
             ImGui::TreePop();
         }
-        ImGui::TextWrapped("%s", ui::tr("Ctrl + left click in the viewport to focus on a surface."));
+        ImGui::TextWrapped("%s", ui::tr("Ctrl + click: static focus. Ctrl + Shift + click: track the surface."));
+        if (trackingFocusFallback_)
+            ImGui::TextWrapped("%s", ui::tr("No bone anchor found; using static focus."));
         if (resolved.depthOfField && scene_.background().enabled &&
             scene_.background().screenSource == core::ScreenTextureSource::previousFrame)
             ImGui::TextWrapped("%s", ui::tr("Choose White, Image or Video background to preview depth of field."));
@@ -3774,6 +3843,7 @@ void Application::buildRenderSettingsControls() {
         }
     }
     if (changed) {
+        previewFocusState_.trackingValid = false;
         if (settings.dof.modelIndex != previewMissingFocusModel)
             missingFocusModelProjectIndex_.reset();
         device_->cancelPreviewFocusPick();

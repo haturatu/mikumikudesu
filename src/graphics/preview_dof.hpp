@@ -9,12 +9,14 @@
 
 namespace dayo::graphics {
 
-enum class PreviewFocusMode : std::uint8_t { cameraTarget, manual, bone, face, eyes, viewportPoint };
+enum class PreviewFocusMode : std::uint8_t { cameraTarget, manual, bone, face, eyes, viewportPoint, trackedSurface };
 enum class PreviewDofQuality : std::uint8_t { automatic, performance, balanced, high };
 
 struct PreviewDofSettings {
     std::string boneName;
     std::array<float, 3> worldPoint{};
+    std::array<float, 3> localOffsetMetres{};
+    std::array<float, 3> faceOffsetMetres{0.0F, 0.1F, -0.06F};
     float fNumber{2.8F};
     float sensorHeightMm{24.0F};
     // Each model is normalized to preview coordinates. A two-unit character
@@ -22,7 +24,11 @@ struct PreviewDofSettings {
     float metresPerUnit{0.8F};
     float focusDistanceMetres{2.4F};
     float focusOffsetMetres{};
+    float focusResponseSeconds{0.12F};
+    float focusDeadbandMetres{0.003F};
+    float focusMaxSpeed{10.0F};
     std::uint32_t modelIndex{}; // Project model order, never a transient ModelId.
+    std::uint32_t trackingInstance{};
     PreviewFocusMode focusMode{PreviewFocusMode::cameraTarget};
     PreviewDofQuality quality{PreviewDofQuality::automatic};
 };
@@ -36,13 +42,50 @@ inline PreviewDofSettings sanitizePreviewDofSettings(PreviewDofSettings settings
     settings.metresPerUnit = clamp(settings.metresPerUnit, 0.8F, 0.01F, 100.0F);
     settings.focusDistanceMetres = clamp(settings.focusDistanceMetres, 2.4F, 0.05F, 10000.0F);
     settings.focusOffsetMetres = clamp(settings.focusOffsetMetres, 0.0F, -100.0F, 100.0F);
+    settings.focusResponseSeconds = clamp(settings.focusResponseSeconds, 0.12F, 0.0F, 5.0F);
+    settings.focusDeadbandMetres = clamp(settings.focusDeadbandMetres, 0.003F, 0.0F, 0.25F);
+    settings.focusMaxSpeed = clamp(settings.focusMaxSpeed, 10.0F, 0.05F, 1000.0F);
+    for (auto& value : settings.localOffsetMetres)
+        value = clamp(value, 0.0F, -100.0F, 100.0F);
+    for (auto& value : settings.faceOffsetMetres)
+        value = clamp(value, 0.0F, -100.0F, 100.0F);
     for (auto& value : settings.worldPoint)
         value = clamp(value, 0.0F, -10000.0F, 10000.0F);
-    if (settings.focusMode > PreviewFocusMode::viewportPoint)
+    if (settings.focusMode > PreviewFocusMode::trackedSurface)
         settings.focusMode = PreviewFocusMode::cameraTarget;
     if (settings.quality > PreviewDofQuality::high)
         settings.quality = PreviewDofQuality::automatic;
     return settings;
+}
+
+struct PreviewFocusState {
+    float currentMetres{};
+    float targetMetres{};
+    float velocity{};
+    bool trackingValid{};
+};
+
+inline void updatePreviewFocusState(PreviewFocusState& state, float targetMetres, float deltaSeconds,
+                                    const PreviewDofSettings& settings, bool trackingValid,
+                                    bool reset = false) noexcept {
+    const float target = std::isfinite(targetMetres) ? std::max(targetMetres, 0.01F) : 0.01F;
+    state.targetMetres = target;
+    if (reset || !state.trackingValid || !trackingValid || !std::isfinite(deltaSeconds) || deltaSeconds <= 0.0F ||
+        deltaSeconds > 0.25F || settings.focusResponseSeconds <= 0.0F) {
+        state.currentMetres = target;
+        state.velocity = 0.0F;
+    } else {
+        const float error = target - state.currentMetres;
+        const float response = settings.focusResponseSeconds / std::max(1.0F, std::abs(error) / 0.25F);
+        const float alpha = -std::expm1(-deltaSeconds / std::max(response, 0.001F));
+        const float travel = std::abs(error) <= settings.focusDeadbandMetres
+                                 ? 0.0F
+                                 : std::clamp(error * alpha, -settings.focusMaxSpeed * deltaSeconds,
+                                              settings.focusMaxSpeed * deltaSeconds);
+        state.currentMetres += travel;
+        state.velocity = travel / deltaSeconds;
+    }
+    state.trackingValid = trackingValid;
 }
 
 struct PreviewFocusCamera {

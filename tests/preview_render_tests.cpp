@@ -1969,8 +1969,11 @@ bool physicalDofAndFocusPicking(dayo::graphics::VulkanDevice& device) {
     scene.cameraRotation[1] = 0.8F;
     device.updatePreviewScene(scene);
     static_cast<void>(device.collectRenderedImage(ticket));
-    const auto pick = device.pollPreviewFocusPick();
-    expect(pick && std::abs((*pick)[2] + 2.0F) < 0.001F, "asynchronous pick must use the submitted camera snapshot");
+    const auto pick = device.pollPreviewFocusSample();
+    expect(pick && std::abs(pick->worldPoint[2] + 2.0F) < 0.001F,
+           "asynchronous pick must use the submitted camera snapshot");
+    expect(pick && pick->materialIndex == 1 && pick->instanceIndex == 0 && pick->instanceCount == 1,
+           "asynchronous pick must return the rendered material and clone identity");
     expect(!device.pollPreviewFocusPick(), "focus pick result must be consumed once");
     scene.cameraRotation[1] = 0.0F;
     device.updatePreviewScene(scene);
@@ -1983,6 +1986,25 @@ bool physicalDofAndFocusPicking(dayo::graphics::VulkanDevice& device) {
            "focus picking must select the opaque surface behind blended material");
     materials[1].diffuse[3] = 1.0F;
     device.updatePreviewMaterials(materials);
+    scene.cameraDistance = 8.0F;
+    device.updatePreviewScene(scene);
+    device.updatePreviewDraws(std::array<PreviewDraw, 1>{{{6, 6, 1, 2}}});
+    PreviewBoneTransform submittedBone;
+    submittedBone.translation[2] = 0.3F;
+    device.updatePreviewBones(std::array{submittedBone});
+    device.requestPreviewFocusPick({0.925F, 0.5F});
+    const auto cloneTicket = device.enqueueRenderToImage({192, 192});
+    submittedBone.translation[2] = 0.9F;
+    device.updatePreviewBones(std::array{submittedBone});
+    static_cast<void>(device.collectRenderedImage(cloneTicket));
+    const auto clonePick = device.pollPreviewFocusSample();
+    expect(clonePick && clonePick->materialIndex == 1 && clonePick->instanceIndex == 1 && clonePick->instanceCount == 2,
+           "focus identity must distinguish rendered clones of the same material");
+    expect(clonePick && clonePick->bones.size() == 1 && clonePick->bones[0].translation[2] == 0.3F,
+           "focus binding must retain the submitted bone pose across asynchronous updates");
+    device.updatePreviewBones({});
+    scene.cameraDistance = 3.0F;
+    device.updatePreviewScene(scene);
     device.updatePreviewDraws(std::array<PreviewDraw, 1>{{{6, 6, 1}}});
     device.requestPreviewFocusPick({0.99F, 0.99F});
     static_cast<void>(device.renderToImage({65, 63}));

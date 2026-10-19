@@ -63,7 +63,9 @@ opening from f/5.6 to f/1.4 multiplies the uncapped blur radius by four.
 **Camera target** retains the existing focus behavior; **Manual distance** uses
 metres; **Bone**, **Face** and **Eyes** follow the selected model's evaluated
 animation. Eyes uses the left/right eye midpoint, then available eye/head bone
-aliases. Face also prefers eye locations and falls back to the head. Missing
+aliases. Face uses a head-local front anchor (editable in metres), with eye
+fallback when no head bone exists. Bone and tracking modes expose a rotated
+local offset. Missing
 models/bones fall back to the camera target and show a message.
 **Focus selected bone** uses the bone currently selected in the Inspector.
 Model references are mapped through the project model source when asset loading
@@ -71,17 +73,34 @@ order differs from metadata order. A missing model keeps its saved reference
 instead of focusing on whichever model loaded into its old slot.
 Neither focus mode changes the camera pose or a VMD camera track.
 
-Ctrl + left click on a viewport surface selects **Viewport point** and enables
+Ctrl + left click on a viewport surface selects **Static point** and enables
 DoF. The selected 3D point stays fixed while the camera moves. A drag with Ctrl
 held at its start never becomes an orbit gesture. Picking works while VMD camera
 follow locks navigation. UI coordinates are normalized against the displayed
 image and mapped to the actual framebuffer, including DPI scaling. The GPU
-copies one D32 pixel to a frame-owned coherent staging buffer. Results are
+copies one D32 depth pixel and one packed material/clone identity pixel to a
+frame-owned coherent staging buffer. The extra identity attachment is allocated
+only when picking. Results are
 polled after the frame fence signals, without a device-wide wait; unprojection
 uses that submission's camera and pixel centre. New requests, changing focus
 controls and loading/resetting projects invalidate older picks. Clear depth is
 ignored. The depth prepass includes opaque/alpha-tested fragments with combined
 alpha >= 0.98; picking sees the opaque surface behind blended materials.
+
+Ctrl + Shift + left click selects **Tracking point**. The rendered material ID
+selects the model, then the nearest evaluated bone stores a local anchor and
+clone index. This is bone-based tracking, not a deforming-triangle attachment:
+loose cloth, morphs and skin weights can move independently of the anchor.
+Unidentified surfaces fall back to a static point with a visible message.
+The GPU result includes the submitted bone transforms, so an asynchronous
+result is bound in the pose in which it was clicked.
+
+Playback evaluates the shared pose at each rendered fractional VMD time, once
+for mesh, physics and focus. AF response (seconds), deadband (metres) and maximum
+speed (m/s) control model tracking. Zero response is immediate. Paused previews
+can finish converging without evaluating physics again. Backward seeks, repeat
+wraps, long timeline jumps, target changes and project resets clear AF state.
+The Inspector shows actual/target distance and focus velocity.
 
 **Focus offset** moves the focal plane along the camera axis in metres. The UI
 shows the resolved distance including this offset. Lens calibration exposes

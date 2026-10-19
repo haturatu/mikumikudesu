@@ -12,6 +12,7 @@ struct ViewportInput {
     bool contextMenu{};
     bool focusPick{};
     ImVec2 focusUv{};
+    bool focusTracking{};
 };
 
 // Own the mouse gesture instead of letting the image's empty space move its window.
@@ -27,6 +28,7 @@ class ViewportInteraction {
         const auto& io = ImGui::GetIO();
         if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
             focusStarted_ = io.KeyCtrl;
+            focusTracking_ = io.KeyShift;
             focusDragged_ = false;
         }
         if (focusStarted_ && ImGui::IsMouseDragging(ImGuiMouseButton_Left))
@@ -54,11 +56,13 @@ class ViewportInteraction {
             contextMenu,
             focusPick,
             {(io.MousePos.x - position.x) / size.x, (io.MousePos.y - position.y) / size.y},
+            focusPick && focusTracking_,
         };
     }
 
   private:
     bool focusStarted_{};
+    bool focusTracking_{};
     bool focusDragged_{};
     bool rightClickStarted_{};
     bool rightDragged_{};

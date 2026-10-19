@@ -4,6 +4,7 @@
 
 #include "app/application_options.hpp"
 #include "app/audio_export_job.hpp"
+#include "app/preview_focus.hpp"
 #include "app/video_export_job.hpp"
 #include "core/editor.hpp"
 #include "core/frame_scratch.hpp"
@@ -71,7 +72,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void refreshVideoFrame();
     void refreshPreviewTextures();
     void refreshPreviewBackground();
-    void refreshPreviewScene();
+    void refreshPreviewScene(float focusDeltaOverride = -1.0F);
     void buildUi();
     void buildMainMenuBar();
     void buildDockLayout();
@@ -182,6 +183,13 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::uint64_t animatedTopologyGeneration_{};
     float animationFrame_{};
     int uploadedAnimationFrame_{-1};
+    graphics::PreviewFocusState previewFocusState_;
+    std::vector<PreviewFocusModelBinding> previewFocusBindings_;
+    std::vector<PreviewFocusModelBinding> pendingFocusBindings_;
+    core::fx::SceneEvaluationSnapshot pendingFocusSnapshot_;
+    bool pendingTrackingFocus_{};
+    bool trackingFocusFallback_{};
+    float previewFocusEvaluatedFrame_{-1.0F};
     bool playing_{true};
     bool nativePlaybackWasActive_{};
     bool nativeOnStartPending_{true};

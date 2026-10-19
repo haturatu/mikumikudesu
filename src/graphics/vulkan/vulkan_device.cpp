@@ -1568,6 +1568,13 @@ void VulkanDevice::createPipeline() {
             createGraphicsPipelineResource(opaque, pipelineLayout_, shadowStages, {}, VK_FORMAT_D32_SFLOAT);
         depthPrepassPipeline_ = createGraphicsPipelineResource(opaque, pipelineLayout_, normalStages,
                                                                std::array{previewNormalFormat_}, VK_FORMAT_D32_SFLOAT);
+        auto pickOpaque = opaque;
+        pickOpaque.blendAttachments.resize(2);
+        const std::array pickStages{
+            stages[0], stage(DAYO_PREVIEW_PICK_FRAGMENT_SPV, VK_SHADER_STAGE_FRAGMENT_BIT, "NormalPickPS")};
+        depthPickPipeline_ =
+            createGraphicsPipelineResource(pickOpaque, pipelineLayout_, pickStages,
+                                           std::array{previewNormalFormat_, VK_FORMAT_R32_UINT}, VK_FORMAT_D32_SFLOAT);
         hdrPipeline_ =
             createGraphicsPipelineResource(hdrOpaque, pipelineLayout_, stages, hdrFormats, VK_FORMAT_D32_SFLOAT);
         hdrTransparentPipeline_ =
@@ -1761,6 +1768,9 @@ void VulkanDevice::destroyPipeline() {
         vkDestroyPipelineLayout(device_, bloomPipelineLayout_, nullptr);
     bloomPipeline_ = VK_NULL_HANDLE;
     bloomPipelineLayout_ = VK_NULL_HANDLE;
+    if (depthPickPipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device_, depthPickPipeline_, nullptr);
+    depthPickPipeline_ = VK_NULL_HANDLE;
     if (depthPrepassPipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, depthPrepassPipeline_, nullptr);
     if (shadowPipeline_ != VK_NULL_HANDLE)
@@ -3309,6 +3319,12 @@ void VulkanDevice::destroyPreviewAoResources(Frame& frame) noexcept {
         if (resource.sampleSet != VK_NULL_HANDLE)
             vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &resource.sampleSet);
     }
+    if (resource.focusIdView != VK_NULL_HANDLE)
+        vkDestroyImageView(device_, resource.focusIdView, nullptr);
+    if (resource.focusIdImage != VK_NULL_HANDLE)
+        vkDestroyImage(device_, resource.focusIdImage, nullptr);
+    if (resource.focusIdMemory != VK_NULL_HANDLE)
+        vkFreeMemory(device_, resource.focusIdMemory, nullptr);
     if (resource.depthView != VK_NULL_HANDLE)
         vkDestroyImageView(device_, resource.depthView, nullptr);
     if (resource.depthImage != VK_NULL_HANDLE)
@@ -3564,12 +3580,29 @@ void VulkanDevice::collectPreviewFocusPick(Frame& frame) {
     if (pick.serial == focusPickSerial_) {
         float depth{};
         std::memcpy(&depth, pick.mapped, sizeof(depth));
-        focusPickResult_ = previewFocusUnproject(pick.camera, pick.uv, pick.aspect, depth);
+        if (const auto point = previewFocusUnproject(pick.camera, pick.uv, pick.aspect, depth)) {
+            std::uint32_t identity{};
+            std::memcpy(&identity, static_cast<const std::byte*>(pick.mapped) + sizeof(float), sizeof(identity));
+            PreviewFocusSample sample;
+            sample.worldPoint = *point;
+            sample.materialIndex = identity == 0 ? 0xffffffffU : (identity & 0xfffffU) - 1U;
+            sample.instanceIndex = identity >> 20U;
+            for (const auto& draw : pick.draws)
+                if (draw.materialIndex == sample.materialIndex)
+                    sample.instanceCount = draw.instanceCount;
+            sample.bones = std::move(pick.bones);
+            focusPickResult_ = std::move(sample);
+        }
     }
     pick.serial = 0;
 }
 
 std::optional<std::array<float, 3>> VulkanDevice::pollPreviewFocusPick() {
+    if (auto sample = pollPreviewFocusSample())
+        return sample->worldPoint;
+    return std::nullopt;
+}
+std::optional<PreviewFocusSample> VulkanDevice::pollPreviewFocusSample() {
     for (auto& frame : frames_)
         collectPreviewFocusPick(frame);
     return std::exchange(focusPickResult_, std::nullopt);
@@ -3581,12 +3614,13 @@ void VulkanDevice::recordPreviewFocusPick(VkCommandBuffer command, Frame& frame,
     auto& pick = frame.focusReadback;
     if (pick.buffer == VK_NULL_HANDLE) {
         const VkBufferCreateInfo info{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                                      .size = sizeof(float),
+                                      .size = sizeof(float) + sizeof(std::uint32_t),
                                       .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                       .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
         allocateBufferMemory(info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                              pick.buffer, pick.memory);
-        check(vkMapMemory(device_, pick.memory, 0, sizeof(float), 0, &pick.mapped), "map focus depth readback");
+        check(vkMapMemory(device_, pick.memory, 0, sizeof(float) + sizeof(std::uint32_t), 0, &pick.mapped),
+              "map focus depth readback");
     }
     const auto x = std::min(static_cast<std::uint32_t>((*focusPickRequest_)[0] * static_cast<float>(extent.width)),
                             extent.width - 1U);
@@ -3602,6 +3636,8 @@ void VulkanDevice::recordPreviewFocusPick(VkCommandBuffer command, Frame& frame,
     pick.camera.verticalFovRadians = scene.verticalFovRadians;
     pick.camera.perspective = scene.perspective;
     pick.serial = focusPickSerial_;
+    pick.bones = previewGpuScene_.bones;
+    pick.draws = previewGpuScene_.draws;
     focusPickRequest_.reset();
     VkImageMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                                   .srcStageMask =
@@ -3629,6 +3665,28 @@ void VulkanDevice::recordPreviewFocusPick(VkCommandBuffer command, Frame& frame,
     barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
     barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    vkCmdPipelineBarrier2(command, &dependency);
+    auto idBarrier = barrier;
+    idBarrier.image = frame.previewAo.focusIdImage;
+    idBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    idBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    idBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    idBarrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    idBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    idBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    idBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    dependency.pImageMemoryBarriers = &idBarrier;
+    vkCmdPipelineBarrier2(command, &dependency);
+    auto idCopy = copy;
+    idCopy.bufferOffset = sizeof(float);
+    idCopy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vkCmdCopyImageToBuffer(command, idBarrier.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, pick.buffer, 1, &idCopy);
+    idBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    idBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    idBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    idBarrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    idBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    idBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     const VkMemoryBarrier2 host{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                                 .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                                 .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -4048,6 +4106,30 @@ void VulkanDevice::ensurePreviewAoResources(Frame& frame, VkExtent2D extent) {
     }
 }
 
+void VulkanDevice::ensurePreviewFocusIdResource(Frame& frame, VkExtent2D extent) {
+    auto& resource = frame.previewAo;
+    if (resource.focusIdImage != VK_NULL_HANDLE)
+        return;
+    const VkImageCreateInfo info{.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                 .imageType = VK_IMAGE_TYPE_2D,
+                                 .format = VK_FORMAT_R32_UINT,
+                                 .extent = {extent.width, extent.height, 1},
+                                 .mipLevels = 1,
+                                 .arrayLayers = 1,
+                                 .samples = VK_SAMPLE_COUNT_1_BIT,
+                                 .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                 .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                          VK_IMAGE_USAGE_SAMPLED_BIT,
+                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    allocateImageMemory(info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, resource.focusIdImage, resource.focusIdMemory);
+    const VkImageViewCreateInfo view{.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                     .image = resource.focusIdImage,
+                                     .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                     .format = VK_FORMAT_R32_UINT,
+                                     .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    check(vkCreateImageView(device_, &view, nullptr, &resource.focusIdView), "create focus identity image");
+}
+
 void VulkanDevice::recordPreviewAoPass(VkCommandBuffer command, Frame& frame, VkExtent2D extent) {
     if (depthPrepassPipeline_ == VK_NULL_HANDLE || aoPipelines_[0] == VK_NULL_HANDLE ||
         aoPipelines_[2] == VK_NULL_HANDLE || previewIndexBuffer_ == VK_NULL_HANDLE)
@@ -4112,12 +4194,41 @@ void VulkanDevice::recordPreviewAoPass(VkCommandBuffer command, Frame& frame, Vk
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
         .clearValue = normalClear,
     };
+    const bool pickIdentity = focusPickRequest_.has_value();
+    VkRenderingAttachmentInfo identityAttachment{.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    if (pickIdentity) {
+        ensurePreviewFocusIdResource(frame, extent);
+        const VkImageMemoryBarrier2 identityToColor{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask =
+                resource.focusIdInitialized ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_NONE,
+            .srcAccessMask = resource.focusIdInitialized ? VK_ACCESS_2_MEMORY_READ_BIT : 0U,
+            .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            .oldLayout =
+                resource.focusIdInitialized ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = resource.focusIdImage,
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        const VkDependencyInfo beginId{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                       .imageMemoryBarrierCount = 1,
+                                       .pImageMemoryBarriers = &identityToColor};
+        vkCmdPipelineBarrier2(command, &beginId);
+        identityAttachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                              .imageView = resource.focusIdView,
+                              .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                              .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+    }
+    const std::array normalAttachments{normalAttachment, identityAttachment};
     const VkRenderingInfo rendering{
         .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
         .renderArea = {{0, 0}, extent},
         .layerCount = 1,
-        .colorAttachmentCount = 1,
-        .pColorAttachments = &normalAttachment,
+        .colorAttachmentCount = pickIdentity ? 2U : 1U,
+        .pColorAttachments = normalAttachments.data(),
         .pDepthAttachment = &attachment,
     };
     vkCmdBeginRendering(command, &rendering);
@@ -4126,7 +4237,8 @@ void VulkanDevice::recordPreviewAoPass(VkCommandBuffer command, Frame& frame, Vk
     const VkRect2D scissor{{0, 0}, extent};
     vkCmdSetViewport(command, 0, 1, &viewport);
     vkCmdSetScissor(command, 0, 1, &scissor);
-    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPrepassPipeline_);
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      pickIdentity ? depthPickPipeline_ : depthPrepassPipeline_);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 1, 1,
                             &frame.previewBoneDescriptor, 0, nullptr);
     if (frame.previewMaterialDescriptor != VK_NULL_HANDLE)
@@ -4170,6 +4282,24 @@ void VulkanDevice::recordPreviewAoPass(VkCommandBuffer command, Frame& frame, Vk
                          constants.instanceCount, draw.firstIndex, 0, 0);
     }
     vkCmdEndRendering(command);
+    if (pickIdentity) {
+        const VkImageMemoryBarrier2 identityToRead{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                                   .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                                   .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                                   .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                                   .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+                                                   .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                                   .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                   .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                                   .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                                   .image = resource.focusIdImage,
+                                                   .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        const VkDependencyInfo endId{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                     .imageMemoryBarrierCount = 1,
+                                     .pImageMemoryBarriers = &identityToRead};
+        vkCmdPipelineBarrier2(command, &endId);
+        resource.focusIdInitialized = true;
+    }
     const VkImageMemoryBarrier2 toRead{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,

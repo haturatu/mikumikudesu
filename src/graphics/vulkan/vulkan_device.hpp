@@ -91,6 +91,7 @@ class VulkanDevice final : public Device {
     [[nodiscard]] PreviewPassTimings previewPassTimings() const noexcept override {
         return previewPassTimings_;
     }
+    [[nodiscard]] std::optional<PreviewFocusSample> pollPreviewFocusSample() override;
     void requestPreviewFocusPick(std::array<float, 2> uv) override;
     void cancelPreviewFocusPick() override;
     [[nodiscard]] std::optional<std::array<float, 3>> pollPreviewFocusPick() override;
@@ -223,6 +224,10 @@ class VulkanDevice final : public Device {
         VkImage depthImage{};
         VkDeviceMemory depthMemory{};
         VkImageView depthView{};
+        VkImage focusIdImage{};
+        VkDeviceMemory focusIdMemory{};
+        VkImageView focusIdView{};
+        bool focusIdInitialized{};
         VkImage normalImage{};
         VkDeviceMemory normalMemory{};
         VkImageView normalView{};
@@ -279,6 +284,8 @@ class VulkanDevice final : public Device {
         VkDeviceMemory memory{};
         void* mapped{};
         std::uint64_t serial{};
+        std::vector<PreviewBoneTransform> bones;
+        std::vector<PreviewDraw> draws;
     };
     struct Frame {
         VkCommandPool commandPool{};
@@ -470,6 +477,7 @@ class VulkanDevice final : public Device {
     void destroyPreviewDeformBuffers(Frame& frame);
     void recordPreviewShadowPass(VkCommandBuffer command, Frame& frame);
     void recordPreviewAoPass(VkCommandBuffer command, Frame& frame, VkExtent2D extent);
+    void ensurePreviewFocusIdResource(Frame& frame, VkExtent2D extent);
     void ensurePreviewAoResources(Frame& frame, VkExtent2D extent);
     void destroyPreviewAoResources(Frame& frame) noexcept;
     void recordPreviewBackground(VkCommandBuffer command);
@@ -645,6 +653,7 @@ class VulkanDevice final : public Device {
     VkPipeline pipeline_{};
     VkPipeline shadowPipeline_{};
     VkPipeline depthPrepassPipeline_{};
+    VkPipeline depthPickPipeline_{};
     VkPipeline hdrPipeline_{};
     VkPipeline hdrTransparentPipeline_{};
     VkPipeline hdrEdgePipeline_{};
@@ -655,7 +664,7 @@ class VulkanDevice final : public Device {
     VkDescriptorSetLayout dofDescriptorSetLayout_{};
     VkFormat dofCocFormat_{VK_FORMAT_R16_SFLOAT};
     std::optional<std::array<float, 2>> focusPickRequest_;
-    std::optional<std::array<float, 3>> focusPickResult_;
+    std::optional<PreviewFocusSample> focusPickResult_;
     std::uint64_t focusPickSerial_{};
     VkPipeline bloomPipeline_{};
     VkPipelineLayout bloomPipelineLayout_{};

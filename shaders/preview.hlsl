@@ -19,6 +19,7 @@ struct VertexOutput {
     [[vk::location(6)]] nointerpolation uint edgePass : TEXCOORD4;
     [[vk::location(7)]] float3 worldPosition : TEXCOORD5;
     [[vk::location(8)]] float3 worldNormal : TEXCOORD6;
+    [[vk::location(9)]] nointerpolation uint instanceIndex : TEXCOORD7;
 };
 
 struct PreviewSceneConstants {
@@ -103,6 +104,7 @@ VertexOutput makeVertex(VertexInput input, uint materialIndex, uint edgePass, ui
     output.uv = input.uv;
     output.materialIndex = materialIndex;
     output.edgePass = edgePass;
+    output.instanceIndex = instanceIndex;
     output.sphereUv = float2(0.5, 0.5);
     if (scene.backgroundPass != 0) {
         output.position = float4(input.position.xy, 0.0, 1.0);
@@ -228,6 +230,18 @@ float2 NormalPS(VertexOutput input) : SV_Target0 {
     // for AO/DoF and surface picking; keep alpha-tested opaque hair strands.
     clip(alpha.a * material.diffuse.a - 0.98);
     return encodeOctNormal(safeNormalize(input.normal, float3(0.0, 0.0, 1.0)));
+}
+
+struct FocusPickOutput {
+    float2 normal : SV_Target0;
+    uint identity : SV_Target1;
+};
+FocusPickOutput NormalPickPS(VertexOutput input) {
+    FocusPickOutput output;
+    output.normal = NormalPS(input);
+    output.identity = input.materialIndex < 1048575 && input.instanceIndex < 4096
+                    ? (input.materialIndex + 1) | (input.instanceIndex << 20) : 0;
+    return output;
 }
 
 float3 viewToWorldDirection(float3 direction) {

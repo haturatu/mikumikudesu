@@ -19,10 +19,11 @@ struct Harness {
     bool cameraClicked{};
 
     dayo::ui::ViewportInput frame(ImVec2 mouse, int button = -1, bool navigationEnabled = true, float wheel = 0.0F,
-                                  bool ctrl = false) {
+                                  bool ctrl = false, bool shift = false) {
         auto& io = ImGui::GetIO();
         io.AddMousePosEvent(mouse.x, mouse.y);
         io.AddKeyEvent(ImGuiMod_Ctrl, ctrl);
+        io.AddKeyEvent(ImGuiMod_Shift, shift);
         io.AddMouseButtonEvent(ImGuiMouseButton_Left, button == ImGuiMouseButton_Left);
         io.AddMouseButtonEvent(ImGuiMouseButton_Right, button == ImGuiMouseButton_Right);
         if (wheel != 0.0F)
@@ -100,6 +101,13 @@ void checkGestures() {
     input = harness.frame(moved, ImGuiMouseButton_Left);
     expect(!input.orbit, "Releasing Ctrl mid-gesture must not turn focus into camera orbit");
     expect(!harness.frame(moved).focusPick, "A Ctrl-drag must not focus on release");
+
+    harness.frame(inside, -1, false, 0.0F, true, true);
+    harness.frame(inside, ImGuiMouseButton_Left, false, 0.0F, true, true);
+    input = harness.frame(inside);
+    expect(input.focusPick && input.focusTracking && !input.orbit,
+           "Ctrl-Shift-click latches tracking intent even if modifiers are released before the mouse");
+    harness.frame(inside);
 
     const auto cameraButton = harness.cameraButtonPosition;
     harness.frame(cameraButton);

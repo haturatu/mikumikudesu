@@ -74,6 +74,10 @@ bool focusAndLensMath() {
     const auto eyes = dayo::app::previewFocusBonePoint(model, snapshot, lensSettings);
     ok &= check(eyes && std::abs((*eyes)[0]) < 0.0001F && (*eyes)[1] == 1.0F && (*eyes)[2] == 1.0F,
                 "eye midpoint uses evaluated skinning transforms and model normalization");
+    lensSettings.focusMode = PreviewFocusMode::face;
+    const auto face = dayo::app::previewFocusBonePoint(model, snapshot, lensSettings);
+    ok &= check(face && eyes && std::abs((*face)[1] - (*eyes)[1]) > 0.1F && (*face)[2] < (*eyes)[2],
+                "face uses the head front anchor independently of the eye midpoint");
     model.model->bones.resize(1);
     model.model->bones[0].name = "Head";
     lensSettings.focusMode = PreviewFocusMode::face;
@@ -105,11 +109,110 @@ bool focusAndLensMath() {
                 "a failed model load must not retarget focus to the next loaded model");
     return ok;
 }
+bool focusTrackingAndResponse() {
+    using namespace dayo::graphics;
+    using namespace dayo::core;
+    using namespace dayo::app;
+    bool ok = true;
+    PreviewDofSettings settings;
+    settings.focusDeadbandMetres = 0.0F;
+    settings.focusResponseSeconds = 0.12F;
+    PreviewFocusState slow{2.0F, 2.0F, 0.0F, true};
+    auto fast = slow;
+    for (int i = 0; i < 30; ++i)
+        updatePreviewFocusState(slow, 2.2F, 1.0F / 30.0F, settings, true);
+    for (int i = 0; i < 120; ++i)
+        updatePreviewFocusState(fast, 2.2F, 1.0F / 120.0F, settings, true);
+    ok &= check(std::abs(slow.currentMetres - fast.currentMetres) < 0.00001F && slow.currentMetres <= 2.2F,
+                "AF exponential response is refresh-rate independent and cannot overshoot");
+    settings.focusDeadbandMetres = 0.005F;
+    const auto stable = fast.currentMetres;
+    updatePreviewFocusState(fast, stable + 0.004F, 1.0F / 60.0F, settings, true);
+    ok &= check(fast.currentMetres == stable && fast.velocity == 0.0F, "AF deadband avoids focus hunting");
+    settings.focusMaxSpeed = 0.5F;
+    updatePreviewFocusState(fast, 10.0F, 0.1F, settings, true);
+    ok &= check(fast.currentMetres <= stable + 0.05001F && fast.velocity <= 0.50001F,
+                "AF respects its maximum travel speed");
+    updatePreviewFocusState(fast, 4.0F, -1.0F, settings, true);
+    ok &= check(fast.currentMetres == 4.0F && fast.velocity == 0.0F, "backward seeks reset the AF history");
+    updatePreviewFocusState(fast, 3.0F, 0.5F, settings, true);
+    ok &= check(fast.currentMetres == 3.0F, "discontinuous timeline jumps reset the AF history");
+    updatePreviewFocusState(fast, 2.0F, 0.01F, settings, false);
+    ok &= check(!fast.trackingValid && fast.currentMetres == 2.0F,
+                "missing targets use the resolved fallback immediately");
+
+    ModelInstance instance;
+    instance.id = 23;
+    instance.cloneCount = 2;
+    instance.model = std::make_shared<PmxModel>();
+    instance.normalization = {{0.0F, 0.0F, 0.0F}, 1.0F};
+    instance.model->bones.resize(1);
+    instance.model->bones[0].name = "head";
+    instance.model->bones[0].position = {0.0F, 1.0F, 0.0F};
+    VmdMotion motion;
+    VmdBoneKey first;
+    first.name = "head";
+    first.interpolation.fill(127);
+    auto last = first;
+    last.frame = 1;
+    last.translation = {0.0F, 0.0F, 1.0F};
+    motion.bones = {first, last};
+    motion.lastFrame = 1;
+    MmdAnimator animator(*instance.model);
+    animator.setMotion(&motion);
+    fx::SceneEvaluationSnapshot snapshot;
+    snapshot.models.resize(1);
+    snapshot.models.front().id = instance.id;
+    settings.focusMode = PreviewFocusMode::bone;
+    settings.boneName = "head";
+    float previousZ = -1.0F;
+    for (const float frame : {0.0F, 0.25F, 0.5F, 0.75F, 1.0F}) {
+        const auto pose = animator.evaluate(frame, frame == 0.0F ? 0.0F : 1.0F / 120.0F, true);
+        snapshot.models.front().bones = pose.bones;
+        const auto target = previewFocusBonePoint(instance, snapshot, settings);
+        ok &= check(target && (*target)[2] > previousZ,
+                    "focus shares each fractional VMD pose instead of stepping at integer frames");
+        if (target)
+            previousZ = (*target)[2];
+    }
+    snapshot.models.front().bones.front().rotation = {0.0F, 1.0F, 0.0F, 0.0F};
+    const std::array bindings{
+        PreviewFocusModelBinding{instance.model, instance.normalization, instance.id, 4, 2, 0, true}};
+    PreviewFocusSample sample;
+    sample.materialIndex = 5;
+    sample.instanceIndex = 1;
+    sample.instanceCount = 2;
+    sample.bones.push_back(makePreviewBone(snapshot.models.front().bones.front(), instance.normalization));
+    sample.worldPoint = {1.3F, 1.1F, 0.7F};
+    const auto tracked = previewTrackedFocus(sample, bindings, snapshot, settings.metresPerUnit);
+    ok &= check(tracked && tracked->model == instance.id && tracked->instance == 1 && tracked->boneName == "head",
+                "tracking binds to the GPU-selected model and clone");
+    if (tracked) {
+        settings.focusMode = PreviewFocusMode::trackedSurface;
+        settings.localOffsetMetres = tracked->localOffsetMetres;
+        settings.trackingInstance = tracked->instance;
+        const auto point = previewFocusBonePoint(instance, snapshot, settings);
+        ok &= check(point && std::abs((*point)[0] - sample.worldPoint[0]) < 0.00001F &&
+                        std::abs((*point)[1] - sample.worldPoint[1]) < 0.00001F &&
+                        std::abs((*point)[2] - sample.worldPoint[2]) < 0.00001F,
+                    "a rotated bone-local clicked anchor round trips through clone placement");
+        snapshot.models.front().bones.front().translation[2] += 0.4F;
+        const auto moved = previewFocusBonePoint(instance, snapshot, settings);
+        ok &= check(moved && std::abs((*moved)[2] - sample.worldPoint[2] - 0.4F) < 0.00001F,
+                    "tracking moves with the bone while the static world point stays fixed");
+    }
+    sample.materialIndex = 3;
+    ok &= check(!previewTrackedFocus(sample, bindings, snapshot, settings.metresPerUnit),
+                "unidentified surfaces cannot silently bind to a nearby model");
+    return ok;
+}
+
 } // namespace
 
 int main() {
     using namespace dayo::graphics;
     bool ok = focusAndLensMath();
+    ok &= focusTrackingAndResponse();
     PreviewRenderSettings settings;
     auto effective = resolvePreviewEffects(settings, PreviewQuality::apu, true);
     ok &= check(effective.shadowFilter == PreviewShadowFilter::pcf && !effective.depthOfField,
@@ -159,7 +262,7 @@ int main() {
         project.renderSettings.clearcoat = {EffectOverride::enabled, 0.3F};
         project.renderSettings.ambientOcclusionMode = PreviewAmbientOcclusion::ssao;
         auto& dof = project.renderSettings.dof;
-        dof.focusMode = PreviewFocusMode::bone;
+        dof.focusMode = PreviewFocusMode::trackedSurface;
         dof.quality = PreviewDofQuality::high;
         dof.fNumber = 1.4F;
         dof.focusDistanceMetres = 1.8F;
@@ -169,6 +272,12 @@ int main() {
         dof.modelIndex = 2;
         dof.boneName = "右目";
         dof.worldPoint = {1.0F, 2.0F, 3.0F};
+        dof.localOffsetMetres = {0.1F, -0.2F, 0.3F};
+        dof.faceOffsetMetres = {0.0F, 0.12F, -0.08F};
+        dof.focusResponseSeconds = 0.2F;
+        dof.focusDeadbandMetres = 0.007F;
+        dof.focusMaxSpeed = 2.0F;
+        dof.trackingInstance = 3;
         project.upstreamDocumentJson =
             R"({"mikumikudesu":{"renderSettings":{"futureEffect":17,"bloom":{"futureParameter":9},"dof":{"futureLensParameter":7}}}})";
         dayo::core::saveProject(path, project);
@@ -180,13 +289,18 @@ int main() {
                         value.ambientOcclusionMode == PreviewAmbientOcclusion::ssao &&
                         value.antiAliasing == PreviewAntiAliasing::off,
                     "project round trip preserves effect overrides, methods and color management");
-        ok &= check(value.dof.focusMode == dof.focusMode && value.dof.quality == dof.quality &&
-                        value.dof.fNumber == dof.fNumber && value.dof.focusDistanceMetres == dof.focusDistanceMetres &&
-                        value.dof.focusOffsetMetres == dof.focusOffsetMetres &&
-                        value.dof.metresPerUnit == dof.metresPerUnit &&
-                        value.dof.sensorHeightMm == dof.sensorHeightMm && value.dof.modelIndex == dof.modelIndex &&
-                        value.dof.boneName == dof.boneName && value.dof.worldPoint == dof.worldPoint,
-                    "all lens and stable focus target fields survive project reload");
+        ok &= check(
+            value.dof.focusMode == dof.focusMode && value.dof.quality == dof.quality &&
+                value.dof.fNumber == dof.fNumber && value.dof.focusDistanceMetres == dof.focusDistanceMetres &&
+                value.dof.focusOffsetMetres == dof.focusOffsetMetres && value.dof.metresPerUnit == dof.metresPerUnit &&
+                value.dof.sensorHeightMm == dof.sensorHeightMm && value.dof.modelIndex == dof.modelIndex &&
+                value.dof.boneName == dof.boneName && value.dof.worldPoint == dof.worldPoint &&
+                value.dof.localOffsetMetres == dof.localOffsetMetres &&
+                value.dof.faceOffsetMetres == dof.faceOffsetMetres &&
+                value.dof.focusResponseSeconds == dof.focusResponseSeconds &&
+                value.dof.focusDeadbandMetres == dof.focusDeadbandMetres &&
+                value.dof.focusMaxSpeed == dof.focusMaxSpeed && value.dof.trackingInstance == dof.trackingInstance,
+            "all lens and stable focus target fields survive project reload");
         ok &= check(loaded.upstreamDocumentJson.find("futureLensParameter") != std::string::npos,
                     "unknown lens fields survive project saving");
         ok &= check(loaded.upstreamDocumentJson.find("futureEffect") != std::string::npos &&

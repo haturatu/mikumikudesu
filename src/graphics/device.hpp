@@ -147,6 +147,14 @@ struct PreviewBoneTransform {
     float translation[4]{};
 };
 
+struct PreviewFocusSample {
+    std::array<float, 3> worldPoint{};
+    std::uint32_t materialIndex{0xffffffffU};
+    std::uint32_t instanceIndex{};
+    std::uint32_t instanceCount{1};
+    std::vector<PreviewBoneTransform> bones;
+};
+
 struct PreviewMaterial {
     float diffuse[4]{1.0F, 1.0F, 1.0F, 1.0F};
     float ambient[3]{0.2F, 0.2F, 0.2F};
@@ -840,6 +848,14 @@ class Device {
     virtual void requestPreviewFocusPick(std::array<float, 2>) {}
     virtual void cancelPreviewFocusPick() {}
     [[nodiscard]] virtual std::optional<std::array<float, 3>> pollPreviewFocusPick() {
+        return std::nullopt;
+    }
+    [[nodiscard]] virtual std::optional<PreviewFocusSample> pollPreviewFocusSample() {
+        if (const auto point = pollPreviewFocusPick()) {
+            PreviewFocusSample sample;
+            sample.worldPoint = *point;
+            return sample;
+        }
         return std::nullopt;
     }
     // Per-pass breakdown of the same interval.
