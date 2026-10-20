@@ -974,6 +974,20 @@ if(BUILD_TESTING)
   dayo_enable_warnings(dayo_interpolation_commit_tests)
   add_test(NAME interpolation_commit COMMAND dayo_interpolation_commit_tests)
 
+  get_target_property(DAYO_APPLICATION_TEST_SOURCES mikumikudesu SOURCES)
+  list(REMOVE_ITEM DAYO_APPLICATION_TEST_SOURCES src/app/main.cpp)
+  add_executable(dayo_application_cache_tests tests/application_cache_tests.cpp ${DAYO_APPLICATION_TEST_SOURCES})
+  target_link_libraries(dayo_application_cache_tests PRIVATE dayo_cli dayo_core dayo_platform dayo_graphics)
+  target_compile_definitions(
+    dayo_application_cache_tests
+    PRIVATE DAYO_HAS_OIDN=${DAYO_HAS_OIDN} DAYO_HAS_MEDIA=${DAYO_HAS_MEDIA} DAYO_VERSION="${PROJECT_VERSION}"
+  )
+  if(DAYO_HAS_MEDIA)
+    target_link_libraries(dayo_application_cache_tests PRIVATE PkgConfig::FFMPEG)
+  endif()
+  dayo_enable_warnings(dayo_application_cache_tests)
+  add_test(NAME application_native_cache COMMAND dayo_application_cache_tests)
+
   add_executable(dayo_output_tests tests/output_tests.cpp)
   target_link_libraries(dayo_output_tests PRIVATE dayo_core)
   add_executable(dayo_video_export_job_tests tests/video_export_job_tests.cpp src/app/video_export_job.cpp)

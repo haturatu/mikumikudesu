@@ -181,7 +181,8 @@ bool NativeSceneModelRuntime::sync(Device& device, std::span<const NativeSceneMo
                 frame.faceStaging.push_back({});
                 frame.materialFaceStaging.push_back({});
                 frame.faceWalkerStaging.push_back({});
-                frame.staticGenerations.push_back({model.topologyGeneration, model.materialGeneration});
+                frame.staticGenerations.push_back(
+                    {model.topologyGeneration, model.materialGeneration, model.areaGeneration});
             }
         }
     } catch (const std::exception& exception) {
@@ -212,7 +213,8 @@ bool NativeSceneModelRuntime::update(Device& device, std::span<const NativeScene
                 const auto& model = models[index];
                 const auto& generations = frame.staticGenerations[index];
                 const bool topologyChanged = generations.topology != model.topologyGeneration;
-                const bool materialChanged = generations.material != model.materialGeneration;
+                const bool materialChanged = topologyChanged || generations.material != model.materialGeneration;
+                const bool areasChanged = topologyChanged || generations.areas != model.areaGeneration;
                 device.copyBufferEx(frame.vertices[index], frame.previousVertices[index]);
                 if (!model.vertices.empty())
                     device.uploadBufferEx(frame.vertices[index],
@@ -229,14 +231,15 @@ bool NativeSceneModelRuntime::update(Device& device, std::span<const NativeScene
                 if (topologyChanged && !model.faces.empty())
                     device.uploadBufferEx(frame.faces[index],
                                           std::as_bytes(std::span<const std::uint32_t>(model.faces)), 0);
-                if (topologyChanged && !model.materialFaces.empty())
+                if (areasChanged && !model.materialFaces.empty())
                     device.uploadBufferEx(frame.materialFaces[index],
                                           std::as_bytes(std::span<const NativeSceneMaterialFace>(model.materialFaces)),
                                           0);
                 if (topologyChanged && !model.faceWalker.empty())
                     device.uploadBufferEx(frame.faceWalkers[index],
                                           std::as_bytes(std::span<const NativeSceneWalkerAlias>(model.faceWalker)), 0);
-                frame.staticGenerations[index] = {model.topologyGeneration, model.materialGeneration};
+                frame.staticGenerations[index] = {model.topologyGeneration, model.materialGeneration,
+                                                  model.areaGeneration};
             }
         }
     } catch (const std::exception& exception) {
@@ -290,7 +293,8 @@ bool NativeSceneModelRuntime::updateFrame(Device& device, CommandList& commands,
 
             const auto& generations = frame.staticGenerations[index];
             const bool topologyChanged = generations.topology != model.topologyGeneration;
-            const bool materialChanged = generations.material != model.materialGeneration;
+            const bool materialChanged = topologyChanged || generations.material != model.materialGeneration;
+            const bool areasChanged = topologyChanged || generations.areas != model.areaGeneration;
             const auto copyIfChanged = [&](auto& staging, auto destination, const auto& values, bool changed,
                                            std::string_view name) {
                 if (!changed || values.empty())
@@ -307,16 +311,15 @@ bool NativeSceneModelRuntime::updateFrame(Device& device, CommandList& commands,
                                                         materialChanged, "material staging");
             const bool facesChanged =
                 copyIfChanged(frame.faceStaging, frame.faces[index], model.faces, topologyChanged, "face staging");
-            const bool materialFacesChanged =
-                copyIfChanged(frame.materialFaceStaging, frame.materialFaces[index], model.materialFaces,
-                              topologyChanged, "material face staging");
+            const bool materialFacesChanged = copyIfChanged(frame.materialFaceStaging, frame.materialFaces[index],
+                                                            model.materialFaces, areasChanged, "material face staging");
             const bool faceWalkerChanged = copyIfChanged(frame.faceWalkerStaging, frame.faceWalkers[index],
                                                          model.faceWalker, topologyChanged, "face walker staging");
             const bool rawVerticesChanged = copyIfChanged(frame.rawVertexStaging, frame.rawVertices[index],
                                                           model.rawVertices, topologyChanged, "raw vertex staging");
             recordedTransfer = recordedTransfer || indicesChanged || materialsChanged || facesChanged ||
                                materialFacesChanged || faceWalkerChanged || rawVerticesChanged;
-            frame.staticGenerations[index] = {model.topologyGeneration, model.materialGeneration};
+            frame.staticGenerations[index] = {model.topologyGeneration, model.materialGeneration, model.areaGeneration};
         }
         if (recordedTransfer)
             commands.memoryBarrierEx();
