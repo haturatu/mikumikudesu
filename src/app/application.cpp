@@ -1,5 +1,6 @@
 #include "app/application.hpp"
 #include "app/preview_conversion.hpp"
+#include "app/preview_evaluation.hpp"
 #include "app/preview_focus.hpp"
 #include "app/viewport_navigation.hpp"
 #include <deque>
@@ -2160,28 +2161,20 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         instance->animationVisible = evaluatedModel.frame.visible;
         evaluatedModel.policy = core::ModelExecutionPlanner::resolve(*instance, scene_.effects());
     }
-    evaluatedModels_.models.clear();
     evaluatedModels_.models.reserve(evaluated.size());
+    std::size_t snapshotIndex = 0;
     for (const auto& evaluatedModel : evaluated) {
         if (!evaluatedModel.policy.exposeToControllers)
             continue;
         const auto& instance = *evaluatedModel.instance;
-        core::fx::EvaluatedModelState snapshot;
-        snapshot.id = instance.id;
-        snapshot.sourcePath = instance.sourcePath;
-        snapshot.displayName = instance.displayName;
-        snapshot.modelName = instance.model->metadata.modelName;
-        snapshot.englishName = instance.model->metadata.englishName;
-        snapshot.morphNames.reserve(instance.model->morphs.size());
-        for (const auto& morph : instance.model->morphs)
-            snapshot.morphNames.push_back(morph.name);
-        snapshot.boneNames.reserve(instance.model->bones.size());
-        for (const auto& bone : instance.model->bones)
-            snapshot.boneNames.push_back(bone.name);
+        if (snapshotIndex == evaluatedModels_.models.size())
+            evaluatedModels_.models.emplace_back();
+        auto& snapshot = evaluatedModels_.models[snapshotIndex++];
+        updateEvaluationMetadata(snapshot, instance);
         snapshot.morphWeights = evaluatedModel.frame.morphWeights;
         snapshot.bones = evaluatedModel.frame.bones;
-        evaluatedModels_.models.push_back(std::move(snapshot));
     }
+    evaluatedModels_.models.resize(snapshotIndex);
     previewFocusBindings_.clear();
     std::size_t materialCursor = 0;
     std::uint32_t indexCursor = 0;
