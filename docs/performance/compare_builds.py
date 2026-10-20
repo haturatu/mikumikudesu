@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import time
 
@@ -16,6 +17,11 @@ parser.add_argument("--deps", type=Path, required=True)
 parser.add_argument("--model", type=Path, required=True)
 parser.add_argument("--motion", type=Path, required=True)
 parser.add_argument("--jobs", type=int, default=3)
+parser.add_argument(
+    "--resume",
+    action="store_true",
+    help="reuse completed variants with unchanged production sources",
+)
 args = parser.parse_args()
 source, output, deps = args.source.resolve(), args.output.resolve(), args.deps.resolve()
 if args.jobs < 1:
@@ -25,20 +31,54 @@ for path in [args.model, args.motion]:
         parser.error(f"missing input: {path}")
 subprocess.run(["git", "diff", "--quiet"], cwd=source, check=True)
 subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=source, check=True)
-if output.exists():
-    parser.error("use a new output directory for a clean build comparison")
-output.mkdir(parents=True)
 profiles = output / "profiles"
-result = {
-    "source_commit": subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=source, text=True
-    ).strip(),
-    "libmmd_commit": subprocess.check_output(
-        ["git", "-C", "external/libmmd", "rev-parse", "HEAD"], cwd=source, text=True
-    ).strip(),
-    "jobs": args.jobs,
-    "variants": [],
-}
+if output.exists() and not args.resume:
+    parser.error("use a new output directory for a clean build comparison")
+if args.resume:
+    result = json.loads((output / "results.json").read_text())
+    # CMake/measurement corrections may change, while production code and
+    # shaders must match the already completed variants.
+    subprocess.run(
+        [
+            "git",
+            "diff",
+            "--quiet",
+            result["source_commit"],
+            "--",
+            "src",
+            "shaders",
+            "external/libmmd",
+        ],
+        cwd=source,
+        check=True,
+    )
+    for entry in result["variants"]:
+        if entry["status"] != "complete":
+            build = Path(entry["build_dir"])
+            if build.resolve().parent != output or (build / "mikumikudesu").exists():
+                parser.error("incomplete executable exists; use a new output directory")
+            if build.exists():
+                shutil.rmtree(build)
+    result["variants"] = [
+        entry for entry in result["variants"] if entry["status"] == "complete"
+    ]
+    result.setdefault("configuration_commits", []).append(
+        subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=source, text=True
+        ).strip()
+    )
+else:
+    output.mkdir(parents=True)
+    result = {
+        "source_commit": subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=source, text=True
+        ).strip(),
+        "libmmd_commit": subprocess.check_output(
+            ["git", "-C", "external/libmmd", "rev-parse", "HEAD"], cwd=source, text=True
+        ).strip(),
+        "jobs": args.jobs,
+        "variants": [],
+    }
 
 
 def save():
@@ -73,6 +113,27 @@ variants = [
 ]
 reference = None
 for name, preset, flag in variants:
+    completed = next(
+        (entry for entry in result["variants"] if entry["name"] == name), None
+    )
+    if completed:
+        if reference is None:
+            reference = subprocess.check_output(
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-i",
+                    str(output / f"{name}.mp4"),
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "rgb24",
+                    "-",
+                ]
+            )
+        print(f"{name}: reusing complete measurement", flush=True)
+        continue
     print(f"{name}: configuring", flush=True)
     build = output / name
     entry = {
@@ -111,7 +172,9 @@ for name, preset, flag in variants:
     ]:
         command = next(c["command"] for c in commands if c["file"].endswith(suffix))
         options = shlex.split(command)
-        if flag and flag not in options:
+        if flag and not any(
+            option == flag or option.startswith(flag + "=") for option in options
+        ):
             raise RuntimeError(f"{name}: missing {flag} in {suffix}")
         if flag is None and any(
             o.startswith(("-march=native", "-flto=", "-fprofile-")) for o in options
