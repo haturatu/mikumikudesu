@@ -1095,6 +1095,7 @@ if(DAYO_ENABLE_SANITIZERS)
   set(
     DAYO_SANITIZER_EXECUTABLES
     mikumikudesu
+    dayo_application_cache_tests
     dayo_cli_tests
     dayo_core_tests
     dayo_interpolation_commit_tests
