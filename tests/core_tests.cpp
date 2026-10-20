@@ -1052,6 +1052,16 @@ int main() {
                     "profiler aggregates one frame");
         ok &= check(profiler.report().find("animation=") != std::string::npos, "profiler report sections");
         profiler.reset();
+        for (int i = 1; i <= 100; ++i) {
+            profiler.beginFrame(static_cast<double>(i) / 1000.0);
+            profiler.setGpuNanoseconds(1000);
+            profiler.setGpuPassNanoseconds({1000});
+            profiler.endFrame();
+        }
+        ok &= check(std::abs(profiler.framePeriodPercentile(0.95) - 0.095) < 1e-10 &&
+                        profiler.totals().gpuSamples == 100 && profiler.totals().gpuPassNanoseconds[0] == 100000,
+                    "profiler records frame percentile and completed GPU passes independently");
+        profiler.reset();
         profiler.addUploadBytes(1);
         ok &= check(profiler.totals().frames == 0 && profiler.totals().uploadBytes == 0,
                     "profiler reset ignores inactive samples");

@@ -1132,7 +1132,7 @@ int Application::run() {
         const auto tick = std::chrono::steady_clock::now();
         const float deltaSeconds = std::chrono::duration<float>(tick - previousTick).count();
         previousTick = tick;
-        frameProfiler_.beginFrame();
+        frameProfiler_.beginFrame(deltaSeconds);
 #if DAYO_HAS_IMGUI
         if (imageSequenceExportRunning_) {
             advanceImageSequenceExport();
@@ -1258,6 +1258,10 @@ int Application::run() {
             auto render = frameProfiler_.measure(core::ProfileSection::render);
             device->renderFrame();
             frameProfiler_.setGpuNanoseconds(device->previewGpuNanoseconds());
+            const auto timings = device->previewPassTimings();
+            frameProfiler_.setGpuPassNanoseconds(
+                {timings.shadow, timings.ambientOcclusion, timings.model, timings.subsurface, timings.coc,
+                 timings.dofDownsample, timings.dofBlur, timings.dofComposite, timings.postProcess, timings.toneMap});
             render.finish();
         }
         frameProfiler_.endFrame();
@@ -1272,6 +1276,10 @@ int Application::run() {
     device->waitIdle();
     audioPlayer_.stop();
     log::info(frameProfiler_.report());
+    log::info(frameProfiler_.gpuPassReport());
+    const auto viewport = device->previewViewport();
+    log::info("profile target: window=", window->pixelWidth(), "x", window->pixelHeight(), " viewport=", viewport.width,
+              "x", viewport.height, " renderer=", graphics::toString(device->activeRenderer()));
     log::info("Rendered ", frameCount, " frame(s); clean shutdown");
     return 0;
 }
@@ -2077,13 +2085,13 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     };
     std::pmr::vector<EvaluatedModel> evaluated(scratch);
     evaluated.reserve(scene_.models().size());
+    const auto gravity = scene_.evaluatePhysicsSettings(animationFrame_);
     const auto executionPlan = core::ModelExecutionPlanner::plan(scene_.models(), scene_.effects());
     for (std::size_t index = 0; index < scene_.models().size(); ++index) {
         const auto& instance = scene_.models()[index];
         const auto& policy = executionPlan[index];
         if (!policy.evaluateAnimation)
             continue;
-        const auto gravity = scene_.evaluatePhysicsSettings(animationFrame_);
         if (policy.evaluatePhysics && instance.physics != nullptr) {
             instance.physics->setGravity({gravity.gravityDirection[0] * gravity.gravity,
                                           gravity.gravityDirection[1] * gravity.gravity,
@@ -2107,7 +2115,6 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             const auto& instance = *current.instance;
             current.frame = instance.animator->evaluate(animationFrame_, deltaSeconds, current.gpuSkinning);
             if (instance.softBody != nullptr && instance.softBody->available()) {
-                const auto gravity = scene_.evaluatePhysicsSettings(animationFrame_);
                 instance.softBody->step(deltaSeconds, {gravity.gravityDirection[0] * gravity.gravity,
                                                        gravity.gravityDirection[1] * gravity.gravity,
                                                        gravity.gravityDirection[2] * gravity.gravity});
