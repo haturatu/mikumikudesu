@@ -44,6 +44,24 @@
 
 namespace dayo::graphics {
 namespace {
+// image-available, upload and optional asynchronous deformation are the only
+// waits. Keep each semaphore/value/stage triple together without heap storage.
+struct SubmissionWaits {
+    std::array<std::uint64_t, 3> values{};
+    std::array<VkSemaphore, 3> semaphores{};
+    std::array<VkPipelineStageFlags, 3> stages{};
+    std::uint32_t count{};
+
+    void append(VkSemaphore semaphore, std::uint64_t value, VkPipelineStageFlags stage) {
+        if (count == values.size())
+            throw std::logic_error("Vulkan submission wait capacity exceeded");
+        values[count] = value;
+        semaphores[count] = semaphore;
+        stages[count] = stage;
+        ++count;
+    }
+};
+
 void transferWriteBarrier(VkCommandBuffer commands, VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size,
                           VkPipelineStageFlags2 dstStages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                           VkAccessFlags2 dstAccess = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT) {
@@ -5254,34 +5272,29 @@ void VulkanDevice::renderFrame() {
 
     const auto uploadWaitValue = uploadContext_->lastSubmittedValue();
     const std::uint64_t signalValue = ++nextTimelineValue_;
-    std::vector<std::uint64_t> waitValues{0};
-    std::vector<VkSemaphore> waitSemaphores{frame.imageAvailable};
-    std::vector<VkPipelineStageFlags> waitStages{VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    SubmissionWaits waits;
+    waits.append(frame.imageAvailable, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
     if (uploadWaitValue != 0) {
-        waitValues.push_back(uploadWaitValue);
-        waitSemaphores.push_back(timelineSemaphore_);
-        waitStages.push_back(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+        waits.append(timelineSemaphore_, uploadWaitValue, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
     }
     if (frame.deformReadyValue != 0) {
-        waitValues.push_back(frame.deformReadyValue);
-        waitSemaphores.push_back(computeTimelineSemaphore_);
-        waitStages.push_back(VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
+        waits.append(computeTimelineSemaphore_, frame.deformReadyValue, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
     }
     const std::array<std::uint64_t, 2> signalValues{0, signalValue};
     const std::array<VkSemaphore, 2> signalSemaphores{swapchainRenderFinished_[imageIndex], timelineSemaphore_};
     const VkTimelineSemaphoreSubmitInfo timelineSubmit{
         .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
-        .waitSemaphoreValueCount = static_cast<std::uint32_t>(waitValues.size()),
-        .pWaitSemaphoreValues = waitValues.data(),
+        .waitSemaphoreValueCount = waits.count,
+        .pWaitSemaphoreValues = waits.values.data(),
         .signalSemaphoreValueCount = static_cast<std::uint32_t>(signalValues.size()),
         .pSignalSemaphoreValues = signalValues.data(),
     };
     const VkSubmitInfo submitInfo{
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .pNext = &timelineSubmit,
-        .waitSemaphoreCount = static_cast<std::uint32_t>(waitSemaphores.size()),
-        .pWaitSemaphores = waitSemaphores.data(),
-        .pWaitDstStageMask = waitStages.data(),
+        .waitSemaphoreCount = waits.count,
+        .pWaitSemaphores = waits.semaphores.data(),
+        .pWaitDstStageMask = waits.stages.data(),
         .commandBufferCount = 1,
         .pCommandBuffers = &frame.commandBuffer,
         .signalSemaphoreCount = static_cast<std::uint32_t>(signalSemaphores.size()),
@@ -5723,32 +5736,26 @@ std::uint64_t VulkanDevice::enqueueRenderToImage(const RenderTargetDesc& target)
     offscreen_.colorInitialized = true;
     check(vkEndCommandBuffer(frame.commandBuffer), "end offscreen command buffer");
     const std::uint64_t signalValue = ++nextTimelineValue_;
-    std::vector<std::uint64_t> waitValues;
-    std::vector<VkSemaphore> waitSemaphores;
-    std::vector<VkPipelineStageFlags> waitStages;
+    SubmissionWaits waits;
     if (uploadWaitValue != 0) {
-        waitValues.push_back(uploadWaitValue);
-        waitSemaphores.push_back(timelineSemaphore_);
-        waitStages.push_back(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+        waits.append(timelineSemaphore_, uploadWaitValue, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
     }
     if (frame.deformReadyValue != 0) {
-        waitValues.push_back(frame.deformReadyValue);
-        waitSemaphores.push_back(computeTimelineSemaphore_);
-        waitStages.push_back(VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
+        waits.append(computeTimelineSemaphore_, frame.deformReadyValue, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
     }
     const VkTimelineSemaphoreSubmitInfo timelineSubmit{
         .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
-        .waitSemaphoreValueCount = static_cast<std::uint32_t>(waitValues.size()),
-        .pWaitSemaphoreValues = waitValues.data(),
+        .waitSemaphoreValueCount = waits.count,
+        .pWaitSemaphoreValues = waits.values.data(),
         .signalSemaphoreValueCount = 1,
         .pSignalSemaphoreValues = &signalValue,
     };
     const VkSubmitInfo submitInfo{
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .pNext = &timelineSubmit,
-        .waitSemaphoreCount = static_cast<std::uint32_t>(waitSemaphores.size()),
-        .pWaitSemaphores = waitSemaphores.data(),
-        .pWaitDstStageMask = waitStages.data(),
+        .waitSemaphoreCount = waits.count,
+        .pWaitSemaphores = waits.semaphores.data(),
+        .pWaitDstStageMask = waits.stages.data(),
         .commandBufferCount = 1,
         .pCommandBuffers = &frame.commandBuffer,
         .signalSemaphoreCount = 1,

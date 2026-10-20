@@ -2085,13 +2085,13 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     };
     std::pmr::vector<EvaluatedModel> evaluated(scratch);
     evaluated.reserve(scene_.models().size());
+    const auto gravity = scene_.evaluatePhysicsSettings(animationFrame_);
     const auto executionPlan = core::ModelExecutionPlanner::plan(scene_.models(), scene_.effects());
     for (std::size_t index = 0; index < scene_.models().size(); ++index) {
         const auto& instance = scene_.models()[index];
         const auto& policy = executionPlan[index];
         if (!policy.evaluateAnimation)
             continue;
-        const auto gravity = scene_.evaluatePhysicsSettings(animationFrame_);
         if (policy.evaluatePhysics && instance.physics != nullptr) {
             instance.physics->setGravity({gravity.gravityDirection[0] * gravity.gravity,
                                           gravity.gravityDirection[1] * gravity.gravity,
@@ -2115,7 +2115,6 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             const auto& instance = *current.instance;
             current.frame = instance.animator->evaluate(animationFrame_, deltaSeconds, current.gpuSkinning);
             if (instance.softBody != nullptr && instance.softBody->available()) {
-                const auto gravity = scene_.evaluatePhysicsSettings(animationFrame_);
                 instance.softBody->step(deltaSeconds, {gravity.gravityDirection[0] * gravity.gravity,
                                                        gravity.gravityDirection[1] * gravity.gravity,
                                                        gravity.gravityDirection[2] * gravity.gravity});
