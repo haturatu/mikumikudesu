@@ -25,6 +25,7 @@ struct ApplicationCacheTestAccess {
         app.refreshAnimatedMesh(true, 1.0F / 60.0F);
         require(app.nativeGeometry_.empty() && app.nativeSceneModelData_.empty(),
                 "Preview must not construct native geometry or model tables");
+        require(app.evaluatedFrames_[0].frame.vertices.empty(), "ordinary GPU skinning must omit CPU vertex copies");
         const auto before = app.scene_.model(first)->physics->stepStats().substeps;
         const auto body = app.scene_.model(first)->physics->bodyTransform(0);
         std::string error;
@@ -34,6 +35,8 @@ struct ApplicationCacheTestAccess {
         require(app.scene_.model(first)->physics->stepStats().substeps == before &&
                     app.scene_.model(first)->physics->bodyTransform(0).position == body.position,
                 "renderer initialization must reuse the pose without evaluating physics again");
+        require(app.nativeSceneModelData_[0].vertices.size() == app.scene_.model(first)->model->vertices.size(),
+                "native switch must reconstruct omitted bind attributes without reevaluation");
         const auto* raw = app.nativeSceneModelData_[0].rawVertices.data();
         const auto topology = app.nativeSceneModelData_[0].topologyGeneration;
         const auto material = app.nativeSceneModelData_[0].materialGeneration;
@@ -66,6 +69,28 @@ struct ApplicationCacheTestAccess {
         app.refreshAnimatedMesh(false);
         require(app.nativeSceneModelData_.empty() && app.evaluatedModels_.models.empty(),
                 "clearing models must clear native data and controller snapshots");
+        auto uvModel = mmd::pmx::load(modelPath);
+        uvModel.morphs.resize(1);
+        uvModel.morphs[0].name = "uv";
+        uvModel.morphs[0].type = 3;
+        uvModel.morphs[0].offsets = {{.index = 0, .vector4 = {0.25F, 0, 0, 0}}};
+        const auto uvPath = modelPath.parent_path() / "uv.pmx";
+        static_cast<void>(mmd::pmx::save(uvPath, uvModel));
+        const auto uvId = app.scene_.addModel(uvPath);
+        auto* instance = app.scene_.model(uvId);
+        instance->motion = std::make_unique<mmd::VmdMotion>();
+        instance->motion->morphs = {{"uv", 0, 0.0F}, {"uv", 30, 1.0F}};
+        instance->animator->setMotion(instance->motion.get());
+        app.requestRenderer(graphics::RendererKind::preview);
+        app.animationFrame_ = 0;
+        app.scene_.setFrame(0);
+        app.refreshAnimatedMesh(true);
+        require(device.previewVertices[0].uv[0] == 0.0F, "UV fixture starts with bind UVs");
+        app.animationFrame_ = 30;
+        app.scene_.setFrame(30);
+        app.refreshAnimatedMesh(false);
+        require(app.evaluatedFrames_[0].frame.vertices.size() == 3 && device.previewVertices[0].uv[0] == 0.25F,
+                "GPU skinning must retain and upload changing CPU UV morphs on ordinary frames");
         // Keep the mock alive through all application-owned GPU resource destructors.
     }
 };

@@ -32,8 +32,13 @@ struct MockNativeDevice final : dayo::graphics::Device {
         return frameSlot;
     }
     void waitIdle() override {}
-    void uploadPreviewMesh(std::span<const dayo::graphics::PreviewVertex>, std::span<const std::uint32_t>) override {}
-    void updatePreviewVertices(std::span<const dayo::graphics::PreviewVertex>) override {}
+    void uploadPreviewMesh(std::span<const dayo::graphics::PreviewVertex> vertices,
+                           std::span<const std::uint32_t>) override {
+        previewVertices.assign(vertices.begin(), vertices.end());
+    }
+    void updatePreviewVertices(std::span<const dayo::graphics::PreviewVertex> vertices) override {
+        previewVertices.assign(vertices.begin(), vertices.end());
+    }
     void updatePreviewBones(std::span<const dayo::graphics::PreviewBoneTransform>) override {}
     void uploadPreviewMorphDeltas(std::span<const dayo::graphics::PreviewMorphDelta>) override {}
     void updatePreviewMorphWeights(std::span<const float>) override {}
@@ -196,6 +201,7 @@ struct MockNativeDevice final : dayo::graphics::Device {
     std::size_t clearedTextures{};
     std::size_t destroyedDescriptorSets{};
     std::size_t destroyedDescriptorLayouts{};
+    std::vector<dayo::graphics::PreviewVertex> previewVertices;
     std::size_t uploadBufferCalls{};
     std::size_t frameSlot{};
     dayo::graphics::RendererKind active{dayo::graphics::RendererKind::subayai};

@@ -78,4 +78,20 @@ inline graphics::PreviewVertex makePreviewVertex(const core::PmxVertex& source, 
     return vertex;
 }
 
+// Full frames have already been normalized. Omitted GPU vertices come from
+// immutable bind attributes and need only their position normalized here.
+inline graphics::PreviewVertex makePreviewFrameVertex(const core::PmxModel& model,
+                                                      const core::AnimatedModelFrame& frame, std::size_t index,
+                                                      std::int32_t boneOffset,
+                                                      const core::PreviewNormalization& normalization,
+                                                      std::array<std::uint32_t, 2> morphRange, bool gpuSkinning) {
+    const auto& source = frame.vertices.empty() ? model.vertices[index] : frame.vertices[index];
+    auto result = makePreviewVertex(source, frame.bones.size(), boneOffset, normalization, morphRange, gpuSkinning);
+    if (frame.vertices.empty()) {
+        const auto position = normalizePreviewPoint(source.position, normalization);
+        std::copy(position.begin(), position.end(), result.position);
+    }
+    return result;
+}
+
 } // namespace dayo::app
