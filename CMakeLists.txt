@@ -26,6 +26,7 @@ option(DAYO_FETCH_DEPENDENCIES "Fetch small missing source dependencies" ON)
 option(DAYO_ENABLE_VMA "Use AMD/Vulkan Memory Allocator for generic resources" ON)
 option(DAYO_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(DAYO_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(DAYO_BUILD_BENCHMARKS "Build opt-in CPU model loading measurement tools" OFF)
 option(DAYO_ENABLE_NATIVE_TUNING "Enable -march=native/-mtune=native for local Linux builds" OFF)
 option(DAYO_ENABLE_BOLT "Run LLVM BOLT on the Linux executable after linking" OFF)
 set(DAYO_BOLT_PROFILE "" CACHE FILEPATH "perf2bolt/fdata profile used by LLVM BOLT")
@@ -847,10 +848,15 @@ function(dayo_enable_warnings target)
   endif()
 endfunction()
 dayo_enable_warnings(dayo_i18n)
+if(DAYO_BUILD_BENCHMARKS)
+  add_executable(dayo_model_load_bench EXCLUDE_FROM_ALL tools/model_load_benchmark.cpp)
+  target_link_libraries(dayo_model_load_bench PRIVATE dayo_core)
+  dayo_enable_warnings(dayo_model_load_bench)
+endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-  foreach(
-    target
+  set(
+    DAYO_OPTIMIZATION_TARGETS
     dayo_core
     dayo_fx
     dayo_platform
@@ -858,28 +864,49 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     dayo_cli
     mikumikudesu
   )
+  foreach(target IN LISTS DAYO_OPTIMIZATION_TARGETS)
     dayo_enable_warnings(${target})
+  endforeach()
+  if(TARGET dayo_model_load_bench)
+    list(APPEND DAYO_OPTIMIZATION_TARGETS dayo_model_load_bench)
+  endif()
+  # These are our source targets. System Bullet is precompiled and deliberately
+  # remains outside the tuning list.
+  list(APPEND DAYO_OPTIMIZATION_TARGETS mmd_core mmd_animation mmd_physics)
+  foreach(target IN LISTS DAYO_OPTIMIZATION_TARGETS)
+    if(NOT TARGET ${target})
+      continue()
+    endif()
+    get_target_property(DAYO_OPTIMIZATION_IMPORTED ${target} IMPORTED)
+    if(DAYO_OPTIMIZATION_IMPORTED)
+      continue()
+    endif()
     if(DAYO_ENABLE_NATIVE_TUNING)
       target_compile_options(${target} PRIVATE -march=native -mtune=native)
     endif()
     if(DAYO_ENABLE_THIN_LTO)
       target_compile_options(${target} PRIVATE -flto=thin)
-      target_link_options(${target} PRIVATE -flto=thin)
+      target_link_options(${target} PUBLIC -flto=thin)
+    endif()
+    # The benchmark measures the optimized libraries. Its separate main must
+    # not consume the application's main profile or add conflicting counters.
+    if(target STREQUAL "dayo_model_load_bench")
+      continue()
     endif()
     if(DAYO_ENABLE_PGO_GENERATE)
       if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        target_compile_options(${target} PRIVATE -fprofile-instr-generate)
-        target_link_options(${target} PRIVATE "-fprofile-instr-generate=${DAYO_PGO_PROFILE_DIR}/%p.profraw")
+        target_compile_options(${target} PRIVATE "-fprofile-instr-generate=${DAYO_PGO_PROFILE_DIR}/%p.profraw")
+        target_link_options(${target} PUBLIC "-fprofile-instr-generate=${DAYO_PGO_PROFILE_DIR}/%p.profraw")
       else()
         target_compile_options(${target} PRIVATE "-fprofile-generate=${DAYO_PGO_PROFILE_DIR}")
-        target_link_options(${target} PRIVATE "-fprofile-generate=${DAYO_PGO_PROFILE_DIR}")
+        target_link_options(${target} PUBLIC "-fprofile-generate=${DAYO_PGO_PROFILE_DIR}")
       endif()
     elseif(DAYO_ENABLE_PGO_USE)
       if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         target_compile_options(${target} PRIVATE "-fprofile-instr-use=${DAYO_CLANG_PGO_PROFILE}")
       else()
         target_compile_options(${target} PRIVATE "-fprofile-use=${DAYO_PGO_PROFILE_DIR}" -fprofile-correction)
-        target_link_options(${target} PRIVATE "-fprofile-use=${DAYO_PGO_PROFILE_DIR}")
+        target_link_options(${target} PUBLIC "-fprofile-use=${DAYO_PGO_PROFILE_DIR}")
       endif()
     endif()
   endforeach()
@@ -916,7 +943,7 @@ if(DAYO_ENABLE_PGO_GENERATE AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   add_custom_target(
     dayo_pgo_merge
     COMMAND
-      "${CMAKE_COMMAND}" -DLLVM_PROFDATA="${DAYO_LLVM_PROFDATA_EXECUTABLE}" -DPGO_PROFILE_DIR="${DAYO_PGO_PROFILE_DIR}"
+      "${CMAKE_COMMAND}" "-DLLVM_PROFDATA=${DAYO_LLVM_PROFDATA_EXECUTABLE}" "-DPGO_PROFILE_DIR=${DAYO_PGO_PROFILE_DIR}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MergePgoProfiles.cmake"
     DEPENDS mikumikudesu
     USES_TERMINAL
@@ -1100,6 +1127,7 @@ if(DAYO_ENABLE_SANITIZERS)
     DAYO_SANITIZER_EXECUTABLES
     mikumikudesu
     dayo_application_cache_tests
+    dayo_model_load_bench
     dayo_cli_tests
     dayo_core_tests
     dayo_image_block_tests
@@ -1122,10 +1150,14 @@ if(DAYO_ENABLE_SANITIZERS)
   foreach(
     target
     IN
-    ITEMS dayo_i18n dayo_core dayo_fx dayo_platform dayo_graphics dayo_test_assets
+    ITEMS dayo_i18n dayo_core dayo_fx dayo_platform dayo_graphics dayo_test_assets mmd_core mmd_animation mmd_physics
   )
     if(TARGET ${target})
-      target_compile_options(${target} PRIVATE ${DAYO_SANITIZER_COMPILE_OPTIONS})
+      get_target_property(DAYO_SANITIZER_IMPORTED ${target} IMPORTED)
+      if(NOT DAYO_SANITIZER_IMPORTED)
+        target_compile_options(${target} PRIVATE ${DAYO_SANITIZER_COMPILE_OPTIONS})
+        target_link_options(${target} INTERFACE ${DAYO_SANITIZER_LINK_OPTIONS})
+      endif()
     endif()
   endforeach()
   foreach(target IN LISTS DAYO_SANITIZER_EXECUTABLES)

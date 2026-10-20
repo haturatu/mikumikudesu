@@ -44,7 +44,7 @@ cd mikumikudesu
 make setup
 ```
 
-`make setup` は `external/libmmd` を初期化し、`deps/mikumikudayo.lock` に固定された MikuMikuDayo 1.30 の Release ZIP を取得・検証して `MikuMikuDayo/` に展開します。ZIP は `.cache/mikumikudayo/` から再利用できます。すでに clone した作業ツリーでは、`git submodule update --init --recursive` で submodule を更新できます。
+`make setup` は `external/libmmd` を初期化し、`deps/mikumikudayo.lock` に固定された MikuMikuDayo 1.30 の Release ZIP を取得・検証して `MikuMikuDayo/` に展開します。ZIP は `.cache/mikumikudayo/` から再利用できます。すでに clone した作業ツリーでは、`git submodule update --init --recursive` で submodule を更新できます。 現在のlibmmd固定バージョンは [v0.3.0](https://github.com/haturatu/libmmd/releases/tag/v0.3.0) です。
 
 **注記:** `make` および `make build` は MikuMikuDayo の配布物を取得しません。初回は先に `make setup` を実行してください。
 

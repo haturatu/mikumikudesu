@@ -64,6 +64,16 @@
       }
     },
     {
+      "name": "linux-clang-release",
+      "displayName": "Linux Vulkan Clang Release with LLD",
+      "inherits": "linux-release",
+      "binaryDir": "${sourceDir}/build/linux-clang-release",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=lld"
+      }
+    },
+    {
       "name": "linux-clang-thinlto",
       "displayName": "Linux Vulkan Clang ThinLTO",
       "generator": "Ninja",
@@ -71,6 +81,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=lld",
         "DAYO_BACKEND": "VULKAN",
         "DAYO_ENABLE_VALIDATION": "OFF",
         "DAYO_ENABLE_THIN_LTO": "ON"
@@ -84,6 +95,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=lld",
         "DAYO_BACKEND": "VULKAN",
         "DAYO_ENABLE_VALIDATION": "OFF",
         "DAYO_ENABLE_PGO_GENERATE": "ON"
@@ -97,6 +109,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=lld",
         "DAYO_BACKEND": "VULKAN",
         "DAYO_ENABLE_VALIDATION": "OFF",
         "DAYO_ENABLE_PGO_USE": "ON",
@@ -110,6 +123,7 @@
     { "name": "linux-release-native", "configurePreset": "linux-release-native" },
     { "name": "linux-system-only", "configurePreset": "linux-system-only" },
     { "name": "linux-sanitize", "configurePreset": "linux-sanitize" },
+    { "name": "linux-clang-release", "configurePreset": "linux-clang-release" },
     { "name": "linux-clang-thinlto", "configurePreset": "linux-clang-thinlto" },
     { "name": "linux-pgo-generate", "configurePreset": "linux-pgo-generate" },
     { "name": "linux-pgo-use", "configurePreset": "linux-pgo-use" }
