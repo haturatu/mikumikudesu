@@ -1,3 +1,4 @@
+#include "app/preview_evaluation.hpp"
 #include "app/preview_focus.hpp"
 #include "app/preview_texture_layout.hpp"
 #include "core/project.hpp"
@@ -18,6 +19,45 @@ bool check(bool condition, const char* message) {
         std::cerr << "FAIL: " << message << '\n';
     return condition;
 }
+bool evaluationMetadata() {
+    dayo::core::ModelInstance instance;
+    instance.id = 3;
+    instance.model = std::make_shared<dayo::core::PmxModel>();
+    instance.sourcePath = "models/a/model.pmx";
+    instance.displayName = std::string(80, 'd');
+    instance.model->metadata.modelName = std::string(80, 'n');
+    instance.model->metadata.englishName = "English";
+    instance.model->bones.resize(2);
+    instance.model->bones[0].name = std::string(80, 'b');
+    instance.model->morphs.resize(1);
+    instance.model->morphs[0].name = std::string(80, 'm');
+    dayo::core::fx::EvaluatedModelState snapshot;
+    dayo::app::updateEvaluationMetadata(snapshot, instance);
+    const auto* display = snapshot.displayName.data();
+    const auto* bone = snapshot.boneNames[0].data();
+    const auto* morph = snapshot.morphNames[0].data();
+    dayo::app::updateEvaluationMetadata(snapshot, instance);
+    bool ok = check(snapshot.id == 3 && display == snapshot.displayName.data() &&
+                        bone == snapshot.boneNames[0].data() && morph == snapshot.morphNames[0].data(),
+                    "unchanged metadata retains owning name storage between frames");
+    const auto retained = snapshot;
+    instance.id = 7;
+    instance.sourcePath = "models/b/model.pmx";
+    instance.displayName = "renamed";
+    instance.model->metadata.modelName = "reloaded";
+    instance.model->bones.resize(1);
+    instance.model->bones[0].name = "new bone";
+    instance.model->morphs.clear();
+    dayo::app::updateEvaluationMetadata(snapshot, instance);
+    ok &= check(snapshot.id == 7 && snapshot.sourcePath == instance.sourcePath && snapshot.displayName == "renamed" &&
+                    snapshot.modelName == "reloaded" && snapshot.boneNames.size() == 1 &&
+                    snapshot.boneNames[0] == "new bone" && snapshot.morphNames.empty(),
+                "reload, rename, instance replacement and removed names invalidate metadata");
+    ok &= check(retained.id == 3 && retained.boneNames.size() == 2 && retained.boneNames[0] == std::string(80, 'b'),
+                "retained snapshots own names independently of live model changes");
+    return ok;
+}
+
 bool textureLayout() {
     std::vector<dayo::core::ModelInstance> models(4);
     for (std::size_t i = 0; i < models.size(); ++i) {
@@ -308,6 +348,7 @@ int main() {
     using namespace dayo::graphics;
     bool ok = focusAndLensMath();
     ok &= textureLayout();
+    ok &= evaluationMetadata();
     ok &= focusTrackingAndResponse();
     ok &= apertureShape();
     PreviewRenderSettings settings;
