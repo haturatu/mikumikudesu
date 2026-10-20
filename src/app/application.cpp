@@ -2090,7 +2090,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         initialUpload || animatedTextureGeneration_ != previewTextureLayout_.generation() ||
         animatedTopologyGeneration_ != scene_.topologyGeneration() || animatedIndices_.size() != indexCount ||
         animatedMaterialTemplates_.size() != materialCount || animatedDraws_.size() != materialCount;
-    const bool rebuildVertices = initialUpload || rebuildTopology || dynamicVertices;
+    bool rebuildVertices = initialUpload || rebuildTopology || dynamicVertices;
     std::pmr::vector<graphics::PreviewVertex> vertices(scratch);
     vertices.reserve(vertexCount);
     std::pmr::vector<graphics::PreviewMorphDelta> morphDeltas(scratch);
@@ -2143,7 +2143,11 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         for (const auto index : motionOrder) {
             auto& current = evaluated[index];
             const auto& instance = *current.instance;
-            current.frame = instance.animator->evaluate(animationFrame_, deltaSeconds, current.gpuSkinning);
+            current.frame = instance.animator->evaluate(animationFrame_, deltaSeconds, current.gpuSkinning, {},
+                                                        mmd::VertexOutput::omitUnchangedGpu);
+            // UV/additional-UV and temporary vertex edits still require CPU
+            // output and a per-frame vertex upload, even with GPU skinning.
+            dynamicVertices = dynamicVertices || !current.frame.vertices.empty();
             if (instance.softBody != nullptr && instance.softBody->available()) {
                 instance.softBody->step(deltaSeconds, {gravity.gravityDirection[0] * gravity.gravity,
                                                        gravity.gravityDirection[1] * gravity.gravity,
@@ -2154,6 +2158,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         }
         animation.finish();
     }
+    rebuildVertices = rebuildVertices || dynamicVertices;
     for (auto& evaluatedModel : evaluated) {
         auto* instance = scene_.model(evaluatedModel.instance->id);
         if (instance == nullptr)
@@ -2252,12 +2257,11 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         const auto firstModelIndex = indexCursor;
         if (rebuildVertices) {
             auto conversion = frameProfiler_.measure(core::ProfileSection::vertexConvert);
-            for (std::size_t sourceIndex = 0; sourceIndex < frame.vertices.size(); ++sourceIndex) {
-                const auto& source = frame.vertices[sourceIndex];
+            for (std::size_t sourceIndex = 0; sourceIndex < instance.model->vertices.size(); ++sourceIndex) {
                 const auto morphRange =
                     rebuildTopology ? sourceMorphRanges[sourceIndex] : animatedMorphRanges_[baseVertex + sourceIndex];
-                const auto vertex = makePreviewVertex(source, frame.bones.size(), boneBase, instance.normalization,
-                                                      morphRange, gpuSkinning);
+                const auto vertex = makePreviewFrameVertex(*instance.model, frame, sourceIndex, boneBase,
+                                                           instance.normalization, morphRange, gpuSkinning);
                 vertices.push_back(vertex);
                 if (rebuildTopology)
                     animatedMorphRanges_.push_back(morphRange);
@@ -2530,12 +2534,12 @@ bool Application::refreshNativeSceneData() {
         if (verticesChanged) {
             native.baseVertices.clear();
             native.deformedVertices.clear();
-            native.baseVertices.reserve(frame.vertices.size());
-            native.deformedVertices.reserve(frame.vertices.size());
-            for (std::size_t sourceIndex = 0; sourceIndex < frame.vertices.size(); ++sourceIndex) {
-                const auto& source = frame.vertices[sourceIndex];
-                const auto vertex = makePreviewVertex(source, frame.bones.size(), 0, instance.normalization,
-                                                      native.morphRanges[sourceIndex], gpuSkinning);
+            native.baseVertices.reserve(instance.model->vertices.size());
+            native.deformedVertices.reserve(instance.model->vertices.size());
+            for (std::size_t sourceIndex = 0; sourceIndex < instance.model->vertices.size(); ++sourceIndex) {
+                const auto vertex =
+                    makePreviewFrameVertex(*instance.model, frame, sourceIndex, 0, instance.normalization,
+                                           native.morphRanges[sourceIndex], gpuSkinning);
                 native.baseVertices.push_back(vertex);
                 graphics::NativeDeformedVertex seed;
                 std::copy(std::begin(vertex.position), std::end(vertex.position), seed.position);

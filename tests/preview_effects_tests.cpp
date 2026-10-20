@@ -19,6 +19,38 @@ bool check(bool condition, const char* message) {
         std::cerr << "FAIL: " << message << '\n';
     return condition;
 }
+bool omittedVertexConversion() {
+    dayo::core::PmxModel model;
+    model.vertices.resize(1);
+    auto& vertex = model.vertices[0];
+    vertex.position = {2.0F, 4.0F, 6.0F};
+    vertex.sdefC = {0.5F, 1.0F, 1.5F};
+    vertex.sdefR0 = {1.0F, 2.0F, 3.0F};
+    vertex.sdefR1 = {-1.0F, -2.0F, -3.0F};
+    vertex.bones[0] = 0;
+    dayo::core::AnimatedModelFrame full, omitted;
+    full.vertices = model.vertices;
+    full.bones.resize(1);
+    omitted.bones = full.bones;
+    const dayo::core::PreviewNormalization normalization{{1.0F, 2.0F, 3.0F}, 0.5F};
+    dayo::core::normalizeForPreview(full.vertices, normalization);
+    bool ok = true;
+    for (const auto type : {mmd::PmxWeightType::bdef1, mmd::PmxWeightType::sdef, mmd::PmxWeightType::qdef}) {
+        vertex.weightType = type;
+        full.vertices[0].weightType = type;
+        const auto a = dayo::app::makePreviewFrameVertex(model, full, 0, 2, normalization, {3, 4}, true);
+        const auto b = dayo::app::makePreviewFrameVertex(model, omitted, 0, 2, normalization, {3, 4}, true);
+        ok &=
+            check(std::equal(std::begin(a.position), std::end(a.position), b.position) &&
+                      std::equal(std::begin(a.sdefC), std::end(a.sdefC), b.sdefC) &&
+                      std::equal(std::begin(a.sdefHalfDelta), std::end(a.sdefHalfDelta), b.sdefHalfDelta) &&
+                      std::equal(std::begin(a.bones), std::end(a.bones), b.bones) && a.skinningType == b.skinningType &&
+                      a.morphStart == b.morphStart && a.morphCount == b.morphCount,
+                  "omitted bind attributes match normalized full-frame conversion for BDEF, SDEF and QDEF");
+    }
+    return ok;
+}
+
 bool evaluationMetadata() {
     dayo::core::ModelInstance instance;
     instance.id = 3;
@@ -349,6 +381,7 @@ int main() {
     bool ok = focusAndLensMath();
     ok &= textureLayout();
     ok &= evaluationMetadata();
+    ok &= omittedVertexConversion();
     ok &= focusTrackingAndResponse();
     ok &= apertureShape();
     PreviewRenderSettings settings;
