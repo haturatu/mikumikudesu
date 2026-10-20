@@ -849,8 +849,8 @@ endfunction()
 dayo_enable_warnings(dayo_i18n)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-  foreach(
-    target
+  set(
+    DAYO_OPTIMIZATION_TARGETS
     dayo_core
     dayo_fx
     dayo_platform
@@ -858,28 +858,41 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     dayo_cli
     mikumikudesu
   )
+  foreach(target IN LISTS DAYO_OPTIMIZATION_TARGETS)
     dayo_enable_warnings(${target})
+  endforeach()
+  # These are our source targets. System Bullet is precompiled and deliberately
+  # remains outside the tuning list.
+  list(APPEND DAYO_OPTIMIZATION_TARGETS mmd_core mmd_animation mmd_physics)
+  foreach(target IN LISTS DAYO_OPTIMIZATION_TARGETS)
+    if(NOT TARGET ${target})
+      continue()
+    endif()
+    get_target_property(DAYO_OPTIMIZATION_IMPORTED ${target} IMPORTED)
+    if(DAYO_OPTIMIZATION_IMPORTED)
+      continue()
+    endif()
     if(DAYO_ENABLE_NATIVE_TUNING)
       target_compile_options(${target} PRIVATE -march=native -mtune=native)
     endif()
     if(DAYO_ENABLE_THIN_LTO)
       target_compile_options(${target} PRIVATE -flto=thin)
-      target_link_options(${target} PRIVATE -flto=thin)
+      target_link_options(${target} PUBLIC -flto=thin)
     endif()
     if(DAYO_ENABLE_PGO_GENERATE)
       if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         target_compile_options(${target} PRIVATE -fprofile-instr-generate)
-        target_link_options(${target} PRIVATE "-fprofile-instr-generate=${DAYO_PGO_PROFILE_DIR}/%p.profraw")
+        target_link_options(${target} PUBLIC "-fprofile-instr-generate=${DAYO_PGO_PROFILE_DIR}/%p.profraw")
       else()
         target_compile_options(${target} PRIVATE "-fprofile-generate=${DAYO_PGO_PROFILE_DIR}")
-        target_link_options(${target} PRIVATE "-fprofile-generate=${DAYO_PGO_PROFILE_DIR}")
+        target_link_options(${target} PUBLIC "-fprofile-generate=${DAYO_PGO_PROFILE_DIR}")
       endif()
     elseif(DAYO_ENABLE_PGO_USE)
       if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         target_compile_options(${target} PRIVATE "-fprofile-instr-use=${DAYO_CLANG_PGO_PROFILE}")
       else()
         target_compile_options(${target} PRIVATE "-fprofile-use=${DAYO_PGO_PROFILE_DIR}" -fprofile-correction)
-        target_link_options(${target} PRIVATE "-fprofile-use=${DAYO_PGO_PROFILE_DIR}")
+        target_link_options(${target} PUBLIC "-fprofile-use=${DAYO_PGO_PROFILE_DIR}")
       endif()
     endif()
   endforeach()
@@ -916,7 +929,7 @@ if(DAYO_ENABLE_PGO_GENERATE AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   add_custom_target(
     dayo_pgo_merge
     COMMAND
-      "${CMAKE_COMMAND}" -DLLVM_PROFDATA="${DAYO_LLVM_PROFDATA_EXECUTABLE}" -DPGO_PROFILE_DIR="${DAYO_PGO_PROFILE_DIR}"
+      "${CMAKE_COMMAND}" "-DLLVM_PROFDATA=${DAYO_LLVM_PROFDATA_EXECUTABLE}" "-DPGO_PROFILE_DIR=${DAYO_PGO_PROFILE_DIR}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MergePgoProfiles.cmake"
     DEPENDS mikumikudesu
     USES_TERMINAL
@@ -1122,10 +1135,14 @@ if(DAYO_ENABLE_SANITIZERS)
   foreach(
     target
     IN
-    ITEMS dayo_i18n dayo_core dayo_fx dayo_platform dayo_graphics dayo_test_assets
+    ITEMS dayo_i18n dayo_core dayo_fx dayo_platform dayo_graphics dayo_test_assets mmd_core mmd_animation mmd_physics
   )
     if(TARGET ${target})
-      target_compile_options(${target} PRIVATE ${DAYO_SANITIZER_COMPILE_OPTIONS})
+      get_target_property(DAYO_SANITIZER_IMPORTED ${target} IMPORTED)
+      if(NOT DAYO_SANITIZER_IMPORTED)
+        target_compile_options(${target} PRIVATE ${DAYO_SANITIZER_COMPILE_OPTIONS})
+        target_link_options(${target} INTERFACE ${DAYO_SANITIZER_LINK_OPTIONS})
+      endif()
     endif()
   endforeach()
   foreach(target IN LISTS DAYO_SANITIZER_EXECUTABLES)

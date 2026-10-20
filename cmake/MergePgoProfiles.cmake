@@ -14,7 +14,7 @@ if(NOT profile_files)
 endif()
 
 execute_process(
-  COMMAND "${LLVM_PROFDATA}" merge -output="${PGO_OUTPUT}" ${profile_files}
+  COMMAND "${LLVM_PROFDATA}" merge "-output=${PGO_OUTPUT}" ${profile_files}
   RESULT_VARIABLE merge_result
   OUTPUT_VARIABLE merge_output
   ERROR_VARIABLE merge_error
