@@ -5,6 +5,7 @@
 #include "app/application_options.hpp"
 #include "app/audio_export_job.hpp"
 #include "app/preview_focus.hpp"
+#include "app/preview_texture_layout.hpp"
 #include "app/video_export_job.hpp"
 #include "core/editor.hpp"
 #include "core/frame_scratch.hpp"
@@ -156,6 +157,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::vector<graphics::PreviewDraw> animatedDraws_;
     std::vector<std::uint8_t> animatedEffectiveVisibility_;
     struct EvaluatedModel {
+        std::size_t sceneIndex{};
         const core::ModelInstance* instance{};
         bool gpuSkinning{};
         core::ModelExecutionPolicy policy;
@@ -206,6 +208,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::uint64_t nativeMaterialGeneration_{1};
     graphics::NativeFxPendingEvents nativeFxPendingEvents_;
     std::uint64_t animatedTopologyGeneration_{};
+    PreviewTextureLayout previewTextureLayout_;
+    std::uint64_t animatedTextureGeneration_{};
     float animationFrame_{};
     int uploadedAnimationFrame_{-1};
     graphics::PreviewFocusState previewFocusState_;

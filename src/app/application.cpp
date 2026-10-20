@@ -2070,6 +2070,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                                         ? 1U
                                         : nativeMaterialGeneration_ + 1U;
     }
+    previewTextureLayout_.update(scene_.models());
     frameScratch_.reset();
     auto* scratch = frameScratch_.resource();
     std::size_t vertexCount = 0;
@@ -2084,10 +2085,10 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         materialCount += instance.model->materials.size();
         dynamicVertices = dynamicVertices || (instance.softBody != nullptr && instance.softBody->available());
     }
-    const bool rebuildTopology = initialUpload || animatedTopologyGeneration_ != scene_.topologyGeneration() ||
-                                 animatedIndices_.size() != indexCount ||
-                                 animatedMaterialTemplates_.size() != materialCount ||
-                                 animatedDraws_.size() != materialCount;
+    const bool rebuildTopology =
+        initialUpload || animatedTextureGeneration_ != previewTextureLayout_.generation() ||
+        animatedTopologyGeneration_ != scene_.topologyGeneration() || animatedIndices_.size() != indexCount ||
+        animatedMaterialTemplates_.size() != materialCount || animatedDraws_.size() != materialCount;
     const bool rebuildVertices = initialUpload || rebuildTopology || dynamicVertices;
     std::pmr::vector<graphics::PreviewVertex> vertices(scratch);
     vertices.reserve(vertexCount);
@@ -2126,7 +2127,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             instance.physics->setGravityNoise(gravity.noiseAmplitude, gravity.noiseFrequency);
             instance.physics->setFloorCollision(gravity.floorCollision);
         }
-        evaluated.push_back({&instance, instance.softBody == nullptr || !instance.softBody->available(), policy, {}});
+        evaluated.push_back(
+            {index, &instance, instance.softBody == nullptr || !instance.softBody->available(), policy, {}});
     }
     {
         auto animation = frameProfiler_.measure(core::ProfileSection::animation);
@@ -2251,15 +2253,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             for (const auto& source : frame.bones)
                 bones.push_back(makePreviewBone(source, instance.normalization));
         }
-        const auto textureBase = [&] {
-            std::size_t value = 0;
-            for (const auto& previous : scene_.models()) {
-                if (previous.id == instance.id)
-                    break;
-                value += previous.textures.size();
-            }
-            return static_cast<std::uint32_t>(value);
-        }();
+        const auto textureBase = previewTextureLayout_.base(evaluatedModel.sceneIndex);
         const auto sceneCloneCount = std::max(instance.cloneCount, 1U);
         const auto baseVertex = static_cast<std::uint32_t>(vertices.size());
         const auto firstModelIndex = indexCursor;
@@ -2387,6 +2381,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         animatedDraws_.assign(draws.begin(), draws.end());
         animatedMorphDeltas_.assign(morphDeltas.begin(), morphDeltas.end());
         animatedTopologyGeneration_ = scene_.topologyGeneration();
+        animatedTextureGeneration_ = previewTextureLayout_.generation();
     }
     {
         auto upload = frameProfiler_.measure(core::ProfileSection::upload);
@@ -2444,6 +2439,7 @@ bool Application::refreshNativeSceneData() {
         evaluatedTopologyGeneration_ != scene_.topologyGeneration())
         return false;
     nativeDataValid_ = false;
+    previewTextureLayout_.update(scene_.models());
     const auto hasGeometry = [](const EvaluatedModel& value) {
         return !value.instance->model->vertices.empty() && !value.instance->model->indices.empty();
     };
@@ -2468,15 +2464,7 @@ bool Application::refreshNativeSceneData() {
                                    native.indices.size() != instance.model->indices.size() ||
                                    native.baseVertices.size() != instance.model->vertices.size() ||
                                    nativeModel.materials.size() != instance.model->materials.size();
-        const auto textureBase = [&] {
-            std::size_t value = 0;
-            for (const auto& previous : scene_.models()) {
-                if (previous.id == instance.id)
-                    break;
-                value += previous.textures.size();
-            }
-            return static_cast<std::uint32_t>(value);
-        }();
+        const auto textureBase = previewTextureLayout_.base(evaluatedModel.sceneIndex);
         native.meshId = static_cast<std::uint32_t>(modelIndex + 1U);
         native.cloneCount =
             graphics::resolveNativeModelCloneCount(instance.cloneCount, instance.id, scene_.effects().deform);
@@ -2582,6 +2570,9 @@ bool Application::refreshNativeSceneData() {
 }
 
 void Application::refreshPreviewTextures() {
+    previewTextureLayout_.update(scene_.models());
+    // Availability can change without changing the number of texture slots.
+    animatedTopologyGeneration_ = 0;
     if (device_ == nullptr)
         return;
     textures_.clear();

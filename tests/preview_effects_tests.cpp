@@ -1,4 +1,5 @@
 #include "app/preview_focus.hpp"
+#include "app/preview_texture_layout.hpp"
 #include "core/project.hpp"
 #include "graphics/preview_aperture.hpp"
 #include "graphics/preview_effects.hpp"
@@ -17,6 +18,35 @@ bool check(bool condition, const char* message) {
         std::cerr << "FAIL: " << message << '\n';
     return condition;
 }
+bool textureLayout() {
+    std::vector<dayo::core::ModelInstance> models(4);
+    for (std::size_t i = 0; i < models.size(); ++i) {
+        models[i].id = static_cast<dayo::core::ModelId>(i + 1);
+        models[i].sourcePath = "same.pmx";
+    }
+    models[0].textures.resize(2);
+    models[2].textures.resize(3);
+    dayo::app::PreviewTextureLayout layout;
+    bool ok = check(layout.update(models) && layout.base(0) == 0 && layout.base(1) == 2 && layout.base(2) == 2 &&
+                        layout.base(3) == 5,
+                    "texture prefix includes empty and duplicate-source model instances");
+    const auto generation = layout.generation();
+    ok &= check(!layout.update(models) && layout.generation() == generation,
+                "unchanged texture layout retains its generation");
+    models[0].textures.resize(4);
+    ok &= check(layout.update(models) && layout.base(2) == 4 && layout.base(3) == 7,
+                "texture reload with a changed count invalidates later slots");
+    std::swap(models[0], models[2]);
+    ok &= check(layout.update(models) && layout.base(2) == 3 && layout.base(3) == 7,
+                "model reorder recomputes offsets by instance identity");
+    models.erase(models.begin());
+    ok &= check(layout.update(models) && layout.base(1) == 0 && layout.base(2) == 4,
+                "removal updates the remaining model slots");
+    models.clear();
+    ok &= check(layout.update(models) && !layout.update(models), "cleared layout becomes stable");
+    return ok;
+}
+
 bool focusAndLensMath() {
     using namespace dayo::graphics;
     bool ok = true;
@@ -277,6 +307,7 @@ bool apertureShape() {
 int main() {
     using namespace dayo::graphics;
     bool ok = focusAndLensMath();
+    ok &= textureLayout();
     ok &= focusTrackingAndResponse();
     ok &= apertureShape();
     PreviewRenderSettings settings;
