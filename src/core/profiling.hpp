@@ -1,7 +1,9 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <string>
 
@@ -18,6 +20,8 @@ static_assert(profileSectionCount == 4);
 
 struct ProfileTotals {
     std::array<double, profileSectionCount> sectionSeconds{};
+    std::array<std::uint64_t, 10> gpuPassNanoseconds{};
+    std::uint64_t gpuSamples{};
     std::uint64_t uploadBytes{};
     std::uint64_t vertices{};
     std::uint64_t draws{};
@@ -52,7 +56,12 @@ class FrameProfiler {
     [[nodiscard]] Section measure(ProfileSection section) noexcept {
         return Section(this, section);
     }
-    void beginFrame() {
+    void beginFrame(double periodSeconds = 0.0) {
+        if (std::isfinite(periodSeconds) && periodSeconds > 0.0) {
+            periods_[periodCursor_] = periodSeconds;
+            periodCursor_ = (periodCursor_ + 1U) % periods_.size();
+            periodCount_ = std::min(periodCount_ + 1U, periods_.size());
+        }
         current_ = ProfileTotals{};
         frameActive_ = true;
     }
@@ -61,6 +70,9 @@ class FrameProfiler {
             return;
         for (std::size_t i = 0; i < totals_.sectionSeconds.size(); ++i)
             totals_.sectionSeconds[i] += current_.sectionSeconds[i];
+        for (std::size_t i = 0; i < totals_.gpuPassNanoseconds.size(); ++i)
+            totals_.gpuPassNanoseconds[i] += current_.gpuPassNanoseconds[i];
+        totals_.gpuSamples += current_.gpuSamples;
         totals_.uploadBytes += current_.uploadBytes;
         totals_.vertices += current_.vertices;
         totals_.draws += current_.draws;
@@ -90,6 +102,26 @@ class FrameProfiler {
             return;
         current_.gpuNanoseconds = nanoseconds;
     }
+    void setGpuPassNanoseconds(const std::array<std::uint64_t, 10>& timings) noexcept {
+        if (!frameActive_ || current_.gpuNanoseconds == 0)
+            return;
+        current_.gpuPassNanoseconds = timings;
+        current_.gpuSamples = 1;
+    }
+    // Exact nearest-rank percentile over the last 4096 observed frame periods.
+    // Storage is bounded and sampling does not allocate or synchronize the GPU.
+    [[nodiscard]] double framePeriodPercentile(double fraction) const {
+        if (periodCount_ == 0)
+            return 0.0;
+        auto sorted = periods_;
+        const auto index = static_cast<std::size_t>(std::ceil(
+            std::clamp(std::isfinite(fraction) ? fraction : 0.95, 0.0, 1.0) * static_cast<double>(periodCount_)));
+        const auto selected = index == 0 ? 0 : index - 1U;
+        std::nth_element(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(selected),
+                         sorted.begin() + static_cast<std::ptrdiff_t>(periodCount_));
+        return sorted[selected];
+    }
+    [[nodiscard]] std::string gpuPassReport() const;
     [[nodiscard]] const ProfileTotals& totals() const noexcept {
         return totals_;
     }
@@ -98,10 +130,14 @@ class FrameProfiler {
     void reset() noexcept {
         totals_ = ProfileTotals{};
         current_ = ProfileTotals{};
+        periodCount_ = periodCursor_ = 0;
         frameActive_ = false;
     }
 
   private:
+    std::array<double, 4096> periods_{};
+    std::size_t periodCount_{};
+    std::size_t periodCursor_{};
     ProfileTotals totals_;
     ProfileTotals current_;
     bool frameActive_{};

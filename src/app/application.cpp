@@ -1132,7 +1132,7 @@ int Application::run() {
         const auto tick = std::chrono::steady_clock::now();
         const float deltaSeconds = std::chrono::duration<float>(tick - previousTick).count();
         previousTick = tick;
-        frameProfiler_.beginFrame();
+        frameProfiler_.beginFrame(deltaSeconds);
 #if DAYO_HAS_IMGUI
         if (imageSequenceExportRunning_) {
             advanceImageSequenceExport();
@@ -1258,6 +1258,10 @@ int Application::run() {
             auto render = frameProfiler_.measure(core::ProfileSection::render);
             device->renderFrame();
             frameProfiler_.setGpuNanoseconds(device->previewGpuNanoseconds());
+            const auto timings = device->previewPassTimings();
+            frameProfiler_.setGpuPassNanoseconds(
+                {timings.shadow, timings.ambientOcclusion, timings.model, timings.subsurface, timings.coc,
+                 timings.dofDownsample, timings.dofBlur, timings.dofComposite, timings.postProcess, timings.toneMap});
             render.finish();
         }
         frameProfiler_.endFrame();
@@ -1272,6 +1276,10 @@ int Application::run() {
     device->waitIdle();
     audioPlayer_.stop();
     log::info(frameProfiler_.report());
+    log::info(frameProfiler_.gpuPassReport());
+    const auto viewport = device->previewViewport();
+    log::info("profile target: window=", window->pixelWidth(), "x", window->pixelHeight(), " viewport=", viewport.width,
+              "x", viewport.height, " renderer=", graphics::toString(device->activeRenderer()));
     log::info("Rendered ", frameCount, " frame(s); clean shutdown");
     return 0;
 }
