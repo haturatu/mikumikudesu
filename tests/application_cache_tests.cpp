@@ -26,6 +26,7 @@ struct ApplicationCacheTestAccess {
         require(app.nativeGeometry_.empty() && app.nativeSceneModelData_.empty(),
                 "Preview must not construct native geometry or model tables");
         require(app.evaluatedFrames_[0].frame.vertices.empty(), "ordinary GPU skinning must omit CPU vertex copies");
+        const auto* frameBones = app.evaluatedFrames_[0].frame.bones.data();
         const auto before = app.scene_.model(first)->physics->stepStats().substeps;
         const auto body = app.scene_.model(first)->physics->bodyTransform(0);
         std::string error;
@@ -50,6 +51,7 @@ struct ApplicationCacheTestAccess {
         app.scene_.setFrame(app.animationFrame_);
         app.refreshAnimatedMesh(false, 1.0F / 30.0F);
         require(app.nativeDeformVersion_ == generation, "Preview pose updates must not rebuild native caches");
+        require(app.evaluatedFrames_[0].frame.bones.data() == frameBones, "frame output must retain bone capacity");
         const auto second = app.scene_.addModel(modelPath);
         app.requestRenderer(graphics::RendererKind::subayai);
         require(app.nativePreparePending_,

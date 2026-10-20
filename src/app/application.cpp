@@ -2077,6 +2077,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     std::size_t vertexCount = 0;
     std::size_t indexCount = 0;
     std::size_t materialCount = 0;
+    std::size_t morphCount = 0;
     bool dynamicVertices = false;
     for (const auto& instance : scene_.models()) {
         if (instance.model == nullptr || instance.animator == nullptr)
@@ -2084,6 +2085,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         vertexCount += instance.model->vertices.size();
         indexCount += instance.model->indices.size();
         materialCount += instance.model->materials.size();
+        morphCount += instance.model->morphs.size();
         dynamicVertices = dynamicVertices || (instance.softBody != nullptr && instance.softBody->available());
     }
     const bool rebuildTopology =
@@ -2095,7 +2097,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
     vertices.reserve(vertexCount);
     std::pmr::vector<graphics::PreviewMorphDelta> morphDeltas(scratch);
     std::pmr::vector<float> morphWeights(scratch);
-    morphWeights.reserve(materialCount);
+    morphWeights.reserve(morphCount);
     std::pmr::vector<graphics::PreviewMaterial> materials(scratch);
     std::pmr::vector<graphics::PreviewDraw> draws(scratch);
     if (!rebuildTopology) {
@@ -2111,8 +2113,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         materials.reserve(materialCount);
         draws.reserve(materialCount);
     }
-    evaluatedFrames_.clear();
     auto& evaluated = evaluatedFrames_;
+    std::size_t evaluatedCount = 0;
     evaluated.reserve(scene_.models().size());
     const auto gravity = scene_.evaluatePhysicsSettings(animationFrame_);
     const auto executionPlan = core::ModelExecutionPlanner::plan(scene_.models(), scene_.effects());
@@ -2128,9 +2130,15 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
             instance.physics->setGravityNoise(gravity.noiseAmplitude, gravity.noiseFrequency);
             instance.physics->setFloorCollision(gravity.floorCollision);
         }
-        evaluated.push_back(
-            {index, &instance, instance.softBody == nullptr || !instance.softBody->available(), policy, {}});
+        if (evaluatedCount == evaluated.size())
+            evaluated.emplace_back();
+        auto& current = evaluated[evaluatedCount++];
+        current.sceneIndex = index;
+        current.instance = &instance;
+        current.gpuSkinning = instance.softBody == nullptr || !instance.softBody->available();
+        current.policy = policy;
     }
+    evaluated.resize(evaluatedCount);
     {
         auto animation = frameProfiler_.measure(core::ProfileSection::animation);
         std::vector<std::int32_t> motionOrderValues;
@@ -2143,8 +2151,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         for (const auto index : motionOrder) {
             auto& current = evaluated[index];
             const auto& instance = *current.instance;
-            current.frame = instance.animator->evaluate(animationFrame_, deltaSeconds, current.gpuSkinning, {},
-                                                        mmd::VertexOutput::omitUnchangedGpu);
+            instance.animator->evaluateInto(current.frame, animationFrame_, deltaSeconds, current.gpuSkinning, {},
+                                            mmd::VertexOutput::omitUnchangedGpu);
             // UV/additional-UV and temporary vertex edits still require CPU
             // output and a per-frame vertex upload, even with GPU skinning.
             dynamicVertices = dynamicVertices || !current.frame.vertices.empty();
