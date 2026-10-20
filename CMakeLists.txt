@@ -26,6 +26,7 @@ option(DAYO_FETCH_DEPENDENCIES "Fetch small missing source dependencies" ON)
 option(DAYO_ENABLE_VMA "Use AMD/Vulkan Memory Allocator for generic resources" ON)
 option(DAYO_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(DAYO_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(DAYO_BUILD_BENCHMARKS "Build opt-in CPU model loading measurement tools" OFF)
 option(DAYO_ENABLE_NATIVE_TUNING "Enable -march=native/-mtune=native for local Linux builds" OFF)
 option(DAYO_ENABLE_BOLT "Run LLVM BOLT on the Linux executable after linking" OFF)
 set(DAYO_BOLT_PROFILE "" CACHE FILEPATH "perf2bolt/fdata profile used by LLVM BOLT")
@@ -847,6 +848,11 @@ function(dayo_enable_warnings target)
   endif()
 endfunction()
 dayo_enable_warnings(dayo_i18n)
+if(DAYO_BUILD_BENCHMARKS)
+  add_executable(dayo_model_load_bench EXCLUDE_FROM_ALL tools/model_load_benchmark.cpp)
+  target_link_libraries(dayo_model_load_bench PRIVATE dayo_core)
+  dayo_enable_warnings(dayo_model_load_bench)
+endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   set(
@@ -861,6 +867,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   foreach(target IN LISTS DAYO_OPTIMIZATION_TARGETS)
     dayo_enable_warnings(${target})
   endforeach()
+  if(TARGET dayo_model_load_bench)
+    list(APPEND DAYO_OPTIMIZATION_TARGETS dayo_model_load_bench)
+  endif()
   # These are our source targets. System Bullet is precompiled and deliberately
   # remains outside the tuning list.
   list(APPEND DAYO_OPTIMIZATION_TARGETS mmd_core mmd_animation mmd_physics)
@@ -878,6 +887,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     if(DAYO_ENABLE_THIN_LTO)
       target_compile_options(${target} PRIVATE -flto=thin)
       target_link_options(${target} PUBLIC -flto=thin)
+    endif()
+    # The benchmark measures the optimized libraries. Its separate main must
+    # not consume the application's main profile or add conflicting counters.
+    if(target STREQUAL "dayo_model_load_bench")
+      continue()
     endif()
     if(DAYO_ENABLE_PGO_GENERATE)
       if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
@@ -1113,6 +1127,7 @@ if(DAYO_ENABLE_SANITIZERS)
     DAYO_SANITIZER_EXECUTABLES
     mikumikudesu
     dayo_application_cache_tests
+    dayo_model_load_bench
     dayo_cli_tests
     dayo_core_tests
     dayo_image_block_tests

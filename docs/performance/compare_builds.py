@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import statistics
+import re
 import subprocess
 import time
 
@@ -99,6 +101,81 @@ def run(command, log, environment=None):
     return time.perf_counter() - start
 
 
+def measure_loads(entry):
+    build = Path(entry["build_dir"])
+    name = entry["name"]
+    run(
+        ["cmake", "-S", str(source), "-B", str(build), "-DDAYO_BUILD_BENCHMARKS=ON"],
+        output / f"{name}-load-configure.log",
+    )
+    entry["load_tool_build_seconds"] = run(
+        [
+            "cmake",
+            "--build",
+            str(build),
+            "--target",
+            "dayo_model_load_bench",
+            "-j",
+            str(args.jobs),
+        ],
+        output / f"{name}-load-build.log",
+    )
+    log = output / f"{name}-load.log"
+    run(
+        [
+            str(build / "dayo_model_load_bench"),
+            str(args.model.resolve()),
+            str(args.motion.resolve()),
+        ],
+        log,
+    )
+    line = next(
+        line
+        for line in reversed(log.read_text().splitlines())
+        if line.startswith("model_ms=")
+    )
+    entry["cpu_load_ms"] = {
+        key: float(value)
+        for key, value in re.findall(r"(model_ms|motion_ms)=([0-9.]+)", line)
+    }
+    environment = dict(
+        os.environ, XDG_CONFIG_HOME=str(output / f"{name}-startup-config")
+    )
+    base = [
+        str(build / "mikumikudesu"),
+        "--hidden",
+        "--no-validation",
+        "--renderer",
+        "preview",
+        "--present",
+        "immediate",
+        "--preview-quality",
+        "apu",
+        "--frames",
+        "1",
+    ]
+    for label, assets in [
+        ("startup", []),
+        (
+            "startup_with_assets",
+            [
+                "--asset",
+                str(args.model.resolve()),
+                "--asset",
+                str(args.motion.resolve()),
+            ],
+        ),
+    ]:
+        times = []
+        for repeat in range(4):
+            elapsed = run(
+                base + assets, output / f"{name}-{label}-{repeat}.log", environment
+            )
+            if repeat:
+                times.append(elapsed * 1000)
+        entry[label + "_ms"] = statistics.median(times)
+
+
 variants = [
     ("gcc-release", "linux-release", None),
     ("gcc-native", "linux-release-native", "-march=native"),
@@ -117,6 +194,10 @@ for name, preset, flag in variants:
         (entry for entry in result["variants"] if entry["name"] == name), None
     )
     if completed:
+        if "cpu_load_ms" not in completed:
+            print(f"{name}: measuring startup and CPU loading", flush=True)
+            measure_loads(completed)
+            save()
         if reference is None:
             reference = subprocess.check_output(
                 [
@@ -153,6 +234,7 @@ for name, preset, flag in variants:
         "-B",
         str(build),
         "-DBUILD_TESTING=OFF",
+        "-DDAYO_BUILD_BENCHMARKS=ON",
         "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
         "-DCMAKE_CXX_COMPILER_LAUNCHER=",
         f"-DDAYO_PGO_PROFILE_DIR={profiles}",
@@ -306,6 +388,8 @@ for name, preset, flag in variants:
     entry["rgb_mean_error"] = sum(errors) / len(errors)
     entry["rgb_max_error"] = max(errors)
     entry["rgb_changed_channels"] = sum(e != 0 for e in errors)
+    print(f"{name}: measuring startup and CPU loading", flush=True)
+    measure_loads(entry)
     if name == "clang-pgo-generate":
         run(
             ["cmake", "--build", str(build), "--target", "dayo_pgo_merge"],
