@@ -28,6 +28,7 @@ static_assert(sizeof(NativeSceneVertex) == 112);
 static_assert(alignof(NativeSceneVertex) == 16);
 
 struct alignas(16) NativeSceneMaterial {
+    bool operator==(const NativeSceneMaterial&) const = default;
     float diffuse[4]{};
     float specular[3]{};
     float shininess{};
@@ -94,6 +95,8 @@ struct NativeSceneModelData {
     // static bytes on every frame.
     std::uint64_t topologyGeneration{1};
     std::uint64_t materialGeneration{1};
+    // Evaluated triangle areas can change without topology/material changes.
+    std::uint64_t areaGeneration{1};
 };
 
 // One material range of one evaluated model. The typed vertex/index buffers
@@ -137,5 +140,15 @@ makeNativeSceneModelData(const mmd::PmxModel& model, std::span<const PreviewVert
                          std::span<const mmd::AnimatedModelFrame::Material> animatedMaterials = {},
                          mmd::PreviewNormalization normalization = {},
                          std::span<const mmd::PmxVertex> evaluatedVertices = {});
+
+// Retains bind vertices, topology, face assignments and sampling tables.
+// Recompute evaluated tangents/areas only when CPU positions or UVs change;
+// animated material values are compared every frame and advance their own epoch.
+void updateNativeSceneModelData(NativeSceneModelData& destination, const mmd::PmxModel& model,
+                                std::span<const PreviewVertex> vertices,
+                                std::span<const mmd::AnimatedModelFrame::Material> animatedMaterials,
+                                mmd::PreviewNormalization normalization,
+                                std::span<const mmd::PmxVertex> evaluatedVertices, bool rebuildStatic,
+                                bool verticesChanged, std::span<const std::uint8_t> textureAvailable = {});
 
 } // namespace dayo::graphics

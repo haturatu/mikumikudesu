@@ -48,6 +48,7 @@ class NativeSceneModelRuntime {
     struct StaticGenerations {
         std::uint64_t topology{};
         std::uint64_t material{};
+        std::uint64_t areas{};
     };
 
     struct FrameResources {

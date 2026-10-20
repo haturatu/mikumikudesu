@@ -9,6 +9,7 @@
 #include "core/editor.hpp"
 #include "core/frame_scratch.hpp"
 #include "core/fx/fx_controller_resolver.hpp"
+#include "core/model_execution.hpp"
 #include "core/output.hpp"
 #include "core/profiling.hpp"
 #include "core/project.hpp"
@@ -46,6 +47,8 @@
 namespace dayo::app {
 
 class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
+    friend struct ApplicationCacheTestAccess;
+
   public:
     explicit Application(Options options);
     int run();
@@ -66,6 +69,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     void buildMediaPlaybackControls(bool compact = false);
     void selectBackgroundSource(core::ScreenTextureSource source);
     void refreshAnimatedMesh(bool initialUpload, float deltaSeconds = 0.0F);
+    [[nodiscard]] bool refreshNativeSceneData();
     void resetPhysicsSimulation();
     void evaluateExportFrame(float frame, float deltaSeconds, bool initialUpload = false);
     bool advanceDeterministicFrameEvaluation(float targetFrame, std::uint64_t& nextFrame);
@@ -151,7 +155,28 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::vector<graphics::PreviewMaterial> animatedMaterialTemplates_;
     std::vector<graphics::PreviewDraw> animatedDraws_;
     std::vector<std::uint8_t> animatedEffectiveVisibility_;
+    struct EvaluatedModel {
+        const core::ModelInstance* instance{};
+        bool gpuSkinning{};
+        core::ModelExecutionPolicy policy;
+        core::AnimatedModelFrame frame;
+    };
+    // The same evaluated pose feeds Preview, focus and a later renderer switch.
+    // Switching renderers must not evaluate impulses or advance physics again.
+    std::vector<EvaluatedModel> evaluatedFrames_;
+    std::uint64_t evaluatedTopologyGeneration_{};
+    float evaluatedFrame_{};
+    bool evaluatedFramesValid_{};
+    bool nativeDataValid_{};
+    std::uint64_t nativeTopologyGeneration_{};
+    bool nativePreparePending_{};
     struct NativeModelGeometry {
+        std::shared_ptr<const core::PmxModel> sourceModel;
+        core::PreviewNormalization normalization;
+        std::vector<std::array<std::uint32_t, 2>> morphRanges;
+        std::vector<std::uint8_t> textureAvailable;
+        bool hasUvMorphs{};
+        bool baseGpuSkinning{};
         std::uint32_t meshId{};
         std::uint32_t cloneCount{1};
         core::ModelId modelId{};

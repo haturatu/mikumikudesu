@@ -25,6 +25,7 @@
 #include "graphics/subayai_material_gpu.hpp"
 #include "graphics/subayai_material_runtime.hpp"
 #include "graphics/subayai_runtime.hpp"
+#include "mock_native_device.hpp"
 
 #include <algorithm>
 #include <array>
@@ -160,206 +161,7 @@ struct MockEnvironmentBackend : dayo::graphics::IEnvironmentBackend {
     }
 };
 
-struct MockNativeDevice final : dayo::graphics::Device {
-    struct Buffer {
-        std::vector<std::byte> bytes;
-    };
-
-    const dayo::graphics::DeviceCapabilities& capabilities() const noexcept override {
-        return capabilities_;
-    }
-    const dayo::graphics::GraphicsConvention& convention() const noexcept override {
-        return convention_;
-    }
-    dayo::graphics::RendererKind activeRenderer() const noexcept override {
-        return dayo::graphics::RendererKind::subayai;
-    }
-    void selectRenderer(dayo::graphics::RendererKind) override {}
-    void resize() override {}
-    void beginUiFrame() override {}
-    void renderFrame() override {}
-    std::size_t currentFrameSlot() const noexcept override {
-        return frameSlot;
-    }
-    void waitIdle() override {}
-    void uploadPreviewMesh(std::span<const dayo::graphics::PreviewVertex>, std::span<const std::uint32_t>) override {}
-    void updatePreviewVertices(std::span<const dayo::graphics::PreviewVertex>) override {}
-    void updatePreviewBones(std::span<const dayo::graphics::PreviewBoneTransform>) override {}
-    void uploadPreviewMorphDeltas(std::span<const dayo::graphics::PreviewMorphDelta>) override {}
-    void updatePreviewMorphWeights(std::span<const float>) override {}
-    void updatePreviewMaterials(std::span<const dayo::graphics::PreviewMaterial>) override {}
-    void updatePreviewDraws(std::span<const dayo::graphics::PreviewDraw>) override {}
-    void uploadPreviewTextures(std::span<const dayo::graphics::PreviewTexture>) override {}
-    void uploadPreviewBackground(std::span<const dayo::graphics::PreviewTexture>) override {}
-    void clearPreviewResources() override {}
-    void updatePreviewScene(const dayo::graphics::PreviewScene&) override {}
-    dayo::graphics::BufferHandle createBuffer(const dayo::graphics::BufferDesc&) override {
-        return nextHandle_++;
-    }
-    dayo::graphics::TextureHandle createTexture(const dayo::graphics::TextureDesc&) override {
-        return nextHandle_++;
-    }
-    dayo::graphics::handles::DescriptorSetLayoutHandle
-    createDescriptorSetLayoutEx(const dayo::graphics::DescriptorSetLayoutDesc& desc) override {
-        lastDescriptorLayout = desc;
-        return {nextDescriptorLayout_++, 1};
-    }
-    dayo::graphics::handles::TextureHandle createTextureEx(const dayo::graphics::TextureResourceDesc& desc) override {
-        textureDescriptions.push_back(desc);
-        return {nextTypedTexture_++, 1};
-    }
-    dayo::graphics::handles::BufferHandle createBufferEx(const dayo::graphics::BufferResourceDesc& desc) override {
-        const auto handle = dayo::graphics::handles::BufferHandle{nextTypedBuffer_++, 1};
-        typedBuffers_.emplace(handle, Buffer{std::vector<std::byte>(desc.size)});
-        typedBufferUsages.emplace_back(handle, desc.usage);
-        return handle;
-    }
-    void destroyTextureEx(dayo::graphics::handles::TextureHandle handle) override {
-        if (handle.valid())
-            ++destroyedTextures;
-    }
-    void clearTextureEx(dayo::graphics::handles::TextureHandle, const std::array<float, 4>&) override {
-        ++clearedTextures;
-    }
-    void destroyBufferEx(dayo::graphics::handles::BufferHandle handle) override {
-        ++destroyedBuffers;
-        typedBuffers_.erase(handle);
-    }
-    void copyBufferEx(dayo::graphics::handles::BufferHandle source,
-                      dayo::graphics::handles::BufferHandle destination) override {
-        const auto sourceIt = typedBuffers_.find(source);
-        const auto destinationIt = typedBuffers_.find(destination);
-        if (sourceIt == typedBuffers_.end() || destinationIt == typedBuffers_.end() ||
-            sourceIt->second.bytes.size() > destinationIt->second.bytes.size())
-            throw std::out_of_range("mock typed buffer copy exceeds allocation");
-        std::copy(sourceIt->second.bytes.begin(), sourceIt->second.bytes.end(), destinationIt->second.bytes.begin());
-    }
-    dayo::graphics::handles::DescriptorSetHandle
-    allocateDescriptorSetEx(dayo::graphics::handles::DescriptorSetLayoutHandle layout,
-                            std::span<const dayo::graphics::DescriptorBindingEx> bindings) override {
-        if (!layout.valid())
-            throw std::invalid_argument("mock descriptor layout is invalid");
-        lastDescriptorBindings.assign(bindings.begin(), bindings.end());
-        descriptorAllocations.emplace_back(bindings.begin(), bindings.end());
-        const auto set = dayo::graphics::handles::DescriptorSetHandle{nextDescriptorSet_++, 1};
-        descriptorBindings_[set].assign(bindings.begin(), bindings.end());
-        return set;
-    }
-    void updateDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle set,
-                               std::span<const dayo::graphics::DescriptorBindingEx> bindings) override {
-        lastDescriptorBindings.assign(bindings.begin(), bindings.end());
-        descriptorBindings_[set].assign(bindings.begin(), bindings.end());
-    }
-    void destroyDescriptorSetEx(dayo::graphics::handles::DescriptorSetHandle handle) override {
-        if (handle.valid()) {
-            ++destroyedDescriptorSets;
-            descriptorBindings_.erase(handle);
-        }
-    }
-    void destroyDescriptorSetLayoutEx(dayo::graphics::handles::DescriptorSetLayoutHandle handle) override {
-        if (handle.valid())
-            ++destroyedDescriptorLayouts;
-    }
-    dayo::graphics::handles::PipelineLayoutHandle
-    createPipelineLayoutEx(const dayo::graphics::PipelineLayoutDesc&) override {
-        return {nextPipelineLayout_++, 1};
-    }
-    dayo::graphics::handles::SamplerHandle createSamplerEx() override {
-        return {nextSampler_++, 1};
-    }
-    dayo::graphics::handles::SamplerHandle createSamplerEx(const dayo::graphics::SamplerResourceDesc& desc) override {
-        samplerDescriptions.push_back(desc);
-        return createSamplerEx();
-    }
-    dayo::graphics::handles::PipelineHandle
-    createGraphicsPipelineEx(const dayo::graphics::GraphicsPipelineDescEx&) override {
-        return {nextPipeline_++, 1};
-    }
-    void destroyPipelineLayoutEx(dayo::graphics::handles::PipelineLayoutHandle) override {}
-    dayo::graphics::handles::ShaderHandle createShaderEx(const dayo::graphics::ShaderDesc&) override {
-        return {nextShader_++, 1};
-    }
-    void destroyShaderEx(dayo::graphics::handles::ShaderHandle) override {}
-    dayo::graphics::handles::PipelineHandle
-    createComputePipelineEx(const dayo::graphics::ComputePipelineDescEx&) override {
-        return {nextPipeline_++, 1};
-    }
-    void destroyPipelineEx(dayo::graphics::handles::PipelineHandle) override {}
-    dayo::graphics::handles::PipelineHandle
-    createRayTracingPipelineEx(const dayo::graphics::RayTracingPipelineDescEx&) override {
-        return {nextPipeline_++, 1};
-    }
-    dayo::graphics::handles::ShaderBindingTableHandle
-    createShaderBindingTable(const dayo::graphics::ShaderBindingTableDesc&) override {
-        return {nextSbt_++, 1};
-    }
-    void destroyShaderBindingTable(dayo::graphics::handles::ShaderBindingTableHandle) override {}
-    void uploadTextureEx(dayo::graphics::handles::TextureHandle, std::span<const std::uint8_t> bytes, std::uint32_t,
-                         std::uint32_t) override {
-        lastTextureUpload.assign(bytes.begin(), bytes.end());
-    }
-    void destroySamplerEx(dayo::graphics::handles::SamplerHandle) override {
-        ++destroyedSamplers;
-    }
-    void uploadBufferEx(dayo::graphics::handles::BufferHandle handle, std::span<const std::byte> bytes,
-                        std::size_t offset) override {
-        ++uploadBufferCalls;
-        auto it = typedBuffers_.find(handle);
-        if (it == typedBuffers_.end() || offset > it->second.bytes.size() ||
-            bytes.size() > it->second.bytes.size() - offset)
-            throw std::out_of_range("mock typed buffer upload exceeds allocation");
-        std::copy(bytes.begin(), bytes.end(), it->second.bytes.begin() + static_cast<std::ptrdiff_t>(offset));
-    }
-    std::vector<std::byte> readbackBufferEx(dayo::graphics::handles::BufferHandle handle, std::size_t offset,
-                                            std::size_t size) override {
-        const auto it = typedBuffers_.find(handle);
-        if (it == typedBuffers_.end() || offset > it->second.bytes.size() || size > it->second.bytes.size() - offset)
-            throw std::out_of_range("mock typed buffer readback exceeds allocation");
-        return {it->second.bytes.begin() + static_cast<std::ptrdiff_t>(offset),
-                it->second.bytes.begin() + static_cast<std::ptrdiff_t>(offset + size)};
-    }
-
-    dayo::graphics::DeviceCapabilities capabilities_{
-        .gpuName = "mock",
-        .driverName = "mock",
-        .swapchain = true,
-        .bufferDeviceAddress = true,
-        .descriptorIndexing = true,
-        .accelerationStructure = true,
-        .rayTracingPipeline = true,
-        .rayQuery = true,
-        .fragmentShaderBarycentric = true,
-    };
-    dayo::graphics::GraphicsConvention convention_;
-    dayo::graphics::BufferHandle nextHandle_{1};
-    std::uint32_t nextTypedBuffer_{1};
-    std::uint32_t nextTypedTexture_{1};
-    std::uint32_t nextDescriptorLayout_{1};
-    std::uint32_t nextDescriptorSet_{1};
-    std::uint32_t nextPipelineLayout_{1};
-    std::uint32_t nextSampler_{1};
-    std::uint32_t nextShader_{1};
-    std::uint32_t nextPipeline_{1};
-    std::uint32_t nextSbt_{1};
-    std::size_t destroyedBuffers{};
-    std::size_t destroyedTextures{};
-    std::size_t clearedTextures{};
-    std::size_t destroyedDescriptorSets{};
-    std::size_t destroyedDescriptorLayouts{};
-    std::size_t uploadBufferCalls{};
-    std::size_t frameSlot{};
-    dayo::graphics::DescriptorSetLayoutDesc lastDescriptorLayout;
-    std::vector<dayo::graphics::DescriptorBindingEx> lastDescriptorBindings;
-    std::vector<std::vector<dayo::graphics::DescriptorBindingEx>> descriptorAllocations;
-    std::vector<std::pair<dayo::graphics::handles::BufferHandle, dayo::graphics::ResourceUsage>> typedBufferUsages;
-    std::vector<dayo::graphics::TextureResourceDesc> textureDescriptions;
-    std::vector<dayo::graphics::SamplerResourceDesc> samplerDescriptions;
-    std::vector<std::uint8_t> lastTextureUpload;
-    std::size_t destroyedSamplers{};
-    std::unordered_map<dayo::graphics::handles::DescriptorSetHandle, std::vector<dayo::graphics::DescriptorBindingEx>>
-        descriptorBindings_;
-    std::unordered_map<dayo::graphics::handles::BufferHandle, Buffer> typedBuffers_;
-};
+using dayo::test::MockNativeDevice;
 
 struct MockNativeSceneCommands final : dayo::graphics::CommandList {
     explicit MockNativeSceneCommands(MockNativeDevice& device) : device_(&device) {}
@@ -1932,6 +1734,43 @@ int main() {
         ok &= check(data.materials[0].vertexCount == 3 && data.materials[1].vertexCount == 3,
                     "native scene data preserves material index counts");
 
+        auto cachedScene = data;
+        auto changedPreview = preview;
+        changedPreview[2].position[0] = 2.0F;
+        changedPreview[1].uv[0] = 0.2F;
+        changedPreview[1].uv[1] = 1.0F;
+        std::array<mmd::AnimatedModelFrame::Material, 2> animatedMaterials{};
+        for (auto& value : animatedMaterials) {
+            value.diffuse = {0.4F, 0.5F, 0.6F, 1.0F};
+            value.shininess = 17.0F;
+        }
+        const auto* cachedRaw = cachedScene.rawVertices.data();
+        const auto* cachedIndices = cachedScene.indices.data();
+        dayo::graphics::updateNativeSceneModelData(cachedScene, model, changedPreview, animatedMaterials, {},
+                                                   evaluatedUvVertices, false, true);
+        const auto fullReference =
+            dayo::graphics::makeNativeSceneModelData(model, changedPreview, animatedMaterials, {}, evaluatedUvVertices);
+        ok &=
+            check(cachedScene.rawVertices.data() == cachedRaw && cachedScene.indices.data() == cachedIndices &&
+                      std::memcmp(cachedScene.vertices.data(), fullReference.vertices.data(),
+                                  cachedScene.vertices.size() * sizeof(dayo::graphics::NativeSceneVertex)) == 0 &&
+                      cachedScene.materials == fullReference.materials &&
+                      cachedScene.materialFaces[0].totalArea == fullReference.materialFaces[0].totalArea &&
+                      cachedScene.areaGeneration != data.areaGeneration &&
+                      cachedScene.materialGeneration != data.materialGeneration,
+                  "native cache preserves static allocations and recomputes deformed areas, UV tangents and materials");
+        const auto areaEpoch = cachedScene.areaGeneration;
+        const auto materialEpoch = cachedScene.materialGeneration;
+        dayo::graphics::updateNativeSceneModelData(cachedScene, model, changedPreview, animatedMaterials, {},
+                                                   evaluatedUvVertices, false, true);
+        ok &= check(cachedScene.areaGeneration == areaEpoch && cachedScene.materialGeneration == materialEpoch,
+                    "unchanged area and material values must retain their upload generations");
+        animatedMaterials[0].diffuse[0] = 0.75F;
+        dayo::graphics::updateNativeSceneModelData(cachedScene, model, changedPreview, animatedMaterials, {},
+                                                   evaluatedUvVertices, false, false);
+        ok &= check(cachedScene.materialGeneration != materialEpoch && cachedScene.areaGeneration == areaEpoch,
+                    "material morph changes advance their own generation without topology edits");
+
         MockNativeDevice device;
         dayo::graphics::NativeSceneModelRuntime runtime;
         const std::array<dayo::graphics::NativeSceneModelData, 1> models{data};
@@ -2010,6 +1849,19 @@ int main() {
                     "native scene frame update accepts a changed material buffer");
         ok &= check(frameCommands.copies.size() == copiesBeforeMaterial + 3,
                     "native scene frame update records only the changed material and vertex transfers");
+
+        auto morphModels = models;
+        morphModels[0] = cachedScene;
+        ok &= check(runtime.updateFrame(device, frameCommands, morphModels, &error),
+                    "native scene uploads animated materials and triangle areas without topology changes");
+        dayo::graphics::NativeSceneMaterial gpuMaterial{};
+        const auto materialBytes = device.readbackBufferEx(runtime.bindings().materials[0], 0, sizeof(gpuMaterial));
+        std::memcpy(&gpuMaterial, materialBytes.data(), sizeof(gpuMaterial));
+        dayo::graphics::NativeSceneMaterialFace gpuArea{};
+        const auto areaBytes = device.readbackBufferEx(runtime.bindings().materialFaces[0], 0, sizeof(gpuArea));
+        std::memcpy(&gpuArea, areaBytes.data(), sizeof(gpuArea));
+        ok &= check(gpuMaterial.diffuse[0] == 0.75F && gpuArea.totalArea == cachedScene.materialFaces[0].totalArea,
+                    "native material morph and deforming face-area buffers must receive their evaluated values");
 
         // Temporal vertex history must follow the preceding logical frame,
         // not the buffer that happens to share the current frame slot.
