@@ -941,6 +941,10 @@ if(BUILD_TESTING)
   dayo_enable_warnings(dayo_preview_effects_tests)
   add_test(NAME preview_effect_settings COMMAND dayo_preview_effects_tests)
 
+  add_executable(dayo_image_block_tests tests/image_block_tests.cpp)
+  target_link_libraries(dayo_image_block_tests PRIVATE dayo_core dayo_test_assets)
+  dayo_enable_warnings(dayo_image_block_tests)
+  add_test(NAME image_blocks COMMAND dayo_image_block_tests)
   add_executable(dayo_core_tests tests/core_tests.cpp)
   target_link_libraries(dayo_core_tests PRIVATE dayo_core dayo_test_assets)
   add_executable(dayo_interpolation_bezier_tests tests/interpolation_bezier_tests.cpp)
@@ -1098,6 +1102,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_application_cache_tests
     dayo_cli_tests
     dayo_core_tests
+    dayo_image_block_tests
     dayo_interpolation_commit_tests
     dayo_keyframe_editor_tests
     dayo_i18n_tests

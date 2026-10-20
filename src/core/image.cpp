@@ -43,14 +43,6 @@ std::array<std::uint8_t, 4> rgb565(std::uint16_t value) {
             static_cast<std::uint8_t>((value & 31U) * 255U / 31U), 255};
 }
 
-void writePixel(std::vector<std::uint8_t>& pixels, std::uint32_t width, std::uint32_t height, std::uint32_t depth,
-                std::uint32_t z, std::uint32_t x, std::uint32_t y, const std::array<std::uint8_t, 4>& color) {
-    if (x >= width || y >= height || z >= depth)
-        return;
-    const auto offset = ((static_cast<std::size_t>(z) * height + y) * width + x) * 4U;
-    std::copy(color.begin(), color.end(), pixels.begin() + static_cast<std::ptrdiff_t>(offset));
-}
-
 std::array<std::array<std::uint8_t, 4>, 4> colorPalette(const std::uint8_t* block, bool dxt1) {
     const auto color0 = static_cast<std::uint16_t>(block[0] | (static_cast<std::uint16_t>(block[1]) << 8U));
     const auto color1 = static_cast<std::uint16_t>(block[2] | (static_cast<std::uint16_t>(block[3]) << 8U));
@@ -87,11 +79,11 @@ std::array<std::uint8_t, 8> alphaPalette(const std::uint8_t* block) {
     return values;
 }
 
-std::uint8_t alphaIndex(const std::uint8_t* block, std::uint32_t pixel) {
+std::uint64_t alphaIndices(const std::uint8_t* block) {
     std::uint64_t bits = 0;
     for (std::uint32_t i = 0; i < 6; ++i)
         bits |= static_cast<std::uint64_t>(block[2 + i]) << (i * 8U);
-    return static_cast<std::uint8_t>((bits >> (pixel * 3U)) & 7U);
+    return bits;
 }
 
 std::uint64_t checkedMultiply(std::uint64_t left, std::uint64_t right, std::string_view field) {
@@ -182,44 +174,130 @@ std::filesystem::path resolveImageFile(const std::filesystem::path& requested) {
 
 enum class BlockFormat { bc1, bc2, bc3, bc4, bc5 };
 
-void decodeBlockSlice(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> data, BlockFormat format,
-                      std::vector<std::uint8_t>& pixels, std::uint32_t z, std::uint32_t outputDepth) {
-    const auto blockSize = (format == BlockFormat::bc1 || format == BlockFormat::bc4) ? 8U : 16U;
+template <BlockFormat Format>
+void decodeBlockSliceImpl(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> data,
+                          std::vector<std::uint8_t>& pixels, std::uint32_t z, std::uint32_t outputDepth) {
+    constexpr auto blockSize = (Format == BlockFormat::bc1 || Format == BlockFormat::bc4) ? 8U : 16U;
     const auto blocksWide = (static_cast<std::uint64_t>(width) + 3U) / 4U;
     const auto blocksHigh = (static_cast<std::uint64_t>(height) + 3U) / 4U;
     const auto expectedBytes =
         checkedMultiply(checkedMultiply(blocksWide, blocksHigh, "DDS blocks"), blockSize, "DDS block payload");
     if (expectedBytes > data.size())
         throw std::runtime_error("truncated DDS block data");
+    if (z >= outputDepth)
+        return;
     for (std::uint32_t by = 0; by < blocksHigh; ++by)
         for (std::uint32_t bx = 0; bx < blocksWide; ++bx) {
             const auto* block = data.data() + (static_cast<std::size_t>(by) * blocksWide + bx) * blockSize;
-            if (format == BlockFormat::bc4 || format == BlockFormat::bc5) {
+            const auto rows = std::min(4U, height - by * 4U);
+            const auto columns = std::min(4U, width - bx * 4U);
+            const auto base = ((static_cast<std::size_t>(z) * height + by * 4U) * width + bx * 4U) * 4U;
+            if constexpr (Format == BlockFormat::bc4 || Format == BlockFormat::bc5) {
                 const auto red = alphaPalette(block);
-                const auto green = format == BlockFormat::bc5 ? alphaPalette(block + 8) : red;
-                for (std::uint32_t pixel = 0; pixel < 16; ++pixel) {
-                    const auto r = red[alphaIndex(block, pixel)];
-                    const auto g = green[alphaIndex(format == BlockFormat::bc5 ? block + 8 : block, pixel)];
-                    writePixel(pixels, width, height, outputDepth, z, bx * 4U + pixel % 4U, by * 4U + pixel / 4U,
-                               {r, g, format == BlockFormat::bc5 ? static_cast<std::uint8_t>(255) : r, 255});
-                }
-                continue;
-            }
-            const auto* colorBlock = format == BlockFormat::bc1 ? block : block + 8;
-            const auto colors = colorPalette(colorBlock, format == BlockFormat::bc1);
-            const auto colorBits = u32(colorBlock + 4);
-            const auto alphas = format == BlockFormat::bc3 ? alphaPalette(block) : std::array<std::uint8_t, 8>{};
-            for (std::uint32_t pixel = 0; pixel < 16; ++pixel) {
-                auto color = colors[(colorBits >> (pixel * 2U)) & 3U];
-                if (format == BlockFormat::bc2) {
-                    const auto nibble = static_cast<std::uint8_t>((block[pixel / 2U] >> ((pixel & 1U) * 4U)) & 15U);
-                    color[3] = static_cast<std::uint8_t>(nibble * 17U);
-                } else if (format == BlockFormat::bc3) {
-                    color[3] = alphas[alphaIndex(block, pixel)];
-                }
-                writePixel(pixels, width, height, outputDepth, z, bx * 4U + pixel % 4U, by * 4U + pixel / 4U, color);
+                const auto green = Format == BlockFormat::bc5 ? alphaPalette(block + 8) : red;
+                const auto redBits = alphaIndices(block);
+                const auto greenBits = Format == BlockFormat::bc5 ? alphaIndices(block + 8) : redBits;
+                for (std::uint32_t row = 0; row < rows; ++row)
+                    for (std::uint32_t column = 0; column < columns; ++column) {
+                        const auto shift = (row * 4U + column) * 3U;
+                        const auto r = red[(redBits >> shift) & 7U];
+                        const auto g = green[(greenBits >> shift) & 7U];
+                        const std::array<std::uint8_t, 4> color{
+                            r, g, Format == BlockFormat::bc5 ? static_cast<std::uint8_t>(255) : r, 255};
+                        std::memcpy(pixels.data() + base + (static_cast<std::size_t>(row) * width + column) * 4U,
+                                    color.data(), color.size());
+                    }
+            } else {
+                const auto* colorBlock = Format == BlockFormat::bc1 ? block : block + 8;
+                const auto colors = colorPalette(colorBlock, Format == BlockFormat::bc1);
+                const auto colorBits = u32(colorBlock + 4);
+                const auto alphas = Format == BlockFormat::bc3 ? alphaPalette(block) : std::array<std::uint8_t, 8>{};
+                const auto alphaBits = Format == BlockFormat::bc3 ? alphaIndices(block) : 0ULL;
+                for (std::uint32_t row = 0; row < rows; ++row)
+                    for (std::uint32_t column = 0; column < columns; ++column) {
+                        const auto pixel = row * 4U + column;
+                        auto color = colors[(colorBits >> (pixel * 2U)) & 3U];
+                        if constexpr (Format == BlockFormat::bc2) {
+                            const auto nibble =
+                                static_cast<std::uint8_t>((block[pixel / 2U] >> ((pixel & 1U) * 4U)) & 15U);
+                            color[3] = static_cast<std::uint8_t>(nibble * 17U);
+                        } else if constexpr (Format == BlockFormat::bc3) {
+                            color[3] = alphas[(alphaBits >> (pixel * 3U)) & 7U];
+                        }
+                        std::memcpy(pixels.data() + base + (static_cast<std::size_t>(row) * width + column) * 4U,
+                                    color.data(), color.size());
+                    }
             }
         }
+}
+
+void decodeBlockSlice(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> data, BlockFormat format,
+                      std::vector<std::uint8_t>& pixels, std::uint32_t z, std::uint32_t outputDepth) {
+    switch (format) {
+    case BlockFormat::bc1:
+        decodeBlockSliceImpl<BlockFormat::bc1>(width, height, data, pixels, z, outputDepth);
+        return;
+    case BlockFormat::bc2:
+        decodeBlockSliceImpl<BlockFormat::bc2>(width, height, data, pixels, z, outputDepth);
+        return;
+    case BlockFormat::bc3:
+        decodeBlockSliceImpl<BlockFormat::bc3>(width, height, data, pixels, z, outputDepth);
+        return;
+    case BlockFormat::bc4:
+        decodeBlockSliceImpl<BlockFormat::bc4>(width, height, data, pixels, z, outputDepth);
+        return;
+    case BlockFormat::bc5:
+        decodeBlockSliceImpl<BlockFormat::bc5>(width, height, data, pixels, z, outputDepth);
+        return;
+    }
+    throw std::logic_error("invalid DDS block format");
+}
+
+// Signed endpoints/interpolation retain the previous float arithmetic. Build
+// the palette and selectors per block/channel rather than per output pixel.
+void decodeSignedBlocks(std::uint32_t width, std::uint32_t height, std::uint32_t depth,
+                        std::span<const std::uint8_t> payload, std::uint32_t channels, std::uint64_t blockSliceBytes,
+                        std::vector<std::uint8_t>& pixels) {
+    const auto blocksWide = (static_cast<std::uint64_t>(width) + 3U) / 4U;
+    const auto blocksHigh = (static_cast<std::uint64_t>(height) + 3U) / 4U;
+    for (std::uint32_t z = 0; z < depth; ++z)
+        for (std::uint32_t by = 0; by < blocksHigh; ++by)
+            for (std::uint32_t bx = 0; bx < blocksWide; ++bx)
+                for (std::uint32_t channel = 0; channel < channels; ++channel) {
+                    const auto blockOffset = blockSliceBytes * z +
+                                             (static_cast<std::uint64_t>(by) * blocksWide + bx) * (channels * 8U) +
+                                             channel * 8U;
+                    const auto* block = payload.data() + blockOffset;
+                    const auto endpoint = [](std::uint8_t value) {
+                        const int signedValue = value < 128 ? value : static_cast<int>(value) - 256;
+                        return std::max(-1.0F, static_cast<float>(signedValue) / 127.0F);
+                    };
+                    const float first = endpoint(block[0]);
+                    const float second = endpoint(block[1]);
+                    std::array<float, 8> palette{first, second};
+                    if (first > second) {
+                        for (std::size_t i = 1; i <= 6; ++i)
+                            palette[i + 1] =
+                                (static_cast<float>(7 - i) * first + static_cast<float>(i) * second) / 7.0F;
+                    } else {
+                        for (std::size_t i = 1; i <= 4; ++i)
+                            palette[i + 1] =
+                                (static_cast<float>(5 - i) * first + static_cast<float>(i) * second) / 5.0F;
+                        palette[6] = -1.0F;
+                        palette[7] = 1.0F;
+                    }
+                    const auto indices = alphaIndices(block);
+                    const auto rows = std::min(4U, height - by * 4U);
+                    const auto columns = std::min(4U, width - bx * 4U);
+                    const auto base = ((static_cast<std::size_t>(z) * height + by * 4U) * width + bx * 4U) * channels;
+                    for (std::uint32_t row = 0; row < rows; ++row)
+                        for (std::uint32_t column = 0; column < columns; ++column) {
+                            const auto index = (indices >> ((row * 4U + column) * 3U)) & 7U;
+                            const auto output =
+                                base + (static_cast<std::size_t>(row) * width + column) * channels + channel;
+                            std::memcpy(pixels.data() + output * sizeof(float), &palette[index], sizeof(float));
+                        }
+                }
 }
 
 ImageRgba8 decodeBlocks(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> data,
@@ -740,46 +818,8 @@ ImageRgba8 decodeDds(const std::filesystem::path& requested) {
             const auto payload =
                 bytes.subspan(static_cast<std::size_t>(offset), static_cast<std::size_t>(payloadBytes));
             if (signedBlockChannels != 0) {
-                const auto blocksWide = (static_cast<std::uint64_t>(width) + 3U) / 4U;
-                for (std::uint32_t z = 0; z < depth; ++z) {
-                    for (std::uint32_t y = 0; y < height; ++y) {
-                        for (std::uint32_t x = 0; x < width; ++x) {
-                            for (std::uint32_t channel = 0; channel < signedBlockChannels; ++channel) {
-                                const auto blockOffset = blockSliceBytes * z +
-                                                         ((y / 4U) * blocksWide + x / 4U) * (signedBlockChannels * 8U) +
-                                                         channel * 8U;
-                                const auto* block = payload.data() + blockOffset;
-                                const auto endpoint = [](std::uint8_t value) {
-                                    const int signedValue = value < 128 ? value : static_cast<int>(value) - 256;
-                                    return std::max(-1.0F, static_cast<float>(signedValue) / 127.0F);
-                                };
-                                const float first = endpoint(block[0]);
-                                const float second = endpoint(block[1]);
-                                std::array<float, 8> palette{first, second};
-                                if (first > second) {
-                                    for (std::size_t i = 1; i <= 6; ++i)
-                                        palette[i + 1] =
-                                            (static_cast<float>(7 - i) * first + static_cast<float>(i) * second) / 7.0F;
-                                } else {
-                                    for (std::size_t i = 1; i <= 4; ++i)
-                                        palette[i + 1] =
-                                            (static_cast<float>(5 - i) * first + static_cast<float>(i) * second) / 5.0F;
-                                    palette[6] = -1.0F;
-                                    palette[7] = 1.0F;
-                                }
-                                std::uint64_t indices = 0;
-                                for (unsigned i = 0; i < 6; ++i)
-                                    indices |= static_cast<std::uint64_t>(block[i + 2]) << (i * 8U);
-                                const auto index = (indices >> (((y % 4U) * 4U + x % 4U) * 3U)) & 7U;
-                                const auto output =
-                                    ((static_cast<std::size_t>(z) * height + y) * width + x) * signedBlockChannels +
-                                    channel;
-                                std::memcpy(subresource.pixels.data() + output * sizeof(float), &palette[index],
-                                            sizeof(float));
-                            }
-                        }
-                    }
-                }
+                decodeSignedBlocks(width, height, depth, payload, signedBlockChannels, blockSliceBytes,
+                                   subresource.pixels);
             } else if (compressed) {
                 for (std::uint32_t z = 0; z < depth; ++z) {
                     const auto sliceOffset = static_cast<std::size_t>(blockSliceBytes) * z;
