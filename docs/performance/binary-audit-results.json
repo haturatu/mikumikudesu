@@ -1,0 +1,922 @@
+{
+  "date": "2026-10-23 Asia/Tokyo",
+  "source_revision": "f10efd8d0a9eaa87434676d659e65e98464d2f05",
+  "libmmd_revision": "ca4ba1fb97c9cc30d9846d4f56cd5093c49bcebc",
+  "environment": {
+    "cpu": "AMD Ryzen 5 PRO 3500U (4 cores / 8 threads)",
+    "gpu": "AMD Radeon Vega 8 Graphics (RADV RAVEN)",
+    "driver": "Mesa 26.2.5-arch1.1",
+    "compiler": "GCC 16.2.1 20260810",
+    "shader_compiler": "glslc 2026.4",
+    "ffmpeg": "n9.0.2",
+    "build": "linux-release, -O3 -DNDEBUG, native/ThinLTO/PGO OFF, ImGui/physics/media ON",
+    "limitations": "Other user processes were active; clocks/temperature not fixed. Wall times are observations, not causal optimization effects. Static counts include exclusive branches. No native RT GPU or GPU hardware-counter profile."
+  },
+  "binary": {
+    "name": "mikumikudesu",
+    "bytes": 26573440,
+    "sha256": "181758d05d41c197afa6dd82630789fdd30f6439f8352576cf9dddd6aedb2a2a"
+  },
+  "functions": [
+    {
+      "name": "mmd::MmdAnimator::evaluateInto(mmd::AnimatedModelFrame&, float, float, bool, std::span<mmd::MorphOverride const, 18446744073709551615ul>, mmd::VertexOutput)",
+      "address_hex": "0000000000596b70",
+      "bytes": 23105
+    },
+    {
+      "name": "mmd::MmdAnimator::evaluateInto(mmd::AnimatedModelFrame&, float, float, bool, std::span<mmd::MorphOverride const, 18446744073709551615ul>, mmd::VertexOutput) [clone .cold]",
+      "address_hex": "00000000000a2a4e",
+      "bytes": 147
+    },
+    {
+      "name": "mmd::(anonymous namespace)::rebuildBonePoses(mmd::PmxModel const&, std::vector<unsigned long, std::allocator<unsigned long> > const&, std::vector<mmd::(anonymous namespace)::BoneRuntimePose, std::allocator<mmd::(anonymous namespace)::BoneRuntimePose> >&, std::vector<mmd::(anonymous namespace)::LocalPose, std::allocator<mmd::(anonymous namespace)::LocalPose> >&, std::vector<mmd::(anonymous namespace)::GlobalPose, std::allocator<mmd::(anonymous namespace)::GlobalPose> >&, std::vector<unsigned char, std::allocator<unsigned char> >&, std::span<unsigned long const, 18446744073709551615ul>)",
+      "address_hex": "000000000058b0d0",
+      "bytes": 2475
+    },
+    {
+      "name": "mmd::(anonymous namespace)::solveIk(mmd::PmxModel const&, std::vector<unsigned long, std::allocator<unsigned long> > const&, std::vector<mmd::(anonymous namespace)::BoneRuntimePose, std::allocator<mmd::(anonymous namespace)::BoneRuntimePose> >&, mmd::VmdMotion const*, float, std::vector<mmd::(anonymous namespace)::LocalPose, std::allocator<mmd::(anonymous namespace)::LocalPose> >&, std::vector<mmd::(anonymous namespace)::GlobalPose, std::allocator<mmd::(anonymous namespace)::GlobalPose> >&, std::span<unsigned long const, 18446744073709551615ul>, std::span<unsigned long const, 18446744073709551615ul>, std::vector<std::vector<unsigned long, std::allocator<unsigned long> >, std::allocator<std::vector<unsigned long, std::allocator<unsigned long> > > > const&, std::vector<std::vector<unsigned long, std::allocator<unsigned long> >, std::allocator<std::vector<unsigned long, std::allocator<unsigned long> > > > const&, std::vector<unsigned char, std::allocator<unsigned char> >&, std::vector<unsigned long, std::allocator<unsigned long> >&, std::vector<unsigned long, std::allocator<unsigned long> >&, std::vector<unsigned long, std::allocator<unsigned long> >&, std::vector<unsigned long, std::allocator<unsigned long> >&, bool, mmd::(anonymous namespace)::IkEvaluationBudget&)",
+      "address_hex": "0000000000590b10",
+      "bytes": 11735
+    },
+    {
+      "name": "mmd::(anonymous namespace)::solveIk(mmd::PmxModel const&, std::vector<unsigned long, std::allocator<unsigned long> > const&, std::vector<mmd::(anonymous namespace)::BoneRuntimePose, std::allocator<mmd::(anonymous namespace)::BoneRuntimePose> >&, mmd::VmdMotion const*, float, std::vector<mmd::(anonymous namespace)::LocalPose, std::allocator<mmd::(anonymous namespace)::LocalPose> >&, std::vector<mmd::(anonymous namespace)::GlobalPose, std::allocator<mmd::(anonymous namespace)::GlobalPose> >&, std::span<unsigned long const, 18446744073709551615ul>, std::span<unsigned long const, 18446744073709551615ul>, std::vector<std::vector<unsigned long, std::allocator<unsigned long> >, std::allocator<std::vector<unsigned long, std::allocator<unsigned long> > > > const&, std::vector<std::vector<unsigned long, std::allocator<unsigned long> >, std::allocator<std::vector<unsigned long, std::allocator<unsigned long> > > > const&, std::vector<unsigned char, std::allocator<unsigned char> >&, std::vector<unsigned long, std::allocator<unsigned long> >&, std::vector<unsigned long, std::allocator<unsigned long> >&, std::vector<unsigned long, std::allocator<unsigned long> >&, std::vector<unsigned long, std::allocator<unsigned long> >&, bool, mmd::(anonymous namespace)::IkEvaluationBudget&) [clone .cold]",
+      "address_hex": "00000000000a27fa",
+      "bytes": 147
+    },
+    {
+      "name": "dayo::app::Application::refreshAnimatedMesh(bool, float)",
+      "address_hex": "00000000000ecbc0",
+      "bytes": 21480
+    },
+    {
+      "name": "dayo::app::Application::refreshAnimatedMesh(bool, float) [clone .cold]",
+      "address_hex": "0000000000034a92",
+      "bytes": 1624
+    },
+    {
+      "name": "dayo::core::MediaFile::decodeVideoFrame(double)",
+      "address_hex": "00000000001cc150",
+      "bytes": 986
+    },
+    {
+      "name": "dayo::core::MediaFile::decodeVideoFrame(double) [clone .cold]",
+      "address_hex": "00000000000477a6",
+      "bytes": 430
+    },
+    {
+      "name": "dayo::graphics::VulkanDevice::renderFrame()",
+      "address_hex": "00000000003758b0",
+      "bytes": 4701
+    },
+    {
+      "name": "dayo::graphics::VulkanDevice::renderFrame() [clone .cold]",
+      "address_hex": "000000000007bc10",
+      "bytes": 210
+    },
+    {
+      "name": "dayo::graphics::VulkanDevice::recordPreviewDeform(VkCommandBuffer_T*, dayo::graphics::VulkanDevice::Frame&)",
+      "address_hex": "0000000000358180",
+      "bytes": 25
+    },
+    {
+      "name": "dayo::graphics::VulkanDevice::recordPreviewDeform(VkCommandBuffer_T*, dayo::graphics::VulkanDevice::Frame&) [clone .part.0]",
+      "address_hex": "0000000000357670",
+      "bytes": 2829
+    },
+    {
+      "name": "dayo::graphics::VulkanDevice::collectRenderedImage(unsigned long, bool)",
+      "address_hex": "000000000033c800",
+      "bytes": 1835
+    },
+    {
+      "name": "dayo::graphics::VulkanDevice::collectRenderedImage(unsigned long, bool) [clone .cold]",
+      "address_hex": "0000000000070dfa",
+      "bytes": 225
+    },
+    {
+      "name": "mmd::MmdAnimator::evaluateInto(mmd::AnimatedModelFrame&, float, float, bool, std::span<mmd::MorphOverride const, 18446744073709551615ul>, mmd::VertexOutput)::{lambda(unsigned long, float)#1}::operator()(unsigned long, float) const",
+      "address_hex": "000000000058c470",
+      "bytes": 6281
+    }
+  ],
+  "spirv": [
+    {
+      "name": "preview_tonemap.PS.spv",
+      "bytes": 83812,
+      "sha256": "8f09450bf40ed31b04e30a9088fbbbed4b69df22b0671bd19ecf211ac4228c14",
+      "static_instructions": 4294,
+      "selected_static_counts": {
+        "image_sample_sites": 36,
+        "OpFDiv": 266,
+        "Exp2": 18,
+        "Pow": 18,
+        "OpLoopMerge": 0
+      }
+    },
+    {
+      "name": "preview.PS.spv",
+      "bytes": 35940,
+      "sha256": "579b5db3097c3f0ea7bea7330216e2e788ebbd6dac7c2a5f7737a5af0ceaaedb",
+      "static_instructions": 1946,
+      "selected_static_counts": {
+        "image_sample_sites": 9,
+        "OpFDiv": 31,
+        "Exp2": 2,
+        "Pow": 8,
+        "OpLoopMerge": 4
+      }
+    },
+    {
+      "name": "preview_deform.PreviewDeform.spv",
+      "bytes": 20676,
+      "sha256": "0f56284d0586b04ccbd85c9314baf5185fa898a15f42a875c3bdf43c9984df65",
+      "static_instructions": 1130,
+      "selected_static_counts": {
+        "image_sample_sites": 0,
+        "OpFDiv": 6,
+        "Exp2": 0,
+        "Pow": 0,
+        "OpLoopMerge": 5
+      }
+    },
+    {
+      "name": "preview_dof.DofFilter.spv",
+      "bytes": 83336,
+      "sha256": "a8fa592a356c149734478207e5cde13f33d200042816f99eef91e3c5e4c90399",
+      "static_instructions": 4635,
+      "selected_static_counts": {
+        "image_sample_sites": 29,
+        "OpFDiv": 95,
+        "Exp2": 0,
+        "Pow": 0,
+        "OpLoopMerge": 18
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "path": "assets/models/teto/model/teto.pmx",
+      "bytes": 2029034,
+      "sha256": "8e813f4e453d0a11311c67e46e939412799dfa8470475ba6c9365484af22aed9"
+    },
+    {
+      "path": "telephone_merged.vmd",
+      "bytes": 13314322,
+      "sha256": "fcf2ef4854eb412befe7fc2d10297a5ad9094f441f7b0f045741448ca9732462"
+    }
+  ],
+  "shader_O_experiment": {
+    "bytes": 53776,
+    "sha256": "5ed06f4ac6e56065df520039dbcb732162d61a0a6b7e92c19bc45c6d59c5d06c",
+    "static_instructions": 2782,
+    "OpFDiv": 96,
+    "Exp2": 1,
+    "image_sample_sites": 36,
+    "runtime_shader_restored": true,
+    "image_equivalence_tested": false,
+    "frame_time_benchmark_performed": false
+  },
+  "radv_tonemap": {
+    "gpu-isa": {
+      "reported_stats": {
+        "Driver pipeline hash": 12409212018911861563,
+        "SGPRs": 48,
+        "VGPRs": 52,
+        "Spilled SGPRs": 0,
+        "Spilled VGPRs": 0,
+        "Code size": 22576,
+        "LDS size": 0,
+        "Scratch size": 0,
+        "Subgroups per SIMD": 4,
+        "Combined inputs": 1,
+        "Combined outputs": 1,
+        "Hash": 1837337258,
+        "Instructions": 3524,
+        "Copies": 217,
+        "Branches": 110,
+        "Latency": 7463,
+        "Inverse Throughput": 3518,
+        "VMEM Clause": 27,
+        "SMEM Clause": 19,
+        "Pre-Sched SGPRs": 33,
+        "Pre-Sched VGPRs": 49,
+        "VALU": 3072,
+        "SALU": 238,
+        "VMEM": 36,
+        "SMEM": 19,
+        "VOPD": 0
+      },
+      "assembly_sha256": "a8697db41390fda0c99b377e6d612462ac83a0a4bd2eee5f6a67c01de3e0840e",
+      "selected_static_counts": {
+        "image_sample_sites": 36,
+        "v_rcp_f32_e32": 128,
+        "v_exp_f32_e32": 55
+      }
+    },
+    "gpu-opt-isa": {
+      "reported_stats": {
+        "Driver pipeline hash": 18186557730807070770,
+        "SGPRs": 48,
+        "VGPRs": 52,
+        "Spilled SGPRs": 0,
+        "Spilled VGPRs": 0,
+        "Code size": 22576,
+        "LDS size": 0,
+        "Scratch size": 0,
+        "Subgroups per SIMD": 4,
+        "Combined inputs": 1,
+        "Combined outputs": 1,
+        "Hash": 144830049,
+        "Instructions": 3524,
+        "Copies": 217,
+        "Branches": 110,
+        "Latency": 7463,
+        "Inverse Throughput": 3518,
+        "VMEM Clause": 27,
+        "SMEM Clause": 19,
+        "Pre-Sched SGPRs": 33,
+        "Pre-Sched VGPRs": 49,
+        "VALU": 3072,
+        "SALU": 238,
+        "VMEM": 36,
+        "SMEM": 19,
+        "VOPD": 0
+      },
+      "assembly_sha256": "b03a6e651b3fdbc4575ad52e56afe33563c0c607f7bd95e61646b3049bda23e4",
+      "selected_static_counts": {
+        "image_sample_sites": 36,
+        "v_rcp_f32_e32": 128,
+        "v_exp_f32_e32": 55
+      }
+    }
+  },
+  "playback": {
+    "quality": "apu",
+    "frames_per_run": 300,
+    "warmup_frames_per_model_count": 60,
+    "runs": [
+      {
+        "models": 1,
+        "run": 1,
+        "wall_seconds_including_startup": 1.4174104880003142,
+        "cpu_and_frame_ms": {
+          "animation": 1.03,
+          "convert": 0.0,
+          "upload": 0.0,
+          "render": 1.32,
+          "gpu": 2.76,
+          "p95": 3.92
+        },
+        "gpu_pass_ms": {
+          "shadow": 0.177,
+          "depth/ao": 0.402,
+          "materials": 0.571,
+          "sss": 0.205,
+          "coc": 0.0,
+          "downsample": 0.0,
+          "blur": 0.0,
+          "composite": 0.0,
+          "bloom": 0.208,
+          "tonemap": 0.538
+        },
+        "command": [
+          "<repo>/build/linux-release/mikumikudesu",
+          "--hidden",
+          "--no-validation",
+          "--renderer",
+          "preview",
+          "--present",
+          "immediate",
+          "--preview-quality",
+          "apu",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--frames",
+          "300"
+        ]
+      },
+      {
+        "models": 1,
+        "run": 2,
+        "wall_seconds_including_startup": 1.4952275089999603,
+        "cpu_and_frame_ms": {
+          "animation": 1.17,
+          "convert": 0.0,
+          "upload": 0.0,
+          "render": 1.24,
+          "gpu": 2.9,
+          "p95": 4.17
+        },
+        "gpu_pass_ms": {
+          "shadow": 0.186,
+          "depth/ao": 0.421,
+          "materials": 0.608,
+          "sss": 0.21,
+          "coc": 0.0,
+          "downsample": 0.0,
+          "blur": 0.0,
+          "composite": 0.0,
+          "bloom": 0.218,
+          "tonemap": 0.566
+        },
+        "command": [
+          "<repo>/build/linux-release/mikumikudesu",
+          "--hidden",
+          "--no-validation",
+          "--renderer",
+          "preview",
+          "--present",
+          "immediate",
+          "--preview-quality",
+          "apu",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--frames",
+          "300"
+        ]
+      },
+      {
+        "models": 1,
+        "run": 3,
+        "wall_seconds_including_startup": 1.4657130639998286,
+        "cpu_and_frame_ms": {
+          "animation": 1.07,
+          "convert": 0.0,
+          "upload": 0.0,
+          "render": 1.27,
+          "gpu": 2.76,
+          "p95": 3.87
+        },
+        "gpu_pass_ms": {
+          "shadow": 0.176,
+          "depth/ao": 0.401,
+          "materials": 0.571,
+          "sss": 0.205,
+          "coc": 0.0,
+          "downsample": 0.0,
+          "blur": 0.0,
+          "composite": 0.0,
+          "bloom": 0.208,
+          "tonemap": 0.537
+        },
+        "command": [
+          "<repo>/build/linux-release/mikumikudesu",
+          "--hidden",
+          "--no-validation",
+          "--renderer",
+          "preview",
+          "--present",
+          "immediate",
+          "--preview-quality",
+          "apu",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--frames",
+          "300"
+        ]
+      },
+      {
+        "models": 3,
+        "run": 1,
+        "wall_seconds_including_startup": 3.0483019080002123,
+        "cpu_and_frame_ms": {
+          "animation": 3.31,
+          "convert": 0.0,
+          "upload": 0.01,
+          "render": 0.86,
+          "gpu": 4.5,
+          "p95": 7.2
+        },
+        "gpu_pass_ms": {
+          "shadow": 0.461,
+          "depth/ao": 0.705,
+          "materials": 1.311,
+          "sss": 0.19,
+          "coc": 0.0,
+          "downsample": 0.0,
+          "blur": 0.0,
+          "composite": 0.0,
+          "bloom": 0.207,
+          "tonemap": 0.559
+        },
+        "command": [
+          "<repo>/build/linux-release/mikumikudesu",
+          "--hidden",
+          "--no-validation",
+          "--renderer",
+          "preview",
+          "--present",
+          "immediate",
+          "--preview-quality",
+          "apu",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--frames",
+          "300"
+        ]
+      },
+      {
+        "models": 3,
+        "run": 2,
+        "wall_seconds_including_startup": 2.7385935969996353,
+        "cpu_and_frame_ms": {
+          "animation": 3.12,
+          "convert": 0.0,
+          "upload": 0.01,
+          "render": 0.85,
+          "gpu": 4.36,
+          "p95": 6.29
+        },
+        "gpu_pass_ms": {
+          "shadow": 0.451,
+          "depth/ao": 0.678,
+          "materials": 1.258,
+          "sss": 0.181,
+          "coc": 0.0,
+          "downsample": 0.0,
+          "blur": 0.0,
+          "composite": 0.0,
+          "bloom": 0.199,
+          "tonemap": 0.546
+        },
+        "command": [
+          "<repo>/build/linux-release/mikumikudesu",
+          "--hidden",
+          "--no-validation",
+          "--renderer",
+          "preview",
+          "--present",
+          "immediate",
+          "--preview-quality",
+          "apu",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--frames",
+          "300"
+        ]
+      },
+      {
+        "models": 3,
+        "run": 3,
+        "wall_seconds_including_startup": 2.8507634259999577,
+        "cpu_and_frame_ms": {
+          "animation": 3.44,
+          "convert": 0.0,
+          "upload": 0.01,
+          "render": 0.85,
+          "gpu": 4.52,
+          "p95": 6.76
+        },
+        "gpu_pass_ms": {
+          "shadow": 0.468,
+          "depth/ao": 0.719,
+          "materials": 1.307,
+          "sss": 0.191,
+          "coc": 0.0,
+          "downsample": 0.0,
+          "blur": 0.0,
+          "composite": 0.0,
+          "bloom": 0.208,
+          "tonemap": 0.558
+        },
+        "command": [
+          "<repo>/build/linux-release/mikumikudesu",
+          "--hidden",
+          "--no-validation",
+          "--renderer",
+          "preview",
+          "--present",
+          "immediate",
+          "--preview-quality",
+          "apu",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--frames",
+          "300"
+        ]
+      },
+      {
+        "models": 5,
+        "run": 1,
+        "wall_seconds_including_startup": 4.6319905370000924,
+        "cpu_and_frame_ms": {
+          "animation": 6.73,
+          "convert": 0.0,
+          "upload": 0.01,
+          "render": 0.75,
+          "gpu": 6.49,
+          "p95": 12.74
+        },
+        "gpu_pass_ms": {
+          "shadow": 0.796,
+          "depth/ao": 1.034,
+          "materials": 2.063,
+          "sss": 0.201,
+          "coc": 0.0,
+          "downsample": 0.0,
+          "blur": 0.0,
+          "composite": 0.0,
+          "bloom": 0.216,
+          "tonemap": 0.575
+        },
+        "command": [
+          "<repo>/build/linux-release/mikumikudesu",
+          "--hidden",
+          "--no-validation",
+          "--renderer",
+          "preview",
+          "--present",
+          "immediate",
+          "--preview-quality",
+          "apu",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--frames",
+          "300"
+        ]
+      },
+      {
+        "models": 5,
+        "run": 2,
+        "wall_seconds_including_startup": 5.832513934999952,
+        "cpu_and_frame_ms": {
+          "animation": 9.04,
+          "convert": 0.0,
+          "upload": 0.01,
+          "render": 0.74,
+          "gpu": 7.36,
+          "p95": 13.46
+        },
+        "gpu_pass_ms": {
+          "shadow": 0.882,
+          "depth/ao": 1.177,
+          "materials": 2.408,
+          "sss": 0.206,
+          "coc": 0.0,
+          "downsample": 0.0,
+          "blur": 0.0,
+          "composite": 0.0,
+          "bloom": 0.241,
+          "tonemap": 0.682
+        },
+        "command": [
+          "<repo>/build/linux-release/mikumikudesu",
+          "--hidden",
+          "--no-validation",
+          "--renderer",
+          "preview",
+          "--present",
+          "immediate",
+          "--preview-quality",
+          "apu",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--frames",
+          "300"
+        ]
+      },
+      {
+        "models": 5,
+        "run": 3,
+        "wall_seconds_including_startup": 6.4778274539999074,
+        "cpu_and_frame_ms": {
+          "animation": 9.46,
+          "convert": 0.0,
+          "upload": 0.01,
+          "render": 0.7,
+          "gpu": 7.47,
+          "p95": 14.04
+        },
+        "gpu_pass_ms": {
+          "shadow": 0.891,
+          "depth/ao": 1.19,
+          "materials": 2.454,
+          "sss": 0.202,
+          "coc": 0.0,
+          "downsample": 0.0,
+          "blur": 0.0,
+          "composite": 0.0,
+          "bloom": 0.239,
+          "tonemap": 0.69
+        },
+        "command": [
+          "<repo>/build/linux-release/mikumikudesu",
+          "--hidden",
+          "--no-validation",
+          "--renderer",
+          "preview",
+          "--present",
+          "immediate",
+          "--preview-quality",
+          "apu",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--asset",
+          "<repo>/assets/models/teto/model/teto.pmx",
+          "--asset",
+          "<repo>/telephone_merged.vmd",
+          "--frames",
+          "300"
+        ]
+      }
+    ],
+    "window_pixels": [
+      1280,
+      720
+    ],
+    "viewport_pixels": [
+      733,
+      271
+    ]
+  },
+  "callgrind": {
+    "version": "3.25.1",
+    "scope": "refreshAnimatedMesh only; fixed 320x320 MP4 frames 30/31 plus preroll/initial uploads",
+    "total_Ir": 393156439,
+    "refreshAnimatedMesh_calls": 34,
+    "stepSimulation_calls": 124,
+    "stepSimulation_inclusive_Ir": 337436139,
+    "self_Ir_by_object": {
+      "libBulletDynamics.so.3.25": 205817910,
+      "libBulletCollision.so.3.25": 122643421,
+      "mikumikudesu": 46913320,
+      "libc.so.6": 7655343,
+      "libm.so.6": 9579744,
+      "libstdc++.so.6.0.36": 231975,
+      "libLinearMath.so.3.25": 114566,
+      "libvulkan_radeon.so": 126742,
+      "ld-linux-x86-64.so.2": 19981,
+      "libdrm_amdgpu.so.1.134.0": 19493,
+      "libzstd.so.1.5.7": 21602,
+      "libz.so.1.3.2": 3789,
+      "???": 2778,
+      "libdrm.so.2.134.0": 1923,
+      "libvulkan.so.1.4.363": 3705,
+      "libgcc_s.so.1": 147
+    },
+    "top_15_self_functions": [
+      {
+        "function": "btSequentialImpulseConstraintSolver::resolveSingleConstraintRowGeneric(btSolverBody&, btSolverBody&, btSolverConstraint const&)",
+        "object": "libBulletDynamics.so.3.25",
+        "self_Ir": 76139033
+      },
+      {
+        "function": "btGjkPairDetector::getClosestPointsNonVirtual(btDiscreteCollisionDetectorInterface::ClosestPointInput const&, btDiscreteCollisionDetectorInterface::Result&, btIDebugDraw*)",
+        "object": "libBulletCollision.so.3.25",
+        "self_Ir": 36388635
+      },
+      {
+        "function": "btConvexShape::localGetSupportVertexWithoutMarginNonVirtual(btVector3 const&) const",
+        "object": "libBulletCollision.so.3.25",
+        "self_Ir": 26874234
+      },
+      {
+        "function": "btSequentialImpulseConstraintSolver::solveSingleIteration(int, btCollisionObject**, int, btPersistentManifold**, int, btTypedConstraint**, int, btContactSolverInfo const&, btIDebugDraw*)",
+        "object": "libBulletDynamics.so.3.25",
+        "self_Ir": 18596670
+      },
+      {
+        "function": "btSequentialImpulseConstraintSolver::convertJoint(btSolverConstraint*, btTypedConstraint*, btTypedConstraint::btConstraintInfo1 const&, int, int, btContactSolverInfo const&)",
+        "object": "libBulletDynamics.so.3.25",
+        "self_Ir": 13867132
+      },
+      {
+        "function": "btSequentialImpulseConstraintSolver::resolveSingleConstraintRowLowerLimit(btSolverBody&, btSolverBody&, btSolverConstraint const&)",
+        "object": "libBulletDynamics.so.3.25",
+        "self_Ir": 9831908
+      },
+      {
+        "function": "dayo::app::makePreviewFrameVertex(mmd::PmxModel const&, mmd::AnimatedModelFrame const&, unsigned long, int, mmd::PreviewNormalization const&, std::array<unsigned int, 2ul>, bool)",
+        "object": "mikumikudesu",
+        "self_Ir": 9829046
+      },
+      {
+        "function": "dayo::app::Application::refreshAnimatedMesh(bool, float)",
+        "object": "mikumikudesu",
+        "self_Ir": 9616894
+      },
+      {
+        "function": "btSequentialImpulseConstraintSolver::getOrInitSolverBody(btCollisionObject&, float)",
+        "object": "libBulletDynamics.so.3.25",
+        "self_Ir": 9613081
+      },
+      {
+        "function": "btGeneric6DofConstraint::get_limit_motor_info2(btRotationalLimitMotor*, btTransform const&, btTransform const&, btVector3 const&, btVector3 const&, btVector3 const&, btVector3 const&, btTypedConstraint::btConstraintInfo2*, int, btVector3&, int, int)",
+        "object": "libBulletDynamics.so.3.25",
+        "self_Ir": 9282028
+      },
+      {
+        "function": "mmd::(anonymous namespace)::solveIk(mmd::PmxModel const&, std::vector<unsigned long, std::allocator<unsigned long> > const&, std::vector<mmd::(anonymous namespace)::BoneRuntimePose, std::allocator<mmd::(anonymous namespace)::BoneRuntimePose> >&, mmd::VmdMotion const*, float, std::vector<mmd::(anonymous namespace)::LocalPose, std::allocator<mmd::(anonymous namespace)::LocalPose> >&, std::vector<mmd::(anonymous namespace)::GlobalPose, std::allocator<mmd::(anonymous namespace)::GlobalPose> >&, std::span<unsigned long const, 18446744073709551615ul>, std::span<unsigned long const, 18446744073709551615ul>, std::vector<std::vector<unsigned long, std::allocator<unsigned long> >, std::allocator<std::vector<unsigned long, std::allocator<unsigned long> > > > const&, std::vector<std::vector<unsigned long, std::allocator<unsigned long> >, std::allocator<std::vector<unsigned long, std::allocator<unsigned long> > > > const&, std::vector<unsigned char, std::allocator<unsigned char> >&, std::vector<unsigned long, std::allocator<unsigned long> >&, std::vector<unsigned long, std::allocator<unsigned long> >&, std::vector<unsigned long, std::allocator<unsigned long> >&, std::vector<unsigned long, std::allocator<unsigned long> >&, bool, mmd::(anonymous namespace)::IkEvaluationBudget&)",
+        "object": "mikumikudesu",
+        "self_Ir": 8440461
+      },
+      {
+        "function": "btRigidBody::predictIntegratedTransform(float, btTransform&)",
+        "object": "libBulletDynamics.so.3.25",
+        "self_Ir": 7732961
+      },
+      {
+        "function": "0x00000000000310c0",
+        "object": "libBulletCollision.so.3.25",
+        "self_Ir": 5621188
+      },
+      {
+        "function": "btVoronoiSimplexSolver::updateClosestVectorAndPoints()",
+        "object": "libBulletCollision.so.3.25",
+        "self_Ir": 5604722
+      },
+      {
+        "function": "0x0000000000175080",
+        "object": "libc.so.6",
+        "self_Ir": 5525140
+      }
+    ],
+    "evaluateInto_self_Ir": 2323679,
+    "makePreviewFrameVertex_calls": 63908,
+    "makeNativeSceneModelData_calls": 0,
+    "fixed_RGB_bytes": 614400,
+    "fixed_RGB_sha256": "16d68dd6e2417ecd6502719f0c84b80410409142778ca589adfa65d572f7e705"
+  },
+  "scratch_reserve_probe": [
+    {
+      "models": 1,
+      "vertex_bytes": 108,
+      "reserved_bytes": 3451032,
+      "size": 0,
+      "upstream_allocations": 0,
+      "upstream_bytes": 0
+    },
+    {
+      "models": 3,
+      "vertex_bytes": 108,
+      "reserved_bytes": 10353096,
+      "size": 0,
+      "upstream_allocations": 1,
+      "upstream_bytes": 10353152
+    },
+    {
+      "models": 5,
+      "vertex_bytes": 108,
+      "reserved_bytes": 17255160,
+      "size": 0,
+      "upstream_allocations": 1,
+      "upstream_bytes": 17255232
+    }
+  ],
+  "media_decode_probe": {
+    "runs": [
+      {
+        "frames": 60,
+        "seeks": 60,
+        "packets": 1830,
+        "scalers": 60,
+        "milliseconds": 1849.08,
+        "checksum": 15054,
+        "run": 1,
+        "gop": 60
+      },
+      {
+        "frames": 60,
+        "seeks": 60,
+        "packets": 60,
+        "scalers": 60,
+        "milliseconds": 68.0283,
+        "checksum": 15054,
+        "run": 1,
+        "gop": 1
+      },
+      {
+        "frames": 60,
+        "seeks": 60,
+        "packets": 1830,
+        "scalers": 60,
+        "milliseconds": 2152.1,
+        "checksum": 15054,
+        "run": 2,
+        "gop": 60
+      },
+      {
+        "frames": 60,
+        "seeks": 60,
+        "packets": 60,
+        "scalers": 60,
+        "milliseconds": 58.935,
+        "checksum": 15054,
+        "run": 2,
+        "gop": 1
+      },
+      {
+        "frames": 60,
+        "seeks": 60,
+        "packets": 1830,
+        "scalers": 60,
+        "milliseconds": 1410.35,
+        "checksum": 15054,
+        "run": 3,
+        "gop": 60
+      },
+      {
+        "frames": 60,
+        "seeks": 60,
+        "packets": 60,
+        "scalers": 60,
+        "milliseconds": 66.896,
+        "checksum": 15054,
+        "run": 3,
+        "gop": 1
+      }
+    ],
+    "first_60_decoded_RGBA_bytes": 13824000,
+    "both_fixtures_decoded_RGBA_sha256": "8ae9351c9460b1399c979b38c6c095c7bd2858ce8a53712681c21f9ddce1d723",
+    "fixture_bytes": {
+      "gop1": 634244,
+      "gop60": 436837
+    }
+  }
+}
