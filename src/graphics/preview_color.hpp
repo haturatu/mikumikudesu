@@ -20,8 +20,11 @@ inline std::array<float, 3> previewPlanckianRgb(float kelvin) noexcept {
     const float denominator = std::max(y, 1e-4F);
     const float X = x / denominator;
     const float Z = (1.0F - x - y) / denominator;
-    return {std::max(3.2406F * X - 1.5372F - 0.4986F * Z, 0.05F), std::max(-0.9689F * X + 1.8758F + 0.0415F * Z, 0.05F),
-            std::max(0.0557F * X - 0.2040F + 1.0570F * Z, 0.05F)};
+    return {
+        std::max(3.2406F * X - 1.5372F - 0.4986F * Z, 0.05F),
+        std::max(-0.9689F * X + 1.8758F + 0.0415F * Z, 0.05F),
+        std::max(0.0557F * X - 0.2040F + 1.0570F * Z, 0.05F),
+    };
 }
 } // namespace detail
 

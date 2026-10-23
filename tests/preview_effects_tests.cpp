@@ -27,13 +27,15 @@ bool colorAdjustmentConstants() {
         float kelvin;
         std::array<float, 3> gain;
     };
-    const std::array references{WhitePoint{1000.0F, {0.127427792F, 0.628060055F, 7.253743772F}},
-                                WhitePoint{2221.0F, {0.212240988F, 0.647062694F, 6.815766304F}},
-                                WhitePoint{2222.0F, {0.212697266F, 0.647935954F, 6.805772398F}},
-                                WhitePoint{3999.0F, {0.696101474F, 1.006128629F, 1.834150019F}},
-                                WhitePoint{4000.0F, {0.696542928F, 1.006192058F, 1.832221790F}},
-                                WhitePoint{6500.0F, {1.0F, 1.0F, 1.0F}},
-                                WhitePoint{15000.0F, {1.282846588F, 0.957706341F, 0.586083659F}}};
+    const std::array references{
+        WhitePoint{1000.0F, {0.127427792F, 0.628060055F, 7.253743772F}},
+        WhitePoint{2221.0F, {0.212240988F, 0.647062694F, 6.815766304F}},
+        WhitePoint{2222.0F, {0.212697266F, 0.647935954F, 6.805772398F}},
+        WhitePoint{3999.0F, {0.696101474F, 1.006128629F, 1.834150019F}},
+        WhitePoint{4000.0F, {0.696542928F, 1.006192058F, 1.832221790F}},
+        WhitePoint{6500.0F, {1.0F, 1.0F, 1.0F}},
+        WhitePoint{15000.0F, {1.282846588F, 0.957706341F, 0.586083659F}},
+    };
     bool ok = true;
     for (const auto& reference : references) {
         for (const float exposure : {-12.0F, 0.0F, 12.0F}) {

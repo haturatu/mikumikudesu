@@ -2345,8 +2345,12 @@ void captureColorReference(dayo::graphics::VulkanDevice& device, const char* dir
     for (unsigned y = 0; y < 19; ++y)
         for (unsigned x = 0; x < 31; ++x) {
             const float a = static_cast<float>(x % 5) / 4.0F;
-            const float rgba[]{a * (0.1F + static_cast<float>(x) / 7.0F), a * (0.3F + static_cast<float>(y) / 5.0F),
-                               a * 0.8F, a};
+            const float rgba[]{
+                a * (0.1F + static_cast<float>(x) / 7.0F),
+                a * (0.3F + static_cast<float>(y) / 5.0F),
+                a * 0.8F,
+                a,
+            };
             for (unsigned c = 0; c < 4; ++c) {
                 auto half = dayo::core::floatToHalf(rgba[c]);
                 std::memcpy(hdr.data() + ((y * 31 + x) * 4 + c) * 2, &half, 2);
