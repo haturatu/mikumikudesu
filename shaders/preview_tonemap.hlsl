@@ -12,12 +12,13 @@ struct FullscreenVertex {
 };
 
 struct TonemapConstants {
-    // x = view transform (DAYO_VIEW_*), y = exposure EV, z = white balance K, w = bloom intensity
+    // x = view transform (DAYO_VIEW_*), yz = reserved, w = bloom intensity
     float4 options;
     // x = bloom, y = FXAA, zw = reserved
     float4 flags;
+    // xyz = precomputed white-balance gain, w = exposure multiplier
+    float4 colorAdjustment;
     // Reserved ABI words. Spatial effects run in preview_dof.hlsl.
-    float4 projection;
     float4 depthOfField;
     // xy = viewport size in pixels
     float4 viewport;
@@ -56,10 +57,13 @@ float displayLuma(float3 color) {
     return dot(color, float3(0.299, 0.587, 0.114));
 }
 
+float3 adjustedColor(float3 color) {
+    return color * tonemap.colorAdjustment.w * tonemap.colorAdjustment.xyz;
+}
+
 float3 displayAt(float2 uv) {
     float3 color = sceneAtWithBloom(uv);
-    return applyViewTransform(applyExposureAndWhiteBalance(color, tonemap.options.y, tonemap.options.z),
-                              uint(tonemap.options.x));
+    return applyViewTransform(adjustedColor(color), uint(tonemap.options.x));
 }
 
 // Keep emissive bloom outside geometry as additive RGB with zero coverage.
@@ -70,8 +74,7 @@ float4 outputAt(float2 uv) {
     float3 color = displayAt(uv) * alpha;
     if (tonemap.flags.x > 0.5 && alpha < 1.0) {
         const float3 bloom = bloomColor.SampleLevel(colorSampler, uv, 0).rgb * tonemap.options.w;
-        color += applyViewTransform(applyExposureAndWhiteBalance(bloom, tonemap.options.y, tonemap.options.z),
-                                    uint(tonemap.options.x)) * (1.0 - alpha);
+        color += applyViewTransform(adjustedColor(bloom), uint(tonemap.options.x)) * (1.0 - alpha);
     }
     return float4(color, alpha);
 }

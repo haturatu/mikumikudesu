@@ -1,3 +1,4 @@
+#include "core/image_hdr.hpp"
 #include "core/model_probe.hpp"
 #include "core/output.hpp"
 #include "fx/fx_compiler.hpp"
@@ -22,6 +23,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <numbers>
@@ -2334,6 +2336,48 @@ bool physicalDofAndFocusPicking(dayo::graphics::VulkanDevice& device) {
     return ok;
 }
 
+void captureColorReference(dayo::graphics::VulkanDevice& device, const char* directory) {
+    using namespace dayo::graphics;
+    PreviewScene scene;
+    scene.backgroundEnabled = false;
+    device.updatePreviewScene(scene);
+    std::vector<std::uint8_t> hdr(31 * 19 * 8);
+    for (unsigned y = 0; y < 19; ++y)
+        for (unsigned x = 0; x < 31; ++x) {
+            const float a = static_cast<float>(x % 5) / 4.0F;
+            const float rgba[]{a * (0.1F + static_cast<float>(x) / 7.0F), a * (0.3F + static_cast<float>(y) / 5.0F),
+                               a * 0.8F, a};
+            for (unsigned c = 0; c < 4; ++c) {
+                auto half = dayo::core::floatToHalf(rgba[c]);
+                std::memcpy(hdr.data() + ((y * 31 + x) * 4 + c) * 2, &half, 2);
+            }
+        }
+    std::filesystem::create_directories(directory);
+    unsigned index = 0;
+    for (auto transform : {PreviewViewTransform::aces, PreviewViewTransform::agx, PreviewViewTransform::neutral})
+        for (float k : {1000.0F, 2221.0F, 2222.0F, 3999.0F, 4000.0F, 6500.0F, 15000.0F})
+            for (float ev : {-12.0F, 0.0F, 12.0F})
+                for (bool fxaa : {false, true})
+                    for (bool bloom : {false, true}) {
+                        auto settings = legacyPreviewRenderSettings();
+                        settings.viewTransform = transform;
+                        settings.whiteBalance = k;
+                        settings.exposure = ev;
+                        settings.antiAliasing = fxaa ? PreviewAntiAliasing::fxaa : PreviewAntiAliasing::off;
+                        settings.bloom.override = bloom ? EffectOverride::enabled : EffectOverride::disabled;
+                        settings.bloomThreshold = 0.3F;
+                        device.setPreviewRenderSettings(settings);
+                        const auto image = device.renderPreviewHdrToImage({31, 19}, hdr);
+                        std::ofstream out(std::filesystem::path(directory) / (std::to_string(index++) + ".rgba"),
+                                          std::ios::binary);
+                        out.write(reinterpret_cast<const char*>(image.pixels.data()),
+                                  static_cast<std::streamsize>(image.pixels.size()));
+                        if (!out)
+                            throw std::runtime_error("write color reference failed");
+                    }
+    std::cout << "color cases=" << index << '\n';
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -2364,6 +2408,10 @@ int main(int argc, char** argv) {
                 options.quality = dayo::graphics::PreviewQuality::high;
         }
         dayo::graphics::VulkanDevice device(*window, true, options);
+        if (const auto* directory = std::getenv("DAYO_TEST_COLOR_OUTPUT")) {
+            captureColorReference(device, directory);
+            return 0;
+        }
         dayo::graphics::PreviewScene scene;
         scene.cameraDistance = 3.0F;
         scene.backgroundEnabled = false;
