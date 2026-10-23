@@ -55,10 +55,20 @@ struct MediaFile::Impl {
     AVFormatContext* format{};
     AVCodecContext* audioCodec{};
     AVCodecContext* videoCodec{};
+    AVPacket* videoPacket{};
+    AVFrame* videoFrame{};
+    SwsContext* videoScaler{};
+    bool videoDecodeReady{};
+    bool videoDraining{};
+    double videoRequestSeconds{-1.0};
+    double videoFrameSeconds{-1.0};
     int audioStream{-1};
     int videoStream{-1};
 
     ~Impl() {
+        sws_freeContext(videoScaler);
+        av_frame_free(&videoFrame);
+        av_packet_free(&videoPacket);
         avcodec_free_context(&audioCodec);
         avcodec_free_context(&videoCodec);
         avformat_close_input(&format);
@@ -81,6 +91,10 @@ MediaFile::MediaFile(const std::filesystem::path& path, MediaOpenMode mode) : im
     }
     if (impl_->videoStream >= 0) {
         impl_->videoCodec = openDecoder(impl_->format, impl_->videoStream);
+        impl_->videoPacket = av_packet_alloc();
+        impl_->videoFrame = av_frame_alloc();
+        if (impl_->videoPacket == nullptr || impl_->videoFrame == nullptr)
+            throw std::bad_alloc();
         impl_->info.hasVideo = true;
         impl_->info.videoWidth = static_cast<std::uint32_t>(impl_->videoCodec->width);
         impl_->info.videoHeight = static_cast<std::uint32_t>(impl_->videoCodec->height);
@@ -147,6 +161,9 @@ void MediaFile::streamAudio(const AudioSampleCallback& callback, double startSec
         if (!samples.empty())
             callback(samples, 48'000, 2);
     };
+    // Audio and video share the demuxer. The next video request must seek again
+    // after an audio operation has changed its packet position.
+    impl_->videoDecodeReady = false;
     ffmpeg::check(av_seek_frame(impl_->format, impl_->audioStream, 0, AVSEEK_FLAG_BACKWARD), "seek audio");
     avformat_flush(impl_->format);
     avcodec_flush_buffers(impl_->audioCodec);
@@ -230,67 +247,89 @@ ImageRgba8 MediaFile::decodeVideoFrame(double seconds) {
 #if DAYO_HAS_MEDIA
     if (impl_->videoCodec == nullptr)
         throw std::runtime_error("media has no video stream");
+    if (!std::isfinite(seconds) || seconds < 0.0)
+        throw std::invalid_argument("video time must be finite and nonnegative");
     const auto* stream = impl_->format->streams[impl_->videoStream];
-    const auto timestamp = static_cast<std::int64_t>(seconds / av_q2d(stream->time_base));
-    ffmpeg::check(av_seek_frame(impl_->format, impl_->videoStream, timestamp, AVSEEK_FLAG_BACKWARD), "seek video");
-    avformat_flush(impl_->format);
-    avcodec_flush_buffers(impl_->videoCodec);
-    auto* packet = av_packet_alloc();
-    auto* frame = av_frame_alloc();
-    if (packet == nullptr || frame == nullptr)
-        throw std::bad_alloc();
-    bool found = false;
-    while (!found && av_read_frame(impl_->format, packet) >= 0) {
-        if (packet->stream_index == impl_->videoStream) {
-            ffmpeg::check(avcodec_send_packet(impl_->videoCodec, packet), "submit video packet");
-            while (true) {
-                const int result = avcodec_receive_frame(impl_->videoCodec, frame);
-                if (result == AVERROR(EAGAIN) || result == AVERROR_EOF)
-                    break;
-                ffmpeg::check(result, "decode video frame");
-                const auto pts = frame->best_effort_timestamp;
-                if (pts == AV_NOPTS_VALUE || static_cast<double>(pts) * av_q2d(stream->time_base) + 1e-6 >= seconds) {
-                    found = true;
-                    break;
-                }
-                av_frame_unref(frame);
-            }
+    const auto timeBase = av_q2d(stream->time_base);
+    const auto timestamp = seconds / timeBase;
+    if (timestamp >= static_cast<double>(std::numeric_limits<std::int64_t>::max()))
+        throw std::out_of_range("video time exceeds timestamp range");
+    // Bound forward decoding after a timeline jump, but keep normal playback
+    // (including skipped display frames) on the current decoder state.
+    constexpr double maximumForwardGap = 1.0;
+    const bool seek = !impl_->videoDecodeReady || seconds < impl_->videoRequestSeconds ||
+                      seconds - impl_->videoRequestSeconds > maximumForwardGap || impl_->videoFrameSeconds < 0.0;
+    try {
+        if (seek) {
+            impl_->videoDecodeReady = false;
+            ffmpeg::check(av_seek_frame(impl_->format, impl_->videoStream, static_cast<std::int64_t>(timestamp),
+                                        AVSEEK_FLAG_BACKWARD),
+                          "seek video");
+            avformat_flush(impl_->format);
+            avcodec_flush_buffers(impl_->videoCodec);
+            av_packet_unref(impl_->videoPacket);
+            av_frame_unref(impl_->videoFrame);
+            impl_->videoDraining = false;
+            impl_->videoFrameSeconds = -1.0;
+            impl_->videoDecodeReady = true;
         }
-        av_packet_unref(packet);
-    }
-    if (!found) {
-        const int flushResult = avcodec_send_packet(impl_->videoCodec, nullptr);
-        if (flushResult >= 0 || flushResult == AVERROR_EOF) {
-            while (avcodec_receive_frame(impl_->videoCodec, frame) >= 0) {
+        auto* frame = impl_->videoFrame;
+        // A fractional request can select the same ceiling-PTS frame as its
+        // predecessor. Keep that frame alive until the next receive call.
+        while (impl_->videoFrameSeconds < 0.0 || impl_->videoFrameSeconds + 1e-6 < seconds) {
+            const int received = avcodec_receive_frame(impl_->videoCodec, frame);
+            if (received == 0) {
                 const auto pts = frame->best_effort_timestamp;
-                if (pts == AV_NOPTS_VALUE || static_cast<double>(pts) * av_q2d(stream->time_base) + 1e-6 >= seconds) {
-                    found = true;
+                impl_->videoFrameSeconds = pts == AV_NOPTS_VALUE ? -1.0 : static_cast<double>(pts) * timeBase;
+                if (pts == AV_NOPTS_VALUE || impl_->videoFrameSeconds + 1e-6 >= seconds)
                     break;
-                }
-                av_frame_unref(frame);
+                continue;
             }
+            if (received == AVERROR_EOF)
+                throw std::runtime_error("no video frame at requested time");
+            if (received != AVERROR(EAGAIN))
+                ffmpeg::check(received, "decode video frame");
+            if (impl_->videoDraining)
+                throw std::runtime_error("video decoder requested input after draining");
+
+            auto* packet = impl_->videoPacket;
+            int read;
+            do {
+                av_packet_unref(packet);
+                read = av_read_frame(impl_->format, packet);
+            } while (read >= 0 && packet->stream_index != impl_->videoStream);
+            if (read == AVERROR_EOF) {
+                ffmpeg::check(avcodec_send_packet(impl_->videoCodec, nullptr), "drain video decoder");
+                impl_->videoDraining = true;
+            } else {
+                ffmpeg::check(read, "read video packet");
+                // receive_frame returned EAGAIN, so send_packet must accept
+                // input. No packet is discarded while output is pending.
+                ffmpeg::check(avcodec_send_packet(impl_->videoCodec, packet), "submit video packet");
+            }
+            av_packet_unref(packet);
         }
+        impl_->videoRequestSeconds = seconds;
+        ImageRgba8 output;
+        output.width = static_cast<std::uint32_t>(frame->width);
+        output.height = static_cast<std::uint32_t>(frame->height);
+        output.pixels.resize(static_cast<std::size_t>(output.width) * output.height * 4U);
+        // Reconfigure only when dimensions or pixel format actually change.
+        impl_->videoScaler = sws_getCachedContext(
+            impl_->videoScaler, frame->width, frame->height, static_cast<AVPixelFormat>(frame->format), frame->width,
+            frame->height, AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr, nullptr, nullptr);
+        if (impl_->videoScaler == nullptr)
+            throw std::runtime_error("create video color converter failed");
+        std::uint8_t* destination[]{output.pixels.data()};
+        int stride[]{static_cast<int>(output.width * 4U)};
+        ffmpeg::check(
+            sws_scale(impl_->videoScaler, frame->data, frame->linesize, 0, frame->height, destination, stride),
+            "convert video frame");
+        return output;
+    } catch (...) {
+        impl_->videoDecodeReady = false;
+        throw;
     }
-    if (!found) {
-        av_frame_free(&frame);
-        av_packet_free(&packet);
-        throw std::runtime_error("no video frame at requested time");
-    }
-    ImageRgba8 output;
-    output.width = static_cast<std::uint32_t>(frame->width);
-    output.height = static_cast<std::uint32_t>(frame->height);
-    output.pixels.resize(static_cast<std::size_t>(output.width) * output.height * 4U);
-    auto* scaler = sws_getContext(frame->width, frame->height, static_cast<AVPixelFormat>(frame->format), frame->width,
-                                  frame->height, AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr, nullptr, nullptr);
-    if (scaler == nullptr)
-        throw std::runtime_error("create video color converter failed");
-    std::uint8_t* destination[]{output.pixels.data()};
-    int stride[]{static_cast<int>(output.width * 4U)};
-    sws_scale(scaler, frame->data, frame->linesize, 0, frame->height, destination, stride);
-    sws_freeContext(scaler);
-    av_frame_free(&frame);
-    av_packet_free(&packet);
-    return output;
 #else
     static_cast<void>(seconds);
     throw std::runtime_error("FFmpeg support was not built");
