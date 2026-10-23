@@ -1104,6 +1104,17 @@ if(BUILD_TESTING)
     PROPERTIES TIMEOUT 40 RUN_SERIAL TRUE ENVIRONMENT "VK_LAYER_VALIDATE_SYNC=1"
   )
   if(DAYO_HAS_MEDIA)
+    add_executable(dayo_media_decode_tests tests/media_decode_tests.cpp)
+    target_link_libraries(dayo_media_decode_tests PRIVATE dayo_core)
+    target_link_options(dayo_media_decode_tests PRIVATE -Wl,--wrap=av_seek_frame -Wl,--wrap=avcodec_send_packet)
+    dayo_enable_warnings(dayo_media_decode_tests)
+    add_test(
+      NAME media_decode
+      COMMAND
+        "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/media_decode_tests.py"
+        "$<TARGET_FILE:dayo_media_decode_tests>"
+    )
+    set_tests_properties(media_decode PROPERTIES TIMEOUT 60)
     add_test(
       NAME audio_export_cli
       COMMAND bash "${CMAKE_SOURCE_DIR}/tests/audio_export_cli.sh" "$<TARGET_FILE:mikumikudesu>"
@@ -1136,6 +1147,7 @@ if(DAYO_ENABLE_SANITIZERS)
     dayo_i18n_tests
     dayo_output_tests
     dayo_video_export_job_tests
+    dayo_media_decode_tests
     dayo_fx_executor_tests
     dayo_upload_ring_tests
     dayo_preview_effects_tests
