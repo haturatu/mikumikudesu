@@ -3,6 +3,7 @@
 #include "app/preview_texture_layout.hpp"
 #include "core/project.hpp"
 #include "graphics/preview_aperture.hpp"
+#include "graphics/preview_color.hpp"
 #include "graphics/preview_effects.hpp"
 
 #include <cmath>
@@ -19,6 +20,40 @@ bool check(bool condition, const char* message) {
         std::cerr << "FAIL: " << message << '\n';
     return condition;
 }
+bool colorAdjustmentConstants() {
+    using dayo::graphics::previewColorAdjustment;
+    // Independent double-precision evaluations of the original shader fit.
+    struct WhitePoint {
+        float kelvin;
+        std::array<float, 3> gain;
+    };
+    const std::array references{
+        WhitePoint{1000.0F, {0.127427792F, 0.628060055F, 7.253743772F}},
+        WhitePoint{2221.0F, {0.212240988F, 0.647062694F, 6.815766304F}},
+        WhitePoint{2222.0F, {0.212697266F, 0.647935954F, 6.805772398F}},
+        WhitePoint{3999.0F, {0.696101474F, 1.006128629F, 1.834150019F}},
+        WhitePoint{4000.0F, {0.696542928F, 1.006192058F, 1.832221790F}},
+        WhitePoint{6500.0F, {1.0F, 1.0F, 1.0F}},
+        WhitePoint{15000.0F, {1.282846588F, 0.957706341F, 0.586083659F}},
+    };
+    bool ok = true;
+    for (const auto& reference : references) {
+        for (const float exposure : {-12.0F, 0.0F, 12.0F}) {
+            const auto value = previewColorAdjustment(exposure, reference.kelvin);
+            for (std::size_t channel = 0; channel < reference.gain.size(); ++channel)
+                ok &= check(std::abs(value[channel] - reference.gain[channel]) <
+                                2e-5F * std::max(reference.gain[channel], 1.0F),
+                            "precomputed white balance matches the original fit at endpoints and branch boundaries");
+            ok &= check(std::abs(value[0] * 0.2126F + value[1] * 0.7152F + value[2] * 0.0722F - 1.0F) < 2e-6F,
+                        "white balance retains unit luminance independently of exposure");
+            ok &= check(value[3] == std::exp2(exposure), "exposure remains separate from white-balance gain");
+        }
+    }
+    ok &= check(previewColorAdjustment(0.0F, 6500.0F) == std::array{1.0F, 1.0F, 1.0F, 1.0F},
+                "default cached constants are exactly identity");
+    return ok;
+}
+
 bool omittedVertexConversion() {
     dayo::core::PmxModel model;
     model.vertices.resize(1);
@@ -379,6 +414,7 @@ bool apertureShape() {
 int main() {
     using namespace dayo::graphics;
     bool ok = focusAndLensMath();
+    ok &= colorAdjustmentConstants();
     ok &= textureLayout();
     ok &= evaluationMetadata();
     ok &= omittedVertexConversion();

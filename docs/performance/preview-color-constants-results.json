@@ -1,0 +1,145 @@
+{
+  "source_base": "f10efd8",
+  "gpu": "Vega 8 / RADV RAVEN",
+  "driver": "Mesa 26.2.5-arch1.1",
+  "glslc": "2026.4",
+  "build": "GCC Release; native/PGO/LTO OFF",
+  "image_comparison": {
+    "cases": 252,
+    "channels": 593712,
+    "different_channels": 2,
+    "max_channel_error": 1,
+    "absolute_error_histogram": {
+      "0": 593710,
+      "1": 2
+    },
+    "worst_cases": [
+      {
+        "case": 55,
+        "max_error": 1,
+        "different_channels": 1
+      },
+      {
+        "case": 148,
+        "max_error": 1,
+        "different_channels": 1
+      },
+      {
+        "case": 0,
+        "max_error": 0,
+        "different_channels": 0
+      },
+      {
+        "case": 1,
+        "max_error": 0,
+        "different_channels": 0
+      },
+      {
+        "case": 2,
+        "max_error": 0,
+        "different_channels": 0
+      },
+      {
+        "case": 3,
+        "max_error": 0,
+        "different_channels": 0
+      },
+      {
+        "case": 4,
+        "max_error": 0,
+        "different_channels": 0
+      },
+      {
+        "case": 5,
+        "max_error": 0,
+        "different_channels": 0
+      },
+      {
+        "case": 6,
+        "max_error": 0,
+        "different_channels": 0
+      },
+      {
+        "case": 7,
+        "max_error": 0,
+        "different_channels": 0
+      }
+    ]
+  },
+  "spirv": {
+    "main": {
+      "bytes": 83812,
+      "static_instructions": 4294,
+      "OpFDiv": 266,
+      "Exp2": 18,
+      "image_sample_sites": 36
+    },
+    "new": {
+      "bytes": 60640,
+      "static_instructions": 3186,
+      "OpFDiv": 86,
+      "Exp2": 0,
+      "image_sample_sites": 36
+    }
+  },
+  "radv": {
+    "main": {
+      "Driver pipeline hash": 12409212018911861563,
+      "SGPRs": 48,
+      "VGPRs": 52,
+      "Spilled SGPRs": 0,
+      "Spilled VGPRs": 0,
+      "Code size": 22576,
+      "LDS size": 0,
+      "Scratch size": 0,
+      "Subgroups per SIMD": 4,
+      "Combined inputs": 1,
+      "Combined outputs": 1,
+      "Hash": 1837337258,
+      "Instructions": 3524,
+      "Copies": 217,
+      "Branches": 110,
+      "Latency": 7463,
+      "Inverse Throughput": 3518,
+      "VMEM Clause": 27,
+      "SMEM Clause": 19,
+      "Pre-Sched SGPRs": 33,
+      "Pre-Sched VGPRs": 49,
+      "VALU": 3072,
+      "SALU": 238,
+      "VMEM": 36,
+      "SMEM": 19,
+      "VOPD": 0
+    },
+    "optimized": {
+      "Driver pipeline hash": 10082292755970979471,
+      "SGPRs": 48,
+      "VGPRs": 48,
+      "Spilled SGPRs": 0,
+      "Spilled VGPRs": 0,
+      "Code size": 22104,
+      "LDS size": 0,
+      "Scratch size": 0,
+      "Subgroups per SIMD": 5,
+      "Combined inputs": 1,
+      "Combined outputs": 1,
+      "Hash": 73739957,
+      "Instructions": 3455,
+      "Copies": 213,
+      "Branches": 110,
+      "Latency": 7082,
+      "Inverse Throughput": 3145,
+      "VMEM Clause": 27,
+      "SMEM Clause": 19,
+      "Pre-Sched SGPRs": 37,
+      "Pre-Sched VGPRs": 45,
+      "VALU": 3005,
+      "SALU": 236,
+      "VMEM": 36,
+      "SMEM": 19,
+      "VOPD": 0
+    }
+  },
+  "spirv_sha256_main": "8f09450bf40ed31b04e30a9088fbbbed4b69df22b0671bd19ecf211ac4228c14",
+  "spirv_sha256_optimized": "2648d850234ef5efe0dac50628f4566e4a4b882fe2c7a637b043252fcc0fdf1a"
+}

@@ -778,6 +778,7 @@ class VulkanDevice final : public Device {
     bool previewStillQuality_{};
     bool previewHdrActive_{};
     PreviewRenderSettings previewRenderSettings_{};
+    std::array<float, 4> previewColorAdjustment_{1.0F, 1.0F, 1.0F, 1.0F};
     PreviewPassTimings previewPassTimings_{};
     core::ImageRgba8 previewDisplayBackground_;
     handles::TextureHandle lastPreviewHdrTexture_{};

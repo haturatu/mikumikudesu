@@ -1,5 +1,6 @@
 #include "graphics/vulkan/vulkan_device.hpp"
 #include "graphics/preview_aperture.hpp"
+#include "graphics/preview_color.hpp"
 #include "graphics/vulkan/vulkan_command_list.hpp"
 #include "graphics/vulkan/vulkan_upload_context.hpp"
 
@@ -122,7 +123,7 @@ static_assert(sizeof(PreviewDofConstants) == 80);
 struct PreviewTonemapConstants {
     float options[4];
     float flags[4];
-    float projection[4];
+    float colorAdjustment[4];
     float depthOfField[4];
     float viewport[4];
 };
@@ -4934,8 +4935,7 @@ void VulkanDevice::recordPreviewFinalPass(VkCommandBuffer command, Frame& frame,
                             &hdr.descriptor, 0, nullptr);
     PreviewTonemapConstants tonemapConstants{};
     tonemapConstants.options[0] = static_cast<float>(resolved.viewTransform);
-    tonemapConstants.options[1] = resolved.exposure;
-    tonemapConstants.options[2] = resolved.whiteBalance;
+    std::copy(previewColorAdjustment_.begin(), previewColorAdjustment_.end(), tonemapConstants.colorAdjustment);
     tonemapConstants.options[3] = resolved.bloomIntensity;
     tonemapConstants.flags[0] = resolved.bloom && frame.previewBloom.initialized ? 1.0F : 0.0F;
     tonemapConstants.flags[1] = resolved.antiAliasing == PreviewAntiAliasing::fxaa ? 1.0F : 0.0F;
@@ -6673,6 +6673,8 @@ void VulkanDevice::updatePreviewMaterials(std::span<const PreviewMaterial> mater
 void VulkanDevice::setPreviewRenderSettings(const PreviewRenderSettings& settings) {
     previewTemporalHistory_.valid = false;
     previewRenderSettings_ = sanitizePreviewRenderSettings(settings);
+    previewColorAdjustment_ =
+        previewColorAdjustment(previewRenderSettings_.exposure, previewRenderSettings_.whiteBalance);
     refreshPreviewEffectUniforms();
 }
 
