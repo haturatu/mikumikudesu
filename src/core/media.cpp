@@ -293,11 +293,13 @@ ImageRgba8 MediaFile::decodeVideoFrame(double seconds) {
                 throw std::runtime_error("video decoder requested input after draining");
 
             auto* packet = impl_->videoPacket;
-            int read;
-            do {
+            int read = 0;
+            while (true) {
                 av_packet_unref(packet);
                 read = av_read_frame(impl_->format, packet);
-            } while (read >= 0 && packet->stream_index != impl_->videoStream);
+                if (read < 0 || packet->stream_index == impl_->videoStream)
+                    break;
+            }
             if (read == AVERROR_EOF) {
                 ffmpeg::check(avcodec_send_packet(impl_->videoCodec, nullptr), "drain video decoder");
                 impl_->videoDraining = true;

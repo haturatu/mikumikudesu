@@ -16,7 +16,13 @@ int __real_avcodec_send_packet(AVCodecContext*, const AVPacket*);
 }
 
 namespace {
-std::size_t seeks{}, packets{};
+struct DecodeCounters {
+    std::size_t seeks{}, packets{};
+};
+DecodeCounters& decodeCounters() {
+    static DecodeCounters counters;
+    return counters;
+}
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
@@ -24,24 +30,25 @@ void require(bool condition, const char* message) {
 } // namespace
 
 extern "C" int __wrap_av_seek_frame(AVFormatContext* context, int stream, std::int64_t timestamp, int flags) {
-    ++seeks;
+    ++decodeCounters().seeks;
     return __real_av_seek_frame(context, stream, timestamp, flags);
 }
 extern "C" int __wrap_avcodec_send_packet(AVCodecContext* context, const AVPacket* packet) {
-    ++packets;
+    ++decodeCounters().packets;
     return __real_avcodec_send_packet(context, packet);
 }
 
 int main(int argc, char** argv) {
     try {
+        auto& [seeks, packets] = decodeCounters();
         require(argc == 4, "usage: media_decode_tests video raw.rgba pts.txt");
         std::ifstream timestamps(argv[3]);
         const bool changingDimensions = std::string_view(argv[2]) == "-";
         std::ifstream raw(argv[2], std::ios::binary);
         std::vector<double> times;
         std::vector<dayo::core::ImageRgba8> expected;
-        double time;
-        std::uint32_t width, height;
+        double time{};
+        std::uint32_t width{}, height{};
         while (timestamps >> time >> width >> height) {
             dayo::core::ImageRgba8 image;
             if (changingDimensions) {
@@ -94,8 +101,12 @@ int main(int argc, char** argv) {
         }
         require(eof, "a request beyond EOF must fail");
         matches(media.decodeVideoFrame(times[0]), 0);
-        for (double invalid : {-1.0, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN(),
-                               std::numeric_limits<double>::max()}) {
+        for (double invalid : {
+                 -1.0,
+                 std::numeric_limits<double>::infinity(),
+                 std::numeric_limits<double>::quiet_NaN(),
+                 std::numeric_limits<double>::max(),
+             }) {
             bool rejected = false;
             try {
                 static_cast<void>(media.decodeVideoFrame(invalid));

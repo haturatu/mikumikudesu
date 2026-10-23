@@ -27,11 +27,12 @@ main `f10efd8` からの変更。`media_decode` は小さな動画をその場�
 同一時刻・小数時刻・逆送り・大きなジャンプ・EOF後の先頭復帰・音声との交互利用・move・不正時刻も検証する。
 旧実装では「連続再生の seek は1回」の検査が失敗する。
 
-前回調査と同じ320×180 GOP 60 の probe では、0フレームの warmup 後の60要求が
+前回調査と同じ320×180 GOP 60 の probe では、フレーム0を warmup として1回読み込んだ後の60要求が
 1,830パケット／60 seek から59パケット／0 seek になった。warmup がフレーム0を保持するため59パケットとなる。
 これは処理回数の削減であり、GPU描画やアプリ全体のFPSの改善率ではない。
 
 ローカルでは通常ビルドと ASan/UBSan で上記4入力を検証した。
+CMake経由の `media_decode`、`core`、`audio_export_cli`、`video_export_cli` の4テストも成功した。
 
 ```sh
 cmake --preset linux-release
