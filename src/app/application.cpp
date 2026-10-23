@@ -2094,7 +2094,6 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         animatedMaterialTemplates_.size() != materialCount || animatedDraws_.size() != materialCount;
     bool rebuildVertices = initialUpload || rebuildTopology || dynamicVertices;
     std::pmr::vector<graphics::PreviewVertex> vertices(scratch);
-    vertices.reserve(vertexCount);
     std::pmr::vector<graphics::PreviewMorphDelta> morphDeltas(scratch);
     std::pmr::vector<float> morphWeights(scratch);
     morphWeights.reserve(morphCount);
@@ -2167,6 +2166,8 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
         animation.finish();
     }
     rebuildVertices = rebuildVertices || dynamicVertices;
+    if (rebuildVertices)
+        vertices.reserve(vertexCount);
     for (auto& evaluatedModel : evaluated) {
         auto* instance = scene_.model(evaluatedModel.instance->id);
         if (instance == nullptr)

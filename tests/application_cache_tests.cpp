@@ -5,11 +5,38 @@
 
 #include <filesystem>
 #include <iostream>
+#include <memory_resource>
 #include <stdexcept>
+
+namespace {
+class LargeAllocationCounter final : public std::pmr::memory_resource {
+  public:
+    LargeAllocationCounter() : previous_(std::pmr::set_default_resource(this)) {}
+    ~LargeAllocationCounter() override {
+        std::pmr::set_default_resource(previous_);
+    }
+    std::size_t allocations{};
+
+  private:
+    std::pmr::memory_resource* previous_;
+    void* do_allocate(std::size_t size, std::size_t alignment) override {
+        if (size >= 8U * 1024U * 1024U)
+            ++allocations;
+        return previous_->allocate(size, alignment);
+    }
+    void do_deallocate(void* pointer, std::size_t size, std::size_t alignment) override {
+        previous_->deallocate(pointer, size, alignment);
+    }
+    bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
+        return this == &other;
+    }
+};
+} // namespace
 
 namespace dayo::app {
 struct ApplicationCacheTestAccess {
-    static void run(Application& app, test::MockNativeDevice& device, const std::filesystem::path& modelPath) {
+    static void run(Application& app, test::MockNativeDevice& device, const std::filesystem::path& modelPath,
+                    LargeAllocationCounter& allocations) {
         const auto require = [](bool value, const char* message) {
             if (!value)
                 throw std::runtime_error(message);
@@ -93,6 +120,21 @@ struct ApplicationCacheTestAccess {
         app.refreshAnimatedMesh(false);
         require(app.evaluatedFrames_[0].frame.vertices.size() == 3 && device.previewVertices[0].uv[0] == 0.25F,
                 "GPU skinning must retain and upload changing CPU UV morphs on ordinary frames");
+
+        app.scene_.clearModels();
+        auto largeModel = mmd::pmx::load(modelPath);
+        largeModel.vertices.resize(100'000, largeModel.vertices.front());
+        const auto largePath = modelPath.parent_path() / "large.pmx";
+        static_cast<void>(mmd::pmx::save(largePath, largeModel));
+        static_cast<void>(app.scene_.addModel(largePath));
+        allocations.allocations = 0;
+        app.refreshAnimatedMesh(true);
+        require(device.previewVertices.size() == 100'000 && allocations.allocations != 0,
+                "initial upload must reserve and populate the large vertex array");
+        allocations.allocations = 0;
+        app.refreshAnimatedMesh(false);
+        require(app.evaluatedFrames_[0].frame.vertices.empty() && allocations.allocations == 0,
+                "unchanged GPU poses must not reserve an unused full-model vertex array");
         // Keep the mock alive through all application-owned GPU resource destructors.
     }
 };
@@ -126,9 +168,10 @@ int main() {
         model.rigidBodies[0].position = {0.0F, 1.0F, 0.0F};
         const auto modelPath = directory / "model.pmx";
         static_cast<void>(mmd::pmx::save(modelPath, model));
+        LargeAllocationCounter allocations;
         dayo::test::MockNativeDevice device;
         dayo::app::Application application({});
-        dayo::app::ApplicationCacheTestAccess::run(application, device, modelPath);
+        dayo::app::ApplicationCacheTestAccess::run(application, device, modelPath, allocations);
         std::filesystem::remove_all(directory);
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';
