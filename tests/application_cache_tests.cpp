@@ -15,13 +15,19 @@ class LargeAllocationCounter final : public std::pmr::memory_resource {
     ~LargeAllocationCounter() override {
         std::pmr::set_default_resource(previous_);
     }
-    std::size_t allocations{};
+    [[nodiscard]] std::size_t count() const noexcept {
+        return allocations_;
+    }
+    void reset() noexcept {
+        allocations_ = 0;
+    }
 
   private:
+    std::size_t allocations_{};
     std::pmr::memory_resource* previous_;
     void* do_allocate(std::size_t size, std::size_t alignment) override {
         if (size >= 8U * 1024U * 1024U)
-            ++allocations;
+            ++allocations_;
         return previous_->allocate(size, alignment);
     }
     void do_deallocate(void* pointer, std::size_t size, std::size_t alignment) override {
@@ -127,13 +133,13 @@ struct ApplicationCacheTestAccess {
         const auto largePath = modelPath.parent_path() / "large.pmx";
         static_cast<void>(mmd::pmx::save(largePath, largeModel));
         static_cast<void>(app.scene_.addModel(largePath));
-        allocations.allocations = 0;
+        allocations.reset();
         app.refreshAnimatedMesh(true);
-        require(device.previewVertices.size() == 100'000 && allocations.allocations != 0,
+        require(device.previewVertices.size() == 100'000 && allocations.count() != 0,
                 "initial upload must reserve and populate the large vertex array");
-        allocations.allocations = 0;
+        allocations.reset();
         app.refreshAnimatedMesh(false);
-        require(app.evaluatedFrames_[0].frame.vertices.empty() && allocations.allocations == 0,
+        require(app.evaluatedFrames_[0].frame.vertices.empty() && allocations.count() == 0,
                 "unchanged GPU poses must not reserve an unused full-model vertex array");
         // Keep the mock alive through all application-owned GPU resource destructors.
     }
