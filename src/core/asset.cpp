@@ -37,8 +37,8 @@ AssetKind classifyAsset(const std::filesystem::path& path) {
     if (extension == ".fxdayo")
         return AssetKind::effect;
 
-    constexpr std::array<std::string_view, 7> images{".bmp", ".jpg", ".jpeg", ".png", ".hdr", ".tga", ".dds"};
-    constexpr std::array<std::string_view, 5> audio{".wav", ".mp3", ".m4a", ".flac", ".ogg"};
+    constexpr std::array<std::string_view, 8> images{".bmp", ".jpg", ".jpeg", ".png", ".hdr", ".tga", ".dds", ".ppm"};
+    constexpr std::array<std::string_view, 6> audio{".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac"};
     constexpr std::array<std::string_view, 5> video{".mp4", ".avi", ".mkv", ".mov", ".webm"};
     if (contains(images, extension))
         return AssetKind::image;
