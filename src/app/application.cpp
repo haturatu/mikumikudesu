@@ -51,6 +51,22 @@ namespace dayo::app {
 namespace {
 
 #if DAYO_HAS_IMGUI
+constexpr int videoAspectPresetCustom = 4;
+
+void applyVideoAspectPreset(int preset, std::uint32_t& width, std::uint32_t& height) noexcept {
+    constexpr std::array<std::array<std::uint32_t, 2>, videoAspectPresetCustom> presets{{
+        {1920, 1080},
+        {1080, 1920},
+        {1080, 1080},
+        {1080, 1350},
+    }};
+    if (preset >= 0 && preset < videoAspectPresetCustom) {
+        const auto& selected = presets[static_cast<std::size_t>(preset)];
+        width = selected[0];
+        height = selected[1];
+    }
+}
+
 float halton(std::uint32_t index, std::uint32_t base) noexcept {
     float result = 0.0F;
     float fraction = 1.0F / static_cast<float>(base);
@@ -3111,6 +3127,11 @@ void Application::buildUi() {
         ImGui::SameLine();
         if (ImGui::Button(ui::label("Reset view")))
             resetView();
+        if (ImGui::Combo(ui::label("Aspect ratio"), &videoAspectPreset_,
+                         ui::items("Landscape 16:9|Short video 9:16|Square 1:1|Portrait 4:5|Custom"))) {
+            applyVideoAspectPreset(videoAspectPreset_, videoWidth_, videoHeight_);
+        }
+        ImGui::TextDisabled("%s", ui::tr("Viewport guides show the exported frame."));
         if (hasCameraVmd) {
             bool follow = followVmdCamera_;
             if (ImGui::Checkbox(ui::label("Follow VMD camera"), &follow)) {
@@ -3148,6 +3169,31 @@ void Application::buildUi() {
                 const auto imagePosition = ImGui::GetCursorScreenPos();
                 const auto input = viewportInteraction_.image(ImTextureRef{static_cast<ImTextureID>(preview.textureId)},
                                                               available, !hasCameraVmd || !followVmdCamera_);
+                const float previewAspect = available.x / available.y;
+                const float outputAspect = static_cast<float>(videoWidth_) / static_cast<float>(videoHeight_);
+                ImVec2 frameMinimum = imagePosition;
+                const ImVec2 imageMaximum{imagePosition.x + available.x, imagePosition.y + available.y};
+                ImVec2 frameMaximum = imageMaximum;
+                if (outputAspect < previewAspect) {
+                    const float frameWidth = available.y * outputAspect;
+                    frameMinimum.x += (available.x - frameWidth) * 0.5F;
+                    frameMaximum.x = frameMinimum.x + frameWidth;
+                } else {
+                    const float frameHeight = available.x / outputAspect;
+                    frameMinimum.y += (available.y - frameHeight) * 0.5F;
+                    frameMaximum.y = frameMinimum.y + frameHeight;
+                }
+                auto* drawList = ImGui::GetWindowDrawList();
+                constexpr ImU32 cropShade = IM_COL32(0, 0, 0, 112);
+                if (frameMinimum.x > imagePosition.x) {
+                    drawList->AddRectFilled(imagePosition, {frameMinimum.x, imageMaximum.y}, cropShade);
+                    drawList->AddRectFilled({frameMaximum.x, imagePosition.y}, imageMaximum, cropShade);
+                }
+                if (frameMinimum.y > imagePosition.y) {
+                    drawList->AddRectFilled(imagePosition, {imageMaximum.x, frameMinimum.y}, cropShade);
+                    drawList->AddRectFilled({imagePosition.x, frameMaximum.y}, imageMaximum, cropShade);
+                }
+                drawList->AddRect(frameMinimum, frameMaximum, IM_COL32(255, 255, 255, 220), 0.0F, 0, 1.5F);
                 uiState_.viewportHovered = input.hovered;
                 if (input.focusPick) {
                     pendingTrackingFocus_ = input.focusTracking;
@@ -3189,7 +3235,6 @@ void Application::buildUi() {
                                          ImGui::GetStyle().FramePadding.y * 2.0F};
                     const ImVec2 messagePosition{imagePosition.x + (available.x - messageSize.x) * 0.5F,
                                                  imagePosition.y + (available.y - messageSize.y) * 0.5F};
-                    auto* drawList = ImGui::GetWindowDrawList();
                     drawList->AddRectFilled(
                         {messagePosition.x - padding.x, messagePosition.y - padding.y},
                         {messagePosition.x + messageSize.x + padding.x, messagePosition.y + messageSize.y + padding.y},
@@ -5526,12 +5571,21 @@ void Application::buildVideoExportUi() {
             else
                 ImGui::TextWrapped("%s", audioSource_.string().c_str());
             ImGui::InputText(ui::label("Output"), videoDestination_.data(), videoDestination_.size());
+            if (ImGui::Combo(ui::label("Aspect ratio"), &videoAspectPreset_,
+                             ui::items("Landscape 16:9|Short video 9:16|Square 1:1|Portrait 4:5|Custom"))) {
+                applyVideoAspectPreset(videoAspectPreset_, videoWidth_, videoHeight_);
+            }
             int width = static_cast<int>(videoWidth_);
             int height = static_cast<int>(videoHeight_);
-            if (ImGui::InputInt(ui::label("Width"), &width))
+            if (ImGui::InputInt(ui::label("Width"), &width)) {
                 videoWidth_ = static_cast<std::uint32_t>(std::max(width, 1));
-            if (ImGui::InputInt(ui::label("Height"), &height))
+                videoAspectPreset_ = videoAspectPresetCustom;
+            }
+            if (ImGui::InputInt(ui::label("Height"), &height)) {
                 videoHeight_ = static_cast<std::uint32_t>(std::max(height, 1));
+                videoAspectPreset_ = videoAspectPresetCustom;
+            }
+            ImGui::TextDisabled("%s", ui::tr("Viewport guides show the exported frame."));
             ImGui::InputFloat(ui::label("FPS"), &videoFps_, 0.0F, 0.0F, "%.3f");
             videoFps_ = std::max(videoFps_, 1.0F);
             ImGui::Combo(ui::label("Codec"), &videoCodec_, ui::items("H.264|H.265 / HEVC|AV1"));

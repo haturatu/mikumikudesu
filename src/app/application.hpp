@@ -322,6 +322,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     std::array<char, 1024> videoDestination_{};
     std::uint32_t videoWidth_{1920};
     std::uint32_t videoHeight_{1080};
+    int videoAspectPreset_{};
     std::uint32_t sequenceWidth_{1920};
     std::uint32_t sequenceHeight_{1080};
     int previewStillScale_{1}; // 0: native, 1: 4/3, 2: 2x
