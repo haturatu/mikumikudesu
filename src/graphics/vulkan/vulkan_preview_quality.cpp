@@ -64,73 +64,81 @@ void qualityBarrier(VkCommandBuffer command, VkPipelineStageFlags2 source, VkAcc
 void VulkanDevice::ensurePreviewQualityPipelines() {
     if (qualityPipelineLayout_ != VK_NULL_HANDLE)
         return;
-    const VkSamplerCreateInfo sampler{.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-                                      .magFilter = VK_FILTER_NEAREST,
-                                      .minFilter = VK_FILTER_NEAREST,
-                                      .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
-                                      .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                                      .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                                      .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                                      .maxLod = 0};
-    checkQuality(vkCreateSampler(device_, &sampler, nullptr, &qualityPointSampler_), "create quality point sampler");
-    std::array<VkDescriptorSetLayoutBinding, 14> bindings{};
-    for (std::uint32_t i = 0; i < bindings.size(); ++i) {
-        bindings[i] = {i,
-                       i < 10   ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
-                       : i < 12 ? VK_DESCRIPTOR_TYPE_SAMPLER
-                                : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                       1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-    }
-    bindings[10].pImmutableSamplers = &previewClampSampler_;
-    bindings[11].pImmutableSamplers = &qualityPointSampler_;
-    const VkDescriptorSetLayoutCreateInfo descriptor{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                                                     .bindingCount = static_cast<std::uint32_t>(bindings.size()),
-                                                     .pBindings = bindings.data()};
-    checkQuality(vkCreateDescriptorSetLayout(device_, &descriptor, nullptr, &qualityDescriptorLayout_),
-                 "create quality descriptor layout");
-    const VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(QualityConstants)};
-    const VkPipelineLayoutCreateInfo layout{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                                            .setLayoutCount = 1,
-                                            .pSetLayouts = &qualityDescriptorLayout_,
-                                            .pushConstantRangeCount = 1,
-                                            .pPushConstantRanges = &push};
-    checkQuality(vkCreatePipelineLayout(device_, &layout, nullptr, &qualityPipelineLayout_),
-                 "create quality pipeline layout");
-    const std::array programs{std::pair{DAYO_PREVIEW_CONTACT_SHADOW_SPV, "ContactShadow"},
-                              std::pair{DAYO_PREVIEW_CONTACT_BLUR_SPV, "ContactBlur"},
-                              std::pair{DAYO_PREVIEW_SCREEN_REFLECTION_SPV, "ScreenReflection"},
-                              std::pair{DAYO_PREVIEW_SCREEN_COMPOSITE_SPV, "ScreenComposite"},
-                              std::pair{DAYO_PREVIEW_TEMPORAL_RESOLVE_SPV, "TemporalResolve"},
-                              std::pair{DAYO_PREVIEW_PREPARE_DISPLAY_SPV, "PrepareDisplay"},
-                              std::pair{DAYO_PREVIEW_FXAA_RESOLVE_SPV, "FxaaResolve"},
-                              std::pair{DAYO_PREVIEW_SMAA_EDGES_SPV, "SmaaEdges"},
-                              std::pair{DAYO_PREVIEW_SMAA_WEIGHTS_SPV, "SmaaWeights"},
-                              std::pair{DAYO_PREVIEW_SMAA_NEIGHBORHOOD_SPV, "SmaaNeighborhood"}};
-    for (std::size_t i = 0; i < programs.size(); ++i) {
-        std::ifstream file(programs[i].first, std::ios::binary | std::ios::ate);
-        if (!file)
-            throw std::runtime_error("cannot open preview quality SPIR-V");
-        const auto bytes = static_cast<std::size_t>(file.tellg());
-        std::vector<std::uint32_t> words(bytes / sizeof(std::uint32_t));
-        file.seekg(0);
-        file.read(reinterpret_cast<char*>(words.data()), static_cast<std::streamsize>(bytes));
-        if (!file || words.empty() || bytes % sizeof(std::uint32_t) != 0)
-            throw std::runtime_error("invalid preview quality SPIR-V");
-        const VkShaderModuleCreateInfo moduleInfo{
-            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = bytes, .pCode = words.data()};
-        VkShaderModule module{};
-        checkQuality(vkCreateShaderModule(device_, &moduleInfo, nullptr, &module), "create quality shader");
-        const VkComputePipelineCreateInfo pipeline{
-            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-            .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                      .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                      .module = module,
-                      .pName = programs[i].second},
-            .layout = qualityPipelineLayout_};
-        const auto result =
-            vkCreateComputePipelines(device_, pipelineCache_, 1, &pipeline, nullptr, &qualityPipelines_[i]);
-        vkDestroyShaderModule(device_, module, nullptr);
-        checkQuality(result, "create quality compute pipeline");
+    try {
+        const VkSamplerCreateInfo sampler{.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                                          .magFilter = VK_FILTER_NEAREST,
+                                          .minFilter = VK_FILTER_NEAREST,
+                                          .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                                          .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                          .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                          .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                          .maxLod = 0};
+        checkQuality(vkCreateSampler(device_, &sampler, nullptr, &qualityPointSampler_),
+                     "create quality point sampler");
+        std::array<VkDescriptorSetLayoutBinding, 14> bindings{};
+        for (std::uint32_t i = 0; i < bindings.size(); ++i) {
+            bindings[i] = {i,
+                           i < 10   ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
+                           : i < 12 ? VK_DESCRIPTOR_TYPE_SAMPLER
+                                    : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                           1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        }
+        bindings[10].pImmutableSamplers = &previewClampSampler_;
+        bindings[11].pImmutableSamplers = &qualityPointSampler_;
+        const VkDescriptorSetLayoutCreateInfo descriptor{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                                         .bindingCount = static_cast<std::uint32_t>(bindings.size()),
+                                                         .pBindings = bindings.data()};
+        checkQuality(vkCreateDescriptorSetLayout(device_, &descriptor, nullptr, &qualityDescriptorLayout_),
+                     "create quality descriptor layout");
+        const VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(QualityConstants)};
+        const VkPipelineLayoutCreateInfo layout{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                                .setLayoutCount = 1,
+                                                .pSetLayouts = &qualityDescriptorLayout_,
+                                                .pushConstantRangeCount = 1,
+                                                .pPushConstantRanges = &push};
+        checkQuality(vkCreatePipelineLayout(device_, &layout, nullptr, &qualityPipelineLayout_),
+                     "create quality pipeline layout");
+        const std::array programs{std::pair{DAYO_PREVIEW_CONTACT_SHADOW_SPV, "ContactShadow"},
+                                  std::pair{DAYO_PREVIEW_CONTACT_BLUR_SPV, "ContactBlur"},
+                                  std::pair{DAYO_PREVIEW_SCREEN_REFLECTION_SPV, "ScreenReflection"},
+                                  std::pair{DAYO_PREVIEW_SCREEN_COMPOSITE_SPV, "ScreenComposite"},
+                                  std::pair{DAYO_PREVIEW_TEMPORAL_RESOLVE_SPV, "TemporalResolve"},
+                                  std::pair{DAYO_PREVIEW_PREPARE_DISPLAY_SPV, "PrepareDisplay"},
+                                  std::pair{DAYO_PREVIEW_FXAA_RESOLVE_SPV, "FxaaResolve"},
+                                  std::pair{DAYO_PREVIEW_SMAA_EDGES_SPV, "SmaaEdges"},
+                                  std::pair{DAYO_PREVIEW_SMAA_WEIGHTS_SPV, "SmaaWeights"},
+                                  std::pair{DAYO_PREVIEW_SMAA_NEIGHBORHOOD_SPV, "SmaaNeighborhood"}};
+        for (std::size_t i = 0; i < programs.size(); ++i) {
+            std::ifstream file(programs[i].first, std::ios::binary | std::ios::ate);
+            if (!file)
+                throw std::runtime_error("cannot open preview quality SPIR-V");
+            const auto bytes = static_cast<std::size_t>(file.tellg());
+            if (bytes == 0 || bytes % sizeof(std::uint32_t) != 0)
+                throw std::runtime_error("invalid preview quality SPIR-V size");
+            std::vector<std::uint32_t> words(bytes / sizeof(std::uint32_t));
+            file.seekg(0);
+            file.read(reinterpret_cast<char*>(words.data()), static_cast<std::streamsize>(bytes));
+            if (!file)
+                throw std::runtime_error("invalid preview quality SPIR-V");
+            const VkShaderModuleCreateInfo moduleInfo{
+                .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = bytes, .pCode = words.data()};
+            VkShaderModule module{};
+            checkQuality(vkCreateShaderModule(device_, &moduleInfo, nullptr, &module), "create quality shader");
+            const VkComputePipelineCreateInfo pipeline{
+                .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                          .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                          .module = module,
+                          .pName = programs[i].second},
+                .layout = qualityPipelineLayout_};
+            const auto result =
+                vkCreateComputePipelines(device_, pipelineCache_, 1, &pipeline, nullptr, &qualityPipelines_[i]);
+            vkDestroyShaderModule(device_, module, nullptr);
+            checkQuality(result, "create quality compute pipeline");
+        }
+    } catch (...) {
+        destroyPreviewQualityPipelines();
+        throw;
     }
 }
 
@@ -277,7 +285,7 @@ void VulkanDevice::recordPreviewQuality(VkCommandBuffer command, Frame& frame, V
     const bool screen = !previewFinalHdr_.valid() && frame.previewAo.initialized &&
                         (effects.reflectionIntensity > 0 || effects.refractionIntensity > 0);
     auto aa = effects.antiAliasing;
-    if (aa == PreviewAntiAliasing::taa && !frame.motion.enabled)
+    if (aa == PreviewAntiAliasing::taa && (!frame.motion.enabled || !capabilities_.independentBlend))
         aa = PreviewAntiAliasing::smaa;
     // This frame slot's fence has completed. Release disabled full-size targets
     // through the texture retirement queue instead of retaining High-preset VRAM.
@@ -458,7 +466,7 @@ void VulkanDevice::ensurePreviewSurfaceResource(Frame& frame, VkExtent2D extent)
     frame.previewHdr.surfaceTexture =
         createTextureEx({.dimension = TextureDimension::d2,
                          .extent = {extent.width, extent.height, 1},
-                         .format = PixelFormat::rgba16Float,
+                         .format = PixelFormat::rgba16Uint,
                          .mipLevels = 1,
                          .arrayLayers = 1,
                          .usage = ResourceUsage::colorAttachment | ResourceUsage::sampledRead,

@@ -659,7 +659,7 @@ float4 shadePreview(VertexOutput input, bool frontFace, out float4 skinDiffuse) 
 struct PreviewFragment {
     float4 color : SV_Target0;
     float4 skinDiffuse : SV_Target1;
-    float4 surface : SV_Target2;
+    uint4 surface : SV_Target2;
 };
 
 PreviewFragment PS(VertexOutput input, bool frontFace : SV_IsFrontFace) {
@@ -673,7 +673,8 @@ PreviewFragment PS(VertexOutput input, bool frontFace : SV_IsFrontFace) {
         const float reactive = saturate(1 - output.color.a + material.hair.x * 0.4 + material.hair.w * 0.5);
         const uint packed = uint(round(reflectivity * 15)) | (uint(round(saturate(material.hair.w) * 15)) << 4U) |
                             (uint(round(reactive * 7)) << 8U);
-        output.surface = float4(encodeOctNormal(n), saturate(material.pbr.x), float(packed));
+        output.surface = uint4(uint2(round(saturate(encodeOctNormal(n) * 0.5 + 0.5) * 65535)),
+                               uint(round(saturate(material.pbr.x) * 65535)), packed);
     }
     return output;
 }

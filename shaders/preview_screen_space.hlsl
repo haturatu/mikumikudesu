@@ -23,6 +23,10 @@ void ScreenReflection(uint3 id : SV_DispatchThreadID) {
             if (q.z <= quality.projection.z || !qualityInside(qUv)) break;
             float delta = q.z - qualityDepthAt(qUv);
             if (delta > 0 && delta < 0.025 + t * 0.025 && length((qUv - uv) * quality.size) > 2) {
+                // The hit must face the ray. Reject the back of the originating
+                // normal-mapped surface before accepting a short-distance hit.
+                float3 hitNormal = decodeOctNormal(qualityNormal.Load(int3(qualityPixel(qUv), 0)));
+                if (dot(hitNormal, direction) >= -0.02) { last = t; continue; }
                 // Refine the intersection before sampling scene colour.
                 float low = last, high = t;
                 [unroll] for (uint j = 0; j < 3; ++j) {
@@ -47,7 +51,7 @@ void ScreenComposite(uint3 id : SV_DispatchThreadID) {
     if (any(id.xy >= quality.outputSize)) return;
     float2 uv = qualityUv(id.xy);
     float4 color = qualityColor.Load(int3(id.xy, 0));
-    float4 surface = qualitySurface.Load(int3(id.xy, 0));
+    float4 surface = qualitySurfaceAt(uv);
     uint packed = uint(round(surface.a));
     float transmission = float((packed >> 4) & 15U) / 15;
     float z = qualityDepthAt(uv);

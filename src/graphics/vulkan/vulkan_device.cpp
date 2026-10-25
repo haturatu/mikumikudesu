@@ -1601,7 +1601,7 @@ void VulkanDevice::createPipeline() {
         surfaceEdge.rasterizer = edge.rasterizer;
         surfaceEdge.depthStencil = edge.depthStencil;
         const std::array surfaceFormats{VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT,
-                                        VK_FORMAT_R16G16B16A16_SFLOAT};
+                                        VK_FORMAT_R16G16B16A16_UINT};
         hdrSurfacePipeline_ = createGraphicsPipelineResource(surfaceOpaque, pipelineLayout_, stages, surfaceFormats,
                                                              VK_FORMAT_D32_SFLOAT);
         hdrSurfaceTransparentPipeline_ = createGraphicsPipelineResource(surfaceTransparent, pipelineLayout_, stages,
@@ -5121,7 +5121,9 @@ void VulkanDevice::recordPreviewScenePass(VkCommandBuffer command, Frame& frame,
     auto surfaceAttachment = skinAttachment;
     surfaceAttachment.imageView =
         previewSurfaceActive_ ? typedTextures_.at(frame.previewHdr.surfaceTexture).view : VK_NULL_HANDLE;
-    surfaceAttachment.clearValue.color = {{0, 0, 1, 0}};
+    surfaceAttachment.clearValue.color.uint32[0] = surfaceAttachment.clearValue.color.uint32[1] = 32768;
+    surfaceAttachment.clearValue.color.uint32[2] = 65535;
+    surfaceAttachment.clearValue.color.uint32[3] = 0;
     const std::array colorAttachments{colorAttachment, skinAttachment, surfaceAttachment};
     const VkRenderingInfo renderingInfo{
         .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,

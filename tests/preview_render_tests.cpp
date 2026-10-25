@@ -1737,7 +1737,8 @@ bool spatialEffectsPreserveMaterialBoundaries(dayo::graphics::VulkanDevice& devi
     settings.refraction.override = EffectOverride::enabled;
     settings.refractionThickness = 0.2F;
     device.setPreviewRenderSettings(settings);
-    if (noRefraction.pixels == device.renderToImage({192, 192}).pixels) {
+    const auto refractedImage = device.renderToImage({192, 192});
+    if (noRefraction.pixels == refractedImage.pixels) {
         std::cerr << "FAIL: glass refraction failed to offset scene colour\n";
         ok = false;
     }

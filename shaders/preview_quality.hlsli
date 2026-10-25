@@ -16,7 +16,9 @@ struct QualityConstants {
 [[vk::binding(0, 0)]] Texture2D<float4> qualityColor;
 [[vk::binding(1, 0)]] Texture2D<float> qualityDepth;
 [[vk::binding(2, 0)]] Texture2D<float2> qualityNormal;
-[[vk::binding(3, 0)]] Texture2D<float4> qualitySurface;
+// RG = oct normal UNORM16, B = roughness UNORM16, A = packed material flags.
+// Integer attachment data must never pass through floating-point color blending.
+[[vk::binding(3, 0)]] Texture2D<uint4> qualitySurface;
 [[vk::binding(4, 0)]] Texture2D<float4> qualityMotion;
 [[vk::binding(5, 0)]] Texture2D<float4> qualityHistory;
 [[vk::binding(6, 0)]] Texture2D<float4> qualityHistoryGeometry;
@@ -53,6 +55,9 @@ float2 qualityProject(float3 p) {
     return xy * float2(0.5 / quality.projection.y, -0.5) + 0.5;
 }
 bool qualityInside(float2 uv) { return all(uv > 0) && all(uv < 1); }
-float4 qualitySurfaceAt(float2 uv) { return qualitySurface.Load(int3(qualityPixel(uv), 0)); }
+float4 qualitySurfaceAt(float2 uv) {
+    uint4 data = qualitySurface.Load(int3(qualityPixel(uv), 0));
+    return float4(float2(data.rg) * (2.0 / 65535.0) - 1.0, float(data.b) / 65535.0, float(data.a));
+}
 float qualityReactive(float4 surface) { return float((uint(round(surface.a)) >> 8) & 7U) / 7.0; }
 #endif

@@ -10,7 +10,7 @@ void TemporalResolve(uint3 id : SV_DispatchThreadID) {
     float2 uv = qualityUv(id.xy);
     float4 current = qualityColor.Load(int3(pixel, 0));
     float4 motion = qualityMotion.Load(int3(pixel, 0));
-    float4 surface = qualitySurface.Load(int3(pixel, 0));
+    float4 surface = qualitySurfaceAt(uv);
     float2 previousUv = uv + motion.xy;
     float weight = 0;
     float4 result = current;
