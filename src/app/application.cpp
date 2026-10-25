@@ -942,6 +942,15 @@ void Application::resetProjectRuntimeState() {
     videoExportRestorePending_ = false;
     activeVideoExport_.reset();
     videoRangeInitialized_ = false;
+    ++assetGeneration_;
+    assetRequests_.clear();
+    assetActions_.clear();
+    assetRemoval_.reset();
+    assetTargetRequest_.reset();
+    missingModelMotions_.clear();
+    sceneDropTargets_.clear();
+    renameModel_ = 0;
+    uiState_.selectedAsset = {};
     scene_.clearProjectState();
     evaluatedModels_.models.clear();
     nativeControllerDeclarations_.clear();
@@ -957,6 +966,8 @@ void Application::resetProjectRuntimeState() {
     }
     reloadedEffects_.clear();
     audioPlayer_.stop();
+    loadedAudio_ = {};
+    waveformPeaks_.clear();
     audioSource_.clear();
     audioDestination_.fill('\0');
     audioFromSeconds_ = 0.0F;
@@ -1098,6 +1109,7 @@ int Application::run() {
     std::uint64_t frameCount = 0;
     auto previousTick = std::chrono::steady_clock::now();
     while (running) {
+        processAssetRequests();
         for (const auto& event : window->pollEvents()) {
             switch (event.type) {
             case platform::WindowEvent::Type::quit:
@@ -1114,7 +1126,7 @@ int Application::run() {
 #endif
                 break;
             case platform::WindowEvent::Type::fileDropped:
-                handleAsset(event.path);
+                queueDroppedAsset(event.path, event.x, event.y);
                 break;
             case platform::WindowEvent::Type::cameraDragged:
 #if DAYO_HAS_IMGUI
@@ -1250,7 +1262,25 @@ int Application::run() {
             std::string reloadError;
             if (effect.reloader.poll(&reloadError) && effect.reloader.current() != nullptr) {
                 static_cast<void>(scene_.removeEffect(effect.id));
-                effect.id = scene_.addEffect(*effect.reloader.current(), effect.owner);
+                if (effect.enabled) {
+                    auto stack = scene_.effects();
+                    core::SceneEffectInstance updated{effect.id, effect.path, *effect.reloader.current(), effect.owner,
+                                                      0};
+                    if (updated.graph.category == "deform")
+                        stack.deform.push_back(std::move(updated));
+                    else if (updated.graph.category == "postprocess")
+                        stack.postprocess.push_back(std::move(updated));
+                    else {
+                        if (stack.renderer && stack.renderer->id != effect.id) {
+                            const auto previous =
+                                std::ranges::find(reloadedEffects_, stack.renderer->id, &ReloadedEffect::id);
+                            if (previous != reloadedEffects_.end())
+                                previous->enabled = false;
+                        }
+                        stack.renderer = std::move(updated);
+                    }
+                    scene_.restoreEffects(std::move(stack));
+                }
                 requestRenderer(requestedRenderer_);
                 log::info("Hot reloaded effect graph: ", effect.path.string());
             } else if (!reloadError.empty()) {
@@ -1309,6 +1339,7 @@ core::DayoProject Application::currentProject() const {
     project.upstreamDocumentJson = upstreamDocumentJson_;
     project.assets = projectAssets_;
     project.editor = projectEditorState_;
+    project.editor.independentMedia = true;
     if (device_ != nullptr)
         project.renderSettings = device_->previewRenderSettings();
     project.editor.animationRepeat = repeat_;
@@ -1319,6 +1350,7 @@ core::DayoProject Application::currentProject() const {
     project.editor.recordFps = static_cast<float>(sceneTimelineFps(scene_));
     project.editor.wavFile = audioSource_;
     project.editor.movieVisible = videoVisible_;
+    project.editor.backgroundImageVisible = scene_.background().enabled;
     project.editor.movieFile = videoMode_ && scene_.background().videoPath.has_value() ? *scene_.background().videoPath
                                                                                        : std::filesystem::path{};
 #if DAYO_HAS_IMGUI
@@ -1336,6 +1368,7 @@ core::DayoProject Application::currentProject() const {
     for (const auto& instance : scene_.models()) {
         core::ProjectModelState state;
         state.instanceId = instance.instanceId;
+        state.displayName = instance.displayName;
         state.source = instance.sourcePath;
         auto savedModel = std::ranges::find_if(
             project.models, [&](const auto& previous) { return previous.instanceId == instance.instanceId; });
@@ -1374,13 +1407,23 @@ core::DayoProject Application::currentProject() const {
     else if (missingFocusModelProjectIndex_)
         focusIndex = *missingFocusModelProjectIndex_;
     for (auto& asset : project.assets) {
+        if (asset.kind != "pmx" && !asset.modelInstanceId.empty()) {
+            const auto state =
+                std::ranges::find(project.models, asset.modelInstanceId, &core::ProjectModelState::instanceId);
+            if (state != project.models.end())
+                asset.ownerModelIndex = static_cast<std::size_t>(state - project.models.begin());
+        }
         if (asset.kind != "effect")
             continue;
         const auto normalized = std::filesystem::absolute(asset.path).lexically_normal();
-        const auto loaded =
-            std::ranges::find_if(reloadedEffects_, [&](const auto& effect) { return effect.path == normalized; });
+        const auto loaded = std::ranges::find_if(reloadedEffects_, [&](const auto& effect) {
+            const auto identity =
+                effect.owner && scene_.model(*effect.owner) ? scene_.model(*effect.owner)->instanceId : std::string{};
+            return effect.path == normalized && identity == asset.modelInstanceId;
+        });
         if (loaded == reloadedEffects_.end())
             continue;
+        asset.enabled = loaded->enabled;
         const auto owner = loaded->owner.has_value()
                                ? std::ranges::find(scene_.models(), *loaded->owner, &core::ModelInstance::id)
                                : scene_.models().end();
@@ -1427,10 +1470,16 @@ core::DayoProject Application::currentProject() const {
     if (camera.modelName.empty())
         camera.modelName = "Camera/Light";
     project.embeddedMotions.push_back(std::move(camera));
-    for (const auto& model : scene_.models()) {
-        auto motion = model.motion == nullptr ? core::VmdMotion{} : *model.motion;
+    for (const auto& state : project.models) {
+        const auto model = std::ranges::find(scene_.models(), state.instanceId, &core::ModelInstance::instanceId);
+        core::VmdMotion motion;
+        if (model != scene_.models().end() && model->motion)
+            motion = *model->motion;
+        else if (const auto missing = missingModelMotions_.find(state.instanceId);
+                 missing != missingModelMotions_.end())
+            motion = missing->second;
         if (motion.modelName.empty())
-            motion.modelName = model.displayName;
+            motion.modelName = model != scene_.models().end() ? model->displayName : state.source.filename().string();
         project.embeddedMotions.push_back(std::move(motion));
     }
     return project;
@@ -1589,9 +1638,9 @@ int Application::runVideoExport() {
     return 0;
 }
 
-void Application::loadEffectAsset(const std::filesystem::path& path, std::optional<core::ModelId> owner) {
+void Application::loadEffectAsset(const std::filesystem::path& path, std::optional<core::ModelId> owner, bool enabled) {
     const auto normalizedPath = std::filesystem::absolute(path).lexically_normal();
-    if (owner.has_value()) {
+    if (owner.has_value() && !loadingProject_) {
         const auto unowned = std::ranges::find_if(
             reloadedEffects_, [&](const auto& loaded) { return loaded.path == normalizedPath && !loaded.owner; });
         if (unowned != reloadedEffects_.end()) {
@@ -1609,14 +1658,23 @@ void Application::loadEffectAsset(const std::filesystem::path& path, std::option
     if (reloaded.reloader.current() == nullptr)
         throw std::runtime_error("effect graph is empty");
     const auto graph = *reloaded.reloader.current();
+    if (enabled && (graph.category.empty() || graph.category == "render") && scene_.effects().renderer) {
+        const auto previous = std::ranges::find(reloadedEffects_, scene_.effects().renderer->id, &ReloadedEffect::id);
+        if (previous != reloadedEffects_.end())
+            previous->enabled = false;
+    }
+    const auto activeEffects = enabled ? core::SceneEffectStack{} : scene_.effects();
     reloaded.id = scene_.addEffect(graph, owner);
+    reloaded.enabled = enabled;
+    if (!enabled)
+        scene_.restoreEffects(activeEffects);
     reloadedEffects_.push_back(std::move(reloaded));
     auto filename = normalizedPath.filename().string();
     std::ranges::transform(filename, filename.begin(),
                            [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
-    if (device_ != nullptr && filename.find("subayai") != std::string::npos)
+    if (enabled && device_ != nullptr && filename.find("subayai") != std::string::npos)
         requestedRenderer_ = graphics::RendererKind::subayai;
-    else if (device_ != nullptr && filename.find("bdpt") != std::string::npos)
+    else if (enabled && device_ != nullptr && filename.find("bdpt") != std::string::npos)
         requestedRenderer_ = graphics::RendererKind::bdpt;
     requestRenderer(requestedRenderer_);
     lastAsset_ = ui::Message("Effect {0} — passes: {1}, textures: {2}",
@@ -1624,10 +1682,16 @@ void Application::loadEffectAsset(const std::filesystem::path& path, std::option
                               std::to_string(graph.textures.size())});
     log::info("Loaded effect graph: ", lastAsset_);
     const auto projectEffect = std::ranges::find_if(projectAssets_, [&](const auto& asset) {
-        return asset.kind == "effect" && std::filesystem::absolute(asset.path).lexically_normal() == normalizedPath;
+        return asset.kind == "effect" && std::filesystem::absolute(asset.path).lexically_normal() == normalizedPath &&
+               asset.modelInstanceId ==
+                   (owner && scene_.model(*owner) ? scene_.model(*owner)->instanceId : std::string{});
     });
-    if (projectEffect == projectAssets_.end())
+    if (projectEffect == projectAssets_.end()) {
         projectAssets_.emplace_back("effect", normalizedPath);
+        projectAssets_.back().enabled = enabled;
+        if (owner && scene_.model(*owner))
+            projectAssets_.back().modelInstanceId = scene_.model(*owner)->instanceId;
+    }
 }
 
 void Application::handleAsset(const std::filesystem::path& path) {
@@ -1647,7 +1711,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 if (state.instanceId.empty())
                     state.instanceId = core::newModelInstanceId();
             for (const auto& asset : project.assets)
-                if (!asset.modelInstanceId.empty())
+                if (asset.kind == "pmx" && !asset.modelInstanceId.empty())
                     for (std::size_t i = 0; i < project.models.size(); ++i)
                         if (project.models[i].instanceId == asset.modelInstanceId)
                             assigned[i] = true;
@@ -1662,6 +1726,28 @@ void Application::handleAsset(const std::filesystem::path& path) {
                     break;
                 }
             }
+            for (auto& asset : project.assets) {
+                if (!asset.modelInstanceId.empty() || asset.kind == "pmx")
+                    continue;
+                if (asset.ownerModelIndex && *asset.ownerModelIndex < project.models.size()) {
+                    asset.modelInstanceId = project.models[*asset.ownerModelIndex].instanceId;
+                } else if (!project.models.empty() &&
+                           (asset.kind == "vpd" || asset.kind == "vmdayo" || asset.kind == "vmd")) {
+                    bool global = false;
+                    if (asset.kind == "vmd") {
+                        try {
+                            const auto motion = core::loadVmd(asset.path);
+                            global = motion.bones.empty() && motion.morphs.empty() &&
+                                     (!motion.cameras.empty() || !motion.lights.empty() || !motion.shadows.empty() ||
+                                      !motion.gravity.empty());
+                        } catch (const std::exception&) {
+                            // Preserve unresolved legacy references for the legacy default target.
+                        }
+                    }
+                    if (!global)
+                        asset.modelInstanceId = project.models.back().instanceId;
+                }
+            }
             currentProjectPath_ = std::filesystem::absolute(path).lexically_normal();
 #if DAYO_HAS_IMGUI
             const auto projectText = currentProjectPath_->string();
@@ -1671,6 +1757,9 @@ void Application::handleAsset(const std::filesystem::path& path) {
 #endif
             resetProjectRuntimeState();
             upstreamDocumentJson_ = project.upstreamDocumentJson;
+            loadingProject_ = true;
+            const auto finishLoading = [this](void*) { loadingProject_ = false; };
+            std::unique_ptr<void, decltype(finishLoading)> loadingGuard(this, finishLoading);
             projectModelMetadata_ = project.models;
             projectEditorState_ = project.editor;
             if (device_ != nullptr) {
@@ -1733,11 +1822,10 @@ void Application::handleAsset(const std::filesystem::path& path) {
                     handleAsset(asset.path);
                     if (scene_.models().size() > previousCount && !asset.modelInstanceId.empty()) {
                         auto* instance = scene_.selectedModel();
-                        const auto loaded = std::ranges::find_if(projectAssets_, [&](const auto& entry) {
-                            return entry.kind == "pmx" && entry.modelInstanceId == instance->instanceId;
-                        });
-                        if (loaded != projectAssets_.end())
-                            loaded->modelInstanceId = asset.modelInstanceId;
+                        const auto temporaryId = instance->instanceId;
+                        for (auto& entry : projectAssets_)
+                            if (entry.modelInstanceId == temporaryId)
+                                entry.modelInstanceId = asset.modelInstanceId;
                         instance->instanceId = asset.modelInstanceId;
                     }
                 } catch (const std::exception& exception) {
@@ -1757,6 +1845,8 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 if (instance == nullptr)
                     continue;
                 const auto& state = project.models[index];
+                if (!state.displayName.empty())
+                    instance->displayName = state.displayName;
                 instance->order = {state.motionOrder, state.deformOrder, state.postprocessOrder, state.rasterOrder};
                 static_cast<void>(scene_.setCloneCount(instance->id, state.cloneCount));
                 static_cast<void>(scene_.setModelVisible(instance->id, state.visible));
@@ -1773,7 +1863,13 @@ void Application::handleAsset(const std::filesystem::path& path) {
                     continue;
                 try {
                     std::optional<core::ModelId> owner;
-                    if (asset.ownerModelIndex.has_value()) {
+                    if (!asset.modelInstanceId.empty()) {
+                        const auto instance =
+                            std::ranges::find(scene_.models(), asset.modelInstanceId, &core::ModelInstance::instanceId);
+                        if (instance == scene_.models().end())
+                            continue;
+                        owner = instance->id;
+                    } else if (asset.ownerModelIndex.has_value()) {
                         if (auto* instance = findLoadedModel(*asset.ownerModelIndex); instance != nullptr) {
                             owner = instance->id;
                         } else {
@@ -1782,15 +1878,20 @@ void Application::handleAsset(const std::filesystem::path& path) {
                             continue;
                         }
                     }
-                    loadEffectAsset(asset.path, owner);
+                    loadEffectAsset(asset.path, owner, asset.enabled);
+                    const auto loaded = std::ranges::find_if(reloadedEffects_, [&](const auto& effect) {
+                        return effect.path == std::filesystem::absolute(asset.path).lexically_normal() &&
+                               effect.owner == owner;
+                    });
+                    if (loaded != reloadedEffects_.end()) {
+                        loaded->enabled = asset.enabled;
+                        if (!asset.enabled)
+                            scene_.removeEffect(loaded->id);
+                        loaded->materialSourceFiles = asset.materialSourceFiles;
+                    }
                 } catch (const std::exception& exception) {
                     log::warn("Project effect could not be loaded: ", asset.path.string(), ": ", exception.what());
                 }
-                const auto normalized = std::filesystem::absolute(asset.path).lexically_normal();
-                const auto loaded = std::ranges::find_if(reloadedEffects_,
-                                                         [&](const auto& effect) { return effect.path == normalized; });
-                if (loaded != reloadedEffects_.end() && !asset.materialSourceFiles.empty())
-                    loaded->materialSourceFiles = asset.materialSourceFiles;
             }
             for (const auto& asset : project.assets)
                 if (asset.kind != "pmx" && asset.kind != "effect") {
@@ -1800,7 +1901,8 @@ void Application::handleAsset(const std::filesystem::path& path) {
                             backgroundVideoPath_.fill(0);
                             std::copy_n(text.data(), std::min(text.size(), backgroundVideoPath_.size() - 1U),
                                         backgroundVideoPath_.data());
-                            if (audioSource_.empty() && project.editor.wavFile.empty()) {
+                            if (!project.editor.independentMedia && audioSource_.empty() &&
+                                project.editor.wavFile.empty()) {
                                 // Legacy projects stored movie audio only as a video asset.
                                 try {
                                     core::MediaFile legacy(asset.path, core::MediaOpenMode::audioOnly);
@@ -1810,7 +1912,19 @@ void Application::handleAsset(const std::filesystem::path& path) {
                                 }
                             }
                             loadBackgroundVideo(asset.path, project.editor.movieVisible);
+                        } else if (asset.kind == "audio") {
+                            loadAudioSource(asset.path);
                         } else {
+                            if (!asset.modelInstanceId.empty()) {
+                                const auto owner = std::ranges::find(scene_.models(), asset.modelInstanceId,
+                                                                     &core::ModelInstance::instanceId);
+                                if (owner == scene_.models().end())
+                                    continue;
+                                scene_.selectModel(owner->id);
+                            }
+                            // Saved snapshots are authoritative, including empty motions.
+                            if (!project.embeddedMotions.empty() && (asset.kind == "vmd" || asset.kind == "vmdayo"))
+                                continue;
                             handleAsset(asset.path);
                         }
                     } catch (const std::exception& exception) {
@@ -1820,28 +1934,39 @@ void Application::handleAsset(const std::filesystem::path& path) {
 
             for (const auto& savedAsset : project.assets) {
                 const auto existing = std::ranges::find_if(projectAssets_, [&](const auto& loaded) {
-                    return loaded.kind == savedAsset.kind &&
-                           (savedAsset.kind != "pmx" || loaded.modelInstanceId == savedAsset.modelInstanceId) &&
+                    return loaded.kind == savedAsset.kind && loaded.modelInstanceId == savedAsset.modelInstanceId &&
                            std::filesystem::absolute(loaded.path).lexically_normal() ==
                                std::filesystem::absolute(savedAsset.path).lexically_normal();
                 });
                 if (existing == projectAssets_.end()) {
                     projectAssets_.push_back(savedAsset);
                 } else {
+                    existing->enabled = savedAsset.enabled;
                     existing->ownerModelIndex = savedAsset.ownerModelIndex;
                     existing->upstreamId = savedAsset.upstreamId;
                     existing->materialSourceFiles = savedAsset.materialSourceFiles;
                 }
             }
-            if (project.embeddedMotions.size() > 1U) {
-                scene_.attachMotion(project.embeddedMotions.front());
+            if (!project.embeddedMotions.empty()) {
+                const auto hasKeys = [](const auto& motion) {
+                    return !motion.bones.empty() || !motion.morphs.empty() || !motion.cameras.empty() ||
+                           !motion.lights.empty() || !motion.shadows.empty() || !motion.ik.empty() ||
+                           !motion.externalParents.empty() || !motion.gravity.empty();
+                };
+                if (hasKeys(project.embeddedMotions.front()))
+                    scene_.replaceMotion(project.embeddedMotions.front(), 0, true);
+                else
+                    scene_.clearMotion(0, true);
                 const auto count = std::min(project.models.size(), project.embeddedMotions.size() - 1U);
                 for (std::size_t index = 0; index < count; ++index) {
                     const auto& motion = project.embeddedMotions[index + 1U];
-                    if (!motion.bones.empty() || !motion.morphs.empty() || !motion.ik.empty()) {
-                        if (auto* instance = findLoadedModel(index); instance != nullptr)
-                            scene_.attachMotion(motion, instance->id);
-                    }
+                    if (auto* instance = findLoadedModel(index); instance != nullptr) {
+                        if (hasKeys(motion))
+                            scene_.replaceMotion(motion, instance->id);
+                        else
+                            scene_.clearMotion(instance->id);
+                    } else
+                        missingModelMotions_[project.models[index].instanceId] = motion;
                 }
                 manualCamera_ = false;
 #if DAYO_HAS_IMGUI
@@ -1852,6 +1977,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 scene_.attachMotion(*project.embeddedMotion, scene_.selectedModelId());
                 manualCamera_ = false;
             }
+            scene_.setBackgroundEnabled(project.editor.backgroundImageVisible);
             animationFrame_ = project.frame;
             scene_.setFrame(animationFrame_);
             playing_ = project.playing;
@@ -1880,6 +2006,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             refreshPreviewScene();
             lastAsset_ = ui::Message("VMdayo {0}", {path.filename().string()});
             projectAssets_.emplace_back("vmdayo", std::filesystem::absolute(path));
+            projectAssets_.back().modelInstanceId = selectedModel()->instanceId;
             log::info("Loaded VMdayo motion: ", path.string());
         } catch (const std::exception& exception) {
             lastAsset_ = ui::Message("VMdayo error: {0}", {exception.what()});
@@ -1935,7 +2062,8 @@ void Application::handleAsset(const std::filesystem::path& path) {
             log::info("PMX scene state: models=", scene_.models().size(), " selected=", scene_.selectedModelId());
             videoMode_ = scene_.backgroundMedia() != nullptr && scene_.backgroundMedia()->info().hasVideo;
             normalization_ = scene_.selectedModel()->normalization;
-            if (const auto associatedEffect = core::findAssociatedEffect(path); associatedEffect.has_value()) {
+            if (const auto associatedEffect = loadingProject_ ? std::nullopt : core::findAssociatedEffect(path);
+                associatedEffect.has_value()) {
                 try {
                     loadEffectAsset(*associatedEffect, modelId);
                 } catch (const std::exception& exception) {
@@ -2010,6 +2138,8 @@ void Application::handleAsset(const std::filesystem::path& path) {
             }
             log::info("Loaded motion: ", lastAsset_, " (", path.string(), ")");
             projectAssets_.emplace_back("vmd", std::filesystem::absolute(path));
+            if (!cameraOnly && selectedModel())
+                projectAssets_.back().modelInstanceId = selectedModel()->instanceId;
         } catch (const std::exception& exception) {
             lastAsset_ = ui::Message("VMD error: {0}", {exception.what()});
             log::warn(lastAsset_);
@@ -2025,6 +2155,7 @@ void Application::handleAsset(const std::filesystem::path& path) {
             lastAsset_ = ui::Message("VPD pose — bones: {0}", {std::to_string(pose->bones.size())});
             log::info("Loaded pose: ", lastAsset_, " (", path.string(), ")");
             projectAssets_.emplace_back("vpd", std::filesystem::absolute(path));
+            projectAssets_.back().modelInstanceId = selectedModel()->instanceId;
         } catch (const std::exception& exception) {
             lastAsset_ = ui::Message("VPD error: {0}", {exception.what()});
             log::warn(lastAsset_);
@@ -3122,46 +3253,7 @@ void Application::buildUi() {
     if (uiState_.performanceVisible)
         ImGui::End();
 
-    if (uiState_.sceneVisible && ImGui::Begin(workspaceWindowName("Scene", "scene").c_str())) {
-        if (ImGui::Selectable(ui::label("Scene / Background"), uiState_.inspectScene)) {
-            uiState_.inspectScene = true;
-            inspectorPage_ = InspectorPage::selection;
-        }
-        ImGui::InputTextWithHint("##scene-filter", ui::tr("Search scene..."), uiState_.sceneFilter.data(),
-                                 uiState_.sceneFilter.size());
-        ImGui::SeparatorText(ui::tr("Models"));
-        for (const auto& instance : scene_.models()) {
-            if (uiState_.sceneFilter[0] != '\0' &&
-                instance.displayName.find(uiState_.sceneFilter.data()) == std::string::npos)
-                continue;
-            ImGui::PushID(static_cast<int>(instance.id));
-            bool selected = !uiState_.inspectScene && scene_.selectedModelId() == instance.id;
-            const auto label = std::string(ui::tr(instance.visible ? "[visible]  " : "[hidden]  ")) +
-                               instance.displayName + "###model-" + std::to_string(instance.id);
-            if (ImGui::Selectable(label.c_str(), selected)) {
-                uiState_.inspectScene = false;
-                inspectorPage_ = InspectorPage::selection;
-                scene_.selectModel(instance.id);
-                normalization_ = instance.normalization;
-                refreshAnimatedMesh(true);
-                refreshPreviewScene();
-            }
-            if (ImGui::BeginPopupContextItem("scene-item-context")) {
-                ImGui::MenuItem(ui::label("Rename"), nullptr, false, false);
-                ImGui::MenuItem(ui::label("Duplicate / Clone"), nullptr, false, false);
-                if (ImGui::MenuItem(ui::label("Open Source Folder"))) {
-                    const auto url = "file://" + instance.sourcePath.parent_path().generic_string();
-                    if (!SDL_OpenURL(url.c_str()))
-                        lastAsset_ = ui::Message("Open folder: {0}", {SDL_GetError()});
-                }
-                ImGui::MenuItem(ui::label("Set External Parent"), nullptr, false, false);
-                ImGui::EndPopup();
-            }
-            ImGui::PopID();
-        }
-    }
-    if (uiState_.sceneVisible)
-        ImGui::End();
+    buildScenePanel();
 
     if (uiState_.physicsVisible && ImGui::Begin(workspaceWindowName("Physics", "physics").c_str())) {
         ImGui::Text(ui::tr("Timeline: %.1f / %.1f frames"), animationFrame_, scene_.timeline().duration);
@@ -3240,6 +3332,8 @@ void Application::handleEditorShortcuts() {
         refreshAnimatedMesh(false);
         refreshPreviewScene();
     }
+    if (!io.WantTextInput && uiState_.sceneFocused && ImGui::IsKeyPressed(ImGuiKey_Delete, false))
+        assetRemoval_ = uiState_.selectedAsset;
     const bool editorShortcutScope = uiState_.viewportHovered || uiState_.timelineFocused;
     if (!editorShortcutScope || io.WantTextInput)
         return;

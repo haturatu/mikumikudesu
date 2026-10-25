@@ -39,9 +39,12 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -55,9 +58,50 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     int run();
 
   private:
+    class AssetEditCommand;
+    void executeAssetEdit(std::string name, std::function<void()> change, std::function<void()> revert);
+    void refreshManagedAssets();
+    void removeAsset(ui::AssetSelection asset);
+    void importManagedAsset(const std::filesystem::path& path, ui::AssetType type, core::ModelId target = 0,
+                            bool replace = false, core::EffectId replacedEffect = 0);
+    void setAssetVisible(ui::AssetSelection asset, bool visible);
+    void buildScenePanel();
+    void duplicateModel(core::ModelId id);
+    void requestAssetDialog(ui::AssetType type, core::ModelId target = 0, bool replace = false);
+    void processAssetRequests();
+    void queueDroppedAsset(const std::filesystem::path& path, float x, float y);
+    struct AssetRequest {
+        std::filesystem::path path;
+        ui::AssetType type{ui::AssetType::none};
+        core::ModelId target{};
+        bool replace{};
+        std::uint64_t generation{};
+        std::string error;
+        core::EffectId replacedEffect{};
+    };
+    struct AssetDialogQueue {
+        std::mutex mutex;
+        bool pending{};
+        std::vector<AssetRequest> results;
+    };
+    std::shared_ptr<AssetDialogQueue> assetDialogQueue_{std::make_shared<AssetDialogQueue>()};
+    std::vector<AssetRequest> assetRequests_;
+    std::vector<std::function<void()>> assetActions_;
+    core::ModelId renameModel_{};
+    std::array<char, 256> modelName_{};
+    std::optional<ui::AssetSelection> assetRemoval_;
+    std::optional<AssetRequest> assetTargetRequest_;
+    std::uint64_t assetGeneration_{};
+    bool loadingProject_{};
+    struct SceneDropTarget {
+        core::ModelId model{};
+        float left{}, top{}, right{}, bottom{};
+    };
+    std::vector<SceneDropTarget> sceneDropTargets_;
+    std::unordered_map<std::string, core::VmdMotion> missingModelMotions_;
     void resetProjectRuntimeState();
     [[nodiscard]] core::DayoProject currentProject() const;
-    void loadEffectAsset(const std::filesystem::path& path, std::optional<core::ModelId> owner);
+    void loadEffectAsset(const std::filesystem::path& path, std::optional<core::ModelId> owner, bool enabled = true);
     void handleAsset(const std::filesystem::path& path);
     void loadAudioSource(const std::filesystem::path& path);
     void loadBackgroundVideo(const std::filesystem::path& path, bool visible = true);
@@ -247,6 +291,7 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     struct ReloadedEffect {
         std::filesystem::path path;
         core::EffectId id{};
+        bool enabled{true};
         std::optional<core::ModelId> owner;
         std::vector<std::vector<std::string>> materialSourceFiles;
         core::EffectHotReloader reloader;
@@ -315,8 +360,8 @@ class Application { // NOLINT(clang-analyzer-optin.performance.Padding)
     bool videoExportRestoreAudioActive_{};
     bool videoRangeInitialized_{};
     std::string videoExportStatus_;
-#if DAYO_HAS_IMGUI
     ui::UiState uiState_;
+#if DAYO_HAS_IMGUI
     bool languageSaveFailed_{};
     ui::KeyframeEditor timelineEditor_;
     bool editGlobalMotion_{};

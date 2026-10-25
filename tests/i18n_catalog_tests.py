@@ -28,7 +28,7 @@ class CatalogTests(unittest.TestCase):
                 self.assertEqual(PRINTF.findall(key), PRINTF.findall(value), key)
                 self.assertNotIn('##', value, key)
                 self.assertEqual(sorted(re.findall(r'\{\d\}', key)), sorted(re.findall(r'\{\d\}', value)), key)
-        for source in ('src/app/application.cpp', 'src/ui/keyframe_editor.cpp', 'src/ui/i18n_imgui.hpp'):
+        for source in ('src/app/application.cpp', 'src/app/asset_management.cpp', 'src/app/scene_panel.cpp', 'src/ui/keyframe_editor.cpp', 'src/ui/i18n_imgui.hpp'):
             text = (ROOT / source).read_text(encoding='utf-8')
             unsafe = r'ImGui::(?:Text|TextWrapped|TextDisabled|SetTooltip)\(\s*ui::tr\(\s*' + STRING + r'(?:\s*' + STRING + r')*\s*\)\s*\)'
             self.assertIsNone(re.search(unsafe, text), source)
