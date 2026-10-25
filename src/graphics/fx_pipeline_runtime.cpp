@@ -654,7 +654,7 @@ void FxPipelineRuntime::destroyEntry(const Entry& entry) noexcept {
 void FxPipelineRuntime::reset() noexcept {
     if (device_ != nullptr) {
         try {
-            device_->waitIdle();
+            device_->prepareResourceDestruction();
         } catch (...) {
         }
         for (const auto& [name, entry] : entries_) {

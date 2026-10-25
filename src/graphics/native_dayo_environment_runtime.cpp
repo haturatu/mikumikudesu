@@ -246,7 +246,7 @@ bool NativeDayoEnvironmentRuntime::sync(Device& device, CommandList& commands, h
                                      resources_.prefilteredSkybox.valid();
     if (device_ != nullptr && hasCurrentResources) {
         try {
-            device.waitIdle();
+            device.prepareResourceDestruction();
         } catch (const std::exception& exception) {
             destroyResources(&device, next);
             setError(error, std::string("Dayo environment could not retire prior GPU resources: ") + exception.what());
@@ -321,7 +321,7 @@ bool NativeDayoEnvironmentRuntime::ensurePipelines(Device& device, const std::fi
         if (hlslDirectory == hlslDirectory_)
             return true;
         try {
-            device.waitIdle();
+            device.prepareResourceDestruction();
         } catch (const std::exception& exception) {
             setError(error, std::string("Dayo environment could not retire shaders from the prior HLSL root: ") +
                                 exception.what());
@@ -803,7 +803,7 @@ void NativeDayoEnvironmentRuntime::reset() noexcept {
                               resources_.prefilteredSkybox.valid();
     if (device != nullptr && (hasResources || descriptorLayout_.valid() || prefilterDescriptorLayout_.valid())) {
         try {
-            device->waitIdle();
+            device->prepareResourceDestruction();
         } catch (...) {
         }
     }

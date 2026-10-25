@@ -350,7 +350,7 @@ bool FxMaterialGpuRuntime::ensureTextureCatalog(std::span<const core::fx::Materi
         return false;
     }
     try {
-        device_->waitIdle();
+        device_->prepareResourceDestruction();
     } catch (...) {
     }
     destroyTextures(currentTextures);
@@ -406,7 +406,7 @@ bool FxMaterialGpuRuntime::ensureTableBuffers(const core::fx::MaterialGpuTableDa
         return false;
     }
     try {
-        device_->waitIdle();
+        device_->prepareResourceDestruction();
     } catch (...) {
     }
     destroyBuffers(frameBuffers_);
@@ -471,7 +471,7 @@ void FxMaterialGpuRuntime::reset() noexcept {
     Device* device = device_;
     if (device != nullptr) {
         try {
-            device->waitIdle();
+            device->prepareResourceDestruction();
         } catch (...) {
         }
     }

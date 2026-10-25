@@ -253,7 +253,7 @@ void NativeSceneResourceStore::reset() noexcept {
     Device* device = device_;
     if (device != nullptr) {
         try {
-            device->waitIdle();
+            device->prepareResourceDestruction();
         } catch (...) {
         }
         if (placeholderBuffer_.valid()) {

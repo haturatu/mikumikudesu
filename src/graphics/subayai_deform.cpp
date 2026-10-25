@@ -272,7 +272,7 @@ void NativeDeformRuntime::reset() noexcept {
     Device* device = device_;
     if (device != nullptr) {
         try {
-            device->waitIdle();
+            device->prepareResourceDestruction();
         } catch (...) {
         }
         for (auto& resources : resources_) {

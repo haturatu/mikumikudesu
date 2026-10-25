@@ -206,7 +206,7 @@ void NativeGeometryRuntime::reset() noexcept {
     Device* device = device_;
     if (device != nullptr) {
         try {
-            device->waitIdle();
+            device->prepareResourceDestruction();
         } catch (...) {
         }
         for (const auto descriptorSet : descriptorSets_) {

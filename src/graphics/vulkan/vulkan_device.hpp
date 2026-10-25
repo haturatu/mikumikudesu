@@ -138,6 +138,7 @@ class VulkanDevice final : public Device {
     }
     [[nodiscard]] core::ImageRgba8 previewDisplayBackground() const override;
     void waitIdle() override;
+    void prepareResourceDestruction() override {}
     void uploadPreviewMesh(std::span<const PreviewVertex> vertices, std::span<const std::uint32_t> indices) override;
     void updatePreviewVertices(std::span<const PreviewVertex> vertices) override;
     void updatePreviewBones(std::span<const PreviewBoneTransform> bones) override;

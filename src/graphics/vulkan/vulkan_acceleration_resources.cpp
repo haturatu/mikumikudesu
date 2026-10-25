@@ -614,15 +614,16 @@ void VulkanDevice::destroyAccelerationStructureEx(handles::AccelerationStructure
     const auto it = typedAccelerationStructures_.find(handle);
     if (it == typedAccelerationStructures_.end() || !typedAccelerationStructureHandles_.isAlive(handle))
         throw std::invalid_argument("stale acceleration-structure handle");
-    waitIdle();
     const auto destroy = reinterpret_cast<PFN_vkDestroyAccelerationStructureKHR>(
         vkGetDeviceProcAddr(device_, "vkDestroyAccelerationStructureKHR"));
     if (destroy == nullptr)
         throw std::runtime_error("vkDestroyAccelerationStructureKHR is unavailable");
-    if (it->second.structure != VK_NULL_HANDLE)
-        destroy(device_, it->second.structure, nullptr);
-    destroyAccelerationBuffer(it->second.storageBuffer, it->second.storageMemory, nullptr);
-    destroyAccelerationBuffer(it->second.instanceBuffer, it->second.instanceMemory, it->second.mappedInstances);
+    retirePreviewResource([this, resource = it->second, destroy] {
+        if (resource.structure != VK_NULL_HANDLE)
+            destroy(device_, resource.structure, nullptr);
+        destroyAccelerationBuffer(resource.storageBuffer, resource.storageMemory, nullptr);
+        destroyAccelerationBuffer(resource.instanceBuffer, resource.instanceMemory, resource.mappedInstances);
+    });
     typedAccelerationStructures_.erase(it);
     typedAccelerationStructureHandles_.destroy(handle);
 }

@@ -31,7 +31,20 @@ struct MockNativeDevice final : dayo::graphics::Device {
     std::size_t currentFrameSlot() const noexcept override {
         return frameSlot;
     }
-    void waitIdle() override {}
+    void waitIdle() override {
+        ++idleWaits;
+    }
+    void prepareResourceDestruction() override {
+        ++retirementBarriers;
+    }
+    void setPreviewRenderSettings(const dayo::graphics::PreviewRenderSettings& settings) override {
+        previewSettings = settings;
+    }
+    dayo::graphics::PreviewRenderSettings previewRenderSettings() const noexcept override {
+        return previewSettings;
+    }
+    std::size_t idleWaits{}, retirementBarriers{};
+    dayo::graphics::PreviewRenderSettings previewSettings;
     void uploadPreviewMesh(std::span<const dayo::graphics::PreviewVertex> vertices,
                            std::span<const std::uint32_t>) override {
         previewVertices.assign(vertices.begin(), vertices.end());

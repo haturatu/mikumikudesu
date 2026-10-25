@@ -2526,6 +2526,15 @@ int main(int argc, char** argv) {
             return 1;
         if (!physicalDofAndFocusPicking(device))
             return 1;
+        resetPreviewScene(device);
+        device.uploadPreviewMesh({}, {});
+        device.updatePreviewMaterials({});
+        device.updatePreviewDraws({});
+        const auto emptyScene = device.renderToImage({64, 64});
+        if (emptyScene.width != 64 || emptyScene.height != 64) {
+            std::cerr << "FAIL: unloaded model scene did not render a valid clear frame\n";
+            return 1;
+        }
         device.waitIdle();
         if (device.validationErrorCount() != 0) {
             std::cerr << "FAIL: Preview emitted " << device.validationErrorCount() << " Vulkan validation errors\n";
