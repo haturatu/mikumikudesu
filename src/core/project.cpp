@@ -38,8 +38,37 @@ graphics::PreviewRenderSettings readRenderSettings(const Json& json) {
         readEnum(json, "shadowFilter", settings.shadowFilter, graphics::PreviewShadowFilter::automatic);
     settings.viewTransform =
         readEnum(json, "viewTransform", settings.viewTransform, graphics::PreviewViewTransform::neutral);
-    settings.antiAliasing =
-        readEnum(json, "antiAliasing", settings.antiAliasing, graphics::PreviewAntiAliasing::automatic);
+    settings.antiAliasing = readEnum(json, "antiAliasing", settings.antiAliasing, graphics::PreviewAntiAliasing::taa);
+    settings.toonLighting =
+        readEnum(json, "toonLighting", settings.toonLighting, graphics::PreviewToonLighting::classicMmd);
+    settings.hairBrdf = readEnum(json, "hairBrdf", settings.hairBrdf, graphics::PreviewHairBrdf::anisotropicGgx);
+    if (json.contains("specularAntialiasing") && json.at("specularAntialiasing").is_object()) {
+        const auto& effect = json.at("specularAntialiasing");
+        settings.specularAntialiasing.override =
+            readEnum(effect, "override", settings.specularAntialiasing.override, graphics::EffectOverride::disabled);
+        if (effect.contains("intensity") && effect.at("intensity").is_number())
+            settings.specularAntialiasing.intensity = effect.at("intensity").get<float>();
+    }
+    const auto readEffect = [&](const char* key, graphics::PreviewEffectSetting& setting) {
+        if (json.contains(key) && json.at(key).is_object()) {
+            const auto& effect = json.at(key);
+            setting.override = readEnum(effect, "override", setting.override, graphics::EffectOverride::disabled);
+            if (effect.contains("intensity") && effect.at("intensity").is_number())
+                setting.intensity = effect.at("intensity").get<float>();
+        }
+    };
+    readEffect("contactShadows", settings.contactShadows);
+    readEffect("screenSpaceReflections", settings.screenSpaceReflections);
+    readEffect("refraction", settings.refraction);
+    const auto readQualityFloat = [&](const char* key, float& value) {
+        if (json.contains(key) && json.at(key).is_number())
+            value = json.at(key).get<float>();
+    };
+    readQualityFloat("contactShadowDistance", settings.contactShadowDistance);
+    readQualityFloat("reflectionDistance", settings.reflectionDistance);
+    readQualityFloat("refractionIor", settings.refractionIor);
+    readQualityFloat("refractionThickness", settings.refractionThickness);
+    readQualityFloat("temporalHistoryWeight", settings.temporalHistoryWeight);
     if (json.contains("exposure") && json.at("exposure").is_number())
         settings.exposure = json.at("exposure").get<float>();
     if (json.contains("whiteBalance") && json.at("whiteBalance").is_number())
@@ -172,6 +201,19 @@ Json writeRenderSettings(const graphics::PreviewRenderSettings& source, Json jso
     json["shadowFilter"] = static_cast<int>(settings.shadowFilter);
     json["viewTransform"] = static_cast<int>(settings.viewTransform);
     json["antiAliasing"] = static_cast<int>(settings.antiAliasing);
+    json["toonLighting"] = static_cast<int>(settings.toonLighting);
+    json["hairBrdf"] = static_cast<int>(settings.hairBrdf);
+    json["specularAntialiasing"] = {{"override", static_cast<int>(settings.specularAntialiasing.override)},
+                                    {"intensity", settings.specularAntialiasing.intensity}};
+    for (const auto& [key, setting] : std::array{std::pair{"contactShadows", settings.contactShadows},
+                                                 std::pair{"screenSpaceReflections", settings.screenSpaceReflections},
+                                                 std::pair{"refraction", settings.refraction}})
+        json[key] = {{"override", static_cast<int>(setting.override)}, {"intensity", setting.intensity}};
+    json["contactShadowDistance"] = settings.contactShadowDistance;
+    json["reflectionDistance"] = settings.reflectionDistance;
+    json["refractionIor"] = settings.refractionIor;
+    json["refractionThickness"] = settings.refractionThickness;
+    json["temporalHistoryWeight"] = settings.temporalHistoryWeight;
     json["exposure"] = settings.exposure;
     json["whiteBalance"] = settings.whiteBalance;
     json["bloomThreshold"] = settings.bloomThreshold;
@@ -378,6 +420,10 @@ ProjectModelState readNativeModelState(const Json& item, const std::filesystem::
                                                   ? static_cast<std::uint8_t>(std::clamp(value.get<int>(), 0, 6))
                                                   : 0U);
     }
+    if (item.contains("previewStrandTextures") && item.at("previewStrandTextures").is_array())
+        for (const auto& value : item.at("previewStrandTextures"))
+            state.previewStrandTextures.push_back(value.is_number_integer() ? std::max(-1, value.get<std::int32_t>())
+                                                                            : -1);
     state.motionOrder = item.value("motionOrder", state.motionOrder);
     state.deformOrder = item.value("deformOrder", state.deformOrder);
     state.postprocessOrder = item.value("postprocessOrder", state.postprocessOrder);
@@ -1137,6 +1183,7 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
                    {"materials", model.materials},
                    {"materialAnnotations", model.materialAnnotations},
                    {"previewPbrPresets", model.previewPbrPresets},
+                   {"previewStrandTextures", model.previewStrandTextures},
                    {"motionOrder", model.motionOrder},
                    {"deformOrder", model.deformOrder},
                    {"postprocessOrder", model.postprocessOrder},

@@ -1405,6 +1405,7 @@ core::DayoProject Application::currentProject() const {
         for (const auto& material : instance.materialSettings) {
             state.materialAnnotations.push_back(material.annotation.string());
             state.previewPbrPresets.push_back(material.previewPbrPreset);
+            state.previewStrandTextures.push_back(material.previewStrandTexture);
         }
         state.motionOrder = instance.order.motion;
         state.deformOrder = instance.order.deform;
@@ -1873,6 +1874,10 @@ void Application::handleAsset(const std::filesystem::path& path) {
                 const auto presetCount = std::min(instance->materialSettings.size(), state.previewPbrPresets.size());
                 for (std::size_t material = 0; material < presetCount; ++material)
                     instance->materialSettings[material].previewPbrPreset = state.previewPbrPresets[material];
+                const auto strandCount =
+                    std::min(instance->materialSettings.size(), state.previewStrandTextures.size());
+                for (std::size_t material = 0; material < strandCount; ++material)
+                    instance->materialSettings[material].previewStrandTexture = state.previewStrandTextures[material];
             }
             for (const auto& asset : project.assets) {
                 if (asset.kind != "effect")
@@ -2470,11 +2475,17 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                 material.edgeSize = animated.edgeSize * instance.normalization.scale;
             }
             material.roughness = std::clamp(std::sqrt(2.0F / (std::max(material.shininess, 0.0F) + 2.0F)), 0.18F, 0.9F);
+            material.strandTextureSlot = 0;
+            if (materialIndex < instance.materialSettings.size()) {
+                const auto strand = instance.materialSettings[materialIndex].previewStrandTexture;
+                if (hasLoadedTexture(instance.textures, strand))
+                    material.strandTextureSlot = textureBase + static_cast<std::uint32_t>(strand) + 1U;
+            }
             material.metallic = 0.0F;
             material.specularStrength = 0.5F;
             material.skin = 0.0F;
             material.anisotropy = 0.0F;
-            material.sheen = material.clearcoat = 0.0F;
+            material.sheen = material.clearcoat = material.transmission = 0.0F;
             const auto preset = materialIndex < instance.materialSettings.size()
                                     ? instance.materialSettings[materialIndex].previewPbrPreset
                                     : 0U;
@@ -2501,6 +2512,7 @@ void Application::refreshAnimatedMesh(bool initialUpload, float deltaSeconds) {
                 material.roughness = 0.38F;
                 break;
             case 6: // Glass
+                material.transmission = 0.9F;
                 material.clearcoat = 1.0F;
                 material.roughness = 0.08F;
                 material.specularStrength = 1.0F;
@@ -2753,6 +2765,8 @@ void Application::restartAudioAtCurrentFrame() {
 }
 
 void Application::seekTimeline(float frame) {
+    if (device_)
+        device_->invalidatePreviewHistory();
     animationFrame_ = std::clamp(frame, 0.0F, scene_.timeline().duration);
     scene_.setFrame(animationFrame_);
     syncMediaAtCurrentFrame();
@@ -3857,9 +3871,10 @@ void Application::buildRenderSettingsControls() {
     };
     combo(ui::label("Quality preset"), settings.preset, ui::items("Auto|Performance|Balanced|High"));
     if (ImGui::Button(ui::label("Reset effect overrides"))) {
-        for (auto* setting :
-             {&settings.ambientOcclusion, &settings.softShadows, &settings.skinSubsurface, &settings.hairShading,
-              &settings.clothSheen, &settings.clearcoat, &settings.bloom, &settings.depthOfField})
+        for (auto* setting : {&settings.ambientOcclusion, &settings.softShadows, &settings.skinSubsurface,
+                              &settings.hairShading, &settings.clothSheen, &settings.clearcoat, &settings.bloom,
+                              &settings.depthOfField, &settings.specularAntialiasing, &settings.contactShadows,
+                              &settings.screenSpaceReflections, &settings.refraction})
             *setting = {};
         settings.shadowFilter = PreviewShadowFilter::automatic;
         settings.antiAliasing = PreviewAntiAliasing::automatic;
@@ -3897,6 +3912,14 @@ void Application::buildRenderSettingsControls() {
                previewEffectSupportAmbientOcclusion);
         combo(ui::label("AO method"), settings.ambientOcclusionMode, ui::items("SSAO (legacy)|GTAO"));
         effect(ui::label("Soft shadows"), settings.softShadows, resolved.softShadows, previewEffectSupportSoftShadows);
+        combo(ui::label("Toon lighting"), settings.toonLighting, ui::items("PBR Hybrid|Classic MMD"));
+        effect(ui::label("Specular anti-aliasing"), settings.specularAntialiasing, resolved.specularAaIntensity > 0.0F,
+               previewEffectSupportSpecularAa);
+        effect(ui::label("Contact shadows"), settings.contactShadows, resolved.contactShadowIntensity > 0.0F,
+               previewEffectSupportContactShadows);
+        if (resolved.contactShadowIntensity > 0.0F)
+            changed |= ImGui::SliderFloat(ui::label("Contact ray distance"), &settings.contactShadowDistance, 0.01F,
+                                          0.5F, "%.3f");
         combo(ui::label("Shadow filter"), settings.shadowFilter, ui::items("PCF|PCSS|Auto"));
     }
     if (ImGui::CollapsingHeader(ui::label("Materials"), ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -3904,6 +3927,19 @@ void Application::buildRenderSettingsControls() {
                previewEffectSupportSkinSubsurface);
         effect(ui::label("Hair highlights"), settings.hairShading, resolved.hairShading,
                previewEffectSupportHairShading);
+        combo(ui::label("Hair reflection model"), settings.hairBrdf, ui::items("Kajiya-Kay|Anisotropic GGX"));
+        effect(ui::label("Screen-space reflections"), settings.screenSpaceReflections,
+               resolved.reflectionIntensity > 0.0F, previewEffectSupportReflections);
+        if (resolved.reflectionIntensity > 0.0F)
+            changed |= ImGui::SliderFloat(ui::label("Reflection ray distance"), &settings.reflectionDistance, 0.1F,
+                                          10.0F, "%.2f");
+        effect(ui::label("Glass refraction"), settings.refraction, resolved.refractionIntensity > 0.0F,
+               previewEffectSupportRefraction);
+        if (resolved.refractionIntensity > 0.0F) {
+            changed |= ImGui::SliderFloat(ui::label("Refractive index"), &settings.refractionIor, 1.0F, 2.5F, "%.2f");
+            changed |=
+                ImGui::SliderFloat(ui::label("Glass thickness"), &settings.refractionThickness, 0.0F, 0.2F, "%.3f");
+        }
         effect(ui::label("Cloth sheen"), settings.clothSheen, resolved.clothSheen, previewEffectSupportClothSheen);
         effect(ui::label("Clearcoat"), settings.clearcoat, resolved.clearcoat, previewEffectSupportClearcoat);
         ImGui::TextWrapped(
@@ -4073,7 +4109,12 @@ void Application::buildRenderSettingsControls() {
             ImGui::TextWrapped("%s", ui::tr("Choose White, Image or Video background to preview depth of field."));
         if (!makeSceneCameraState().perspective)
             ImGui::TextWrapped("%s", ui::tr("Depth of field requires a perspective camera."));
-        combo(ui::label("Anti-aliasing"), settings.antiAliasing, ui::items("Off|FXAA|Auto"));
+        combo(ui::label("Anti-aliasing"), settings.antiAliasing, ui::items("Off|FXAA|Auto|SMAA 1x|TAA"));
+        if (resolved.antiAliasing == PreviewAntiAliasing::taa) {
+            changed |= ImGui::SliderFloat(ui::label("Temporal history weight"), &settings.temporalHistoryWeight, 0.0F,
+                                          0.97F, "%.2f");
+            ImGui::TextWrapped("%s", ui::tr("Still images and exports use SMAA without temporal history."));
+        }
         combo(ui::label("View transform"), settings.viewTransform, ui::items("ACES|AgX|Neutral"));
         changed |= ImGui::SliderFloat(ui::label("Exposure (EV)"), &settings.exposure, -8.0F, 8.0F, "%.2f");
         changed |=
@@ -4097,6 +4138,10 @@ void Application::buildRenderSettingsControls() {
             timing(ui::tr("DoF composite"), timings.dofComposite);
             timing(ui::tr("Bloom"), timings.postProcess);
             timing(ui::tr("Tone mapping"), timings.toneMap);
+            timing(ui::tr("Contact shadows"), timings.contactShadows);
+            timing(ui::tr("Screen-space reflections"), timings.reflections);
+            timing(ui::tr("Temporal resolve"), timings.temporalResolve);
+            timing(ui::tr("Spatial anti-aliasing"), timings.spatialAntialiasing);
             timing(ui::tr("Total"), device_->previewGpuNanoseconds());
         }
     }
@@ -4348,6 +4393,28 @@ void Application::buildInspectorPanel() {
                         static_cast<std::uint8_t>(preset);
                     scene_.markDirty(core::DirtyFlag::material);
                     refreshAnimatedMesh(false);
+                }
+                if (preset == 2) {
+                    auto& strand = model->materialSettings[static_cast<std::size_t>(material)].previewStrandTexture;
+                    const bool valid = strand >= 0 && static_cast<std::size_t>(strand) < model->model->textures.size();
+                    const auto name = valid ? model->model->textures[static_cast<std::size_t>(strand)].storedPath
+                                            : std::string(ui::tr("UV direction"));
+                    if (ImGui::BeginCombo(ui::label("Strand direction map"), name.c_str())) {
+                        if (ImGui::Selectable(ui::tr("UV direction"), !valid)) {
+                            strand = -1;
+                            scene_.markDirty(core::DirtyFlag::material);
+                            refreshAnimatedMesh(false);
+                        }
+                        for (std::size_t i = 0; i < model->model->textures.size(); ++i) {
+                            if (ImGui::Selectable(model->model->textures[i].storedPath.c_str(),
+                                                  strand == static_cast<std::int32_t>(i))) {
+                                strand = static_cast<std::int32_t>(i);
+                                scene_.markDirty(core::DirtyFlag::material);
+                                refreshAnimatedMesh(false);
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
                 }
             }
             if (ImGui::Checkbox(ui::label("Enable PMX outlines (preview)"), &previewOutlineEnabled_))
@@ -5132,6 +5199,29 @@ void Application::buildEditorUi() {
                         static_cast<std::uint8_t>(preset);
                     scene_.markDirty(core::DirtyFlag::material);
                     refreshAnimatedMesh(false);
+                }
+                if (preset == 2) {
+                    auto& strand =
+                        model->materialSettings[static_cast<std::size_t>(materialIndex)].previewStrandTexture;
+                    const bool valid = strand >= 0 && static_cast<std::size_t>(strand) < model->model->textures.size();
+                    const auto name = valid ? model->model->textures[static_cast<std::size_t>(strand)].storedPath
+                                            : std::string(ui::tr("UV direction"));
+                    if (ImGui::BeginCombo(ui::label("Strand direction map"), name.c_str())) {
+                        if (ImGui::Selectable(ui::tr("UV direction"), !valid)) {
+                            strand = -1;
+                            scene_.markDirty(core::DirtyFlag::material);
+                            refreshAnimatedMesh(false);
+                        }
+                        for (std::size_t i = 0; i < model->model->textures.size(); ++i) {
+                            if (ImGui::Selectable(model->model->textures[i].storedPath.c_str(),
+                                                  strand == static_cast<std::int32_t>(i))) {
+                                strand = static_cast<std::int32_t>(i);
+                                scene_.markDirty(core::DirtyFlag::material);
+                                refreshAnimatedMesh(false);
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
                 }
                 ImGui::TreePop();
             }
