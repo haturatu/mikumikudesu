@@ -62,7 +62,7 @@ class Application::AssetEditCommand final : public core::EditCommand {
 
   public:
     AssetEditCommand(Application& app, std::string name, std::function<void()> change, std::function<void()> revert)
-        : app_(app), name_(std::move(name)), change_(std::move(change)), revert_(std::move(revert)) {}
+        : app_(&app), name_(std::move(name)), change_(std::move(change)), revert_(std::move(revert)) {}
     void apply(core::Scene&) override {
         if (!initialized_) {
             before_ = capture();
@@ -74,6 +74,7 @@ class Application::AssetEditCommand final : public core::EditCommand {
             };
             const auto ids = [](const core::SceneEffectStack& stack) {
                 std::vector<core::EffectId> result;
+                result.reserve(stack.deform.size() + stack.postprocess.size() + 1U);
                 for (const auto& effect : stack.deform)
                     result.push_back(effect.id);
                 result.push_back(stack.renderer ? stack.renderer->id : 0);
@@ -97,12 +98,12 @@ class Application::AssetEditCommand final : public core::EditCommand {
             change_();
             restore(after_);
         }
-        app_.refreshManagedAssets();
+        app_->refreshManagedAssets();
     }
     void undo(core::Scene&) override {
         revert_();
         restore(before_);
-        app_.refreshManagedAssets();
+        app_->refreshManagedAssets();
     }
     const char* name() const noexcept override {
         return name_.c_str();
@@ -110,45 +111,45 @@ class Application::AssetEditCommand final : public core::EditCommand {
 
   private:
     Metadata capture() const {
-        return {app_.projectAssets_,
-                app_.projectModelMetadata_,
-                app_.projectEditorState_,
-                app_.scene_.effects(),
-                app_.reloadedEffects_,
-                app_.scene_.background(),
-                app_.device_ ? app_.device_->previewRenderSettings().dof : graphics::PreviewDofSettings{},
-                app_.missingFocusModelProjectIndex_,
-                app_.uiState_.selectedAsset,
-                app_.scene_.selectedModelId(),
-                app_.scene_.timeline().frame,
-                app_.videoVisible_};
+        return {app_->projectAssets_,
+                app_->projectModelMetadata_,
+                app_->projectEditorState_,
+                app_->scene_.effects(),
+                app_->reloadedEffects_,
+                app_->scene_.background(),
+                app_->device_ ? app_->device_->previewRenderSettings().dof : graphics::PreviewDofSettings{},
+                app_->missingFocusModelProjectIndex_,
+                app_->uiState_.selectedAsset,
+                app_->scene_.selectedModelId(),
+                app_->scene_.timeline().frame,
+                app_->videoVisible_};
     }
     void restore(const Metadata& state) {
-        app_.projectAssets_ = state.assets;
-        app_.projectModelMetadata_ = state.models;
+        app_->projectAssets_ = state.assets;
+        app_->projectModelMetadata_ = state.models;
         if (before_.editor.skyboxFile != after_.editor.skyboxFile)
-            app_.projectEditorState_.skyboxFile = state.editor.skyboxFile;
+            app_->projectEditorState_.skyboxFile = state.editor.skyboxFile;
         if (effectsChanged_) {
-            app_.scene_.restoreEffects(state.effects);
-            app_.reloadedEffects_ = state.reloaders;
+            app_->scene_.restoreEffects(state.effects);
+            app_->reloadedEffects_ = state.reloaders;
         }
         if (backgroundChanged_)
-            app_.scene_.restoreBackground(state.background);
-        if (app_.device_ && before_.dof.modelIndex != after_.dof.modelIndex) {
-            auto settings = app_.device_->previewRenderSettings();
+            app_->scene_.restoreBackground(state.background);
+        if (app_->device_ && before_.dof.modelIndex != after_.dof.modelIndex) {
+            auto settings = app_->device_->previewRenderSettings();
             settings.dof.modelIndex = state.dof.modelIndex;
-            app_.device_->setPreviewRenderSettings(settings);
+            app_->device_->setPreviewRenderSettings(settings);
         }
         if (before_.missingFocus != after_.missingFocus)
-            app_.missingFocusModelProjectIndex_ = state.missingFocus;
-        app_.uiState_.selectedAsset = state.selection;
-        app_.scene_.selectModel(state.model);
+            app_->missingFocusModelProjectIndex_ = state.missingFocus;
+        app_->uiState_.selectedAsset = state.selection;
+        app_->scene_.selectModel(state.model);
         if (before_.frame != after_.frame)
-            app_.scene_.setFrame(state.frame);
+            app_->scene_.setFrame(state.frame);
         if (before_.videoVisible != after_.videoVisible)
-            app_.videoVisible_ = state.videoVisible;
+            app_->videoVisible_ = state.videoVisible;
     }
-    Application& app_;
+    Application* app_;
     std::string name_;
     std::function<void()> change_, revert_;
     Metadata before_, after_;
@@ -624,9 +625,9 @@ void Application::importManagedAsset(const std::filesystem::path& source, AssetT
         return;
     }
     if (type == AssetType::effect) {
-        const auto owner = target ? std::optional{target} : std::nullopt;
-        const auto existing = std::ranges::find_if(
-            reloadedEffects_, [&](const auto& effect) { return effect.path == path && effect.owner == owner; });
+        const auto existing = std::ranges::find_if(reloadedEffects_, [&](const auto& effect) {
+            return effect.path == path && effect.owner.value_or(0) == target;
+        });
         if (existing != reloadedEffects_.end() && !replace) {
             uiState_.selectedAsset = {AssetType::effect, existing->id};
             return;
@@ -635,7 +636,10 @@ void Application::importManagedAsset(const std::filesystem::path& source, AssetT
             throw std::runtime_error(ui::tr("This effect is already loaded for the target."));
         // Parse first; a broken replacement must leave the active graph intact.
         auto graph = std::make_shared<core::EffectGraph>(core::loadEffectGraph(path));
-        auto reloader = std::make_shared<ReloadedEffect>(path, target ? std::optional{target} : std::nullopt);
+        std::optional<core::ModelId> owner;
+        if (target != 0)
+            owner = target;
+        auto reloader = std::make_shared<ReloadedEffect>(path, owner);
         static_cast<void>(reloader->reloader.poll());
         const auto oldId = replace ? replacedEffect : 0;
         executeAssetEdit(
@@ -839,10 +843,13 @@ void Application::requestAssetDialog(AssetType type, core::ModelId target, bool 
     default:
         break;
     }
-    auto* context =
-        new Context{assetDialogQueue_, {{}, type, target, replace, assetGeneration_, {}}, {"Asset", pattern}};
+    auto context = std::make_unique<Context>();
+    context->queue = assetDialogQueue_;
+    context->request = {{}, type, target, replace, assetGeneration_, {}};
+    context->filter = {"Asset", pattern};
     if (replace && type == AssetType::effect)
         context->request.replacedEffect = uiState_.selectedAsset.id;
+    const auto* filter = &context->filter;
     SDL_ShowOpenFileDialog(
         [](void* userdata, const char* const* files, int) {
             std::unique_ptr<Context> result(static_cast<Context*>(userdata));
@@ -856,7 +863,7 @@ void Application::requestAssetDialog(AssetType type, core::ModelId target, bool 
                 result->queue->results.push_back(std::move(result->request));
             }
         },
-        context, SDL_GetKeyboardFocus(), &context->filter, 1, nullptr, false);
+        context.release(), SDL_GetKeyboardFocus(), filter, 1, nullptr, false);
 }
 
 void Application::queueDroppedAsset(const std::filesystem::path& path, float x, float y) {

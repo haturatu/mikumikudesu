@@ -35,7 +35,7 @@ void Application::buildScenePanel() {
         }
         inspectorPage_ = asset.type == AssetType::effect ? InspectorPage::effects : InspectorPage::selection;
     };
-    bool dialogPending;
+    bool dialogPending{};
     {
         std::lock_guard lock(assetDialogQueue_->mutex);
         dialogPending = assetDialogQueue_->pending;
@@ -96,7 +96,8 @@ void Application::buildScenePanel() {
         if (asset.type == AssetType::model) {
             const auto* model = scene_.model(asset.id);
             if (ImGui::MenuItem(ui::label(model->visible ? "Hide" : "Show")))
-                assetActions_.push_back([this, asset, visible = !model->visible] { setAssetVisible(asset, visible); });
+                assetActions_.emplace_back(
+                    [this, asset, visible = !model->visible] { setAssetVisible(asset, visible); });
             if (ImGui::MenuItem(ui::label("Focus model"))) {
                 ViewportNavigation::reset(cameraTarget_, cameraYaw_, cameraPitch_, cameraDistance_,
                                           model->normalization.center, model->normalization.scale);
@@ -112,12 +113,13 @@ void Application::buildScenePanel() {
                             modelName_.data());
             }
             if (ImGui::MenuItem(ui::label("Duplicate model")))
-                assetActions_.push_back([this, asset] { duplicateModel(asset.id); });
+                assetActions_.emplace_back([this, asset] { duplicateModel(asset.id); });
         }
         if (asset.type == AssetType::effect) {
             const auto effect = std::ranges::find(reloadedEffects_, asset.id, &ReloadedEffect::id);
             if (effect != reloadedEffects_.end() && ImGui::MenuItem(ui::label(effect->enabled ? "Disable" : "Enable")))
-                assetActions_.push_back([this, asset, enabled = effect->enabled] { setAssetVisible(asset, !enabled); });
+                assetActions_.emplace_back(
+                    [this, asset, enabled = effect->enabled] { setAssetVisible(asset, !enabled); });
         }
         if (ImGui::MenuItem(ui::label("Replace file…")))
             requestAssetDialog(asset.type, asset.type == AssetType::model ? asset.id : target, true);
@@ -125,7 +127,8 @@ void Application::buildScenePanel() {
             const auto folder = source.parent_path().generic_string();
             static constexpr char hex[] = "0123456789ABCDEF";
             std::string url = "file://";
-            for (const unsigned char c : folder) {
+            for (const char character : folder) {
+                const auto c = static_cast<unsigned char>(character);
                 if (std::isalnum(c) || c == '/' || c == '-' || c == '_' || c == '.' || c == '~')
                     url += static_cast<char>(c);
                 else {
@@ -147,7 +150,7 @@ void Application::buildScenePanel() {
     };
     const auto visibility = [&](AssetSelection asset, bool visible) {
         if (ImGui::Button("##visibility", {24.0F, ImGui::GetFrameHeight()}))
-            assetActions_.push_back([this, asset, visible] { setAssetVisible(asset, !visible); });
+            assetActions_.emplace_back([this, asset, visible] { setAssetVisible(asset, !visible); });
         const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
         const ImVec2 centre{(min.x + max.x) * 0.5F, (min.y + max.y) * 0.5F};
         const auto color = ImGui::GetColorU32(ImGuiCol_Text);
@@ -199,7 +202,10 @@ void Application::buildScenePanel() {
         for (const auto& model : scene_.models()) {
             const auto motionNames = sourceNames(model.instanceId, "vmd");
             const auto poseNames = sourceNames(model.instanceId, "vpd");
-            std::string searchable = model.displayName + model.sourcePath.string() + motionNames + poseNames;
+            std::string searchable = model.displayName;
+            searchable += model.sourcePath.string();
+            searchable += motionNames;
+            searchable += poseNames;
             for (const auto& effect : reloadedEffects_)
                 if (effect.owner == model.id)
                     searchable += effect.path.string();
@@ -277,7 +283,7 @@ void Application::buildScenePanel() {
             const auto name = std::string(modelName_.data());
             if (const auto* model = scene_.model(id)) {
                 const auto before = model->displayName;
-                assetActions_.push_back([this, id, before, name] {
+                assetActions_.emplace_back([this, id, before, name] {
                     executeAssetEdit(
                         "Rename model",
                         [this, id, name] {
