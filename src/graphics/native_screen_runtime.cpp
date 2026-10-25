@@ -258,7 +258,7 @@ void NativeScreenRuntime::reset() noexcept {
     Device* device = device_;
     if (device != nullptr) {
         try {
-            device->waitIdle();
+            device->prepareResourceDestruction();
         } catch (...) {
         }
         for (const auto texture : {screenBmp_, screenTexture_, previousFrame_}) {

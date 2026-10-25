@@ -813,6 +813,8 @@ target_compile_definitions(dayo_core PUBLIC DAYO_HAS_OPENEXR=${DAYO_HAS_OPENEXR}
 add_executable(
   mikumikudesu
   src/app/application.cpp
+  src/app/asset_management.cpp
+  src/app/scene_panel.cpp
   src/app/audio_export_command.cpp
   src/app/audio_export_job.cpp
   src/app/video_export_job.cpp

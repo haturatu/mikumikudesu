@@ -77,9 +77,8 @@ std::string newModelInstanceId() {
     return value.str();
 }
 
-ModelId Scene::addModel(const std::filesystem::path& path) {
+ModelInstance Scene::prepareModel(const std::filesystem::path& path) {
     ModelInstance instance;
-    instance.id = nextId_++;
     instance.sourcePath = std::filesystem::absolute(path).lexically_normal();
     instance.model = std::make_shared<PmxModel>(loadPmxModel(path));
     instance.upstreamDrawable = isUpstreamDrawableModel(*instance.model);
@@ -92,15 +91,50 @@ ModelId Scene::addModel(const std::filesystem::path& path) {
     instance.normalization = previewNormalization(*instance.model);
     instance.displayName =
         instance.model->metadata.modelName.empty() ? path.filename().string() : instance.model->metadata.modelName;
+    instance.materialSettings.resize(instance.model->materials.size());
+    // Resource resolution does not depend on mutable scene state.
+    Scene loader;
+    loader.refreshModelResources(instance);
+    return instance;
+}
+
+ModelId Scene::addModel(const std::filesystem::path& path) {
+    auto instance = prepareModel(path);
     const auto order = static_cast<std::int32_t>(models_.size());
     instance.order = {order, order, order, order};
-    instance.materialSettings.resize(instance.model->materials.size());
-    refreshModelResources(instance);
-    models_.push_back(std::move(instance));
+    return restoreModel({std::move(instance), models_.size(), {}});
+}
+
+std::optional<DetachedModel> Scene::takeModel(ModelId id) {
+    const auto found = std::ranges::find(models_, id, &ModelInstance::id);
+    if (found == models_.end())
+        return std::nullopt;
+    DetachedModel detached{std::move(*found), static_cast<std::size_t>(found - models_.begin()), externalParents_};
+    // removeModel also updates selection, topology, parents and duration.
+    removeModel(id);
+    return detached;
+}
+
+ModelId Scene::restoreModel(DetachedModel detached) {
+    auto& instance = detached.instance;
+    if (instance.id == 0)
+        instance.id = nextId_++;
+    else
+        nextId_ = std::max(nextId_, instance.id + 1);
+    const auto id = instance.id;
+    models_.insert(models_.begin() + static_cast<std::ptrdiff_t>(std::min(detached.index, models_.size())),
+                   std::move(instance));
+    for (const auto& link : detached.externalParents) {
+        if ((link.parentModel == id || link.childModel == id) && model(link.parentModel) && model(link.childModel))
+            externalParents_.push_back(link);
+    }
+    timeline_.externalParents = externalParents_;
+    selectedModel_ = id;
     ++topologyGeneration_;
-    selectedModel_ = models_.back().id;
-    markDirty(DirtyFlag::geometry | DirtyFlag::material);
-    return selectedModel_;
+    ++motionRevision_;
+    recalculateTimelineDuration();
+    markDirty(DirtyFlag::geometry | DirtyFlag::material | DirtyFlag::camera);
+    return id;
 }
 
 bool Scene::removeModel(ModelId id) {
@@ -490,6 +524,44 @@ void Scene::attachPose(const std::filesystem::path& path, ModelId target) {
     markDirty(DirtyFlag::geometry);
 }
 
+bool Scene::clearMotion(ModelId target, bool global) {
+    if (global) {
+        cameraMotion_.reset();
+        timeline_.camera.clear();
+        timeline_.light.clear();
+        timeline_.shadow.clear();
+        timeline_.ik.clear();
+        timeline_.externalParentKeys.clear();
+        timeline_.gravity.clear();
+    } else {
+        auto* instance = model(targetModel(target));
+        if (instance == nullptr)
+            return false;
+        instance->animator->setMotion(nullptr);
+        instance->motion.reset();
+        instance->animationVisible = true;
+    }
+    ++motionRevision_;
+    recalculateTimelineDuration();
+    markDirty(DirtyFlag::geometry | DirtyFlag::camera | DirtyFlag::lighting);
+    return true;
+}
+
+bool Scene::setPose(std::optional<VpdPose> pose, ModelId target) {
+    auto* instance = model(targetModel(target));
+    if (instance == nullptr)
+        return false;
+    instance->pose = pose ? std::make_unique<VpdPose>(std::move(*pose)) : nullptr;
+    instance->animator->setPose(instance->pose.get());
+    ++motionRevision_;
+    markDirty(DirtyFlag::geometry);
+    return true;
+}
+
+bool Scene::clearPose(ModelId target) {
+    return setPose(std::nullopt, target);
+}
+
 void Scene::setBackgroundImage(const std::filesystem::path& path) {
     background_.image = loadImageRgba8(path);
     background_.imagePath = std::filesystem::absolute(path).lexically_normal();
@@ -547,6 +619,25 @@ void Scene::clearBackground() {
     background_ = {};
     recalculateTimelineDuration();
     markDirty(DirtyFlag::background);
+}
+
+void Scene::clearBackgroundImage() {
+    background_.image.reset();
+    background_.imagePath.reset();
+    if (background_.screenSource == ScreenTextureSource::backgroundImage)
+        background_.screenSource = ScreenTextureSource::white;
+    markDirty(DirtyFlag::background);
+}
+
+void Scene::restoreBackground(BackgroundState state) {
+    background_ = std::move(state);
+    markDirty(DirtyFlag::background);
+}
+
+void Scene::swapMedia(std::optional<MediaFile>& media, MediaPresentation presentation) {
+    std::swap(presentation == MediaPresentation::audioOnly ? media_ : backgroundMedia_, media);
+    recalculateTimelineDuration();
+    markDirty(DirtyFlag::background | DirtyFlag::output);
 }
 
 void Scene::clearMedia() {
@@ -617,6 +708,18 @@ void Scene::clearEffects() {
     if (effects_.empty())
         return;
     effects_ = {};
+    markDirty(DirtyFlag::effect);
+}
+
+void Scene::restoreEffects(SceneEffectStack effects) {
+    effects_ = std::move(effects);
+    const auto update = [this](const auto& effect) { nextEffectId_ = std::max(nextEffectId_, effect.id + 1); };
+    for (const auto& effect : effects_.deform)
+        update(effect);
+    for (const auto& effect : effects_.postprocess)
+        update(effect);
+    if (effects_.renderer)
+        update(*effects_.renderer);
     markDirty(DirtyFlag::effect);
 }
 

@@ -130,7 +130,7 @@ void OutputSampleAccumulator::ensureTexture(Device& device, Extent3D extent) {
     }
     if (resolved_.valid()) {
         try {
-            device.waitIdle();
+            device.prepareResourceDestruction();
         } catch (...) {
         }
         device.destroyTextureEx(resolved_);
@@ -151,7 +151,7 @@ void OutputSampleAccumulator::reset() noexcept {
     cancel();
     if (device_ != nullptr && resolved_.valid()) {
         try {
-            device_->waitIdle();
+            device_->prepareResourceDestruction();
             device_->destroyTextureEx(resolved_);
         } catch (...) {
         }

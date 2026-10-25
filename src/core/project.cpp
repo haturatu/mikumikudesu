@@ -363,6 +363,7 @@ Json modelOrderArray(const std::vector<ProjectModelState>& models, ProjectOrderF
 ProjectModelState readNativeModelState(const Json& item, const std::filesystem::path& base) {
     ProjectModelState state;
     state.instanceId = item.value("instanceId", std::string{});
+    state.displayName = item.value("displayName", std::string{});
     if (item.contains("source") && item.at("source").is_string())
         state.source = resolveAsset(base, item.at("source").get<std::string>());
     if (item.contains("upstreamId") && item.at("upstreamId").is_number_integer())
@@ -731,6 +732,7 @@ DayoProject loadProject(const std::filesystem::path& path) {
                     continue;
                 ProjectAsset loaded{asset.value("kind", "unknown"),
                                     resolveAsset(base, asset.at("path").get<std::string>())};
+                loaded.enabled = asset.value("enabled", true);
                 loaded.modelInstanceId = asset.value("modelInstanceId", std::string{});
                 if (asset.contains("ownerModelIndex") && asset.at("ownerModelIndex").is_number_unsigned())
                     loaded.ownerModelIndex = asset.at("ownerModelIndex").get<std::size_t>();
@@ -756,6 +758,8 @@ DayoProject loadProject(const std::filesystem::path& path) {
                            ? resolveAsset(base, editor.at(key).get<std::string>())
                            : fallback;
             };
+            result.editor.independentMedia = editor.value("independentMedia", false);
+            result.editor.backgroundImageVisible = editor.value("backgroundImageVisible", true);
             result.editor.skyboxFile = readPath("skyboxFile", upstream.editor.skyboxFile);
             result.editor.floorCollision = editor.value("floorCollision", upstream.editor.floorCollision);
             result.editor.animationStart = editor.value("animationStart", upstream.editor.animationStart);
@@ -965,6 +969,7 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
     Json assets = Json::array();
     for (const auto& asset : project.assets) {
         Json value{{"kind", asset.kind}, {"path", portablePath(base, asset.path).generic_string()}};
+        value["enabled"] = asset.enabled;
         if (!asset.modelInstanceId.empty())
             value["modelInstanceId"] = asset.modelInstanceId;
         if (asset.ownerModelIndex.has_value())
@@ -1086,7 +1091,9 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
     native["frame"] = project.frame;
     native["playing"] = project.playing;
     native["assets"] = std::move(assets);
-    native["editorState"] = {{"skyboxFile", editorPath(project.editor.skyboxFile)},
+    native["editorState"] = {{"independentMedia", project.editor.independentMedia},
+                             {"backgroundImageVisible", project.editor.backgroundImageVisible},
+                             {"skyboxFile", editorPath(project.editor.skyboxFile)},
                              {"floorCollision", project.editor.floorCollision},
                              {"animationStart", project.editor.animationStart},
                              {"animationEnd", project.editor.animationEnd},
@@ -1123,6 +1130,7 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
     native["modelState"] = Json::array();
     for (const auto& model : modelStates) {
         Json state{{"instanceId", model.instanceId},
+                   {"displayName", model.displayName},
                    {"source", portablePath(base, model.source).generic_string()},
                    {"bones", model.bones},
                    {"morphs", model.morphs},
@@ -1158,6 +1166,16 @@ void saveProject(const std::filesystem::path& path, const DayoProject& project) 
         auto payload = project.embeddedVmdayo;
         if (payload.empty()) {
             std::vector<VmdMotion> motions = project.embeddedMotions;
+            // Asset order can differ from model metadata order after a replace,
+            // or when unresolved references are appended during project load.
+            if (!project.models.empty() && motions.size() == project.models.size() + 1U) {
+                std::vector<VmdMotion> ordered;
+                ordered.reserve(modelAssets.size() + 1U);
+                ordered.push_back(std::move(motions.front()));
+                for (const auto index : modelIndices)
+                    ordered.push_back(index < project.models.size() ? std::move(motions[index + 1U]) : VmdMotion{});
+                motions = std::move(ordered);
+            }
             if (motions.empty() && project.embeddedMotion) {
                 VmdMotion camera;
                 camera.modelName = "Camera/Light";

@@ -119,7 +119,7 @@ bool BdptAccumulation::ensureGpuResources(Device& device, std::uint32_t width, s
     created.volumeResolution = volumeResolution;
     const auto destroyCreated = [&]() noexcept {
         try {
-            device.waitIdle();
+            device.prepareResourceDestruction();
             for (auto volume : created.volumes) {
                 if (volume.valid())
                     device.destroyTextureEx(volume);
@@ -196,7 +196,7 @@ void BdptAccumulation::releaseGpuResources(Device& device) noexcept {
 
 void BdptAccumulation::releaseGpuResourcesNoexcept(Device& device) noexcept {
     try {
-        device.waitIdle();
+        device.prepareResourceDestruction();
         for (auto volume : gpuResources_.volumes) {
             if (volume.valid())
                 device.destroyTextureEx(volume);

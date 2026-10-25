@@ -137,6 +137,13 @@ struct ModelInstance {
 [[nodiscard]] std::vector<std::size_t> stableMotionEvaluationOrder(std::span<const std::int32_t> orderValues);
 [[nodiscard]] bool isUpstreamDrawableModel(const PmxModel& model) noexcept;
 
+// Owns a removed model until Undo restores it or the command is discarded.
+struct DetachedModel {
+    ModelInstance instance;
+    std::size_t index{};
+    std::vector<ExternalParentLink> externalParents;
+};
+
 struct Timeline {
     float frame{};
     float fps{static_cast<float>(kMmdTimelineFramesPerSecond)};
@@ -162,7 +169,10 @@ class Scene {
     Scene(const Scene&) = delete;
     Scene& operator=(const Scene&) = delete;
 
+    [[nodiscard]] static ModelInstance prepareModel(const std::filesystem::path& path);
     [[nodiscard]] ModelId addModel(const std::filesystem::path& path);
+    [[nodiscard]] std::optional<DetachedModel> takeModel(ModelId id);
+    ModelId restoreModel(DetachedModel model);
     bool removeModel(ModelId id);
     void clearModels();
     [[nodiscard]] ModelInstance* model(ModelId id) noexcept;
@@ -185,6 +195,9 @@ class Scene {
     [[nodiscard]] const VmdMotion* motion(ModelId target = 0, bool global = false) const noexcept;
     bool replaceMotion(VmdMotion motion, ModelId target = 0, bool global = false);
     void attachPose(const std::filesystem::path& path, ModelId target = 0);
+    bool clearMotion(ModelId target = 0, bool global = false);
+    bool setPose(std::optional<VpdPose> pose, ModelId target = 0);
+    bool clearPose(ModelId target = 0);
     [[nodiscard]] ModelId targetModel(ModelId requested = 0) const noexcept;
     bool addExternalParent(ExternalParentLink link, std::string* error = nullptr);
     [[nodiscard]] bool hasExternalParentCycle() const noexcept;
@@ -213,6 +226,9 @@ class Scene {
     void setMedia(const std::filesystem::path& path, MediaPresentation presentation = MediaPresentation::audioOnly);
     void clearMedia();
     void clearBackground();
+    void clearBackgroundImage();
+    void restoreBackground(BackgroundState state);
+    void swapMedia(std::optional<MediaFile>& media, MediaPresentation presentation);
     void clearBackgroundVideo();
     void setBackgroundVideoVisible(bool visible) noexcept;
     [[nodiscard]] MediaFile* backgroundMedia() noexcept;
@@ -225,6 +241,7 @@ class Scene {
                                      std::int32_t executionOrder = 0);
     bool removeEffect(EffectId id);
     void clearEffects();
+    void restoreEffects(SceneEffectStack effects);
     void clearEffect();
     [[nodiscard]] EffectGraph* effect() noexcept;
     [[nodiscard]] const EffectGraph* effect() const noexcept;

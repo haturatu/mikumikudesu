@@ -211,7 +211,7 @@ bool NativeSceneDerivedRuntime::ensureTableBufferCapacity(const NativeSceneDeriv
         if (fits)
             return true;
         try {
-            device_->waitIdle();
+            device_->prepareResourceDestruction();
         } catch (...) {
         }
         for (auto& frame : frameBuffers_) {
@@ -276,7 +276,7 @@ bool NativeSceneDerivedRuntime::ensureOutputResources(Extent3D extent, std::stri
         return true;
 
     try {
-        device_->waitIdle();
+        device_->prepareResourceDestruction();
     } catch (...) {
     }
     for (auto& frame : frameBuffers_) {
@@ -434,7 +434,7 @@ void NativeSceneDerivedRuntime::destroyOwnedResources() noexcept {
     if (device_ == nullptr)
         return;
     try {
-        device_->waitIdle();
+        device_->prepareResourceDestruction();
     } catch (...) {
     }
     for (const auto texture : ownedTextures_) {

@@ -895,6 +895,7 @@ class Device {
         return {1, 1, {255, 255, 255, 255}};
     }
     virtual void waitIdle() = 0;
+    // An empty vertex/index pair unloads the model mesh.
     virtual void uploadPreviewMesh(std::span<const PreviewVertex> vertices, std::span<const std::uint32_t> indices) = 0;
     virtual void updatePreviewVertices(std::span<const PreviewVertex> vertices) = 0;
     virtual void updatePreviewBones(std::span<const PreviewBoneTransform> bones) = 0;
@@ -1014,6 +1015,11 @@ class Device {
         throw std::logic_error("Typed acceleration-structure destroy is not implemented by this backend");
     }
     // ---- destroy / retirement ----
+    // Backends that defer every typed destruction until GPU completion can
+    // override this barrier. Callers must replace, rather than overwrite, resources.
+    virtual void prepareResourceDestruction() {
+        waitIdle();
+    }
     virtual void destroyTextureEx(handles::TextureHandle) {
         throw std::logic_error("Typed texture destroy is not implemented by this backend");
     }

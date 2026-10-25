@@ -89,7 +89,8 @@ class SdlWindow final : public Window {
                 break;
             case SDL_EVENT_DROP_FILE:
                 if (event.drop.data != nullptr) {
-                    result.push_back({WindowEvent::Type::fileDropped, std::filesystem::path(event.drop.data)});
+                    result.push_back({WindowEvent::Type::fileDropped, std::filesystem::path(event.drop.data),
+                                      event.drop.x, event.drop.y});
                 }
                 break;
             case SDL_EVENT_MOUSE_MOTION:

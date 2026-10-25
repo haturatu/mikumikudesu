@@ -5,6 +5,14 @@
 
 namespace dayo::ui {
 
+enum class AssetType { none, model, motion, globalMotion, pose, effect, audio, video, image, environment };
+
+struct AssetSelection {
+    AssetType type{AssetType::none};
+    std::uint64_t id{};
+    friend bool operator==(const AssetSelection&, const AssetSelection&) = default;
+};
+
 enum class Workspace { layout, animation, camera, render, debug };
 
 struct WorkspacePanels {
@@ -36,6 +44,8 @@ struct UiState {
     std::array<char, 256> sceneFilter{};
     bool viewportHovered{};
     bool timelineFocused{};
+    bool sceneFocused{};
+    AssetSelection selectedAsset;
     bool inspectScene{};
     std::int32_t selectedMaterial{-1};
 };

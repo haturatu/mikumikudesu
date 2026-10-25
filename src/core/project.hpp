@@ -16,6 +16,7 @@ namespace dayo::core {
 struct ProjectAsset {
     std::string modelInstanceId;
     std::string kind;
+    bool enabled{true};
     std::filesystem::path path;
     std::optional<std::size_t> ownerModelIndex;
     std::optional<std::int32_t> upstreamId;
@@ -28,6 +29,7 @@ struct ProjectAsset {
 
 struct ProjectModelState {
     std::string instanceId;
+    std::string displayName;
     std::filesystem::path source;
     std::optional<std::int32_t> upstreamId;
     std::vector<std::string> bones;
@@ -60,6 +62,8 @@ struct ProjectEditorState {
     std::uint32_t outputHeight{1080};
     std::filesystem::path outputFile;
     std::filesystem::path movieFile;
+    bool independentMedia{}; // Native asset actions can explicitly remove audio from a movie.
+    bool backgroundImageVisible{true};
     bool movieVisible{true}; // Older projects implicitly displayed their movie.
     float recordFps{30.0F};
     float animationSpeed{1.0F};

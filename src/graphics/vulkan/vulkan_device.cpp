@@ -4633,12 +4633,14 @@ void VulkanDevice::recordPreviewBackground(VkCommandBuffer command) {
 
 void VulkanDevice::destroyPreviewDeformBuffers(Frame& frame) {
     if (frame.previewDeformDescriptor != VK_NULL_HANDLE)
-        check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &frame.previewDeformDescriptor),
-              "free Preview deform descriptor");
+        retirePreviewResource([this, set = frame.previewDeformDescriptor] {
+            check(vkFreeDescriptorSets(device_, previewDescriptorPool_, 1, &set), "free Preview deform descriptor");
+        });
     if (frame.previewDeformedBuffer != VK_NULL_HANDLE)
-        vkDestroyBuffer(device_, frame.previewDeformedBuffer, nullptr);
+        retirePreviewResource(
+            [this, buffer = frame.previewDeformedBuffer] { vkDestroyBuffer(device_, buffer, nullptr); });
     if (frame.previewDeformedMemory != VK_NULL_HANDLE)
-        vkFreeMemory(device_, frame.previewDeformedMemory, nullptr);
+        retirePreviewResource([this, memory = frame.previewDeformedMemory] { vkFreeMemory(device_, memory, nullptr); });
     frame.previewDeformDescriptor = VK_NULL_HANDLE;
     frame.previewDeformBindingsValid = false;
     frame.previewDeformedBuffer = VK_NULL_HANDLE;
@@ -5039,6 +5041,11 @@ void VulkanDevice::recordPreviewScenePass(VkCommandBuffer command, Frame& frame,
     };
     vkCmdBeginRendering(command, &renderingInfo);
     depth.initialized = true;
+    if (previewIndexCount_ == 0 || frame.previewDeformedBuffer == VK_NULL_HANDLE) {
+        writePreviewTimestamp(command, frame.timestampQueryPool, previewTimestampModel);
+        vkCmdEndRendering(command);
+        return;
+    }
     const VkViewport viewport{0.0F, 0.0F, static_cast<float>(extent.width), static_cast<float>(extent.height),
                               0.0F, 1.0F};
     const VkRect2D scissor{{0, 0}, extent};
@@ -6410,10 +6417,16 @@ void VulkanDevice::uploadPreviewDeviceLocalBuffer(const void* data, VkDeviceSize
 
 void VulkanDevice::uploadPreviewMesh(std::span<const PreviewVertex> vertices, std::span<const std::uint32_t> indices) {
     previewTemporalHistory_.valid = false;
-    if (vertices.empty() || indices.empty())
-        throw std::invalid_argument("preview mesh is empty");
+    if (vertices.empty() != indices.empty())
+        throw std::invalid_argument("preview mesh needs both vertices and indices");
     collectPreviewRetirements();
     destroyPreviewMesh();
+    if (vertices.empty()) {
+        previewGpuScene_.vertices.clear();
+        for (auto& frame : frames_)
+            destroyPreviewDeformBuffers(frame);
+        return;
+    }
 
     try {
         uploadPreviewDeviceLocalBuffer(vertices.data(), vertices.size_bytes(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -7235,7 +7248,8 @@ void VulkanDevice::destroyPipelineLayoutEx(handles::PipelineLayoutHandle handle)
     if (it == typedPipelineLayouts_.end() || !typedPipelineLayoutHandles_.isAlive(handle))
         throw std::invalid_argument("stale typed pipeline layout handle");
     if (it->second.layout != VK_NULL_HANDLE)
-        vkDestroyPipelineLayout(device_, it->second.layout, nullptr);
+        retirePreviewResource(
+            [this, layout = it->second.layout] { vkDestroyPipelineLayout(device_, layout, nullptr); });
     typedPipelineLayouts_.erase(it);
     typedPipelineLayoutHandles_.destroy(handle);
 }
@@ -7565,7 +7579,8 @@ void VulkanDevice::destroyPipelineEx(handles::PipelineHandle handle) {
     if (it == typedPipelines_.end() || !typedPipelineHandles_.isAlive(handle))
         throw std::invalid_argument("stale typed pipeline handle");
     if (it->second.pipeline != VK_NULL_HANDLE)
-        vkDestroyPipeline(device_, it->second.pipeline, nullptr);
+        retirePreviewResource(
+            [this, pipeline = it->second.pipeline] { vkDestroyPipeline(device_, pipeline, nullptr); });
     typedPipelines_.erase(it);
     typedPipelineHandles_.destroy(handle);
 }
@@ -7687,9 +7702,9 @@ void VulkanDevice::destroyShaderBindingTable(handles::ShaderBindingTableHandle h
     if (it == typedShaderBindingTables_.end() || !typedShaderBindingTableHandles_.isAlive(handle))
         throw std::invalid_argument("stale shader binding table handle");
     if (it->second.buffer != VK_NULL_HANDLE)
-        vkDestroyBuffer(device_, it->second.buffer, nullptr);
+        retirePreviewResource([this, buffer = it->second.buffer] { vkDestroyBuffer(device_, buffer, nullptr); });
     if (it->second.memory != VK_NULL_HANDLE)
-        vkFreeMemory(device_, it->second.memory, nullptr);
+        retirePreviewResource([this, memory = it->second.memory] { vkFreeMemory(device_, memory, nullptr); });
     typedShaderBindingTables_.erase(it);
     typedShaderBindingTableHandles_.destroy(handle);
 }

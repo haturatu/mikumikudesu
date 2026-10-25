@@ -26,7 +26,7 @@ struct SharedAllocation {
         : device(&owner), texture(image), buffer(data) {}
     ~SharedAllocation() {
         try {
-            device->waitIdle();
+            device->prepareResourceDestruction();
         } catch (...) {
         }
         if (texture.valid()) {
@@ -469,7 +469,7 @@ void FxPassDescriptorRuntime::reset() noexcept {
     Device* device = device_;
     if (device != nullptr) {
         try {
-            device->waitIdle();
+            device->prepareResourceDestruction();
         } catch (...) {
         }
         for (const auto& [name, entry] : entries_) {
@@ -933,7 +933,7 @@ void FxResourceRuntime::reset() noexcept {
     if (device != nullptr) {
         passDescriptors_.reset();
         try {
-            device->waitIdle();
+            device->prepareResourceDestruction();
         } catch (...) {
         }
         if (descriptorSet_.valid()) {
