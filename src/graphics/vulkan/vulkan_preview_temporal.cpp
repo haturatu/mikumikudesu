@@ -96,14 +96,21 @@ void VulkanDevice::preparePreviewTemporal(VkCommandBuffer command, Frame& frame,
     if (quality == PreviewDofQuality::automatic)
         quality = static_cast<PreviewDofQuality>(
             previewEffectivePreset(previewRenderSettings_.preset, options_.quality, previewIntegrated()));
-    motion.enabled = available && previewRenderSettings_.dof.temporal && effects.depthOfField &&
-                     effects.depthOfFieldIntensity > 0.0F && quality != PreviewDofQuality::performance &&
-                     !previewStillQuality_ && !previewLensSample_ && previewGpuScene_.view.perspective &&
-                     previewVertexSize_ != 0;
+    const bool taa = effects.antiAliasing == PreviewAntiAliasing::taa;
+    const bool dofTemporal = previewRenderSettings_.dof.temporal && effects.depthOfField &&
+                             effects.depthOfFieldIntensity > 0.0F && quality != PreviewDofQuality::performance &&
+                             previewGpuScene_.view.perspective;
+    motion.enabled =
+        available && (taa || dofTemporal) && !previewStillQuality_ && !previewLensSample_ && previewVertexSize_ != 0;
     auto& history = previewTemporalHistory_;
     if (!motion.enabled) {
         motion.valid = false;
         history.valid = false;
+        previewAaHistory_.valid = false;
+        if (previewTaaJitter_) {
+            previewJitter_ = {};
+            previewTaaJitter_ = false;
+        }
         // This frame slot's fence has completed. Drop the extra full-size
         // attachments when returning to the APU path instead of retaining
         // temporal VRAM until the next viewport resize.
@@ -134,11 +141,14 @@ void VulkanDevice::preparePreviewTemporal(VkCommandBuffer command, Frame& frame,
             ensurePreviewTemporalHistory(command, {1, 1});
         return;
     }
-    ensurePreviewTemporalHistory(command, extent);
+    // Motion-only TAA needs the shared vertex/camera history, not the four
+    // full-resolution DoF history images. Keep only valid fallback descriptors.
+    ensurePreviewTemporalHistory(command, dofTemporal ? extent : VkExtent2D{1, 1});
     const auto& current = previewGpuScene_.view;
     const auto& previous = history.scene;
     const float delta = current.animationTimeSeconds - previous.animationTimeSeconds;
-    if (delta < 0.0F || delta > 0.25F || std::abs(current.verticalFovRadians - previous.verticalFovRadians) > 0.15F ||
+    if (current.perspective != previous.perspective || delta < 0.0F || delta > 0.25F ||
+        std::abs(current.verticalFovRadians - previous.verticalFovRadians) > 0.15F ||
         std::abs(current.cameraDistance - previous.cameraDistance) > std::max(0.5F, previous.cameraDistance * 0.25F) ||
         std::abs(current.focusDistance - previous.focusDistance) > std::max(0.25F, previous.focusDistance * 0.25F))
         history.valid = false;
@@ -167,6 +177,22 @@ void VulkanDevice::preparePreviewTemporal(VkCommandBuffer command, Frame& frame,
     motion.valid = history.valid;
     if (!motion.valid)
         history.phase = 0;
+    if (taa) {
+        const auto halton = [](std::uint32_t index, std::uint32_t base) {
+            float value = 0, scale = 1;
+            while (index != 0) {
+                scale /= static_cast<float>(base);
+                value += scale * static_cast<float>(index % base);
+                index /= base;
+            }
+            return value - 0.5F;
+        };
+        previewJitter_ = {halton(history.phase + 1U, 2), halton(history.phase + 1U, 3)};
+        previewTaaJitter_ = true;
+    } else if (previewTaaJitter_) {
+        previewJitter_ = {};
+        previewTaaJitter_ = false;
+    }
     if (motion.cameraBuffer == VK_NULL_HANDLE) {
         const VkBufferCreateInfo info{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                                       .size = sizeof(float) * 16,
@@ -201,6 +227,7 @@ void VulkanDevice::preparePreviewTemporal(VkCommandBuffer command, Frame& frame,
     constants[10] = motion.valid ? history.jitter[0] : previewJitter_[0];
     constants[11] = motion.valid ? history.jitter[1] : previewJitter_[1];
     constants[12] = motion.valid ? 1.0F : 0.0F;
+    constants[13] = camera.perspective ? 1.0F : 0.0F;
     std::memcpy(motion.mappedCamera, constants.data(), sizeof(constants));
     ensurePreviewAoResources(frame, extent);
     ensurePreviewFocusIdResource(frame, extent);
@@ -276,6 +303,12 @@ void VulkanDevice::recordPreviewTemporalHistory(VkCommandBuffer command, Frame& 
             std::swap(barrier.oldLayout, barrier.newLayout);
     }
     vkCmdPipelineBarrier2(command, &dependency);
+    recordPreviewMotionHistory(command, frame);
+}
+
+void VulkanDevice::recordPreviewMotionHistory(VkCommandBuffer command, Frame& frame) {
+    auto& history = previewTemporalHistory_;
+    VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     const VkMemoryBarrier2 toCopy{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                                   .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                   .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,

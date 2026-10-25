@@ -35,7 +35,9 @@ enum class EffectOverride : std::uint8_t { inherit, enabled, disabled };
 enum class PreviewAmbientOcclusion : std::uint8_t { ssao, gtao };
 enum class PreviewShadowFilter : std::uint8_t { pcf, pcss, automatic };
 enum class PreviewViewTransform : std::uint8_t { aces, agx, neutral };
-enum class PreviewAntiAliasing : std::uint8_t { off, fxaa, automatic };
+enum class PreviewToonLighting : std::uint8_t { pbrHybrid, classicMmd };
+enum class PreviewHairBrdf : std::uint8_t { kajiyaKay, anisotropicGgx };
+enum class PreviewAntiAliasing : std::uint8_t { off, fxaa, automatic, smaa, taa };
 enum class PreviewQualityPreset : std::uint8_t { automatic, performance, balanced, high };
 
 struct PreviewEffectSetting {
@@ -50,6 +52,17 @@ struct PreviewRenderSettings {
     PreviewShadowFilter shadowFilter{PreviewShadowFilter::automatic};
     PreviewViewTransform viewTransform{PreviewViewTransform::aces};
     PreviewAntiAliasing antiAliasing{PreviewAntiAliasing::automatic};
+    PreviewToonLighting toonLighting{PreviewToonLighting::pbrHybrid};
+    PreviewHairBrdf hairBrdf{PreviewHairBrdf::kajiyaKay};
+    PreviewEffectSetting specularAntialiasing{};
+    PreviewEffectSetting contactShadows{};
+    PreviewEffectSetting screenSpaceReflections{};
+    PreviewEffectSetting refraction{};
+    float contactShadowDistance{0.12F};
+    float reflectionDistance{2.0F};
+    float refractionIor{1.5F};
+    float refractionThickness{0.04F};
+    float temporalHistoryWeight{0.9F};
     float exposure{0.0F};        // EV applied before the view transform.
     float whiteBalance{6500.0F}; // Kelvin of the assumed white point.
     float bloomThreshold{1.0F};
@@ -76,6 +89,10 @@ constexpr PreviewRenderSettings legacyPreviewRenderSettings() noexcept {
     settings.skinSubsurface.override = EffectOverride::disabled;
     settings.clothSheen.override = EffectOverride::disabled;
     settings.clearcoat.override = EffectOverride::disabled;
+    settings.specularAntialiasing.override = EffectOverride::disabled;
+    settings.contactShadows.override = EffectOverride::disabled;
+    settings.screenSpaceReflections.override = EffectOverride::disabled;
+    settings.refraction.override = EffectOverride::disabled;
     return settings;
 }
 
@@ -92,14 +109,24 @@ inline PreviewRenderSettings sanitizePreviewRenderSettings(PreviewRenderSettings
         settings.shadowFilter = PreviewShadowFilter::automatic;
     if (settings.viewTransform > PreviewViewTransform::neutral)
         settings.viewTransform = PreviewViewTransform::aces;
-    if (settings.antiAliasing > PreviewAntiAliasing::automatic)
+    if (settings.antiAliasing > PreviewAntiAliasing::taa)
         settings.antiAliasing = PreviewAntiAliasing::automatic;
+    if (settings.toonLighting > PreviewToonLighting::classicMmd)
+        settings.toonLighting = PreviewToonLighting::pbrHybrid;
+    if (settings.hairBrdf > PreviewHairBrdf::anisotropicGgx)
+        settings.hairBrdf = PreviewHairBrdf::kajiyaKay;
+    settings.contactShadowDistance = finiteClamp(settings.contactShadowDistance, 0.12F, 0.001F, 1.0F);
+    settings.reflectionDistance = finiteClamp(settings.reflectionDistance, 2.0F, 0.05F, 20.0F);
+    settings.refractionIor = finiteClamp(settings.refractionIor, 1.5F, 1.0F, 2.5F);
+    settings.refractionThickness = finiteClamp(settings.refractionThickness, 0.04F, 0.0F, 0.5F);
+    settings.temporalHistoryWeight = finiteClamp(settings.temporalHistoryWeight, 0.9F, 0.0F, 0.97F);
     settings.exposure = finiteClamp(settings.exposure, 0.0F, -12.0F, 12.0F);
     settings.whiteBalance = finiteClamp(settings.whiteBalance, 6500.0F, 1000.0F, 15000.0F);
     settings.bloomThreshold = finiteClamp(settings.bloomThreshold, 1.0F, 0.0F, 20.0F);
-    for (auto* effect :
-         {&settings.ambientOcclusion, &settings.softShadows, &settings.skinSubsurface, &settings.hairShading,
-          &settings.clothSheen, &settings.clearcoat, &settings.bloom, &settings.depthOfField}) {
+    for (auto* effect : {&settings.ambientOcclusion, &settings.softShadows, &settings.skinSubsurface,
+                         &settings.hairShading, &settings.clothSheen, &settings.clearcoat, &settings.bloom,
+                         &settings.depthOfField, &settings.specularAntialiasing, &settings.contactShadows,
+                         &settings.screenSpaceReflections, &settings.refraction}) {
         if (effect->override > EffectOverride::disabled)
             effect->override = EffectOverride::inherit;
         effect->intensity = finiteClamp(effect->intensity, 1.0F, 0.0F, 4.0F);
@@ -119,11 +146,16 @@ enum PreviewEffectSupport : std::uint32_t { // NOLINT(performance-enum-size)
     previewEffectSupportClearcoat = 1U << 5U,
     previewEffectSupportBloom = 1U << 6U,
     previewEffectSupportDepthOfField = 1U << 7U,
+    previewEffectSupportSpecularAa = 1U << 8U,
+    previewEffectSupportContactShadows = 1U << 9U,
+    previewEffectSupportReflections = 1U << 10U,
+    previewEffectSupportRefraction = 1U << 11U,
 };
 constexpr std::uint32_t previewEffectSupportAll =
     previewEffectSupportAmbientOcclusion | previewEffectSupportSoftShadows | previewEffectSupportSkinSubsurface |
     previewEffectSupportHairShading | previewEffectSupportClothSheen | previewEffectSupportClearcoat |
-    previewEffectSupportBloom | previewEffectSupportDepthOfField;
+    previewEffectSupportBloom | previewEffectSupportDepthOfField | previewEffectSupportSpecularAa |
+    previewEffectSupportContactShadows | previewEffectSupportReflections | previewEffectSupportRefraction;
 
 // Per-effect defaults for one quality preset.
 struct PreviewEffectPresetDefaults {
@@ -178,7 +210,7 @@ constexpr PreviewEffectPresetDefaults previewEffectPresetDefaults(PreviewQuality
                 .bloom = true,
                 .depthOfField = true,
                 .shadowFilter = PreviewShadowFilter::pcss,
-                .antiAliasing = PreviewAntiAliasing::fxaa};
+                .antiAliasing = PreviewAntiAliasing::taa};
     case PreviewQualityPreset::balanced:
     case PreviewQualityPreset::automatic:
     default:
@@ -191,12 +223,23 @@ constexpr PreviewEffectPresetDefaults previewEffectPresetDefaults(PreviewQuality
                 .bloom = true,
                 .depthOfField = false,
                 .shadowFilter = PreviewShadowFilter::pcss,
-                .antiAliasing = PreviewAntiAliasing::fxaa};
+                .antiAliasing = PreviewAntiAliasing::smaa};
     }
 }
 
 // Effective per-frame state consumed by the renderer.
 struct ResolvedPreviewEffects {
+    PreviewToonLighting toonLighting{PreviewToonLighting::pbrHybrid};
+    PreviewHairBrdf hairBrdf{PreviewHairBrdf::kajiyaKay};
+    float specularAaIntensity{1.0F};
+    float contactShadowIntensity{};
+    float reflectionIntensity{};
+    float refractionIntensity{};
+    float contactShadowDistance{0.12F};
+    float reflectionDistance{2.0F};
+    float refractionIor{1.5F};
+    float refractionThickness{0.04F};
+    float temporalHistoryWeight{0.9F};
     float ambientOcclusionIntensity{1.0F};
     float shadowSoftness{1.0F};
     float skinSubsurfaceIntensity{1.0F};
@@ -241,6 +284,31 @@ constexpr ResolvedPreviewEffects resolvePreviewEffects(const PreviewRenderSettin
                                                         ? PreviewQualityPreset::high
                                                         : effectivePreset);
     ResolvedPreviewEffects resolved;
+    resolved.toonLighting = settings.toonLighting;
+    resolved.hairBrdf = settings.hairBrdf;
+    resolved.specularAaIntensity =
+        effectEnabled(settings.specularAntialiasing, true) && (support & previewEffectSupportSpecularAa) != 0
+            ? settings.specularAntialiasing.intensity
+            : 0.0F;
+    resolved.contactShadowIntensity =
+        effectEnabled(settings.contactShadows, effectivePreset != PreviewQualityPreset::performance) &&
+                (support & previewEffectSupportContactShadows) != 0
+            ? settings.contactShadows.intensity
+            : 0.0F;
+    resolved.reflectionIntensity =
+        effectEnabled(settings.screenSpaceReflections, effectivePreset == PreviewQualityPreset::high) &&
+                (support & previewEffectSupportReflections) != 0
+            ? settings.screenSpaceReflections.intensity
+            : 0.0F;
+    resolved.refractionIntensity = effectEnabled(settings.refraction, effectivePreset == PreviewQualityPreset::high) &&
+                                           (support & previewEffectSupportRefraction) != 0
+                                       ? settings.refraction.intensity
+                                       : 0.0F;
+    resolved.contactShadowDistance = settings.contactShadowDistance;
+    resolved.reflectionDistance = settings.reflectionDistance;
+    resolved.refractionIor = settings.refractionIor;
+    resolved.refractionThickness = settings.refractionThickness;
+    resolved.temporalHistoryWeight = settings.temporalHistoryWeight;
     resolved.ambientOcclusion = effectEnabled(settings.ambientOcclusion, preset.ambientOcclusion) &&
                                 (support & previewEffectSupportAmbientOcclusion) != 0;
     resolved.ambientOcclusionMode = settings.ambientOcclusionMode;
@@ -276,6 +344,8 @@ constexpr ResolvedPreviewEffects resolvePreviewEffects(const PreviewRenderSettin
     resolved.whiteBalance = settings.whiteBalance;
     resolved.antiAliasing =
         settings.antiAliasing == PreviewAntiAliasing::automatic ? preset.antiAliasing : settings.antiAliasing;
+    if (stillQuality && resolved.antiAliasing == PreviewAntiAliasing::taa)
+        resolved.antiAliasing = PreviewAntiAliasing::smaa;
     return resolved;
 }
 
@@ -288,7 +358,8 @@ constexpr ResolvedPreviewEffects resolvePreviewEffects(const PreviewRenderSettin
 //   data[14] = clearcoat / PCSS / bloom / depth of field enable flags
 //   data[15].x = 1 when GTAO replaced the legacy screen-space occlusion
 constexpr std::uint32_t previewEffectDataIndex = 10;
-constexpr std::uint32_t previewEffectDataFloats = 6 * 4;
+constexpr std::uint32_t previewEffectDataFloats = 9 * 4;
+constexpr std::uint32_t previewEnvironmentDataFloats = previewEffectDataIndex * 4 + previewEffectDataFloats;
 
 constexpr std::array<float, previewEffectDataFloats>
 packPreviewEffectData(const ResolvedPreviewEffects& effects) noexcept {
@@ -315,7 +386,19 @@ packPreviewEffectData(const ResolvedPreviewEffects& effects) noexcept {
             effects.ambientOcclusionMode == PreviewAmbientOcclusion::gtao ? 1.0F : 0.0F,
             static_cast<float>(effects.viewTransform),
             effects.antiAliasing == PreviewAntiAliasing::fxaa ? 1.0F : 0.0F,
-            effects.softShadows ? 1.0F : 0.0F};
+            effects.softShadows ? 1.0F : 0.0F,
+            static_cast<float>(effects.toonLighting),
+            effects.specularAaIntensity,
+            static_cast<float>(effects.hairBrdf),
+            effects.contactShadowIntensity,
+            effects.reflectionIntensity,
+            effects.refractionIntensity,
+            effects.refractionIor,
+            effects.refractionThickness,
+            effects.contactShadowDistance,
+            effects.reflectionDistance,
+            effects.temporalHistoryWeight,
+            0.0F};
 }
 
 } // namespace dayo::graphics

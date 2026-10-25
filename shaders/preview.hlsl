@@ -70,6 +70,7 @@ struct PreviewMaterialData {
 [[vk::binding(2, 6)]] SamplerState previewShadowDepthSampler;
 [[vk::binding(0, 7)]] Texture2D<float4> previewAoMap;
 [[vk::binding(1, 7)]] SamplerState previewAoSampler;
+[[vk::binding(2, 7)]] Texture2D<float> previewContactShadow;
 
 [[vk::binding(0, 0)]] Texture2D<float4> baseTexture;
 [[vk::binding(1, 0)]] Texture2D<float4> toonTexture;
@@ -90,6 +91,7 @@ float3 safeNormalize(float3 value, float3 fallback) {
 #define PREVIEW_EFFECT_ENABLE_A previewEnvironmentData[13]
 #define PREVIEW_EFFECT_ENABLE_B previewEnvironmentData[14]
 #define PREVIEW_EFFECT_MODE previewEnvironmentData[15]
+#define PREVIEW_SHADING_MODE previewEnvironmentData[16]
 
 float3 previewShadowCoordinates(float3 worldPosition) {
     const float3 light = safeNormalize(-scene.light.xyz, float3(0.0, 1.0, 0.0));
@@ -214,8 +216,11 @@ VertexOutput NormalMotionVS(VertexInput input, [[vk::location(10)]] float3 previ
     p.z += max(previousCamera[0].w, 0.1);
     const float focal = 1.0 / tan(max(previousCamera[1].w, 0.05) * 0.5);
     const float2 size = max(previousCamera[2].xy, 1.0.xx);
-    output.previousClip = float4(p.x * focal * size.y / size.x, -p.y * focal, 0.0, p.z);
-    output.previousClip.xy += previousCamera[2].zw * (2.0 / size) * p.z;
+    const bool perspective = previousCamera[3].y > 0.5;
+    const float extent = max(previousCamera[0].w, 0.1) * tan(max(previousCamera[1].w, 0.05) * 0.5);
+    output.previousClip = perspective ? float4(p.x * focal * size.y / size.x, -p.y * focal, p.z, p.z)
+                                      : float4(p.x / extent * size.y / size.x, -p.y / extent, p.z, 1.0);
+    output.previousClip.xy += previousCamera[2].zw * (2.0 / size) * output.previousClip.w;
     output.motionValid = previousCamera[3].x;
     return output;
 }
@@ -294,8 +299,8 @@ MotionOutput NormalMotionPS(VertexOutput input) {
     output.identity = picked.identity;
     const float2 previousUv = input.previousClip.xy / max(input.previousClip.w, 0.0001) * 0.5 + 0.5;
     const float2 uv = input.position.xy / scene.viewport.xy;
-    output.motion = float4(previousUv - uv, input.previousClip.w,
-                           input.previousClip.w > 0.05 ? input.motionValid : 0.0);
+    output.motion = float4(previousUv - uv, input.previousClip.z,
+                           input.previousClip.z > 0.05 ? input.motionValid : 0.0);
     return output;
 }
 
@@ -326,6 +331,15 @@ float3 evaluateIrradiance(float3 normal) {
 
 float3 fresnelSchlick(float cosine, float3 f0) {
     return f0 + (1.0 - f0) * pow(1.0 - saturate(cosine), 5.0);
+}
+
+// Filter normal variance in slope space without an extra pass. The input
+// roughness is perceptual; the variance is added to the squared GGX alpha.
+float previewSpecularRoughness(float roughness, float3 normal) {
+    const float3 dx = ddx(normal);
+    const float3 dy = ddy(normal);
+    const float variance = max(dot(dx, dx), dot(dy, dy)) * max(PREVIEW_SHADING_MODE.y, 0.0);
+    return sqrt(sqrt(saturate(pow(roughness, 4.0) + min(2.0 * variance, 0.18))));
 }
 
 float distributionGGX(float noH, float roughness) {
@@ -462,7 +476,7 @@ float4 shadePreview(VertexOutput input, bool frontFace, out float4 skinDiffuse) 
     const float noV = saturate(dot(normal, viewDirection));
     const float noH = saturate(dot(normal, halfVector));
     const float voH = saturate(dot(viewDirection, halfVector));
-    const float roughness = clamp(material.pbr.x, 0.06, 1.0);
+    const float roughness = clamp(previewSpecularRoughness(material.pbr.x, normal), 0.06, 1.0);
     const float metallic = saturate(material.pbr.y);
     const float skin = saturate(material.pbr.w);
     const float3 baseColor = material.diffuse.rgb * baseSampled.rgb;
@@ -490,7 +504,11 @@ float4 shadePreview(VertexOutput input, bool frontFace, out float4 skinDiffuse) 
     const float backLight = pow(saturate(dot(-normal, lightDirection)), 2.0);
     const float rim = pow(1.0 - noV, 3.0);
     const float3 skinTransmission = skin * backLight * sssTint * (sssEnabled ? 0.22 * sssIntensity : 0.08);
-    const float shadow = previewShadow(input.worldPosition, normal, lightDirection);
+    float shadow = previewShadow(input.worldPosition, normal, lightDirection);
+    if (PREVIEW_SHADING_MODE.w > 0) {
+        float contact = previewContactShadow.SampleLevel(previewAoSampler, input.position.xy / scene.viewport.xy, 0);
+        shadow *= lerp(1.0, contact, saturate(PREVIEW_SHADING_MODE.w));
+    }
     const float3 Le = scene.lightColor.rgb * (scene.debug.z > 0.5 ? 0.4 : 1.0) * shadow;
 
     // Pre-integrated skin scattering: the wrapped diffuse, plus a backlight and
@@ -506,7 +524,7 @@ float4 shadePreview(VertexOutput input, bool frontFace, out float4 skinDiffuse) 
     // Clearcoat: a second, very smooth dielectric lobe over the base specular.
     float3 directSpecular = ggx;
     if (clearcoatEnabled && material.hair.z > 0.0) {
-        const float coatRoughness = 0.055;
+        const float coatRoughness = max(0.055, previewSpecularRoughness(0.055, normal));
         const float3 coatFresnel = fresnelSchlick(voH, 0.04.xxx);
         const float3 coat = distributionGGX(noH, coatRoughness) * geometrySmith(noV, noL, coatRoughness) *
                             coatFresnel / specularDenominator * noL;
@@ -522,15 +540,40 @@ float4 shadePreview(VertexOutput input, bool frontFace, out float4 skinDiffuse) 
         const float3 dpdy = ddy(input.worldPosition);
         const float2 duvdx = ddx(input.uv);
         const float2 duvdy = ddy(input.uv);
-        const float3 tangent = safeNormalize(dpdx * duvdy.y - dpdy * duvdx.y,
-                                              safeNormalize(cross(normal, float3(0.0, 1.0, 0.0)),
-                                                            float3(1.0, 0.0, 0.0)));
-        const float primary =
-            strandSpecular(tangent, viewDirection, lightDirection, lerp(24.0, 80.0, 1.0 - roughness));
-        const float secondary = strandSpecular(shiftTangent(tangent, normal, 0.12), viewDirection, lightDirection,
-                                               lerp(8.0, 30.0, 1.0 - roughness));
+        const float3 uvTangent = safeNormalize(dpdx * duvdy.y - dpdy * duvdx.y,
+                                               safeNormalize(cross(normal, float3(0, 1, 0)), float3(1, 0, 0)));
+        float3 tangent = safeNormalize(uvTangent - normal * dot(uvTangent, normal), float3(1, 0, 0));
+        float3 bitangent = safeNormalize(cross(normal, tangent), float3(0, 0, 1));
+        if (textureSlots.w != 0) {
+            const float2 flow = samplePreviewTextureRepeat(textureSlots.w, input.uv).rg * 2.0 - 1.0;
+            tangent = safeNormalize(tangent * flow.x + bitangent * flow.y, tangent);
+            bitangent = safeNormalize(cross(normal, tangent), bitangent);
+        }
         const float3 hairTint = lerp(f0, baseColor * 0.4, 0.5);
-        hairSpecular = hairIntensity * material.hair.x * (primary + secondary * 0.35) * noL * hairTint;
+        if (PREVIEW_SHADING_MODE.z > 0.5) {
+            // Anisotropic GGX with correlated Smith visibility. Derivative-filtered
+            // roughness bounds both axes to avoid subpixel glints at grazing angles.
+            const float aspect = sqrt(1.0 - 0.85 * saturate(material.hair.x));
+            const float ax = max(0.02, roughness * roughness / aspect);
+            const float ay = max(0.02, roughness * roughness * aspect);
+            const float3 h = safeNormalize(viewDirection + lightDirection, normal);
+            const float th = dot(tangent, h), bh = dot(bitangent, h);
+            const float d = th * th / (ax * ax) + bh * bh / (ay * ay) + noH * noH;
+            const float distribution = 1.0 / max(3.14159265 * ax * ay * d * d, 1e-5);
+            const float tv = dot(tangent, viewDirection), bv = dot(bitangent, viewDirection);
+            const float tl = dot(tangent, lightDirection), bl = dot(bitangent, lightDirection);
+            const float visibility = 0.5 / max(
+                noL * sqrt(ax * ax * tv * tv + ay * ay * bv * bv + noV * noV) +
+                noV * sqrt(ax * ax * tl * tl + ay * ay * bl * bl + noL * noL), 1e-4);
+            hairSpecular = hairIntensity * material.hair.x * distribution * visibility * noL *
+                           fresnelSchlick(voH, hairTint);
+            directSpecular *= 1.0 - saturate(material.hair.x);
+        } else {
+            const float primary = strandSpecular(tangent, viewDirection, lightDirection, lerp(24.0, 80.0, 1.0 - roughness));
+            const float secondary = strandSpecular(shiftTangent(tangent, normal, 0.12), viewDirection, lightDirection,
+                                                    lerp(8.0, 30.0, 1.0 - roughness));
+            hairSpecular = hairIntensity * material.hair.x * (primary + secondary * 0.35) * noL * hairTint;
+        }
     }
 
     // Cloth sheen: Charlie lobe tinted towards the base colour.
@@ -563,17 +606,29 @@ float4 shadePreview(VertexOutput input, bool frontFace, out float4 skinDiffuse) 
     float4 color = float4(directDiffuse + (directSpecular + hairSpecular + sheenSpecular) * Le +
                           iblDiffuse + iblSpecular, material.diffuse.a * baseSampled.a);
 
+    // PMX mode 0 is a model texture and mode 1 is a shared toon texture.
+    // They share sampling semantics; neither represents a lighting model.
     const uint toonMode = (material.flags >> 1U) & 0x03U;
-    if ((debugFlags & 0x04U) == 0U && toonMode == 0U)
-    {
-        const float4 toon = samplePreviewTextureClamp(textureSlots.y, float2(0.0, 0.5 - noLight * 0.5));
-        color *= toon;
-        scatterDiffuse *= toon.rgb;
+    float3 toon = 1.0.xxx;
+    if ((debugFlags & 0x04U) == 0U && toonMode <= 1U) {
+        toon = applyTextureMorphRgb(
+            samplePreviewTextureClamp(textureSlots.y, float2(0.0, 0.5 - noLight * 0.5)),
+            material.toonMultiply, material.toonAdd, 1.0.xxx).rgb;
     }
-    else if ((debugFlags & 0x04U) == 0U && toonMode == 1U) {
-        const float4 toon = samplePreviewTextureClamp(textureSlots.y, float2(0.0, 0.5 - noLight * 0.5));
-        color *= toon;
-        scatterDiffuse *= toon.rgb;
+    if (PREVIEW_SHADING_MODE.x > 0.5) {
+        // Classic MMD lets the toon ramp encode the angular diffuse response.
+        // Preserve the PMX ambient, specular exponent and sphere composition.
+        const float3 classicDiffuse = saturate(material.diffuse.rgb * scene.lightColor.rgb +
+                                               material.ambientShininess.rgb) * baseSampled.rgb * toon * shadow;
+        const float3 classicSpecular = material.specular.rgb * pow(noH, max(material.ambientShininess.w, 1.0)) * Le;
+        color.rgb = classicDiffuse + classicSpecular;
+        scatterDiffuse = 0;
+    } else {
+        // Tint diffuse energy only. Toon morphs must not darken the GGX/IBL
+        // reflection or change the surface's alpha coverage.
+        color.rgb = (directDiffuse + iblDiffuse) * toon +
+                    (directSpecular + hairSpecular + sheenSpecular) * Le + iblSpecular;
+        scatterDiffuse *= toon;
     }
 
     const uint sphereMode = (material.flags >> 3U) & 0x03U;
@@ -604,10 +659,21 @@ float4 shadePreview(VertexOutput input, bool frontFace, out float4 skinDiffuse) 
 struct PreviewFragment {
     float4 color : SV_Target0;
     float4 skinDiffuse : SV_Target1;
+    float4 surface : SV_Target2;
 };
 
 PreviewFragment PS(VertexOutput input, bool frontFace : SV_IsFrontFace) {
     PreviewFragment output;
     output.color = shadePreview(input, frontFace, output.skinDiffuse);
+    output.surface = 0;
+    if ((scene.materialPadding & 8U) != 0U) {
+        const PreviewMaterialData material = previewMaterials[input.materialIndex];
+        const float3 n = safeNormalize(input.normal, float3(0, 0, -1));
+        const float reflectivity = saturate(lerp(0.08 * material.pbr.z, 1.0, material.pbr.y));
+        const float reactive = saturate(1 - output.color.a + material.hair.x * 0.4 + material.hair.w * 0.5);
+        const uint packed = uint(round(reflectivity * 15)) | (uint(round(saturate(material.hair.w) * 15)) << 4U) |
+                            (uint(round(reactive * 7)) << 8U);
+        output.surface = float4(encodeOctNormal(n), saturate(material.pbr.x), float(packed));
+    }
     return output;
 }

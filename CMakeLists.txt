@@ -314,6 +314,7 @@ add_library(
   src/graphics/native_fx_runtime.cpp
   src/graphics/vulkan/vulkan_device.cpp
   src/graphics/vulkan/vulkan_preview_temporal.cpp
+  src/graphics/vulkan/vulkan_preview_quality.cpp
   src/graphics/vulkan/vulkan_acceleration_structure.cpp
   src/graphics/vulkan/vulkan_acceleration_resources.cpp
   src/graphics/vulkan/vulkan_command_list.cpp
@@ -324,6 +325,7 @@ add_library(
   src/ui/theme.cpp
 )
 target_include_directories(dayo_graphics PUBLIC src)
+target_include_directories(dayo_graphics SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 target_link_libraries(
   dayo_graphics
   PUBLIC dayo_fx dayo_core dayo_i18n Vulkan::Vulkan SDL3::SDL3
@@ -543,6 +545,126 @@ dayo_compile_hlsl(
   STAGE frag
   DEPENDS shaders/preview_color.hlsli
 )
+dayo_compile_hlsl(
+  DAYO_PREVIEW_CONTACT_SHADOW_SPV
+  SOURCE shaders/preview_contact_shadow.hlsl
+  ENTRY ContactShadow
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS
+    shaders/preview_quality.hlsli
+    shaders/preview_color.hlsli
+    shaders/preview_normal.hlsli
+    third_party/smaa/SMAA.hlsl
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_CONTACT_BLUR_SPV
+  SOURCE shaders/preview_contact_shadow.hlsl
+  ENTRY ContactBlur
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS
+    shaders/preview_quality.hlsli
+    shaders/preview_color.hlsli
+    shaders/preview_normal.hlsli
+    third_party/smaa/SMAA.hlsl
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_SCREEN_REFLECTION_SPV
+  SOURCE shaders/preview_screen_space.hlsl
+  ENTRY ScreenReflection
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS
+    shaders/preview_quality.hlsli
+    shaders/preview_color.hlsli
+    shaders/preview_normal.hlsli
+    third_party/smaa/SMAA.hlsl
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_SCREEN_COMPOSITE_SPV
+  SOURCE shaders/preview_screen_space.hlsl
+  ENTRY ScreenComposite
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS
+    shaders/preview_quality.hlsli
+    shaders/preview_color.hlsli
+    shaders/preview_normal.hlsli
+    third_party/smaa/SMAA.hlsl
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_TEMPORAL_RESOLVE_SPV
+  SOURCE shaders/preview_postprocess.hlsl
+  ENTRY TemporalResolve
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS
+    shaders/preview_quality.hlsli
+    shaders/preview_color.hlsli
+    shaders/preview_normal.hlsli
+    third_party/smaa/SMAA.hlsl
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_PREPARE_DISPLAY_SPV
+  SOURCE shaders/preview_postprocess.hlsl
+  ENTRY PrepareDisplay
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS
+    shaders/preview_quality.hlsli
+    shaders/preview_color.hlsli
+    shaders/preview_normal.hlsli
+    third_party/smaa/SMAA.hlsl
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_FXAA_RESOLVE_SPV
+  SOURCE shaders/preview_postprocess.hlsl
+  ENTRY FxaaResolve
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS
+    shaders/preview_quality.hlsli
+    shaders/preview_color.hlsli
+    shaders/preview_normal.hlsli
+    third_party/smaa/SMAA.hlsl
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_SMAA_EDGES_SPV
+  SOURCE shaders/preview_smaa.hlsl
+  ENTRY SmaaEdges
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS
+    shaders/preview_quality.hlsli
+    shaders/preview_color.hlsli
+    shaders/preview_normal.hlsli
+    third_party/smaa/SMAA.hlsl
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_SMAA_WEIGHTS_SPV
+  SOURCE shaders/preview_smaa.hlsl
+  ENTRY SmaaWeights
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS
+    shaders/preview_quality.hlsli
+    shaders/preview_color.hlsli
+    shaders/preview_normal.hlsli
+    third_party/smaa/SMAA.hlsl
+)
+dayo_compile_hlsl(
+  DAYO_PREVIEW_SMAA_NEIGHBORHOOD_SPV
+  SOURCE shaders/preview_smaa.hlsl
+  ENTRY SmaaNeighborhood
+  PROFILE cs_6_6
+  STAGE comp
+  DEPENDS
+    shaders/preview_quality.hlsli
+    shaders/preview_color.hlsli
+    shaders/preview_normal.hlsli
+    third_party/smaa/SMAA.hlsl
+)
 dayo_compile_hlsl(DAYO_PREVIEW_BLOOM_SPV SOURCE shaders/preview_bloom.hlsl ENTRY BloomFilter PROFILE cs_6_6 STAGE comp)
 dayo_compile_hlsl(DAYO_PREVIEW_DOF_SPV SOURCE shaders/preview_dof.hlsl ENTRY DofFilter PROFILE cs_6_6 STAGE comp)
 dayo_compile_hlsl(
@@ -621,6 +743,16 @@ add_custom_target(
     ${DAYO_PREVIEW_AO32_BLUR_SPV}
     ${DAYO_PREVIEW_TONEMAP_VERTEX_SPV}
     ${DAYO_PREVIEW_TONEMAP_FRAGMENT_SPV}
+    ${DAYO_PREVIEW_CONTACT_SHADOW_SPV}
+    ${DAYO_PREVIEW_CONTACT_BLUR_SPV}
+    ${DAYO_PREVIEW_SCREEN_REFLECTION_SPV}
+    ${DAYO_PREVIEW_SCREEN_COMPOSITE_SPV}
+    ${DAYO_PREVIEW_TEMPORAL_RESOLVE_SPV}
+    ${DAYO_PREVIEW_PREPARE_DISPLAY_SPV}
+    ${DAYO_PREVIEW_FXAA_RESOLVE_SPV}
+    ${DAYO_PREVIEW_SMAA_EDGES_SPV}
+    ${DAYO_PREVIEW_SMAA_WEIGHTS_SPV}
+    ${DAYO_PREVIEW_SMAA_NEIGHBORHOOD_SPV}
     ${DAYO_PREVIEW_BLOOM_SPV}
     ${DAYO_PREVIEW_DOF_SPV}
     ${DAYO_PREVIEW_DOF32_SPV}
@@ -665,6 +797,16 @@ target_compile_definitions(
     DAYO_PREVIEW_AO32_BLUR_SPV="${DAYO_PREVIEW_AO32_BLUR_SPV}"
     DAYO_PREVIEW_TONEMAP_VERTEX_SPV="${DAYO_PREVIEW_TONEMAP_VERTEX_SPV}"
     DAYO_PREVIEW_TONEMAP_FRAGMENT_SPV="${DAYO_PREVIEW_TONEMAP_FRAGMENT_SPV}"
+    DAYO_PREVIEW_CONTACT_SHADOW_SPV="${DAYO_PREVIEW_CONTACT_SHADOW_SPV}"
+    DAYO_PREVIEW_CONTACT_BLUR_SPV="${DAYO_PREVIEW_CONTACT_BLUR_SPV}"
+    DAYO_PREVIEW_SCREEN_REFLECTION_SPV="${DAYO_PREVIEW_SCREEN_REFLECTION_SPV}"
+    DAYO_PREVIEW_SCREEN_COMPOSITE_SPV="${DAYO_PREVIEW_SCREEN_COMPOSITE_SPV}"
+    DAYO_PREVIEW_TEMPORAL_RESOLVE_SPV="${DAYO_PREVIEW_TEMPORAL_RESOLVE_SPV}"
+    DAYO_PREVIEW_PREPARE_DISPLAY_SPV="${DAYO_PREVIEW_PREPARE_DISPLAY_SPV}"
+    DAYO_PREVIEW_FXAA_RESOLVE_SPV="${DAYO_PREVIEW_FXAA_RESOLVE_SPV}"
+    DAYO_PREVIEW_SMAA_EDGES_SPV="${DAYO_PREVIEW_SMAA_EDGES_SPV}"
+    DAYO_PREVIEW_SMAA_WEIGHTS_SPV="${DAYO_PREVIEW_SMAA_WEIGHTS_SPV}"
+    DAYO_PREVIEW_SMAA_NEIGHBORHOOD_SPV="${DAYO_PREVIEW_SMAA_NEIGHBORHOOD_SPV}"
     DAYO_PREVIEW_BLOOM_SPV="${DAYO_PREVIEW_BLOOM_SPV}"
     DAYO_PREVIEW_DOF_SPV="${DAYO_PREVIEW_DOF_SPV}"
     DAYO_PREVIEW_DOF32_SPV="${DAYO_PREVIEW_DOF32_SPV}"
