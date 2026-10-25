@@ -450,7 +450,6 @@ void VulkanDevice::recordPreviewQuality(VkCommandBuffer command, Frame& frame, V
         frame.quality.displayView = typedTextures_.at(frame.quality.textures[7]).view;
     } else
         frame.quality.displayView = inputs[0];
-    stampQuality(command, frame.timestampQueryPool, previewSpatialEnd);
 }
 
 void VulkanDevice::ensurePreviewSurfaceResource(Frame& frame, VkExtent2D extent) {

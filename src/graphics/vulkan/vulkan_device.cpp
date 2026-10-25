@@ -198,7 +198,8 @@ bool samePreviewMaterial(const PreviewMaterial& left, const PreviewMaterial& rig
            left.toonMode == right.toonMode && left.sphereMode == right.sphereMode &&
            left.roughness == right.roughness && left.metallic == right.metallic &&
            left.specularStrength == right.specularStrength && left.skin == right.skin &&
-           left.anisotropy == right.anisotropy && left.sheen == right.sheen && left.clearcoat == right.clearcoat;
+           left.anisotropy == right.anisotropy && left.sheen == right.sheen && left.clearcoat == right.clearcoat &&
+           left.transmission == right.transmission && left.strandTextureSlot == right.strandTextureSlot;
 }
 
 VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -3023,8 +3024,9 @@ void VulkanDevice::resolveTimestampQuery(Frame& frame) noexcept {
     previewPassTimings_.dofBlur = elapsed(previewTimestampDofDownsample, previewTimestampDofBlur);
     previewPassTimings_.dofComposite = elapsed(previewTimestampDofBlur, previewTimestampDofComposite);
     previewPassTimings_.postProcess = elapsed(previewTimestampDofComposite, previewTimestampPostProcess);
-    previewPassTimings_.toneMap = elapsed(previewTimestampPostProcess, previewTimestampToneMap);
+    previewPassTimings_.toneMap = elapsed(previewSpatialEnd, previewTimestampToneMap);
     previewPassTimings_.contactShadows = elapsed(previewContactBegin, previewContactEnd);
+    previewPassTimings_.model -= std::min(previewPassTimings_.model, previewPassTimings_.contactShadows);
     previewPassTimings_.reflections = elapsed(previewReflectionBegin, previewReflectionEnd);
     previewPassTimings_.temporalResolve = elapsed(previewTemporalBegin, previewTemporalEnd);
     previewPassTimings_.spatialAntialiasing = elapsed(previewSpatialBegin, previewSpatialEnd);
@@ -4977,8 +4979,9 @@ void VulkanDevice::recordPreviewFinalPass(VkCommandBuffer command, Frame& frame,
         .pMemoryBarriers = &bloomToTonemap,
     };
     vkCmdPipelineBarrier2(command, &bloomDependency);
-    recordPreviewQuality(command, frame, extent);
     writePreviewTimestamp(command, frame.timestampQueryPool, previewTimestampPostProcess);
+    recordPreviewQuality(command, frame, extent);
+    writePreviewTimestamp(command, frame.timestampQueryPool, previewSpatialEnd);
 
     const auto resolved = previewResolvedEffects();
     const auto depthView =
@@ -5046,8 +5049,8 @@ void VulkanDevice::recordPreviewScenePass(VkCommandBuffer command, Frame& frame,
     recordPreviewShadowPass(command, frame);
     writePreviewTimestamp(command, frame.timestampQueryPool, previewTimestampShadow);
     recordPreviewAoPass(command, frame, extent);
-    recordPreviewContactShadows(command, frame, extent);
     writePreviewTimestamp(command, frame.timestampQueryPool, previewTimestampAmbientOcclusion);
+    recordPreviewContactShadows(command, frame, extent);
     const VkImageMemoryBarrier2 toColor{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .srcStageMask = colorInitialized ? previousColorStage : VK_PIPELINE_STAGE_2_NONE,
