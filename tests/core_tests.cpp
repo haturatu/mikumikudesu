@@ -1484,6 +1484,14 @@ int main() {
         scene.attachMotion(std::move(longMotion), secondModel);
         ok &= check(scene.timeline().duration == 100.0F, "timeline duration follows the longest model motion");
         scene.setFrame(80.0F);
+        const auto* retainedPmx = scene.model(secondModel)->model.get();
+        auto detached = scene.takeModel(secondModel);
+        ok &= check(detached && scene.model(secondModel) == nullptr && scene.timeline().duration == 20.0F,
+                    "detaching a model removes its motion from timeline duration");
+        ok &= check(scene.restoreModel(std::move(*detached)) == secondModel &&
+                        scene.model(secondModel)->model.get() == retainedPmx && scene.timeline().duration == 100.0F,
+                    "Undo restores the original model identity and parsed resources without reloading");
+        scene.setFrame(80.0F);
         ok &= check(scene.removeModel(secondModel) && scene.timeline().duration == 20.0F,
                     "removing longest motion recalculates timeline duration");
         ok &= check(scene.timeline().frame == 20.0F, "removing longest motion clamps the current frame");
@@ -1505,6 +1513,16 @@ int main() {
         scene.setFrame(400.0F);
         ok &= check(scene.cameraMotion() != nullptr && scene.timeline().duration == 500.0F,
                     "camera motion is attached as global scene state");
+        ok &= check(scene.clearMotion(0, true) && scene.cameraMotion() == nullptr && scene.timeline().camera.empty() &&
+                        scene.timeline().light.empty() && scene.timeline().gravity.empty(),
+                    "clearing global motion clears all derived global tracks");
+        ok &= check(scene.clearMotion(firstModel) && scene.model(firstModel)->motion == nullptr,
+                    "clearing model motion detaches the animator's motion pointer");
+        dayo::core::VpdPose removablePose;
+        removablePose.bones.push_back({"root", {}, {0.0F, 0.0F, 0.0F, 1.0F}});
+        ok &= check(scene.setPose(removablePose, firstModel) && scene.clearPose(firstModel) &&
+                        scene.model(firstModel)->pose == nullptr,
+                    "pose application and clearing do not leave an animator pointer to freed data");
         const auto beforeProjectResetGeneration = scene.topologyGeneration();
         scene.clearProjectState();
         ok &= check(scene.models().empty() && scene.cameraMotion() == nullptr && scene.timeline().duration == 0.0F &&
