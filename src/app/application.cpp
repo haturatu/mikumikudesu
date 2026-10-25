@@ -3041,7 +3041,8 @@ void Application::buildUi() {
                 const float previewAspect = available.x / available.y;
                 const float outputAspect = static_cast<float>(videoWidth_) / static_cast<float>(videoHeight_);
                 ImVec2 frameMinimum = imagePosition;
-                ImVec2 frameMaximum{imagePosition.x + available.x, imagePosition.y + available.y};
+                const ImVec2 imageMaximum{imagePosition.x + available.x, imagePosition.y + available.y};
+                ImVec2 frameMaximum = imageMaximum;
                 if (outputAspect < previewAspect) {
                     const float frameWidth = available.y * outputAspect;
                     frameMinimum.x += (available.x - frameWidth) * 0.5F;
@@ -3054,16 +3055,12 @@ void Application::buildUi() {
                 auto* drawList = ImGui::GetWindowDrawList();
                 constexpr ImU32 cropShade = IM_COL32(0, 0, 0, 112);
                 if (frameMinimum.x > imagePosition.x) {
-                    drawList->AddRectFilled(imagePosition, {frameMinimum.x, imagePosition.y + available.y}, cropShade);
-                    drawList->AddRectFilled({frameMaximum.x, imagePosition.y},
-                                             {imagePosition.x + available.x, imagePosition.y + available.y},
-                                             cropShade);
+                    drawList->AddRectFilled(imagePosition, {frameMinimum.x, imageMaximum.y}, cropShade);
+                    drawList->AddRectFilled({frameMaximum.x, imagePosition.y}, imageMaximum, cropShade);
                 }
                 if (frameMinimum.y > imagePosition.y) {
-                    drawList->AddRectFilled(imagePosition, {imagePosition.x + available.x, frameMinimum.y}, cropShade);
-                    drawList->AddRectFilled({imagePosition.x, frameMaximum.y},
-                                             {imagePosition.x + available.x, imagePosition.y + available.y},
-                                             cropShade);
+                    drawList->AddRectFilled(imagePosition, {imageMaximum.x, frameMinimum.y}, cropShade);
+                    drawList->AddRectFilled({imagePosition.x, frameMaximum.y}, imageMaximum, cropShade);
                 }
                 drawList->AddRect(frameMinimum, frameMaximum, IM_COL32(255, 255, 255, 220), 0.0F, 0, 1.5F);
                 uiState_.viewportHovered = input.hovered;
@@ -3107,7 +3104,6 @@ void Application::buildUi() {
                                          ImGui::GetStyle().FramePadding.y * 2.0F};
                     const ImVec2 messagePosition{imagePosition.x + (available.x - messageSize.x) * 0.5F,
                                                  imagePosition.y + (available.y - messageSize.y) * 0.5F};
-                    auto* drawList = ImGui::GetWindowDrawList();
                     drawList->AddRectFilled(
                         {messagePosition.x - padding.x, messagePosition.y - padding.y},
                         {messagePosition.x + messageSize.x + padding.x, messagePosition.y + messageSize.y + padding.y},
