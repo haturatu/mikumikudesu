@@ -468,6 +468,21 @@ int main() {
         project.renderSettings.whiteBalance = 4200.0F;
         project.renderSettings.clearcoat = {EffectOverride::enabled, 0.3F};
         project.renderSettings.ambientOcclusionMode = PreviewAmbientOcclusion::ssao;
+        project.renderSettings.toonLighting = PreviewToonLighting::classicMmd;
+        project.renderSettings.hairBrdf = PreviewHairBrdf::anisotropicGgx;
+        project.renderSettings.contactShadows = {EffectOverride::enabled, 0.7F};
+        project.renderSettings.screenSpaceReflections = {EffectOverride::disabled, 0.4F};
+        project.renderSettings.refraction = {EffectOverride::enabled, 0.8F};
+        project.renderSettings.contactShadowDistance = 0.23F;
+        project.renderSettings.reflectionDistance = 3.5F;
+        project.renderSettings.refractionIor = 1.7F;
+        project.renderSettings.refractionThickness = 0.06F;
+        project.renderSettings.temporalHistoryWeight = 0.85F;
+        dayo::core::ProjectModelState model;
+        model.source = path.parent_path() / "shader-quality.pmx";
+        project.assets.emplace_back("pmx", model.source);
+        model.previewStrandTextures = {-1, 3};
+        project.models.push_back(model);
         auto& dof = project.renderSettings.dof;
         dof.focusMode = PreviewFocusMode::trackedSurface;
         dof.quality = PreviewDofQuality::high;
@@ -502,6 +517,20 @@ int main() {
                         value.ambientOcclusionMode == PreviewAmbientOcclusion::ssao &&
                         value.antiAliasing == PreviewAntiAliasing::off,
                     "project round trip preserves effect overrides, methods and color management");
+        ok &= check(
+            value.toonLighting == PreviewToonLighting::classicMmd &&
+                value.hairBrdf == PreviewHairBrdf::anisotropicGgx &&
+                value.contactShadows.override == project.renderSettings.contactShadows.override &&
+                value.contactShadows.intensity == project.renderSettings.contactShadows.intensity &&
+                value.screenSpaceReflections.override == project.renderSettings.screenSpaceReflections.override &&
+                value.screenSpaceReflections.intensity == project.renderSettings.screenSpaceReflections.intensity &&
+                value.refraction.override == project.renderSettings.refraction.override &&
+                value.refraction.intensity == project.renderSettings.refraction.intensity &&
+                value.contactShadowDistance == 0.23F && value.reflectionDistance == 3.5F &&
+                value.refractionIor == 1.7F && value.refractionThickness == 0.06F &&
+                value.temporalHistoryWeight == 0.85F && loaded.models.size() == 1 &&
+                loaded.models.front().previewStrandTextures == std::vector<std::int32_t>({-1, 3}),
+            "shader controls and strand maps round trip through projects");
         ok &= check(
             value.dof.focusMode == dof.focusMode && value.dof.quality == dof.quality &&
                 value.dof.fNumber == dof.fNumber && value.dof.temporal == dof.temporal &&
@@ -555,6 +584,37 @@ int main() {
     } catch (const std::exception& exception) {
         std::cerr << "FAIL: settings persistence: " << exception.what() << '\n';
         return 1;
+    }
+    {
+        PreviewRenderSettings quality;
+        quality.preset = PreviewQualityPreset::performance;
+        auto result = resolvePreviewEffects(quality, PreviewQuality::apu, true);
+        ok &= check(result.contactShadowIntensity == 0 && result.reflectionIntensity == 0 &&
+                        result.refractionIntensity == 0 && result.antiAliasing == PreviewAntiAliasing::fxaa,
+                    "APU performance avoids screen-space rays and temporal bandwidth");
+        quality.preset = PreviewQualityPreset::balanced;
+        result = resolvePreviewEffects(quality, PreviewQuality::automatic, false);
+        ok &= check(result.contactShadowIntensity > 0 && result.reflectionIntensity == 0 &&
+                        result.antiAliasing == PreviewAntiAliasing::smaa,
+                    "balanced enables spatial AA and short contact rays");
+        quality.preset = PreviewQualityPreset::high;
+        result = resolvePreviewEffects(quality, PreviewQuality::high, false);
+        ok &= check(result.reflectionIntensity > 0 && result.refractionIntensity > 0 &&
+                        result.antiAliasing == PreviewAntiAliasing::taa,
+                    "high opts into temporal AA, reflections and glass refraction");
+        ok &= check(resolvePreviewEffects(quality, PreviewQuality::high, false, true).antiAliasing ==
+                        PreviewAntiAliasing::smaa,
+                    "still exports do not depend on playback history");
+        result = resolvePreviewEffects(quality, PreviewQuality::high, false, false, 0);
+        ok &= check(result.contactShadowIntensity == 0 && result.reflectionIntensity == 0 &&
+                        result.refractionIntensity == 0 && result.specularAaIntensity == 0,
+                    "unsupported quality effects are disabled in shader uniforms");
+        quality.refractionIor = 0;
+        quality.temporalHistoryWeight = std::numeric_limits<float>::infinity();
+        quality.contactShadowDistance = -3;
+        const auto safe = sanitizePreviewRenderSettings(quality);
+        ok &= check(safe.refractionIor == 1 && safe.temporalHistoryWeight == 0.9F && safe.contactShadowDistance > 0,
+                    "ray and history settings stay finite and bounded");
     }
     return ok ? 0 : 1;
 }
