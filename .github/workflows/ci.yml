@@ -41,11 +41,6 @@ jobs:
             cxx: clang++
             preset: linux-debug
             upstream: false
-          - compiler: GCC
-            cc: gcc
-            cxx: g++
-            preset: linux-release
-            upstream: false
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
@@ -154,6 +149,83 @@ jobs:
           DAYO_FX_COMPILER: dxc
           DAYO_UPSTREAM_REQUIRE_DXC: '1'
         run: xvfb-run -a -s '-screen 0 1280x1024x24' ctest --preset "${{ matrix.preset }}" --output-on-failure --parallel "$(nproc)" -L upstream
+
+      - name: Show compiler cache statistics
+        if: always()
+        run: ccache --show-stats
+
+  release:
+    name: GCC / linux-release
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc
+      CXX: g++
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Restore APT package cache
+        uses: ./.github/actions/cache-apt
+        with:
+          scope: release
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get \
+            -o Dir::Cache::archives="$RUNNER_TEMP/mikumikudesu-apt/" \
+            -o APT::Keep-Downloaded-Packages=true \
+            install --no-install-recommends -y \
+            ccache \
+            ffmpeg \
+            glslc \
+            libavcodec-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libbullet-dev \
+            libjsonnet-dev \
+            libstb-dev \
+            libasound2-dev \
+            libswresample-dev \
+            libswscale-dev \
+            libxcursor-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxss-dev \
+            libxtst-dev \
+            libx11-dev \
+            libxext-dev \
+            libxrender-dev \
+            libvulkan-dev \
+            ninja-build
+
+      - name: Restore or build SDL3
+        uses: ./.github/actions/setup-sdl3
+
+      - name: Restore compiler cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-v2-${{ runner.os }}-GCC-linux-release-${{ github.sha }}
+          restore-keys: |
+            ccache-v2-${{ runner.os }}-GCC-linux-release-
+
+      - name: Configure
+        run: cmake --preset linux-release -DCMAKE_PREFIX_PATH="$SDL3_PREFIX" -DDAYO_WARNINGS_AS_ERRORS=ON -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        run: cmake --build --preset linux-release --parallel
+
+      - name: Upload release binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: mikumikudesu-linux-x86_64
+          path: build/linux-release/mikumikudesu
+          if-no-files-found: error
 
       - name: Show compiler cache statistics
         if: always()
