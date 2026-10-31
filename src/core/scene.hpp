@@ -104,6 +104,7 @@ struct MaterialEditorState {
     MaterialParameterBlock parameters;
     // Preview-only reflection model. Stored by material in native projects.
     std::uint8_t previewPbrPreset{};
+    std::int32_t previewStrandTexture{-1};
 };
 
 [[nodiscard]] std::string newModelInstanceId();

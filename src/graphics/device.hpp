@@ -182,6 +182,8 @@ struct PreviewMaterial {
     float anisotropy{};
     float sheen{};
     float clearcoat{};
+    float transmission{};
+    std::uint32_t strandTextureSlot{};
 };
 
 struct PreviewDraw {
@@ -294,6 +296,10 @@ struct PreviewPassTimings {
     std::uint64_t dofComposite{};
     std::uint64_t postProcess{};
     std::uint64_t toneMap{};
+    std::uint64_t contactShadows{};
+    std::uint64_t reflections{};
+    std::uint64_t temporalResolve{};
+    std::uint64_t spatialAntialiasing{};
 };
 
 using BufferHandle = std::uint64_t;
@@ -933,6 +939,7 @@ class Device {
         return 512;
     }
     virtual void setPreviewJitter(float, float) {}
+    virtual void invalidatePreviewHistory() {}
     virtual void setPreviewStillQuality(bool) {}
 
     [[nodiscard]] virtual BufferHandle createBuffer(const BufferDesc& desc) = 0;

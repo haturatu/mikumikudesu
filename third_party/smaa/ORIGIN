@@ -1,0 +1,7 @@
+SMAA 1x reference shader and lookup tables
+Upstream: https://github.com/iryoku/smaa
+Revision: 71c806a838bdd7d517df19192a20f0c61b3ca29d
+Files: SMAA.hlsl, Textures/AreaTex.h, Textures/SearchTex.h, LICENSE.txt
+License: MIT (see LICENSE.txt and the original notices in each file)
+Local changes: normalize line endings and trailing whitespace only.
+The compute adaptation lives separately in shaders/preview_smaa.hlsl.

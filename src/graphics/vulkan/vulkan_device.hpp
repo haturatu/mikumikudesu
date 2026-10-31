@@ -21,6 +21,18 @@ VK_DEFINE_HANDLE(VmaAllocator)
 #include <vector>
 
 namespace dayo::graphics {
+// Additional queries leave the existing DoF timing slots stable.
+enum PreviewQualityTimestamp : std::uint32_t { // NOLINT(performance-enum-size)
+    previewContactBegin = 13,
+    previewContactEnd,
+    previewReflectionBegin,
+    previewReflectionEnd,
+    previewTemporalBegin,
+    previewTemporalEnd,
+    previewSpatialBegin,
+    previewSpatialEnd,
+    previewQualityTimestampCount
+};
 
 class VulkanUploadContext;
 class VulkanCommandList;
@@ -109,12 +121,14 @@ class VulkanDevice final : public Device {
                                      previewStillQuality_, previewEffectSupport());
     }
     [[nodiscard]] std::uint32_t previewEffectSupport() const noexcept override {
-        std::uint32_t support =
-            previewEffectSupportHairShading | previewEffectSupportClothSheen | previewEffectSupportClearcoat;
+        std::uint32_t support = previewEffectSupportHairShading | previewEffectSupportClothSheen |
+                                previewEffectSupportClearcoat | previewEffectSupportSpecularAa;
         if (shadowPipeline_ != VK_NULL_HANDLE)
             support |= previewEffectSupportSoftShadows;
         if (depthPrepassPipeline_ != VK_NULL_HANDLE && aoPipelines_[0] != VK_NULL_HANDLE)
-            support |= previewEffectSupportAmbientOcclusion;
+            support |= previewEffectSupportAmbientOcclusion | previewEffectSupportContactShadows;
+        if (capabilities_.independentBlend)
+            support |= previewEffectSupportReflections | previewEffectSupportRefraction;
         if (previewTonemapPipeline_ != VK_NULL_HANDLE) {
             if (capabilities_.independentBlend && dofPipeline_ != VK_NULL_HANDLE)
                 support |= previewEffectSupportSkinSubsurface;
@@ -153,6 +167,10 @@ class VulkanDevice final : public Device {
         previewGpuScene_.view = scene;
     }
     void updatePreviewEnvironment(const PreviewEnvironment& environment) override;
+    void invalidatePreviewHistory() override {
+        previewTemporalHistory_.valid = false;
+        previewAaHistory_.valid = false;
+    }
     void setPreviewJitter(float x, float y) override {
         previewJitter_ = {x, y};
     }
@@ -255,6 +273,7 @@ class VulkanDevice final : public Device {
     struct PreviewHdrResource {
         handles::TextureHandle texture{};
         handles::TextureHandle skinTexture{};
+        handles::TextureHandle surfaceTexture{};
         VkImage skinImage{};
         VkImageView skinView{};
         VkImage image{};
@@ -294,6 +313,18 @@ class VulkanDevice final : public Device {
         bool active{};
         bool fullDof{};
         bool temporal{};
+    };
+    struct PreviewQualityResource {
+        std::array<handles::TextureHandle, 10> textures{};
+        std::array<VkExtent2D, 10> extents{};
+        std::array<VkDescriptorSet, 10> sets{};
+        VkImageView displayView{};
+        bool displayPrepared{};
+    };
+    struct PreviewAaHistory {
+        std::array<handles::TextureHandle, 2> textures{};
+        VkExtent2D extent{};
+        bool valid{};
     };
     struct PreviewMotionResource {
         VkBuffer cameraBuffer{};
@@ -378,6 +409,7 @@ class VulkanDevice final : public Device {
         PreviewDofResource previewDof;
         PreviewFocusReadback focusReadback;
         PreviewMotionResource motion;
+        PreviewQualityResource quality;
         VkBuffer previewIndirectBuffer{};
         VkDeviceMemory previewIndirectMemory{};
         void* mappedPreviewIndirect{};
@@ -525,6 +557,18 @@ class VulkanDevice final : public Device {
     [[nodiscard]] float previewFocusDistanceUnits() const;
     void ensurePreviewDofResource(Frame& frame, VkExtent2D extent, bool fullDof, bool temporal);
     void ensurePreviewTemporalHistory(VkCommandBuffer command, VkExtent2D extent);
+    void ensurePreviewQualityPipelines();
+    void destroyPreviewQualityPipelines() noexcept;
+    void destroyPreviewQualityResource(Frame& frame) noexcept;
+    handles::TextureHandle previewQualityTarget(Frame& frame, std::size_t slot, VkExtent2D extent);
+    void recordPreviewContactShadows(VkCommandBuffer command, Frame& frame, VkExtent2D extent);
+    void recordPreviewQuality(VkCommandBuffer command, Frame& frame, VkExtent2D extent);
+    void ensurePreviewSurfaceResource(Frame& frame, VkExtent2D extent);
+    void recordPreviewMotionHistory(VkCommandBuffer command, Frame& frame);
+    void dispatchPreviewQuality(VkCommandBuffer command, Frame& frame, std::size_t pass, std::size_t target,
+                                VkExtent2D extent, std::span<const VkImageView> inputs,
+                                std::span<const std::byte> constants,
+                                std::optional<std::size_t> geometry = std::nullopt);
     void preparePreviewTemporal(VkCommandBuffer command, Frame& frame, VkExtent2D extent, bool available);
     void recordPreviewTemporalHistory(VkCommandBuffer command, Frame& frame, VkExtent2D extent);
     void destroyPreviewTemporalHistory() noexcept;
@@ -707,6 +751,17 @@ class VulkanDevice final : public Device {
     PreviewTemporalHistory previewTemporalHistory_;
     VkPipeline hdrPipeline_{};
     VkPipeline hdrTransparentPipeline_{};
+    VkPipeline hdrSurfacePipeline_{};
+    VkPipeline hdrSurfaceTransparentPipeline_{};
+    VkPipeline hdrSurfaceEdgePipeline_{};
+    VkDescriptorSetLayout qualityDescriptorLayout_{};
+    VkPipelineLayout qualityPipelineLayout_{};
+    std::array<VkPipeline, 10> qualityPipelines_{};
+    VkSampler qualityPointSampler_{};
+    std::array<handles::TextureHandle, 2> smaaLookup_{};
+    PreviewAaHistory previewAaHistory_;
+    bool previewSurfaceActive_{};
+    bool previewTaaJitter_{};
     VkPipeline hdrEdgePipeline_{};
     VkPipeline previewTonemapPipeline_{};
     VkPipelineLayout previewTonemapPipelineLayout_{};
@@ -773,7 +828,7 @@ class VulkanDevice final : public Device {
     VkSampler previewEnvironmentSampler_{};
     handles::TextureHandle previewEnvironmentTexture_{};
     handles::TextureHandle previewFallbackEnvironmentTexture_{};
-    std::array<float, 64> previewEnvironmentData_{};
+    std::array<float, previewEnvironmentDataFloats> previewEnvironmentData_{};
     std::array<float, 2> previewJitter_{};
     std::optional<std::array<float, 2>> previewLensSample_;
     bool previewStillQuality_{};

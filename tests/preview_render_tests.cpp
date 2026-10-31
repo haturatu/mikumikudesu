@@ -37,6 +37,16 @@
 // final image and public timings rather than renderer implementation resources.
 namespace dayo::graphics {
 struct VulkanPreviewTestAccess {
+    static auto qualityDiagnostics(const VulkanDevice& device) {
+        const auto& frame = device.frames_[(device.frameIndex_ + device.frames_.size() - 1U) % device.frames_.size()];
+        return frame.quality.textures;
+    }
+    static bool reusedMotion(const VulkanDevice& device) {
+        return device.frames_[(device.frameIndex_ + device.frames_.size() - 1U) % device.frames_.size()].motion.valid;
+    }
+    static bool taaValid(const VulkanDevice& device) {
+        return device.previewAaHistory_.valid;
+    }
     static std::array<handles::TextureHandle, 3> nearDiagnostics(const VulkanDevice& device) {
         const auto& frame = device.frames_[(device.frameIndex_ + device.frames_.size() - 1U) % device.frames_.size()];
         return {frame.previewDof.textures[8], frame.previewDof.textures[11], frame.previewDof.textures[2]};
@@ -1689,6 +1699,250 @@ bool spatialEffectsPreserveMaterialBoundaries(dayo::graphics::VulkanDevice& devi
         std::cerr << "FAIL: disabling AO sampled stale occlusion\n";
         ok = false;
     }
+    // The left-hand card receives a short shadow from the raised right card.
+    scene.lightDirection[0] = -0.8F;
+    scene.lightDirection[2] = 0.6F;
+    device.updatePreviewScene(scene);
+    const auto noContact = device.renderToImage({192, 192});
+    settings.contactShadows = {EffectOverride::enabled, 1.0F};
+    settings.contactShadowDistance = 0.3F;
+    device.setPreviewRenderSettings(settings);
+    if (noContact.pixels == device.renderToImage({192, 192}).pixels) {
+        std::cerr << "FAIL: directional contact shadow missed an adjacent occluder\n";
+        ok = false;
+    }
+    settings.contactShadows.override = EffectOverride::disabled;
+    // Aim the right card's glossy normal at the red card for a deterministic SSR hit.
+    for (std::size_t i = 4; i < vertices.size(); ++i) {
+        vertices[i].normal[0] = -0.8F;
+        vertices[i].normal[2] = -0.6F;
+    }
+    materials[1].metallic = 1;
+    materials[1].roughness = 0.1F;
+    device.updatePreviewVertices(vertices);
+    device.updatePreviewMaterials(materials);
+    device.setPreviewRenderSettings(settings);
+    const auto noReflection = device.renderToImage({192, 192});
+    settings.screenSpaceReflections.override = EffectOverride::enabled;
+    device.setPreviewRenderSettings(settings);
+    if (noReflection.pixels == device.renderToImage({192, 192}).pixels) {
+        std::cerr << "FAIL: screen-space reflection missed a visible red surface\n";
+        ok = false;
+    }
+    settings.screenSpaceReflections.override = EffectOverride::disabled;
+    materials[1].transmission = 0.9F;
+    device.updatePreviewMaterials(materials);
+    device.setPreviewRenderSettings(settings);
+    const auto noRefraction = device.renderToImage({192, 192});
+    settings.refraction.override = EffectOverride::enabled;
+    settings.refractionThickness = 0.2F;
+    device.setPreviewRenderSettings(settings);
+    const auto refractedImage = device.renderToImage({192, 192});
+    if (noRefraction.pixels == refractedImage.pixels) {
+        std::cerr << "FAIL: glass refraction failed to offset scene colour\n";
+        ok = false;
+    }
+    device.setPreviewRenderSettings(saved);
+    resetPreviewScene(device);
+    return ok;
+}
+
+bool shaderQualityRegressions(dayo::graphics::VulkanDevice& device) {
+    using namespace dayo::graphics;
+    const auto saved = device.previewRenderSettings();
+    auto settings = legacyPreviewRenderSettings();
+    auto vertices = makeFlatTriangle();
+    for (auto& v : vertices)
+        v.normal[2] = -1;
+    vertices[0].position[0] -= 0.013F;
+    vertices[1].uv[0] = 1;
+    vertices[2].uv[1] = 1;
+    device.uploadPreviewMesh(vertices, std::array<std::uint32_t, 3>{0, 2, 1});
+    device.uploadPreviewTextures({});
+    PreviewMaterial material;
+    material.diffuse[0] = 0.7F;
+    material.diffuse[1] = 0.2F;
+    material.diffuse[2] = 0.08F;
+    material.diffuse[3] = 0.55F;
+    material.doubleSided = true;
+    material.roughness = 0.15F;
+    device.updatePreviewMaterials(std::array{material});
+    device.updatePreviewDraws(std::array<PreviewDraw, 1>{{{0, 3, 0}}});
+    PreviewScene scene;
+    scene.backgroundEnabled = false;
+    scene.cameraDistance = 3;
+    scene.lightDirection[0] = -0.3F;
+    scene.lightDirection[1] = -0.5F;
+    scene.lightDirection[2] = 1;
+    device.updatePreviewScene(scene);
+    device.setPreviewRenderSettings(settings);
+    bool ok = true;
+    const auto expect = [&](bool condition, const char* message) {
+        if (!condition) {
+            std::cerr << "FAIL: shader quality: " << message << '\n';
+            ok = false;
+        }
+    };
+    const auto render = [&] { return device.renderToImage({97, 95}); };
+    const auto baseline = render();
+    const auto halfChannel = [](const auto& bytes, std::size_t channel) {
+        std::uint16_t bits{};
+        std::memcpy(&bits, bytes.data() + channel * 2U, sizeof(bits));
+        return dayo::core::halfToFloat(bits);
+    };
+    for (const auto aa : {PreviewAntiAliasing::fxaa, PreviewAntiAliasing::smaa}) {
+        settings.antiAliasing = aa;
+        device.setPreviewRenderSettings(settings);
+        const auto image = render();
+        expect(image.pixels != baseline.pixels, "spatial AA must change diagonal edge samples");
+        const auto targets = VulkanPreviewTestAccess::qualityDiagnostics(device);
+        const auto before = device.readbackTextureEx(targets[4], 0, 0);
+        const auto after = device.readbackTextureEx(targets[7], 0, 0);
+        expect(halfChannel(after, 3) == 0 && halfChannel(after, (47U * 97U + 48U) * 4U + 3U) < 0.8F,
+               "spatial AA must preserve transparent background and blended coverage");
+        double originalCoverage = 0, filteredCoverage = 0;
+        for (std::size_t channel = 3; channel < before.size() / 2; channel += 4) {
+            originalCoverage += halfChannel(before, channel);
+            filteredCoverage += halfChannel(after, channel);
+        }
+        expect(std::abs(originalCoverage - filteredCoverage) < originalCoverage * 0.04,
+               "spatial AA must preserve total alpha coverage");
+    }
+    settings.antiAliasing = PreviewAntiAliasing::off;
+    settings.toonLighting = PreviewToonLighting::classicMmd;
+    device.setPreviewRenderSettings(settings);
+    const auto classic = render();
+    expect(classic.pixels != baseline.pixels, "Classic MMD and PBR Hybrid must use distinct lighting");
+    material.toonMultiply[0] = 0.2F;
+    device.updatePreviewMaterials(std::array{material});
+    expect(render().pixels != classic.pixels, "PMX toon morph multipliers must affect diffuse shading");
+    material.toonMultiply[0] = 1;
+    settings.toonLighting = PreviewToonLighting::pbrHybrid;
+    material.diffuse[3] = 1;
+    material.anisotropy = 0.8F;
+    device.updatePreviewMaterials(std::array{material});
+    settings.hairShading.override = EffectOverride::enabled;
+    device.setPreviewRenderSettings(settings);
+    const auto kajiya = render();
+    settings.hairBrdf = PreviewHairBrdf::anisotropicGgx;
+    device.setPreviewRenderSettings(settings);
+    expect(render().pixels != kajiya.pixels, "anisotropic hair BRDF must affect highlights");
+    const std::array<std::uint8_t, 4> flowU{255, 128, 0, 255}, flowV{128, 255, 0, 255};
+    const std::array<PreviewTexture, 2> flowMaps{{{1, 1, flowU, false}, {1, 1, flowV, false}}};
+    device.uploadPreviewTextures(flowMaps);
+    material.strandTextureSlot = 1;
+    device.updatePreviewMaterials(std::array{material});
+    const auto alongU = render();
+    material.strandTextureSlot = 2;
+    device.updatePreviewMaterials(std::array{material});
+    expect(render().pixels != alongU.pixels,
+           "changing only the strand map must update the material cache and highlights");
+    material.strandTextureSlot = 0;
+    device.updatePreviewMaterials(std::array{material});
+    settings.hairShading.override = EffectOverride::disabled;
+    auto curvedNormals = vertices;
+    curvedNormals[1].normal[0] = 0.8F;
+    curvedNormals[1].normal[2] = -0.6F;
+    curvedNormals[2].normal[1] = 0.8F;
+    curvedNormals[2].normal[2] = -0.6F;
+    device.updatePreviewVertices(curvedNormals);
+    material.roughness = 0.04F;
+    device.updatePreviewMaterials(std::array{material});
+    device.setPreviewRenderSettings(settings);
+    const auto unfilteredSpecular = render();
+    settings.specularAntialiasing.override = EffectOverride::enabled;
+    device.setPreviewRenderSettings(settings);
+    expect(render().pixels != unfilteredSpecular.pixels, "normal variance must broaden subpixel specular highlights");
+    settings.specularAntialiasing.override = EffectOverride::disabled;
+    device.updatePreviewVertices(vertices);
+    settings.hairShading.override = EffectOverride::disabled;
+    settings.contactShadows.override = EffectOverride::enabled;
+    device.setPreviewRenderSettings(settings);
+    static_cast<void>(render());
+    const auto diagnostics = VulkanPreviewTestAccess::qualityDiagnostics(device);
+    expect(diagnostics[1].valid(), "contact shadows must produce a filtered half-resolution image");
+    if (diagnostics[1].valid()) {
+        const auto bytes = device.readbackTextureEx(diagnostics[1], 0, 0);
+        for (std::size_t i = 0; i < bytes.size(); i += 8) {
+            std::uint16_t bits{};
+            std::memcpy(&bits, bytes.data() + i, 2);
+            const float value = dayo::core::halfToFloat(bits);
+            if (!std::isfinite(value) || value < 0.99F || value > 1.001F) {
+                expect(false, "isolated planar geometry must not self-shadow");
+                break;
+            }
+        }
+    }
+    settings.contactShadows.override = EffectOverride::disabled;
+    settings.screenSpaceReflections.override = EffectOverride::enabled;
+    settings.refraction.override = EffectOverride::enabled;
+    device.setPreviewRenderSettings(settings);
+    const auto screen = render();
+    // No reflected hit exists for this isolated card. It must use original shading.
+    settings.screenSpaceReflections.override = settings.refraction.override = EffectOverride::disabled;
+    device.setPreviewRenderSettings(settings);
+    expect(imagesMatch(screen, render()), "off-screen reflection misses must preserve source shading");
+    settings.antiAliasing = PreviewAntiAliasing::taa;
+    device.setPreviewRenderSettings(settings);
+    for (int frame = 0; frame < 5; ++frame) {
+        scene.animationTimeSeconds = static_cast<float>(frame) / 60;
+        device.updatePreviewScene(scene);
+        static_cast<void>(render());
+    }
+    expect(VulkanPreviewTestAccess::taaValid(device) && VulkanPreviewTestAccess::reusedMotion(device),
+           "TAA must reuse valid motion history with DoF disabled");
+    scene.animationTimeSeconds = 0;
+    device.updatePreviewScene(scene);
+    const auto seek = render();
+    expect(!VulkanPreviewTestAccess::reusedMotion(device), "backward VMD seeks must invalidate history");
+    device.invalidatePreviewHistory();
+    expect(imagesMatch(seek, render()), "a seek must match a fresh history at the same frame");
+    scene.cameraRotation[1] = 0.8F;
+    device.updatePreviewScene(scene);
+    const auto cut = render();
+    expect(!VulkanPreviewTestAccess::reusedMotion(device), "camera cuts must invalidate history");
+    device.invalidatePreviewHistory();
+    expect(imagesMatch(cut, render()), "camera cuts must not contain prior-frame ghosts");
+    scene.perspective = false;
+    device.updatePreviewScene(scene);
+    static_cast<void>(render());
+    expect(!VulkanPreviewTestAccess::reusedMotion(device), "orthographic changes must invalidate history");
+    device.setPreviewStillQuality(true);
+    static_cast<void>(render());
+    expect(!VulkanPreviewTestAccess::taaValid(device), "still exports must not reuse temporal history");
+    device.setPreviewStillQuality(false);
+    if (std::getenv("DAYO_TEST_QUALITY_BENCHMARK") != nullptr) {
+        scene.perspective = true;
+        scene.cameraRotation[1] = 0;
+        for (int mode = 0; mode < 6; ++mode) {
+            settings = legacyPreviewRenderSettings();
+            if (mode == 1)
+                settings.antiAliasing = PreviewAntiAliasing::fxaa;
+            if (mode == 2)
+                settings.antiAliasing = PreviewAntiAliasing::smaa;
+            if (mode == 3)
+                settings.contactShadows.override = EffectOverride::enabled;
+            if (mode == 4)
+                settings.antiAliasing = PreviewAntiAliasing::taa;
+            if (mode == 5) {
+                settings.screenSpaceReflections.override = EffectOverride::enabled;
+                settings.refraction.override = EffectOverride::enabled;
+            }
+            device.setPreviewRenderSettings(settings);
+            for (int sample = 0; sample < 6; ++sample) {
+                scene.animationTimeSeconds += 1.0F / 60;
+                device.updatePreviewScene(scene);
+                static_cast<void>(device.renderToImage({1920, 1080}));
+                if (sample < 3)
+                    continue;
+                const auto time = device.previewPassTimings();
+                std::cout << "Quality 1080p mode=" << mode << " sample=" << sample
+                          << " ns total=" << device.previewGpuNanoseconds() << " contact=" << time.contactShadows
+                          << " SSR/refraction=" << time.reflections << " temporal=" << time.temporalResolve
+                          << " spatial=" << time.spatialAntialiasing << '\n';
+            }
+        }
+    }
     device.setPreviewRenderSettings(saved);
     resetPreviewScene(device);
     return ok;
@@ -2412,6 +2666,9 @@ int main(int argc, char** argv) {
                 options.quality = dayo::graphics::PreviewQuality::high;
         }
         dayo::graphics::VulkanDevice device(*window, true, options);
+        // Reference geometry and readback ownership checks must be independent
+        // of preset-driven temporal history. Effect tests select their modes.
+        device.setPreviewRenderSettings(dayo::graphics::legacyPreviewRenderSettings());
         if (const auto* directory = std::getenv("DAYO_TEST_COLOR_OUTPUT")) {
             captureColorReference(device, directory);
             return 0;
@@ -2521,6 +2778,8 @@ int main(int argc, char** argv) {
             return 1;
         }
         if (!spatialEffectsPreserveMaterialBoundaries(device))
+            return 1;
+        if (!shaderQualityRegressions(device))
             return 1;
         if (!renderEffectsReachGpu(device))
             return 1;

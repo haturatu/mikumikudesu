@@ -110,6 +110,7 @@ float4 fxaa(float2 uv, float4 center) {
 }
 
 float4 PS(FullscreenVertex input) : SV_Target0 {
+    if (tonemap.flags.z > 0.5) return hdrColor.SampleLevel(colorSampler, input.uv, 0);
     float4 display = outputAt(input.uv);
     if (tonemap.flags.y > 0.5)
         display = fxaa(input.uv, display);
