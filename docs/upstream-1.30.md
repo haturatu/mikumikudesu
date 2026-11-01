@@ -1,10 +1,14 @@
 # MikuMikuDayo 1.30 との互換性
 
-この文書は、MikuMikuDayo 1.30 のデータ形式、エフェクト、レンダラについて、移植対象と検証範囲を整理したものです。互換性は「ファイルを読み込めること」「GPU リソースへ接続できること」「Windows 版と同等の結果になること」に分けて判断します。
+MikuMikuDayo 1.30 の互換性を調べるとき、ファイルを読み込めたから互換性がある、とは言い切れません。FX のリソースを作れてもシェーダーの結果が違うかもしれませんし、Windows 版の描画と一致するかは別の検証が必要です。
+
+そこで、**データを読めるか、GPU 実行へ接続できるか、Windows 版と同じ結果になるか**を分けて整理しています。
 
 **注意:** 機能を実装したことは、すべての入力や GPU で正しく動作することの保証ではありません。後続の修正・実装の記録は [Dayo 互換性調査](dayo-audit/README.md)も確認してください。Windows 版での相互運用と RT 対応 GPU 上での画像比較は、別途検証が必要です。
 
 ## 基準と配布物
+
+上流のバージョンが変わると比較する条件も変わるため、まず配布元とハッシュを固定します。
 
 公式[1.30 Release](https://github.com/pennennennennennenem/MikuMikuDayo/releases/tag/MikuMikuDayo130)を
 テスト・配布の基準にする第1段階です。Release APIで確認したasset digestをlockに固定し、取得したZIPのSHA256をlockと照合します。
@@ -16,6 +20,8 @@ fetchは全エントリと主要renderer・画像・ライセンスの存在を�
 installも同じ一覧を使い、拡張子による除外を行わず、第三者ライセンスとtexture/importを保持します。
 
 ## 対応段階
+
+どの処理を実装したかと、どこまで実機で確認したかを混ぜないための一覧です。
 
 以下は移植・検証の段階を示す表です。GPU 経路の接続や単体テストと、Windows 版での結果一致を区別しています。実装履歴と未検証項目の詳細は[互換性調査](dayo-audit/README.md)も参照してください。
 
@@ -77,6 +83,8 @@ Subayai/BDPT generic FXへこのtableを渡し、annotation textureのうち予�
 aggregate zero-initializationを避けるfield-wise loweringを行い、compile fixtureでSPIR-V生成まで確認します。
 
 ## Windows 版 fixture の受け入れ条件
+
+Linux 側の単体テストだけでは、Windows 版のファイル形式や数値結果と同じかどうかは判断できません。
 
 Windows 版 1.30 での保存・再読み込みは、この検証に含まれていません。
 独自serializerで生成したファイルを「本家が生成したfixture」として扱わないでください。

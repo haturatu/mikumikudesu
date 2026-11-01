@@ -1,8 +1,14 @@
 # MikuMikuDayo 1.30 の再利用・互換性調査
 
-この文書は、固定した上流ソースと mikumikudesu の実装を比較し、調査対象と修正履歴をまとめたものです。表の「実装済み」は該当するコード経路の対応状況を示します。すべての FX、GPU、モデルについて本家との結果一致を保証するものではありません。
+MikuMikuDayo 1.30 の FX を Vulkan 側で動かそうとすると、見た目は同じ名前のリソースでも、生成順序や所有権、サイズの決め方が違うだけで正しく動かない場合があります。
+
+そこで固定した上流ソースと mikumikudesu の処理を比較し、どこが違っていたのか、どの PR で修正したのかを残しています。
+
+表の「実装済み」はコード経路を接続したという意味です。**すべての FX、GPU、モデルで本家と同じ画像になったという意味ではありません。**
 
 ## 調査の前提
+
+比較の対象が毎回変わると差分を追えなくなるため、上流のバージョンと ZIP のハッシュを固定しています。
 
 比較の基準は `main@7ed41e0` と [MikuMikuDayo130 release](https://github.com/pennennennennennenem/MikuMikuDayo/releases/tag/MikuMikuDayo130)。
 `.cache/mikumikudayo/MikuMikuDayo130.zip` のSHA256はlockの
@@ -11,6 +17,8 @@
 1.20 ZIPも比較対象としたが、修正の基準はlockどおり1.30。
 
 ## 対応した項目と関連 PR
+
+どれも単なる書き方の違いではなく、実行結果や GPU リソースの扱いに影響するものです。
 
 | 項目 | 状態 | PR / 根拠 |
 | --- | --- | --- |
@@ -46,6 +54,8 @@ Windows / DirectX 依存の C++ を直接リンクしていないこと自体は
 再利用可能なHLSLがコピー/独自実装になっている点と、読み込んだ宣言が実行経路まで届かない点を抽出した。
 
 ## 実装済みの機能と未検証事項
+
+コードに対応経路があることと、実機で画像が一致することは別です。ここからは確認できた範囲を分けて記録しています。
 
 - CloneCountはnative scene tableから実際にupload/bindされる。文書の旧い留保だけを根拠に未bindとしない。
 - MatDescのrenderer-local/deformer/shared-source texture解決は実装済み。ただしFXのshared=refとは別。
