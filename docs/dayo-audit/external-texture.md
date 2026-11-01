@@ -9,9 +9,9 @@
 
 上流が外部画像の実寸を使う場合、Vulkan 側の plan もその実寸に合わせる必要があります。
 
-修正前の runtime は size が書かれていると画像寸法との一致を要求し、formatもRGBA8以外なら拒否していた。
-また `FxCompiler::plan` はGPUにロードされた画像寸法を使わず宣言から再計算するため、画像名を
-outputSize.baseに指定したcomputeのdispatchや、その画像を基準にしたリソースと不一致が生じた。
+修正前は、FX の宣言に size があると画像ファイルの実寸との一致を要求し、format が RGBA8 以外なら拒否していました。
+
+さらに `FxCompiler::plan` は GPU に読み込まれた画像の寸法ではなく宣言値から再計算していました。そのため、外部画像を `outputSize.base` にした compute の dispatch や、その画像を基準にするリソースでサイズが食い違っていました。
 
 - 外部2D/3D画像の実寸を採用し、宣言のsize/formatは無視する。
 - 既存decoderの出力RGBA8にshaderのfloat4宣言とattachment formatを合わせる。
@@ -20,7 +20,6 @@ outputSize.baseに指定したcomputeのdispatchや、その画像を基準に�
 
 ## 確認した内容と制限事項
 
-`fx_executor`で2D画像の競合size/unknown format、3D DDSの未定義size.base/競合format、
-派生texture、明示/暗黙のdispatch寸法を確認する。実画像のDXGI形式保存は別件で、
-この修正範囲では、外部画像は従来どおり RGBA8 へ decode します。HDR/float DDSの精度互換を解決したものではない。
-宣言順を越えるsize.base参照の依存解決は別の未対応項目。
+`fx_executor` では、2D 画像の競合する size / 不明な format、3D DDS の未定義 `size.base`、派生テクスチャ、明示・暗黙の dispatch サイズを確認します。
+
+ただし、読み込んだ画像は従来どおり RGBA8 へ decode します。HDR / float DDS の精度互換性や、宣言順をまたぐ `size.base` の依存解決まで修正したものではありません。

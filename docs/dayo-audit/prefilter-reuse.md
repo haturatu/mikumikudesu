@@ -8,16 +8,15 @@
 
 同じ計算を自前で持ってしまうと、配布物を更新しても古い実装が残ります。
 
-`NativeDayoEnvironmentRuntime`はPCG4d、VNDF、BRDF等を含むshader約100行をC++文字列へコピーしていた。
-上流ZIPを更新しても同コードは変わらず、実際には存在しない `system/skyboxPrefilter.hlsl` を
-compile診断上のパスに使っていた。
+修正前の `NativeDayoEnvironmentRuntime` は、PCG4d・VNDF・BRDF などを含む約100行のシェーダーを C++ の文字列として複製していました。
+
+このままでは上流 ZIP を更新しても複製したコードが古いまま残ります。また、compile 診断では実際には存在しない `system/skyboxPrefilter.hlsl` を参照していました。
 
 ## 修正内容
 
-この修正では `hlsl/../src/YRZ.ixx` から `PrefilterShader` のraw literalをそのまま読み込む。
-Vulkanのvertex bufferなし描画に必要な `NativePrefilterVS` だけ追加し、元のVSを呼ぶ。
-PS/PSCopyとsample helperは上流sourceをそのまま使う。上流ソースの欠損・空literal・終端欠損・
-宣言重複を診断する。任意のC++を実行/compileする処理ではなく、固定した文字列の読込である。
+修正後は `hlsl/../src/YRZ.ixx` から `PrefilterShader` の raw literal をそのまま読み取ります。Vulkan の vertex buffer を使わない描画に必要な `NativePrefilterVS` だけを追加し、元の VS を呼び出します。
+
+PS / PSCopy と sample helper は上流のソースを再利用します。ソースの欠損、空の literal、終端の欠落、宣言の重複を検出しますが、**任意の C++ コードをコンパイルしたり実行したりする仕組みではありません。**
 
 runtime manifestへ `src/YRZ.ixx` を追加し、fetchの存在検査とCMake installの対象にする。
 従来のlicenceディレクトリの配布は継続する。既存の4 iteration、64 samples、mipとblendの設定は維持する。

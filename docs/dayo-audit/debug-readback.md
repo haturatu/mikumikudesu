@@ -8,9 +8,7 @@ FX Debug で必要なのは、リソース名を表示することだけでは�
 
 既存の UI にメタデータ表示はありましたが、GPU の実体を readback する経路は別に必要でした。
 
-本家 `src/debDayo.h::DebugImageProcessor` は `hlsl/system/debug.hlsl` を使い、選択したtextureを
-表示用画像へ変換する。同ファイルの `dumpLambda` はbuffer download、2D/3D texture保存を行い、
-UIからdumpと画像表示を提供する。
+上流の `src/debDayo.h::DebugImageProcessor` は `hlsl/system/debug.hlsl` を使い、選択したテクスチャを表示用の画像に変換します。`dumpLambda` はバッファの download と 2D / 3D テクスチャの保存を担当し、UI からプレビューとダンプを操作できます。
 
 [ApplicationのFX Debug](../../src/app/application.cpp) は宣言metadataと
 `NativeRendererCoordinator::liveResources()` の実allocation情報を表示する。
@@ -38,5 +36,6 @@ bufferは先頭256bytesのhex表示と `.bin` 保存。device-local bufferのVul
 textureは選択sliceのPNG/EXR、または選択mip全体のraw `.bin` とformat/寸法JSONを保存する。
 FX allocationにはarrayがないためarray layerは0。readbackとfloat展開はそれぞれ256 MiBまでに制限する。
 
-既存ファイルは上書きせず、IO/compile/readbackエラーをUIへ返す。明示要求時は同期readbackで描画を待機する。
-Linux での `mikumikudesu` ビルドは成功しています。ただし、この記録の作業では GPU 実行・テストを行っていません。前提PR: #248。
+ダンプ先に既存ファイルがある場合は上書きせず、I/O・compile・readback の失敗は UI へ返します。明示的に要求した同期 readback では描画の待機が発生します。
+
+Linux での `mikumikudesu` ビルドは確認しました。ただし、この調査では GPU での実行テストは行っていません。前提 PR は #248 です。

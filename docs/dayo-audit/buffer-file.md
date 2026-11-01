@@ -9,13 +9,13 @@ FX の buffer にファイル名が指定されている場合、GPU メモリ�
 
 読み込みに失敗した場合も GPU 側のバッファが残らないよう、リソースの所有権と初期化の順序を整理しています。
 
-`buffers[].filename` が `EffectBuffer` に保持されず、GPUバッファの初期データが失われていた。
-parser → FxProgram → FxResourceRuntime にファイル名を通し、effectディレクトリを基準に読み込んで
-既存の `Device::uploadBufferEx` に接続する。Dayoと同様に確保サイズ分だけ読み、短いファイルは
-残りをゼロ、長いファイルは超過分を無視する。開けないファイルはパス付きで初期化失敗とする。
+修正前は `buffers[].filename` が `EffectBuffer` に保持されておらず、GPU バッファにファイルの初期データが入っていませんでした。
 
-GPU 所有権を store へ登録してから I/O を行うため、読込やuploadの失敗時にもresetがバッファを解放する。
-D3D12に依存する上流C++を直接リンクせず、上流の入出力契約を既存Vulkan uploadへ接続した。
+修正では parser → FxProgram → FxResourceRuntime にファイル名を渡し、effect ディレクトリから読み込んだデータを `Device::uploadBufferEx` へ渡します。上流と同じように確保したサイズまで読み、足りなければゼロで埋め、超えた分は無視します。ファイルが開けなければパスを含むエラーで初期化を止めます。
+
+ファイルの読み込みより先に GPU リソースの所有権を store に登録しているため、I/O や upload が失敗しても reset 時に解放できます。
+
+D3D12 固有の上流 C++ をそのままリンクするのではなく、ファイル初期化の動作を既存の Vulkan upload へ合わせています。
 
 ## 検証範囲
 
