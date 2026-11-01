@@ -8,9 +8,9 @@ Texture2D や Texture3D の型をすべて同じものとして扱うと、FX �
 
 パーサーが型を捨ててしまうと、GPU 側であとから取り戻すことはできません。
 
-本家 `src/YRZFx.ixx::FXRes::type` はTexture2D/3Dにも適用される。
-`createTextureLambda` / `createTexture3DLambda` はtypeが空の場合だけ実DXGI formatから型を推定し、
-明示型は保持する。ファイル読込後は実リソースのformat/sizeを宣言へ反映する。
+上流の `src/YRZFx.ixx::FXRes::type` は Texture2D / Texture3D にも適用されます。type が省略された場合だけ実際の DXGI format から型を推定し、明示された型はそのまま保持します。
+
+また、ファイルを読み込んだ後にはリソースの実際の format / size を宣言へ反映します。
 
 [EffectTexture](../../src/core/effect.hpp) には調査時点で type field がなく、
 [texture parser](../../src/core/effect.cpp) もtypeを読まない。
@@ -34,7 +34,7 @@ fixture、2D/3D各mip、数値のGPU readback、対応外組合せのエラー�
 
 ## 実装内容
 
-- `EffectTexture.type` を parser から HLSL 生成まで保持する。float/int/uint の1〜4成分を認識し、数値型の不一致を診断する。
+- `EffectTexture.type` を parser から HLSL 生成まで保持します。float / int / uint の1〜4成分を認識し、数値型が食い違う場合はエラーにします。
 - `loadTextureImage` は DDS の8/16/32 bit、1/2/4成分の対応形式を保持する。float、UNORM、SNORM、UINT、SINT、sRGB と旧形式の浮動小数点 DDS を扱う。
 - HDR は float32、signed BC4/BC5 は符号付き正規化値を float32 に復号する。BC1〜5 UNORM は既存の復号器を再利用する。
 - Vulkan の形式、転送サイズ、shader型、attachment形式を実データに揃える。外部画像の各mip・3D depthを保持する。
@@ -46,4 +46,4 @@ fixture、2D/3D各mip、数値のGPU readback、対応外組合せのエラー�
 用途・次元・サイズを含むimage format supportを確保前に検査して診断する。
 headless Vulkan fixtureでR8_UNORM、R16_FLOAT、R8_UINT、R8_SINT、R16G16_SNORM、RGBA16_UINT、RGBA32_SINTの
 create/upload/readbackをbyte単位で比較する。CPU側にはDDS/HLSL型のtable-driven fixtureもある。
-Windowsとの比較は未実施。前提PR: #251。
+Windows 版との画像比較はまだ実施していません。前提 PR は #251 です。

@@ -4,9 +4,9 @@ FX リソースのサイズが別のリソースを参照する場合、宣言�
 
 状態: **実装済み**。比較基準は `main@7ed41e0` と固定 MikuMikuDayo130。
 
-本家 `src/YRZFx.ixx` のリソース生成は、絶対サイズ・外部ファイル・shared refを先に解決し、
-残りのtexturemap/texture3Dmap/buffermapからsize.baseの依存先を辿る。
-`FXSize::convert` は相対サイズの丸め結果を `max(1ull, ...)` にする。
+上流の `src/YRZFx.ixx` は、絶対サイズ・外部ファイル・shared ref を先に解決します。それから texturemap / texture3Dmap / buffermap の `size.base` が参照するリソースをたどります。
+
+相対サイズを丸めた結果がゼロになる場合も、`FXSize::convert` は `max(1ull, ...)` で最低1を保証しています。
 
 [FxResourceRuntime::initialize](../../src/graphics/fx_resource_runtime.cpp) と
 [FxCompiler::plan](../../src/fx/fx_compiler.cpp) は調査時点で textures → textures3D → buffers を一度ずつ走査し、
@@ -28,10 +28,9 @@ FX リソースのサイズが別のリソースを参照する場合、宣言�
 
 ## 実装内容
 
-`FxResourceSizeTable` に宣言を登録して遅延評価する。texture / texture3D / buffer 間の
-前方参照を解決し、循環・未定義参照は依存元を含む診断にする。再帰深度は128まで。
-allocator と planner は同じ `resolveEffectSize` を使用し、planner に渡された物理サイズと
-外部画像の実寸を優先する。shared=ref の size.base 使用は拒否する。
+`FxResourceSizeTable` に宣言を登録してから、必要になったときにサイズを評価するようにしました。これで texture / texture3D / buffer の間の前方参照も解決できます。
+
+循環や未定義の参照は依存元を含むエラーにし、再帰深度は128までに制限します。allocator と planner は同じ `resolveEffectSize` を使い、実際に割り当てられたサイズと外部画像の実寸を優先します。`shared=ref` を `size.base` にする入力は拒否します。
 
 Dayo の相対サイズでは丸め結果を1以上にする。一般の `FxSizeExpr` の既存動作は維持し、
 負数、非有限値、整数範囲の検査も維持した。

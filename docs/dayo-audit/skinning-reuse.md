@@ -8,9 +8,9 @@
 
 計算結果が似ているだけでなく、どのリソースを渡すかまで合わせる必要があります。
 
-本家 `hlsl/system/DefaultSkinning.hlsl::CS` は `hlsl/skinning.hlsli::DefaultSkinning` を呼び、
-`resources_deform.hlsli` のVB/Skin/BoneMatrix/MorphValues/MorphTable/MorphTablePointer/OutBufを使う。
-上流helperは位置・UV・追加UV morph、tangent、BDEF/SDEF/QDEFを扱う。
+上流の `hlsl/system/DefaultSkinning.hlsl::CS` は `hlsl/skinning.hlsli::DefaultSkinning` を呼び出し、`resources_deform.hlsli` の VB / Skin / BoneMatrix / MorphValues / MorphTable / MorphTablePointer / OutBuf を使います。
+
+位置、UV、追加 UV morph、tangent、BDEF / SDEF / QDEF をこの helper が扱うため、独自実装を残すと計算の差が生まれやすくなります。
 
 [CMakeLists.txt](../../CMakeLists.txt) は調査時点では独自の [native_deform.hlsl](../../shaders/native_deform.hlsl) をcompileし、
 [VulkanDevice::createNativeDeformPipeline](../../src/graphics/vulkan/vulkan_device.cpp) はその `NativeDeform` を使う。
@@ -37,9 +37,9 @@ OutBufをBLAS refitとrendererの頂点参照へ接続する。アルゴリズ�
 
 ## 実装内容
 
-`native_deform.hlsl` は上流 `yrz.hlsli` / `dayotypes.hlsli` / `skinning.hlsli` を直接 include し、
-`Dayo::DefaultSkinning(0)` を呼ぶ。独自 LBS/SDEF/QDEF と quaternion 補間の実装を削除した。
-上流ファイル群をビルド依存に登録し、更新時にSPIR-Vを再生成する。
+`native_deform.hlsl` は上流の `yrz.hlsli` / `dayotypes.hlsli` / `skinning.hlsli` を直接 include し、`Dayo::DefaultSkinning(0)` を呼ぶ形にしました。
+
+独自の LBS / SDEF / QDEF と quaternion 補間を重複して持たず、上流ファイルの更新時には SPIR-V を再生成するよう、ビルド依存関係にも追加しています。
 
 既存NativeDeformの5 binding ABIを保つため、各threadで1頂点のDayo入力viewと4本の骨行列を構成する。
 骨indexをそのviewへ対応付け、SDEFの半差分を上流weight.yzwに渡す。

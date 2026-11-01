@@ -8,9 +8,9 @@
 
 単にフレーム番号を足せばよいわけではなく、元の名前に含まれる番号も考慮する必要があります。
 
-本家 `src/YRZ.ixx::SeqFilename` はstem末尾の数字を抽出し、`max(initialNumber, trail)` から
-指定桁数で番号を作る。既存ファイルは次番号へ進める。`dayo.cpp` の録画処理は
-`g_edi.outputFile` / `recordNum` / 5桁を同関数へ渡している。
+上流の `src/YRZ.ixx::SeqFilename` は、ファイル名の stem 末尾から数字を取り出し、`max(initialNumber, trail)` を開始番号として指定桁数の名前を作ります。すでに同名ファイルがあれば次の番号へ進みます。
+
+`dayo.cpp` の録画処理では `g_edi.outputFile`、`recordNum`、5桁の指定をこの関数へ渡しています。
 
 [OutputSettings/outputPath](../../src/core/output.cpp) は調査時点で `filenamePattern` に frame 番号を渡していました。
 [Application](../../src/app/application.cpp) はprojectの録画範囲・解像度・sampleを適用するが、
@@ -29,9 +29,9 @@ UIには初回出力名を表示する。100%等の文字をprintfのformat文�
 
 ## 実装内容
 
-OutputSettings.sequenceFile を指定した経路では末尾番号から5桁で開始し、scene frameとは独立した
-worker内の番号を使う。既存番号はスキップする。overwrite=trueなら指定番号を上書きする。
-未指定のCLI/既存呼出しは従来のframe番号とfilenamePatternを維持するが、printf呼出しを安全なparserへ置換した。
+`OutputSettings.sequenceFile` を指定した場合は、末尾番号を基準に5桁の連番を開始します。この番号は scene frame とは別に worker が管理し、存在する番号は飛ばします。`overwrite=true` の場合だけ指定番号を上書きします。
+
+`sequenceFile` を指定しない CLI や従来の呼び出しは、これまでの frame 番号と `filenamePattern` を維持しつつ、危険な printf 呼び出しを専用の parser に置き換えました。
 
 sequenceFileを指定したDayoモードの非上書き出力は同一filesystemの一時ファイルへencode後、hard linkで保存先を作る。
 他processと衝突しても既存fileを置換せず、Dayoモードでは次番号へ進む。hard link非対応filesystemはIOエラーを返す。

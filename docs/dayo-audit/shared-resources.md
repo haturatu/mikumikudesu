@@ -8,9 +8,9 @@ FX の `shared=ref` は、同じ名前の GPU リソースをもう一つ作る�
 
 二つのリソースを個別に確保してしまうと、見た目は似ていても上流の参照関係とは異なります。
 
-本家 `src/YRZFx.ixx` の `createTextureLambda` / `createTexture3DLambda` / `createBufferLambda`
-は `shared=ref` で `FindSharedSource(name)` を使う。参照元のComポインタを共有し、source解放時にも
-参照先の実体を保持する。`FXWatcher` の共有参照更新処理がreload後の参照を更新する。
+上流の `createTextureLambda` / `createTexture3DLambda` / `createBufferLambda` は、`shared=ref` に対して `FindSharedSource(name)` を使います。COM の実体を共有し、source が解放されても参照先の寿命を保持します。
+
+reload 後の参照は `FXWatcher` が更新します。つまり、**共有するのは名前ではなくリソースの実体とその寿命**です。
 
 [FxResourceRuntime::initialize](../../src/graphics/fx_resource_runtime.cpp) は調査時点では 3 種とも `shared` を見ず
 `createTextureEx` / `createBufferEx` を呼ぶ。同名sourceが存在しても新規の別GPUリソースになり、
@@ -38,9 +38,9 @@ sourceがない場合がある。registry自体もnon-owningで、そのhandle�
 
 ## 実装内容
 
-2D/3D/buffer の ref を初期化前に解決し、source と同じ物理handleと所有権tokenをstoreへ登録する。
-sourceの次元・buffer stride/type・必要usageを検査する。共有参照は重複確保せず、最終所有者がGPU待機後に解放する。
-refresh はsourceのhandle/token変更を検知してdescriptorとpipelineを再構築する。
+2D / 3D / buffer の参照を初期化前に解決し、source と同じ物理 handle と所有権 token を store に登録します。次元、buffer の stride / type、必要な usage も照合します。
+
+共有先ではリソースをもう一度確保せず、最終所有者が GPU 完了を待って解放します。refresh 時に source の handle / token が変わっていれば descriptor と pipeline を再構築します。
 
 generic stage内はsource→refの依存順に実行し、effect間にmemory barrierを置く。
 deform→renderer→postprocessの境界を越えて参照可能で、後続stageへの逆向き参照は診断する。
