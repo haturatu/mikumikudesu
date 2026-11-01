@@ -1,8 +1,12 @@
 # shared=ref の実体共有と再bind
 
+FX の `shared=ref` は、同じ名前の GPU リソースをもう一つ作るという意味ではありません。元と同じ実体を共有し、reload 後の参照も正しく更新する必要があります。
+
 状態: **実装済み**。基準は `main@7ed41e0` と固定 MikuMikuDayo130。
 
 ## 調査時点の差分
+
+二つのリソースを個別に確保してしまうと、見た目は似ていても上流の参照関係とは異なります。
 
 本家 `src/YRZFx.ixx` の `createTextureLambda` / `createTexture3DLambda` / `createBufferLambda`
 は `shared=ref` で `FindSharedSource(name)` を使う。参照元のComポインタを共有し、source解放時にも

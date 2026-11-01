@@ -1,8 +1,12 @@
 # texture の明示HLSL型とファイル形式の保持
 
+Texture2D や Texture3D の型をすべて同じものとして扱うと、FX に明示されている HLSL の型や、ファイルの実際の形式を失ってしまいます。ここでは parser とリソース生成の両方を確認しました。
+
 状態: **実装済み**。基準は `main@7ed41e0` と固定 MikuMikuDayo130。
 
 ## 調査時点の問題
+
+パーサーが型を捨ててしまうと、GPU 側であとから取り戻すことはできません。
 
 本家 `src/YRZFx.ixx::FXRes::type` はTexture2D/3Dにも適用される。
 `createTextureLambda` / `createTexture3DLambda` はtypeが空の場合だけ実DXGI formatから型を推定し、

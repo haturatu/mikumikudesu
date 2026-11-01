@@ -1,8 +1,12 @@
 # 標準 skinningのDayo HLSL再利用
 
+標準スキニングを独自の HLSL で持ち続けると、BDEF / SDEF / QDEF やモーフの細かい処理で上流との差が生まれます。そこで、可能な限り上流の既存 HLSL を再利用する方法を調べています。
+
 状態: **実装済み**。基準は `main@7ed41e0` と固定 MikuMikuDayo130。
 
 ## 調査時点の差分
+
+計算結果が似ているだけでなく、どのリソースを渡すかまで合わせる必要があります。
 
 本家 `hlsl/system/DefaultSkinning.hlsl::CS` は `hlsl/skinning.hlsli::DefaultSkinning` を呼び、
 `resources_deform.hlsli` のVB/Skin/BoneMatrix/MorphValues/MorphTable/MorphTablePointer/OutBufを使う。

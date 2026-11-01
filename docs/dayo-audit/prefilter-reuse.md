@@ -1,8 +1,12 @@
 # 環境光 prefilterの上流shader再利用
 
+環境光の prefilter を独自シェーダーで複製すると、上流を更新したときに処理の差が増えていきます。なので、可能な部分は固定した上流のシェーダーをそのまま再利用する方針にしました。
+
 調査基準: 固定 MikuMikuDayo130、`src/YRZ.ixx::PrefilterShader` と `DXR::PrefilterEnvmap`。
 
 ## 調査時点の問題
+
+同じ計算を自前で持ってしまうと、配布物を更新しても古い実装が残ります。
 
 `NativeDayoEnvironmentRuntime`はPCG4d、VNDF、BRDF等を含むshader約100行をC++文字列へコピーしていた。
 上流ZIPを更新しても同コードは変わらず、実際には存在しない `system/skyboxPrefilter.hlsl` を
