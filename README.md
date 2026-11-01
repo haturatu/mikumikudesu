@@ -48,6 +48,18 @@ make setup
 
 **注記:** `make` および `make build` は MikuMikuDayo の配布物を取得しません。初回は先に `make setup` を実行してください。
 
+### システムにインストールした libmmd を使う
+
+Arch Linux と Artix Linux では、AUR から libmmd をインストールできます。
+
+```sh
+yay -S libmmd
+cmake -S . -B build/system -G Ninja -DCMAKE_BUILD_TYPE=Release -DLIBMMD_PROVIDER=SYSTEM
+cmake --build build/system --parallel
+```
+
+ほかのビルド依存関係も必要です。`LIBMMD_PROVIDER` は既定で `AUTO` です。互換性のある libmmd 0.3.2 以降の 0.3 系を検出するとシステム版を使い、見つからなければ組み込み版を使います。`SYSTEM` はシステム版を必須にし、`BUNDLED` は従来の組み込み版を使います。システム版を選ぶと libmmd の submodule 初期化やソース取得は不要です。CMake を直接実行する場合にも、アプリケーション固有のアセットや依存関係を準備してください。
+
 ### Debug ビルド
 
 ```sh

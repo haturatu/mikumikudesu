@@ -157,12 +157,7 @@ if(NOT DAYO_STB_INCLUDE_DIR)
   set(DAYO_STB_INCLUDE_DIR "${stb_SOURCE_DIR}")
 endif()
 
-set(LIBMMD_ENABLE_PHYSICS ON CACHE BOOL "Build the libmmd physics API required by the runtime" FORCE)
-set(LIBMMD_ENABLE_BULLET ${DAYO_ENABLE_PHYSICS} CACHE BOOL "Use Bullet acceleration in libmmd" FORCE)
-set(LIBMMD_BUILD_TESTS OFF CACHE BOOL "Build libmmd standalone tests" FORCE)
-set(LIBMMD_FETCH_DEPENDENCIES ${DAYO_FETCH_DEPENDENCIES} CACHE BOOL "Fetch libmmd optional dependencies" FORCE)
-set(LIBMMD_INSTALL OFF CACHE BOOL "Do not install embedded libmmd separately" FORCE)
-add_subdirectory(external/libmmd EXCLUDE_FROM_ALL)
+include(cmake/LibMmd.cmake)
 
 add_library(
   dayo_core
@@ -1329,7 +1324,7 @@ message(STATUS "mikumikudesu backend: ${DAYO_BACKEND}")
 message(STATUS "Dear ImGui: ${DAYO_ENABLE_IMGUI}")
 message(STATUS "OIDN detected: ${DAYO_HAS_OIDN} (CPU always preferred; HIP is runtime-optional)")
 message(STATUS "FFmpeg detected: ${DAYO_HAS_MEDIA}")
-message(STATUS "libmmd physics: enabled (Bullet acceleration follows DAYO_ENABLE_PHYSICS)")
+message(STATUS "libmmd physics API: enabled; runtime physics: ${DAYO_ENABLE_PHYSICS}")
 message(STATUS "cereal detected: ${cereal_FOUND}")
 message(STATUS "DirectXTex detected: ${directxtex_FOUND}")
 message(STATUS "Jsonnet effects: ${DAYO_HAS_JSONNET}")
