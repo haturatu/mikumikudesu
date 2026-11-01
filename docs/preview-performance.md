@@ -1,12 +1,16 @@
 # Preview の性能と画質設定
 
-この文書では、Preview レンダラのメモリ使用量と描画処理の最適化、画質 profile、Present mode、および計測方法を説明します。
+Preview はモデルを編集中ずっと使うので、一枚だけ高画質に描けることより、操作中の応答性とメモリ使用量が重要になります。
+
+そこで GPU メモリ帯域、頂点変形、フレーム同期を中心に見直しました。この文書には、実装した最適化と画質設定、測定条件をまとめています。
 
 主な改善対象は GPU メモリ帯域、頂点変形、フレーム同期です。Vulkan 1.3、VMA、upload ring、bindless descriptor、pipeline cache、ThinLTO / PGO / BOLT などの既存の仕組みを引き続き使用します。
 
 **注意:** このページに記載した速度・メモリ削減率は、指定した入力と検証環境での結果です。別の GPU、モデル、画質 profile で同じ改善が得られることを意味しません。
 
 ## 最適化した処理
+
+まず、毎フレーム必ず必要な処理と、変更があったときだけ更新すればよい処理を分けています。GPU へのコピーや同期を減らすためです。
 
 - AO: scalar R8_UNORM。storage、sampling、linear filteringとextended storage formats featureを確認します。
   未対応ならR16_SFLOAT、extended formats自体が未対応ならR32_SFLOATへfallbackします。
@@ -40,6 +44,8 @@
 1920 × 1080、半解像度 AO の場合、対象 attachment の理論上のデータ量は約 23.73 MiB から約 8.90 MiB に減少します（約 62.5% の削減）。これは R8 AO と RG16 normal に関する値であり、allocation padding、depth、HDR 合成、compute vertex 出力を含みません。**FPS が 62.5% 改善することを意味しません。**
 
 ## 画質 profile と Present mode
+
+すべての端末で同じ設定が最適になるわけではありません。APU ではメモリ帯域を優先し、余裕のある GPU では画質を上げられるようにしています。
 
 画質 profile は `--preview-quality auto|apu|high` で指定します。既定の `auto` は GPU とメモリ使用状況に応じて選択します。下表の「still quality」は静止画出力時に使用する設定であり、CLI の profile 名ではありません。
 
@@ -79,6 +85,8 @@ SSAOとenvironmentはgraphics queue上です。SSAOとShadowのoverlapにはpass
 APUのCU/メモリ帯域は共有されるため、有効化だけで高速化したとは判断しません。
 
 ## 測定条件とドライバ
+
+FPS だけを見ても、ドライバや入力モデル、画質が違えば比較になりません。実測値は環境をそろえて解釈してください。
 
 GPU/driver、モデル、motion、解像度、profile、cacheのcold/warm状態、validationの有無を揃えます。
 CPUビルドや他のGPU処理を止め、通常設定とasyncの順序を交互にして複数回測ります。

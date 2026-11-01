@@ -1,11 +1,14 @@
 # deformer/postprocessのMatDesc GPU binding
 
+FX の deformer と postprocess でも材質情報を参照します。モデル描画用の経路だけ対応していると、同じ FX 定義でも pass によって結果が違ってしまいます。
+
 状態: **実装済み**。基準は `main@7ed41e0` と固定 MikuMikuDayo130。
 
 ## 調査時点の問題
 
-本家 `src/YRZFx.ixx` は `FXTech::matDescs` をcategory共通で保持し、`FX::Load` の
-`hasMatDesc()` 分岐でtemplateを読み、各passへidx/tex/tex3D/value/texture配列を生成する。
+材質の宣言を parse できることと、GPU に実際のデータを渡していることは別なので、そこを確認しています。
+
+上流の `src/YRZFx.ixx` では `FXTech::matDescs` を category 共通で保持し、`FX::Load` の `hasMatDesc()` から template を読み込みます。その内容を使って各 pass の idx / tex / tex3D / value / texture 配列を組み立てます。
 
 [FxCompiler::compile](../../src/fx/fx_compiler.cpp) はdesuでもcategoryに関わらずmaterialSchemaを作る。
 調査時点では [NativeRendererCoordinator::executeGenericEffects](../../src/graphics/native_renderer.cpp) の
@@ -28,9 +31,9 @@ model構成、material override、reload、texture generation、layout長の変�
 
 ## 実装内容
 
-GenericEffectRuntime が effect ごとに FxMaterialSceneRuntime とコンパイル済み schema を所有する。
-初回はリソース確保後の initializer で、以後は毎frameの sync と resize時の initializer で
-annotation、defaultFile、式、texture catalogを更新する。配列長変更時はdescriptor/pipelineを再構築する。
+GenericEffectRuntime が effect ごとに FxMaterialSceneRuntime とコンパイル済み schema を持つようにしました。
+
+最初のリソース確保後とリサイズ時には initializer、通常フレームでは sync で annotation、defaultFile、式、texture catalog を更新します。配列の長さが変わる場合は descriptor / pipeline も再構築します。
 
 共通のtexture resolverを抽出し、generic側は当該effectのlocal storeを最優先にする。
 renderer-localへの暗黙参照を避け、screen、owner deformer、明示shared sourceを順に参照する。
