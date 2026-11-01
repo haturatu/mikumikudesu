@@ -64,10 +64,10 @@ make setup
 
 PMX / VMD の処理には libmmd を使っています。毎回 submodule をビルドするのではなく、システムに入っている libmmd を利用することもできます。
 
-Arch Linux と Artix Linux では、AUR から libmmd をインストールできます。
+Arch Linux と Artix Linux では、AUR の `libmmd-cpp` パッケージから libmmd をインストールできます。
 
 ```sh
-yay -S libmmd
+yay -S libmmd-cpp
 cmake -S . -B build/system -G Ninja -DCMAKE_BUILD_TYPE=Release -DLIBMMD_PROVIDER=SYSTEM
 cmake --build build/system --parallel
 ```
