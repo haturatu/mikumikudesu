@@ -1,9 +1,13 @@
 # 外部テクスチャのメタデータとdispatch
 
+外部画像を読み込む FX では、宣言したサイズとファイルの実際のサイズが違うことがあります。ここを宣言値だけで処理すると、後続の dispatch や出力サイズまでずれてしまいます。
+
 調査基準: MikuMikuDayo130、`src/YRZFx.ixx` の `FXTexture`、`createTextureLambda`、
 `createTexture3DLambda`。ファイルを指定した場合、本家は宣言のsize/formatを無視し、読込結果を使う。
 
 ## 調査時点の問題と修正内容
+
+上流が外部画像の実寸を使う場合、Vulkan 側の plan もその実寸に合わせる必要があります。
 
 修正前の runtime は size が書かれていると画像寸法との一致を要求し、formatもRGBA8以外なら拒否していた。
 また `FxCompiler::plan` はGPUにロードされた画像寸法を使わず宣言から再計算するため、画像名を

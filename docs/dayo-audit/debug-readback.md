@@ -1,8 +1,12 @@
 # FX Debugのpreview/dump接続
 
+FX Debug で必要なのは、リソース名を表示することだけではありません。実際に GPU 上にあるテクスチャやバッファを確認できなければ、エフェクトの問題を追いにくいためです。
+
 状態: **実装済み**。基準は `main@7ed41e0` と固定 MikuMikuDayo130。
 
 ## 調査時点の問題
+
+既存の UI にメタデータ表示はありましたが、GPU の実体を readback する経路は別に必要でした。
 
 本家 `src/debDayo.h::DebugImageProcessor` は `hlsl/system/debug.hlsl` を使い、選択したtextureを
 表示用画像へ変換する。同ファイルの `dumpLambda` はbuffer download、2D/3D texture保存を行い、

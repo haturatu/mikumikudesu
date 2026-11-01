@@ -1,8 +1,12 @@
 # deformer/postprocessのMatDesc GPU binding
 
+FX の deformer と postprocess でも材質情報を参照します。モデル描画用の経路だけ対応していると、同じ FX 定義でも pass によって結果が違ってしまいます。
+
 状態: **実装済み**。基準は `main@7ed41e0` と固定 MikuMikuDayo130。
 
 ## 調査時点の問題
+
+材質の宣言を parse できることと、GPU に実際のデータを渡していることは別なので、そこを確認しています。
 
 本家 `src/YRZFx.ixx` は `FXTech::matDescs` をcategory共通で保持し、`FX::Load` の
 `hasMatDesc()` 分岐でtemplateを読み、各passへidx/tex/tex3D/value/texture配列を生成する。
