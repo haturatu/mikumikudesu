@@ -221,7 +221,7 @@ jobs:
         run: cmake --build --preset linux-release --parallel
 
       - name: Upload release binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mikumikudesu-linux-x86_64
           path: build/linux-release/mikumikudesu
