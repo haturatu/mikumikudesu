@@ -3702,9 +3702,10 @@ void Application::buildCameraLightControls() {
         changed |= ImGui::SliderFloat(ui::label("Field of view"), &editedCamera_.viewAngle, 1.0F, 179.0F, "%.1f deg");
         changed |= ImGui::Checkbox(ui::label("Perspective"), &editedCamera_.perspective);
         if (ImGui::CollapsingHeader(ui::label("Camera parent (advanced)"))) {
-            ImGui::InputInt(ui::label("Parent model"), &editedCamera_.parentModel);
-            ImGui::InputInt(ui::label("Parent bone"), &editedCamera_.parentBone);
-            ImGui::InputText(ui::label("Parent bone name"), cameraParentBoneName_.data(), cameraParentBoneName_.size());
+            changed |= ImGui::InputInt(ui::label("Parent model"), &editedCamera_.parentModel);
+            changed |= ImGui::InputInt(ui::label("Parent bone"), &editedCamera_.parentBone);
+            changed |= ImGui::InputText(ui::label("Parent bone name"), cameraParentBoneName_.data(),
+                                        cameraParentBoneName_.size());
         }
         if (changed) {
             manualCamera_ = false;
@@ -5174,6 +5175,8 @@ void Application::buildEditorUi() {
             }
             if (!model->materialSettings.empty() && ImGui::TreeNode(ui::label("Material settings"))) {
                 static int materialIndex = 0;
+                static core::ModelId annotationModelId = 0;
+                static int annotationMaterialIndex = -1;
                 materialIndex = std::clamp(materialIndex, 0, static_cast<int>(model->materialSettings.size() - 1));
                 const auto& materials = model->model->materials;
                 const char* preview = materials[static_cast<std::size_t>(materialIndex)].name.c_str();
@@ -5187,6 +5190,14 @@ void Application::buildEditorUi() {
                     ImGui::EndCombo();
                 }
                 static std::array<char, 1024> annotation{};
+                if (annotationModelId != model->id || annotationMaterialIndex != materialIndex) {
+                    annotationModelId = model->id;
+                    annotationMaterialIndex = materialIndex;
+                    const auto& current = model->materialSettings[static_cast<std::size_t>(materialIndex)].annotation;
+                    const auto length = std::min(current.size(), annotation.size() - 1U);
+                    std::copy_n(current.data(), length, annotation.data());
+                    annotation[length] = '\0';
+                }
                 ImGui::InputText(ui::label("Annotation / MatDesc"), annotation.data(), annotation.size());
                 if (ImGui::Button(ui::label("Apply material annotation"))) {
                     model->materialSettings[static_cast<std::size_t>(materialIndex)].annotation = annotation.data();
