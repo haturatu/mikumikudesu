@@ -5193,7 +5193,8 @@ void Application::buildEditorUi() {
                 if (annotationModelId != model->id || annotationMaterialIndex != materialIndex) {
                     annotationModelId = model->id;
                     annotationMaterialIndex = materialIndex;
-                    const auto& current = model->materialSettings[static_cast<std::size_t>(materialIndex)].annotation;
+                    const auto current =
+                        model->materialSettings[static_cast<std::size_t>(materialIndex)].annotation.string();
                     const auto length = std::min(current.size(), annotation.size() - 1U);
                     std::copy_n(current.data(), length, annotation.data());
                     annotation[length] = '\0';
