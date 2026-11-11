@@ -379,6 +379,8 @@ cmake --build --preset linux-release-native
 
 BOLT の出力は `mikumikudesu.bolt` です。有効時の install はこの最適化済みバイナリを `mikumikudesu` として配置します。詳細な GPU 側の最適化・測定条件は[Preview の性能](docs/preview-performance.md)を参照してください。
 
+現行 Release の ELF・SPIR-V・GPU ISA と実行時プロファイルを調べた[バイナリ性能調査](docs/performance/binary-audit.md)には、背景動画、トーンマップ、頂点配列確保の最適化候補と再現手順を記録しています。
+
 ### ソースコードの構成
 
 | パス | 内容 |
